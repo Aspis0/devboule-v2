@@ -2133,13 +2133,13 @@ fn the_delivered_model_is_what_the_claude_argv_pins() {
 /// setting the CLI reads, and a refusal of it fails the session rather than
 /// leaving a child running unflagged behind a card that said it was fast.
 #[test]
-fn the_fast_mode_frame_names_the_flag_and_its_refusal_names_it_back() {
+fn the_effort_frame_names_the_flag_and_its_refusal_names_it_back() {
     let mut harness = initial_mode_test_setup();
     let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
     let delivery_settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
-    let fast_request_id =
-        send_initial_fast_mode(&harness.stdin, &harness.next_id, &delivery_settings, true)
-            .expect("the fast-mode frame is written synchronously");
+    let effort_request_id =
+        send_initial_effort(&harness.stdin, &harness.next_id, &delivery_settings, "low")
+            .expect("the effort frame is written synchronously");
     let mut reader = ClaudeReader::with_mode_gate(
         ClaudeView::new(Some(PathBuf::from(r"C:\work"))),
         Arc::clone(&broker),
@@ -2157,24 +2157,24 @@ fn the_fast_mode_frame_names_the_flag_and_its_refusal_names_it_back() {
 
     let mode_request = read_json_line(&mut harness.stdout);
     assert_eq!(mode_request["request"]["subtype"], "set_permission_mode");
-    let fast_echo = read_json_line(&mut harness.stdout);
+    let effort_echo = read_json_line(&mut harness.stdout);
     assert_eq!(
-        fast_echo["request"]["subtype"], "apply_flag_settings",
-        "the flag rides the settings frame, not a new verb: {fast_echo}"
+        effort_echo["request"]["subtype"], "apply_flag_settings",
+        "the flag rides the settings frame, not a new verb: {effort_echo}"
     );
-    assert_eq!(fast_echo["request_id"], fast_request_id);
+    assert_eq!(effort_echo["request_id"], effort_request_id);
     assert_eq!(
-        fast_echo["request"]["settings"]["fastMode"],
-        serde_json::json!(true),
-        "the setting is the one Paseo's SDK writes: {fast_echo}"
+        effort_echo["request"]["settings"]["effortLevel"],
+        serde_json::json!("low"),
+        "the effort setting uses the existing control frame: {effort_echo}"
     );
 
     let refusal = serde_json::json!({
         "type": "control_response",
         "response": {
             "subtype": "error",
-            "request_id": fast_request_id,
-            "error": "unknown setting fastMode",
+            "request_id": effort_request_id,
+            "error": "unknown setting effortLevel",
         }
     });
     reader
@@ -2186,14 +2186,14 @@ fn the_fast_mode_frame_names_the_flag_and_its_refusal_names_it_back() {
             .as_bytes(),
             &runtime,
         )
-        .expect("fast-mode response");
+        .expect("effort response");
     let events = drain(&conn);
     assert!(
         events.iter().any(|event| matches!(
             event,
             SessionEvent::AgentError { message }
-                if message.contains("refused the delivered fast mode")
-                    && message.contains("unknown setting fastMode")
+                if message.contains("refused the delivered thinking option 'low'")
+                    && message.contains("unknown setting effortLevel")
         )),
         "a CLI that will not take the flag fails the session, naming it: {:?}",
         slice_of_kinds(&events)
@@ -2516,6 +2516,20 @@ fn a_delivered_fast_mode_is_confirmed_on_the_create_path_in_all_three_answers() 
     );
     let _ = harness.child.kill();
     let _ = harness.child.wait();
+}
+
+#[test]
+fn fast_mode_wait_refusals_name_claude_for_every_read_failure() {
+    for source in [
+        "the ACP agent did not answer within 15s; the creation is refused rather than awaited without end",
+        "ACP agent closed stdout before the answer arrived.",
+        "ACP stdio failed: broken pipe",
+        "the ACP agent wrote more than 256 bytes without a newline",
+    ] {
+        let error = delivery_wait_error(WireError::new(ErrorCode::Io, source));
+        assert!(error.message.contains("Claude"), "{source}: {}", error.message);
+        assert!(!error.message.contains("ACP"), "{source}: {}", error.message);
+    }
 }
 
 /// `read_json_line` with a real bound, through the same non-blocking reader the

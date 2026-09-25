@@ -799,12 +799,10 @@ pub(crate) fn declared_surfaces_from_options(
 /// (an agent with no effort surface leaves the second one empty), so the same
 /// call works for any handshake shape.
 ///
-/// A third exclusion beyond the two switch ids: a `mode`-category option, or a
-/// row the standard `modes` block already describes. A profile stores its mode
-/// in `modeId` and the daemon switches it with `session/set_mode`; a second
-/// control over the same five values would be two sources for one setting, and
-/// the identity test is by the declared **values**, because an id of `mode` is
-/// not a promise and `category` is advisory.
+/// An option whose choices exactly match the standard `modes` block is excluded:
+/// the profile stores that value in `modeId` and switches it with
+/// `session/set_mode`, so a second control over the same values would conflict.
+/// Category and option id are advisory; only the declared values identify it.
 ///
 /// An option contributes no row when it has no `id`, or no choices at all: a
 /// dial the daemon cannot name or set. A duplicate `id` is the agent

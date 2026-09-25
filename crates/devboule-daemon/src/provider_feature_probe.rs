@@ -12,42 +12,26 @@ use devboule_protocol::{VocabularyFeature, VocabularyFeatures};
 
 use crate::provider_features;
 
-/// One cache key: a provider, and the model the read was made against.
-///
-/// The model is in the key because Paseo's own answer is: its `listFeatures`
-/// opens `session/new` with **no** model (`acp-agent.ts:1130`, `{cwd,
-/// mcpServers: []}`), while its profile form re-asks on every model change
-/// (`use-profile-form-inputs.ts` keys the fetch on provider, cwd, mode, model and
-/// thinking option). The two are not a contradiction — the request does not name
-/// a model, the *answer may differ per model anyway*, because an agent derives
-/// its own `configOptions` from the model it started that session on. Copying it
-/// means one spawn per model a human actually chooses, which is what Paseo costs
-/// its users, and never a prune of a B-valid value against A's list.
+/// One cache key: the provider whose `session/new` answer is being read.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ProbeKey {
     pub(crate) provider: String,
-    pub(crate) model: Option<String>,
 }
 
 impl ProbeKey {
-    pub(crate) fn new(provider: &str, model: Option<&str>) -> Self {
+    pub(crate) fn new(provider: &str) -> Self {
         Self {
-            provider: provider.to_string(),
-            model: model.map(|model| model.to_string()),
+            provider: provider.trim().to_string(),
         }
     }
 }
 
-/// The cached ACP declarations for one provider **and model**, if that read has
+/// The cached ACP declarations for one provider, if that read has
 /// answered. `Some(vec![])` is a real answer — the agent declared nothing — while
-/// `None` is "nobody has asked *for this model* yet", and the difference decides
+/// `None` is "nobody has asked yet", and the difference decides
 /// whether the store may prune at all
 /// ([`crate::provider_features::prune_for`]).
 ///
-/// The model is part of the lookup and not a detail: pruning a profile against a
-/// list read while the agent ran a different model would delete a choice this
-/// agent does offer. `None` model is its own key, the same one the form uses
-/// before a model is chosen.
 pub(crate) fn cached_declarations(key: &ProbeKey) -> Option<Vec<VocabularyFeature>> {
     // The store has no handle on `ServerState`, and reaching for one to ask
     // this question would put a process-spawning read on the profile write
@@ -68,7 +52,10 @@ static ACP_PROBE_ANSWERS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<ProbeKey, Vec<VocabularyFeature>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// The feature axis of one named ACP provider at one model: the cached answer
+const MAX_CACHED_PROVIDERS: usize = 128;
+const UNAVAILABLE_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The feature axis of one named ACP provider: the cached answer
 /// for that pair if there is one, otherwise "being read now" and a started read.
 ///
 /// This is where `D1`'s cache lives, and the three rules that make a
@@ -79,14 +66,10 @@ static ACP_PROBE_ANSWERS: std::sync::LazyLock<
 ///   slot, answers `probing`, and starts the process on a worker. A form that
 ///   waited on an `npx` cold start would be a frozen Settings panel — Paseo can
 ///   await its probe only because its server is asynchronous.
-/// - **One read per provider *and model*, never one per keystroke.** The key is
-///   [`ProbeKey`]: a distinct read per model a human actually chooses, which is
-///   Paseo's own cost, while typing in a model field costs nothing because the
-///   form asks only when the field settles.
-/// - **A failed read is not an answer.** A provider that is not installed, or
-///   died, or refused the handshake leaves no cached failure: the next ask
-///   claims the slot again, so installing it is picked up without anyone
-///   reaching for a refresh button.
+/// - **One read per provider.** `session/new` carries no model, so the probe
+///   cannot establish a model-specific declaration.
+/// - **A failed read expires.** Brief failures are cached to avoid starting a
+///   provider on every poll, then a later open can retry.
 pub(crate) fn acp_axis_for(
     state: &std::sync::Arc<crate::server::ServerState>,
     key: &ProbeKey,
@@ -114,6 +97,9 @@ pub(crate) fn acp_axis_for(
                         // store prunes an ACP profile's keys against this list and
                         // must not spawn a process to find it.
                         if let Ok(mut answers) = ACP_PROBE_ANSWERS.lock() {
+                            if answers.len() >= MAX_CACHED_PROVIDERS {
+                                answers.clear();
+                            }
                             answers.insert(worker_key.clone(), declared.clone());
                         }
                         Probe::Answered(declared)
@@ -176,23 +162,17 @@ pub(crate) enum Probe {
     Unavailable,
 }
 
-/// The ACP probe answers, one per provider and model, for the life of the daemon.
-///
-/// Keyed on [`ProbeKey`] - provider *and* model - because a list read while the agent
-/// ran one model must never justify pruning a profile that names another: the
-/// `session/new` the read sends carries no model, but the agent derives its own
-/// `configOptions` from the model that session started on, and Paseo's profile form
-/// re-asks per model for exactly that reason. There is no TTL, because the value
-/// costs a process to obtain, and no entry per keystroke, because the form re-reads
-/// only when a model field settles.
-///
-/// `Running` holds the slot open so ten fast asks start ten probes; a failed
-/// read is not cached, because a provider that was not installed a moment ago
-/// may be installed now, and `Unavailable` must never outlive the read that
-/// produced it.
+/// Bounded per-provider ACP answers. The request has no model field, and brief
+/// failures expire so a later form open can retry.
 #[derive(Default)]
 pub(crate) struct AcpProbeCache {
-    answers: std::sync::Mutex<std::collections::HashMap<ProbeKey, Probe>>,
+    answers: std::sync::Mutex<std::collections::HashMap<ProbeKey, ProbeEntry>>,
+}
+
+#[derive(Clone)]
+struct ProbeEntry {
+    probe: Probe,
+    retry_after: Option<std::time::Instant>,
 }
 
 impl AcpProbeCache {
@@ -203,7 +183,12 @@ impl AcpProbeCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(key)
-            .cloned()
+            .filter(|entry| {
+                entry
+                    .retry_after
+                    .is_none_or(|at| at > std::time::Instant::now())
+            })
+            .map(|entry| entry.probe.clone())
     }
 
     /// Claim the slot for `provider` and say whether this caller is the one
@@ -217,15 +202,36 @@ impl AcpProbeCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match answers.get(key) {
-            Some(Probe::Running) | Some(Probe::Answered(_)) => false,
-            Some(Probe::Unavailable) | None => {
-                answers.insert(key.clone(), Probe::Running);
+            Some(entry)
+                if entry
+                    .retry_after
+                    .is_none_or(|at| at > std::time::Instant::now()) =>
+            {
+                false
+            }
+            _ => {
+                if answers.len() >= MAX_CACHED_PROVIDERS {
+                    if let Some(evict) = answers.keys().next().cloned() {
+                        answers.remove(&evict);
+                    }
+                }
+                answers.insert(
+                    key.clone(),
+                    ProbeEntry {
+                        probe: Probe::Running,
+                        retry_after: None,
+                    },
+                );
                 true
             }
         }
     }
 
     pub(crate) fn finish(&self, key: &ProbeKey, probe: Probe) {
+        self.finish_at(key, probe, std::time::Instant::now());
+    }
+
+    fn finish_at(&self, key: &ProbeKey, probe: Probe, now: std::time::Instant) {
         debug_assert!(
             !matches!(probe, Probe::Running),
             "a read finishes with an answer or a failure, never still running"
@@ -239,20 +245,26 @@ impl AcpProbeCache {
         // answer of a process that no longer describes the provider is not
         // worth putting back.
         if answers.contains_key(key) {
-            answers.insert(key.clone(), probe);
+            answers.insert(
+                key.clone(),
+                ProbeEntry {
+                    retry_after: matches!(&probe, Probe::Unavailable)
+                        .then(|| now + UNAVAILABLE_RETRY_AFTER),
+                    probe,
+                },
+            );
         }
     }
 
-    /// Forget every answer. The provider update's callback: a new version of
-    /// an agent may declare a different surface, and the next ask re-reads it.
-    /// Forget every answer for one provider, whatever model it was read for: a
-    /// provider update changes the executable, and a list read from the old one
-    /// describes a surface that may no longer exist.
+    /// Forget this provider's answer after an update changes its executable.
     pub(crate) fn invalidate(&self, provider: &str) {
         self.answers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|key, _| key.provider != provider);
+        if let Ok(mut answers) = ACP_PROBE_ANSWERS.lock() {
+            answers.retain(|key, _| key.provider != provider);
+        }
     }
 }
 
@@ -278,14 +290,13 @@ mod tests {
         }
     }
 
-    /// The probe cache answers a claim exactly once per provider *and model*, so
+    /// The probe cache answers a claim exactly once per provider, so
     /// ten opens of the form start one provider process, and a failed read is
     /// retryable.
     #[test]
     fn one_claim_per_running_read_and_a_failure_retries() {
         let cache = AcpProbeCache::default();
-        let grok = ProbeKey::new("grok", None);
-        let other_model = ProbeKey::new("grok", Some("glm-4.6"));
+        let grok = ProbeKey::new(" grok ");
         assert!(cache.claim(&grok), "the first ask claims the slot");
         assert!(!cache.claim(&grok), "and the next ten do not start again");
         cache.finish(&grok, Probe::Answered(vec![feature("engine")]));
@@ -294,18 +305,7 @@ mod tests {
             "an answered read is not re-run by a claim"
         );
         assert!(matches!(cache.peek(&grok), Some(Probe::Answered(_))));
-        // The model is in the key, so a list read on one model is never the
-        // answer for another. This is the half that protects a value rather than
-        // the cost of a spawn: `prune_for` asks for the profile's own pair, and
-        // an entry for a different model must not answer it.
-        assert!(
-            cache.peek(&other_model).is_none(),
-            "a second model has no answer from the first's read"
-        );
-        assert!(
-            cache.claim(&other_model),
-            "and it is claimed on its own, so its read runs"
-        );
+        assert_eq!(grok.provider, "grok", "provider keys are normalized");
 
         cache.invalidate("grok");
         assert!(
@@ -314,11 +314,22 @@ mod tests {
         );
         assert!(cache.claim(&grok), "a provider update re-opens the read");
         cache.finish(&grok, Probe::Unavailable);
+        assert_eq!(cache.peek(&grok), Some(Probe::Unavailable));
         assert!(
-            cache.claim(&grok),
-            "a failure is not cached: a provider installed since then is answered now"
+            !cache.claim(&grok),
+            "a short failure cooldown prevents a spawn storm"
         );
-        assert_eq!(cache.peek(&grok), Some(Probe::Running));
+    }
+
+    #[test]
+    fn unavailable_answers_expire_and_can_be_retried() {
+        let cache = AcpProbeCache::default();
+        let key = ProbeKey::new("grok");
+        assert!(cache.claim(&key));
+        let expired_at = std::time::Instant::now() - UNAVAILABLE_RETRY_AFTER;
+        cache.finish_at(&key, Probe::Unavailable, expired_at);
+        assert_eq!(cache.peek(&key), None);
+        assert!(cache.claim(&key));
     }
 
     /// A finish that arrives after the cache was cleared underneath the read
@@ -327,36 +338,21 @@ mod tests {
     #[test]
     fn a_finish_after_an_invalidate_writes_nothing() {
         let cache = AcpProbeCache::default();
-        let trae = ProbeKey::new("trae", None);
+        let trae = ProbeKey::new("trae");
         assert!(cache.claim(&trae));
         cache.invalidate("trae");
         cache.finish(&trae, Probe::Answered(vec![feature("fast")]));
         assert_eq!(cache.peek(&trae), None, "the stale answer is dropped");
     }
-    /// The store's prune asks for the profile's own pair. A list read while the
-    /// agent ran another model is not an answer about this profile, and answering
-    /// the lookup with it is how a valid stored choice gets deleted: the same
-    /// `Some(list)` that licenses a prune for one model must not license one for
-    /// another.
     #[test]
-    fn an_answer_for_one_model_never_answers_the_lookup_for_another() {
-        let mut answers = std::collections::HashMap::new();
-        answers.insert(
-            ProbeKey::new("grok", Some("glm-4.6")),
-            vec![feature("fast")],
-        );
-        let read = |key: &ProbeKey| answers.get(key).cloned();
-        assert!(
-            read(&ProbeKey::new("grok", Some("glm-4.6"))).is_some(),
-            "the pair that was asked has an answer"
-        );
-        assert!(
-            read(&ProbeKey::new("grok", Some("glm-4.7"))).is_none(),
-            "a neighbour model's list is not this one's answer"
-        );
-        assert!(
-            read(&ProbeKey::new("grok", None)).is_none(),
-            "and no model at all is not the same key as some model"
-        );
+    fn cache_evicts_when_its_provider_bound_is_reached() {
+        let cache = AcpProbeCache::default();
+        for index in 0..=MAX_CACHED_PROVIDERS {
+            let key = ProbeKey::new(&format!("provider-{index}"));
+            assert!(cache.claim(&key));
+            cache.finish(&key, Probe::Answered(vec![]));
+        }
+        let entries = cache.answers.lock().unwrap();
+        assert!(entries.len() <= MAX_CACHED_PROVIDERS);
     }
 }

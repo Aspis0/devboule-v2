@@ -2887,10 +2887,7 @@ fn creation_card(
             if crate::provider_catalog::session_kind_for(&profile.provider)
                 == devboule_protocol::SessionKind::Acp
                 && crate::provider_feature_probe::cached_declarations(
-                    &crate::provider_feature_probe::ProbeKey::new(
-                        &profile.provider,
-                        Some(&profile.model),
-                    ),
+                    &crate::provider_feature_probe::ProbeKey::new(&profile.provider),
                 )
                 .is_none()
             {

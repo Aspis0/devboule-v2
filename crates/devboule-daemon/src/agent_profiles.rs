@@ -528,14 +528,8 @@ fn check_profile(
     // `acp_client::apply_profile_delivery`, which is not a looser rule, only a
     // later one: the agent is the only source that knows its own list.
     //
-    // The lookup is keyed on the profile's **own model**, because that is what
-    // the read was made against. A list learned while the agent ran another
-    // model is not an answer about this profile, and pruning against it would
-    // delete a choice the provider does offer.
-    let probe_key = crate::provider_feature_probe::ProbeKey::new(
-        &profile.provider,
-        Some(profile.model.as_str()),
-    );
+    // The probe's `session/new` carries no model, so its answer is provider-wide.
+    let probe_key = crate::provider_feature_probe::ProbeKey::new(&profile.provider);
     let probed = if crate::provider_catalog::session_kind_for(&profile.provider)
         == devboule_protocol::SessionKind::Acp
     {
@@ -1561,30 +1555,23 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
-    /// `D4`'s safety half, and the reason the probe cache is keyed on provider
-    /// *and* model: a list read while the agent ran one model must never license a
-    /// prune of a profile that names another. Answering this lookup with the wrong
-    /// model's list would delete a choice the provider really offers — the silent
-    /// loss this surface exists to prevent, arrived at from the other direction.
-    ///
-    /// The two halves are one test on purpose: a key that never matched anything
-    /// would pass the first assertion as loudly as a correct one, and only the
-    /// second shows the lookup is a lookup and not a refusal to prune at all.
+    /// The probe opens `session/new` without a model, so one provider answer
+    /// applies to profiles that name different models.
     #[test]
-    fn a_list_read_for_another_model_does_not_prune_this_profile() {
-        let dir = crate::test_dirs::test_temp_dir("devboule-prune-model-key");
+    fn one_provider_answer_applies_to_profiles_with_different_models() {
+        let dir = crate::test_dirs::test_temp_dir("devboule-provider-answer-models");
         let store = AgentProfilesStore::load(&dir);
         let answer = vec![crate::provider_features::select_declaration(
-            "fast".to_string(),
-            "Fast".to_string(),
+            "engine".to_string(),
+            "Engine".to_string(),
             vec![devboule_protocol::VocabularyFeatureOption {
-                id: "on".to_string(),
-                label: "On".to_string(),
+                id: "m1".to_string(),
+                label: "Model one".to_string(),
             }],
         )
         .expect("a declaration with one choice")];
         crate::provider_feature_probe::record_answer_for_test(
-            &crate::provider_feature_probe::ProbeKey::new("grok", Some("glm-4.6")),
+            &crate::provider_feature_probe::ProbeKey::new("grok"),
             answer,
         );
         let mut other_model = profile("p-grok-b", "Model B profile");
@@ -1601,7 +1588,7 @@ mod tests {
         assert_eq!(
             kept.features.get("engine").cloned(),
             Some(serde_json::json!("m1")),
-            "a list read for another model did not consume this profile's key"
+            "the provider-wide answer preserves this declared value"
         );
 
         let mut this_model = other_model.clone();
@@ -1610,8 +1597,8 @@ mod tests {
         this_model.model = "glm-4.6".to_string();
         store
             .set(document(vec![this_model]))
-            .expect("the store admits the matching profile too");
-        let pruned = store
+            .expect("the store admits a second profile with another model");
+        let kept_on_other_model = store
             .document()
             .profiles
             .iter()
@@ -1620,9 +1607,9 @@ mod tests {
             .features
             .clone();
         assert_eq!(
-            pruned.get("engine").cloned(),
-            None,
-            "the list read on this very model did prune the key it does not carry"
+            kept_on_other_model.get("engine").cloned(),
+            Some(serde_json::json!("m1")),
+            "the same provider-wide answer preserves the declared value here"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

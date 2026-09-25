@@ -858,11 +858,9 @@ pub enum ClientMessage {
     ProviderVocabularyGet {
         id: u64,
         provider: String,
-        /// The model the asking form currently holds. The ACP half of the
-        /// features axis is read by starting the provider, and the read's answer
-        /// may differ per model, so the cache key is provider **and** model —
-        /// exactly Paseo's own fetch key. `None` is "no model chosen yet" and is
-        /// its own key. Defaulted, so a client older than the field still parses.
+        /// The asking form's model, used for static model-gated declarations.
+        /// ACP probes do not carry a model and are cached by provider alone.
+        /// Defaulted, so a client older than the field still parses.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         refresh: bool,

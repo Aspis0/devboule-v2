@@ -473,10 +473,20 @@ mod tests {
             "outside the declared list"
         );
         assert!(!value_fits(&engine, &json!(true)), "not a choice at all");
-        assert!(
-            !value_fits(&engine, &json!("")),
-            "an empty string is not one of the agent's choices, so it is not a value"
-        );
+        let empty_choice = VocabularyFeature {
+            options: vec![
+                VocabularyFeatureOption {
+                    id: "".to_string(),
+                    label: "Use default".to_string(),
+                },
+                VocabularyFeatureOption {
+                    id: "a".to_string(),
+                    label: "A".to_string(),
+                },
+            ],
+            ..engine
+        };
+        assert!(value_fits(&empty_choice, &json!("")));
     }
 
     /// An ACP provider nobody has read yet has **no** list, which is not the

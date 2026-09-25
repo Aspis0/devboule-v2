@@ -496,16 +496,13 @@ impl Provider for AcpProvider {
         &self,
         state: &Arc<ServerState>,
         named: &str,
-        model: Option<&str>,
+        _model: Option<&str>,
     ) -> VocabularyFeatures {
-        // The one family whose list is the agent's, so the one family that is
-        // read rather than recited. The read is started once per provider for
-        // the run and never re-run by a model change: it asks `session/new`
-        // on the agent's own default model, so no model choice can change what
-        // it answers.
+        // The probe request carries no model, so its declarations are keyed by
+        // provider and model-specific rows are filtered by the form.
         crate::provider_feature_probe::acp_axis_for(
             state,
-            &crate::provider_feature_probe::ProbeKey::new(named, model),
+            &crate::provider_feature_probe::ProbeKey::new(named),
         )
     }
 

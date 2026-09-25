@@ -3633,17 +3633,7 @@ impl AcpTest {
         );
         let session_close_file = observation_dir.join("stub session close.txt");
         std::env::set_var("DEVBOULE_ACP_STUB_CLOSE_FILE", &session_close_file);
-        let set_config_log_file = observation_dir.join("stub set config log.txt");
-        std::env::set_var(
-            "DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE",
-            &set_config_log_file,
-        );
         std::env::set_var("DEVBOULE_ACP_STUB_SET_CONFIG_FILE", &set_config_file);
-        let set_config_log_file = observation_dir.join("stub set config log.txt");
-        std::env::set_var(
-            "DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE",
-            &set_config_log_file,
-        );
         let mut env_names = vec![
             "DEVBOULE_ACP_COMMAND",
             "DEVBOULE_ACP_PROVIDER_ID",
@@ -3652,6 +3642,7 @@ impl AcpTest {
             "DEVBOULE_ACP_STUB_CONSOLE_FILE",
             "DEVBOULE_ACP_STUB_SET_MODEL_FILE",
             "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
+            "DEVBOULE_ACP_STUB_CLOSE_FILE",
             "DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE",
             "DEVBOULE_ACP_STUB_SET_CONFIG_FILE",
         ];

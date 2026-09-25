@@ -1059,7 +1059,7 @@ export const providerVocabularyGet = (provider: string, model: string, refresh: 
     provider,
     // Empty means "no model chosen yet", which is the daemon's own cache key —
     // sent as null, not as a model named "".
-    model: model.trim() === "" ? null : model,
+    model: model.trim() === "" ? null : model.trim(),
     refresh,
   }) as unknown as Promise<ProviderVocabulary>;
 

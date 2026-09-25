@@ -2086,7 +2086,7 @@ fn update_test_agent(
     }
 }
 
-fn wait_for_update_reply(conn: &ConnHandle) -> DaemonMessage {
+fn wait_for_worker_reply(conn: &ConnHandle) -> DaemonMessage {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if let Some(reply) = conn.outbound.pull_replies().pop_front() {
@@ -2094,10 +2094,83 @@ fn wait_for_update_reply(conn: &ConnHandle) -> DaemonMessage {
         }
         assert!(
             Instant::now() < deadline,
-            "provider update worker did not reply"
+            "background request did not reply"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[test]
+fn queued_session_frames_flow_while_creation_waits_off_dispatch() {
+    let (path, state) = temp_state("create-worker-dispatch");
+    let owner = OwnerId::new("alex", "app").expect("owner");
+    let conn = ConnHandle::new(91);
+    let other = crate::session::insert_test_live_agent(&state.sessions, "s.other", owner.clone());
+    state
+        .sessions
+        .attach_with_subscription("s.other", 1, None, &conn, &owner, false)
+        .expect("attach the other session");
+    let create_guard = state
+        .session_create_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionCreate {
+            id: 41,
+            workspace_id: None,
+            kind: SessionKind::Claude,
+            provider: Some("unknown-test-provider".to_string()),
+            mode: None,
+            display_name: Some("   ".to_string()),
+            idempotency_key: None,
+        },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    );
+    assert!(
+        reply.is_none(),
+        "the dispatch loop hands creation to a worker"
+    );
+
+    assert!(other.publish_agent_error("transcript frame".to_string()));
+    let frames = conn.pull_events();
+    assert!(
+        !frames.is_empty(),
+        "the other session's transcript is available"
+    );
+    for frame in &frames {
+        conn.event_sent(frame);
+    }
+
+    drop(create_guard);
+    let created = wait_for_worker_reply(&conn);
+    assert!(matches!(created, DaemonMessage::Error(error) if error.id == Some(41)));
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn provider_update_invalidates_the_acp_feature_answer() {
+    let state = state();
+    let key = crate::provider_feature_probe::ProbeKey::new("updated-acp-provider");
+    assert!(state.acp_features.claim(&key));
+    state
+        .acp_features
+        .finish(&key, crate::provider_feature_probe::Probe::Answered(vec![]));
+    crate::provider_feature_probe::record_answer_for_test(&key, vec![]);
+
+    state.invalidate_provider_update_caches("updated-acp-provider");
+
+    assert_eq!(state.acp_features.peek(&key), None);
+    assert_eq!(
+        crate::provider_feature_probe::cached_declarations(&key),
+        None
+    );
 }
 
 #[test]
@@ -2165,7 +2238,7 @@ fn provider_update_drops_fingerprint_but_preserves_latest_version_cache() {
     )
     .is_none());
     assert_eq!(
-        wait_for_update_reply(&conn),
+        wait_for_worker_reply(&conn),
         DaemonMessage::ProviderUpdated {
             id: 43,
             ok: true,
@@ -2259,7 +2332,7 @@ fn provider_update_failure_preserves_both_version_caches() {
     )
     .is_none());
     assert_eq!(
-        wait_for_update_reply(&conn),
+        wait_for_worker_reply(&conn),
         DaemonMessage::ProviderUpdated {
             id: 51,
             ok: false,
@@ -2310,7 +2383,7 @@ fn provider_update_refuses_native_even_when_a_package_is_known() {
         false,
     )
     .is_none());
-    let DaemonMessage::Error(error) = wait_for_update_reply(&conn) else {
+    let DaemonMessage::Error(error) = wait_for_worker_reply(&conn) else {
         panic!("native provider update must return an InvalidRequest");
     };
     assert_eq!(error.code, ErrorCode::InvalidRequest);
@@ -2346,7 +2419,7 @@ fn provider_update_refuses_the_native_debug_stub_before_package_lookup() {
         false,
     )
     .is_none());
-    let DaemonMessage::Error(error) = wait_for_update_reply(&conn) else {
+    let DaemonMessage::Error(error) = wait_for_worker_reply(&conn) else {
         panic!("native debug stub update must return an InvalidRequest");
     };
     assert_eq!(error.code, ErrorCode::InvalidRequest);
@@ -2398,7 +2471,7 @@ fn provider_update_reports_missing_npm_without_invoking_the_runner() {
     )
     .is_none());
     assert_eq!(
-        wait_for_update_reply(&conn),
+        wait_for_worker_reply(&conn),
         DaemonMessage::ProviderUpdated {
             id: 49,
             ok: false,

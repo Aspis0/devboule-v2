@@ -62,6 +62,7 @@ pub struct ServerState {
     shutdown_flag: Arc<Mutex<bool>>,
     shutdown_cvar: Arc<Condvar>,
     pub(super) idempotency: Mutex<IdempotencyStore>,
+    pub(super) session_create_lock: Mutex<()>,
     pub(crate) mcp: Arc<crate::mcp_broker::McpBroker>,
     /// Per-provider tool policy, read by the MCP broker on every
     /// `tools/list` and `tools/call` and written by `ToolPolicySet`. One
@@ -325,6 +326,7 @@ impl ServerState {
             shutdown_flag: Arc::new(Mutex::new(false)),
             shutdown_cvar: Arc::new(Condvar::new()),
             idempotency: Mutex::new(IdempotencyStore::default()),
+            session_create_lock: Mutex::new(()),
             mcp,
             tool_policy,
             agent_profiles,
@@ -948,6 +950,7 @@ impl ServerState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(provider_id);
+        self.acp_features.invalidate(provider_id);
         // Only the installed state changed: dropping the executable fingerprint
         // forces the next --version observation to be fresh. npm latest is a
         // registry property, so it remains valid under its six-hour TTL.

@@ -34,7 +34,8 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import { providerVocabularyGet } from "../../lib/tauri";
-import { AgentProfileForm, VOCABULARY_POLL_MS as POLL_MS } from "./AgentProfileForm";
+import { AgentProfileForm } from "./AgentProfileForm";
+import { VOCABULARY_POLL_MS as POLL_MS } from "./useProviderVocabulary";
 import {
   offeredFeatures,
   profileFeaturesFromDraft,
@@ -66,6 +67,13 @@ const ENGINE: VocabularyFeature = {
     { id: "m1", label: "Model one" },
     { id: "m2", label: "Model two" },
   ],
+};
+const EMPTY_ENGINE: VocabularyFeature = {
+  id: "engine",
+  label: "Engine",
+  author: "provider",
+  type: "select",
+  options: [{ id: "", label: "Use provider default" }, ...ENGINE.options!],
 };
 
 const PROVIDERS: ProviderInfo[] = [
@@ -218,10 +226,22 @@ describe("the feature controls, as the form draws them", () => {
     const props = (field as unknown as Record<string, unknown>)[reactKey ?? ""] as
       | { onChange?: (event: { target: { value: string } }) => void }
       | undefined;
-    if (!props?.onChange) throw new Error("the field's onChange did not render");
     await act(async () => {
-      props.onChange?.({ target: { value } });
+      if (props?.onChange) {
+        props.onChange({ target: { value } });
+      } else {
+        field.value = value;
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+      }
     });
+  }
+
+  async function blur(field: HTMLInputElement) {
+    const reactKey = Object.keys(field).find((key) => key.startsWith("__reactProps"));
+    const props = (field as unknown as Record<string, unknown>)[reactKey ?? ""] as
+      | { onBlur?: () => void }
+      | undefined;
+    await act(async () => props?.onBlur?.());
   }
 
   async function renderForm(seed: ProfileFormSeed) {
@@ -264,13 +284,36 @@ describe("the feature controls, as the form draws them", () => {
     expect(tick?.getAttribute("type")).toBe("checkbox");
     expect(fast?.getAttribute("type")).toBe("checkbox");
     expect(engine?.tagName).toBe("SELECT");
-    // The choices are the agent's, plus the one value the form may add: unset,
-    // which stores nothing for the key.
+    // The unset position has its own value so an empty provider choice remains
+    // selectable and distinct.
     expect(Array.from(engine?.options ?? []).map((option) => option.value)).toEqual([
+      "__devboule_profile_feature_unset__",
+      "m1",
+      "m2",
+    ]);
+  });
+
+  it("lets an empty provider choice be selected and saved", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(vocabulary([EMPTY_ENGINE]));
+    const { onCreate } = await renderForm(draftOf());
+    const engine = container.querySelector<HTMLSelectElement>(
+      '[aria-label="Profile feature engine"]',
+    );
+    expect(Array.from(engine?.options ?? []).map((option) => option.value)).toEqual([
+      "__devboule_profile_feature_unset__",
       "",
       "m1",
       "m2",
     ]);
+    if (!engine) throw new Error("the engine select did not render");
+    await typeInto(engine, "");
+    const button = Array.from(container.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent === "Create profile",
+    );
+    if (!button) throw new Error("the create button did not render");
+    await act(async () => button.click());
+    const draft = onCreate.mock.calls[0]?.[0] as ProfileFormSeed;
+    expect(profileFeaturesFromDraft(draft, draft.offeredFeatures)).toEqual({ engine: "" });
   });
 
   it("redraws the list when the model moves outside a feature's gate", async () => {
@@ -281,6 +324,8 @@ describe("the feature controls, as the form draws them", () => {
     const model = container.querySelector<HTMLInputElement>('[aria-label="Model"]');
     if (!model) throw new Error("the model field did not render (absent axes are free text)");
     await typeInto(model, "claude-sonnet-5");
+    expect(container.textContent).not.toContain("daemon's reply was malformed");
+    expect(container.textContent).toContain("did not publish its modes");
     expect(container.querySelector('[aria-label="Profile feature fastMode"]')).toBeNull();
     // The tick is offered on every model, so a model change never leaves the
     // form without the one control every agent family reads.
@@ -353,6 +398,23 @@ describe("the feature controls, as the form draws them", () => {
     });
     await renderForm(draftOf());
     expect(container.textContent).toContain("could not be asked what it offers");
+    expect(
+      container.querySelector('[aria-label="Auto accept for children of this profile"]'),
+    ).not.toBeNull();
+  });
+
+  it("clears the failure sentence when a later vocabulary ask succeeds", async () => {
+    vi.mocked(providerVocabularyGet)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(vocabulary([TICK]));
+    await renderForm(draftOf());
+    expect(container.textContent).toContain("vocabulary query failed");
+    const model = container.querySelector<HTMLInputElement>('[aria-label="Model"]');
+    if (!model) throw new Error("the model field did not render");
+    await typeInto(model, "claude-sonnet-5");
+    await blur(model);
+    await act(async () => undefined);
+    expect(container.textContent).not.toContain("vocabulary query failed");
     expect(
       container.querySelector('[aria-label="Auto accept for children of this profile"]'),
     ).not.toBeNull();

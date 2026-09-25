@@ -69,6 +69,7 @@ const COMMAND_PROVIDER_ENV: &str = "DEVBOULE_ACP_PROVIDER_ID";
 pub const ACP_TURN_SILENCE: Duration = Duration::from_secs(60);
 const TURN_TIMEOUT_ENV: &str = "DEVBOULE_ACP_TURN_TIMEOUT_MS";
 const MAX_ACP_PERMISSION_LINE_BYTES: usize = 256 * 1024;
+const ACP_PROBE_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const ACP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 
@@ -208,6 +209,15 @@ pub(crate) fn read_line_bounded(
     deadline: Instant,
     budget: Duration,
 ) -> Result<String, WireError> {
+    read_line_bounded_with_limit(reader, deadline, budget, MAX_ACP_PERMISSION_LINE_BYTES)
+}
+
+pub(crate) fn read_line_bounded_with_limit(
+    reader: &mut BufReader<ChildStdout>,
+    deadline: Instant,
+    budget: Duration,
+    max_line_bytes: usize,
+) -> Result<String, WireError> {
     let mut line: Vec<u8> = Vec::new();
     loop {
         // The deadline is consulted on every iteration, not only when the
@@ -223,12 +233,12 @@ pub(crate) fn read_line_bounded(
                 ),
             ));
         }
-        if line.len() > MAX_ACP_PERMISSION_LINE_BYTES {
+        if line.len() > max_line_bytes {
             return Err(WireError::new(
                 ErrorCode::Io,
                 format!(
                     "the ACP agent wrote more than {} bytes without a newline; the creation is refused rather than buffered without end",
-                    MAX_ACP_PERMISSION_LINE_BYTES
+                    max_line_bytes
                 ),
             ));
         }
@@ -1186,8 +1196,8 @@ pub(crate) fn probe_declarations(
 /// and its failure is not the read's failure: the declarations were already
 /// taken, and a provider that refuses the cleanup still loses its process to the
 /// job object. Bounded by the same patience every other awaited rpc in this
-/// family carries, because a provider that hangs here would otherwise turn a
-/// settings-panel read into a wait on a dead agent.
+/// family allows for cleanup; the process is torn down immediately after this
+/// short best-effort wait.
 fn close_probe_session(
     transport: &AcpTransport,
     reader: &mut BufReader<ChildStdout>,
@@ -1199,8 +1209,13 @@ fn close_probe_session(
             serde_json::json!({ "sessionId": session_id }),
         )
         .map_err(acp_io_error)?;
-    let response =
-        read_response_envelope(transport, reader, id, &mut Vec::new(), response_timeout());
+    let response = read_response_envelope(
+        transport,
+        reader,
+        id,
+        &mut Vec::new(),
+        ACP_PROBE_CLOSE_TIMEOUT,
+    );
     transport.remove_pending_id(id);
     response.map(|_| ())
 }

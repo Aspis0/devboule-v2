@@ -69,6 +69,43 @@ pub(super) fn dispatch(
         }
         return None;
     }
+    if matches!(&request, ClientMessage::SessionCreate { .. }) {
+        let request_id = request.request_id();
+        let worker_state = Arc::clone(state);
+        let worker_owner = owner.clone();
+        let worker_request = request;
+        let worker_conn = Arc::clone(conn);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-session-create".to_string())
+            .spawn(move || {
+                let _create_guard = worker_state
+                    .session_create_lock
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let reply = dispatch_immediate(
+                    &worker_state,
+                    &worker_owner,
+                    worker_request,
+                    &worker_conn,
+                    sessions_ok,
+                    journal_ok,
+                    typed_permissions_ok,
+                    devices_ok,
+                    &passed,
+                );
+                outbound.enqueue_reply(reply);
+            });
+        if spawn.is_err() {
+            if let Some(id) = request_id {
+                failure_outbound.enqueue_reply(DaemonMessage::Error(
+                    WireError::new(ErrorCode::Io, "could not start session creation").with_id(id),
+                ));
+            }
+        }
+        return None;
+    }
     // Deliberately do not serialize concurrent updates: this pipe is single-user,
     // the frontend runs one npm update at a time, and npm's global lockfile
     // serializes racers. Revisit if the daemon becomes multi-client.

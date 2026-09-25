@@ -27,6 +27,13 @@ import { AUTO_ACCEPT_FEATURE } from "./AgentProfileDraft";
  *  constraint on the delivered mode. */
 const AUTO_ACCEPT_NOTE =
   "Children created from this profile approve their own permission prompts instead of asking you.";
+const UNSET_SELECT_VALUE = "__devboule_profile_feature_unset__";
+
+function unsetSelectValue(feature: VocabularyFeature): string {
+  let value = UNSET_SELECT_VALUE;
+  while (feature.options?.some((option) => option.id === value)) value += "_";
+  return value;
+}
 
 /** One control, keyed by the provider's own feature id. */
 function FeatureControl({
@@ -38,23 +45,24 @@ function FeatureControl({
   feature: VocabularyFeature;
   value: boolean | string | undefined;
   busy: boolean;
-  onChange: (id: string, value: boolean | string) => void;
+  onChange: (id: string, value: boolean | string | undefined) => void;
 }) {
   if (feature.type === "select") {
+    const unsetValue = unsetSelectValue(feature);
     return (
       <label className="device-field">
         {feature.label}
         <select
           aria-label={`Profile feature ${feature.id}`}
-          value={typeof value === "string" ? value : ""}
+          value={typeof value === "string" ? value : unsetValue}
           disabled={busy}
-          onChange={(event) => onChange(feature.id, event.target.value)}
+          onChange={(event) =>
+            onChange(feature.id, event.target.value === unsetValue ? undefined : event.target.value)
+          }
         >
-          {/* An unset select is the profile storing nothing for this key, which
-              is the provider's own default. An option is never drawn for a value
-              the agent did not declare, so the empty choice is the only one this
-              form can add. */}
-          <option value="">The provider's own default</option>
+          {/* The default position is distinct from a declared empty-string
+              choice, which remains a provider value. */}
+          <option value={unsetValue}>The provider's own default</option>
           {(feature.options ?? []).map((option) => (
             <option key={option.id} value={option.id}>
               {option.label}
@@ -138,11 +146,16 @@ export function AgentProfileFeatureFields({
   busy: boolean;
   onChange: (features: Record<string, boolean | string>) => void;
 }) {
-  function change(id: string, value: boolean | string) {
-    // An untoggled checkbox writes `false`, and the save drops a `false`
-    // toggle: there is no third state to store, and clearing the key is what
-    // "off" means to every client that reads it.
-    onChange({ ...features, [id]: value });
+  function change(id: string, value: boolean | string | undefined) {
+    // Selecting the provider default removes a value; the empty string remains
+    // available for a provider that explicitly declares it.
+    if (value === undefined) {
+      const next = { ...features };
+      delete next[id];
+      onChange(next);
+    } else {
+      onChange({ ...features, [id]: value });
+    }
   }
 
   if (probing) {

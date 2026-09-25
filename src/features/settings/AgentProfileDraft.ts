@@ -333,8 +333,8 @@ export function featuresAskFailed(vocabulary: ProviderVocabulary | null): boolea
  * produce: a toggle writes its key when it is on and nothing when it is off —
  * the rule `autoAccept` already followed, now every toggle's, because `false`
  * and absent are one state to the daemon and storing both spellings would be two
- * ways to say one thing. A select writes its chosen option id, and nothing when
- * the human chose the empty option. **A stored key the provider no longer offers
+ * ways to say one thing. A select writes its chosen option id, including an
+ * explicitly declared empty string. **A stored key the provider no longer offers
  * is therefore dropped here, silently, on save** — Paseo's
  * `pruneFeatureValues`, and the reason the form no longer shows removable
  * read-only rows: with one control per offered feature an unoffered key has no
@@ -360,7 +360,7 @@ export function profileFeaturesFromDraft(
   const saved: Record<string, unknown> = {};
   for (const feature of offered) {
     const value = draft.features[feature.id];
-    if (value === undefined || value === false || value === "") {
+    if (value === undefined || value === false) {
       continue;
     }
     saved[feature.id] = value;

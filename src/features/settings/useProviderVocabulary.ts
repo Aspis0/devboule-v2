@@ -119,6 +119,7 @@ export function useProviderVocabulary({
         // report a successful query as failed and discard the axis that landed.
         setVocabulary(reply);
         setAnsweredModel(modelForAsk);
+        setVocabularyError(null);
         if (reply.modes?.state === "absent") {
           const info = providersRef.current.find((provider) => provider.id === providerId);
           if (info?.protocol === "acp") {
@@ -181,7 +182,7 @@ export function useProviderVocabulary({
    *  provider an ask is a provider process, so typing `claude-opus-5` one
    *  character at a time would start ten agents to answer a question the human
    *  had not finished asking. */
-  function settleModel(next: string) {
+  function settleModel(next: string, askNow = true) {
     if (next === settledModelRef.current) {
       return;
     }
@@ -190,10 +191,9 @@ export function useProviderVocabulary({
     // The question changed, so the old answer's poll is retired with it.
     chainRef.current += 1;
     stopPoll();
-    // The old reply is not cleared: it is already inert, because `answeredFor`
-    // below will not match, and blanking it would flash an empty form and take
-    // the model and mode fields down with it for the round-trip.
-    askRef.current(next);
+    // Keep the last reply for the model and mode axes while the new feature
+    // answer is pending; offered features remain gated by `answeredFor`.
+    if (askNow) askRef.current(next);
   }
 
   // A reply for another provider is not this provider's answer, even in the
@@ -207,6 +207,7 @@ export function useProviderVocabulary({
   const vocabularyAnswered = answeredFor ? vocabulary : null;
   return {
     vocabulary: current ? vocabulary : null,
+    vocabularyCurrent: current ? vocabulary : null,
     vocabularyAnswered,
     vocabularyError,
     /** The axes are read only when the reply is the answer to the current

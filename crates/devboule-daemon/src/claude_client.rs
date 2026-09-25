@@ -724,6 +724,19 @@ fn spawn_claude_child(
     // of how the process starts and its SDK awaits the control call before the
     // first turn. This family sends no launch setting it has not measured, so
     // the awaited frame is what makes the promise true.
+    let stderr_source = match ClaudeStderr::start(stderr) {
+        Ok(source) => source,
+        Err(error) => {
+            if let Ok(mut process) = process.lock() {
+                terminate_process(&mut process);
+            }
+            drop(process_job);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not drain Claude stderr: {error}"),
+            ));
+        }
+    };
     let mut prelude = Vec::new();
     if fast_mode == Some(true) {
         let request_id = match send_initial_fast_mode(&stdin, &next_id, &delivery_settings, true) {
@@ -756,19 +769,6 @@ fn spawn_claude_child(
     }
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
-    let stderr_source = match ClaudeStderr::start(stderr) {
-        Ok(source) => source,
-        Err(error) => {
-            if let Ok(mut process) = process.lock() {
-                terminate_process(&mut process);
-            }
-            drop(process_job);
-            return Err(WireError::new(
-                ErrorCode::Io,
-                format!("Could not drain Claude stderr: {error}"),
-            ));
-        }
-    };
     let writer = ClaudeWriter {
         stdin: Arc::clone(&stdin),
         pending: Vec::new(),
@@ -1457,10 +1457,16 @@ fn delivery_wait_error(error: WireError) -> WireError {
     }
     WireError::new(
         ErrorCode::Io,
-        error.message.replace("the ACP agent", "Claude").replace(
-            "the creation is refused rather than awaited without end",
-            "the creation is refused rather than left on a flag nobody confirmed",
-        ),
+        error
+            .message
+            .replace("the ACP agent", "Claude")
+            .replace("ACP agent closed stdout", "Claude CLI closed stdout")
+            .replace("ACP agent wrote", "Claude wrote")
+            .replace("ACP stdio failed", "Claude stdio failed")
+            .replace(
+                "the creation is refused rather than awaited without end",
+                "the creation is refused rather than left on a flag nobody confirmed",
+            ),
     )
 }
 
@@ -1529,7 +1535,12 @@ fn confirm_delivery_settings(
         // nineteen minutes in the test below. The shared read peeks the pipe
         // where a peek exists and consults the deadline on every turn; where no
         // peek exists it says so in its own doc instead of pretending.
-        let text = match crate::session::acp_client::read_line_bounded(reader, deadline, budget) {
+        let text = match crate::session::acp_client::read_line_bounded_with_limit(
+            reader,
+            deadline,
+            budget,
+            MAX_LINE_BYTES,
+        ) {
             Ok(line) => line,
             Err(error) => {
                 retire(delivery_settings, request_id);

@@ -49,7 +49,7 @@ const VOCABULARY_CACHE_TTL_MS: u64 = 30 * 60 * 1000;
 /// echo builds an error frame at least as large as the request — larger,
 /// when the bytes JSON-escape — which `MAX_FRAME_BYTES` then refuses,
 /// dropping the connection the reply was about to travel on.
-const MAX_PROVIDER_ECHO_BYTES: usize = 128;
+const MAX_QUERY_FIELD_BYTES: usize = 128;
 
 /// One cached vocabulary answer.
 ///
@@ -227,12 +227,22 @@ pub(crate) fn provider_vocabulary_reply(
     // past the cap, because the refusal sentence would otherwise repeat an
     // unbounded caller string into a frame the app renders.
     let provider = provider.trim();
-    if provider.len() > MAX_PROVIDER_ECHO_BYTES {
+    let model = model.map(str::trim).filter(|model| !model.is_empty());
+    if model.is_some_and(|model| model.len() > MAX_QUERY_FIELD_BYTES) {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("the model exceeds the {MAX_QUERY_FIELD_BYTES}-byte cap"),
+            )
+            .with_id(id),
+        );
+    }
+    if provider.len() > MAX_QUERY_FIELD_BYTES {
         return DaemonMessage::Error(
             WireError::new(
                 ErrorCode::InvalidRequest,
                 format!(
-                    "the provider is {} bytes, over the {MAX_PROVIDER_ECHO_BYTES}-byte cap",
+                    "the provider is {} bytes, over the {MAX_QUERY_FIELD_BYTES}-byte cap",
                     provider.len()
                 ),
             )
@@ -682,6 +692,29 @@ mod tests {
             frame.len() <= devboule_protocol::MAX_FRAME_BYTES,
             "the refusal frame must stay under MAX_FRAME_BYTES, got {} bytes",
             frame.len()
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    #[test]
+    fn an_over_cap_model_is_refused_without_echoing_it_whole() {
+        let state = state();
+        let flood = "x".repeat(700_000);
+        let reply = provider_vocabulary_reply(&state, 92, "claude", Some(&flood), false);
+        let DaemonMessage::Error(error) = &reply else {
+            panic!("an over-cap model must be refused, got {reply:?}");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.id, Some(92));
+        assert_eq!(error.message, "the model exceeds the 128-byte cap");
+        assert!(
+            serde_json::to_vec(&reply)
+                .expect("the refusal serialises")
+                .len()
+                <= devboule_protocol::MAX_FRAME_BYTES
         );
 
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
