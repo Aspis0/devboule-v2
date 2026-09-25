@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -63,6 +64,7 @@ import {
   sessionStateLabel,
   sessionTitle,
   isRecoveredSession,
+  sharedSessionController,
   useWorkspaceSessions,
 } from "./workspaceSessions";
 import {
@@ -500,15 +502,30 @@ export function Workspace({
     void reconnectSessions();
     void refreshPeerNames();
   }, [daemon.state, reconnectSessions, refreshPeerNames, retryProjects]);
-  // The presence reporter itself is App's (one per app run, wherever the user
-  // is standing); this surface only owns the selected session. Leaving the
-  // surface (Settings, Design) must withdraw the selection, so neither the
-  // daemon nor the local toast gate keeps holding raises back for a session
-  // this window no longer shows — the second effect's cleanup owns exactly that.
-  useEffect(() => {
-    reportSelection(selectedSessionId);
-  }, [selectedSessionId]);
-  useEffect(() => () => reportSelection(null), []);
+  // The presence reporter itself is App's (one per app run, wherever the user is
+  // standing); this surface only owns the fact of what it shows. That fact is
+  // written from the STORE, not from a render: the selection is decided inside
+  // the controller — a row click, a roster push, the reconcile below — and a
+  // roster push arriving in the next task is judged against it. Reporting from
+  // an effect keyed to `selectedSessionId` runs a commit later than the publish,
+  // and the toast gate would hold a raise back for the session the user already
+  // left. Leaving the surface (Settings, Design) withdraws the record, so neither
+  // the daemon nor the local gate keeps excusing a session nobody shows.
+  useLayoutEffect(() => {
+    const controller = sharedSessionController();
+    let reported = controller.getState().selectedSessionId;
+    reportSelection(reported);
+    const unsubscribe = controller.subscribe(() => {
+      const next = controller.getState().selectedSessionId;
+      if (next === reported) return;
+      reported = next;
+      reportSelection(next);
+    });
+    return () => {
+      unsubscribe();
+      reportSelection(null);
+    };
+  }, []);
   const handleReopenSession = useCallback(
     (session: Session) => {
       openSession(session);

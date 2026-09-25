@@ -234,17 +234,60 @@ export function setAttentionHeldContentProvider(
 }
 
 /**
- * The last raise a toast fired (or was gate-blocked) for, per session.
- * Paseo's own dedupe (`attentionNotifiedRef`, `session-context.tsx:285-291`):
- * identity is the raise's timestamp, so a re-publication of the event the
- * daemon already told us about never toasts twice.
+ * The last raise a toast announced, per session — Paseo's `attentionNotifiedRef`
+ * (`session-context.tsx:285-291`), and written in Paseo's place: only AFTER the
+ * gate let the raise out. A raise the gate held back is therefore NOT recorded,
+ * so it stays due and a later publication of the same event can still reach the
+ * user once they look away (the review's P1).
  */
 const lastFired = new Map<string, Attention>();
 
-/** Forget raises of sessions that left the roster, so the map cannot grow forever. */
+/**
+ * Raises currently inside their own window read. Paseo needs no such marker: its
+ * window answer is `AppState.currentState`, synchronous, so one event's gate and
+ * record are a single step. Ours awaits the OS, and a roster is re-published
+ * constantly, so two publications of one session can interleave — without this
+ * marker a duplicate pair of toasts lands, and a delayed older snapshot can
+ * claim before the newer raise it should never have outrun.
+ *
+ * A publication the gate holds back CLEARS its marker on the way out. That is
+ * the whole of the P1 fix stated the other way round: nothing is left claimed
+ * for a raise nobody saw, so the next publication of it is judged afresh.
+ */
+const judging = new Map<string, Attention>();
+
+/**
+ * Whether this publication is worth acting on: nothing announced covers it, and
+ * nothing in flight outranks it. Identity is the timestamp plus the daemon's
+ * escalation order, so the same event re-published is a duplicate, while a
+ * same-millisecond higher-priority raise is news.
+ */
+function raiseIsOfferable(sessionId: string, attention: Attention): boolean {
+  if (!attentionRaised(lastFired.get(sessionId), attention)) return false;
+  return attentionRaised(judging.get(sessionId), attention);
+}
+
+/**
+ * Mark raises as already seen WITHOUT announcing them. The roster controller
+ * calls this for the first roster of a run: what already stood when this app
+ * came up is old news, and the dedupe has to hold it even though no toast ever
+ * fired — otherwise the next application would announce a raise the user
+ * watched arrive before this app existed.
+ */
+export function markAttentionSeen(
+  entries: ReadonlyArray<{ sessionId: string; attention: Attention }>,
+): void {
+  for (const { sessionId, attention } of entries) {
+    if (attentionRaised(lastFired.get(sessionId), attention)) lastFired.set(sessionId, attention);
+  }
+}
+
+/** Forget raises of sessions that left the roster, so the maps cannot grow forever. */
 export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
-  for (const id of [...lastFired.keys()]) {
-    if (!sessionIds.has(id)) lastFired.delete(id);
+  for (const map of [lastFired, judging]) {
+    for (const id of [...map.keys()]) {
+      if (!sessionIds.has(id)) map.delete(id);
+    }
   }
 }
 
@@ -337,10 +380,11 @@ export function productionOnWindowFocusChange(
 }
 
 /**
- * The production toast path, called by the roster controller on every
- * attention transition. The gate holds a raise back only when this window is
- * actively seen AND shows the session that raised; everything else announces
- * at once. A send that throws waits once for `TOAST_RETRY_DELAY_MS` and tries
+ * The production toast path, called by the roster controller with every
+ * publication of a raise. Paseo's order (`session-context.tsx:279-291`): the
+ * gate FIRST, and the dedupe record only after it — a raise the gate held back
+ * is not consumed, so a later publication announces it once the user looks
+ * away. A send that throws waits once for `TOAST_RETRY_DELAY_MS` and tries
  * again; a second failure is dropped — the raise was announced as far as this
  * app can push it.
  */
@@ -350,11 +394,10 @@ export function fireAttentionToast(
   attention: Attention,
   deps?: Partial<ToastDeps>,
 ): void {
-  if (!attentionRaised(lastFired.get(sessionId), attention)) return;
-  // Claimed before the awaits, so a raise superseded while this one waited can
-  // be recognized by identity below — and a raise the gate holds back is spent
-  // as main spends it: the user was looking at the session that raised.
-  lastFired.set(sessionId, attention);
+  // Offered, then marked as in flight — the mark is not a claim of having been
+  // announced, and a publication the gate holds back gives it back below.
+  if (!raiseIsOfferable(sessionId, attention)) return;
+  judging.set(sessionId, attention);
   const state = deps?.windowState ?? productionWindowState;
   const send = deps?.send ?? defaultSend;
   void (async () => {
@@ -366,19 +409,28 @@ export function fireAttentionToast(
       // be in the tray, so behave as if they are not.
       snapshot = { visible: false, focused: false, minimized: false };
     }
-    // A raise paused in the read above is stale if a newer one has since
-    // taken the slot: the newer toast must not be followed by this one.
-    if (lastFired.get(sessionId) !== attention) return;
-    // Both halves of the gate are read at the moment of decision, not when
-    // the raise arrived: the user may have reached this session, or left it,
-    // while the window answer was in flight.
-    if (!toastGate(snapshot, sessionId, lookedAtSessionId())) return;
+    // Paseo's gate, both halves read at the moment of decision — the user may
+    // have reached this session, or left it, while the window was being asked.
+    const mayAnnounce = toastGate(snapshot, sessionId, lookedAtSessionId());
+    if (judging.get(sessionId) === attention) judging.delete(sessionId);
+    if (!mayAnnounce) {
+      // Held back, and unrecorded: the daemon still owes this raise to someone,
+      // and the next publication of it is judged from scratch.
+      return;
+    }
+    // Paseo's dedupe does the recording here — after the gate, before the send,
+    // and with no await between the test and the write, so two publications of
+    // one raise cannot both land: the first has covered the second's answer by
+    // then, and a raise the session moved past while this one waited fails the
+    // same test.
+    if (!raiseIsOfferable(sessionId, attention)) return;
+    lastFired.set(sessionId, attention);
     const held = heldContentProvider?.(sessionId);
     const content = toastContent(title, attention.reason, held);
     try {
       await send(content);
     } catch {
-      // A newer raise may have taken the slot while this send was in
+      // A newer raise may have taken the record while this send was in
       // flight: a stale retry must not land after the newer toast.
       if (lastFired.get(sessionId) !== attention) return;
       setTimeout(() => {

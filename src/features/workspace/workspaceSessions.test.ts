@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
+  Attention,
   PeerRow,
   ProviderInfo,
   Session,
@@ -28,7 +29,7 @@ import {
   sessionStateLabel,
   sessionTitle,
 } from "./workspaceSessions";
-import { fireAttentionToast, forgetAttentionFor } from "./attentionNotice";
+import { fireAttentionToast, forgetAttentionFor, type ToastContent } from "./attentionNotice";
 import { workspaceView } from "./workspaceProjects";
 
 const liveSession = (id: string, title = id): Session => ({
@@ -1649,7 +1650,7 @@ describe("attention raises from the roster", () => {
 
   const controllerWithWatcher = (
     box: ReturnType<typeof watched>,
-    onAttention: (session: Session) => void,
+    onAttention: (session: Session, attention: Attention) => void,
   ) =>
     createWorkspaceSessionController(
       {
@@ -1665,37 +1666,69 @@ describe("attention raises from the roster", () => {
       onAttention,
     );
 
-  it("treats attention already active in the first roster as the baseline", () => {
+  /** The toast path awaits the window answer before it sends: microtask turns
+   *  let that continuation run without a timer. */
+  const settleToast = async (): Promise<void> => {
+    for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
+  };
+
+  const awayFromWindow = async () => ({ visible: false, focused: false, minimized: false });
+
+  // `lastFired` and the in-flight marker are module state, like the notifier's
+  // other maps, so each test starts from an empty roster. The window answer is
+  // away-on-purpose: what keeps a baseline raise silent is the claim, not a gate.
+  const toaster =
+    (sends: ToastContent[]) =>
+    (session: Session, attention: Attention): void =>
+      fireAttentionToast(session.id, sessionTitle(session), attention, {
+        send: async (content) => {
+          sends.push(content);
+        },
+        windowState: awayFromWindow,
+      });
+
+  it("treats attention already active in the first roster as the baseline", async () => {
+    forgetAttentionFor(new Set());
     const box = watched();
-    const raises: string[] = [];
-    const controller = controllerWithWatcher(box, (session) => raises.push(session.id));
+    const sends: ToastContent[] = [];
+    const controller = controllerWithWatcher(box, toaster(sends));
     controller.watch();
     // The app just started (or the watch just came up): a raise already
-    // standing is old news, not a new event.
+    // standing is old news, claimed unseen and never announced — not now, and
+    // not on the re-publications the controller offers because it no longer
+    // judges what a toast was owed.
     box.listener?.([snapshot("s1", 1000)]);
-    expect(raises).toEqual([]);
-    // The same raise re-published: still nothing.
     box.listener?.([snapshot("s1", 1000)]);
-    expect(raises).toEqual([]);
-    // A genuinely newer raise: exactly one notification.
+    await settleToast();
+    expect(sends).toEqual([]);
+    // A genuinely newer raise: exactly one toast, and its re-publications stay
+    // silent because the notifier recorded the one it sent.
     box.listener?.([snapshot("s1", 2000)]);
-    expect(raises).toEqual(["s1"]);
+    await settleToast();
+    expect(sends).toHaveLength(1);
+    box.listener?.([snapshot("s1", 2000)]);
+    await settleToast();
+    expect(sends).toHaveLength(1);
   });
 
-  it("re-announces a raise whose session left the roster and came back", () => {
+  it("re-announces a raise whose session left the roster and came back", async () => {
+    forgetAttentionFor(new Set());
     const box = watched();
-    const raises: string[] = [];
-    const controller = controllerWithWatcher(box, (session) => raises.push(session.id));
+    const sends: ToastContent[] = [];
+    const controller = controllerWithWatcher(box, toaster(sends));
     controller.watch();
     box.listener?.([snapshot("s1", 1000)]);
     box.listener?.([snapshot("s1", 2000), snapshot("s2", 3000)]);
-    // s2 is a new arrival carrying a raise: announceable.
-    expect(raises).toEqual(["s1", "s2"]);
-    // s1 leaves the roster entirely…
+    await settleToast();
+    // s1's newer raise and s2's arrival: two toasts.
+    expect(sends).toHaveLength(2);
+    // s1 leaves the roster entirely, so its dedupe slot goes with the row…
     box.listener?.([snapshot("s2", 3000)]);
-    // …and its SAME raise is re-published when it returns: the dedupe slot
-    // went with the row, so this is announceable again.
+    await settleToast();
+    expect(sends).toHaveLength(2);
+    // …and its SAME raise, re-published when it returns, is news again.
     box.listener?.([snapshot("s2", 3000), snapshot("s1", 2000)]);
-    expect(raises).toEqual(["s1", "s2", "s1"]);
+    await settleToast();
+    expect(sends).toHaveLength(3);
   });
 });

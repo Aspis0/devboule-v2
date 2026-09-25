@@ -19,7 +19,7 @@ import type {
 import { isAgentKind } from "../../types/ipc";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
-import { attentionRaised, fireAttentionToast, forgetAttentionFor } from "./attentionNotice";
+import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -553,8 +553,10 @@ function carrySession(listed: Session, previous: Session | undefined): Session {
 }
 
 /**
- * Called once per NEW attention raise (never for re-publications) with the
- * row that raised it. The controller stays neutral about toasts; the
+ * Called with every publication of a raise the roster carries; the notifier
+ * owns the dedupe that keeps one raise from announcing twice, and it applies
+ * that dedupe after its own gate — so a raise the gate held back is offered
+ * again by the next roster. The controller stays neutral about toasts; the
  * observer decides what a raise means.
  */
 export type AttentionObserver = (session: Session, attention: Attention) => void;
@@ -657,7 +659,10 @@ export function createWorkspaceSessionController(
     // slow initial request cannot put the tab strip back behind the daemon.
     ++refreshGeneration;
     const known = new Map(state.sessions.map((session) => [session.id, session]));
-    const transitions: Array<{ session: Session; attention: Attention }> = [];
+    // Raises the notifier is offered now, and raises this FIRST roster carries
+    // — the second are claimed unseen below, never offered.
+    const offers: Array<{ session: Session; attention: Attention }> = [];
+    const standing: Array<{ sessionId: string; attention: Attention }> = [];
     // A local const: the observer is captured once, so the checks below
     // narrow for TypeScript the way they read for people.
     const notifyAttention = onAttention;
@@ -715,15 +720,16 @@ export function createWorkspaceSessionController(
             kind: snapshot.kind,
             ...carried,
           };
-      // A raise is the timestamp the daemon wrote, so re-publications of
-      // the same event are recognized and never re-announced.
-      if (
-        notifyAttention !== undefined &&
-        !baseline &&
-        snapshot.attention !== undefined &&
-        attentionRaised(previous?.attention, snapshot.attention)
-      ) {
-        transitions.push({ session, attention: snapshot.attention });
+      // A raise is the timestamp the daemon wrote, so one publication cannot
+      // announce twice — but the guard is the notifier's dedupe AFTER its gate,
+      // exactly as in Paseo, not a filter here. The offer therefore stands even
+      // when the previous application carried the same raise: a raise the gate
+      // held back (the user was looking at that session) stays due and gets its
+      // chance the next time the roster speaks, once they have looked away.
+      // The first roster of a run is the exception: it is claimed unseen below.
+      if (notifyAttention !== undefined && snapshot.attention !== undefined) {
+        if (baseline) standing.push({ sessionId: snapshot.id, attention: snapshot.attention });
+        else offers.push({ session, attention: snapshot.attention });
       }
       return session;
     });
@@ -739,11 +745,13 @@ export function createWorkspaceSessionController(
       loading: false,
       error: null,
     });
-    // Fired after the state lands, so an observer reading the roster sees
-    // the world the toast is about.
-    if (notifyAttention !== undefined) {
-      for (const { session, attention } of transitions) notifyAttention(session, attention);
-    }
+    // Fired after the state lands, so an observer reading the roster sees the
+    // world the toast is about.
+    for (const { session, attention } of offers) notifyAttention?.(session, attention);
+    // Raises already standing when this app came up are old news: claimed
+    // without a toast, so no later application announces them as if they were
+    // news the user never saw.
+    markAttentionSeen(standing);
     // Rows that left the roster take their dedupe slot with them, so a
     // session that returns re-announces like the first arrival it is.
     forgetAttentionFor(new Set(sessions.map((session) => session.id)));

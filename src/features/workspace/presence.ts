@@ -88,6 +88,9 @@ let activeReporter: PresenceReporter | null = null;
 let reportedSelection: string | null = null;
 
 export function reportSelection(focusedSessionId: string | null): void {
+  // The surface follows the store, and the store publishes for reasons other
+  // than a selection change. Same value, same answer: nothing to re-report.
+  if (reportedSelection === focusedSessionId) return;
   reportedSelection = focusedSessionId;
   activeReporter?.onSelectionChanged();
 }

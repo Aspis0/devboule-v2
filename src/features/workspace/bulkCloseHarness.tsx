@@ -9,7 +9,14 @@ import { vi } from "vitest";
 import type { Project, Session, SessionStateSnapshot } from "../../types/ipc";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(async () => false) }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
+vi.mock("@tauri-apps/api/core", () => ({
+  // One raw invoke matters beyond `lib/tauri`: the notification plugin's RUST
+  // permission answer, which the OS toast path asks before it sends. A topic
+  // file that wants to watch toasts mocks the plugin itself and counts there.
+  invoke: vi.fn(async (command: unknown) =>
+    command === "plugin:notification|is_permission_granted" ? true : undefined,
+  ),
+}));
 
 let watchListener: ((snapshots: SessionStateSnapshot[]) => void) | null = null;
 

@@ -665,8 +665,12 @@ describe("the toast gate is Paseo's rule", () => {
   });
 
   it("announces one raise once, however often the roster re-publishes it", async () => {
+    // The away case, twice over: the controller offers the standing raise on
+    // every application (Paseo's notifier is fed by the events themselves), and
+    // the notifier's own record — the one that was never written for a raise the
+    // gate suppressed — is what keeps this to one toast.
     const send = vi.fn(async (_content: ToastContent) => undefined);
-    const { release } = harness(send, onScreenFocused);
+    const { release } = harness(send, hiddenInTray);
     reportSelection("agent-one");
     watched.listener?.(roster(null));
     watched.listener?.(roster("agent-two"));
@@ -679,9 +683,54 @@ describe("the toast gate is Paseo's rule", () => {
     release();
   });
 
-  it("holds a raise back when the switch that shows it landed first", async () => {
-    // One write, two readers: the surface's selection reaches the daemon
-    // through the real reporter AND decides the gate, from the same record.
+  it("announces a raise the gate suppressed once the user has looked away", async () => {
+    // The review's P1: Paseo records ONLY after its gate, so a raise held back
+    // for a user who was looking at it stays due — and the next publication of
+    // the same event announces it once they have switched away. The controller
+    // offers that publication because it no longer filters the raise itself.
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { controller, release } = harness(send, onScreenFocused);
+    reportSelection("agent-one");
+    watched.listener?.(roster(null));
+    watched.listener?.(roster("agent-one"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+
+    controller.select("agent-two");
+    reportSelection(controller.getState().selectedSessionId);
+    watched.listener?.(roster("agent-one"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].title).toBe("agent-one — finished");
+    release();
+  });
+
+  it("announces one of two publications in flight for the same raise", async () => {
+    // The window answer is an await, so two publications of one raise can be in
+    // flight together. Paseo's record is written after the gate; the two
+    // continuations still cannot both toast, because the claim test and the
+    // write share no await. Deferred reads make that interleaving real.
+    const { windowState, resolveNext } = deferredWindowState();
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { release } = harness(send, windowState);
+    reportSelection("agent-one");
+    watched.listener?.(roster(null));
+    watched.listener?.(roster("agent-two"));
+    watched.listener?.(roster("agent-two"));
+    resolveNext({ visible: false, focused: false, minimized: false });
+    await vi.advanceTimersByTimeAsync(0);
+    resolveNext({ visible: false, focused: false, minimized: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    release();
+  });
+
+  it("holds a raise back for the session the record names, over one record", async () => {
+    // One write, two readers: the surface's selection reaches the daemon through
+    // the real reporter AND decides the gate, from the same record. The TIMING of
+    // a real switch — the write landing with the click that decided it — is
+    // pinned in WorkspaceAttentionToast.test.tsx, where no test hand-calls the
+    // bridge; here the point is only that one record answers both questions.
     const send = vi.fn(async (_content: ToastContent) => undefined);
     const presence = vi.fn(async (_args: unknown) => undefined);
     const reporter = startPresenceReporting({
@@ -698,14 +747,13 @@ describe("the toast gate is Paseo's rule", () => {
       },
       windowState: onScreenFocused,
     });
-    const { controller, release } = harness(send, onScreenFocused);
+    const { release } = harness(send, onScreenFocused);
     reportSelection("agent-one");
     watched.listener?.(roster(null));
 
-    // The user navigates to workspace B: the strip's reconciliation selects
-    // agent-two, and the surface reports that selection BEFORE the raise.
-    controller.select("agent-two");
-    reportSelection(controller.getState().selectedSessionId);
+    // What the surface reports when its strip now shows agent-two, and the raise
+    // is published after that.
+    reportSelection("agent-two");
     await vi.advanceTimersByTimeAsync(0);
     expect(presence).toHaveBeenLastCalledWith("session_presence", {
       focusedSessionId: "agent-two",
