@@ -2886,7 +2886,13 @@ fn creation_card(
             // applies — and there a caveat would be a hedge about nothing.
             if crate::provider_catalog::session_kind_for(&profile.provider)
                 == devboule_protocol::SessionKind::Acp
-                && crate::provider_feature_probe::cached_declarations(&profile.provider).is_none()
+                && crate::provider_feature_probe::cached_declarations(
+                    &crate::provider_feature_probe::ProbeKey::new(
+                        &profile.provider,
+                        Some(&profile.model),
+                    ),
+                )
+                .is_none()
             {
                 format!(
                     "{listed} (each set on the child as the agent declares it; a feature this agent does not declare refuses the creation rather than starting without it)"

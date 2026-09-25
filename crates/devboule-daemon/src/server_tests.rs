@@ -108,8 +108,13 @@ fn providers_list_answers_a_live_user_row() {
         "setup: the row is live"
     );
     // Second gate first: the vocabulary already sees the row, as `absent`.
-    let vocab =
-        crate::provider_vocabulary::provider_vocabulary_reply(&state, 2, "fieldtest-grok", false);
+    let vocab = crate::provider_vocabulary::provider_vocabulary_reply(
+        &state,
+        2,
+        "fieldtest-grok",
+        None,
+        false,
+    );
     assert!(
         matches!(
             &vocab,
@@ -1405,6 +1410,7 @@ fn a_vocabulary_request_rides_the_administrative_capability() {
         ClientMessage::ProviderVocabularyGet {
             id: 51,
             provider: "claude".to_string(),
+            model: None,
             refresh: false,
         },
         &conn,
@@ -1434,6 +1440,7 @@ fn a_vocabulary_request_rides_the_administrative_capability() {
         ClientMessage::ProviderVocabularyGet {
             id: 52,
             provider: "claude".to_string(),
+            model: None,
             refresh: false,
         },
         &conn,
@@ -1468,6 +1475,7 @@ fn an_unknown_provider_vocabulary_request_is_an_invalid_request() {
         ClientMessage::ProviderVocabularyGet {
             id: 53,
             provider: "bogus".to_string(),
+            model: None,
             refresh: false,
         },
         &conn,
@@ -1516,6 +1524,7 @@ fn a_vocabulary_read_answers_on_the_wire_as_the_spec_spells_it() {
         ClientMessage::ProviderVocabularyGet {
             id: 54,
             provider: "claude".to_string(),
+            model: None,
             refresh: true,
         },
         &conn,
@@ -1585,6 +1594,7 @@ fn a_vocabulary_read_answers_on_the_wire_as_the_spec_spells_it() {
         ClientMessage::ProviderVocabularyGet {
             id: 55,
             provider: "devboule-absent-probe".to_string(),
+            model: None,
             refresh: true,
         },
         &conn,
@@ -1720,6 +1730,7 @@ fn origin_travels_exactly_with_a_present_state_on_every_reply() {
             ClientMessage::ProviderVocabularyGet {
                 id: 56,
                 provider: provider.to_string(),
+                model: None,
                 refresh,
             },
             &conn,
@@ -1789,6 +1800,7 @@ fn the_vocabulary_cache_serves_second_reads_and_refresh_re_probes() {
     let request = |id: u64, refresh: bool| ClientMessage::ProviderVocabularyGet {
         id,
         provider: "devboule-absent-probe".to_string(),
+        model: None,
         refresh,
     };
 

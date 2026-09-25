@@ -219,6 +219,7 @@ pub(crate) fn provider_vocabulary_reply(
     state: &Arc<ServerState>,
     id: u64,
     provider: &str,
+    model: Option<&str>,
     refresh: bool,
 ) -> DaemonMessage {
     // Canonicalised the way the profile store canonicalises one: trimmed
@@ -258,7 +259,7 @@ pub(crate) fn provider_vocabulary_reply(
                 &canonical,
                 entry.models,
                 entry.modes,
-                provider_impl.features(state, &canonical),
+                provider_impl.features(state, &canonical, model),
                 VocabularySource::Cache,
                 Some(entry.filled_at_ms),
             );
@@ -282,7 +283,7 @@ pub(crate) fn provider_vocabulary_reply(
     // free to re-derive. The reply therefore carries a features axis that may
     // be `probing` on a cold ACP provider while the models and modes come
     // straight from the cache.
-    let features = provider_impl.features(state, &canonical);
+    let features = provider_impl.features(state, &canonical, model);
     state
         .provider_vocabulary
         .store(&canonical, facts, now_ms, models.clone(), modes.clone());
@@ -666,7 +667,7 @@ mod tests {
     fn an_over_cap_provider_is_refused_without_echoing_it_whole() {
         let state = state();
         let flood = "\"".repeat(700_000);
-        let reply = provider_vocabulary_reply(&state, 90, &flood, false);
+        let reply = provider_vocabulary_reply(&state, 90, &flood, None, false);
         let DaemonMessage::Error(error) = &reply else {
             panic!("an over-cap provider must be refused, got {reply:?}");
         };
@@ -695,7 +696,7 @@ mod tests {
     #[test]
     fn a_padded_known_provider_is_trimmed_before_the_catalog_walk() {
         let state = state();
-        let reply = provider_vocabulary_reply(&state, 91, "  claude  ", false);
+        let reply = provider_vocabulary_reply(&state, 91, "  claude  ", None, false);
         let DaemonMessage::ProviderVocabulary { provider, .. } = &reply else {
             panic!("a padded known provider must be served, got {reply:?}");
         };

@@ -502,6 +502,24 @@ pub(crate) struct PromptCapabilities {
     pub embedded_context: PromptCapabilityState,
 }
 
+/// Whether the agent advertised `sessionCapabilities.close`, read from the same
+/// `initialize` result the probe already has.
+///
+/// Three states are not needed here and one is used: this answers a yes/no
+/// question about a cleanup step, and both `false` and an absent field mean the
+/// same operational thing — do not send `session/close`, because an agent that
+/// did not advertise it answers the request with a method-not-found error, which
+/// is a log line and no cleanup. `true` alone means the session is the agent's
+/// to keep until told otherwise.
+pub(crate) fn close_session_advertised(initialize_result: &serde_json::Value) -> bool {
+    initialize_result
+        .get("agentCapabilities")
+        .and_then(|capabilities| capabilities.get("sessionCapabilities"))
+        .and_then(|sessions| sessions.get("close"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
 /// Reads `agentCapabilities.promptCapabilities` from an ACP `initialize`
 /// result. A missing `agentCapabilities`, a missing `promptCapabilities`, or
 /// a missing sub-field leaves that capability [`PromptCapabilityState::Absent`];
@@ -579,6 +597,11 @@ pub(crate) struct HandshakeManifest {
     /// separate states. Read here so the same parse that produces the
     /// manifest produces the capabilities; there is no second reader.
     pub prompt_capabilities: PromptCapabilities,
+    /// Whether the agent advertises `session/close`. Read by the same parse for
+    /// the same reason: the throwaway probe needs it to decide whether to close
+    /// the session it opened, and a second reader of `initialize` could disagree
+    /// with this one about what was advertised.
+    pub close_session_advertised: bool,
     /// The agent's own declared `select` config options **other than** the
     /// model and effort selectors, as the two shapes the two consumers need:
     /// `declared_features` is the declaration the profile form draws (labels
@@ -679,6 +702,7 @@ pub(crate) fn merge_handshake_manifest(
     // but record no switch shape.
     HandshakeManifest {
         prompt_capabilities: prompt_capabilities_from_initialize(initialize_result),
+        close_session_advertised: close_session_advertised(initialize_result),
         declared_features,
         declared_surfaces,
         event: event.or_else(|| {
@@ -695,21 +719,22 @@ pub(crate) fn merge_handshake_manifest(
 
 /// Whether one declared select **is** the session's mode selector.
 ///
-/// Excluded by value-set and not by `id == "mode"`, because the ACP spec makes
-/// `category` advisory and an agent may name the option anything; but an option
-/// whose choices are exactly the modes the standard `modes` block already listed
-/// is that block redressed. A profile's mode is its `modeId`, switched with
-/// `session/set_mode`, so a second control over the same values would be two
-/// sources for one setting — reached by two different verbs, one of them
-/// silently last.
+/// The test is the value set alone, and `category` is not part of it. The ACP
+/// spec says the category "is intended to help Clients distinguish broadly
+/// common selectors" and "MUST NOT be required for correctness", so an agent is
+/// free to label an independent dial `mode` — and excluding on that word alone
+/// would hide the dial and let `prune` delete its stored value on the strength of
+/// a label the spec refuses to make load-bearing. What the daemon does own is the
+/// profile's `modeId`, switched with `session/set_mode`: an option whose choices
+/// are exactly the modes the standard `modes` block listed is that block
+/// redressed under a second verb, and one of the two would silently win. With no
+/// `modes` block there is no value set to compare against and the option stays a
+/// feature — the same asymmetry the rule is built from: a fact the agent did not
+/// state cannot justify hiding a control it did declare.
 fn is_the_mode_selector(
-    option: &serde_json::Value,
     choices: &[devboule_protocol::VocabularyFeatureOption],
     modes: Option<&SessionModeStateView>,
 ) -> bool {
-    if option.get("category").and_then(serde_json::Value::as_str) == Some("mode") {
-        return true;
-    }
     let Some(modes) = modes else {
         return false;
     };
@@ -723,11 +748,6 @@ fn is_the_mode_selector(
         })
 }
 
-/// The same options, reduced to what a delivery validates a choice against:
-/// the declared id and its declared values. One parse of the array for both
-/// shapes would have made the delivery and the form agree by accident; reading
-/// the same helper's exclusion twice, with the same taken ids, makes them
-/// agree by construction.
 /// The two option ids the daemon drives as switches, from the shape the same
 /// parse produced. One helper, so the declaration list and the surface list
 /// exclude exactly the same options.
@@ -746,6 +766,10 @@ fn switch_ids(shape: &ModelSwitchShape) -> [Option<&str>; 2] {
     ]
 }
 
+/// The same options, reduced to what a delivery validates a choice against: the
+/// declared id and its declared values. Read through the same exclusion as the
+/// declaration list rather than a second walk of the array, so the form's
+/// choices and the spawn's validation cannot disagree about one option.
 pub(crate) fn declared_surfaces_from_options(
     result: &serde_json::Value,
     taken: &[Option<&str>],
@@ -814,10 +838,21 @@ pub(crate) fn declared_features_from_options(
         let Some(id) = option.get("id").and_then(serde_json::Value::as_str) else {
             continue;
         };
-        if id.is_empty() || claimed.contains(&id) || declared.iter().any(|row| row.id == id) {
-            // A duplicate declaration is the agent contradicting itself; the
-            // first row wins, as the model catalog's parse does for a
-            // duplicate model id.
+        if id.is_empty()
+            || claimed.contains(&id)
+            || id == crate::provider_catalog::AUTO_ACCEPT_FEATURE
+            || declared.iter().any(|row| row.id == id)
+        {
+            // Three refusals, one line. A duplicate declaration is the agent
+            // contradicting itself and the first row wins, as the model
+            // catalog's parse does for a duplicate model id. A switch id is
+            // already driven by the profile's own `model`/`thinkingOptionId`.
+            // And `autoAccept` is the daemon's reserved key — the mode
+            // constraint — so a provider select with that id would put two
+            // controls on one stored value and the child would receive neither:
+            // `delivered_features` skips the reserved key by name. Renaming it
+            // would send the agent a `configId` it never declared, so the row
+            // is dropped and the agent's real options are unaffected.
             continue;
         }
         let mut choices: Vec<devboule_protocol::VocabularyFeatureOption> = option
@@ -827,9 +862,10 @@ pub(crate) fn declared_features_from_options(
             .flatten()
             .filter_map(|entry| {
                 let value = entry.get("value").and_then(serde_json::Value::as_str)?;
-                if value.is_empty() {
-                    return None;
-                }
+                // An empty choice is a position the agent declared, not an
+                // absence: Paseo relabels it (`emptyOptionLabel`) rather than
+                // deleting it. Dropping it would hide a value the profile can
+                // hold and `value_fits` would then prune on save.
                 Some(devboule_protocol::VocabularyFeatureOption {
                     label: entry
                         .get("name")
@@ -840,10 +876,21 @@ pub(crate) fn declared_features_from_options(
                 })
             })
             .collect();
-        // Order-preserving de-duplication: a repeated choice would give a
-        // select two options with one value, which React keys collide on.
-        choices.dedup_by(|a, b| a.id == b.id);
-        if is_the_mode_selector(option, &choices, modes) {
+        // A repeated choice would give one select two options with the same
+        // value: React keys collide and the stored value names neither. By
+        // value over the whole list, keeping the agent's order and first label —
+        // `Vec::dedup_by` compares neighbours only, so `A, B, A` survives it, and
+        // a comment promising order-preserving de-duplication has to hold for
+        // the input it does not show.
+        let mut seen: Vec<String> = Vec::with_capacity(choices.len());
+        choices.retain(|choice| {
+            if seen.contains(&choice.id) {
+                return false;
+            }
+            seen.push(choice.id.clone());
+            true
+        });
+        if is_the_mode_selector(&choices, modes) {
             continue;
         }
         let label = option

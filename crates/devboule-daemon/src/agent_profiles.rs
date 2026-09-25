@@ -527,10 +527,19 @@ fn check_profile(
     // `prune_for` says why — and its stored keys are refused at spawn by
     // `acp_client::apply_profile_delivery`, which is not a looser rule, only a
     // later one: the agent is the only source that knows its own list.
+    //
+    // The lookup is keyed on the profile's **own model**, because that is what
+    // the read was made against. A list learned while the agent ran another
+    // model is not an answer about this profile, and pruning against it would
+    // delete a choice the provider does offer.
+    let probe_key = crate::provider_feature_probe::ProbeKey::new(
+        &profile.provider,
+        Some(profile.model.as_str()),
+    );
     let probed = if crate::provider_catalog::session_kind_for(&profile.provider)
         == devboule_protocol::SessionKind::Acp
     {
-        crate::provider_feature_probe::cached_declarations(&profile.provider)
+        crate::provider_feature_probe::cached_declarations(&probe_key)
     } else {
         None
     };
@@ -1549,6 +1558,71 @@ mod tests {
         assert!(
             crate::security::dacl_is_current_user_only(&sddl, &sid),
             "the profile file DACL must name only the current user: {sddl}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// `D4`'s safety half, and the reason the probe cache is keyed on provider
+    /// *and* model: a list read while the agent ran one model must never license a
+    /// prune of a profile that names another. Answering this lookup with the wrong
+    /// model's list would delete a choice the provider really offers — the silent
+    /// loss this surface exists to prevent, arrived at from the other direction.
+    ///
+    /// The two halves are one test on purpose: a key that never matched anything
+    /// would pass the first assertion as loudly as a correct one, and only the
+    /// second shows the lookup is a lookup and not a refusal to prune at all.
+    #[test]
+    fn a_list_read_for_another_model_does_not_prune_this_profile() {
+        let dir = crate::test_dirs::test_temp_dir("devboule-prune-model-key");
+        let store = AgentProfilesStore::load(&dir);
+        let answer = vec![crate::provider_features::select_declaration(
+            "fast".to_string(),
+            "Fast".to_string(),
+            vec![devboule_protocol::VocabularyFeatureOption {
+                id: "on".to_string(),
+                label: "On".to_string(),
+            }],
+        )
+        .expect("a declaration with one choice")];
+        crate::provider_feature_probe::record_answer_for_test(
+            &crate::provider_feature_probe::ProbeKey::new("grok", Some("glm-4.6")),
+            answer,
+        );
+        let mut other_model = profile("p-grok-b", "Model B profile");
+        other_model.provider = "grok".to_string();
+        other_model.model = "glm-4.7".to_string();
+        other_model.features = serde_json::json!({ "engine": "m1" })
+            .as_object()
+            .expect("map")
+            .clone();
+        store
+            .set(document(vec![other_model.clone()]))
+            .expect("the store admits it");
+        let kept = &store.document().profiles[0];
+        assert_eq!(
+            kept.features.get("engine").cloned(),
+            Some(serde_json::json!("m1")),
+            "a list read for another model did not consume this profile's key"
+        );
+
+        let mut this_model = other_model.clone();
+        this_model.id = "p-grok-a".to_string();
+        this_model.name = "Model A profile".to_string();
+        this_model.model = "glm-4.6".to_string();
+        store
+            .set(document(vec![this_model]))
+            .expect("the store admits the matching profile too");
+        let pruned = store
+            .document()
+            .profiles
+            .iter()
+            .find(|candidate| candidate.id == "p-grok-a")
+            .expect("both profiles are stored")
+            .features
+            .clone();
+        assert_eq!(
+            pruned.get("engine").cloned(),
+            None,
+            "the list read on this very model did prune the key it does not carry"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

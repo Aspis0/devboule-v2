@@ -24,7 +24,7 @@ use devboule_daemon::{
     RuntimePaths, SessionStateHandler,
 };
 use devboule_protocol::{
-    AgentTaskState, AttentionReason, ClientHello, Cursor, ErrorCode, FinishArtifact,
+    AgentTaskState, AttentionReason, ClientHello, Cursor, DaemonMessage, ErrorCode, FinishArtifact,
     NoticeSeverity, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
     SessionEvent, SessionKind, SessionStateSnapshot, WorkspaceIsolation,
 };
@@ -344,6 +344,31 @@ fn stub_only_path() -> PathGuard {
     let original = std::env::var_os("PATH").unwrap_or_default();
     std::env::set_var("PATH", stub_bin().parent().expect("stub build dir"));
     PathGuard { original }
+}
+
+/// Ask until the ACP feature read has answered, so a test can say "the read is
+/// over" without sleeping on a guess. `probing` while the worker runs; the
+/// answer is the list.
+fn wait_for_probing(client: &DaemonClient) -> devboule_protocol::VocabularyFeatures {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let DaemonMessage::ProviderVocabulary { features, .. } = client
+            .provider_vocabulary_get("devboule-acp-stub", None, false)
+            .expect("vocabulary rpc")
+        else {
+            panic!("unexpected vocabulary reply");
+        };
+        let axis = features.expect("a new daemon answers the axis");
+        if axis.state == devboule_protocol::VocabularyState::Present {
+            return axis;
+        }
+        assert!(
+            axis.probing,
+            "a final absent answer means the read failed: {axis:?}"
+        );
+        assert!(Instant::now() < deadline, "the feature read never answered");
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 fn wait_for_file(path: &Path) -> String {
@@ -3435,6 +3460,20 @@ impl AcpTest {
     /// `load_modes_only`: the reattach reply (session/load) carries modes
     /// only, so the restart records no switch shape. `malformed_config_reply`:
     /// set_config_option answers JSON-RPC success with no parseable catalog.
+    /// The config-options stub with a vendor-authored dial beside the two
+    /// switches (`--feature-option`), optionally advertising
+    /// `sessionCapabilities.close` so a test can tell the two cleanup answers
+    /// apart. A real provider process: the only way to ask what the probe
+    /// returns and what it does on the way out.
+    fn new_feature_probe(advertise_close: bool) -> Self {
+        let args: Vec<&str> = if advertise_close {
+            vec!["--config-options", "--feature-option", "--advertise-close"]
+        } else {
+            vec!["--config-options", "--feature-option"]
+        };
+        Self::new_with_options(&args, false, false, false, false, true, false, false, false)
+    }
+
     fn new_config_options_with(
         wrong_config_value: bool,
         load_modes_only: bool,
@@ -3592,7 +3631,19 @@ impl AcpTest {
             "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
             &set_model_effort_file,
         );
+        let session_close_file = observation_dir.join("stub session close.txt");
+        std::env::set_var("DEVBOULE_ACP_STUB_CLOSE_FILE", &session_close_file);
+        let set_config_log_file = observation_dir.join("stub set config log.txt");
+        std::env::set_var(
+            "DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE",
+            &set_config_log_file,
+        );
         std::env::set_var("DEVBOULE_ACP_STUB_SET_CONFIG_FILE", &set_config_file);
+        let set_config_log_file = observation_dir.join("stub set config log.txt");
+        std::env::set_var(
+            "DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE",
+            &set_config_log_file,
+        );
         let mut env_names = vec![
             "DEVBOULE_ACP_COMMAND",
             "DEVBOULE_ACP_PROVIDER_ID",
@@ -3601,6 +3652,7 @@ impl AcpTest {
             "DEVBOULE_ACP_STUB_CONSOLE_FILE",
             "DEVBOULE_ACP_STUB_SET_MODEL_FILE",
             "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
+            "DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE",
             "DEVBOULE_ACP_STUB_SET_CONFIG_FILE",
         ];
         if reject_set_model {
@@ -3741,6 +3793,11 @@ impl AcpTest {
 
     fn set_model_effort_file(&self) -> PathBuf {
         self.observation_dir.join("stub set model effort.txt")
+    }
+
+    /// Where the stub records the **session** it was asked to close.
+    fn session_close_file(&self) -> PathBuf {
+        self.observation_dir.join("stub session close.txt")
     }
 
     fn set_config_file(&self) -> PathBuf {
@@ -4080,14 +4137,38 @@ impl Slice5Test {
         Self::with_profiles(creation, &worker_profile_document(), extra)
     }
 
+    /// The same daemon with stub **argv** flags: the shape of the agent a test
+    /// needs to describe (`--config-options` for a v1 selector surface,
+    /// `--feature-option` for a vendor-authored dial beside the two switches).
+    /// Flags, not environment, because an agent's surface is a property of the
+    /// build and this stub's knobs are argv.
+    fn with_profiles_and_args(
+        creation: &serde_json::Value,
+        profiles: &serde_json::Value,
+        extra: &[(&str, &str)],
+        args: &[&str],
+    ) -> Self {
+        Self::with_profiles_impl(creation, profiles, extra, args)
+    }
+
     fn with_profiles(
         creation: &serde_json::Value,
         profiles: &serde_json::Value,
         extra: &[(&str, &str)],
     ) -> Self {
+        Self::with_profiles_impl(creation, profiles, extra, &[])
+    }
+
+    fn with_profiles_impl(
+        creation: &serde_json::Value,
+        profiles: &serde_json::Value,
+        extra: &[(&str, &str)],
+        args: &[&str],
+    ) -> Self {
         let dir = unique_dir();
-        let argv = serde_json::to_string(&vec![stub_bin().to_string_lossy().into_owned()])
-            .expect("stub argv");
+        let mut stub_argv = vec![stub_bin().to_string_lossy().into_owned()];
+        stub_argv.extend(args.iter().map(|arg| (*arg).to_string()));
+        let argv = serde_json::to_string(&stub_argv).expect("stub argv");
         // Owned strings first: the daemon gets these as its own environment,
         // which is where its providers read them from.
         let values = [
@@ -4104,6 +4185,18 @@ impl Slice5Test {
             (
                 "DEVBOULE_ACP_STUB_MODES_FILE",
                 file_name(&dir, "stub modes.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_SET_CONFIG_FILE",
+                file_name(&dir, "set config.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE",
+                file_name(&dir, "set config log.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_CLOSE_FILE",
+                file_name(&dir, "session close.txt"),
             ),
             (
                 "DEVBOULE_ACP_STUB_SET_MODEL_FILE",
@@ -5232,6 +5325,13 @@ fn a_feature_key_the_agent_never_declared_is_named_as_a_condition_on_the_card() 
         description.contains("auto accept: Cannot establish"),
         "a stored value is not a tick, and the mode is not judged by name: {description}"
     );
+}
+
+// Retain the main-branch test name across the behavior change while exercising
+// the current card contract in the shared test body above.
+#[test]
+fn an_unknown_feature_key_is_named_as_uninterpreted_on_the_card() {
+    a_feature_key_the_agent_never_declared_is_named_as_a_condition_on_the_card();
 }
 
 /// `S5` block 2's overlay, measured on the child's *own* broker connection:
@@ -6652,5 +6752,170 @@ fn a_mute_provider_is_refused_by_the_first_answer_budget_and_says_which_one_fire
         !wire.message.contains("did not answer within 0s"),
         "the ordinary budget's 250 ms is not what bounded the first answer: {}",
         wire.message
+    );
+}
+
+/// A stored ACP select reaches the **child** through the create route. The
+/// profile stores `fast=on`, the agent declares that option, and the proof is
+/// the stub's own record of a `session/set_config_option` naming both — not a
+/// call into a pure helper.
+///
+/// The first draft of this slice pinned `declared_feature_frames` alone, so a
+/// route that stopped calling the delivery left those green while every child
+/// started on the provider's default. Only a wire assertion can see that, and it
+/// earned its keep: the arms of `apply_profile_delivery` that skip a model switch
+/// also skipped the feature delivery until this test refused to pass.
+#[test]
+fn a_created_child_receives_its_profiles_declared_feature() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    // `sonnet` is a model the config-options stub really declares; the profile's
+    // own `stub-model-new` is not in that frame, and the pre-existing model rule
+    // refuses the creation long before any feature is considered.
+    profiles["profiles"][0]["model"] = serde_json::json!("sonnet");
+    profiles["profiles"][0]["features"] = serde_json::json!({ "fast": "on" });
+    let test = Slice5Test::with_profiles_and_args(
+        &serde_json::json!({
+            "title": "feature child",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+        &["--config-options", "--feature-option"],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    // The frame arrived, naming the agent's own option id and the stored value.
+    // Read from the append log, not the last-value file: the model switch and the
+    // feature switch have no promised order, and a one-line file the next frame
+    // overwrites cannot answer "did *my* frame arrive".
+    let frames = test.wait_for_observations("set config log.txt", 2);
+    assert!(
+        frames.iter().any(|line| line.trim() == "fast=on"),
+        "no session/set_config_option named fast=on; saw {frames:?}"
+    );
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
+}
+
+/// The probe closes the session it opened when the agent advertises
+/// `sessionCapabilities.close` — Paseo's `closeProbe` gate
+/// (`acp-agent.ts:1441`) — and never sends it when the agent does not. Killing
+/// the process is not the equivalent: an agent that persists sessions past
+/// process exit keeps an orphan per settings-panel open, in the user's history
+/// or spending a session quota. An agent that did not offer the verb answers
+/// `session/close` with a method-not-found error, so sending one would be a log
+/// line and no cleanup.
+#[test]
+fn the_feature_probe_closes_its_session_only_when_the_agent_advertises_close() {
+    let _lock = lock_tests();
+    let advertising = AcpTest::new_feature_probe(true);
+    wait_for_probing(&advertising.client);
+    let closed = wait_for_file(&advertising.session_close_file());
+    assert!(
+        !closed.trim().is_empty(),
+        "the probe sent session/close for the session it opened: {closed}"
+    );
+
+    let silent = AcpTest::new_feature_probe(false);
+    wait_for_probing(&silent.client);
+    // `wait_for_probing` returns only once the read has answered, and the close
+    // is sent before the process is torn down — so a wrong request would already
+    // have been written.
+    assert!(
+        !silent.session_close_file().exists(),
+        "an agent without the capability is never sent session/close"
+    );
+}
+
+/// The ACP feature read, end to end. The first ask cannot answer with a list it
+/// has not read, so it starts the provider and says `probing`; a later ask
+/// answers the list the agent declared — the `fast` dial beside the daemon's own
+/// tick — with the model, effort and mode selectors left out, because a profile
+/// already stores those as its own fields.
+#[test]
+fn acp_feature_read_answers_the_declared_dial_after_starting_the_provider() {
+    let _lock = lock_tests();
+    let test = AcpTest::new_feature_probe(false);
+    let mut saw_probing = false;
+    let first = test
+        .client
+        .provider_vocabulary_get("devboule-acp-stub", None, false)
+        .expect("vocabulary rpc");
+    if let DaemonMessage::ProviderVocabulary { features, .. } = &first {
+        let axis = features.clone().expect("the axis is answered");
+        saw_probing = axis.probing;
+    }
+    let axis = wait_for_probing(&test.client);
+    assert!(
+        saw_probing,
+        "the first ask answers `probing` rather than a list it has not read"
+    );
+    assert_eq!(
+        axis.items
+            .iter()
+            .map(|feature| feature.id.as_str())
+            .collect::<Vec<_>>(),
+        ["autoAccept", "fast", "agent"],
+        "the daemon's tick beside the agent's own dials, and no switch or mode: {axis:?}"
+    );
+    assert_eq!(
+        axis.items
+            .iter()
+            .map(|feature| feature.author)
+            .collect::<Vec<_>>(),
+        [
+            devboule_protocol::VocabularyOrigin::Daemon,
+            devboule_protocol::VocabularyOrigin::Provider,
+            devboule_protocol::VocabularyOrigin::Provider
+        ],
+        "authorship is per row, because the list is mixed: {axis:?}"
+    );
+    // The answer is cached: the same question is answered without a new read.
+    let again = test
+        .client
+        .provider_vocabulary_get("devboule-acp-stub", None, false)
+        .expect("second vocabulary rpc");
+    let DaemonMessage::ProviderVocabulary { features, .. } = again else {
+        panic!("unexpected reply");
+    };
+    let cached = features.expect("the axis is answered");
+    assert!(!cached.probing, "a cached answer is final: {cached:?}");
+}
+
+/// The cache key carries the model, so a read made against one model is never
+/// the answer for another — the half that protects a stored value, since the
+/// store's prune asks for the profile's own pair.
+#[test]
+fn acp_feature_read_answers_per_model_and_not_across_models() {
+    let _lock = lock_tests();
+    let test = AcpTest::new_feature_probe(false);
+    let axis_a = test
+        .client
+        .provider_vocabulary_get("devboule-acp-stub", Some("stub-model-new"), false)
+        .expect("vocabulary rpc");
+    let DaemonMessage::ProviderVocabulary { features, .. } = axis_a else {
+        panic!("unexpected reply");
+    };
+    let first = features.expect("the axis is answered");
+    assert!(
+        first.probing || first.state == devboule_protocol::VocabularyState::Present,
+        "model A's question starts its own read: {first:?}"
+    );
+    // Model B was never read. It must not be answered with A's list: the honest
+    // reply is a second read, not a stale one.
+    let axis_b = test
+        .client
+        .provider_vocabulary_get("devboule-acp-stub", Some("stub-model"), false)
+        .expect("vocabulary rpc");
+    let DaemonMessage::ProviderVocabulary { features, .. } = axis_b else {
+        panic!("unexpected reply");
+    };
+    let second = features.expect("the axis is answered");
+    assert!(
+        second.probing,
+        "a second model gets its own read, not the first's answer: {second:?}"
     );
 }

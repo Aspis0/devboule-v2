@@ -1170,6 +1170,7 @@ pub(crate) mod tests {
             ClientMessage::ProviderVocabularyGet {
                 id: 1,
                 provider: "claude".to_string(),
+                model: None,
                 refresh: false,
             },
             // The delegation switch, read and write: the same setting-store
@@ -2484,6 +2485,7 @@ pub(crate) mod tests {
             ClientMessage::ProviderVocabularyGet {
                 id: 1,
                 provider: "claude".to_string(),
+                model: None,
                 refresh: false,
             },
             ClientMessage::DelegationGet { id: 1 },

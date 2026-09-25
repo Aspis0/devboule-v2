@@ -161,6 +161,7 @@ export function VocabularyField({
   suggestion,
   items,
   onChange,
+  onSettle,
 }: {
   label: string;
   value: string;
@@ -173,6 +174,10 @@ export function VocabularyField({
   suggestion?: ReactNode;
   items: readonly { value: string; label: string }[];
   onChange: (next: string) => void;
+  /** The field's value stopped changing and the answer must follow it. A select
+   *  settles on its change; a free-text field settles on blur, so a human
+   *  typing a model id does not start one provider read per character. */
+  onSettle?: (next: string) => void;
 }) {
   if (freeText) {
     return (
@@ -184,6 +189,7 @@ export function VocabularyField({
             value={value}
             disabled={busy}
             onChange={(event) => onChange(event.target.value)}
+            onBlur={() => onSettle?.(value)}
           />
         </label>
         {hint === undefined ? null : <p className="device-field-hint">{hint}</p>}
@@ -198,7 +204,10 @@ export function VocabularyField({
         aria-label={label}
         value={value}
         disabled={busy}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => {
+          onChange(event.target.value);
+          onSettle?.(event.target.value);
+        }}
       >
         <option value="">Choose a {label.toLowerCase()}…</option>
         {items.map((item) => (

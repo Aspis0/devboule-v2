@@ -64,11 +64,12 @@ pub struct ProviderVocabularyReply {
 pub async fn provider_vocabulary_get(
     bridge: State<'_, DaemonBridge>,
     provider: String,
+    model: Option<String>,
     refresh: bool,
 ) -> Result<ProviderVocabularyReply, CommandError> {
     let client = require_client(&bridge)?;
-    off_main_thread(
-        move || match client.provider_vocabulary_get(&provider, refresh)? {
+    off_main_thread(move || {
+        match client.provider_vocabulary_get(&provider, model.as_deref(), refresh)? {
             DaemonMessage::ProviderVocabulary {
                 provider,
                 models,
@@ -86,7 +87,7 @@ pub async fn provider_vocabulary_get(
                 probed_at_ms,
             }),
             _ => Err(unexpected_reply()),
-        },
-    )
+        }
+    })
     .await
 }

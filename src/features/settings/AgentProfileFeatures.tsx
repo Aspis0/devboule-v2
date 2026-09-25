@@ -119,6 +119,7 @@ export const AUTO_ACCEPT_FALLBACK_FEATURE: VocabularyFeature = {
 export function AgentProfileFeatureFields({
   offered,
   probing,
+  askedAndFailed,
   features,
   busy,
   onChange,
@@ -128,6 +129,10 @@ export function AgentProfileFeatureFields({
   offered: readonly VocabularyFeature[] | null;
   /** The answer is still being read: an ACP provider's first open. */
   probing: boolean;
+  /** The read was made and could not be answered — the provider is not running
+   *  or it did not answer. Distinct from `offered === null` with no read at
+   *  all, which is a daemon older than the axis and says nothing. */
+  askedAndFailed: boolean;
   /** The draft's stored values, keyed as the provider spells them. */
   features: Record<string, boolean | string>;
   busy: boolean;
@@ -141,10 +146,24 @@ export function AgentProfileFeatureFields({
   }
 
   if (probing) {
+    // The tick is drawn while the read runs, and disabled by nothing but the
+    // panel's own `busy`. Hiding it was the review's point: `autoAccept` is not
+    // one of the rows the read is out to discover — every agent family carries
+    // it — so a form that withheld it during an ACP cold start removed a control
+    // from a profile that could always have used it, and left the human with
+    // nothing to edit until they closed the editor and opened it again.
     return (
-      <div role="status" className="device-field-hint">
-        Checking what this provider offers…
-      </div>
+      <>
+        <div role="status" className="device-field-hint">
+          Checking what this provider offers…
+        </div>
+        <FeatureControl
+          feature={AUTO_ACCEPT_FALLBACK_FEATURE}
+          value={features[AUTO_ACCEPT_FEATURE]}
+          busy={busy}
+          onChange={change}
+        />
+      </>
     );
   }
   // No answer in hand: the tick alone. A stored key the provider was never
@@ -154,6 +173,26 @@ export function AgentProfileFeatureFields({
   // provider will refuse. It stays in the draft and travels through the save
   // untouched, which is `profileFeaturesFromDraft`'s no-answer branch.
   const rows = offered ?? [AUTO_ACCEPT_FALLBACK_FEATURE];
+  if (askedAndFailed) {
+    // One plain sentence, and the tick below it. An empty feature section
+    // otherwise reads as "this provider has no features", which is a different
+    // fact from "it could not be asked", and the one that tells a human to stop
+    // looking.
+    return (
+      <>
+        <p className="device-field-hint">
+          This provider could not be asked what it offers; it is either not running or it did not
+          answer. Nothing stored on this profile was changed.
+        </p>
+        <FeatureControl
+          feature={AUTO_ACCEPT_FALLBACK_FEATURE}
+          value={features[AUTO_ACCEPT_FEATURE]}
+          busy={busy}
+          onChange={change}
+        />
+      </>
+    );
+  }
   if (rows.length === 0) {
     return <p className="device-field-hint">This provider offers no features to a profile.</p>;
   }

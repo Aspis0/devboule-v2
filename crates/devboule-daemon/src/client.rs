@@ -1370,6 +1370,7 @@ impl DaemonClient {
     pub fn provider_vocabulary_get(
         &self,
         provider: &str,
+        model: Option<&str>,
         refresh: bool,
     ) -> Result<DaemonMessage, DaemonError> {
         self.require_agreed(devboule_protocol::caps::PROVIDER_VOCABULARY)?;
@@ -1377,6 +1378,7 @@ impl DaemonClient {
         match self.roundtrip(ClientMessage::ProviderVocabularyGet {
             id,
             provider: provider.to_string(),
+            model: model.map(|model| model.to_string()),
             refresh,
         })? {
             reply @ DaemonMessage::ProviderVocabulary { .. } => Ok(reply),

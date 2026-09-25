@@ -135,7 +135,11 @@ fn first_response_timeout() -> Duration {
         .unwrap_or(ACP_FIRST_RESPONSE_TIMEOUT)
 }
 
-/// Whether the child's stdout can be read without blocking.
+/// Whether the child's stdout can be read without blocking, and
+/// [`read_line_bounded`] beside it, are the crate's one bounded read of a
+/// child's pipe: the Claude create path waits on the same shape for its
+/// delivered-flag answer and has no business carrying a second
+/// `PeekNamedPipe` with its own platform caveat.
 ///
 /// `Ok(true)` — bytes are in the pipe, so one `fill_buf` read returns
 /// immediately. `Ok(false)` — the pipe is open but empty, so wait. `Err` —
@@ -199,7 +203,7 @@ fn stdout_blocks_until_bytes(_reader: &BufReader<ChildStdout>) -> Result<bool, (
 /// Windows is the only target this daemon is built and tested on; a
 /// platform added later must either give this function a real poll or keep
 /// this paragraph telling the truth.
-fn read_line_bounded(
+pub(crate) fn read_line_bounded(
     reader: &mut BufReader<ChildStdout>,
     deadline: Instant,
     budget: Duration,
@@ -1148,8 +1152,11 @@ pub(crate) fn probe_declarations(
         None,
         None,
     );
-    let declarations = match read {
-        Ok((_deferred, handshake, _session_id, _version)) => handshake.declared_features,
+    let (declarations, close) = match read {
+        Ok((_deferred, handshake, session_id, _version)) => (
+            handshake.declared_features,
+            handshake.close_session_advertised.then_some(session_id),
+        ),
         Err(error) => {
             teardown(&mut child);
             let _ = stderr_source.discard_and_join();
@@ -1157,12 +1164,45 @@ pub(crate) fn probe_declarations(
             return Err(error);
         }
     };
+    // Close the session the read opened before the process goes, when the agent
+    // said it can be asked to: Paseo's `closeProbe` does the same and gates on
+    // `sessionCapabilities.close` (`acp-agent.ts:1441`). Killing the process is
+    // not the equivalent — an agent that persists sessions past process exit
+    // keeps the orphan, where it shows in the user's history or eats a session
+    // quota. An agent that did not advertise it is never sent the request,
+    // because it answers with a method-not-found error and gains nothing.
+    if let Some(session_id) = close {
+        let _ = close_probe_session(&transport, &mut reader, &session_id);
+    }
     // Read and done: the session it opened is nobody's session, and the job
     // above is what guarantees the whole tree goes.
     drop(transport);
     teardown(&mut child);
     let _ = stderr_source.discard_and_join();
     Ok(declarations)
+}
+
+/// One bounded `session/close` for the throwaway read. Its answer is discarded
+/// and its failure is not the read's failure: the declarations were already
+/// taken, and a provider that refuses the cleanup still loses its process to the
+/// job object. Bounded by the same patience every other awaited rpc in this
+/// family carries, because a provider that hangs here would otherwise turn a
+/// settings-panel read into a wait on a dead agent.
+fn close_probe_session(
+    transport: &AcpTransport,
+    reader: &mut BufReader<ChildStdout>,
+    session_id: &str,
+) -> Result<(), WireError> {
+    let id = transport
+        .request(
+            "session/close",
+            serde_json::json!({ "sessionId": session_id }),
+        )
+        .map_err(acp_io_error)?;
+    let response =
+        read_response_envelope(transport, reader, id, &mut Vec::new(), response_timeout());
+    transport.remove_pending_id(id);
+    response.map(|_| ())
 }
 
 fn probe_refused(provider: &str, what: &str) -> WireError {
@@ -2261,7 +2301,11 @@ fn apply_profile_delivery(
         }
     }
     if delivery.model_id.is_none() && delivery.thinking_option_id.is_none() {
-        return Ok(());
+        // The model/effort switch has nothing to send. The feature delivery
+        // below still runs: a profile can carry a stored select and name no
+        // model at all, and skipping it there is how a child ends up started
+        // without a value its card printed.
+        return deliver_declared_features(transport, reader, deferred, delivery);
     }
     let shape = transport.model_switch_shape();
     let Some(shape) = shape else {
@@ -2302,7 +2346,9 @@ fn apply_profile_delivery(
     } else if let Some(effort) = &requested_effort {
         switcher.set_requested_effort(shape, effort.clone())?
     } else {
-        return Ok(());
+        // Nothing to switch on the model or effort axis, which is not the same
+        // as nothing to deliver: the feature arm below still runs.
+        return deliver_declared_features(transport, reader, deferred, delivery);
     };
     confirm_switch(transport, reader, deferred, &sent, delivery)?;
     // What the card named is now what the transport reports, so the runtime

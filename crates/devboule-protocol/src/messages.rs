@@ -838,7 +838,8 @@ pub enum ClientMessage {
         id: u64,
         document: AgentProfilesDocument,
     },
-    /// Ask what one provider offers — its models and its modes — so the
+    /// Ask what one provider offers — its models, its modes and its features —
+    /// so the
     /// profile form can be authored from real vocabulary instead of free
     /// text. `provider` is a catalog provider id or alias, canonicalised the
     /// way the profile store canonicalises one — trimmed first, then
@@ -857,6 +858,13 @@ pub enum ClientMessage {
     ProviderVocabularyGet {
         id: u64,
         provider: String,
+        /// The model the asking form currently holds. The ACP half of the
+        /// features axis is read by starting the provider, and the read's answer
+        /// may differ per model, so the cache key is provider **and** model —
+        /// exactly Paseo's own fetch key. `None` is "no model chosen yet" and is
+        /// its own key. Defaulted, so a client older than the field still parses.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
         refresh: bool,
     },
     /// Read the permission-delegation switch: whether an agent that created a

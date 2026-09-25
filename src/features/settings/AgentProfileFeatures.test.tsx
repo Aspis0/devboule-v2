@@ -34,7 +34,7 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import { providerVocabularyGet } from "../../lib/tauri";
-import { AgentProfileForm } from "./AgentProfileForm";
+import { AgentProfileForm, VOCABULARY_POLL_MS as POLL_MS } from "./AgentProfileForm";
 import {
   offeredFeatures,
   profileFeaturesFromDraft,
@@ -196,6 +196,7 @@ describe("the feature controls, as the form draws them", () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.useRealTimers();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -301,6 +302,60 @@ describe("the feature controls, as the form draws them", () => {
     // And it invents no control while it waits: an empty form would read as a
     // provider with nothing, which is the other answer.
     expect(container.querySelector('[aria-label="Profile feature fastMode"]')).toBeNull();
+  });
+  /// The review's second P1: a `probing` answer is a moment, not a destination.
+  /// The form must keep asking until the list arrives, must keep the daemon's
+  /// own tick on screen while it waits, and must stop asking once the answer is
+  /// there — a form that stopped at the first reply left no feature editable for
+  /// the whole life of the editor.
+  it("keeps asking while the ACP read runs, and draws the tick while it waits", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const probing = {
+      ...vocabulary([]),
+      features: { state: "absent" as const, probing: true, items: [] },
+    };
+    const answered = vocabulary([TICK, ENGINE]);
+    vi.mocked(providerVocabularyGet)
+      .mockResolvedValueOnce(probing)
+      .mockResolvedValueOnce(probing)
+      .mockResolvedValue(answered);
+    await renderForm(draftOf());
+    // First ask: "checking", and the tick present beside it.
+    expect(container.textContent).toContain("Checking what this provider offers");
+    expect(
+      container.querySelector('[aria-label="Auto accept for children of this profile"]'),
+    ).not.toBeNull();
+    // The poll fires on the interval; advancing time lets it run, and the third
+    // reply is the list, so the asking stops there.
+    await act(async () => {
+      vi.advanceTimersByTimeAsync(POLL_MS + 50);
+    });
+    await act(async () => {
+      vi.advanceTimersByTimeAsync(POLL_MS + 50);
+    });
+    expect(container.querySelector('[aria-label="Profile feature engine"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Checking what this provider offers");
+    // And no further asks: the last reply was final.
+    const before = vi.mocked(providerVocabularyGet).mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTimeAsync(POLL_MS * 3);
+    });
+    expect(vi.mocked(providerVocabularyGet).mock.calls.length).toBe(before);
+  });
+
+  /// A read that failed says so, once, and keeps the tick. An empty feature
+  /// section would read as "this provider offers nothing", which is the other
+  /// answer and a reason for a human to stop looking.
+  it("says a failed read failed, and still draws the tick", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue({
+      ...vocabulary([]),
+      features: { state: "absent", probing: false, items: [] },
+    });
+    await renderForm(draftOf());
+    expect(container.textContent).toContain("could not be asked what it offers");
+    expect(
+      container.querySelector('[aria-label="Auto accept for children of this profile"]'),
+    ).not.toBeNull();
   });
 
   it("carries a stored key it was never allowed to prune, and draws no row for it", async () => {

@@ -255,8 +255,15 @@ pub(super) fn dispatch_immediate(
         ClientMessage::ProviderVocabularyGet {
             id,
             provider,
+            model,
             refresh,
-        } => crate::provider_vocabulary::provider_vocabulary_reply(state, id, &provider, refresh),
+        } => crate::provider_vocabulary::provider_vocabulary_reply(
+            state,
+            id,
+            &provider,
+            model.as_deref(),
+            refresh,
+        ),
         ClientMessage::DevicesList { .. }
         | ClientMessage::PairingStart { .. }
         | ClientMessage::PairingComplete { .. }

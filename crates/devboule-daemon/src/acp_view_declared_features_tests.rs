@@ -158,8 +158,8 @@ fn an_unusable_option_contributes_no_row_and_fails_nothing() {
     assert_eq!(ids, ["dupe", "choices"], "the first of each: {declared:?}");
     assert_eq!(
         declared[1].options.len(),
-        1,
-        "a choice with no value is dropped"
+        2,
+        "both choices survive, the empty one included — see          a_declared_empty_choice_survives_the_parse"
     );
 }
 
@@ -234,7 +234,7 @@ fn the_handshake_parse_carries_the_declaration_alongside_the_manifest() {
 /// modes is offering the same selector, and it must be excluded the same way.
 #[test]
 fn the_mode_selector_is_excluded_by_its_values_and_not_only_its_name() {
-    let modes = json!({
+    let modes_json = json!({
         "currentModeId": "default",
         "availableModes": [
             {"id": "default", "name": "Manual"},
@@ -242,29 +242,29 @@ fn the_mode_selector_is_excluded_by_its_values_and_not_only_its_name() {
         ]
     });
     let named = with_mode_option(
-        &modes,
+        &modes_json,
         json!({"id": "mode", "type": "select", "category": "mode", "currentValue": "default",
                "options": [{"value": "default", "name": "Manual"},
                            {"value": "acceptEdits", "name": "Accept edits"}]}),
     );
     let redressed = with_mode_option(
-        &modes,
+        &modes_json,
         json!({"id": "behaviour", "type": "select", "currentValue": "default",
                "options": [{"value": "default", "name": "Manual"},
                            {"value": "acceptEdits", "name": "Accept edits"}]}),
     );
     let a_real_feature = with_mode_option(
-        &modes,
+        &modes_json,
         json!({"id": "fast", "type": "select", "currentValue": "off",
                "options": [{"value": "on", "name": "On"}, {"value": "off", "name": "Off"}]}),
     );
     // The modes view the same handshake would hand the read: parsing the block
     // here rather than passing `None` is the point of the assertion.
-    let modes = modes_from_standard(&serde_json::json!({ "modes": modes }))
+    let modes = modes_from_standard(&serde_json::json!({ "modes": modes_json }))
         .expect("the block above is a standard modes view");
     assert!(
         declared_features_from_options(&named, &[], Some(&modes)).is_empty(),
-        "a category-tagged mode option is the mode selector"
+        "the mode list under the `mode` category and matching values is the mode selector"
     );
     assert!(
         declared_features_from_options(&redressed, &[], Some(&modes)).is_empty(),
@@ -278,18 +278,121 @@ fn the_mode_selector_is_excluded_by_its_values_and_not_only_its_name() {
         ["fast"],
         "a dial that is not the mode list survives"
     );
+    // The category alone never excludes. An agent is free to label an
+    // independent dial `mode` — the ACP spec says the category "MUST NOT be
+    // required for correctness" — and treating the word as the test hid a real
+    // control and let `prune` delete its stored value on save.
+    let mislabelled = with_mode_option(
+        &modes_json,
+        json!({"id": "verbosity", "type": "select", "category": "mode", "currentValue": "short",
+               "options": [{"value": "short", "name": "Short"},
+                           {"value": "long", "name": "Long"}]}),
+    );
+    let kept_mislabelled = declared_features_from_options(&mislabelled, &[], Some(&modes));
+    assert_eq!(
+        kept_mislabelled
+            .iter()
+            .map(|feature| feature.id.as_str())
+            .collect::<Vec<_>>(),
+        ["verbosity"],
+        "a `mode`-category option whose values are not the modes is a feature: {kept_mislabelled:?}"
+    );
     // Without the standard block there is no value-set to compare against, so
-    // only the advisory category excludes. That is the honest limit of a
-    // by-values rule, and the reason the rule is a backstop and not a rewrite:
-    // an option the daemon cannot prove is the mode selector stays a feature it
-    // can set, and `session/set_config_option` is a real verb for it.
+    // nothing is excluded on the mode question at all: the option stays a
+    // feature the daemon can set with a real verb.
     let blind = json!({"sessionId": "s", "configOptions": [
         {"id": "behaviour", "type": "select", "currentValue": "default",
          "options": [{"value": "default", "name": "Manual"}]}]});
     assert_eq!(
-        declared_features_from_options(&blind, &[], Some(&modes)).len(),
+        declared_features_from_options(&blind, &[], None).len(),
         1,
         "no modes block, no value-set to match"
+    );
+}
+
+/// An empty-string choice is a position the agent declared, not an absence.
+/// Paseo relabels it (`emptyOptionLabel`) rather than deleting it, and this
+/// parser must keep it: `value_fits` reads the declared list, so a dropped
+/// choice would prune on save a value the provider genuinely accepts.
+#[test]
+fn a_declared_empty_choice_survives_the_parse() {
+    let result = options(json!([
+        {"id": "context", "type": "select", "name": "Context", "currentValue": "",
+         "options": [{"value": "", "name": "None"}, {"value": "full", "name": "Full"}]}
+    ]));
+    let declared = declared_features_from_options(&result, &[], None);
+    assert_eq!(
+        declared.len(),
+        1,
+        "the empty value is a choice: {declared:?}"
+    );
+    assert_eq!(
+        declared[0]
+            .options
+            .iter()
+            .map(|option| option.id.as_str())
+            .collect::<Vec<_>>(),
+        ["", "full"],
+        "{:?}",
+        declared[0].options
+    );
+    assert_eq!(declared[0].options[0].label, "None", "its own label");
+}
+
+/// The daemon's mode-constraint key is reserved. A provider select that claims
+/// it would put two controls on one stored value, and the child would receive
+/// neither: the delivery reads `autoAccept` as the mode tick and skips it as a
+/// feature. Renaming it would send the agent a `configId` it never declared, so
+/// the row is dropped instead.
+#[test]
+fn a_provider_option_named_auto_accept_is_dropped_and_the_rest_survive() {
+    let result = options(json!([
+        {"id": "autoAccept", "type": "select", "name": "Auto accept",
+         "currentValue": "on",
+         "options": [{"value": "on", "name": "On"}, {"value": "off", "name": "Off"}]},
+        {"id": "fast", "type": "select", "name": "Fast", "currentValue": "off",
+         "options": [{"value": "on", "name": "On"}, {"value": "off", "name": "Off"}]}
+    ]));
+    let declared = declared_features_from_options(&result, &[], None);
+    assert_eq!(
+        declared
+            .iter()
+            .map(|feature| feature.id.as_str())
+            .collect::<Vec<_>>(),
+        ["fast"],
+        "the reserved key goes, the agent's own dial stays: {declared:?}"
+    );
+}
+
+/// A repeated choice gives one select two options with the same value: React
+/// keys collide and the stored value names neither. The base parser promised
+/// order-preserving de-duplication and used `Vec::dedup_by`, which compares
+/// neighbours only — so `A, B, A` survived it with both `A` rows.
+#[test]
+fn a_repeated_choice_is_dropped_whole_list_and_the_agent_order_survives() {
+    let result = options(json!([
+        {"id": "engine", "type": "select", "name": "Engine", "currentValue": "a",
+         "options": [
+            {"value": "a", "name": "First A"},
+            {"value": "b", "name": "B"},
+            {"value": "a", "name": "Second A"},
+            {"value": "c", "name": "C"},
+            {"value": "b", "name": "Another B"}
+         ]}
+    ]));
+    let declared = declared_features_from_options(&result, &[], None);
+    let options_of_engine = &declared[0].options;
+    assert_eq!(
+        options_of_engine
+            .iter()
+            .map(|option| option.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b", "c"],
+        "each value once, in the agent's order: {options_of_engine:?}"
+    );
+    assert_eq!(
+        options_of_engine[1].label, "B",
+        "the first label for a repeated value wins"
     );
 }
 
@@ -299,4 +402,45 @@ fn with_mode_option(modes: &serde_json::Value, option: serde_json::Value) -> ser
         "modes": modes,
         "configOptions": [option]
     })
+}
+
+/// The probe's cleanup question, read from the agent's own answer:
+/// `session/close` is sent only when the agent advertises it. Advertising is
+/// tri-state in this file's own style for prompt capabilities, but here both
+/// `false` and an absent field mean the same operational thing — do not send a
+/// request the agent has not said it answers — so the read collapses them and
+/// the doc says why.
+#[test]
+fn the_close_capability_is_read_from_the_initialize_result() {
+    use super::close_session_advertised;
+    let parse = |raw: &str| serde_json::from_str::<serde_json::Value>(raw).expect("json");
+    assert!(close_session_advertised(&parse(
+        r#"{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":true}}}"#
+    )));
+    assert!(
+        !close_session_advertised(&parse(
+            r#"{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":false}}}"#
+        )),
+        "an explicit refusal is not an advertisement"
+    );
+    assert!(
+        !close_session_advertised(&parse(r#"{"protocolVersion":1}"#)),
+        "no capabilities at all is no close"
+    );
+    assert!(
+        !close_session_advertised(&parse(
+            r#"{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"list":true}}}"#
+        )),
+        "a neighbouring capability is not this one"
+    );
+    // The handshake carries the answer beside the declarations, so the probe
+    // never reads `initialize` a second time with its own rule.
+    let handshake = merge_handshake_manifest(
+        &parse(
+            r#"{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":true}}}"#,
+        ),
+        &options(json!([])),
+        Some("trae".to_string()),
+    );
+    assert!(handshake.close_session_advertised);
 }

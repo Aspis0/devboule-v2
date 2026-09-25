@@ -9,12 +9,12 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, SessionModel, WireError};
 use serde_json::Value;
@@ -650,6 +650,10 @@ fn spawn_claude_child(
         terminate_process(&mut child);
         WireError::new(ErrorCode::Io, "Claude did not provide stdout.")
     })?;
+    // Wrapped here rather than at the struct below: the fast-mode confirmation
+    // waits on this pipe before any session reader exists, exactly as the ACP
+    // creation-time switch does for the same reason.
+    let mut stdout = std::io::BufReader::new(stdout);
     let stderr = child.stderr.take().ok_or_else(|| {
         terminate_process(&mut child);
         WireError::new(ErrorCode::Io, "Claude did not provide stderr.")
@@ -704,16 +708,50 @@ fn spawn_claude_child(
         .iter()
         .find(|feature| feature.id() == crate::provider_features::FAST_MODE_FEATURE)
         .map(|feature| matches!(feature, DeliveredFeature::Toggle { on: true, .. }));
+    // The fast-mode flag the profile ticked, on the same control frame and with
+    // the same tracked answer as the effort above. A stored `false` is the CLI's
+    // own default and asks for nothing.
+    //
+    // Unlike the effort, this one is **awaited before the child is accepted**.
+    // The rule is the delivery's own — a child that exists was delivered
+    // everything its card printed — and the effort's async answer does not
+    // satisfy it: a CLI that consumes the frame and never replies, or answers
+    // with an error after the spawn has returned, leaves a running session whose
+    // transcript carries a session error instead of the creation the human
+    // approved. Paseo can afford the fire-and-forget shape because it also puts
+    // `fastMode` in the child's own launch settings
+    // (`buildSettingsOptions` → `settings: { fastMode }`), so the value is part
+    // of how the process starts and its SDK awaits the control call before the
+    // first turn. This family sends no launch setting it has not measured, so
+    // the awaited frame is what makes the promise true.
+    let mut prelude = Vec::new();
     if fast_mode == Some(true) {
-        if let Err(error) = send_initial_fast_mode(&stdin, &next_id, &delivery_settings, true) {
+        let request_id = match send_initial_fast_mode(&stdin, &next_id, &delivery_settings, true) {
+            Ok(request_id) => request_id,
+            Err(error) => {
+                if let Ok(mut process) = process.lock() {
+                    terminate_process(&mut process);
+                }
+                drop(process_job);
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not send Claude fast-mode request: {error}"),
+                ));
+            }
+        };
+        let outcome = confirm_delivery_settings(
+            &mut stdout,
+            &mut prelude,
+            &request_id,
+            &delivery_settings,
+            CONTROL_RESPONSE_TIMEOUT,
+        );
+        if let Err(error) = outcome {
             if let Ok(mut process) = process.lock() {
                 terminate_process(&mut process);
             }
             drop(process_job);
-            return Err(WireError::new(
-                ErrorCode::Io,
-                format!("Could not send Claude fast-mode request: {error}"),
-            ));
+            return Err(error);
         }
     }
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
@@ -752,7 +790,7 @@ fn spawn_claude_child(
     };
     let mut wiring = ClaudeModeGateWiring::new(Arc::clone(&stdin), Arc::clone(&mode_gate));
     wiring.delivery_settings = Arc::clone(&delivery_settings);
-    let reader_dispatch = ClaudeReader::with_mode_gate(
+    let mut reader_dispatch = ClaudeReader::with_mode_gate(
         ClaudeView::new(Some(command.cwd.clone())),
         Arc::clone(&permission_broker),
         Arc::clone(&controls),
@@ -760,6 +798,13 @@ fn spawn_claude_child(
         Arc::clone(&next_id),
         wiring,
     );
+    // The fast-mode wait read ahead in this same pipe, and whatever it saw that
+    // was not its own answer — the init event, the mode response, an MCP status
+    // line — is seeded here so the session reader parses it once, through the
+    // parser that understands all of it. A second reader of the same bytes is
+    // where a delivery confirmation and the mode gate would disagree about which
+    // lines had already been handled. Empty unless a fast-mode frame was sent.
+    reader_dispatch.buffer = prelude;
     Ok(SpawnedSession {
         process_job,
         master: None,
@@ -776,7 +821,7 @@ fn spawn_claude_child(
         // holds Claude's own frame and the mode gate it goes through.
         image_sink: None,
         static_image_sink: Some(static_prompt),
-        reader: Box::new(BufReader::new(stdout)),
+        reader: Box::new(stdout),
         reader_dispatch: Some(Box::new(reader_dispatch)),
         stderr: Some(Box::new(stderr_source)),
         permission_broker: Some(permission_broker),
@@ -1399,6 +1444,138 @@ fn send_initial_fast_mode(
         serde_json::json!({ "fastMode": on }),
         "fast mode",
     )
+}
+
+/// The shared bounded read speaks of "the ACP agent". On this road it is the
+/// CLI that stayed mute, and a sentence naming the wrong provider is worse than
+/// no sentence at all: the human reads it and goes looking at the wrong thing.
+/// The bound, the refusal and the overflow rule are the shared ones; only the
+/// nouns are this family's.
+fn delivery_wait_error(error: WireError) -> WireError {
+    if error.code != ErrorCode::Io {
+        return error;
+    }
+    WireError::new(
+        ErrorCode::Io,
+        error.message.replace("the ACP agent", "Claude").replace(
+            "the creation is refused rather than awaited without end",
+            "the creation is refused rather than left on a flag nobody confirmed",
+        ),
+    )
+}
+
+/// A duration for a sentence: seconds above a second, milliseconds below. A
+/// sub-second bound printed as "0s" reads like an unset timeout, and the wait
+/// this names is exactly the bound a test passes to prove the timeout arm works.
+fn human_duration(budget: Duration) -> String {
+    if budget < Duration::from_secs(1) {
+        return format!("{} ms", budget.as_millis());
+    }
+    format!("{} s", budget.as_secs())
+}
+
+/// Drop a delivery registration without answering it, so the session reader
+/// never treats a settled request as still owed.
+fn retire(delivery_settings: &ClaudeDeliverySettings, request_id: &str) {
+    let _ = delivery_settings
+        .lock()
+        .map(|mut settings| settings.remove(request_id));
+}
+
+/// Wait for the answer to one delivered flag-settings request, on the create
+/// path, before the child becomes a session.
+///
+/// Every line read on the way is appended to `prelude` and replayed to the
+/// session reader afterwards, so the init event, the mode response and anything
+/// else the CLI wrote first are handled by the one parser that understands them
+/// — a second reader of the same bytes is where a delivery confirmation and the
+/// mode gate would disagree about who saw what.
+///
+/// Three outcomes, and only one of them accepts a child:
+/// - `success` for this request id: delivered, accepted.
+/// - `error` for it: the CLI will not take the setting, so the creation is
+///   refused. This is the same sentence the async reader publishes for a
+///   refusal it sees later; here it stops the child existing at all.
+/// - no answer inside `budget`: refused too. A timeout is the dangerous case —
+///   the CLI may still apply the setting or not, and a child started on an
+///   unconfirmed flag is a card whose promise nobody checked.
+fn confirm_delivery_settings(
+    reader: &mut std::io::BufReader<ChildStdout>,
+    prelude: &mut Vec<u8>,
+    request_id: &str,
+    delivery_settings: &ClaudeDeliverySettings,
+    budget: Duration,
+) -> Result<(), WireError> {
+    let deadline = Instant::now() + budget;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            retire(delivery_settings, request_id);
+            // The wait is named in the unit that can actually describe it: a
+            // sub-second bound said "0s" and read like an unset timeout.
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "Claude did not answer the delivered fast mode within {}; the creation is refused rather than left on a flag nobody confirmed",
+                    human_duration(budget)
+                ),
+            ));
+        }
+        // The crate's one bounded read of a child's pipe, shared with the ACP
+        // creation path. `fill_buf` on an empty pipe **blocks**, so a deadline
+        // checked around it is unreachable: an earlier shape of this function
+        // polled `fill_buf` and reached its "timeout" only when the child
+        // happened to write or die — measured as a 200 ms bound that took
+        // nineteen minutes in the test below. The shared read peeks the pipe
+        // where a peek exists and consults the deadline on every turn; where no
+        // peek exists it says so in its own doc instead of pretending.
+        let text = match crate::session::acp_client::read_line_bounded(reader, deadline, budget) {
+            Ok(line) => line,
+            Err(error) => {
+                retire(delivery_settings, request_id);
+                return Err(delivery_wait_error(error));
+            }
+        };
+        prelude.extend_from_slice(text.as_bytes());
+        let Ok(value) = serde_json::from_str::<Value>(text.trim_end()) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("control_response")
+            || value
+                .pointer("/response/request_id")
+                .and_then(Value::as_str)
+                != Some(request_id)
+        {
+            continue;
+        }
+        // The answer is ours to consume, so retire the registration: the replay
+        // through the session reader sees an unknown request id and ignores it,
+        // which is what it already does for any control response nobody asked for.
+        let names = delivery_settings
+            .lock()
+            .ok()
+            .and_then(|mut settings| settings.remove(request_id));
+        let names = names.unwrap_or_else(|| "setting".to_string());
+        return match value.pointer("/response/subtype").and_then(Value::as_str) {
+            Some("success") => Ok(()),
+            Some("error") => Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "Claude refused the delivered {names}: {}; the creation is refused rather than started without it",
+                    value
+                        .pointer("/response/error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("no reason given")
+                ),
+            )),
+            _ => Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "Claude returned an invalid response to the delivered {names}; the creation is refused"
+                ),
+            )),
+        };
+    }
 }
 
 /// The one writer of `apply_flag_settings` at start. `names` is what the

@@ -315,6 +315,16 @@ export function featuresAreProbing(vocabulary: ProviderVocabulary | null): boole
   return vocabulary?.features?.state === "absent" && vocabulary.features.probing === true;
 }
 
+/** Whether the read was **made and could not be answered**: the axis is
+ *  `absent` and the daemon is not still reading. The two `absent` answers are
+ *  the difference between "the provider has nothing" and "nobody could ask",
+ *  and the form says them in different sentences — and a daemon older than the
+ *  field is neither, which is why this reads the axis rather than its absence. */
+export function featuresAskFailed(vocabulary: ProviderVocabulary | null): boolean {
+  const axis = vocabulary?.features;
+  return axis !== undefined && axis !== null && axis.state === "absent" && axis.probing !== true;
+}
+
 /**
  * The stored `features` map the draft saves.
  *

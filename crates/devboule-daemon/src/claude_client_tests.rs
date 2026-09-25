@@ -2385,3 +2385,165 @@ fn a_model_is_not_judged_against_a_provisional_catalog_and_the_derived_one_match
         error.message
     );
 }
+
+/// P1 of the review: a delivered fast-mode flag is **confirmed before the child
+/// is accepted**, and each of the three answers is its own outcome. The base
+/// write-and-forget shape left a create path that returned a running session
+/// while the CLI had either refused the setting or never answered it — a card
+/// whose promise nobody had checked, which is the exact rule the delivery
+/// carries ("a child that exists was delivered everything its card printed").
+///
+/// The `node` echo child stands in for the CLI: the frames this client writes
+/// come back on its stdout, and the test writes the control responses the real
+/// CLI would send.
+#[test]
+fn a_delivered_fast_mode_is_confirmed_on_the_create_path_in_all_three_answers() {
+    // Success: accepted, and the lines that were not the answer are handed to
+    // the session reader rather than dropped.
+    let mut harness = initial_mode_test_setup();
+    let settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
+    let fast_id =
+        send_initial_fast_mode(&harness.stdin, &harness.next_id, &settings, true).expect("written");
+    let mode_request = read_json_line_bounded(&mut harness.stdout);
+    assert_eq!(mode_request["request"]["subtype"], "set_permission_mode");
+    let fast_request = read_json_line_bounded(&mut harness.stdout);
+    assert_eq!(fast_request["request"]["subtype"], "apply_flag_settings");
+    assert_eq!(
+        fast_request["request"]["settings"]["fastMode"],
+        serde_json::json!(true),
+        "the setting Paseo's SDK writes, in the frame this family already uses: {fast_request}"
+    );
+    // A line that is not the answer — the init event the real CLI sends first.
+    let init = serde_json::json!({"type": "system", "subtype": "init"});
+    write_line_to_child(&harness.stdin, &init);
+    let mut prelude = Vec::new();
+    let success = serde_json::json!({
+        "type": "control_response",
+        "response": {"subtype": "success", "request_id": fast_id}
+    });
+    write_line_to_child(&harness.stdin, &success);
+    confirm_delivery_settings(
+        &mut harness.stdout,
+        &mut prelude,
+        &fast_id,
+        &settings,
+        CONTROL_RESPONSE_TIMEOUT,
+    )
+    .expect("the CLI took the flag");
+    // Everything the wait read is handed on, in order — the init line it did not
+    // need and the answer it did. The session reader parses both through the one
+    // parser that understands them; the answer is then inert, because its
+    // request id is no longer registered.
+    let replayed = String::from_utf8_lossy(&prelude).to_string();
+    assert!(
+        replayed.contains("\"subtype\":\"init\""),
+        "the init line the wait read past is replayed, not dropped: {replayed}"
+    );
+    assert!(
+        replayed.find("\"subtype\":\"init\"") < replayed.find(&fast_id),
+        "the replay keeps the order the pipe delivered: {replayed}"
+    );
+    assert!(
+        settings.lock().expect("settings").is_empty(),
+        "the answered request is retired, so the reader ignores it: {settings:?}"
+    );
+
+    let _ = harness.child.kill();
+    let _ = harness.child.wait();
+
+    // Error: refused, in a sentence naming the setting and the CLI's reason.
+    let mut harness = initial_mode_test_setup();
+    let settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
+    let fast_id =
+        send_initial_fast_mode(&harness.stdin, &harness.next_id, &settings, true).expect("written");
+    let _ = read_json_line_bounded(&mut harness.stdout);
+    let _ = read_json_line_bounded(&mut harness.stdout);
+    let refusal = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "error", "request_id": fast_id,
+            "error": "fast mode needs a newer Claude CLI"
+        }
+    });
+    write_line_to_child(&harness.stdin, &refusal);
+    let mut prelude = Vec::new();
+    let error = confirm_delivery_settings(
+        &mut harness.stdout,
+        &mut prelude,
+        &fast_id,
+        &settings,
+        CONTROL_RESPONSE_TIMEOUT,
+    )
+    .expect_err("a refused flag refuses the creation");
+    assert!(
+        error.message.contains("refused the delivered fast mode")
+            && error.message.contains("fast mode needs a newer Claude CLI"),
+        "the refusal names the setting and the CLI's words: {}",
+        error.message
+    );
+
+    let _ = harness.child.kill();
+    let _ = harness.child.wait();
+
+    // Silence: also refused. This is the case the async reader could never
+    // answer - no line ever arrives, so nothing was ever published, and the
+    // child ran on its own default behind a card that said otherwise.
+    let mut harness = initial_mode_test_setup();
+    let settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
+    let fast_id =
+        send_initial_fast_mode(&harness.stdin, &harness.next_id, &settings, true).expect("written");
+
+    let _ = read_json_line_bounded(&mut harness.stdout);
+
+    let _ = read_json_line_bounded(&mut harness.stdout);
+
+    let mut prelude = Vec::new();
+    let error = confirm_delivery_settings(
+        &mut harness.stdout,
+        &mut prelude,
+        &fast_id,
+        &settings,
+        Duration::from_millis(200),
+    )
+    .expect_err("a CLI that never answers must not be accepted");
+    assert!(
+        error.message.contains("did not answer") && error.message.contains("creation is refused"),
+        "the timeout is a refusal, not a silence: {error:?}"
+    );
+    assert!(
+        settings.lock().expect("settings").is_empty(),
+        "an unanswered request is not left registered for the reader to answer later"
+    );
+    let _ = harness.child.kill();
+    let _ = harness.child.wait();
+}
+
+/// `read_json_line` with a real bound, through the same non-blocking reader the
+/// delivery confirmation uses. `BufRead::read_line` blocks until a line arrives,
+/// so a deadline checked after it is unreachable — and a test that waits on a
+/// line that never comes shows up as a hung suite, not a failed assertion.
+fn read_json_line_bounded(stdout: &mut BufReader<ChildStdout>) -> Value {
+    let text = crate::session::acp_client::read_line_bounded(
+        stdout,
+        std::time::Instant::now() + std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(10),
+    )
+    .expect("a line from the echo child within 10s");
+    serde_json::from_str(text.trim_end()).expect("child output json")
+}
+
+/// One JSON line into the echo child's stdin, which the child writes straight
+/// back to the pipe this client reads. Written through the same `Arc` the client
+/// holds, because the harness moved the child's own handle into it — the line is
+/// a byte string, not a value the client parses.
+fn write_line_to_child(stdin: &Arc<Mutex<Option<ChildStdin>>>, value: &Value) {
+    use std::io::Write;
+    let mut bytes = serde_json::to_vec(value).expect("json");
+    // One LF, as a number: a char literal for it kept being rewritten into a
+    // real newline by the scripted edits this file went through.
+    bytes.push(10);
+    let mut guard = stdin.lock().expect("stdin");
+    let child_stdin = guard.as_mut().expect("child stdin");
+    child_stdin.write_all(&bytes).expect("write");
+    child_stdin.flush().expect("flush");
+}

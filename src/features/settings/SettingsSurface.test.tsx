@@ -3959,7 +3959,7 @@ describe("Settings agents panel — new profile form", () => {
     await act(async () => undefined);
     await act(async () => undefined);
 
-    expect(providerVocabularyGet).toHaveBeenCalledWith("claude", false);
+    expect(providerVocabularyGet).toHaveBeenCalledWith("claude", "", false);
     // The spec's own sentence, once per axis.
     expect(form().textContent).toContain(
       "This provider did not publish its models; what you type is checked when the session starts.",
@@ -4156,8 +4156,8 @@ describe("Settings agents panel — new profile form", () => {
     // The form shows provider b; the late answer for a must not have landed.
     expect(selectValues(modelControl())).toContain("b-model");
     expect(selectValues(modelControl())).not.toContain("a-model");
-    expect(providerVocabularyGet).toHaveBeenNthCalledWith(1, "a", false);
-    expect(providerVocabularyGet).toHaveBeenNthCalledWith(2, "b", false);
+    expect(providerVocabularyGet).toHaveBeenNthCalledWith(1, "a", "", false);
+    expect(providerVocabularyGet).toHaveBeenNthCalledWith(2, "b", "", false);
   });
 
   it("offers only installed providers in the picker", async () => {

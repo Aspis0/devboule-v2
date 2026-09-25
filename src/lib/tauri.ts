@@ -224,7 +224,11 @@ export type CommandArgs = {
   tool_policy_set: { providerId: string; enabled: boolean | null; disabledTools: string[] };
   agent_profiles_get: undefined;
   agent_profiles_set: { document: AgentProfilesDocument };
-  provider_vocabulary_get: { provider: string; refresh: boolean };
+  provider_vocabulary_get: {
+    provider: string;
+    model: string | null;
+    refresh: boolean;
+  };
   delegation_get: undefined;
   delegation_set: { enabled: boolean };
 };
@@ -463,7 +467,7 @@ export const COMMAND_ARG_KEYS = {
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
   agent_profiles_get: [],
   agent_profiles_set: ["document"],
-  provider_vocabulary_get: ["provider", "refresh"],
+  provider_vocabulary_get: ["provider", "model", "refresh"],
   delegation_get: [],
   delegation_set: ["enabled"],
 } as const satisfies {
@@ -1050,9 +1054,12 @@ export const agentProfilesSet = (document: AgentProfilesDocument) =>
  * the CommandResults entry documents: the success type is the spec's
  * contract, and the daemon pass makes it true.
  */
-export const providerVocabularyGet = (provider: string, refresh: boolean) =>
+export const providerVocabularyGet = (provider: string, model: string, refresh: boolean) =>
   invokeTyped("provider_vocabulary_get", {
     provider,
+    // Empty means "no model chosen yet", which is the daemon's own cache key —
+    // sent as null, not as a model named "".
+    model: model.trim() === "" ? null : model,
     refresh,
   }) as unknown as Promise<ProviderVocabulary>;
 

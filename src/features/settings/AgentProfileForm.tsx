@@ -10,10 +10,10 @@
  * picker's current value.
  */
 import { useEffect, useId, useRef, useState } from "react";
-import { providerVocabularyGet } from "../../lib/tauri";
-import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { useProviderVocabulary } from "./useProviderVocabulary";
 import { ErrorText } from "../../components/ErrorText";
-import type { ProviderInfo, ProviderVocabulary } from "../../types/ipc";
+import type { ErrorSentence } from "../../lib/errorSentence";
+import type { ProviderInfo } from "../../types/ipc";
 import {
   ACP_MODE_SUGGESTION,
   ACP_MODE_SUGGESTION_TEXT,
@@ -26,6 +26,7 @@ import {
   type ProfileFormSeed,
   offeredFeatures,
   featuresAreProbing,
+  featuresAskFailed,
   rustTrim,
   utf8Bytes,
 } from "./AgentProfileDraft";
@@ -42,6 +43,13 @@ const MAX_PROFILE_NOTE_BYTES = 2 * 1024;
  * vocabulary, so they travel as saved whatever the picker says.
  */
 type ProviderSpecificFields = Pick<ProfileFormSeed, "model" | "modeId" | "thinkingOptionId">;
+
+/// How often the form re-asks while an ACP provider's feature list is being
+/// read. Two seconds: the read is a provider process start, which Paseo budgets
+/// at 90 s, so a faster poll would be ten identical round-trips against a worker
+/// that cannot finish sooner, and a slower one would leave the human watching
+/// "Checking…" after the answer already exists.
+export const VOCABULARY_POLL_MS = 2000;
 
 const CLEARED_PROVIDER_FIELDS: ProviderSpecificFields = {
   model: "",
@@ -115,8 +123,9 @@ export function AgentProfileForm({
   const [features, setFeatures] = useState<Record<string, boolean | string>>(seed.features);
   const [overlay, setOverlay] = useState(seed.overlay);
   const [enabledForAgents, setEnabledForAgents] = useState(seed.enabledForAgents);
-  const [vocabulary, setVocabulary] = useState<ProviderVocabulary | null>(null);
-  const [vocabularyError, setVocabularyError] = useState<ErrorSentence | null>(null);
+  // The model the current reply was asked about. A reply is only ever adopted
+  // with its own question attached, so a model change cannot leave an answer for
+  // another model on screen — see `offeredFeatures`' caller.
   // Field-associated text for assistive technology: the ids the described-by
   // wiring points at. One useId per mount, so a create form and an edit form
   // open side by side cannot collide.
@@ -148,7 +157,6 @@ export function AgentProfileForm({
   // echoed back — is what keeps a slow answer for provider A out of a form
   // now showing provider B, so the guard is the single mechanism the
   // stale-reply test mutates.
-  const vocabularySeqRef = useRef(0);
   // Provider-specific fields, cached by provider while the form is open:
   // switching away clears them (the new provider's vocabulary is its own),
   // and switching back restores what was typed.
@@ -162,62 +170,29 @@ export function AgentProfileForm({
     }
   }, [catalogLoading, providerId, providers]);
 
-  useEffect(() => {
-    // A daemon that never advertised `provider_vocabulary` would refuse this
-    // request: it is never sent. The form's free-text fallback and the
-    // older-daemon sentence are the whole UI for that case.
-    if (!vocabularySupported || providerId === "") return;
-    // No `cancelled` flag beside the sequence guard on purpose: every path
-    // that could make a reply stale (the provider changed, the form closed)
-    // bumps the sequence, so the guard below is the one mechanism — and the
-    // one thing the stale-reply test mutates. A `setState` after unmount is
-    // a safe no-op in React 18+.
-    const seq = ++vocabularySeqRef.current;
-    setVocabulary(null);
-    setVocabularyError(null);
-    void providerVocabularyGet(providerId, false)
-      .then((reply) => {
-        // A newer fetch (the provider changed again) owns the form: this
-        // reply is stale no matter which provider it names.
-        if (vocabularySeqRef.current !== seq) return;
-        // And a reply that answers for another provider is stale by its own
-        // admission: what it lists must never dress this provider's controls.
-        if (reply.provider !== providerId) return;
-        // The reply is adopted as it arrived; the per-axis reader below
-        // treats it as the untrusted wire value it is. A reply missing an
-        // axis is malformed — its own state, named in the render — and must
-        // not throw: throwing here would report a successful query as
-        // failed and discard the axis that arrived intact.
-        setVocabulary(reply);
-        // The one prefill allowed: an ACP agent that declared no modes runs
-        // in "default". Typed text is never clobbered — the suggestion only
-        // fills an empty field, and it is labelled a suggestion.
-        if (reply.modes?.state === "absent") {
-          const info = providers.find((provider) => provider.id === providerId);
-          if (info?.protocol === "acp") {
-            setModeId((current) => (current === "" ? ACP_MODE_SUGGESTION : current));
-          }
-        }
-      })
-      .catch((cause: unknown) => {
-        if (vocabularySeqRef.current !== seq) return;
-        setVocabularyError(errorSentence(cause));
-      });
-  }, [providerId, vocabularySupported, providers]);
+  const { vocabulary, vocabularyAnswered, vocabularyError, vocabularyKnown, settleModel } =
+    useProviderVocabulary({
+      providerId,
+      model,
+      providers,
+      supported: vocabularySupported,
+      // The one prefill a reply may make: an ACP agent that declares no modes
+      // runs in "default". Typed text is never clobbered — the hook only calls
+      // this, and the form decides what to do with it.
+      onAcpWithoutModes: () =>
+        setModeId((current) => (current === "" ? ACP_MODE_SUGGESTION : current)),
+      onSettledModel: (next) => {
+        setModel(next);
+        onSeedChange?.({ ...currentSeed(), model: next });
+      },
+    });
 
-  // A reply for another provider is not this provider's answer, even in the
-  // window before the effect above clears it: the fields read nothing until
-  // a reply and the current provider agree.
-  const vocabularyCurrent = vocabulary !== null && vocabulary.provider === providerId;
-  // The reply (or its failure) is what the fields read; before either, the
-  // form shows the ask in flight and renders no field to guess into.
-  const vocabularyKnown = vocabularyCurrent || vocabularyError !== null;
   // One decision per axis, made by the shared reader: every state the wire
   // can reach — present, none, absent, malformed, the contradiction, the
   // unknown — is named there.
   const modelsView = vocabularyAxisView(
-    vocabularyCurrent ? vocabulary?.models : undefined,
-    vocabularyCurrent,
+    vocabularyAnswered ? vocabulary?.models : undefined,
+    vocabularyKnown,
     vocabularyError !== null,
     "models",
     (item) => ({
@@ -227,8 +202,8 @@ export function AgentProfileForm({
     }),
   );
   const modesView = vocabularyAxisView(
-    vocabularyCurrent ? vocabulary?.modes : undefined,
-    vocabularyCurrent,
+    vocabularyAnswered ? vocabulary?.modes : undefined,
+    vocabularyKnown,
     vocabularyError !== null,
     "modes",
     (item) => ({
@@ -236,24 +211,26 @@ export function AgentProfileForm({
       label: item.name && item.name !== item.id ? `${item.name} (${item.id})` : item.id,
     }),
   );
-  // The provider's answer, read once for both the controls and the save. A
-  // `null` here is "no answer in hand": nothing is drawn for it beyond the
-  // daemon's own tick, and nothing stored is judged away. The model gates it,
-  // which is why a model change re-reads it and no provider is asked twice for
-  // one answer.
-  const offered = offeredFeatures(vocabularyCurrent ? vocabulary : null, model);
-  const probing = featuresAreProbing(vocabularyCurrent ? vocabulary : null);
-  // The list the seed carries to the save, keyed by content and not by identity:
-  // `offeredFeatures` returns a fresh array every render, and an identity
-  // comparison below would never settle.
+
+  // The reply only counts while it is the answer to the question actually asked
+  // — provider *and* settled model, which is what `vocabularyAnswered` means.
+  // `null` means no answer in hand: nothing is drawn beyond the daemon's own
+  // tick, and nothing stored is judged away.
+  const offered = offeredFeatures(vocabularyAnswered, model);
+  const probing = featuresAreProbing(vocabularyAnswered);
+  const askedAndFailed = featuresAskFailed(vocabularyAnswered);
+  // The list the seed carries to the save. A fresh array each render, so the
+  // report below keys on its content and not its identity.
   const offeredForSeed = offered === null ? null : [...offered];
   const offeredKey = offered === null ? "none" : offered.map((feature) => feature.id).join(",");
   const lastOfferedKeyRef = useRef<string | undefined>(undefined);
+
   // The offered list is part of the draft a save prunes by, and it can change
-  // without the human touching a field: a vocabulary reply lands, or the model
-  // they typed settles into a different gate. Every other field reports itself
-  // on the change that moved it; this one has no change event, so a save reading
-  // a stale list would prune by an answer the form had already replaced.
+  // without the human touching a field: a reply lands, the hook's poll replaces a
+  // `probing` answer with the real list, or a settled model moves the gate. Every
+  // other field reports itself on the change that moved it; these have no change
+  // event, so a save reading a stale list would prune by an answer the form had
+  // already replaced.
   useEffect(() => {
     const key = `${offeredKey}|${probing ? "probing" : "known"}`;
     if (lastOfferedKeyRef.current === key) {
@@ -305,7 +282,10 @@ export function AgentProfileForm({
     providerDraftsRef.current.set(providerId, { model, modeId, thinkingOptionId });
     const restored = providerDraftsRef.current.get(next) ?? CLEARED_PROVIDER_FIELDS;
     setProviderId(next);
-    setModel(restored.model);
+    // A provider switch settles its model in the same breath: the field is not
+    // being typed in, the value is the whole point of the switch, and the ask
+    // that follows is about that model.
+    settleModel(restored.model);
     setModeId(restored.modeId);
     setThinkingOptionId(restored.thinkingOptionId);
     onSeedChange?.({ ...currentSeed(), provider: next, ...restored });
@@ -459,6 +439,7 @@ export function AgentProfileForm({
               setModel(next);
               onSeedChange?.({ ...currentSeed(), model: next });
             }}
+            onSettle={settleModel}
           />
           <VocabularyField
             label="Mode"
@@ -467,7 +448,7 @@ export function AgentProfileForm({
             freeText={modesView.freeText}
             hint={modesView.hint}
             suggestion={
-              vocabularyCurrent &&
+              vocabularyAnswered !== null &&
               vocabulary?.modes?.state === "absent" &&
               providers.find((provider) => provider.id === providerId)?.protocol === "acp"
                 ? ACP_MODE_SUGGESTION_TEXT
@@ -506,6 +487,7 @@ export function AgentProfileForm({
       <AgentProfileFeatureFields
         offered={offered}
         probing={probing}
+        askedAndFailed={askedAndFailed}
         features={features}
         busy={busy}
         onChange={(next) => {

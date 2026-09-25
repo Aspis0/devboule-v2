@@ -421,15 +421,37 @@ fn main() -> io::Result<()> {
                 if std::env::var_os("DEVBOULE_STUB_IGNORE_INITIALIZE").is_some() {
                     continue;
                 }
+                // `--advertise-close` makes the stub an agent that keeps a
+                // session after the process is gone: the capability the probe's
+                // cleanup is gated on, so a test can tell "the daemon asked" from
+                // "the daemon never asks and nothing was orphaned".
+                let capabilities = if std::env::args().any(|arg| arg == "--advertise-close") {
+                    json!({"sessionCapabilities": {"close": true}})
+                } else {
+                    json!({})
+                };
                 respond(
                     &mut stdout,
                     request.get("id").cloned(),
                     json!({
                         "protocolVersion": 1,
-                        "agentCapabilities": {},
+                        "agentCapabilities": capabilities,
                         "agentInfo": {"name": "devboule-acp-stub", "version": "1"}
                     }),
                 )?;
+            }
+            "session/close" => {
+                // Recorded rather than only answered: the test's claim is that
+                // the daemon **sent** the request for the session it opened.
+                if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_CLOSE_FILE") {
+                    let session_id = request
+                        .pointer("/params/sessionId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<missing>")
+                        .to_string();
+                    std::fs::write(path, session_id).ok();
+                }
+                respond(&mut stdout, request.get("id").cloned(), json!({}))?;
             }
             "session/new" => {
                 if fail_session_new {
@@ -744,6 +766,22 @@ fn main() -> io::Result<()> {
                     .to_string();
                 if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_SET_CONFIG_FILE") {
                     std::fs::write(path, format!("{config_id}={value}")).ok();
+                }
+                // The same frames, appended: a daemon that sends a model switch
+                // and a feature switch has no reason to send them in either
+                // order, and a test that wants to know whether *its* frame
+                // arrived cannot read that off a single-line file the next frame
+                // overwrites. One file per shape, because the 27 assertions on
+                // the last-value file are what the switch tests already measure.
+                if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE") {
+                    use std::io::Write;
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                    {
+                        let _ = writeln!(file, "{config_id}={value}");
+                    }
                 }
                 if !config_mode {
                     respond_error(
