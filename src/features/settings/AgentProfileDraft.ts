@@ -163,6 +163,11 @@ export const EMPTY_PROFILE_FORM_SEED: ProfileFormSeed = {
  */
 export function seedFromProfile(profile: AgentProfile): ProfileFormSeed {
   const overlay = profile.toolOverlay ?? [];
+  // `features` is skipped on the wire when empty, and profiles older builds
+  // wrote never carried the key: absent **is** the empty map. Reading it as
+  // if it were always there threw on a live legacy profile and blanked the
+  // app, so the default lives here, at the one reader.
+  const features = profile.features ?? {};
   return {
     name: profile.name,
     icon: profile.icon ?? "",
@@ -172,8 +177,8 @@ export function seedFromProfile(profile: AgentProfile): ProfileFormSeed {
     model: profile.model,
     modeId: profile.modeId,
     thinkingOptionId: profile.thinkingOptionId ?? "",
-    autoAccept: profile.features.autoAccept === true,
-    storedFeatures: Object.entries(profile.features)
+    autoAccept: features.autoAccept === true,
+    storedFeatures: Object.entries(features)
       .filter(([key]) => key !== AUTO_ACCEPT_FEATURE)
       .map(([key, value]) => ({ key, value })),
     overlay: [...overlay],

@@ -2045,6 +2045,70 @@ fn a_profile_spawn_prompt_round_trips_and_its_absence_is_none() {
     assert_eq!(document.profiles[0].spawn_prompt, "");
 }
 
+/// The wire's split, which the app's reader is written against: five fields
+/// are skipped when they are empty — an absent `icon`/`spawnPrompt`/
+/// `thinkingOptionId`/`features`/`toolOverlay` **is** the empty value — and
+/// the identity, `note` and `enabledForAgents` are always there. Older builds
+/// wrote documents carrying only the mandatory keys; such a document loads
+/// unchanged and serialises back to the same shape. Reading an omitted field
+/// without a default blanked the app on a live legacy profile, so this test
+/// is the daemon's half of the agreement.
+#[test]
+fn a_profile_omits_its_empty_fields_and_never_the_ones_the_app_reads_as_required() {
+    let old = serde_json::json!({
+        "profiles": [{
+            "id": "p-old",
+            "name": "Night probe",
+            "provider": "grok",
+            "model": "grok-4",
+            "modeId": "ask",
+            "enabledForAgents": false
+        }],
+        "standingInstructions": ""
+    });
+    let document: AgentProfilesDocument = serde_json::from_value(old).expect("the old shape");
+    assert!(document.profiles[0].features.is_empty());
+    assert_eq!(
+        document.profiles[0].note, "",
+        "a missing note decodes as the empty note"
+    );
+
+    let wire = serde_json::to_value(&document).expect("json");
+    let profile = &wire["profiles"][0];
+    for omitted in [
+        "icon",
+        "spawnPrompt",
+        "thinkingOptionId",
+        "features",
+        "toolOverlay",
+    ] {
+        assert!(
+            profile.get(omitted).is_none(),
+            "{omitted} is skipped when empty, so a reader must default it: {wire}"
+        );
+    }
+    for always in [
+        "id",
+        "name",
+        "note",
+        "provider",
+        "model",
+        "modeId",
+        "enabledForAgents",
+    ] {
+        assert!(
+            profile.get(always).is_some(),
+            "{always} is never omitted: {wire}"
+        );
+    }
+
+    let back: AgentProfilesDocument = serde_json::from_value(wire).expect("decodes back");
+    assert_eq!(
+        back, document,
+        "the wire shape round-trips to the same document"
+    );
+}
+
 #[test]
 fn delegation_wire_contract_round_trips_with_its_exact_field_names() {
     // The app's Settings switch and the roster's take-back are written

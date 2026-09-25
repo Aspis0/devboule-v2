@@ -1438,6 +1438,12 @@ export interface ToolPolicyReply {
  * vocabulary, stored verbatim. `toolOverlay` can only ever remove tools.
  * `spawnPrompt` is daemon-injected text sent at the start of every agent
  * created from this profile; it is absent when the profile carries none.
+ *
+ * Five fields are **omitted when empty** by the daemon's serde (and older
+ * builds wrote profiles without them at all): `icon`, `spawnPrompt`,
+ * `thinkingOptionId`, `features`, `toolOverlay`. Absent means the empty value
+ * for each of them — a reader must default it, never assume the key exists
+ * (`features` blanked the app once, live).
  */
 export interface AgentProfile {
   id: string;
@@ -1449,7 +1455,8 @@ export interface AgentProfile {
   model: string;
   modeId: string;
   thinkingOptionId?: string | null;
-  features: Record<string, unknown>;
+  /** Skipped when empty: absent is `{}`, the profile carries no features. */
+  features?: Record<string, unknown>;
   toolOverlay?: string[];
   enabledForAgents: boolean;
 }

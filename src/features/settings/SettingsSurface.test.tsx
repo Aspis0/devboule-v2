@@ -2644,6 +2644,55 @@ describe("Settings agents panel", () => {
     });
   });
 
+  it("edits and saves a profile that arrived without features or spawn prompt", async () => {
+    // The profile exactly as the daemon serves one whose omittable fields are
+    // all empty: serde skips `icon`, `spawnPrompt`, `thinkingOptionId`,
+    // `features` and `toolOverlay`, and a document older builds wrote never
+    // had those keys. Only the keys the daemon always sends are here —
+    // reading an omitted one without a default blanked the app live.
+    const legacy: AgentProfile = {
+      id: "profile-1",
+      name: "Explorer",
+      note: "Written by an older build.",
+      provider: "grok",
+      model: "grok-4",
+      modeId: "ask",
+      enabledForAgents: false,
+    };
+    await renderAgentsPanel({ profiles: [legacy], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const editor = container.querySelector(".agent-inline-editor");
+    if (!editor) throw new Error("the editor did not open for the legacy profile");
+    // Absent features read as none: the editor says the profile carries no
+    // others instead of throwing on the missing map, and the fields the
+    // profile did have are in their inputs.
+    expect(editor.textContent).toContain("No other features are stored");
+    expect(editor.querySelector<HTMLInputElement>('[aria-label="Profile name"]')?.value).toBe(
+      "Explorer",
+    );
+    expect(editor.querySelector<HTMLTextAreaElement>('[aria-label="Profile note"]')?.value).toBe(
+      "Written by an older build.",
+    );
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    // Every field the profile had survives the save; the omitted ones come
+    // back as their empty values, which the daemon skips again on disk.
+    expect(sent.profiles[0]).toEqual({
+      ...legacy,
+      icon: null,
+      thinkingOptionId: null,
+      features: {},
+      toolOverlay: [],
+    });
+  });
+
   it("keeps a peer restriction that shares the overlay with another denial", async () => {
     const guarded = makeProfile({
       toolOverlay: ["devboule_send_message", "devboule_create_agent", "devboule_list_profiles"],
