@@ -2,10 +2,9 @@
 //! pi's own RPCs before any turn starts, every other slash text stays a
 //! prompt, and the argument parsing is Paseo's rule for rule.
 
+use super::super::commands::parse_slash_invocation;
 use super::super::PiControl;
-use super::{
-    parse_auto_compact_mode, parse_slash_invocation, AutoCompactMode, PiOutOfBandCommands,
-};
+use super::{parse_auto_compact_mode, AutoCompactMode, PiOutOfBandCommands};
 use crate::session::tests::{
     attach_live_agent_for_test, insert_live_agent_with_out_of_band, test_owner,
     tmp_delete_registry, RecordingWriter,
@@ -40,18 +39,19 @@ process.stdin.on("data", (chunk) => {
 });
 "#;
 
-struct AnsweringPi {
-    child: std::process::Child,
-    control: Arc<PiControl>,
-    answers: Arc<Mutex<Vec<serde_json::Value>>>,
+pub(super) struct AnsweringPi {
+    pub(super) child: std::process::Child,
+    pub(super) control: Arc<PiControl>,
+    pub(super) answers: Arc<Mutex<Vec<serde_json::Value>>>,
     reader: std::thread::JoinHandle<()>,
 }
 
 /// The fake Pi plus the reader thread that correlates its answers by id —
-/// the same shape the session's reader gives a live child.
-fn answering_pi() -> AnsweringPi {
+/// the same shape the session's reader gives a live child. The script is a
+/// parameter so a test can hold back one command (the compact-run tests).
+pub(super) fn answering_pi_script(script: &str) -> AnsweringPi {
     let mut child = std::process::Command::new("node")
-        .args(["-e", FAKE_PI_ANSWERS])
+        .args(["-e", script])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -96,9 +96,13 @@ fn answering_pi() -> AnsweringPi {
     }
 }
 
+fn answering_pi() -> AnsweringPi {
+    answering_pi_script(FAKE_PI_ANSWERS)
+}
+
 impl AnsweringPi {
     /// Stop the fake and hand back every raw line it was sent, in order.
-    fn sent_lines(mut self) -> Vec<String> {
+    pub(super) fn sent_lines(mut self) -> Vec<String> {
         let lines = self
             .answers
             .lock()
@@ -113,7 +117,7 @@ impl AnsweringPi {
     }
 }
 
-fn wait_for_frames(answers: &Arc<Mutex<Vec<serde_json::Value>>>, count: usize) {
+pub(super) fn wait_for_frames(answers: &Arc<Mutex<Vec<serde_json::Value>>>, count: usize) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if answers.lock().expect("answers").len() >= count {
@@ -158,9 +162,7 @@ fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_prompt_text() {
     let owner = test_owner("S-1-5-21-pi-oob", "process-pi-oob");
     let session_id = "pi-out-of-band";
     let pi = answering_pi();
-    let hook = Arc::new(PiOutOfBandCommands {
-        control: Arc::clone(&pi.control),
-    });
+    let hook = Arc::new(PiOutOfBandCommands::new(Arc::clone(&pi.control)));
     let received = Arc::new(Mutex::new(Vec::new()));
     let runtime = insert_live_agent_with_out_of_band(
         &registry,
@@ -260,9 +262,7 @@ fn an_unusable_autocompact_argument_is_paseos_usage_line_and_writes_nothing() {
         Arc::clone(&stdin),
         Arc::new(AtomicU64::new(1)),
     ));
-    let hook = PiOutOfBandCommands {
-        control: Arc::clone(&control),
-    };
+    let hook = PiOutOfBandCommands::new(Arc::clone(&control));
     assert!(
         hook.handles_out_of_band("/autocompact maybe"),
         "the command is recognised; its argument is what is refused"
@@ -310,9 +310,8 @@ fn a_slash_text_is_a_command_only_for_the_two_pi_handles() {
     // recognition is exactly Paseo's `tryHandleOutOfBand` dispatch: compact
     // and autocompact (any case), nothing else.
     let stdin: Arc<Mutex<Option<std::process::ChildStdin>>> = Arc::new(Mutex::new(None));
-    let hook = PiOutOfBandCommands {
-        control: Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1)))),
-    };
+    let hook =
+        PiOutOfBandCommands::new(Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1)))));
     assert!(hook.handles_out_of_band("/compact"));
     assert!(hook.handles_out_of_band("/COMPACT fold everything"));
     assert!(hook.handles_out_of_band("/autocompact"));
@@ -353,6 +352,17 @@ fn the_slash_parse_is_paseos_rule_for_rule() {
     );
     assert!(parse_slash_invocation("/").is_none());
     assert!(parse_slash_invocation("").is_none());
+
+    // JavaScript's trim() and /\s/ also treat U+FEFF as whitespace and
+    // Rust's `char::is_whitespace` does not, so the parse names JavaScript's
+    // set exactly (review A5-2 #7): the separator splits the command, and a
+    // leading U+FEFF is trimmed away before the slash is looked for.
+    let feff_separator = parse_slash_invocation("/autocompact\u{FEFF}off").expect("a command");
+    assert_eq!(feff_separator.name, "autocompact");
+    assert_eq!(feff_separator.args.as_deref(), Some("off"));
+    let feff_leading = parse_slash_invocation("\u{FEFF}/compact x").expect("a command");
+    assert_eq!(feff_leading.name, "compact");
+    assert_eq!(feff_leading.args.as_deref(), Some("x"));
 }
 
 #[test]
@@ -384,5 +394,12 @@ fn autocompact_resolves_its_argument_the_way_paseo_does() {
     assert_eq!(
         parse_auto_compact_mode(Some("maybe")),
         AutoCompactMode::Unknown
+    );
+    // A trailing U+FEFF is whitespace to JavaScript's trim(), which is what
+    // Paseo's mode parse runs on (`pi/agent.ts:1809`) — the mode still
+    // resolves (review A5-2 #7).
+    assert_eq!(
+        parse_auto_compact_mode(Some("on\u{FEFF}")),
+        AutoCompactMode::Enabled
     );
 }

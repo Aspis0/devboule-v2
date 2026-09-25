@@ -152,6 +152,10 @@ impl ClaudeView {
     /// separate list the CLI answers itself and is deliberately not
     /// published.
     fn slash_commands_from(envelope: &Value) -> Option<Vec<AvailableCommandView>> {
+        // The bound: a correctly typed but enormous array copies its first
+        // thousand names and drops the rest (review A5-2 #5) — the same
+        // bound `pi_view` puts on a `get_commands` reply.
+        const MAX_SLASH_COMMANDS: usize = 1000;
         let names = envelope.get("slash_commands")?.as_array()?;
         Some(
             names
@@ -164,6 +168,7 @@ impl ClaudeView {
                         hint: None,
                     })
                 })
+                .take(MAX_SLASH_COMMANDS)
                 .collect(),
         )
     }
@@ -1070,6 +1075,26 @@ mod tests {
             matches!(events.as_slice(), [SessionEvent::SessionManifest { .. }]),
             "nothing changes for an init that carries no commands: {events:?}"
         );
+    }
+
+    #[test]
+    fn the_init_command_list_copies_at_most_a_thousand_names() {
+        // A correctly typed but enormous array must not become an enormous
+        // event (review A5-2 #5): the first thousand names are copied into
+        // the view and the rest dropped.
+        let mut envelope = init_frame_with_slash_commands();
+        let names = (0..1005)
+            .map(|index| format!("cmd{index}"))
+            .collect::<Vec<_>>();
+        envelope["slash_commands"] = serde_json::json!(names);
+        let mut mapper = view();
+        let events = mapper.ingest(&envelope);
+        match events.as_slice() {
+            [SessionEvent::SessionManifest { .. }, SessionEvent::AvailableCommands { commands }] => {
+                assert_eq!(commands.len(), 1000, "the bound, and only the bound")
+            }
+            other => panic!("expected manifest then a capped list, got {other:?}"),
+        }
     }
 
     #[test]

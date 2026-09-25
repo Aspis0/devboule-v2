@@ -3,11 +3,15 @@
 //! when the reply never comes.
 
 use super::super::{PiControl, PiReader};
-use super::{await_commands_reply, begin_get_commands, PiCommandsReply};
+use super::{await_commands_reply, begin_get_commands, refusal_log_line, PiCommandsReply};
 use crate::session::event_pull::ConnHandle;
 use crate::session::permission_broker::PermissionBroker;
+use crate::session::tests::{
+    attach_live_agent_for_test, insert_live_agent_with_kind_writer_and_sink, test_owner,
+    tmp_delete_registry,
+};
 use crate::session::{write_child_stdin, ReaderDispatch, SessionRuntime};
-use devboule_protocol::{AvailableCommandView, SessionEvent};
+use devboule_protocol::{AvailableCommandView, SessionEvent, SessionKind};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -174,12 +178,13 @@ fn names(commands: &[AvailableCommandView]) -> Vec<&str> {
 
 #[test]
 fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wait() {
-    // The brief's first case, measured against the stub: the reply arrives
-    // after two `extension_ui_request` frames AND after a user prompt was
-    // sent, and the prompt must not have waited for it. The stub answers the
-    // list only once it has read a prompt, so a send path that blocked on
-    // the reply would deadlock — bounded by `recv_timeout` so that failure
-    // is a red rather than a hang.
+    // The brief's first case, measured against the stub through the real
+    // send path (review A5-2 #8): the reply arrives after two
+    // `extension_ui_request` frames AND after `send_with_subscription` has
+    // put a prompt on the wire, and that send must not have waited for it.
+    // The stub answers the list only once it has read a prompt, so a send
+    // path blocked on the command list would deadlock here — bounded by
+    // `recv_timeout` so the failure is a red rather than a hang.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
@@ -190,7 +195,27 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
         Arc::new(AtomicU64::new(1)),
     ));
     let reply = begin_get_commands(&control);
-    let (runtime, conn) = attached_runtime("pi-commands-flow");
+    // The session a composer sends through: its writer is Pi's own, so the
+    // production send path writes the prompt frame this stub waits for.
+    let (dir, registry, journal) = tmp_delete_registry();
+    let registry = Arc::new(registry);
+    let owner = test_owner("S-1-5-21-pi-list", "process-pi-list");
+    let session_id = "pi-list-flow";
+    let writer = super::super::PiWriter {
+        stdin: Arc::clone(&stdin),
+        next_id: Arc::new(AtomicU64::new(100)),
+        pending: Vec::new(),
+    };
+    let runtime = insert_live_agent_with_kind_writer_and_sink(
+        &registry,
+        session_id,
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(writer),
+        None,
+        None,
+    );
+    let conn = attach_live_agent_for_test(&runtime, session_id, 97);
     let mut reader = reader_for(Arc::clone(&control), &stdin).with_commands_reply(reply);
     let feeder_runtime = Arc::clone(&runtime);
     let feeder = std::thread::spawn(move || {
@@ -206,21 +231,26 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
         }
     });
 
-    let prompt_stdin = Arc::clone(&stdin);
+    let send_registry = Arc::clone(&registry);
+    let send_owner = owner.clone();
+    let send_conn = Arc::clone(&conn);
     let (sent_tx, sent_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let frame = serde_json::json!({
-            "id": "p-90",
-            "type": "prompt",
-            "message": "/goal keep it short",
-        })
-        .to_string();
-        let _ = write_child_stdin(&prompt_stdin, format!("{frame}\n").as_bytes(), "Pi");
-        let _ = sent_tx.send(());
+        let result = send_registry.send_with_subscription(
+            session_id,
+            97,
+            "/goal keep it short",
+            &[],
+            &[],
+            &send_owner,
+            &send_conn,
+        );
+        let _ = sent_tx.send(result);
     });
     sent_rx
         .recv_timeout(Duration::from_secs(5))
-        .expect("the prompt waited for the get_commands reply; a prompt must not block on it");
+        .expect("the send path waited for the get_commands reply; a prompt must not block on it")
+        .expect("the send lands");
 
     let commands = pull_commands(&conn, Duration::from_secs(10));
     assert_eq!(
@@ -240,6 +270,28 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
     let _ = child.kill();
     let _ = child.wait();
     let _ = feeder.join();
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_list_refusal_log_never_carries_pis_error_text() {
+    // review A5-2 #9: pi's `error` field is untrusted — a provider or an
+    // extension can put a local path or a config value in it — so the one
+    // daemon log line is a fixed sentence plus the text's length.
+    let payload = r"C:\Users\dev\secret-config.toml";
+    let line = refusal_log_line(payload);
+    assert!(
+        !line.contains("secret-config.toml"),
+        "pi's error text must not reach the log: {line}"
+    );
+    assert_eq!(
+        line,
+        format!(
+            "pi get_commands was refused (pi's error text was {} characters long)",
+            payload.len()
+        )
+    );
 }
 
 #[test]

@@ -1617,40 +1617,111 @@ fn steering_a_slash_input_is_refused_as_paseo_refuses_it() {
 }
 
 #[test]
-fn a_get_commands_reply_row_publishes_the_command_list_with_the_rows_sequence() {
-    // The row is the list: the reader journals every row and publishes what
-    // the view derives from it, carrying that row's sequence so an attach's
-    // replay seam can drop its own copy (the contract every other pi row
-    // keeps). Today the `response` arm returns early and nothing is derived.
-    let broker =
-        super::super::permission_broker::PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
-    let (runtime, conn) = attached_runtime("pi-commands-dispatch", broker);
+fn only_the_reply_that_answers_the_live_request_becomes_the_command_list() {
+    // Paseo drops a response no live request waits for
+    // (`jsonl-rpc-process.ts:157-163, 283-292`); ours must too — and harder:
+    // the row is the journal's copy, so a reply that answered nothing must
+    // reach neither the transcript nor the replay source, or a reattach would
+    // derive a list nobody asked for (review A5-2 #1). The registration below
+    // is what `commands::begin_get_commands` puts in the table; the two later
+    // replies are an id nobody holds and the same id once its waiter is gone.
+    use crate::journal::{new_session_record, Journal};
+
+    let session_id = "pi-commands-correlated";
+    let dir = crate::test_dirs::test_temp_dir("devboule-pi-commands-correlated");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            devboule_protocol::SessionKind::Pi,
+            "Agent",
+        ))
+        .expect("upsert");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+    }
     let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
-    let mut reader = reader_with_control(Arc::new(PiControl::new(
+    let control = Arc::new(PiControl::new(
         Arc::clone(&stdin),
         Arc::new(AtomicU64::new(1)),
-    )));
-    let reply = serde_json::from_str::<serde_json::Value>(
-        r#"{"id":"c-7","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"goal","description":"Set the session goal","source":"extension","input":{"hint":"<objective>"}}]}}"#,
-    )
-    .expect("recorded reply");
+    ));
+    let mut reader = reader_with_control(Arc::clone(&control));
+    let (sender, held) = std::sync::mpsc::channel();
+    control
+        .pending
+        .lock()
+        .expect("pending")
+        .insert("c-1".to_string(), sender);
+    let reply = |id: &str| {
+        serde_json::from_str::<serde_json::Value>(&format!(
+            r#"{{"id":"{id}","type":"response","command":"get_commands","success":true,"data":{{"commands":[{{"name":"goal","description":"Set the session goal","source":"extension","input":{{"hint":"<objective>"}}}}]}}}}"#
+        ))
+        .expect("recorded reply")
+    };
+
+    // Dispatch before any observer exists — the shared backlog holds the
+    // correlated reply's copy, the journal its row, and a fresh attach is
+    // given both and must collapse them to one (the seam's own contract,
+    // the shape `a_turn_end_line_delivers_each_event_exactly_once` proves).
+    // A dropped reply would add a second list either way it was wrong:
+    // published into the backlog, or journaled for replay.
     reader
-        .dispatch_value(reply, &runtime)
-        .expect("the reply row dispatches");
-    let commands = conn
-        .pull_events()
-        .into_iter()
-        .find_map(|event| match event.envelope.event {
-            SessionEvent::AvailableCommands { commands } => Some(commands),
-            _ => None,
-        })
-        .expect("the reply row is where the list is published");
-    let listed = commands
+        .dispatch_value(reply("c-1"), &runtime)
+        .expect("the correlated reply dispatches");
+    held.recv_timeout(std::time::Duration::from_secs(2))
+        .expect("the waiter's own channel took the reply")
+        .expect("the reply itself is an answer, not a channel failure");
+    reader
+        .dispatch_value(reply("c-404"), &runtime)
+        .expect("the foreign reply dispatches");
+    reader
+        .dispatch_value(reply("c-1"), &runtime)
+        .expect("the late reply dispatches");
+    journal.flush().expect("flush");
+
+    let conn = crate::session::ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let mut listed = Vec::new();
+    loop {
+        let batch = conn.pull_events();
+        if batch.is_empty() {
+            break;
+        }
+        for pending in &batch {
+            if let SessionEvent::AvailableCommands { commands } = &pending.envelope.event {
+                listed.push(commands.clone());
+            }
+        }
+    }
+    assert_eq!(
+        listed.len(),
+        1,
+        "one live request's reply becomes one list — nothing from the dropped replies"
+    );
+    let entries = listed[0]
         .iter()
         .map(|command| (command.name.as_str(), command.hint.as_deref()))
         .collect::<Vec<_>>();
     assert_eq!(
-        listed,
+        entries,
         [
             ("compact", Some("[instructions]")),
             ("autocompact", Some("[on|off|toggle]")),
@@ -1658,6 +1729,10 @@ fn a_get_commands_reply_row_publishes_the_command_list_with_the_rows_sequence() 
         ],
         "the two seeds with their hints, and the reply's own hint kept"
     );
+
+    drop(runtime);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

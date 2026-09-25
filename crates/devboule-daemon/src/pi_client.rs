@@ -33,12 +33,15 @@ use crate::process_tree::{JobObject, ProcessHandle};
 use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
 
-/// Pi's slash-command surface: the `get_commands` request the reader waits
-/// on, and the two commands pi executes itself. A child of this file — it
-/// needs the control channel that lives here, and its tests drive this
-/// client's reader and writer.
+/// Pi's `get_commands` list: the request the spawn writes and the waiter
+/// behind it. A child of this file — it needs the control channel that
+/// lives here, and its tests drive this client's reader.
 #[path = "pi_commands.rs"]
 mod commands;
+/// The two commands pi executes itself, out of band. A child of this file
+/// for the same control channel; its tests drive this client's writer.
+#[path = "pi_out_of_band.rs"]
+mod out_of_band;
 
 const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
 const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
@@ -1267,11 +1270,12 @@ fn spawn_pi(
     let commands_reply = commands::begin_get_commands(&control);
     // Paseo's `tryHandleOutOfBand` dispatch (`pi/agent.ts:1667-1691`): pi is
     // the only family whose side-effect commands exist today, so pi is the
-    // only spawn that builds the seam a send consults.
-    let out_of_band: Option<Arc<dyn OutOfBandCommands>> =
-        Some(Arc::new(commands::PiOutOfBandCommands {
-            control: Arc::clone(&control),
-        }));
+    // only spawn that builds the seam a send consults. The compact slot it
+    // owns is shared with the reader, which observes pi's own compaction
+    // frames — Paseo keeps both halves in one agent (`:2344-2356`).
+    let handler = out_of_band::PiOutOfBandCommands::new(Arc::clone(&control));
+    let compact_guard = handler.compact_guard();
+    let out_of_band: Option<Arc<dyn OutOfBandCommands>> = Some(Arc::new(handler));
     let writer = PiWriter {
         stdin: Arc::clone(&stdin),
         next_id: Arc::clone(&next_id),
@@ -1297,7 +1301,8 @@ fn spawn_pi(
         Arc::clone(&permission_extension_active),
     )
     .with_extension_path(extension_path.clone())
-    .with_commands_reply(commands_reply);
+    .with_commands_reply(commands_reply)
+    .with_compact_guard(compact_guard);
     let stderr_source = PiStderr::start(stderr).map_err(|error| {
         terminate_shared_process(&process);
         remove_permission_extension(&extension_path);
@@ -2579,6 +2584,7 @@ struct PiReader {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     permission_extension_active: Arc<AtomicBool>,
     commands_reply: Option<commands::PiCommandsReply>,
+    compact: Arc<out_of_band::CompactGuard>,
     extension_path: PathBuf,
 }
 
@@ -2606,6 +2612,7 @@ impl PiReader {
             stdin,
             permission_extension_active,
             commands_reply: None,
+            compact: Arc::new(out_of_band::CompactGuard::default()),
             extension_path: PathBuf::new(),
         }
     }
@@ -2622,6 +2629,14 @@ impl PiReader {
         self
     }
 
+    /// The compact slot shared with the out-of-band handler, so pi's own
+    /// compaction frames end the run they belong to (Paseo
+    /// `pi/agent.ts:2344-2356`).
+    fn with_compact_guard(mut self, compact: Arc<out_of_band::CompactGuard>) -> Self {
+        self.compact = compact;
+        self
+    }
+
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent, seq: Option<u64>) {
         let _ = runtime.publish_agent_event_with_seq(event, None, seq);
     }
@@ -2631,18 +2646,27 @@ impl PiReader {
         value: Value,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<(), String> {
-        let event_seq = runtime.journal_agent_envelope(&value);
         if value.get("type").and_then(Value::as_str) == Some("response") {
-            let _ = self.control.deliver(&value);
-            // The list reply is two things at once: an answer for the waiter
-            // that asked (delivered above), and a row whose derivation is the
-            // published list — the same contract every other row keeps, so
-            // replay derives the same list from the same journaled row.
+            let claimed = self.control.deliver(&value);
+            // Paseo finds no pending entry for such a response and returns
+            // without effect (`jsonl-rpc-process.ts:157-163, 283-292`); ours
+            // must do the same, and harder: this row would be replay's copy
+            // of the list, so a `get_commands` reply that answered nothing —
+            // an expired id, a foreign one — reaches neither the transcript
+            // nor the journal (review A5-2 #1). A claimed reply is two
+            // things at once: the waiter's answer (delivered above) and a
+            // row whose derivation is the published list, carrying the row's
+            // sequence like every other row.
+            if value.get("command").and_then(Value::as_str) == Some("get_commands") && !claimed {
+                return Ok(());
+            }
+            let event_seq = runtime.journal_agent_envelope(&value);
             for event in crate::pi_view::events_from_line(&value) {
                 self.publish(runtime, event, event_seq);
             }
             return Ok(());
         }
+        let event_seq = runtime.journal_agent_envelope(&value);
         if let Some(session_id) = session_id_from_value(&value) {
             runtime.set_peer_session_id(session_id);
         }
@@ -2666,6 +2690,7 @@ impl PiReader {
         // seam can match a backlog copy against the copy replay derives from
         // the same row. A `None` here would make the finish's context reading
         // survive the seam beside its replayed twin and deliver twice.
+        self.compact.observe(&value);
         for event in crate::pi_view::events_from_line(&value) {
             self.publish(runtime, event, event_seq);
         }

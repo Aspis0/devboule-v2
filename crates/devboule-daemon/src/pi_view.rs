@@ -3,7 +3,7 @@
 //! Pi's RPC wire has no ACP-style tool ancestry or subagent type. The adapter
 //! therefore emits those fields as `None` by protocol choice.
 
-use devboule_protocol::{AvailableCommandView, SessionEvent, TurnUsage};
+use devboule_protocol::{AvailableCommandView, NoticeSeverity, SessionEvent, TurnUsage};
 use serde_json::Value;
 
 use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
@@ -34,9 +34,28 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
         "tool_execution_start" => tool_execution_start(value).into_iter().collect(),
         "tool_execution_end" => tool_execution_end(value).into_iter().collect(),
         "turn_end" => turn_end(value),
-        // The list reply: delivered to its waiter by the reader *and*
-        // derived here, so the published list and the row replay re-derives
-        // are one fact (the ACP road's contract, kept on this one too).
+        // Paseo's own words for pi's compaction frames, shown as our
+        // transcript's system line — loading, then the manual or automatic
+        // sentence (`pi/agent.ts:2253-2267`; labels at
+        // `packages/app/…/message-compaction-label.ts:14-16`), so a
+        // `/compact` shows progress and completion (review A5-2 #2).
+        "compaction_start" => vec![SessionEvent::SessionNotice {
+            text: "Compacting...".to_string(),
+            severity: NoticeSeverity::Info,
+        }],
+        "compaction_end" => vec![SessionEvent::SessionNotice {
+            text: if value.get("reason").and_then(Value::as_str) == Some("manual") {
+                "Context manually compacted"
+            } else {
+                // Any reason that is not `manual` is Paseo's automatic trigger.
+                "Context automatically compacted"
+            }
+            .to_string(),
+            severity: NoticeSeverity::Info,
+        }],
+        // The list reply: the reader derives it only for the reply its live
+        // waiter claimed (`pi_client.rs`, the response arm), so the row this
+        // publishes — and replay re-derives — is always the answered one.
         "response" => commands_from_reply(value)
             .map(|commands| SessionEvent::AvailableCommands { commands })
             .into_iter()
@@ -79,6 +98,11 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
     {
         return None;
     }
+    // The bound: the reply is parsed synchronously on pi's reader thread, so
+    // a correctly typed but enormous array copies its first thousand entries
+    // and drops the rest (review A5-2 #5) — the same bound `claude_view`
+    // puts on an init's names.
+    const MAX_LISTED_COMMANDS: usize = 1000;
     let mut merged = seeded_commands();
     // A success that carries no usable array still shows the seeds: a list
     // the daemon can offer, exactly as a failure leaves it.
@@ -89,20 +113,23 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
     else {
         return Some(merged);
     };
-    for entry in entries {
+    for entry in entries.iter().take(MAX_LISTED_COMMANDS) {
         let Some(name) = entry.get("name").and_then(Value::as_str) else {
             continue;
         };
         if name.is_empty() {
             continue;
         }
-        let description = entry
-            .get("description")
-            .and_then(Value::as_str)
-            .filter(|description| !description.is_empty())
-            .or_else(|| entry.get("source").and_then(Value::as_str))
-            .unwrap_or_default()
-            .to_string();
+        // Paseo's nullish fallback (`pi/agent.ts:145` `description ??
+        // source`): `""` is a description and stays; only an absent or null
+        // one falls back to the source (review A5-2 #6).
+        let description = match entry.get("description") {
+            Some(Value::String(description)) => description.clone(),
+            _ => match entry.get("source") {
+                Some(Value::String(source)) => source.clone(),
+                _ => String::new(),
+            },
+        };
         let hint = entry
             .get("input")
             .and_then(|input| input.get("hint"))
@@ -457,5 +484,88 @@ mod tests {
         );
         assert!(events_from_line(&refused).is_empty());
         assert!(events_from_line(&other_command).is_empty());
+    }
+
+    #[test]
+    fn compaction_frames_show_progress_and_completion_as_paseo_shows_them() {
+        // Paseo renders pi's own compaction frames as the transcript's
+        // compaction marker: loading → "Compacting...", and on completion
+        // the manual or automatic sentence (`pi/agent.ts:2253-2267`, the
+        // labels at `packages/app/.../message-compaction-label.ts:14-16`).
+        // Our transcript's system line is what can show them (review A5-2 #2).
+        let start = parse(r#"{"type":"compaction_start","reason":"manual"}"#);
+        let end_manual = parse(r#"{"type":"compaction_end","reason":"manual"}"#);
+        let end_auto = parse(r#"{"type":"compaction_end","reason":"threshold"}"#);
+        let notice = |text: &str| {
+            vec![SessionEvent::SessionNotice {
+                text: text.to_string(),
+                severity: devboule_protocol::NoticeSeverity::Info,
+            }]
+        };
+        assert_eq!(events_from_line(&start), notice("Compacting..."));
+        assert_eq!(
+            events_from_line(&end_manual),
+            notice("Context manually compacted")
+        );
+        // Any reason that is not `manual` is Paseo's automatic trigger.
+        assert_eq!(
+            events_from_line(&end_auto),
+            notice("Context automatically compacted")
+        );
+    }
+
+    #[test]
+    fn a_reply_copies_at_most_a_thousand_entries() {
+        // The reply is parsed synchronously on pi's reader thread; a
+        // correctly typed but enormous array must not become an enormous
+        // event (review A5-2 #5): the first thousand entries are copied and
+        // the rest dropped.
+        let entries = (0..1005)
+            .map(
+                |index| serde_json::json!({ "name": format!("cmd{index}"), "source": "extension" }),
+            )
+            .collect::<Vec<_>>();
+        let reply = parse(
+            serde_json::json!({
+                "id": "c-9",
+                "type": "response",
+                "command": "get_commands",
+                "success": true,
+                "data": { "commands": entries },
+            })
+            .to_string()
+            .as_str(),
+        );
+        match events_from_line(&reply).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => assert_eq!(
+                commands.len(),
+                1002,
+                "the two seeds plus the thousand entries the bound keeps"
+            ),
+            other => panic!("expected one command list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_description_stays_empty_the_way_paseos_nullish_fallback_leaves_it() {
+        // Paseo falls back to `source` only for nullish descriptions
+        // (`pi/agent.ts:145` `description ?? source`): `""` is a description
+        // and stays (review A5-2 #6).
+        let reply = parse(
+            r#"{"id":"c-6","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"blank","description":"","source":"skill"}]}}"#,
+        );
+        match events_from_line(&reply).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => {
+                let blank = commands
+                    .iter()
+                    .find(|command| command.name == "blank")
+                    .expect("the entry is listed");
+                assert_eq!(
+                    blank.description, "",
+                    "an empty description is not the source"
+                );
+            }
+            other => panic!("expected one command list, got {other:?}"),
+        }
     }
 }
