@@ -69,6 +69,7 @@ fn parse_auto_compact_mode(args: Option<&str>) -> AutoCompactMode {
 struct CompactRun {
     gen: u64,
     started: bool,
+    shown: bool,
     settled_ok_at: Option<Instant>,
 }
 
@@ -127,19 +128,17 @@ impl CompactGuard {
         state.current = Some(CompactRun {
             gen,
             started: false,
+            shown: false,
             settled_ok_at: None,
         });
         Some(gen)
     }
 
     /// One pi frame observed by the reader (Paseo `emitCompactionTimeline`):
-    /// only our own explicit compact moves the slot — pi marks it
-    /// `reason: "manual"`, threshold cycles otherwise, and Paseo reads the
-    /// same field for the marker label. Paseo attributes every frame to the
-    /// outstanding run and clears on any end; ours additionally requires the
-    /// manual reason, because an automatic compaction is not our run: it is
-    /// strictly narrower and fails closed toward holding the slot.
-    /// An automatic compaction with no run of ours still changes nothing.
+    /// a frame belongs to our run unless its reason is present and not
+    /// manual — pi marks the field optional, and Paseo, which reads it only
+    /// for the label, releases on any end. An explicitly automatic frame is
+    /// someone else's compaction and moves nothing.
     ///
     /// Answers whether this end closes a run the transcript already completed
     /// synthetically: its late end leaves neither a row nor an event.
@@ -147,18 +146,26 @@ impl CompactGuard {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
-        let manual = line.get("reason").and_then(Value::as_str) == Some("manual");
+        let ours = line
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_none_or(|reason| reason == "manual");
         match line.get("type").and_then(Value::as_str) {
-            Some("compaction_start") if manual => {
+            Some("compaction_start") => {
                 if let Some(run) = state.current.as_mut() {
-                    run.started = true;
+                    // The marker goes up for every start pi_view shows,
+                    // whatever its reason — so any of them obliges the close.
+                    run.shown = true;
+                    if ours {
+                        run.started = true;
+                    }
                 }
                 false
             }
-            Some("compaction_end") if manual => {
-                // The first manual end after a timeout or a reclaim belongs to
+            Some("compaction_end") if ours => {
+                // The first of our ends after a timeout or a reclaim belongs to
                 // the run that is gone: consume it rather than releasing the
-                // run that holds the slot now. Two manual ends for two runs
+                // run that holds the slot now. Two such ends for two runs
                 // stay unattributable beyond order — the grace bounds that hold.
                 if state.owed_ends > 0 {
                     state.owed_ends -= 1;
@@ -174,10 +181,10 @@ impl CompactGuard {
 
     /// The RPC settled: a run whose compaction never started releases the
     /// slot (Paseo's `finally`, `:1856-1860`), and so does a failure — for a
-    /// started one that is Paseo's synthetic completed item. A compaction
-    /// that succeeded keeps the slot until its `compaction_end`, bounded by
-    /// the end grace. Answers whether a failed run had begun its compaction:
-    /// only then does the transcript owe the synthetic completed marker.
+    /// run with a marker on screen that is Paseo's synthetic completed item.
+    /// A compaction that succeeded keeps the slot until its `compaction_end`,
+    /// bounded by the end grace. Answers whether the failed run owes the
+    /// transcript its completion sentence: exactly when a start was shown.
     fn settle(&self, gen: u64, outcome: SettleOutcome) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
@@ -186,20 +193,14 @@ impl CompactGuard {
             return false;
         }
         let started = state.current.as_ref().is_some_and(|run| run.started);
+        let shown = state.current.as_ref().is_some_and(|run| run.shown);
         match outcome {
-            SettleOutcome::TimedOut => {
-                // pi stayed silent past the bound but is still alive: a late
-                // end may yet arrive, so it is owed whatever was seen.
-                state.owed_ends = state.owed_ends.saturating_add(1);
-                state.current = None;
-                started
-            }
-            SettleOutcome::Failed => {
-                if started {
+            SettleOutcome::TimedOut | SettleOutcome::Failed => {
+                if shown {
                     state.owed_ends = state.owed_ends.saturating_add(1);
                 }
                 state.current = None;
-                started
+                shown
             }
             SettleOutcome::Succeeded => {
                 if started {

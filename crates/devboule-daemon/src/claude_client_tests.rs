@@ -2785,13 +2785,40 @@ fn the_journaled_handshake_keeps_the_commands_and_no_account_identity() {
             .collect()
     };
     assert!(!payloads.is_empty(), "the handshake row was journaled");
-    assert!(
-        payloads
-            .iter()
-            .any(|payload| String::from_utf8_lossy(payload).contains("commands")),
-        "the minimized row kept the commands"
-    );
+    fn has_key(value: &serde_json::Value, key: &str) -> bool {
+        match value {
+            serde_json::Value::Object(fields) => fields
+                .iter()
+                .any(|(name, field)| name == key || has_key(field, key)),
+            serde_json::Value::Array(entries) => entries.iter().any(|entry| has_key(entry, key)),
+            _ => false,
+        }
+    }
+    let row = payloads
+        .iter()
+        .map(|payload| serde_json::from_slice::<serde_json::Value>(payload).expect("json row"))
+        .find(|row| {
+            row.pointer("/response/request_id")
+                .and_then(serde_json::Value::as_str)
+                == Some("initial-commands-9")
+        })
+        .expect("the handshake row");
+    // The actual command names survive verbatim — not just the request id
+    // that also contains the word "commands".
+    let names = row
+        .pointer("/response/response/commands")
+        .and_then(serde_json::Value::as_array)
+        .expect("minimized commands")
+        .iter()
+        .map(|entry| entry.get("name").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(names, [Some("compact")]);
     for payload in &payloads {
+        let row: serde_json::Value = serde_json::from_slice(payload).expect("json row");
+        assert!(
+            !has_key(&row, "account") && !has_key(&row, "email"),
+            "no account identity key at any depth"
+        );
         assert!(
             !String::from_utf8_lossy(payload).contains("someone@example.invalid"),
             "no account identity at rest"

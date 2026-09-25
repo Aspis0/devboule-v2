@@ -209,10 +209,31 @@ fn a_late_end_from_a_timed_out_run_does_not_release_the_next_run() {
 }
 
 #[test]
+fn a_reasonless_end_frees_the_slot_right_after_settle() {
+    // pi marks `reason` optional and Paseo releases on any end: a frame
+    // belongs to our run unless its reason is present and not manual. A
+    // reasonless end after a settled success frees the slot at once — not
+    // after the end grace.
+    let guard = super::CompactGuard::default();
+    let gen = guard.try_begin().expect("first claim");
+    guard.observe(&serde_json::json!({"type": "compaction_start", "reason": "manual"}));
+    assert!(
+        !guard.settle(gen, super::SettleOutcome::Succeeded),
+        "success publishes nothing"
+    );
+    guard.observe(&serde_json::json!({"type": "compaction_end"}));
+    assert!(
+        guard.try_begin().is_some(),
+        "the reasonless end released the run"
+    );
+}
+
+#[test]
 fn an_automatic_compaction_during_our_run_does_not_free_the_slot() {
-    // pi's threshold cycle is not our run: its start must not mark us started
-    // and its end must not release us — only `reason: "manual"` frames move
-    // the slot, the same field Paseo reads for the marker label.
+    // pi's threshold cycle is not our run: its start must not mark us
+    // started and its end must not release us — only frames without an
+    // explicitly automatic reason move the slot. But its start still went
+    // up on screen, so the close below applies all the same.
     let (mut child, stdin) = absorbing_child();
     let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
     let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
@@ -229,15 +250,17 @@ fn an_automatic_compaction_during_our_run_does_not_free_the_slot() {
         ["[Error] A Pi compact command is already running"],
         "the automatic cycle freed nothing"
     );
-    // And it left no synthetic debt: the run times out unstarted, so only
-    // the failure line follows, with no completion marker.
+    // The shown marker must still be closed: the automatic start went up on
+    // screen during the run, so the timeout owes the synthetic completion
+    // before the failure line — the same predicate pi_view shows by.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let (notices, messages) = drain(&conn);
         if messages == ["[Error] Failed to compact context: Pi compact response timed out"] {
-            assert!(
-                notices.is_empty(),
-                "an unstarted run owes no completion: {notices:?}"
+            assert_eq!(
+                notices,
+                ["Context manually compacted"],
+                "the shown automatic marker is closed, not left dangling"
             );
             break;
         }

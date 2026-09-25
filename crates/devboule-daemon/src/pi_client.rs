@@ -2318,7 +2318,8 @@ impl PiControl {
     /// A response can no longer arrive for any of them — the child's output is
     /// what delivers responses, and it is over — so a waiter left registered
     /// would sit out its whole timeout for an answer that cannot come. The map
-    /// is drained under its lock and each sender is answered outside it.
+    /// is drained and each sender answered under the same lock, so a timeout
+    /// landing mid-wake meets either its entry or the channel's end.
     fn fail_pending(&self, message: &str) {
         let Ok(mut pending) = self.pending.lock() else {
             return;
