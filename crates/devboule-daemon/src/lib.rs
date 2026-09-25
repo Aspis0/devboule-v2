@@ -23,6 +23,14 @@ mod claude_catalog;
 mod claude_view;
 mod client;
 #[cfg(feature = "server")]
+mod codex_command_catalog;
+#[cfg(feature = "server")]
+mod codex_commands;
+#[cfg(feature = "server")]
+mod codex_goals;
+#[cfg(feature = "server")]
+mod codex_prompt_expand;
+#[cfg(feature = "server")]
 mod codex_view;
 mod daemon_record;
 #[cfg(feature = "server")]

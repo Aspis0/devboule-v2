@@ -273,7 +273,7 @@ pub(super) struct PtySession {
     pub(super) static_image_sink: Option<Arc<dyn StaticImageSink>>,
     /// The same side-effect command seam the spawn carries, next to the
     /// routes a send consults. `Some` only for the family that has such
-    /// commands (today: pi).
+    /// commands (pi and Codex).
     pub(super) out_of_band: Option<Arc<dyn OutOfBandCommands>>,
     pub(super) reader_handle: Option<JoinHandle<()>>,
     pub(super) coalesce_handle: Option<JoinHandle<()>>,
@@ -331,7 +331,7 @@ pub(crate) struct SpawnedSession {
     pub(super) pending_codex_verify: Option<codex_client::CodexVerifyBundle>,
     /// A provider's side-effect commands, consulted by a send before a turn
     /// or a steer is considered (Paseo `agent-prompt.ts:112-116`). `Some`
-    /// only where such commands exist (today: pi); every other family
+    /// only where such commands exist (pi and Codex); every other family
     /// passes `None`.
     pub(super) out_of_band: Option<Arc<dyn OutOfBandCommands>>,
 }

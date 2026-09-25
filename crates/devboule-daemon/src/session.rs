@@ -415,6 +415,13 @@ mod session_envelope_card_tests;
 #[cfg(test)]
 #[path = "session_envelope_finish_tests.rs"]
 mod session_envelope_finish_tests;
+/// The send path's out-of-band door: a prompt the provider answers with a
+/// request of its own is decided before the writer, before the steer branch
+/// and before any turn begins, and a text the provider does not claim still
+/// takes the ordinary route.
+#[cfg(test)]
+#[path = "session_out_of_band_tests.rs"]
+mod session_out_of_band_tests;
 /// The road a session that cannot be reopened is replaced by: a new session of
 /// the same family carrying the conversation read back from the journal. A
 /// sibling like the resume phases, and taken only where the resume road proves

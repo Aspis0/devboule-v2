@@ -7,10 +7,10 @@ use super::super::permission_broker::PermissionBroker;
 use super::super::session_runtime::SessionRuntime;
 use super::{
     carried_image_paths, codex_delivery, codex_local_image_entry, decline_input_result,
-    initialize_params, interrupt_params, mcp_launch, mode_values, notification_frame,
-    permission_decision, permission_decision_frame, plan_codex_prompt, request_frame,
-    send_interrupt_request, steer_params_if_current, thread_resume_params, thread_start_params,
-    turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
+    empty_commands, initialize_params, interrupt_params, mcp_launch, mode_values,
+    notification_frame, permission_decision, permission_decision_frame, plan_codex_prompt,
+    request_frame, send_interrupt_request, steer_params_if_current, thread_resume_params,
+    thread_start_params, turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
     turn_start_params_with_images, turn_steer_params, validate_mode, CodexReader, CodexRequests,
     CodexSteerer, ThreadRoad,
 };
@@ -238,6 +238,8 @@ fn unknown_server_request_gets_a_method_not_supported_error() {
     }))
     .expect("catalog");
     let mut reader = CodexReader {
+        commands: empty_commands(),
+        available_commands: None,
         buffer: Vec::new(),
         discarding_oversized_line: false,
         deferred: Vec::new(),
@@ -249,6 +251,8 @@ fn unknown_server_request_gets_a_method_not_supported_error() {
         stdin,
         next_id: Arc::new(AtomicU64::new(1)),
         requests: Arc::new(CodexRequests::new()),
+        unpaired_compaction_items: 0,
+        unpaired_compaction_notifications: 0,
     };
     let runtime = Arc::new(SessionRuntime::new());
     let request = serde_json::json!({
@@ -336,6 +340,8 @@ fn declined_input_is_a_session_notice_and_keeps_the_decline_shapes() {
         outcome.live_agent_replay,
     );
     let mut reader = CodexReader {
+        commands: empty_commands(),
+        available_commands: None,
         buffer: Vec::new(),
         discarding_oversized_line: false,
         deferred: Vec::new(),
@@ -354,6 +360,8 @@ fn declined_input_is_a_session_notice_and_keeps_the_decline_shapes() {
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
         requests: Arc::new(CodexRequests::new()),
+        unpaired_compaction_items: 0,
+        unpaired_compaction_notifications: 0,
     };
     reader.dispatch_value(
         serde_json::json!({
@@ -680,6 +688,8 @@ fn a_codex_steer_is_not_left_waiting_when_the_app_server_ends() {
         requests: Arc::clone(&requests),
     };
     let mut reader = CodexReader {
+        commands: empty_commands(),
+        available_commands: None,
         buffer: Vec::new(),
         discarding_oversized_line: false,
         deferred: Vec::new(),
@@ -691,6 +701,8 @@ fn a_codex_steer_is_not_left_waiting_when_the_app_server_ends() {
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
         requests: Arc::clone(&requests),
+        unpaired_compaction_items: 0,
+        unpaired_compaction_notifications: 0,
     };
     // The reader runs the real end-of-transport path: read to EOF, then
     // `finish`, which is where the waiters are failed.
@@ -1949,9 +1961,16 @@ fn codex_none_road_installs_no_carrier_and_verifies_nothing() {
     }
     let state = crate::server::ServerState::new("codex-none-road".to_string());
     let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+    // The `--` is not decoration: the launcher appends its own flags after the
+    // app-server args (the goals gate, `codex_goals::Goals::launch_args`), and
+    // without the separator node would try to parse them as its own options.
     let command = crate::session::PtyCommand::new(
         "node",
-        vec!["-e".to_string(), FAKE_CODEX_HANDSHAKE.to_string()],
+        vec![
+            "-e".to_string(),
+            FAKE_CODEX_HANDSHAKE.to_string(),
+            "--".to_string(),
+        ],
         crate::test_dirs::test_temp_dir("devboule-codex-cwd"),
         Vec::new(),
     );

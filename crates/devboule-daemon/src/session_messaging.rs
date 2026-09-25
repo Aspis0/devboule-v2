@@ -744,16 +744,8 @@ impl super::SessionRegistry {
                 return Err(internal("Agent input could not be recorded."));
             }
         }
-        // Paseo meets every prompt with the provider's side-effect commands
-        // before it allocates a turn or considers a steer
-        // (`agent-prompt.ts:112-116`): `/compact` and `/autocompact` leave as
-        // pi's own rpcs, are recorded like any input, begin no turn, and do
-        // not interrupt the one that is running. Only a bare text prompt can
-        // be one — a prompt carrying attachments is the structured input
-        // Paseo's string-only check never matches. The first-prompt
-        // composition below is deliberately skipped: standing instructions
-        // belong to a prompt pi will turn on, and the flag stays owed for
-        // the next one.
+        // The shared out-of-band door records the submitted input before it
+        // runs a provider command. Attachment-bearing prompts bypass it.
         if attachments.is_empty() && attachment_references.is_empty() {
             if let Some(commands) = out_of_band.as_ref() {
                 if commands.handles_out_of_band(text) {
