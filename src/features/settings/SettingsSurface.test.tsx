@@ -5111,7 +5111,7 @@ describe("Settings agents panel — new profile form", () => {
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(44);
+    expect(sentences).toHaveLength(45);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

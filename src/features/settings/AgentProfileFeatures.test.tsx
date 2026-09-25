@@ -484,12 +484,15 @@ describe("the feature controls, as the form draws them", () => {
       models: {
         state: "present",
         origin: "provider",
-        items: [{ modelId: "claude-opus-5" }, { modelId: "claude-sonnet-5" }],
+        items: [
+          { modelId: "claude-opus-5", name: "Claude Opus" },
+          { modelId: "claude-sonnet-5", name: "Claude Sonnet" },
+        ],
       },
       modes: {
         state: "present",
         origin: "provider",
-        items: [{ id: "default" }],
+        items: [{ id: "default", name: "Default" }],
       },
     };
     vi.mocked(providerVocabularyGet)
