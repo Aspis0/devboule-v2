@@ -1,6 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { ComponentType } from "react";
 import { Shell } from "./Shell";
+import { RootErrorBoundary } from "./RootErrorBoundary";
+import { SurfaceErrorBoundary } from "./SurfaceErrorBoundary";
 import { SurfacePlaceholder } from "./SurfacePlaceholder";
 import { useAppStore, type DesignSessionState } from "../store/appStore";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
@@ -126,6 +128,15 @@ export function App() {
   const surface = SURFACES.find((item) => item.key === activeSurface) ?? SURFACES[0];
   const SurfaceComponent = SURFACE_COMPONENTS[surface.key];
 
+  // Paseo's root-app.tsx:20-32 keeps a generation key beside the root
+  // boundary: Reload remounts the tree and the router restarts at a safe
+  // route. Ours has no routes, so the safe destination is the default surface.
+  const [errorGeneration, setErrorGeneration] = useState(0);
+  const reloadApp = useCallback(() => {
+    useAppStore.getState().selectSurface("workspace");
+    setErrorGeneration((value) => value + 1);
+  }, []);
+
   useEffect(() => {
     // One roster watch for the whole app run, deliberately never released:
     // it is what keeps attention — and the OS toasts that come from it —
@@ -145,10 +156,20 @@ export function App() {
   }, []);
 
   return (
-    <Shell activeSurface={surface.key}>
-      <Suspense fallback={<SurfaceLoading />}>
-        <SurfaceComponent surface={surface} />
-      </Suspense>
-    </Shell>
+    <RootErrorBoundary key={errorGeneration} onReload={reloadApp}>
+      <Shell activeSurface={surface.key}>
+        <Suspense fallback={<SurfaceLoading />}>
+          {/* key remounts the boundary on surface switch; resetKey clears it
+              without an unmount if the same instance ever sees a new key. */}
+          <SurfaceErrorBoundary
+            key={surface.key}
+            surfaceLabel={surface.label}
+            resetKey={surface.key}
+          >
+            <SurfaceComponent surface={surface} />
+          </SurfaceErrorBoundary>
+        </Suspense>
+      </Shell>
+    </RootErrorBoundary>
   );
 }

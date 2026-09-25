@@ -1,0 +1,119 @@
+/* Fallbacks for the two app error boundaries (RootErrorBoundary,
+   SurfaceErrorBoundary). Tokens only — no new colours, no new type scale. */
+
+.root-fallback {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  place-items: center;
+  padding: var(--app-pad);
+}
+
+.root-fallback-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 560px;
+  padding: 24px;
+  background: var(--panel-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow:
+    0 1px 2px rgba(var(--ink-rgb), 0.06),
+    0 8px 24px rgba(var(--ink-rgb), 0.07);
+}
+
+.root-fallback-title {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.root-fallback-body {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.root-fallback-details-label {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* A stack trace is reference material, not the screen: cap it at Paseo's
+   DETAILS_MAX_HEIGHT (300px) so the message and the Reload action keep their
+   shape, and let the rest scroll. */
+.root-fallback-details,
+.surface-fallback-details {
+  margin: 0;
+  overflow: auto;
+  background: var(--code-bg);
+  border-radius: 8px;
+  color: var(--code-text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.root-fallback-details {
+  max-height: 300px;
+  padding: 12px;
+}
+
+.surface-fallback {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 18px;
+  background: var(--panel-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.surface-fallback-title {
+  margin: 0;
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.surface-fallback-details {
+  max-height: 160px;
+  padding: 10px;
+}
+
+/* The app's pill-button vocabulary (settings.css .diagnostics-copy): the
+   boundary actions introduce no new button shape. */
+.boundary-reload,
+.boundary-retry {
+  display: grid;
+  width: fit-content;
+  height: 26px;
+  padding: 0 14px;
+  place-items: center;
+  color: var(--ink-soft);
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.boundary-reload:hover,
+.boundary-reload:focus-visible,
+.boundary-retry:hover,
+.boundary-retry:focus-visible {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta);
+}

@@ -11,6 +11,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { ErrorText } from "../../components/ErrorText";
+import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
@@ -1625,13 +1626,21 @@ export function Workspace({
             ) : null}
 
             <div className="workspace-scroll workspace-side-scroll">
-              {selectedSurface.render({
-                appBuild,
-                onReload: handleAppReload,
-                prLabel,
-                onOpenPullRequest: handleOpenPullRequest,
-                workspaceId: selectedWorkspace,
-              })}
+              {/* One registry panel failing leaves the workspace usable; the
+                  key remounts the boundary when the selected panel changes. */}
+              <SurfaceErrorBoundary
+                key={selectedSurface.id}
+                surfaceLabel={selectedSurface.name}
+                resetKey={selectedSurface.id}
+              >
+                {selectedSurface.render({
+                  appBuild,
+                  onReload: handleAppReload,
+                  prLabel,
+                  onOpenPullRequest: handleOpenPullRequest,
+                  workspaceId: selectedWorkspace,
+                })}
+              </SurfaceErrorBoundary>
             </div>
           </div>
         )}
