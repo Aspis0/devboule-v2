@@ -178,7 +178,7 @@ export function AgentProfileForm({
   const modelsView = vocabularyAxisView(
     vocabularyCurrent?.models,
     vocabularyKnown,
-    vocabularyError !== null,
+    vocabularyError !== null && vocabularyCurrent === null,
     "models",
     (item) => ({
       value: item.modelId,
@@ -189,7 +189,7 @@ export function AgentProfileForm({
   const modesView = vocabularyAxisView(
     vocabularyCurrent?.modes,
     vocabularyKnown,
-    vocabularyError !== null,
+    vocabularyError !== null && vocabularyCurrent === null,
     "modes",
     (item) => ({
       value: item.id,
@@ -200,8 +200,8 @@ export function AgentProfileForm({
   // Provider declarations stay visible while a model edit is pending; the
   // current model filters only the model-gated rows.
   const offered = offeredFeatures(vocabularyCurrent, model);
-  const probing = featuresAreProbing(vocabularyCurrent);
-  const askedAndFailed = featuresAskFailed(vocabularyCurrent);
+  const probing = vocabularyError === null && featuresAreProbing(vocabularyCurrent);
+  const askedAndFailed = vocabularyError !== null || featuresAskFailed(vocabularyCurrent);
   // The list the seed carries to the save. A fresh array each render, so the
   // report below keys on its content and not its identity.
   const offeredForSeed = offered === null ? null : [...offered];

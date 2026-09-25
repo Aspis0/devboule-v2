@@ -187,22 +187,23 @@ export function AgentProfileFeatureFields({
   // untouched, which is `profileFeaturesFromDraft`'s no-answer branch.
   const rows = offered ?? [AUTO_ACCEPT_FALLBACK_FEATURE];
   if (askedAndFailed) {
-    // One plain sentence, and the tick below it. An empty feature section
-    // otherwise reads as "this provider has no features", which is a different
-    // fact from "it could not be asked", and the one that tells a human to stop
-    // looking.
+    // Keep any last known controls visible beside the failure sentence; the
+    // fallback tick is only used when no declaration reply has ever arrived.
     return (
       <>
         <p className="device-field-hint">
           This provider could not be asked what it offers; it is either not running or it did not
           answer. Nothing stored on this profile was changed.
         </p>
-        <FeatureControl
-          feature={AUTO_ACCEPT_FALLBACK_FEATURE}
-          value={features[AUTO_ACCEPT_FEATURE]}
-          busy={busy}
-          onChange={change}
-        />
+        {rows.map((feature) => (
+          <FeatureControl
+            key={feature.id}
+            feature={feature}
+            value={features[feature.id]}
+            busy={busy}
+            onChange={change}
+          />
+        ))}
       </>
     );
   }

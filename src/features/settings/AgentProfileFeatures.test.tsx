@@ -478,6 +478,52 @@ describe("the feature controls, as the form draws them", () => {
     ).not.toBeNull();
   });
 
+  it("keeps the last good rows and axis selects when a later ask rejects", async () => {
+    const lastGood: ProviderVocabulary = {
+      ...vocabulary([TICK, ENGINE]),
+      models: {
+        state: "present",
+        origin: "provider",
+        items: [{ modelId: "claude-opus-5" }, { modelId: "claude-sonnet-5" }],
+      },
+      modes: {
+        state: "present",
+        origin: "provider",
+        items: [{ id: "default" }],
+      },
+    };
+    vi.mocked(providerVocabularyGet)
+      .mockResolvedValueOnce(lastGood)
+      .mockRejectedValueOnce(new Error("offline"));
+    await renderForm(draftOf());
+
+    expect(
+      container.querySelector('[aria-label="Auto accept for children of this profile"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('[aria-label="Profile feature engine"]')?.tagName).toBe(
+      "SELECT",
+    );
+    expect(container.querySelector('[aria-label="Model"]')?.tagName).toBe("SELECT");
+    expect(container.querySelector('[aria-label="Mode"]')?.tagName).toBe("SELECT");
+
+    const model = container.querySelector<HTMLSelectElement>('[aria-label="Model"]');
+    if (!model) throw new Error("the model select did not render");
+    await typeInto(model, "claude-sonnet-5");
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("vocabulary query failed");
+    expect(container.textContent).toContain("could not be asked what it offers");
+    expect(container.textContent).not.toContain("Checking what this provider offers");
+    expect(
+      container.querySelector('[aria-label="Auto accept for children of this profile"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('[aria-label="Profile feature engine"]')?.tagName).toBe(
+      "SELECT",
+    );
+    expect(container.querySelector('[aria-label="Model"]')?.tagName).toBe("SELECT");
+    expect(container.querySelector('[aria-label="Mode"]')?.tagName).toBe("SELECT");
+  });
+
   it("carries a stored key it was never allowed to prune, and draws no row for it", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValue({
       ...vocabulary([]),

@@ -145,7 +145,6 @@ export function useProviderVocabulary({
       .catch((cause: unknown) => {
         if (seqRef.current !== seq) return;
         stopPoll();
-        setVocabulary(null);
         setVocabularyError(errorSentence(cause));
       });
   }
