@@ -141,14 +141,26 @@ fn the_command_list_is_published_once_at_session_start() {
     );
 }
 
+/// A temp dir removed on drop, even when an assertion panics midway — a
+/// manual `remove_dir_all` at the end leaks the directory on failure.
+struct CleanupDir(std::path::PathBuf);
+
+impl Drop for CleanupDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn the_command_list_written_by_codex_reader_is_in_session_replay() {
     let fixture = Fixture::new("published-replay");
     let commands = fixture.commands(true, true);
     let (mut reader, _, _) = started_reader(Arc::clone(&commands));
     let session_id = "s.codex.command-list-replay";
-    let dir = crate::test_dirs::test_temp_dir("devboule-codex-command-replay");
-    let journal = Arc::new(crate::journal::Journal::open(&dir.join("journal.db")).unwrap());
+    let dir = CleanupDir(crate::test_dirs::test_temp_dir(
+        "devboule-codex-command-replay",
+    ));
+    let journal = Arc::new(crate::journal::Journal::open(&dir.0.join("journal.db")).unwrap());
     journal
         .upsert_blocking(crate::journal::new_session_record(
             session_id,
@@ -188,7 +200,7 @@ fn the_command_list_written_by_codex_reader_is_in_session_replay() {
     drop(conn);
     drop(runtime);
     drop(journal);
-    let _ = std::fs::remove_dir_all(dir);
+    drop(dir);
 }
 
 #[test]
@@ -499,6 +511,44 @@ fn an_empty_thread_id_is_the_root_thread_on_the_optional_channels() {
         notices(&conn),
         ["Compacting the context.", "Context compacted."],
         "the empty id walks the root path: loading, then the turn-end close"
+    );
+}
+
+#[test]
+fn a_new_turn_starts_with_clear_pairing_counts() {
+    // Paseo resets its turn tracking on the root `turn/started`
+    // (`resetTurnTrackingState` :5973-5991): a completion that landed between
+    // turns must not swallow the next turn's notification through a stale
+    // count — while a child thread's turn leaves the root counts alone.
+    let fixture = Fixture::new("turn-start-reset");
+    let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
+    // A completion with nothing pending opens a count...
+    reader.dispatch_value(compaction_item("item/completed"), &runtime);
+    // ...that the next root turn's start clears before its own notification.
+    reader.dispatch_value(
+        serde_json::json!({"method": "turn/started",
+            "params": {"threadId": "thread-fake", "turn": {"id": "t-2"}}}),
+        &runtime,
+    );
+    reader.dispatch_value(thread_compacted("thread-fake"), &runtime);
+    assert_eq!(
+        notices(&conn),
+        ["Context compacted.", "Context compacted."],
+        "the between-turns completion reports, and so does the new turn's notification"
+    );
+
+    let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
+    reader.dispatch_value(compaction_item("item/completed"), &runtime);
+    reader.dispatch_value(
+        serde_json::json!({"method": "turn/started",
+            "params": {"threadId": "other-thread", "turn": {"id": "t-child"}}}),
+        &runtime,
+    );
+    reader.dispatch_value(thread_compacted("thread-fake"), &runtime);
+    assert_eq!(
+        notices(&conn),
+        ["Context compacted."],
+        "a child turn start is not the root boundary: the pending count still pairs"
     );
 }
 

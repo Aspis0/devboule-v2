@@ -282,6 +282,7 @@ fn the_writer_sends_text_literally_and_leaves_commands_to_the_static_route() {
         for text in [
             "/prompts:commit stage",
             "/plotting sales.csv",
+            "/compact with the picture",
             "/unknown thing",
         ] {
             writer
@@ -289,7 +290,7 @@ fn the_writer_sends_text_literally_and_leaves_commands_to_the_static_route() {
                 .expect("a prompt is written");
             writer.flush().expect("the turn goes out");
         }
-        await_answers(&mut child, 3);
+        await_answers(&mut child, 4);
         let _ = child.kill();
         let _ = child.wait();
         let seen = fixture.recorded();
@@ -297,12 +298,13 @@ fn the_writer_sends_text_literally_and_leaves_commands_to_the_static_route() {
             seen.iter()
                 .map(|(method, _)| method.as_str())
                 .collect::<Vec<_>>(),
-            ["turn/start", "turn/start", "turn/start"],
+            ["turn/start", "turn/start", "turn/start", "turn/start"],
             "every text is still a turn"
         );
         for (recorded, text) in seen.iter().zip([
             "/prompts:commit stage",
             "/plotting sales.csv",
+            "/compact with the picture",
             "/unknown thing",
         ]) {
             assert_eq!(
@@ -495,38 +497,6 @@ fn a_later_paragraph_naming_a_command_is_not_one_on_any_route() {
             fixture.recorded()[0].1["input"],
             serde_json::json!([{ "type": "text", "text": text }]),
             "the writer sends the paragraphs as typed"
-        );
-        return;
-    };
-    eprintln!("{reason}");
-}
-
-#[test]
-fn the_writer_keeps_builtin_compact_text_unchanged() {
-    // This writer-only check pins that a built-in is never expanded as a
-    // custom prompt. Attachment bypass is exercised at the session boundary.
-    let Some(reason) = Fixture::skip_without_node() else {
-        let fixture = Fixture::new("attached");
-        let mut child = fixture.child(None);
-        let stdin = stdin_of(&mut child);
-        let mut writer = writer_on(stdin);
-        writer
-            .write_all(b"/compact with the picture")
-            .expect("the text is written");
-        writer.flush().expect("the turn goes out");
-        await_answers(&mut child, 1);
-        let _ = child.kill();
-        let _ = child.wait();
-        assert_eq!(
-            fixture.methods(),
-            vec!["turn/start".to_string()],
-            "the writer never runs the out-of-band hook: the send path does, and \
-             it declines a prompt carrying attachments"
-        );
-        assert_eq!(
-            fixture.recorded()[0].1["input"][0]["text"],
-            "/compact with the picture",
-            "and the text is left as typed rather than rewritten to $compact"
         );
         return;
     };

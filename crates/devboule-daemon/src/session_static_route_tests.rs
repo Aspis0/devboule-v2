@@ -14,6 +14,7 @@ use super::tests::{
     stored_path, test_owner, tmp_delete_registry, RecordingWriter,
 };
 use super::*;
+use crate::codex_commands::CodexCommands;
 use crate::raster_metadata::clean_png;
 
 // --- the static route (Claude, Codex, Pi) -----------------------------
@@ -219,6 +220,142 @@ fn the_static_routes_plan_text_carries_the_reference_lines_too() {
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_first_picked_command_expands_from_the_raw_message() {
+    // The P2 hand-off: the send path must hand the static plan the user's
+    // message as `raw_text`, beside the composed text — the plan expands the
+    // former, the journal records the expansion. Passing `text` where
+    // `raw_text` goes reverts B1: the whole composed string parses as no
+    // command, the plan declines, and the literal slash line is journaled.
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-raw-text", "process-raw-text");
+    let session_id = "raw-text";
+    let home = crate::test_dirs::test_temp_dir("devboule-raw-text-home");
+    std::fs::create_dir_all(home.join("prompts")).expect("prompts dir");
+    std::fs::write(
+        home.join("prompts").join("commit.md"),
+        "---\ndescription: Draft\n---\nDo $1\n",
+    )
+    .expect("prompt file");
+    let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sent = Arc::new(AtomicU64::new(0));
+    let sink = Arc::new(RawKeepingSink {
+        seen: Arc::clone(&seen),
+        commands: CodexCommands::new(&home, None, false),
+        sent: Arc::clone(&sent),
+    });
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let runtime = insert_live_agent_with_kind_writer_and_sink(
+        &registry,
+        session_id,
+        owner.clone(),
+        SessionKind::Claude,
+        Box::new(RecordingWriter(Arc::clone(&received))),
+        None,
+        Some(sink),
+    );
+    let conn = attach_live_agent_for_test(&runtime, session_id, 74);
+    registry
+        .send_with_subscription_timeout(&SendRequest {
+            session_id,
+            subscription_id: 74,
+            text: "/prompts:commit stage",
+            attachments: &[],
+            attachment_references: &[],
+            owner: &owner,
+            conn: &conn,
+            mcp_timeout: crate::mcp_broker::ready_timeout(),
+            active_turn_behavior: None,
+            require_attachment: true,
+            interrupt_on_steer_refusal: true,
+            message_slot: None,
+            preset_preamble: Some("standing instructions"),
+            spawn_prompt: None,
+            author: UserMessageAuthor::Human,
+            message_kind: UserMessageKind::Composer,
+        })
+        .expect("send");
+    assert_eq!(
+        seen.lock().expect("seen").as_slice(),
+        [(
+            "standing instructions\n\n/prompts:commit stage".to_string(),
+            "/prompts:commit stage".to_string(),
+        )],
+        "the plan sees the composed text and, beside it, the user's message"
+    );
+    assert_eq!(sent.load(Ordering::Acquire), 1, "the plan was sent");
+    assert!(
+        received.lock().expect("writer").is_empty(),
+        "the plan's frame went out, not a plain-text write"
+    );
+    let recorded = conn
+        .pull_events()
+        .into_iter()
+        .find_map(|event| match event.envelope.event {
+            SessionEvent::AgentUserMessage { text, .. } => Some(text),
+            _ => None,
+        })
+        .expect("the plan's text is what the journal records");
+    assert_eq!(
+        recorded, "standing instructions\n\nDo stage\n",
+        "the first picked command expands on the composed turn"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// A sink double that keeps the (composed text, raw message) pair the send
+/// path handed it and expands a picked prompt against the message with the
+/// real command table: the session-level half of the Codex seam. Prompt
+/// origins only — a skill's multi-block shape is pinned at the plan level —
+/// so any other answer shape is a test bug, stated loudly.
+struct RawKeepingSink {
+    seen: Arc<Mutex<Vec<(String, String)>>>,
+    commands: CodexCommands,
+    sent: Arc<AtomicU64>,
+}
+
+impl StaticImageSink for RawKeepingSink {
+    fn plan_prompt(
+        &self,
+        _store: &AttachmentStore,
+        _session_id: &str,
+        text: &str,
+        raw_text: &str,
+        _attachments: &[PromptAttachment],
+    ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError> {
+        self.seen
+            .lock()
+            .expect("seen")
+            .push((text.to_string(), raw_text.to_string()));
+        // The Codex rule, same as production: resolve the message, keep the
+        // composed prefix ahead of the expanded body.
+        let prefix = text
+            .strip_suffix(raw_text)
+            .unwrap_or("")
+            .trim_end_matches('\n');
+        let expanded = match self
+            .commands
+            .prompt_input_checked(raw_text, prefix)
+            .expect("the test table expands")
+        {
+            Some(blocks) => blocks
+                .as_array()
+                .and_then(|blocks| blocks.first())
+                .and_then(|block| block.get("text"))
+                .and_then(|text| text.as_str())
+                .expect("a prompt origin answers one text block")
+                .to_string(),
+            None => return Ok(None),
+        };
+        Ok(Some(Box::new(RecordingStaticPlan {
+            text: expanded,
+            sent: Arc::clone(&self.sent),
+        }) as Box<dyn PlannedStaticPrompt>))
+    }
 }
 
 #[test]

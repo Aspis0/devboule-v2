@@ -70,8 +70,7 @@ impl Goals {
     /// passes the gate — Paseo never meets that shape because its command is
     /// always the `codex` binary (`resolveCodexLaunchPrefix`).
     pub(crate) fn probe(program: &str, launch_args: &[String]) -> Self {
-        let probe_argv = version_probe_argv(launch_args);
-        let program = resolved_program_path(program);
+        let (program, probe_argv) = probe_invocation(program, launch_args);
         let key = (program.clone(), probe_argv.clone());
         if let Some(result) = PROBED_VERSIONS
             .get_or_init(Default::default)
@@ -85,8 +84,11 @@ impl Goals {
         // Only successes memoize. A failed probe — a missing binary, a slow
         // disk that outlived the timeout, a Codex upgraded mid-life — is
         // re-run on the next create instead of closing the gate for the
-        // daemon's life. Paseo re-probes per agent instance (:7031); keeping
-        // successes memoized keeps the five-second stall off every create.
+        // daemon's life, at the price of a fresh bounded child (up to
+        // `VERSION_PROBE_TIMEOUT`) on the creating thread for every create
+        // until one passes. Paseo pays a probe per agent instance (:7031);
+        // the success memo keeps that cost off every create once a binary
+        // answers.
         if result.enabled() {
             if let Ok(mut cache) = PROBED_VERSIONS.get_or_init(Default::default).lock() {
                 cache.insert(key, result);
@@ -98,6 +100,18 @@ impl Goals {
 
 fn probe_once(program: &Path, probe_argv: &[String]) -> Goals {
     Goals::from_version_output(&version_output(program, probe_argv).unwrap_or_default())
+}
+
+/// The probe invocation for a launch: the resolved program plus the launch
+/// argv with `app-server` traded for `--version`. Pure — no child is
+/// spawned — so tests pin the shim shape without running anything, and
+/// `Goals::probe` runs exactly this invocation, so those tests guard the
+/// production call site (`session_goals`) as well as the helper.
+pub(crate) fn probe_invocation(program: &str, launch_args: &[String]) -> (PathBuf, Vec<String>) {
+    (
+        resolved_program_path(program),
+        version_probe_argv(launch_args),
+    )
 }
 
 fn resolved_program_path(program: &str) -> PathBuf {
@@ -237,7 +251,10 @@ fn read_version_at(bytes: &[u8], start: usize) -> Option<[u64; 3]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{version_allows_goals, version_probe_argv, Goals, PROBED_VERSIONS};
+    use super::{
+        probe_invocation, resolved_program_path, version_allows_goals, version_probe_argv, Goals,
+        PROBED_VERSIONS,
+    };
 
     #[test]
     fn the_gate_reads_the_version_line_the_cli_prints() {
@@ -281,7 +298,43 @@ extra"
     }
 
     #[test]
-    fn the_probe_runs_the_launch_argv_with_version_in_place_of_app_server() {
+    fn the_probe_invocation_keeps_a_shim_launch_whole() {
+        // The call-site decision fix2 broke for lack of a pin: a shim-shaped
+        // launch (`node.exe` + a Codex script + `app-server`) must probe as
+        // `node.exe <script> --version`. This runs the same pure invocation
+        // `Goals::probe` — and therefore the production `session_goals` line
+        // — runs, so neutering the launch args here (the `&[]` regression)
+        // fails this test without spawning anything.
+        let launch = |script: &str| {
+            probe_invocation(
+                "C:/shim/node.exe",
+                &[script.to_string(), "app-server".to_string()],
+            )
+        };
+        assert_eq!(
+            launch("C:/shim/codex.js"),
+            (
+                std::path::PathBuf::from("C:/shim/node.exe"),
+                vec!["C:/shim/codex.js".to_string(), "--version".to_string()],
+            )
+        );
+        assert_ne!(
+            launch("C:/shim/codex.js").1,
+            launch("C:/other/codex.js").1,
+            "two shims sharing one node.exe build different invocations, so they never share a memo answer"
+        );
+        assert_eq!(
+            probe_invocation("codex", &[]),
+            (
+                resolved_program_path("codex"),
+                vec!["--version".to_string()],
+            ),
+            "a native launch probes the program alone"
+        );
+    }
+
+    #[test]
+    fn the_probe_argv_trades_app_server_for_version() {
         // The shim shape fix 1 measured: `node.exe <script> app-server`
         // probes as `node.exe <script> --version`, never as `node --version`.
         assert_eq!(
@@ -316,18 +369,28 @@ extra"
 
     #[test]
     fn a_version_printing_binary_passes_and_is_memoized() {
-        // The green path the gate never exercised: a real `--version` child
-        // whose stdout parses. `rustc` is on PATH wherever cargo runs, and
+        // The green path: a real `--version` child whose stdout parses.
+        // `rustc` is the version printer only when it is runnable here — a
+        // machine that runs `cargo` by absolute path with the toolchain off
+        // PATH skips instead of failing on an environment it never promised.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("rustc") {
+            eprintln!("{reason}");
+            return;
+        }
         // `rustc 1.x.y` parses above the 0.128.0 minimum. If a second
         // `--version` is ever appended at the spawn site, rustc refuses the
         // doubled flag and this fails — that is the A1 trap, pinned here
         // rather than on the argv helper alone.
         assert!(Goals::probe("rustc", &[]).enabled());
+        let key = (
+            resolved_program_path("rustc"),
+            vec!["--version".to_string()],
+        );
         let cache = PROBED_VERSIONS.get_or_init(Default::default);
         let cache = cache.lock().expect("the probe memo is readable");
         assert!(
-            cache.values().any(|goals| goals.enabled()),
-            "a passed probe is the one the memo keeps"
+            cache.get(&key).is_some_and(|goals| goals.enabled()),
+            "the passed probe is memoized under its own program and argv, not just anywhere"
         );
     }
 }

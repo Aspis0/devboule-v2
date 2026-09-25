@@ -1074,7 +1074,10 @@ impl super::SessionRegistry {
         if let Err(error) = writer.flush().map_err(|error| {
             WireError::new(
                 ErrorCode::Io,
-                format!("Could not flush input to the terminal: {error}"),
+                // Neutral on purpose: this writer is a PTY for a terminal
+                // and a provider's stdin for an agent — "terminal" is wrong
+                // for the second, so the message names neither.
+                format!("Could not flush session input: {error}"),
             )
         }) {
             drop(writer);

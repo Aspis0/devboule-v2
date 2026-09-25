@@ -1893,6 +1893,14 @@ impl CodexReader {
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 );
+                // Paseo resets its turn tracking on the root `turn/started`
+                // (`handleTurnStartedNotification` :5973-5991, gated on the
+                // current thread); a child thread's turn leaves the root
+                // pairing state alone.
+                let params = value.get("params").unwrap_or(&Value::Null);
+                if crate::codex_compaction::is_root_thread(params, &self.state.thread_id()) {
+                    self.compactions.turn_started();
+                }
             } else if method == "turn/completed" {
                 let params = value.get("params").unwrap_or(&Value::Null);
                 if crate::codex_compaction::is_root_thread(params, &self.state.thread_id()) {

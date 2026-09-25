@@ -82,6 +82,17 @@ impl CodexCompactions {
         }
     }
 
+    /// A turn started: clear the pairing counters, as Paseo's
+    /// `resetTurnTrackingState` does on the root `turn/started` (:5973-5991).
+    /// A completion that lands between turns must not swallow the next turn's
+    /// notification through a stale `unpaired_items` count. Pending items are
+    /// not dropped here — an unfinished item is closed by `turn_ended`, and a
+    /// turn that never ends has no boundary to close it at.
+    pub(crate) fn turn_started(&mut self) {
+        self.unpaired_items = 0;
+        self.unpaired_notifications = 0;
+    }
+
     pub(crate) fn turn_ended(&mut self) -> Vec<SessionEvent> {
         // Paseo's `completePendingRootCompactions` (:6145): close every
         // loading row at the turn boundary, then clear the pairing state
