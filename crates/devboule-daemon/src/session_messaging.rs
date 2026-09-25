@@ -760,6 +760,20 @@ impl super::SessionRegistry {
                         .publish_agent_user_message(text.to_string(), author, message_kind)
                         .ok_or_else(|| internal("Agent input could not be recorded."))?;
                     commands.run_out_of_band(text, &runtime);
+                    // An out-of-band command begins no turn, so no finish event
+                    // would ever arrive — while the sender already opened its
+                    // optimistic turn on this send. Settle it here when none
+                    // is running, the way Paseo answers its `out_of_band`
+                    // disposition without waiting for a run start
+                    // (`agent-prompt.ts:112-116`). A live turn keeps its own
+                    // finish; this never touches it.
+                    if !runtime.is_turn_active(runtime.turn_counter()) {
+                        let _ = runtime.publish_daemon_event(SessionEvent::AgentFinished {
+                            stop_reason: "completed".to_string(),
+                            model_id: None,
+                            usage: None,
+                        });
+                    }
                     if runtime.clear_attention() {
                         self.notify_session_transition(owner, session_id);
                     }
