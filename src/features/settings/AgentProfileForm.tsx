@@ -354,6 +354,9 @@ export function AgentProfileForm({
         </span>
         <span className="device-field-hint" id={spawnHintId}>
           Sent at the start of every agent created from this profile, before the creator's prompt.
+          Keep it short. An agent created from this profile also receives the standing instructions
+          and the task written by the agent that creates it — write only what is specific to this
+          kind of agent.
         </span>
       </label>
       <label className="device-field">

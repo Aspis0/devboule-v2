@@ -2187,6 +2187,13 @@ describe("Settings agents panel", () => {
     return button;
   }
 
+  /** What a field's `aria-describedby` points at, joined in the order it lists. */
+  function describedText(field: Element): string {
+    const ids = (field.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
+    expect(ids.length).toBeGreaterThan(0);
+    return ids.map((id) => container.querySelector(`[id="${id}"]`)?.textContent ?? "").join(" ");
+  }
+
   // Drives a controlled React field directly (the suite's raw createRoot/act
   // style has no testing-library fireEvent): calls the rendered onChange with
   // the value a paste would leave in the field.
@@ -2841,6 +2848,44 @@ describe("Settings agents panel", () => {
     expect(editor.textContent).toContain("Agents already running keep what they started with");
     // The spawn prompt carries its own counter, in the daemon's units.
     expect(editor.textContent).toContain("8192 bytes");
+  });
+
+  it("ties one hint to the spawn prompt field, keep-it-short sentence included", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const editor = container.querySelector(".agent-inline-editor");
+    if (!editor) throw new Error("editor did not render");
+    const spawnField = editor.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Profile spawn prompt"]',
+    );
+    if (!spawnField) throw new Error("spawn prompt field did not render");
+    // One hint under the field: the keep-it-short note was merged into the
+    // hint the field already had rather than stacked as a second one.
+    expect(spawnField.closest("label")?.querySelectorAll(".device-field-hint").length).toBe(1);
+    // …and the field's described-by is what points at that hint.
+    const hinted = describedText(spawnField);
+    expect(hinted).toContain(
+      "Sent at the start of every agent created from this profile, before the creator's prompt",
+    );
+    expect(hinted).toContain(
+      "Keep it short. An agent created from this profile also receives the standing instructions and the task written by the agent that creates it — write only what is specific to this kind of agent.",
+    );
+  });
+
+  it("ties one hint to the standing instructions box, keep-it-short sentence included", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "Rules to reuse." });
+
+    const box = container.querySelector<HTMLTextAreaElement>(
+      '[aria-label="Standing instructions for every agent"]',
+    );
+    if (!box) throw new Error("the standing instructions box did not render");
+    // One field-hint in the box — the section's `device-copy` description is
+    // not a hint, so nothing was merged there — tied through described-by.
+    expect(box.closest(".agent-standing")?.querySelectorAll(".device-field-hint").length).toBe(1);
+    expect(describedText(box)).toBe("Keep it short: every agent also receives its own task.");
   });
 
   it("keeps the editor's draft on screen under its error when a rename is refused", async () => {
@@ -5050,10 +5095,11 @@ describe("Settings agents panel — new profile form", () => {
     // heading description, the intro copy, the tick notes (including the
     // open-editor clause on the row tick), and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
-    // renders it into one net entry). A new sentence that does not come
+    // renders it into one net entry), and the standing box's keep-it-short
+    // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(44);
+    expect(sentences).toHaveLength(45);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

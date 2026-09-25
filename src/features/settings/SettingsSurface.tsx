@@ -577,6 +577,7 @@ const AGENT_PROFILES_CAPABILITY = "agent_profiles";
 const PROVIDER_VOCABULARY_CAPABILITY = "provider_vocabulary";
 
 const MAX_STANDING_INSTRUCTIONS_BYTES = 8 * 1024;
+const STANDING_HINT_ID = "settings-standing-instructions-hint";
 /**
  * `MAX_PROFILES` in `crates/devboule-daemon/src/agent_profiles.rs`. The 65th
  * creation is refused by the store, so the panel mirrors the number and says
@@ -1480,11 +1481,15 @@ function AgentProfilesPanel() {
           </p>
           <textarea
             aria-label="Standing instructions for every agent"
+            aria-describedby={STANDING_HINT_ID}
             value={standingValue}
             disabled={loading}
             onChange={(event) => setStandingDraft(event.target.value)}
             rows={6}
           />
+          <span className="device-field-hint" id={STANDING_HINT_ID}>
+            Keep it short: every agent also receives its own task.
+          </span>
           <div className="agent-standing-actions">
             <span className="agent-byte-counter">
               {standingBytes} / {MAX_STANDING_INSTRUCTIONS_BYTES} bytes — over the cap the save is
