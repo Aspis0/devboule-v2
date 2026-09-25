@@ -2694,3 +2694,172 @@ fn initialize_response_publishes_the_command_list_before_any_init() {
         "the init still publishes its manifest"
     );
 }
+
+#[test]
+fn the_journaled_handshake_keeps_the_commands_and_no_account_identity() {
+    use crate::journal::{new_session_record, Journal};
+    // The handshake answers with the account identity next to the commands;
+    // the journal keeps only what the menu reads — no email at rest — while
+    // replay still derives the same list.
+    let session_id = "s.claude.handshake.privacy";
+    let dir = crate::test_dirs::test_temp_dir("devboule-claude-handshake");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            devboule_protocol::SessionKind::Claude,
+            "Agent",
+        ))
+        .expect("upsert");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+    }
+    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let mut reader = ClaudeReader::new(
+        ClaudeView::new(None),
+        Arc::clone(&broker),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(AtomicU64::new(1)),
+    )
+    .with_pending_initialize(Some("initial-commands-9".to_string()));
+    let initialize = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "initial-commands-9",
+            "response": {
+                "commands": [
+                    {"name": "compact", "description": "Compact the context", "argumentHint": "[instructions]"}
+                ],
+                "account": {
+                    "email": "someone@example.invalid",
+                    "organization": "Example Org",
+                    "subscriptionType": "pro"
+                }
+            }
+        }
+    });
+    reader
+        .feed(format!("{initialize}\n").as_bytes(), &runtime)
+        .expect("initialize");
+    journal.flush().expect("flush");
+
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    assert_eq!(
+        drain(&conn)
+            .into_iter()
+            .filter(|event| matches!(event, SessionEvent::AvailableCommands { .. }))
+            .count(),
+        1,
+        "the minimized row still derives the list"
+    );
+
+    let payloads: Vec<Vec<u8>> = {
+        let db = rusqlite::Connection::open(dir.join("journal.db")).expect("inspect");
+        let mut stmt = db
+            .prepare("SELECT payload FROM events WHERE session_id = ?1")
+            .expect("query");
+        stmt.query_map([session_id], |row| row.get(0))
+            .expect("rows")
+            .map(|row| row.expect("payload"))
+            .collect()
+    };
+    assert!(!payloads.is_empty(), "the handshake row was journaled");
+    assert!(
+        payloads
+            .iter()
+            .any(|payload| String::from_utf8_lossy(payload).contains("commands")),
+        "the minimized row kept the commands"
+    );
+    for payload in &payloads {
+        assert!(
+            !String::from_utf8_lossy(payload).contains("someone@example.invalid"),
+            "no account identity at rest"
+        );
+    }
+
+    drop(runtime);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spawn_wires_the_initialize_handshake_to_its_reader() {
+    // The line that arms the early list: the session spawn writes the
+    // initialize frame and hands its id to the reader, so the handshake's
+    // answer derives the list. Deleting the handoff leaves silence — the
+    // reader test above hand-sets the id and cannot see it. Driven through
+    // the real spawn against an echo child that answers nothing itself; the
+    // child exits once both initial frames are through.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let dir = crate::test_dirs::test_temp_dir("devboule-claude-spawn-wire");
+    let script = "let n=0;process.stdin.on('data',d=>{process.stdout.write(d);n+=d.toString().split('\n').length-1;if(n>=2)process.exit(0);});";
+    let command = PtyCommand::new(
+        "node",
+        vec!["-e".to_string(), script.to_string()],
+        dir.clone(),
+        Vec::new(),
+    );
+    let mut session = spawn_claude_child(
+        &command,
+        Vec::new(),
+        "default".to_string(),
+        &ProfileDelivery::none(),
+        None,
+    )
+    .expect("spawn");
+    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let (runtime, conn) = attached(&broker);
+    // The spawn's own counter starts at one: the mode frame takes the first
+    // id, so with no delivered effort or fast mode the handshake is the
+    // second control frame written.
+    let initialize = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "initial-commands-2",
+            "response": {
+                "commands": [
+                    {"name": "compact", "description": "Compact the context", "argumentHint": "[instructions]"}
+                ]
+            }
+        }
+    });
+    let mut dispatch = session.reader_dispatch.take().expect("reader");
+    dispatch
+        .feed(format!("{initialize}\n").as_bytes(), &runtime)
+        .expect("initialize");
+    assert_eq!(
+        drain(&conn)
+            .into_iter()
+            .filter(|event| matches!(event, SessionEvent::AvailableCommands { .. }))
+            .count(),
+        1,
+        "the spawn-wired reader derives the handshake list"
+    );
+    session.child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}

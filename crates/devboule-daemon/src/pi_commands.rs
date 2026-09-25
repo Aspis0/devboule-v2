@@ -105,15 +105,21 @@ fn await_commands_reply(reply: PiCommandsReply, runtime: &Arc<SessionRuntime>, t
 }
 
 /// The timeout arm's decision, split out so the race it settles can be
-/// staged: `abandon` and the reader's `deliver` remove under one lock, so a
-/// missing entry means the reader claimed the reply — its list stands — and
-/// only a failure or the channel's end still needs the seeds. `None` stays
-/// silent; `Some` is the one log line the seeds are published with.
+/// staged: `abandon` fails only when the reader already removed the entry,
+/// and `deliver` puts the answer on the channel under the same lock — so a
+/// missing entry with a buffered answer means the reader owns it, while a
+/// missing entry with an empty channel means nobody does and the waiter
+/// publishes. `None` stays silent only for a successful reply the reader
+/// claimed; `Some` is the one log line the seeds are published with.
 fn on_commands_timeout(reply: &PiCommandsReply, timeout: Duration) -> Option<String> {
     // The registration would otherwise sit in the table until the child
     // ends; Paseo deletes a timed-out request the same way
     // (`jsonl-rpc-process.ts:160-163`).
-    let id = reply.id.as_deref()?;
+    let Some(id) = reply.id.as_deref() else {
+        // No registration was ever written, so no answer can be claimed:
+        // the seeds are this waiter's to publish.
+        return Some(format!("pi get_commands got no reply within {timeout:?}"));
+    };
     if reply.control.abandon(id) {
         return Some(format!("pi get_commands got no reply within {timeout:?}"));
     }
@@ -126,9 +132,10 @@ fn on_commands_timeout(reply: &PiCommandsReply, timeout: Duration) -> Option<Str
                 .unwrap_or("unknown error"),
         )),
         Ok(Err(message)) => Some(format!("pi get_commands got no reply: {message}")),
-        // The reply is still in flight to this channel, so the reader owns
-        // the outcome and this waiter stays silent.
-        _ => None,
+        // Entry gone and channel empty: removal and send share one lock on
+        // both sides, so no answer is still in flight — nobody owns this but
+        // the waiter, which publishes rather than staying silent.
+        _ => Some(format!("pi get_commands got no reply within {timeout:?}")),
     }
 }
 

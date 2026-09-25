@@ -2281,24 +2281,35 @@ impl PiControl {
         let Some(id) = value.get("id").and_then(Value::as_str) else {
             return false;
         };
-        let sender = self
-            .pending
+        // The send rides the same critical section as the removal: a waiter
+        // timing out meets either its own entry (it owns the outcome) or the
+        // answer already on its channel (the reader owns it) — never neither.
+        // The channel is unbounded so the send cannot block; the clone is the
+        // only work held under the lock.
+        self.pending
             .lock()
             .ok()
-            .and_then(|mut pending| pending.remove(id));
-        sender.is_some_and(|sender| sender.send(Ok(value.clone())).is_ok())
+            .map(|mut pending| {
+                pending
+                    .remove(id)
+                    .is_some_and(|sender| sender.send(Ok(value.clone())).is_ok())
+            })
+            .unwrap_or(false)
     }
 
     /// Give up one registration without answering it. `true` when the entry
-    /// was still held — the waiter owns the outcome. `false` when the reader
-    /// already claimed it — the reply's own list stands and the waiter stays
-    /// silent. Both this and `deliver` remove under the same lock, so a
-    /// timed-out waiter and its late reply can never both act on one answer.
+    /// was still held — the waiter owns the outcome. `false` only when the
+    /// reader already claimed it *and* put the answer on the waiter's
+    /// channel, which `deliver` does under the same lock — so a timed-out
+    /// waiter and its late reply can never both act on one answer, and one
+    /// of them always does. A poisoned lock also answers `true`: `deliver`
+    /// fails on the same lock, so the waiter publishing the seeds is the
+    /// exactly-one.
     fn abandon(&self, id: &str) -> bool {
         self.pending
             .lock()
             .map(|mut pending| pending.remove(id).is_some())
-            .unwrap_or(false)
+            .unwrap_or(true)
     }
 
     /// Wake every waiter still registered with the reason the control channel
@@ -2312,10 +2323,10 @@ impl PiControl {
         let Ok(mut pending) = self.pending.lock() else {
             return;
         };
-        let waiters: Vec<Sender<Result<Value, String>>> =
-            pending.drain().map(|(_, sender)| sender).collect();
-        drop(pending);
-        for sender in waiters {
+        // The sends ride the drain's critical section, for the same reason as
+        // `deliver`'s: a timeout landing here meets either its entry or the
+        // channel's end, never neither.
+        for (_, sender) in pending.drain() {
             let _ = sender.send(Err(message.to_string()));
         }
     }
@@ -2688,6 +2699,12 @@ impl PiReader {
             }
             return Ok(());
         }
+        // A late end for a run the transcript already completed synthetically
+        // leaves neither a row nor an event, so replay re-derives exactly what
+        // live showed instead of a second completion marker.
+        if self.compact.observe(&value) {
+            return Ok(());
+        }
         let event_seq = runtime.journal_agent_envelope(&value);
         if let Some(session_id) = session_id_from_value(&value) {
             runtime.set_peer_session_id(session_id);
@@ -2712,7 +2729,6 @@ impl PiReader {
         // seam can match a backlog copy against the copy replay derives from
         // the same row. A `None` here would make the finish's context reading
         // survive the seam beside its replayed twin and deliver twice.
-        self.compact.observe(&value);
         for event in crate::pi_view::events_from_line(&value) {
             self.publish(runtime, event, event_seq);
         }

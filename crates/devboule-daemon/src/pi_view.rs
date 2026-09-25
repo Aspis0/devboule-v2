@@ -99,11 +99,11 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
         return None;
     }
     // The bound: the reply is parsed synchronously on pi's reader thread, so
-    // a correctly typed but enormous array copies its first thousand entries
-    // and drops the rest (review A5-2 #5) — the same bound `claude_view`
-    // puts on an init's names. It counts accepted names, like that bound:
-    // malformed entries never consume it.
+    // at most this many entries are inspected while the event keeps the
+    // first thousand accepted names — the same split `claude_view` puts on
+    // both its lists. A flood of malformed entries costs a bounded scan.
     const MAX_LISTED_COMMANDS: usize = 1000;
+    const MAX_INSPECTED_COMMANDS: usize = 10_000;
     let mut merged = seeded_commands();
     // A success that carries no usable array still shows the seeds: a list
     // the daemon can offer, exactly as a failure leaves it.
@@ -115,7 +115,7 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
         return Some(merged);
     };
     let mut accepted = 0usize;
-    for entry in entries.iter() {
+    for entry in entries.iter().take(MAX_INSPECTED_COMMANDS) {
         if accepted >= MAX_LISTED_COMMANDS {
             break;
         }
@@ -579,6 +579,37 @@ mod tests {
                     .map(|command| command.name.as_str())
                     .collect::<Vec<_>>();
                 assert_eq!(listed, ["compact", "autocompact", "goal", "skill:pdf"]);
+            }
+            other => panic!("expected one command list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn entries_past_the_inspection_bound_are_never_parsed() {
+        // The reader-thread bound: inspection stops after ten thousand
+        // entries even when nothing was accepted — the valid entry behind
+        // the flood is not listed.
+        let mut entries: Vec<serde_json::Value> =
+            (0..10_005).map(|_| serde_json::json!({})).collect();
+        entries.push(serde_json::json!({ "name": "goal", "source": "extension" }));
+        let reply = parse(
+            serde_json::json!({
+                "id": "c-9",
+                "type": "response",
+                "command": "get_commands",
+                "success": true,
+                "data": { "commands": entries },
+            })
+            .to_string()
+            .as_str(),
+        );
+        match events_from_line(&reply).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => {
+                let listed = commands
+                    .iter()
+                    .map(|command| command.name.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(listed, ["compact", "autocompact"]);
             }
             other => panic!("expected one command list, got {other:?}"),
         }

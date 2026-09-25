@@ -1974,6 +1974,31 @@ impl ClaudeReader {
         self
     }
 
+    /// The initialize answer's journal row: the handshake carries the account
+    /// identity next to the commands, and the menu reads only the commands —
+    /// so the journal keeps the commands and nothing else. Anything that is
+    /// not our owed handshake passes through untouched.
+    fn minimize_initialize_answer(&self, value: Value) -> Value {
+        let ours = value.get("type").and_then(Value::as_str) == Some("control_response")
+            && self.pending_initialize.as_deref()
+                == value
+                    .pointer("/response/request_id")
+                    .and_then(Value::as_str);
+        if !ours {
+            return value;
+        }
+        serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": value.pointer("/response/subtype").cloned().unwrap_or(Value::Null),
+                "request_id": value.pointer("/response/request_id").cloned().unwrap_or(Value::Null),
+                "response": {
+                    "commands": value.pointer("/response/response/commands").cloned().unwrap_or(Value::Null),
+                },
+            },
+        })
+    }
+
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
         self.publish_with_seq(runtime, event, None);
     }
@@ -2002,6 +2027,9 @@ impl ClaudeReader {
         };
         let value = runtime.redact_mcp_value(&value);
         observe_mcp_status(&value, runtime);
+        // The initialize answer carries the account identity next to the
+        // commands; the journal keeps only what the menu reads.
+        let value = self.minimize_initialize_answer(value);
         let event_seq = runtime.journal_agent_envelope(&value);
         if self.dispatch_control_response(&value, runtime) {
             return;

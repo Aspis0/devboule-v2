@@ -209,6 +209,148 @@ fn a_late_end_from_a_timed_out_run_does_not_release_the_next_run() {
 }
 
 #[test]
+fn an_automatic_compaction_during_our_run_does_not_free_the_slot() {
+    // pi's threshold cycle is not our run: its start must not mark us started
+    // and its end must not release us — only `reason: "manual"` frames move
+    // the slot, the same field Paseo reads for the marker label.
+    let (mut child, stdin) = absorbing_child();
+    let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
+    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150));
+    let (runtime, conn) = attached_runtime("pi-compact-auto-frames");
+    let guard = handler.compact_guard();
+
+    handler.run_out_of_band("/compact one", &runtime);
+    guard.observe(&serde_json::json!({"type": "compaction_start", "reason": "auto"}));
+    guard.observe(&serde_json::json!({"type": "compaction_end", "reason": "auto"}));
+    handler.run_out_of_band("/compact two", &runtime);
+    assert_eq!(
+        drain(&conn).1,
+        ["[Error] A Pi compact command is already running"],
+        "the automatic cycle freed nothing"
+    );
+    // And it left no synthetic debt: the run times out unstarted, so only
+    // the failure line follows, with no completion marker.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (notices, messages) = drain(&conn);
+        if messages == ["[Error] Failed to compact context: Pi compact response timed out"] {
+            assert!(
+                notices.is_empty(),
+                "an unstarted run owes no completion: {notices:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no bounded failure line: {messages:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn a_late_real_end_after_a_timeout_publishes_no_second_marker() {
+    // Timeout with a manual start shown: synthetic completion, then the
+    // failure line, in that order. pi's late real end must add no second
+    // completion — it leaves neither a row nor an event, so replay agrees
+    // with live.
+    let (mut child, stdin) = absorbing_child();
+    let reader_stdin = Arc::clone(&stdin);
+    let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
+    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150));
+    let (runtime, conn) = attached_runtime("pi-compact-late-end");
+    let mut reader = PiReader::new(
+        Vec::new(),
+        SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: None,
+        },
+        PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(AtomicU64::new(1)),
+        Arc::clone(&control),
+        reader_stdin,
+        Arc::new(AtomicBool::new(true)),
+    )
+    .with_compact_guard(handler.compact_guard());
+
+    handler.run_out_of_band("/compact one", &runtime);
+    reader
+        .feed(
+            b"{\"type\":\"compaction_start\",\"reason\":\"manual\"}\n",
+            &runtime,
+        )
+        .expect("start");
+    let mut ordered: Vec<String> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        for pending in conn.pull_events() {
+            match &pending.envelope.event {
+                SessionEvent::SessionNotice { text, .. } => ordered.push(format!("notice:{text}")),
+                SessionEvent::AgentMessage { text, .. } => ordered.push(format!("message:{text}")),
+                _ => {}
+            }
+        }
+        if ordered
+            .iter()
+            .any(|line| line.starts_with("message:[Error] Failed to compact context"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no bounded failure line: {ordered:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let synthetic = ordered
+        .iter()
+        .position(|line| line == "notice:Context manually compacted")
+        .expect("the synthetic completion");
+    let failure = ordered
+        .iter()
+        .position(|line| line.starts_with("message:[Error] Failed to compact context"))
+        .expect("the failure line");
+    assert!(
+        synthetic < failure,
+        "the synthetic completion precedes the failure line: {ordered:?}"
+    );
+    // pi's late real end: consumed by the owed count, published nowhere.
+    reader
+        .feed(
+            b"{\"type\":\"compaction_end\",\"reason\":\"manual\"}\n",
+            &runtime,
+        )
+        .expect("late end");
+    std::thread::sleep(Duration::from_millis(200));
+    for pending in conn.pull_events() {
+        match &pending.envelope.event {
+            SessionEvent::SessionNotice { text, .. } => ordered.push(format!("notice:{text}")),
+            SessionEvent::AgentMessage { text, .. } => ordered.push(format!("message:{text}")),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        ordered
+            .iter()
+            .filter(|line| line.as_str() == "notice:Context manually compacted")
+            .count(),
+        1,
+        "no second completion marker: {ordered:?}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn a_successful_compact_without_an_end_frees_the_slot_within_its_bound() {
     // pi starts, answers success, and never sends the end. The
     // slot holds while the end is due — the second compact is refused — and

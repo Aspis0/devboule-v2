@@ -3,7 +3,7 @@
 //! The envelope is the source of truth. This module never mutates it: callers
 //! journal the original object and, separately, publish the derived view.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use devboule_protocol::{
@@ -18,6 +18,10 @@ use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
 /// How many command names one list carries at most: the handshake's rich
 /// entries and the init frame's bare names share it, and so does pi's reply.
 const MAX_CLAUDE_COMMANDS: usize = 1000;
+/// How many raw entries one list parse inspects at most: the reader-thread
+/// bound pi's reply keeps too — the event cap counts accepted entries, this
+/// one counts the scan.
+const MAX_INSPECTED_COMMANDS: usize = 10_000;
 
 /// The streamed text of one content block. `kind` is the block type as the
 /// stream declared it (`content_block_start`, or the delta flavour); a
@@ -177,8 +181,12 @@ impl ClaudeView {
         true
     }
 
-    /// The init frame's names over the published list: known names keep
-    /// their descriptions and hints, new ones publish bare.
+    /// The one published list from both readings: the handshake's entries
+    /// first, then init names it never listed, appended bare in init order.
+    /// Either reading alone republishes nothing; both derivations stay
+    /// order-deterministic, live and on replay alike. No `/rewind`: Paseo
+    /// synthesizes it next to a native rewind road it backs it with, and no
+    /// such road exists here — the menu shows what the CLI lists.
     fn merge_with_published(
         &self,
         commands: Vec<AvailableCommandView>,
@@ -186,16 +194,16 @@ impl ClaudeView {
         let Some(published) = self.published_commands.as_ref() else {
             return commands;
         };
-        commands
-            .into_iter()
-            .map(|command| {
-                published
-                    .iter()
-                    .find(|known| known.name == command.name)
-                    .cloned()
-                    .unwrap_or(command)
-            })
-            .collect()
+        let mut seen: HashSet<String> = published.iter().map(|known| known.name.clone()).collect();
+        let mut merged = published.clone();
+        for command in commands {
+            if seen.contains(&command.name) {
+                continue;
+            }
+            seen.insert(command.name.clone());
+            merged.push(command);
+        }
+        merged
     }
 
     /// The handshake's `commands`: name, description and argument hint per
@@ -210,8 +218,11 @@ impl ClaudeView {
             return None;
         }
         let entries = response.get("response")?.get("commands")?.as_array()?;
+        // Paseo keeps the first row per name (`listCommands`); later rows
+        // with a repeated name never reach the menu.
+        let mut seen: HashSet<&str> = HashSet::new();
         let mut commands = Vec::new();
-        for entry in entries.iter() {
+        for entry in entries.iter().take(MAX_INSPECTED_COMMANDS) {
             if commands.len() >= MAX_CLAUDE_COMMANDS {
                 break;
             }
@@ -223,6 +234,9 @@ impl ClaudeView {
             else {
                 continue;
             };
+            if !seen.insert(name) {
+                continue;
+            }
             commands.push(AvailableCommandView {
                 name: name.to_string(),
                 description: entry
@@ -254,13 +268,14 @@ impl ClaudeView {
     /// separate list the CLI answers itself and is deliberately not
     /// published.
     fn slash_commands_from(envelope: &Value) -> Option<Vec<AvailableCommandView>> {
-        // The bound: a correctly typed but enormous array copies its first
-        // thousand names and drops the rest (review A5-2 #5) — the same
-        // bound `pi_view` puts on a `get_commands` reply.
+        // Both bounds: at most this many raw entries inspected on the reader
+        // thread, at most a thousand accepted names in the event (review
+        // A5-2 #5) — the same split `pi_view` puts on a `get_commands` reply.
         let names = envelope.get("slash_commands")?.as_array()?;
         Some(
             names
                 .iter()
+                .take(MAX_INSPECTED_COMMANDS)
                 .filter_map(|name| {
                     let name = name.as_str()?.trim();
                     (!name.is_empty()).then(|| AvailableCommandView {
@@ -1268,9 +1283,10 @@ mod tests {
 
     #[test]
     fn init_with_new_names_merges_over_the_handshake_list() {
-        // The init frame arrives with names the handshake never listed:
-        // they join the one published list — known names keep their
-        // descriptions and hints, new ones publish bare.
+        // Union, not intersection: the handshake's entries first with their
+        // words, then init names it never listed, appended bare in init
+        // order. Paseo dedups the same way (`listCommands`); the wire order
+        // stays, unsorted.
         let mut mapper = ClaudeView::new(None);
         let _ = mapper.ingest(&initialize_response());
         let events = mapper.ingest(&init_frame_with_slash_commands());
@@ -1291,15 +1307,35 @@ mod tests {
                     [
                         ("clear", "Clear the transcript", None),
                         ("compact", "Compact the context", Some("[instructions]")),
+                        ("usage", "Show usage", Some("<detail>")),
                         ("autocompact", "", None),
                         ("model", "", None),
-                        ("usage", "Show usage", Some("<detail>")),
                     ],
-                    "the init's order, the handshake's words where they exist"
+                    "the handshake's entries, then the init-only names bare"
+                );
+                assert!(
+                    !commands.iter().any(|command| command.name == "rewind"),
+                    "no synthesized rewind: Paseo backs it with a native road that has no equivalent here"
                 );
             }
             other => panic!("expected manifest then a merged list, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handshake_names_the_init_omits_stay_on_the_menu() {
+        // The other direction of the union: an init carrying only `clear`
+        // republishes nothing, so the handshake's `compact` and `usage` stay
+        // listed with their words. The old intersection dropped them.
+        let mut mapper = ClaudeView::new(None);
+        let _ = mapper.ingest(&initialize_response());
+        let mut init = init_frame();
+        init["slash_commands"] = json!(["clear"]);
+        let events = mapper.ingest(&init);
+        assert!(
+            matches!(events.as_slice(), [SessionEvent::SessionManifest { .. }]),
+            "the init omits names but deletes none: {events:?}"
+        );
     }
 
     #[test]
@@ -1321,6 +1357,48 @@ mod tests {
                 assert_eq!(commands.len(), 5, "the init's names, bare as ever");
             }
             other => panic!("expected manifest then commands, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn initialize_entries_past_the_inspection_bound_are_never_parsed() {
+        // Same reader-thread bound as the reply and the init: the valid
+        // entry behind ten thousand malformed ones is not listed.
+        let mut entries: Vec<Value> = (0..10_005).map(|_| json!({})).collect();
+        entries.push(json!({ "name": "goal", "description": "Set the goal" }));
+        let response = json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "initial-commands-9",
+                "response": { "commands": entries }
+            }
+        });
+        let mut mapper = ClaudeView::new(None);
+        match mapper.ingest(&response).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => {
+                assert!(commands.is_empty(), "nothing accepted past the bound");
+            }
+            other => panic!("expected one command list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_names_past_the_inspection_bound_are_never_parsed() {
+        let mut envelope = init_frame_with_slash_commands();
+        let mut names: Vec<Value> = (0..10_005).map(|index| json!(index)).collect();
+        names.push(json!("goal"));
+        envelope["slash_commands"] = Value::Array(names);
+        let mut mapper = view();
+        let events = mapper.ingest(&envelope);
+        match events.as_slice() {
+            [SessionEvent::SessionManifest { .. }, SessionEvent::AvailableCommands { commands }] => {
+                assert!(
+                    !commands.iter().any(|command| command.name == "goal"),
+                    "the name behind the flood is not listed"
+                );
+            }
+            other => panic!("expected manifest then a capped list, got {other:?}"),
         }
     }
 

@@ -132,31 +132,43 @@ impl CompactGuard {
         Some(gen)
     }
 
-    /// One pi frame observed by the reader (Paseo `emitCompactionTimeline`,
-    /// `:2344-2356`): only a compaction seen while a run is active moves the
-    /// flags — an automatic compaction with no run of ours changes nothing.
-    pub(super) fn observe(&self, line: &Value) {
+    /// One pi frame observed by the reader (Paseo `emitCompactionTimeline`):
+    /// only our own explicit compact moves the slot — pi marks it
+    /// `reason: "manual"`, threshold cycles otherwise, and Paseo reads the
+    /// same field for the marker label. Paseo attributes every frame to the
+    /// outstanding run and clears on any end; ours additionally requires the
+    /// manual reason, because an automatic compaction is not our run: it is
+    /// strictly narrower and fails closed toward holding the slot.
+    /// An automatic compaction with no run of ours still changes nothing.
+    ///
+    /// Answers whether this end closes a run the transcript already completed
+    /// synthetically: its late end leaves neither a row nor an event.
+    pub(super) fn observe(&self, line: &Value) -> bool {
         let Ok(mut state) = self.state.lock() else {
-            return;
+            return false;
         };
+        let manual = line.get("reason").and_then(Value::as_str) == Some("manual");
         match line.get("type").and_then(Value::as_str) {
-            Some("compaction_start") => {
+            Some("compaction_start") if manual => {
                 if let Some(run) = state.current.as_mut() {
                     run.started = true;
                 }
+                false
             }
-            Some("compaction_end") => {
-                // The first end after a timeout or a reclaim belongs to the
-                // run that is gone: consume it rather than releasing the run
-                // that holds the slot now. Frames carry no run id, so order
-                // is the only attribution available.
+            Some("compaction_end") if manual => {
+                // The first manual end after a timeout or a reclaim belongs to
+                // the run that is gone: consume it rather than releasing the
+                // run that holds the slot now. Two manual ends for two runs
+                // stay unattributable beyond order — the grace bounds that hold.
                 if state.owed_ends > 0 {
                     state.owed_ends -= 1;
+                    true
                 } else {
                     state.current = None;
+                    false
                 }
             }
-            _ => {}
+            _ => false,
         }
     }
 
