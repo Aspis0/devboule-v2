@@ -4,6 +4,7 @@ use super::*;
 use crate::claude_catalog::ClaudeCatalogSnapshot;
 use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
 use crate::session::{ConnHandle, PendingEvent, StaticImageSink};
+use devboule_protocol::AvailableCommandView;
 use devboule_protocol::PermissionOutcome;
 use devboule_protocol::PromptAttachment;
 use devboule_protocol::SessionModelEffort;
@@ -2567,4 +2568,129 @@ fn write_line_to_child(stdin: &Arc<Mutex<Option<ChildStdin>>>, value: &Value) {
     let child_stdin = guard.as_mut().expect("child stdin");
     child_stdin.write_all(&bytes).expect("write");
     child_stdin.flush().expect("flush");
+}
+
+#[test]
+fn initialize_request_writes_one_bare_control_frame() {
+    // The handshake Paseo's `supportedCommands()` is answered from: one
+    // `initialize` control frame, id-keyed like every other control request.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let mut child = std::process::Command::new("node")
+        .args([
+            "-e",
+            "process.stdin.on('data', data => process.stdout.write(data))",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("echo child");
+    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    let stdout = child.stdout.take().expect("stdout");
+    let next_id = Arc::new(AtomicU64::new(1));
+    let request_id = begin_initialize(&stdin, &next_id).expect("written");
+    assert!(
+        request_id.starts_with("initial-commands-"),
+        "id-keyed like the other initial frames: {request_id}"
+    );
+    let mut lines = std::io::BufReader::new(stdout).lines();
+    let line = lines.next().expect("a line").expect("readable");
+    let frame: Value = serde_json::from_str(&line).expect("json");
+    assert_eq!(
+        frame,
+        serde_json::json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": {"subtype": "initialize"},
+        })
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn initialize_response_publishes_the_command_list_before_any_init() {
+    // The "/" menu before the first message: the handshake's answer derives
+    // the rich list through the view, and the init frame's bare names after
+    // it publish nothing twice. Invented values throughout — no probe path,
+    // name, or id.
+    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let mut reader = ClaudeReader::new(
+        ClaudeView::new(None),
+        Arc::clone(&broker),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(AtomicU64::new(1)),
+    )
+    .with_pending_initialize(Some("initial-commands-9".to_string()));
+    let (runtime, conn) = attached(&broker);
+    let initialize = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "initial-commands-9",
+            "response": {
+                "commands": [
+                    {"name": "clear", "description": "Clear the transcript", "argumentHint": ""},
+                    {"name": "compact", "description": "Compact the context", "argumentHint": "[instructions]"},
+                    {"name": "usage", "description": "Show usage", "argumentHint": "<detail>"}
+                ]
+            }
+        }
+    });
+    reader
+        .feed(format!("{initialize}\n").as_bytes(), &runtime)
+        .expect("initialize");
+    let init = serde_json::json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": "00000000-0000-4000-8000-000000000009",
+        "model": "claude-test-model",
+        "permissionMode": "default",
+        "slash_commands": ["clear", "compact", "usage"]
+    });
+    reader
+        .feed(format!("{init}\n").as_bytes(), &runtime)
+        .expect("init");
+    let events = drain(&conn);
+    let lists: Vec<&Vec<AvailableCommandView>> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AvailableCommands { commands } => Some(commands),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        lists.len(),
+        1,
+        "one list: the init's names repeat the handshake"
+    );
+    let listed = lists[0]
+        .iter()
+        .map(|command| {
+            (
+                command.name.as_str(),
+                command.description.as_str(),
+                command.hint.as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        listed,
+        [
+            ("clear", "Clear the transcript", None),
+            ("compact", "Compact the context", Some("[instructions]")),
+            ("usage", "Show usage", Some("<detail>")),
+        ]
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::SessionManifest { .. }))
+            .count(),
+        1,
+        "the init still publishes its manifest"
+    );
 }

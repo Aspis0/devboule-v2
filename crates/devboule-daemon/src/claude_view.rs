@@ -15,6 +15,10 @@ use serde_json::Value;
 use crate::tool_paths::relativize_tool_path;
 use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
 
+/// How many command names one list carries at most: the handshake's rich
+/// entries and the init frame's bare names share it, and so does pi's reply.
+const MAX_CLAUDE_COMMANDS: usize = 1000;
+
 /// The streamed text of one content block. `kind` is the block type as the
 /// stream declared it (`content_block_start`, or the delta flavour); a
 /// final-envelope block finds its stream block by this declared type plus the
@@ -42,6 +46,10 @@ pub(crate) struct ClaudeView {
     current_mode: Option<String>,
     peer_session_id: Option<String>,
     cwd: Option<PathBuf>,
+    /// The last published command list, by full value: the initialize
+    /// handshake's rich list and the init frame's bare names are two readings
+    /// of one menu, so a repeat publishes nothing.
+    published_commands: Option<Vec<AvailableCommandView>>,
 }
 
 impl ClaudeView {
@@ -54,6 +62,7 @@ impl ClaudeView {
             current_mode: None,
             peer_session_id: None,
             cwd,
+            published_commands: None,
         }
     }
 
@@ -74,6 +83,7 @@ impl ClaudeView {
             Some("assistant") => self.ingest_assistant(envelope),
             Some("user") => self.ingest_user(envelope),
             Some("result") => self.ingest_result(envelope),
+            Some("control_response") => self.ingest_control_response(envelope),
             _ => Vec::new(),
         }
     }
@@ -133,9 +143,101 @@ impl ClaudeView {
             modes: self.mode_state(),
         }];
         if let Some(commands) = Self::slash_commands_from(envelope) {
-            events.push(SessionEvent::AvailableCommands { commands });
+            let merged = self.merge_with_published(commands);
+            if self.note_published(&merged) {
+                events.push(SessionEvent::AvailableCommands { commands: merged });
+            }
         }
         events
+    }
+
+    /// The initialize handshake's answer: the SDK's `supportedCommands()` is
+    /// this response's `commands` array cached, so the menu fills before the
+    /// first prompt instead of waiting for the init frame's names. Anything
+    /// else shaped as a control response — mode answers, errors, older CLIs —
+    /// carries no commands and yields nothing.
+    fn ingest_control_response(&mut self, envelope: &Value) -> Vec<SessionEvent> {
+        let Some(commands) = Self::commands_from_initialize(envelope) else {
+            return Vec::new();
+        };
+        if !self.note_published(&commands) {
+            return Vec::new();
+        }
+        vec![SessionEvent::AvailableCommands { commands }]
+    }
+
+    /// Record the published list; `false` when the menu already shows exactly
+    /// this, so a repeat — the init frame echoing the handshake — publishes
+    /// nothing, live and on replay alike.
+    fn note_published(&mut self, commands: &[AvailableCommandView]) -> bool {
+        if self.published_commands.as_deref() == Some(commands) {
+            return false;
+        }
+        self.published_commands = Some(commands.to_vec());
+        true
+    }
+
+    /// The init frame's names over the published list: known names keep
+    /// their descriptions and hints, new ones publish bare.
+    fn merge_with_published(
+        &self,
+        commands: Vec<AvailableCommandView>,
+    ) -> Vec<AvailableCommandView> {
+        let Some(published) = self.published_commands.as_ref() else {
+            return commands;
+        };
+        commands
+            .into_iter()
+            .map(|command| {
+                published
+                    .iter()
+                    .find(|known| known.name == command.name)
+                    .cloned()
+                    .unwrap_or(command)
+            })
+            .collect()
+    }
+
+    /// The handshake's `commands`: name, description and argument hint per
+    /// entry (aliases and builtin have no menu field; Paseo maps the same
+    /// three). The bound counts accepted entries, like the init's.
+    fn commands_from_initialize(envelope: &Value) -> Option<Vec<AvailableCommandView>> {
+        if envelope.get("type").and_then(Value::as_str) != Some("control_response") {
+            return None;
+        }
+        let response = envelope.get("response")?;
+        if response.get("subtype").and_then(Value::as_str) != Some("success") {
+            return None;
+        }
+        let entries = response.get("response")?.get("commands")?.as_array()?;
+        let mut commands = Vec::new();
+        for entry in entries.iter() {
+            if commands.len() >= MAX_CLAUDE_COMMANDS {
+                break;
+            }
+            let Some(name) = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            else {
+                continue;
+            };
+            commands.push(AvailableCommandView {
+                name: name.to_string(),
+                description: entry
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                hint: entry
+                    .get("argumentHint")
+                    .and_then(Value::as_str)
+                    .filter(|hint| !hint.is_empty())
+                    .map(str::to_string),
+            });
+        }
+        Some(commands)
     }
 
     fn mode_state(&self) -> Option<SessionModeStateView> {
@@ -155,7 +257,6 @@ impl ClaudeView {
         // The bound: a correctly typed but enormous array copies its first
         // thousand names and drops the rest (review A5-2 #5) — the same
         // bound `pi_view` puts on a `get_commands` reply.
-        const MAX_SLASH_COMMANDS: usize = 1000;
         let names = envelope.get("slash_commands")?.as_array()?;
         Some(
             names
@@ -168,7 +269,7 @@ impl ClaudeView {
                         hint: None,
                     })
                 })
-                .take(MAX_SLASH_COMMANDS)
+                .take(MAX_CLAUDE_COMMANDS)
                 .collect(),
         )
     }
@@ -1094,6 +1195,159 @@ mod tests {
                 assert_eq!(commands.len(), 1000, "the bound, and only the bound")
             }
             other => panic!("expected manifest then a capped list, got {other:?}"),
+        }
+    }
+
+    /// The initialize handshake's answer, shaped as the SDK's initialize
+    /// response carries `commands` (name, description, argumentHint):
+    /// invented values throughout — no probe path, name, or id.
+    fn initialize_response() -> Value {
+        json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "initial-commands-9",
+                "response": {
+                    "commands": [
+                        {"name": "clear", "description": "Clear the transcript", "argumentHint": ""},
+                        {"name": "compact", "description": "Compact the context", "argumentHint": "[instructions]"},
+                        {"name": "usage", "description": "Show usage", "argumentHint": "<detail>", "aliases": ["cost"], "builtin": true}
+                    ]
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn initialize_response_publishes_commands_with_descriptions_and_hints() {
+        // What Paseo fills its menu from before the first prompt
+        // (`q.supportedCommands()`): names with their descriptions and
+        // argument hints — the init frame's flat names carry neither.
+        let mut mapper = ClaudeView::new(None);
+        match mapper.ingest(&initialize_response()).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => {
+                let listed = commands
+                    .iter()
+                    .map(|command| {
+                        (
+                            command.name.as_str(),
+                            command.description.as_str(),
+                            command.hint.as_deref(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    listed,
+                    [
+                        ("clear", "Clear the transcript", None),
+                        ("compact", "Compact the context", Some("[instructions]")),
+                        ("usage", "Show usage", Some("<detail>")),
+                    ]
+                );
+            }
+            other => panic!("expected one command list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_after_initialize_publishes_no_second_list() {
+        // One consistent list: the init frame's names match what the
+        // handshake already published, so only the manifest is emitted —
+        // a reattach replays the same rows in the same order and derives
+        // the same single list.
+        let mut mapper = ClaudeView::new(None);
+        let _ = mapper.ingest(&initialize_response());
+        let mut init = init_frame();
+        init["slash_commands"] = json!(["clear", "compact", "usage"]);
+        let events = mapper.ingest(&init);
+        assert!(
+            matches!(events.as_slice(), [SessionEvent::SessionManifest { .. }]),
+            "the init's names repeat the handshake list: {events:?}"
+        );
+    }
+
+    #[test]
+    fn init_with_new_names_merges_over_the_handshake_list() {
+        // The init frame arrives with names the handshake never listed:
+        // they join the one published list — known names keep their
+        // descriptions and hints, new ones publish bare.
+        let mut mapper = ClaudeView::new(None);
+        let _ = mapper.ingest(&initialize_response());
+        let events = mapper.ingest(&init_frame_with_slash_commands());
+        match events.as_slice() {
+            [SessionEvent::SessionManifest { .. }, SessionEvent::AvailableCommands { commands }] => {
+                let listed = commands
+                    .iter()
+                    .map(|command| {
+                        (
+                            command.name.as_str(),
+                            command.description.as_str(),
+                            command.hint.as_deref(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    listed,
+                    [
+                        ("clear", "Clear the transcript", None),
+                        ("compact", "Compact the context", Some("[instructions]")),
+                        ("autocompact", "", None),
+                        ("model", "", None),
+                        ("usage", "Show usage", Some("<detail>")),
+                    ],
+                    "the init's order, the handshake's words where they exist"
+                );
+            }
+            other => panic!("expected manifest then a merged list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_initialize_leaves_no_list() {
+        // An older CLI's error, like its silence, only costs the early list:
+        // the init frame stays the list's source, as before.
+        let mut mapper = ClaudeView::new(None);
+        let refused = json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": "initial-commands-9",
+                "error": "Unknown control request subtype: initialize"
+            }
+        });
+        assert!(mapper.ingest(&refused).is_empty());
+        match mapper.ingest(&init_frame_with_slash_commands()).as_slice() {
+            [SessionEvent::SessionManifest { .. }, SessionEvent::AvailableCommands { commands }] => {
+                assert_eq!(commands.len(), 5, "the init's names, bare as ever");
+            }
+            other => panic!("expected manifest then commands, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn initialize_commands_skip_malformed_entries_without_spending_the_bound() {
+        // The bound counts accepted entries, like the init's: a thousand
+        // malformed entries first must not crowd out the valid ones.
+        let mut entries: Vec<Value> = (0..1005).map(|_| json!({})).collect();
+        entries
+            .push(json!({ "name": "goal", "description": "Set the goal", "argumentHint": "<o>" }));
+        entries.push(json!({ "name": "" }));
+        let response = json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "initial-commands-9",
+                "response": { "commands": entries }
+            }
+        });
+        let mut mapper = ClaudeView::new(None);
+        match mapper.ingest(&response).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => {
+                assert_eq!(commands.len(), 1);
+                assert_eq!(commands[0].name, "goal");
+                assert_eq!(commands[0].hint.as_deref(), Some("<o>"));
+            }
+            other => panic!("expected one command list, got {other:?}"),
         }
     }
 

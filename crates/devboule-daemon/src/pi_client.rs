@@ -2289,6 +2289,18 @@ impl PiControl {
         sender.is_some_and(|sender| sender.send(Ok(value.clone())).is_ok())
     }
 
+    /// Give up one registration without answering it. `true` when the entry
+    /// was still held — the waiter owns the outcome. `false` when the reader
+    /// already claimed it — the reply's own list stands and the waiter stays
+    /// silent. Both this and `deliver` remove under the same lock, so a
+    /// timed-out waiter and its late reply can never both act on one answer.
+    fn abandon(&self, id: &str) -> bool {
+        self.pending
+            .lock()
+            .map(|mut pending| pending.remove(id).is_some())
+            .unwrap_or(false)
+    }
+
     /// Wake every waiter still registered with the reason the control channel
     /// ended (A2-02).
     ///

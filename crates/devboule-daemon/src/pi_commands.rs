@@ -90,17 +90,10 @@ fn await_commands_reply(reply: PiCommandsReply, runtime: &Arc<SessionRuntime>, t
             )
         }
         Ok(Err(message)) => format!("pi get_commands got no reply: {message}"),
-        Err(RecvTimeoutError::Timeout) => {
-            // The registration would otherwise sit in the table until the
-            // child ends; Paseo deletes a timed-out request the same way
-            // (`jsonl-rpc-process.ts:160-163`).
-            if let Some(id) = reply.id.as_deref() {
-                if let Ok(mut pending) = reply.control.pending.lock() {
-                    pending.remove(id);
-                }
-            }
-            format!("pi get_commands got no reply within {timeout:?}")
-        }
+        Err(RecvTimeoutError::Timeout) => match on_commands_timeout(&reply, timeout) {
+            Some(failure) => failure,
+            None => return,
+        },
         Err(RecvTimeoutError::Disconnected) => {
             "pi get_commands got no reply: the request was never registered".to_string()
         }
@@ -111,6 +104,34 @@ fn await_commands_reply(reply: PiCommandsReply, runtime: &Arc<SessionRuntime>, t
     });
 }
 
+/// The timeout arm's decision, split out so the race it settles can be
+/// staged: `abandon` and the reader's `deliver` remove under one lock, so a
+/// missing entry means the reader claimed the reply — its list stands — and
+/// only a failure or the channel's end still needs the seeds. `None` stays
+/// silent; `Some` is the one log line the seeds are published with.
+fn on_commands_timeout(reply: &PiCommandsReply, timeout: Duration) -> Option<String> {
+    // The registration would otherwise sit in the table until the child
+    // ends; Paseo deletes a timed-out request the same way
+    // (`jsonl-rpc-process.ts:160-163`).
+    let id = reply.id.as_deref()?;
+    if reply.control.abandon(id) {
+        return Some(format!("pi get_commands got no reply within {timeout:?}"));
+    }
+    match reply.response.try_recv() {
+        Ok(Ok(value)) if value.get("success").and_then(Value::as_bool) == Some(true) => None,
+        Ok(Ok(value)) => Some(refusal_log_line(
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error"),
+        )),
+        Ok(Err(message)) => Some(format!("pi get_commands got no reply: {message}")),
+        // The reply is still in flight to this channel, so the reader owns
+        // the outcome and this waiter stays silent.
+        _ => None,
+    }
+}
+
 /// The one line a refused `get_commands` leaves in the daemon log. Extracted
 /// so its shape can be pinned: pi's error field is not ours to log verbatim —
 /// a provider or extension can put a local path or a config value in it
@@ -118,7 +139,8 @@ fn await_commands_reply(reply: PiCommandsReply, runtime: &Arc<SessionRuntime>, t
 fn refusal_log_line(error: &str) -> String {
     format!(
         "pi get_commands was refused (pi's error text was {} characters long)",
-        error.len()
+        // `str::len` is UTF-8 bytes; the line names characters.
+        error.chars().count()
     )
 }
 

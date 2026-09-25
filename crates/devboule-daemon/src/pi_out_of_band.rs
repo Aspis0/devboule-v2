@@ -6,12 +6,11 @@
 //! cited, and nothing here is redesigned — the look is not in scope. The
 //! `get_commands` list lives in the sibling `pi_commands.rs`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use devboule_protocol::SessionEvent;
+use devboule_protocol::{NoticeSeverity, SessionEvent};
 use serde_json::Value;
 
 use super::commands::{js_trim, parse_slash_invocation, REQUEST_TIMEOUT};
@@ -25,7 +24,9 @@ use crate::session::{OutOfBandCommands, SessionRuntime};
 /// session's life, and the review required the bound (review A5-2 #4).
 /// Five minutes is far longer than a durable compaction, so a real one
 /// never sees it; a silent child's round trip ends in Paseo's failure line
-/// instead of a thread.
+/// instead of a thread. The same duration bounds a successful run's wait
+/// for its `compaction_end`: a real end arrives with the reply, so the
+/// grace only ever frees runs whose end never comes.
 const COMPACT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// What an `/autocompact` argument means — Paseo's `parseAutoCompactMode`
@@ -49,8 +50,9 @@ fn parse_auto_compact_mode(args: Option<&str>) -> AutoCompactMode {
     }
 }
 
-/// Paseo's one-compaction-at-a-time guard (`pi/agent.ts:1821-1825`):
-/// `active` is its `outOfBandCompactionEmit`, `started` its
+/// Paseo's one-compaction-at-a-time guard (`pi/agent.ts:1821-1825`), with
+/// the run identity Paseo's single `emit` field gives it for free: `active`
+/// is its `outOfBandCompactionEmit`, `started` its
 /// `outOfBandCompactionStarted` (`:1826,1856-1860`), kept alive by the
 /// reader's observation of pi's own compaction frames the way Paseo keeps
 /// its alive on the `compaction_start`/`compaction_end` events
@@ -58,49 +60,163 @@ fn parse_auto_compact_mode(args: Option<&str>) -> AutoCompactMode {
 /// compaction having begun (Paseo's `finally`), when the compaction ends,
 /// or when a started compaction's RPC fails — Paseo's synthetic completed
 /// item does that third one (`:1834-1845`).
-#[derive(Default)]
+///
+/// Two bounds Paseo has none of: the wait is bounded (review A5-2 #4), so a
+/// timed-out run's late end is owed to the run that is gone and can never
+/// release the next run; and a successful run whose end never arrives holds
+/// the slot only for the end grace, not the session's life.
+#[derive(Debug)]
+struct CompactRun {
+    gen: u64,
+    started: bool,
+    settled_ok_at: Option<Instant>,
+}
+
+#[derive(Debug)]
+struct GuardState {
+    current: Option<CompactRun>,
+    next_gen: u64,
+    owed_ends: u32,
+    end_grace: Duration,
+}
+
 pub(super) struct CompactGuard {
-    active: AtomicBool,
-    started: AtomicBool,
+    state: Mutex<GuardState>,
 }
 
 impl CompactGuard {
-    /// Claim the one compact slot. `false` is Paseo's refusal.
-    fn try_begin(&self) -> bool {
-        self.active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+    fn new(end_grace: Duration) -> Self {
+        Self {
+            state: Mutex::new(GuardState {
+                current: None,
+                next_gen: 0,
+                owed_ends: 0,
+                end_grace,
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_end_grace(&self, grace: Duration) {
+        if let Ok(mut state) = self.state.lock() {
+            state.end_grace = grace;
+        }
+    }
+
+    /// Claim the one compact slot. `None` is Paseo's refusal.
+    fn try_begin(&self) -> Option<u64> {
+        let mut state = self.state.lock().ok()?;
+        if let Some(run) = state.current.as_ref() {
+            if let Some(settled) = run.settled_ok_at {
+                if settled.elapsed() >= state.end_grace {
+                    // The successful run's end never arrived: reclaim the
+                    // slot, but owe its late end so it cannot release the
+                    // run that starts now.
+                    if run.started {
+                        state.owed_ends = state.owed_ends.saturating_add(1);
+                    }
+                    state.current = None;
+                }
+            }
+            if state.current.is_some() {
+                return None;
+            }
+        }
+        let gen = state.next_gen;
+        state.next_gen = state.next_gen.wrapping_add(1);
+        state.current = Some(CompactRun {
+            gen,
+            started: false,
+            settled_ok_at: None,
+        });
+        Some(gen)
     }
 
     /// One pi frame observed by the reader (Paseo `emitCompactionTimeline`,
     /// `:2344-2356`): only a compaction seen while a run is active moves the
     /// flags — an automatic compaction with no run of ours changes nothing.
     pub(super) fn observe(&self, line: &Value) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         match line.get("type").and_then(Value::as_str) {
-            Some("compaction_start") if self.active.load(Ordering::Acquire) => {
-                self.started.store(true, Ordering::Release);
+            Some("compaction_start") => {
+                if let Some(run) = state.current.as_mut() {
+                    run.started = true;
+                }
             }
-            Some("compaction_end") if self.active.load(Ordering::Acquire) => {
-                self.release();
+            Some("compaction_end") => {
+                // The first end after a timeout or a reclaim belongs to the
+                // run that is gone: consume it rather than releasing the run
+                // that holds the slot now. Frames carry no run id, so order
+                // is the only attribution available.
+                if state.owed_ends > 0 {
+                    state.owed_ends -= 1;
+                } else {
+                    state.current = None;
+                }
             }
             _ => {}
         }
     }
 
     /// The RPC settled: a run whose compaction never started releases the
-    /// slot (Paseo's `finally`, `:1856-1860`), and so does an error — for a
+    /// slot (Paseo's `finally`, `:1856-1860`), and so does a failure — for a
     /// started one that is Paseo's synthetic completed item. A compaction
-    /// that succeeded keeps the slot until its `compaction_end`.
-    fn settle(&self, failed: bool) {
-        if failed || !self.started.load(Ordering::Acquire) {
-            self.release();
+    /// that succeeded keeps the slot until its `compaction_end`, bounded by
+    /// the end grace. Answers whether a failed run had begun its compaction:
+    /// only then does the transcript owe the synthetic completed marker.
+    fn settle(&self, gen: u64, outcome: SettleOutcome) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if !state.current.as_ref().is_some_and(|run| run.gen == gen) {
+            return false;
+        }
+        let started = state.current.as_ref().is_some_and(|run| run.started);
+        match outcome {
+            SettleOutcome::TimedOut => {
+                // pi stayed silent past the bound but is still alive: a late
+                // end may yet arrive, so it is owed whatever was seen.
+                state.owed_ends = state.owed_ends.saturating_add(1);
+                state.current = None;
+                started
+            }
+            SettleOutcome::Failed => {
+                if started {
+                    state.owed_ends = state.owed_ends.saturating_add(1);
+                }
+                state.current = None;
+                started
+            }
+            SettleOutcome::Succeeded => {
+                if started {
+                    if let Some(run) = state.current.as_mut() {
+                        run.settled_ok_at = Some(Instant::now());
+                    }
+                } else {
+                    state.current = None;
+                }
+                false
+            }
         }
     }
+}
 
-    fn release(&self) {
-        self.started.store(false, Ordering::Release);
-        self.active.store(false, Ordering::Release);
+impl Default for CompactGuard {
+    fn default() -> Self {
+        Self::new(COMPACT_TIMEOUT)
     }
+}
+
+/// How one compact round trip ended: the guard owes a late `compaction_end`
+/// only to a run that may still emit one — a timed-out child, or a failure
+/// after its start — never to a clean failure or a settled success.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SettleOutcome {
+    Succeeded,
+    Failed,
+    TimedOut,
 }
 
 /// The two commands pi runs itself, dispatched where Paseo dispatches them
@@ -123,10 +239,12 @@ impl PiOutOfBandCommands {
     }
 
     /// The bound a test shortens: the refusal and bound tests would
-    /// otherwise wait the production five minutes (review A5-2 #4).
+    /// otherwise wait the production five minutes (review A5-2 #4). It is
+    /// also the end grace, so the missing-end test shortens both with one knob.
     #[cfg(test)]
     pub(super) fn with_compact_timeout(mut self, timeout: Duration) -> Self {
         self.compact_timeout = timeout;
+        self.compact.set_end_grace(timeout);
         self
     }
 
@@ -143,15 +261,16 @@ impl PiOutOfBandCommands {
     /// the `compact` RPC with the custom instructions when there are any
     /// (`cli-runtime.ts:139-143`). Progress and completion are pi's own
     /// compaction frames, which `pi_view` shows (`review A5-2 #2`); this
-    /// publishes only Paseo's failure line, verbatim.
+    /// publishes Paseo's failure line, verbatim — preceded by the synthetic
+    /// completion sentence when the start was already shown.
     fn run_compact(&self, args: Option<String>, runtime: &Arc<SessionRuntime>) {
-        if !self.compact.try_begin() {
+        let Some(gen) = self.compact.try_begin() else {
             publish_outcome(
                 runtime,
                 "[Error] A Pi compact command is already running".to_string(),
             );
             return;
-        }
+        };
         let fields = match args {
             Some(args) => serde_json::json!({ "customInstructions": args }),
             None => serde_json::json!({}),
@@ -164,11 +283,22 @@ impl PiOutOfBandCommands {
             self.compact_timeout,
             runtime,
             move |answer, runtime| {
-                guard.settle(answer.is_err());
-                if let Err(message) = answer {
+                let outcome = match &answer {
+                    Ok(_) => SettleOutcome::Succeeded,
+                    Err(error) if error.timed_out => SettleOutcome::TimedOut,
+                    Err(_) => SettleOutcome::Failed,
+                };
+                // Paseo's synthetic completed item (`pi/agent.ts:1834-1845`):
+                // a compaction whose start was shown and whose round trip
+                // then failed owes its completion sentence before the error.
+                let unclosed = guard.settle(gen, outcome);
+                if let Err(error) = answer {
+                    if unclosed {
+                        publish_notice(runtime, "Context manually compacted".to_string());
+                    }
                     publish_outcome(
                         runtime,
-                        format!("[Error] Failed to compact context: {message}"),
+                        format!("[Error] Failed to compact context: {}", error.message),
                     );
                 }
             },
@@ -224,8 +354,8 @@ fn run_autocompact(control: &Arc<PiControl>, args: Option<String>, runtime: &Arc
                             .get("data")
                             .and_then(|data| data.get("autoCompactionEnabled"))
                             .and_then(Value::as_bool),
-                        Err(message) => {
-                            publish_outcome(runtime, format!("[Error] {message}"));
+                        Err(error) => {
+                            publish_outcome(runtime, format!("[Error] {}", error.message));
                             return;
                         }
                     };
@@ -262,12 +392,20 @@ fn request_auto_compaction(control: &Arc<PiControl>, enabled: bool, runtime: &Ar
                     if enabled { "enabled" } else { "disabled" }
                 ),
             ),
-            Err(message) => publish_outcome(
+            Err(error) => publish_outcome(
                 runtime,
-                format!("[Error] Failed to set auto-compaction: {message}"),
+                format!("[Error] Failed to set auto-compaction: {}", error.message),
             ),
         },
     );
+}
+
+/// One out-of-band round trip's failure: the message the outcome carries,
+/// and whether the bound fired — only a silent child may still answer late,
+/// which is what the compact guard owes a late end to.
+struct RoundTripError {
+    message: String,
+    timed_out: bool,
 }
 
 /// Write one out-of-band request and wait for its answer off the send path:
@@ -281,39 +419,89 @@ fn run_out_of_band_request(
     fields: Value,
     timeout: Duration,
     runtime: &Arc<SessionRuntime>,
-    on_answer: impl FnOnce(Result<Value, String>, &Arc<SessionRuntime>) + Send + 'static,
+    on_answer: impl FnOnce(Result<Value, RoundTripError>, &Arc<SessionRuntime>) + Send + 'static,
+) {
+    run_out_of_band_request_with(
+        control,
+        command,
+        fields,
+        timeout,
+        runtime,
+        on_answer,
+        spawn_worker,
+    )
+}
+
+fn spawn_worker(
+    builder: std::thread::Builder,
+    job: Box<dyn FnOnce() + Send + 'static>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    builder.spawn(job)
+}
+
+/// The same, with the thread spawn as a parameter so the no-worker branch —
+/// where the caller takes the answer instead of the worker — is a test that
+/// runs, not a branch that never does (review A5-2 #9).
+#[allow(clippy::too_many_arguments)]
+fn run_out_of_band_request_with(
+    control: &Arc<PiControl>,
+    command: &'static str,
+    fields: Value,
+    timeout: Duration,
+    runtime: &Arc<SessionRuntime>,
+    on_answer: impl FnOnce(Result<Value, RoundTripError>, &Arc<SessionRuntime>) + Send + 'static,
+    spawn: impl FnOnce(
+        std::thread::Builder,
+        Box<dyn FnOnce() + Send + 'static>,
+    ) -> std::io::Result<std::thread::JoinHandle<()>>,
 ) {
     let runtime = Arc::clone(runtime);
     let control = Arc::clone(control);
     let request = match control.begin(command, fields) {
         Ok(request) => request,
         Err(error) => {
-            on_answer(Err(error.message), &runtime);
+            on_answer(
+                Err(RoundTripError {
+                    message: error.message,
+                    timed_out: false,
+                }),
+                &runtime,
+            );
             return;
         }
     };
+    let (id, response) = request;
     // The answer runs on exactly one side: the worker when it starts, or
     // here when no worker could be created — never both, never neither.
-    let on_answer = std::sync::Arc::new(std::sync::Mutex::new(Some(on_answer)));
-    let for_worker = std::sync::Arc::clone(&on_answer);
+    let on_answer = Arc::new(Mutex::new(Some(on_answer)));
+    let for_worker = Arc::clone(&on_answer);
     let runtime_if_no_worker = Arc::clone(&runtime);
-    match std::thread::Builder::new()
-        .name(format!("pi-{command}"))
-        .spawn(move || {
-            let (id, response) = request;
-            let answer = await_out_of_band(&control, command, id, response, timeout);
-            if let Some(run) = for_worker.lock().ok().and_then(|mut slot| slot.take()) {
-                run(answer, &runtime);
-            }
-        }) {
+    let worker_control = Arc::clone(&control);
+    let worker_id = id.clone();
+    let job: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
+        let answer = await_out_of_band(&worker_control, command, worker_id, response, timeout);
+        if let Some(run) = for_worker.lock().ok().and_then(|mut slot| slot.take()) {
+            run(answer, &runtime);
+        }
+    });
+    match spawn(
+        std::thread::Builder::new().name(format!("pi-{command}")),
+        job,
+    ) {
         Ok(_) => {}
         Err(error) => {
-            // The frame is already on the wire; without a worker nothing
-            // would ever answer for it, so the outcome is reported here
-            // instead of discarding the spawn result (review A5-2 #4).
+            // The frame is already on the wire, and without a worker nothing
+            // would answer for it — so the registration goes back too, or the
+            // child's eventual answer would land on an entry nobody waits for.
+            if let Ok(mut pending) = control.pending.lock() {
+                pending.remove(&id);
+            }
             if let Some(run) = on_answer.lock().ok().and_then(|mut slot| slot.take()) {
                 run(
-                    Err(format!("Pi {command} worker could not start: {error}")),
+                    Err(RoundTripError {
+                        message: format!("Pi {command} worker could not start: {error}"),
+                        timed_out: false,
+                    }),
                     &runtime_if_no_worker,
                 );
             }
@@ -333,31 +521,56 @@ fn await_out_of_band(
     id: String,
     response: mpsc::Receiver<Result<Value, String>>,
     timeout: Duration,
-) -> Result<Value, String> {
+) -> Result<Value, RoundTripError> {
     let received = response.recv_timeout(timeout);
     let value = match received {
         Ok(Ok(value)) => value,
-        Ok(Err(message)) => return Err(message),
+        Ok(Err(message)) => {
+            return Err(RoundTripError {
+                message,
+                timed_out: false,
+            });
+        }
         Err(RecvTimeoutError::Timeout) => {
             // The registration would outlive the wait that gave up on it
             // (Paseo deletes it, `jsonl-rpc-process.ts:160-163`).
             if let Ok(mut pending) = control.pending.lock() {
                 pending.remove(&id);
             }
-            return Err(format!("Pi {command} response timed out"));
+            return Err(RoundTripError {
+                message: format!("Pi {command} response timed out"),
+                timed_out: true,
+            });
         }
         Err(RecvTimeoutError::Disconnected) => {
-            return Err("Pi control channel closed before the response arrived.".to_string());
+            return Err(RoundTripError {
+                message: "Pi control channel closed before the response arrived.".to_string(),
+                timed_out: false,
+            });
         }
     };
     if value.get("success").and_then(Value::as_bool) == Some(true) {
         return Ok(value);
     }
-    Err(value
-        .get("error")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("Pi {command} failed")))
+    Err(RoundTripError {
+        message: value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Pi {command} failed")),
+        timed_out: false,
+    })
+}
+
+/// Paseo's compaction marker as our transcript's system line — the same line
+/// `pi_view` derives from pi's own frames, published here for the synthetic
+/// completed marker a failed compact owes. Journaled like any
+/// daemon event, so replay restores it.
+fn publish_notice(runtime: &Arc<SessionRuntime>, text: String) {
+    let _ = runtime.publish_daemon_event(SessionEvent::SessionNotice {
+        text,
+        severity: NoticeSeverity::Info,
+    });
 }
 
 /// The same line Paseo puts on the client's timeline as an `assistant_message`

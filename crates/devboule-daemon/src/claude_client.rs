@@ -767,6 +767,10 @@ fn spawn_claude_child(
             return Err(error);
         }
     }
+    // The initialize handshake: written, never awaited here. The answer
+    // arrives on the session reader like every other control response, and
+    // an old CLI's error — or silence — only costs the early list.
+    let pending_initialize = begin_initialize(&stdin, &next_id);
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
     let writer = ClaudeWriter {
@@ -797,7 +801,8 @@ fn spawn_claude_child(
         Arc::clone(&mode_responses),
         Arc::clone(&next_id),
         wiring,
-    );
+    )
+    .with_pending_initialize(pending_initialize);
     // The fast-mode wait read ahead in this same pipe, and whatever it saw that
     // was not its own answer — the init event, the mode response, an MCP status
     // line — is seeded here so the session reader parses it once, through the
@@ -1358,6 +1363,31 @@ fn control_request_frame_bytes(request_id: &str, request: Value) -> Option<Vec<u
     Some(bytes)
 }
 
+/// The SDK's initialize handshake as one control frame: the CLI answers with
+/// its commands — name, description, argument hint, the `supportedCommands()`
+/// Paseo fills its menu from — so the "/" menu fills at spawn instead of on
+/// the first message. Best-effort: a write failure or a CLI that never
+/// answers only costs the early list; the init frame stays the fallback, as
+/// before. The answer is routed by request id in `dispatch_control_response`
+/// and derived by the view, so replay re-derives the same list from the row.
+fn begin_initialize(stdin: &Arc<Mutex<Option<ChildStdin>>>, next_id: &AtomicU64) -> Option<String> {
+    let request_id = format!(
+        "initial-commands-{}",
+        next_id.fetch_add(1, Ordering::Relaxed)
+    );
+    let bytes =
+        control_request_frame_bytes(&request_id, serde_json::json!({"subtype": "initialize"}))?;
+    match write_child_stdin(stdin, &bytes, "Claude") {
+        Ok(()) => Some(request_id),
+        Err(error) => {
+            eprintln!(
+                "Claude initialize request was not written ({error}); the command list waits for the init frame."
+            );
+            None
+        }
+    }
+}
+
 fn start_initial_mode(
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     next_id: &AtomicU64,
@@ -1856,6 +1886,10 @@ struct ClaudeReader {
     next_id: Arc<AtomicU64>,
     stdin: Option<Arc<Mutex<Option<ChildStdin>>>>,
     mode_gate: Option<ClaudeModeGateRef>,
+    /// The initialize handshake's request id, while its answer is owed: the
+    /// response carrying the command list the "/" menu shows before the
+    /// first message.
+    pending_initialize: Option<String>,
     initial_mode_timeout: Duration,
     initial_mode_timer_started: bool,
     initial_mode_timer_cancel: Option<Sender<()>>,
@@ -1911,6 +1945,7 @@ impl ClaudeReader {
             next_id,
             stdin: None,
             mode_gate: None,
+            pending_initialize: None,
             initial_mode_timeout: CONTROL_RESPONSE_TIMEOUT,
             initial_mode_timer_started: false,
             initial_mode_timer_cancel: None,
@@ -1932,6 +1967,11 @@ impl ClaudeReader {
         reader.initial_mode_timeout = wiring.timeout;
         reader.delivery_settings = wiring.delivery_settings;
         reader
+    }
+
+    fn with_pending_initialize(mut self, request_id: Option<String>) -> Self {
+        self.pending_initialize = request_id;
+        self
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
@@ -2181,6 +2221,23 @@ impl ClaudeReader {
                 _ => Err("Claude returned an invalid permission mode response.".to_string()),
             };
             self.complete_initial_mode(runtime, request_id, result);
+            return true;
+        }
+        // The initialize handshake's answer: when it carries the command
+        // list it is derived by the view, carrying the row's journal sequence
+        // like every other row — so replay re-derives the same list.
+        // Anything without the array (an error, an older CLI) is consumed
+        // here: the init frame stays the list's source.
+        if self.pending_initialize.as_deref() == Some(request_id) {
+            self.pending_initialize = None;
+            let carries_commands = value.pointer("/response/subtype").and_then(Value::as_str)
+                == Some("success")
+                && value
+                    .pointer("/response/response/commands")
+                    .is_some_and(|commands| commands.is_array());
+            if carries_commands {
+                return false;
+            }
             return true;
         }
         // A delivery settings response: the profile's thinking option or fast

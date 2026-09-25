@@ -101,7 +101,8 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
     // The bound: the reply is parsed synchronously on pi's reader thread, so
     // a correctly typed but enormous array copies its first thousand entries
     // and drops the rest (review A5-2 #5) — the same bound `claude_view`
-    // puts on an init's names.
+    // puts on an init's names. It counts accepted names, like that bound:
+    // malformed entries never consume it.
     const MAX_LISTED_COMMANDS: usize = 1000;
     let mut merged = seeded_commands();
     // A success that carries no usable array still shows the seeds: a list
@@ -113,13 +114,18 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
     else {
         return Some(merged);
     };
-    for entry in entries.iter().take(MAX_LISTED_COMMANDS) {
+    let mut accepted = 0usize;
+    for entry in entries.iter() {
+        if accepted >= MAX_LISTED_COMMANDS {
+            break;
+        }
         let Some(name) = entry.get("name").and_then(Value::as_str) else {
             continue;
         };
         if name.is_empty() {
             continue;
         }
+        accepted += 1;
         // Paseo's nullish fallback (`pi/agent.ts:145` `description ??
         // source`): `""` is a description and stays; only an absent or null
         // one falls back to the source (review A5-2 #6).
@@ -542,6 +548,38 @@ mod tests {
                 1002,
                 "the two seeds plus the thousand entries the bound keeps"
             ),
+            other => panic!("expected one command list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_entries_do_not_consume_the_thousand_entry_bound() {
+        // The bound counts accepted names, like `claude_view`'s: a thousand malformed entries first must not crowd
+        // out the valid ones behind them.
+        let mut entries: Vec<serde_json::Value> =
+            (0..1005).map(|_| serde_json::json!({})).collect();
+        entries.push(serde_json::json!({ "name": "goal", "source": "extension" }));
+        entries.push(serde_json::json!({ "name": "" }));
+        entries.push(serde_json::json!({ "name": "skill:pdf", "source": "skill" }));
+        let reply = parse(
+            serde_json::json!({
+                "id": "c-9",
+                "type": "response",
+                "command": "get_commands",
+                "success": true,
+                "data": { "commands": entries },
+            })
+            .to_string()
+            .as_str(),
+        );
+        match events_from_line(&reply).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => {
+                let listed = commands
+                    .iter()
+                    .map(|command| command.name.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(listed, ["compact", "autocompact", "goal", "skill:pdf"]);
+            }
             other => panic!("expected one command list, got {other:?}"),
         }
     }

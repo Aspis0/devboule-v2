@@ -137,7 +137,229 @@ fn a_second_compact_is_refused_while_the_first_is_outstanding() {
     let _ = child.wait();
 }
 
-/// A fake Pi whose compaction starts before its reply and ends 400 ms after
+/// A fake Pi whose compaction starts before its reply and never ends — the
+/// case a successful compact must not hold the slot for: pi's
+/// reply says the work is durable, but the end marker never comes.
+const FAKE_PI_COMPACT_WITHOUT_END: &str = r#"
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    if (frame.type === "compact") {
+      process.stdout.write(JSON.stringify({ type: "compaction_start", reason: "manual" }) + "\n");
+      process.stdout.write(JSON.stringify({ id: frame.id, type: "response", success: true, received: line }) + "\n");
+      continue;
+    }
+    process.stdout.write(
+      JSON.stringify({ id: frame.id, type: "response", success: true, received: line }) + "\n"
+    );
+  }
+});
+"#;
+
+#[test]
+fn a_late_end_from_a_timed_out_run_does_not_release_the_next_run() {
+    // Run identity: run one's wait times out after its start was
+    // seen, freeing the slot; run two claims it; run one's late end must be
+    // owed to run one, so run three is still refused. Without the identity
+    // the late end releases run two's slot and run three is accepted.
+    let (mut child, stdin) = absorbing_child();
+    let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
+    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150));
+    let (runtime, conn) = attached_runtime("pi-compact-stale-end");
+    let guard = handler.compact_guard();
+
+    handler.run_out_of_band("/compact one", &runtime);
+    guard.observe(&serde_json::json!({ "type": "compaction_start", "reason": "manual" }));
+    // The bound fires: the failure line, and the slot is free again.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, messages) = drain(&conn);
+        if messages == ["[Error] Failed to compact context: Pi compact response timed out"] {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no bounded failure line: {messages:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    handler.run_out_of_band("/compact two", &runtime);
+    assert!(
+        drain(&conn).1.is_empty(),
+        "the second compact was accepted, not refused"
+    );
+    // Run one's late end: owed to run one, not a release of run two.
+    guard.observe(&serde_json::json!({ "type": "compaction_end", "reason": "manual" }));
+    handler.run_out_of_band("/compact three", &runtime);
+    assert_eq!(
+        drain(&conn).1,
+        ["[Error] A Pi compact command is already running"],
+        "run two still holds the slot: the stale end released nothing"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn a_successful_compact_without_an_end_frees_the_slot_within_its_bound() {
+    // pi starts, answers success, and never sends the end. The
+    // slot holds while the end is due — the second compact is refused — and
+    // frees within the bound, so the third is accepted. Without the bound
+    // the third is refused for the session's life.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let (mut child, stdin, stdout) = fake_pi(FAKE_PI_COMPACT_WITHOUT_END);
+    let reader_stdin = Arc::clone(&stdin);
+    let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
+    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150));
+    let (runtime, conn) = attached_runtime("pi-compact-no-end");
+    let mut reader = PiReader::new(
+        Vec::new(),
+        SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: None,
+        },
+        PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(AtomicU64::new(1)),
+        Arc::clone(&control),
+        reader_stdin,
+        Arc::new(AtomicBool::new(true)),
+    )
+    .with_compact_guard(handler.compact_guard());
+    let feeder_runtime = Arc::clone(&runtime);
+    let feeder = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match std::io::BufRead::read_line(&mut stdout, &mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+            let _ = reader.feed(line.as_bytes(), &feeder_runtime);
+        }
+    });
+
+    handler.run_out_of_band("/compact one", &runtime);
+    wait_for_notice(&conn, "Compacting...");
+    handler.run_out_of_band("/compact two", &runtime);
+    assert_eq!(
+        drain(&conn).1,
+        ["[Error] A Pi compact command is already running"],
+        "the slot holds while the end is due"
+    );
+    // Past the bound the slot is free: the third compact is accepted, and
+    // its own start marker is the proof.
+    std::thread::sleep(Duration::from_millis(500));
+    handler.run_out_of_band("/compact three", &runtime);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (notices, messages) = drain(&conn);
+        assert!(
+            !messages.contains(&"[Error] A Pi compact command is already running".to_string()),
+            "the third compact was refused: the missing end held the slot"
+        );
+        if notices.iter().any(|notice| notice == "Compacting...") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no second compaction started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = feeder.join();
+}
+
+#[test]
+fn a_compact_whose_worker_never_starts_still_answers_and_leaves_no_registration() {
+    // The take-once holder's caller branch — the spawn
+    // fails, so the caller takes the answer instead of the worker: the round
+    // trip ends in the worker-could-not-start line, and the already-written
+    // frame's registration goes back with it instead of lingering until the
+    // child answers or ends.
+    let (mut child, stdin) = absorbing_child();
+    let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
+    let (runtime, conn) = attached_runtime("pi-compact-no-worker");
+    super::run_out_of_band_request_with(
+        &control,
+        "compact",
+        serde_json::json!({}),
+        Duration::from_secs(60),
+        &runtime,
+        move |answer, runtime| {
+            if let Err(error) = answer {
+                super::publish_outcome(
+                    runtime,
+                    format!("[Error] Failed to compact context: {}", error.message),
+                );
+            }
+        },
+        |_, _| Err(std::io::Error::other("no threads left")),
+    );
+    assert_eq!(
+        drain(&conn).1,
+        ["[Error] Failed to compact context: Pi compact worker could not start: no threads left"],
+        "the caller's answer is reported, not discarded with the spawn result"
+    );
+    assert!(
+        control.pending.lock().expect("pending").is_empty(),
+        "the unwatched frame's registration goes back with the answer"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn a_failed_compact_closes_its_compacting_marker() {
+    // pi starts and then the round trip fails. Paseo emits a
+    // synthetic completed marker before its error line; ours is the same
+    // completion sentence `pi_view` derives from a real end, published
+    // before the failure line. Without it the transcript shows
+    // "Compacting..." with no completion.
+    let (mut child, stdin) = absorbing_child();
+    let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
+    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150));
+    let (runtime, conn) = attached_runtime("pi-compact-synthetic-end");
+
+    handler.run_out_of_band("/compact one", &runtime);
+    handler
+        .compact_guard()
+        .observe(&serde_json::json!({ "type": "compaction_start", "reason": "manual" }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (notices, messages) = drain(&conn);
+        if messages == ["[Error] Failed to compact context: Pi compact response timed out"]
+            && notices == ["Context manually compacted"]
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no synthetic end before the failure line: {notices:?} / {messages:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
 /// it — the window Paseo's guard lives in (`pi/agent.ts:1826` to `:2352`).
 const FAKE_PI_ENDS_COMPACT_LATE: &str = r#"
 let buffered = "";
