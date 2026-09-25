@@ -12,9 +12,9 @@
 //! neither the flag nor the `goal` menu entry, because the flag is the only
 //! thing that turns the `thread/goal/*` requests on.
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::OnceLock;
+#[cfg(not(test))]
+use std::path::Path;
+#[cfg(not(test))]
 use std::time::Duration;
 
 /// `CODEX_GOALS_MIN_VERSION` :170. Below it Codex rejects `--enable goals` at
@@ -24,6 +24,7 @@ const CODEX_GOALS_MIN_VERSION: [u64; 3] = [0, 128, 0];
 /// How long one `--version` probe may take. Paseo's is 5 s
 /// (`diagnostic-utils.ts:138-147`), and a probe that outlives it reads as a
 /// binary without the feature.
+#[cfg(not(test))]
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The answer of the version gate.
@@ -55,30 +56,15 @@ impl Goals {
     /// Whether this Codex answers the goal requests. A no on any failure — a
     /// missing binary, an unparseable version, a probe that never answered —
     /// which is Paseo's own answer when the probe throws (:7049-7052).
-    pub(crate) fn probe(program: &str) -> Self {
-        let memo = PROBE.get_or_init(|| Mutex::new(None));
-        let Ok(mut cached) = memo.lock() else {
-            return probe_once(Path::new(program));
-        };
-        if let Some((cached_program, goals)) = cached.as_ref() {
-            if cached_program == program {
-                return *goals;
-            }
-        }
-        let goals = probe_once(Path::new(program));
-        *cached = Some((PathBuf::from(program), goals));
-        goals
+    #[cfg(not(test))]
+    pub(crate) fn probe(program: &str, prefix_args: &[String]) -> Self {
+        probe_once(Path::new(program), prefix_args)
     }
 }
 
-/// The gate, answered once per daemon process against the program that first
-/// asked. Paseo memoizes the same fact on its agent factory
-/// (`goalsEnabledPromise` :7012); a machine that swaps its Codex between two
-/// paths re-reads here, which that memo does not.
-static PROBE: OnceLock<Mutex<Option<(PathBuf, Goals)>>> = OnceLock::new();
-
-fn probe_once(program: &Path) -> Goals {
-    Goals::from_version_output(&version_output(program).unwrap_or_default())
+#[cfg(not(test))]
+fn probe_once(program: &Path, prefix_args: &[String]) -> Goals {
+    Goals::from_version_output(&version_output(program, prefix_args).unwrap_or_default())
 }
 
 /// Run `<program> --version` and answer its stdout, or the empty string when
@@ -86,9 +72,11 @@ fn probe_once(program: &Path) -> Goals {
 /// [`VERSION_PROBE_TIMEOUT`]. Paseo's `resolveBinaryVersion` answers
 /// `unknown`/`error: …` for the same cases; either way no version parses and
 /// the gate closes.
-fn version_output(program: &Path) -> Option<String> {
+#[cfg(not(test))]
+fn version_output(program: &Path, prefix_args: &[String]) -> Option<String> {
     let mut command = std::process::Command::new(program);
     command
+        .args(version_probe_args(prefix_args))
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -124,6 +112,19 @@ fn version_output(program: &Path) -> Option<String> {
     let _ = child.wait();
     let _ = reader.join();
     Some(output)
+}
+
+fn version_probe_args(prefix_args: &[String]) -> Vec<String> {
+    let prefix = if prefix_args.last().is_some_and(|arg| arg == "app-server") {
+        &prefix_args[..prefix_args.len() - 1]
+    } else {
+        prefix_args
+    };
+    prefix
+        .iter()
+        .cloned()
+        .chain(std::iter::once("--version".to_string()))
+        .collect()
 }
 
 /// `parseCodexVersion` :173-178 + `codexVersionAtLeast` :180-191: the first
@@ -179,7 +180,7 @@ fn read_version_at(bytes: &[u8], start: usize) -> Option<[u64; 3]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{version_allows_goals, Goals};
+    use super::{version_allows_goals, version_probe_args, Goals};
 
     #[test]
     fn the_gate_reads_the_version_line_the_cli_prints() {
@@ -220,5 +221,12 @@ extra"
         assert!(Goals::from_version_output("codex-cli 0.127.9")
             .launch_args()
             .is_empty());
+    }
+
+    #[test]
+    fn npm_shim_version_probe_keeps_the_script_and_drops_app_server() {
+        let args = vec!["C:/node/codex.js".to_string(), "app-server".to_string()];
+        assert_eq!(version_probe_args(&args), ["C:/node/codex.js", "--version"]);
+        assert_eq!(version_probe_args(&[]), ["--version"]);
     }
 }

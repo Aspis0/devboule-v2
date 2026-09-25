@@ -20,7 +20,6 @@ use super::{
     SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
 };
 use crate::attachment_store::AttachmentStore;
-use crate::codex_command_catalog::resolve_home;
 use crate::codex_commands::{Answer, CodexCommands};
 use crate::codex_goals::Goals;
 use crate::codex_view::{
@@ -365,8 +364,9 @@ pub(super) fn spawn_process(
     mcp: Option<crate::mcp_broker::McpLaunchConfig>,
     delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
-    let goals = Goals::probe(&command.program);
-    let commands = session_commands(&goals, &command.cwd);
+    validate_delivery(&delivery)?;
+    let goals = session_goals(&command);
+    let commands = session_commands(&goals, &command.cwd, &command.env);
     spawn_codex(
         state,
         command,
@@ -389,8 +389,8 @@ pub(super) fn spawn_process_resuming(
     peer_session_id: String,
     mcp: Option<crate::mcp_broker::McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
-    let goals = Goals::probe(&command.program);
-    let commands = session_commands(&goals, &command.cwd);
+    let goals = session_goals(&command);
+    let commands = session_commands(&goals, &command.cwd, &command.env);
     spawn_codex(
         state,
         command,
@@ -406,12 +406,32 @@ pub(super) fn spawn_process_resuming(
 /// resolved Codex home and this session's start path. Codex publishes no list
 /// over the protocol, so the filesystem is the only source (`listCommands`,
 /// and the `listCodexCustomPrompts` / `listCodexSkills` walks it calls).
-fn session_commands(goals: &Goals, cwd: &Path) -> Arc<CodexCommands> {
-    Arc::new(CodexCommands::new(
-        &resolve_home(),
-        Some(cwd),
-        goals.enabled(),
-    ))
+fn session_commands(goals: &Goals, cwd: &Path, env: &[(String, String)]) -> Arc<CodexCommands> {
+    let home = env
+        .iter()
+        .find(|(key, _)| key == "CODEX_HOME")
+        .map(|(_, value)| std::path::PathBuf::from(value));
+    #[cfg(test)]
+    let home = home.unwrap_or_else(|| crate::test_dirs::test_temp_dir("devboule-codex-spawn-home"));
+    #[cfg(not(test))]
+    let home = home.unwrap_or_else(crate::codex_command_catalog::resolve_home);
+    Arc::new(CodexCommands::new(&home, Some(cwd), goals.enabled()))
+}
+
+fn session_goals(command: &PtyCommand) -> Goals {
+    #[cfg(test)]
+    {
+        Goals::from_version_output(
+            command
+                .env
+                .iter()
+                .find(|(key, _)| key == "CODEX_VERSION")
+                .map(|(_, value)| value.as_str())
+                .unwrap_or("unknown"),
+        )
+    }
+    #[cfg(not(test))]
+    Goals::probe(&command.program, &command.args)
 }
 
 fn spawn_codex(
@@ -423,7 +443,6 @@ fn spawn_codex(
     goals: Goals,
     commands: Arc<CodexCommands>,
 ) -> Result<SpawnedSession, WireError> {
-    validate_delivery(&delivery)?;
     let mode_id = delivery
         .mode_id
         .as_deref()
@@ -574,6 +593,7 @@ fn spawn_codex(
         next_id: Arc::clone(&next_id),
         state: Arc::clone(&state),
         requests: Arc::clone(&requests),
+        commands: Arc::clone(&commands),
     };
     let response_ids = Arc::new(Mutex::new(HashMap::new()));
     let permission_broker = PermissionBroker::with_sender(codex_permission_sender(
@@ -623,8 +643,7 @@ fn spawn_codex(
         stdin: Arc::clone(&stdin),
         next_id,
         requests,
-        unpaired_compaction_items: 0,
-        unpaired_compaction_notifications: 0,
+        compactions: crate::codex_compaction::CodexCompactions::default(),
     };
     Ok(SpawnedSession {
         process_job,
@@ -668,6 +687,7 @@ struct CodexSwitcher {
     next_id: Arc<AtomicU64>,
     state: Arc<CodexState>,
     requests: Arc<CodexRequests>,
+    commands: Arc<CodexCommands>,
 }
 
 struct CodexSteerer {
@@ -675,6 +695,7 @@ struct CodexSteerer {
     next_id: Arc<AtomicU64>,
     state: Arc<CodexState>,
     requests: Arc<CodexRequests>,
+    commands: Arc<CodexCommands>,
 }
 
 impl SessionSteerer for CodexSteerer {
@@ -683,6 +704,11 @@ impl SessionSteerer for CodexSteerer {
         text: &str,
         turn: &mut TurnToken<'_>,
     ) -> Result<bool, WireError> {
+        // Paseo refuses listed slash commands as steers so the caller replaces
+        // the turn and `buildCommandPromptInput` can expand them (:4326).
+        if self.commands.is_picked_command(text) {
+            return Ok(false);
+        }
         // The turn to steer is read here and checked again at the moment of
         // writing, inside `begin_steer`: a steer written for a turn Codex has
         // already left is not written at all. The daemon's admission token is
@@ -716,6 +742,7 @@ impl SessionSteerer for CodexSteerer {
             next_id: Arc::clone(&self.next_id),
             state: Arc::clone(&self.state),
             requests: Arc::clone(&self.requests),
+            commands: Arc::clone(&self.commands),
         })
     }
 }
@@ -764,24 +791,34 @@ impl OutOfBandCommands for CodexOutOfBand {
         self.commands.command(text).is_some()
     }
 
+    fn skips_first_prompt_composition(&self, text: &str) -> bool {
+        self.commands.is_picked_command(text)
+    }
+
     fn run_out_of_band(&self, text: &str, runtime: &Arc<SessionRuntime>) {
         let Some(command) = self.commands.command(text) else {
             return;
         };
         let Some((method, params)) = command.request(&self.state.thread_id()) else {
             if let Some(line) = command.outcome(None) {
-                let _ = runtime.publish_agent_event(command_notice(line, false), None);
+                let _ = runtime.publish_daemon_event(command_notice(line, false));
             }
             return;
         };
         let id = format!("d-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-        self.commands.owe(&id, &command);
+        if !self.commands.owe(&id, &command) {
+            let _ = runtime.publish_daemon_event(command_notice(
+                "Could not track the Codex command response; retry the command.".to_string(),
+                true,
+            ));
+            return;
+        }
         if let Err(error) = send_frame(&self.stdin, &request_frame(&id, method, params), "Codex") {
             self.commands.forget(&id);
             let line = command
                 .outcome(Some(&error.message))
                 .unwrap_or_else(|| format!("Codex could not run the command: {}", error.message));
-            let _ = runtime.publish_agent_event(command_notice(line, true), None);
+            let _ = runtime.publish_daemon_event(command_notice(line, true));
         }
     }
 }
@@ -882,6 +919,7 @@ impl ModelSwitcher for CodexSwitcher {
             next_id: Arc::clone(&self.next_id),
             state: Arc::clone(&self.state),
             requests: Arc::clone(&self.requests),
+            commands: Arc::clone(&self.commands),
         })
     }
 
@@ -891,6 +929,7 @@ impl ModelSwitcher for CodexSwitcher {
             next_id: Arc::clone(&self.next_id),
             state: Arc::clone(&self.state),
             requests: Arc::clone(&self.requests),
+            commands: Arc::clone(&self.commands),
         })
     }
 }
@@ -1010,7 +1049,10 @@ impl Write for CodexWriter {
         // every `/compact` and `/goal`, keeps the text the human typed: those
         // two are answered out of band before the writer is reached, and a
         // prompt that carries an image is not a command at all.
-        let input = self.commands.prompt_input(&text);
+        let input = self
+            .commands
+            .prompt_input_checked(&text)
+            .map_err(io::Error::other)?;
         // The text-only `turn/start`, unchanged. A prompt that carries
         // images is sent by the static route's own `turn/start` instead of by
         // this writer, so `turn_start_params_with_images` has one production
@@ -1737,9 +1779,7 @@ struct CodexReader {
     discarding_oversized_line: bool,
     deferred: Vec<Value>,
     manifest: Option<SessionEvent>,
-    /// The command list, published beside the manifest: it is read once at
-    /// session start and a client that attaches later gets it from the journal
-    /// replay like any other event.
+    /// The command list is journaled at session start so reattachments recover it.
     available_commands: Option<SessionEvent>,
     commands: Arc<CodexCommands>,
     state: Arc<CodexState>,
@@ -1749,15 +1789,7 @@ struct CodexReader {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     requests: Arc<CodexRequests>,
-    /// Codex can report one finished compaction through both channels — the
-    /// completed `contextCompaction` item and `thread/compacted` — and a person
-    /// should read it once. Paseo pairs them with the same two counters
-    /// (`unpairedCompactionItemCompletions`,
-    /// `unpairedCompactionNotificationCompletions` :3420-3421, used at
-    /// :5612-5621 and :6211-6216): whichever channel spoke first is the one the
-    /// other stays quiet about.
-    unpaired_compaction_items: usize,
-    unpaired_compaction_notifications: usize,
+    compactions: crate::codex_compaction::CodexCompactions,
 }
 
 impl CodexReader {
@@ -1765,69 +1797,13 @@ impl CodexReader {
         let _ = runtime.publish_agent_event_with_seq(event, None, seq);
     }
 
-    /// What Codex said about a compaction, as the one notice it earns.
-    ///
-    /// Two channels report one finished compaction — the completed
-    /// `contextCompaction` thread item (`CODEX_CONTEXT_COMPACTION_TYPE` :163,
-    /// handled at :5594-5622) and the `thread/compacted` notification (:2685,
-    /// handled at :6204-6222) — and each stays quiet when the other has already
-    /// spoken. `item/started` is the one that says a compaction is under way,
-    /// which is Paseo's loading row (:6583-6588). A `thread/compacted` naming
-    /// another thread is not this session's: Codex reports sub-agent threads
-    /// over the same stream and Paseo drops those the same way (:6205-6207).
-    fn compaction_event(&mut self, value: &Value) -> Option<SessionEvent> {
-        let method = value.get("method").and_then(Value::as_str)?;
-        let params = value.get("params").unwrap_or(&Value::Null);
-        let notice = |text: &str| {
-            Some(SessionEvent::SessionNotice {
-                text: text.to_string(),
-                severity: NoticeSeverity::Info,
-            })
-        };
-        match method {
-            "thread/compacted" => {
-                if params.get("threadId").and_then(Value::as_str)
-                    != Some(self.state.thread_id().as_str())
-                {
-                    return None;
-                }
-                if self.unpaired_compaction_items > 0 {
-                    self.unpaired_compaction_items -= 1;
-                    return None;
-                }
-                self.unpaired_compaction_notifications += 1;
-                notice("Context compacted.")
-            }
-            "item/started" | "item/completed" => {
-                if params
-                    .get("item")
-                    .and_then(|item| item.get("type"))
-                    .and_then(Value::as_str)
-                    != Some("contextCompaction")
-                {
-                    return None;
-                }
-                if method == "item/started" {
-                    return notice("Compacting the context.");
-                }
-                if self.unpaired_compaction_notifications > 0 {
-                    self.unpaired_compaction_notifications -= 1;
-                    return None;
-                }
-                self.unpaired_compaction_items += 1;
-                notice("Context compacted.")
-            }
-            _ => None,
-        }
-    }
-
     fn dispatch_value(&mut self, value: Value, runtime: &Arc<SessionRuntime>) {
         let event_seq = runtime.journal_agent_envelope(&value);
         // Answered here rather than in the view: one of the two compaction
         // channels is keyed by the thread this session owns, and the pair has
         // to be counted against each other.
-        if let Some(event) = self.compaction_event(&value) {
-            self.publish(runtime, event, event_seq);
+        if let Some(event) = self.compactions.event(&value, &self.state.thread_id()) {
+            let _ = runtime.publish_daemon_event(event);
             return;
         }
         if value.get("method").and_then(Value::as_str)
@@ -1851,12 +1827,9 @@ impl CodexReader {
                         .map(str::to_string),
                 );
             } else if method == "turn/completed" {
-                // The compaction pair belongs to the turn that reported it.
-                // Paseo clears the same two counters when its turn ends
-                // (`resetTurnTrackingState` :6046-6053); a half-paired count
-                // carried into the next turn would swallow that turn's notice.
-                self.unpaired_compaction_items = 0;
-                self.unpaired_compaction_notifications = 0;
+                for event in self.compactions.turn_ended() {
+                    let _ = runtime.publish_daemon_event(event);
+                }
             } else if let Some(id) = value.get("id") {
                 let _ = send_frame(&self.stdin, &method_not_supported_frame(id), "Codex");
             }
@@ -1868,23 +1841,26 @@ impl CodexReader {
             if let Some(turn_id) = turn_id_from_response(&value) {
                 self.state.set_turn(Some(turn_id));
             }
-            let error = value
-                .get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str);
+            let error = value.get("error").map(|error| {
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Codex returned an error without a message")
+                    .to_string()
+            });
             // A command's answer is told in the command's own words, Paseo's
             // including (``executeCompactCommand`` :5027-5031,
             // ``executeGoalSubcommand`` :5081-5085); any other response keeps
             // the pre-existing notice of Codex's message. The branch is
             // exclusive so one failed request is not reported twice.
-            match self.commands.answer(id, error) {
+            match self.commands.answer(id, error.as_deref()) {
                 Answer::Ours(text) => {
                     if let Some(text) = text {
-                        self.publish(runtime, command_notice(text, error.is_some()), None);
+                        let _ = runtime.publish_daemon_event(command_notice(text, error.is_some()));
                     }
                 }
                 Answer::NotOurs => {
-                    if let Some(error) = error {
+                    if let Some(error) = error.as_deref() {
                         let _ = runtime
                             .publish_session_notice(error.to_string(), NoticeSeverity::Warning);
                     }
@@ -1982,11 +1958,10 @@ impl ReaderDispatch for CodexReader {
         if let Some(manifest) = self.manifest.take() {
             let manifest = runtime.store_session_manifest(manifest);
             self.publish(runtime, manifest, None);
-            // The command list rides the same first-dispatch moment as the
-            // manifest: it was read off disk at session start, and a client
-            // attaching later replays it from the journal.
+            // The command list must be an AgentReport row: replay has no
+            // Codex envelope from which to reconstruct a filesystem-only list.
             if let Some(commands) = self.available_commands.take() {
-                self.publish(runtime, commands, None);
+                let _ = runtime.publish_daemon_event(commands);
             }
             for value in std::mem::take(&mut self.deferred) {
                 self.dispatch_value(value, runtime);

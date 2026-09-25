@@ -27,6 +27,8 @@ mod codex_command_catalog;
 #[cfg(feature = "server")]
 mod codex_commands;
 #[cfg(feature = "server")]
+mod codex_compaction;
+#[cfg(feature = "server")]
 mod codex_goals;
 #[cfg(feature = "server")]
 mod codex_prompt_expand;

@@ -24,7 +24,7 @@ use crate::session::ReaderDispatch;
 fn compaction_item(method: &str) -> serde_json::Value {
     serde_json::json!({
         "method": method,
-        "params": {"item": {"id": "i-1", "type": "contextCompaction"}}
+        "params": {"threadId": "thread-fake", "item": {"id": "i-1", "type": "contextCompaction"}}
     })
 }
 
@@ -68,8 +68,7 @@ fn started_reader(
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
         requests: Arc::new(CodexRequests::new()),
-        unpaired_compaction_items: 0,
-        unpaired_compaction_notifications: 0,
+        compactions: crate::codex_compaction::CodexCompactions::default(),
     };
     (reader, runtime, conn)
 }
@@ -199,6 +198,25 @@ fn a_response_that_is_not_a_command_keeps_the_plain_error_notice() {
 }
 
 #[test]
+fn an_error_without_a_message_never_becomes_a_success_line() {
+    let fixture = Fixture::new("error-without-message");
+    let commands = fixture.commands(false, true);
+    let command = commands.command("/goal clear").expect("goal is enabled");
+    assert!(commands.owe("d-4", &command));
+    let (mut reader, runtime, conn) = started_reader(commands);
+    reader.dispatch_value(
+        serde_json::json!({
+            "id": "d-4", "error": {"code": -32601}
+        }),
+        &runtime,
+    );
+    assert_eq!(
+        notices(&conn),
+        vec!["Failed to update goal: Codex returned an error without a message".to_string()]
+    );
+}
+
+#[test]
 fn one_compaction_is_one_notice_whichever_channel_arrives_first() {
     // Codex can report one finished compaction twice — as a completed
     // `contextCompaction` item and as `thread/compacted`. Paseo pairs the two
@@ -265,15 +283,58 @@ fn a_compaction_under_way_says_so() {
 }
 
 #[test]
-fn a_compaction_of_another_thread_is_silent_here() {
+fn a_compaction_from_another_thread_is_silent_on_both_channels() {
     // Codex runs sub-agent threads over the same stream; Paseo drops a
     // `thread/compacted` naming a thread other than the session's (:6205-6207).
     let fixture = Fixture::new("other-thread");
     let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
     reader.dispatch_value(thread_compacted("other-thread"), &runtime);
+    reader.dispatch_value(serde_json::json!({
+        "method": "item/started",
+        "params": {"threadId": "other-thread", "item": {"id": "child-1", "type": "contextCompaction"}}
+    }), &runtime);
     assert!(
         notices(&conn).is_empty(),
         "not this session's compaction, so nothing is said"
+    );
+}
+
+#[test]
+fn unfinished_root_compaction_is_closed_at_turn_end_and_late_completion_is_ignored() {
+    let fixture = Fixture::new("unfinished-compaction");
+    let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
+    reader.dispatch_value(compaction_item("item/started"), &runtime);
+    reader.dispatch_value(compaction_item("item/completed"), &runtime);
+    reader.dispatch_value(compaction_item("item/started"), &runtime);
+    reader.dispatch_value(
+        serde_json::json!({
+            "method": "turn/completed",
+            "params": {"turn": {"id": "t-1", "status": "completed"}}
+        }),
+        &runtime,
+    );
+    reader.dispatch_value(compaction_item("item/completed"), &runtime);
+    let lines = notices(&conn);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| *line == "Compacting the context.")
+            .count(),
+        2
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| *line == "Context compacted.")
+            .count(),
+        1
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| *line == "Context compaction did not complete.")
+            .count(),
+        1
     );
 }
 

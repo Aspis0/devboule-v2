@@ -251,8 +251,7 @@ fn unknown_server_request_gets_a_method_not_supported_error() {
         stdin,
         next_id: Arc::new(AtomicU64::new(1)),
         requests: Arc::new(CodexRequests::new()),
-        unpaired_compaction_items: 0,
-        unpaired_compaction_notifications: 0,
+        compactions: crate::codex_compaction::CodexCompactions::default(),
     };
     let runtime = Arc::new(SessionRuntime::new());
     let request = serde_json::json!({
@@ -360,8 +359,7 @@ fn declined_input_is_a_session_notice_and_keeps_the_decline_shapes() {
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
         requests: Arc::new(CodexRequests::new()),
-        unpaired_compaction_items: 0,
-        unpaired_compaction_notifications: 0,
+        compactions: crate::codex_compaction::CodexCompactions::default(),
     };
     reader.dispatch_value(
         serde_json::json!({
@@ -652,6 +650,7 @@ fn a_codex_steer_for_a_turn_that_has_moved_on_is_never_written() {
         next_id: Arc::new(AtomicU64::new(1)),
         state,
         requests: Arc::new(CodexRequests::new()),
+        commands: empty_commands(),
     };
     assert!(matches!(
         steerer.begin_steer("turn-3", "turn left"),
@@ -686,6 +685,7 @@ fn a_codex_steer_is_not_left_waiting_when_the_app_server_ends() {
         next_id: Arc::new(AtomicU64::new(7)),
         state: state_on_turn("turn-3"),
         requests: Arc::clone(&requests),
+        commands: empty_commands(),
     };
     let mut reader = CodexReader {
         commands: empty_commands(),
@@ -701,8 +701,7 @@ fn a_codex_steer_is_not_left_waiting_when_the_app_server_ends() {
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
         requests: Arc::clone(&requests),
-        unpaired_compaction_items: 0,
-        unpaired_compaction_notifications: 0,
+        compactions: crate::codex_compaction::CodexCompactions::default(),
     };
     // The reader runs the real end-of-transport path: read to EOF, then
     // `finish`, which is where the waiters are failed.
@@ -814,6 +813,7 @@ fn codex_steer_against(body: &str) -> Result<bool, WireError> {
         next_id: Arc::new(AtomicU64::new(7)),
         state: state_on_turn("turn-3"),
         requests,
+        commands: empty_commands(),
     };
     let answer = crate::test_support::steer_through_the_turn(&mut steerer, "turn left");
     let _ = child.kill();
@@ -899,6 +899,7 @@ fn a_codex_steer_that_is_still_current_is_written_with_its_precondition() {
         next_id: Arc::new(AtomicU64::new(7)),
         state: state_on_turn("turn-3"),
         requests: Arc::new(CodexRequests::new()),
+        commands: empty_commands(),
     };
     let request = steerer
         .begin_steer("turn-3", "turn left")

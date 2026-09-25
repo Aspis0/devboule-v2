@@ -3,6 +3,7 @@
 //! skill, and what the launch line carries.
 
 use std::io::Write;
+use std::sync::Arc;
 
 use devboule_protocol::{NoticeSeverity, SessionEvent};
 
@@ -10,7 +11,7 @@ use super::super::OutOfBandCommands;
 use super::command_test_support::{
     await_answers, out_of_band_on, run_out_of_band, stdin_of, writer_on, Fixture, FAKE_CODEX,
 };
-use super::{spawn_codex, ThreadRoad};
+use super::{spawn_codex, CodexRequests, CodexSteerer, ThreadRoad};
 use crate::codex_goals::Goals;
 
 #[test]
@@ -148,6 +149,68 @@ fn goal_on_an_old_binary_is_not_intercepted_and_reaches_codex_as_text() {
 }
 
 #[test]
+fn a_full_owed_table_tells_the_user_why_the_command_was_not_sent() {
+    let fixture = Fixture::new("owed-cap");
+    let commands = fixture.commands(false, true);
+    let command = commands.command("/compact").expect("compact is available");
+    for index in 0..32 {
+        assert!(commands.owe(&format!("d-{index}"), &command));
+    }
+    let mut child = fixture.child(None);
+    let handler = out_of_band_on(stdin_of(&mut child), Arc::clone(&commands));
+    let runtime = Arc::new(super::super::SessionRuntime::new());
+    runtime.stream.lock().unwrap().screen = None;
+    let conn = super::super::event_pull::ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        "s.codex.command-cap",
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    handler.run_out_of_band("/compact", &runtime);
+    let _ = child.kill();
+    let _ = child.wait();
+    let events: Vec<SessionEvent> = conn
+        .pull_events()
+        .into_iter()
+        .map(|event| event.envelope.event)
+        .collect();
+    assert_eq!(
+        events,
+        vec![SessionEvent::SessionNotice {
+            text: "Could not track the Codex command response; retry the command.".to_string(),
+            severity: NoticeSeverity::Warning,
+        }]
+    );
+    assert!(
+        fixture.recorded().is_empty(),
+        "the untracked command is not sent"
+    );
+}
+
+#[test]
+fn a_picked_command_is_refused_as_a_steer() {
+    let fixture = Fixture::new("steer-command");
+    let steerer = CodexSteerer {
+        stdin: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        next_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        state: super::command_test_support::thread_state(),
+        requests: std::sync::Arc::new(CodexRequests::new()),
+        commands: fixture.commands(true, false),
+    };
+    let mut steerer = steerer;
+    assert!(matches!(
+        crate::test_support::steer_through_the_turn(&mut steerer, "/plotting sales.csv"),
+        Some(Ok(false))
+    ));
+}
+
+#[test]
 fn a_picked_prompt_or_skill_command_changes_the_turn_text_and_stays_a_turn() {
     let Some(reason) = Fixture::skip_without_node() else {
         let fixture = Fixture::new("picked");
@@ -199,12 +262,9 @@ fn a_picked_prompt_or_skill_command_changes_the_turn_text_and_stays_a_turn() {
 }
 
 #[test]
-fn a_command_with_an_attachment_is_the_text_the_human_typed() {
-    // Paseo's hook matches a string prompt only (:4978): an image prompt whose
-    // text happens to name an out-of-band command is not intercepted, and the
-    // prompt rewriter leaves the two out-of-band names alone, so the text
-    // reaches Codex as written. The static (image) route owns that prompt and
-    // carries no command table at all, which is what this pins.
+fn the_writer_keeps_builtin_compact_text_unchanged() {
+    // This writer-only check pins that a built-in is never expanded as a
+    // custom prompt. Attachment bypass is exercised at the session boundary.
     let Some(reason) = Fixture::skip_without_node() else {
         let fixture = Fixture::new("attached");
         let commands = fixture.commands(true, true);
@@ -235,7 +295,7 @@ fn a_command_with_an_attachment_is_the_text_the_human_typed() {
 }
 
 #[test]
-fn the_launch_line_carries_the_goals_flag_only_when_the_gate_passes() {
+fn launch_args_carry_the_goals_flag_only_when_the_gate_passes() {
     let Some(reason) = Fixture::skip_without_node() else {
         for (version, expected) in [
             ("codex-cli 0.155.1", true),

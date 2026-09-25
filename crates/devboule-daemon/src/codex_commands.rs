@@ -123,6 +123,8 @@ pub(crate) enum Answer {
 /// this binary has goals, and the answers a command is still owed.
 pub(crate) struct CodexCommands {
     entries: Vec<CommandEntry>,
+    codex_home: std::path::PathBuf,
+    cwd: Option<std::path::PathBuf>,
     goals_enabled: bool,
     /// Command requests written but not yet answered, keyed by the JSON-RPC id
     /// the answer will name.
@@ -144,6 +146,8 @@ impl CodexCommands {
     pub(crate) fn new(codex_home: &Path, cwd: Option<&Path>, goals_enabled: bool) -> Self {
         Self {
             entries: codex_command_catalog::command_table(codex_home, cwd, goals_enabled),
+            codex_home: codex_home.to_path_buf(),
+            cwd: cwd.map(Path::to_path_buf),
             goals_enabled,
             owed: Mutex::new(HashMap::new()),
         }
@@ -206,8 +210,10 @@ impl CodexCommands {
     /// Input for a picked command (`buildCommandPromptInput` :4028-4056).
     /// Custom prompts are expanded here because app-server text input does not
     /// expand them; skills carry the same skill and text blocks Paseo builds.
-    pub(crate) fn prompt_input(&self, text: &str) -> Option<Value> {
-        let (name, args) = parse_slash(text)?;
+    pub(crate) fn prompt_input_checked(&self, text: &str) -> Result<Option<Value>, String> {
+        let Some((name, args)) = parse_slash(text) else {
+            return Ok(None);
+        };
         // An out-of-band name never becomes a prompt. Paseo cannot reach a
         // prompt builder with one: its intercept runs first, and a prompt
         // carrying images is not a string, so `resolveSlashCommandInvocation`
@@ -215,26 +221,54 @@ impl CodexCommands {
         // reach this daemon's writer, and leaving it alone is what keeps a
         // `/compact` with a picture attached from travelling as a `$compact`
         // prompt Codex has no command for.
-        if matches!(name, "compact" | "goal") {
-            return None;
+        if self.command(text).is_some() {
+            return Ok(None);
         }
-        let entry = self.entries.iter().find(|entry| entry.name == name)?;
+        let entries = codex_command_catalog::command_table(
+            &self.codex_home,
+            self.cwd.as_deref(),
+            self.goals_enabled,
+        );
+        let Some(entry) = entries.iter().find(|entry| entry.name == name) else {
+            if self.entries.iter().any(|entry| entry.name == name) {
+                return Err(format!("Codex command /{name} is no longer available."));
+            }
+            return Ok(None);
+        };
         match (&entry.origin, args) {
-            (CommandOrigin::Prompt { path }, args) => Some(serde_json::json!([
+            (CommandOrigin::Prompt { path }, args) => Ok(Some(serde_json::json!([
                 { "type": "text", "text": expand_prompt(&prompt_body(path)?, args.unwrap_or_default()) }
-            ])),
+            ]))),
             (CommandOrigin::Skill { path }, args) => {
                 let text = match args {
                     Some(args) => format!("${} {}", entry.name, args),
                     None => format!("${}", entry.name),
                 };
-                Some(serde_json::json!([
+                Ok(Some(serde_json::json!([
                     { "type": "skill", "name": entry.name, "path": path },
                     { "type": "text", "text": text },
-                ]))
+                ])))
             }
-            _ => None,
+            _ => Ok(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prompt_input(&self, text: &str) -> Option<Value> {
+        self.prompt_input_checked(text).ok().flatten()
+    }
+
+    pub(crate) fn is_picked_command(&self, text: &str) -> bool {
+        parse_slash(text).is_some_and(|(name, _)| {
+            self.entries.iter().any(|entry| entry.name == name)
+                || codex_command_catalog::command_table(
+                    &self.codex_home,
+                    self.cwd.as_deref(),
+                    self.goals_enabled,
+                )
+                .iter()
+                .any(|entry| entry.name == name)
+        })
     }
 }
 
@@ -242,9 +276,10 @@ impl CodexCommands {
 /// (`buildCommandPromptInput` :4034-4037 reads the file again at send time, so
 /// an edited prompt takes effect without restarting the session). An unreadable
 /// file answers `None`, which leaves the prompt as the text the human typed.
-fn prompt_body(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    Some(codex_command_catalog::front_matter(&content).1)
+fn prompt_body(path: &Path) -> Result<String, String> {
+    let content = codex_command_catalog::read_command_file(path)
+        .ok_or_else(|| "Codex could not read the selected prompt file.".to_string())?;
+    Ok(codex_command_catalog::front_matter(&content).1)
 }
 
 /// `parseSlashCommandInput` :4986-5002: a lone `/` is not a command, a name

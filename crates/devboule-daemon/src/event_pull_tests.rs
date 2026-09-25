@@ -171,6 +171,32 @@ fn malformed_agent_report_replay_marks_journal_degraded() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn an_available_command_list_replays_as_an_agent_report() {
+    let session_id = "s.live.agent.replay.available-commands";
+    let event = SessionEvent::AvailableCommands {
+        commands: vec![devboule_protocol::AvailableCommandView {
+            name: "compact".to_string(),
+            description: "Summarize context".to_string(),
+            hint: None,
+        }],
+    };
+    let record = crate::journal::EventRecord {
+        session_id: session_id.to_string(),
+        generation: 1,
+        seq: 1,
+        kind: crate::journal::EventKind::AgentReport,
+        ts_ms: 0,
+        payload: serde_json::to_vec(&event).expect("the command event serializes"),
+    };
+    let (_dir, _journal, _runtime, conn) = live_agent_replay_fixture(session_id, record);
+    assert!(drain(&conn).iter().any(|event| matches!(
+        event,
+        SessionEvent::AvailableCommands { commands }
+            if commands.iter().any(|command| command.name == "compact")
+    )));
+}
+
 /// §8b A14 at the egress: the placeholder a provider client writes is
 /// replaced with the session's stored origin before the card reaches a
 /// subscriber, so a peer session's card cannot be shown as this machine's

@@ -19,6 +19,24 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+const MAX_COMMAND_FILE_BYTES: u64 = 1024 * 1024;
+
+pub(super) fn read_command_file(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_COMMAND_FILE_BYTES {
+        return None;
+    }
+    use std::io::Read;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_COMMAND_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_COMMAND_FILE_BYTES)
+        .then(|| String::from_utf8_lossy(&bytes).into_owned())
+}
+
 use devboule_protocol::AvailableCommandView;
 
 /// One command in the table, with what running it needs.
@@ -113,7 +131,9 @@ fn prompt_entries(codex_home: &Path) -> Vec<CommandEntry> {
             Ok(file_type) => file_type,
             Err(_) => continue,
         };
-        let name = found.file_name().to_string_lossy().into_owned();
+        let Some(name) = found.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
         let Some(stem) = name.strip_suffix(".md") else {
             continue;
         };
@@ -125,7 +145,7 @@ fn prompt_entries(codex_home: &Path) -> Vec<CommandEntry> {
         let path = found.path();
         // An unreadable prompt is skipped, never an error for the user — the
         // `try/catch` around `fs.readFile` at :674-679.
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Some(content) = read_command_file(&path) else {
             continue;
         };
         let (front_matter, _) = front_matter(&content);
@@ -183,10 +203,16 @@ fn skill_entries(codex_home: &Path, cwd: Option<&Path>) -> Vec<CommandEntry> {
             if !(file_type.is_dir() || file_type.is_symlink()) {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(found.path().join("SKILL.md")) else {
+            let Some(content) = read_command_file(&found.path().join("SKILL.md")) else {
                 continue;
             };
             let (front_matter, _) = front_matter(&content);
+            if front_matter
+                .get("enabled")
+                .is_some_and(|value| value == "false")
+            {
+                continue;
+            }
             let (Some(name), Some(description)) =
                 (front_matter.get("name"), front_matter.get("description"))
             else {
@@ -210,6 +236,7 @@ fn skill_entries(codex_home: &Path, cwd: Option<&Path>) -> Vec<CommandEntry> {
 /// Production resolves it once per session start and hands the path to
 /// [`command_table`], so a test can point the whole surface at a temp directory
 /// without touching the process environment.
+#[cfg(not(test))]
 pub(crate) fn resolve_home() -> PathBuf {
     if let Some(home) = std::env::var_os("CODEX_HOME") {
         let home = PathBuf::from(home);
@@ -228,6 +255,7 @@ pub(crate) fn resolve_home() -> PathBuf {
 /// elsewhere. There is no `dirs` crate in this workspace and no third guess:
 /// a machine with neither answers a relative `.codex`, which reads nothing —
 /// the skip, not a guess about where the home might be.
+#[cfg(not(test))]
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))

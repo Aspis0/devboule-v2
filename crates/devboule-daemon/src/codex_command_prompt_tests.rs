@@ -48,18 +48,45 @@ fn a_picked_skill_command_sends_the_skill_and_text_blocks() {
 }
 
 #[test]
-fn unlisted_and_out_of_band_inputs_are_not_rewritten() {
+fn unlisted_inputs_and_builtin_commands_are_not_rewritten() {
     let home = TempDir::new("unknown-home");
     let workspace = TempDir::new("unknown-cwd");
-    home.write(
-        "prompts/compact.md",
-        "---\ndescription: shadow\n---\nBody.\n",
-    );
     let commands = home.commands(&workspace.0, true);
     assert_eq!(commands.prompt_input("/nonsense args"), None);
     assert_eq!(commands.prompt_input("plain text"), None);
     assert_eq!(commands.prompt_input("/compact"), None);
     assert_eq!(commands.prompt_input("/goal clear"), None);
+}
+
+#[test]
+fn a_skill_named_goal_is_available_when_the_goal_builtin_is_gated_off() {
+    let home = TempDir::new("skill-goal-home");
+    let workspace = TempDir::new("skill-goal-cwd");
+    workspace.write(
+        ".codex/skills/goal/SKILL.md",
+        "---\nname: goal\ndescription: Skill\n---\nBody.\n",
+    );
+    let commands = home.commands(&workspace.0, false);
+    assert_eq!(
+        commands.prompt_input("/goal ship it"),
+        Some(serde_json::json!([
+            { "type": "skill", "name": "goal", "path": workspace.0.join(".codex").join("skills").join("goal").join("SKILL.md") },
+            { "type": "text", "text": "$goal ship it" },
+        ])),
+        "when the version gate is closed, Paseo's listed skill remains a picked command"
+    );
+}
+
+#[test]
+fn a_skill_marked_disabled_is_not_offered() {
+    let home = TempDir::new("disabled-skill-home");
+    let workspace = TempDir::new("disabled-skill-cwd");
+    workspace.write(
+        ".codex/skills/hidden/SKILL.md",
+        "---\nname: hidden\ndescription: Hidden\nenabled: false\n---\nBody.\n",
+    );
+    let commands = home.commands(&workspace.0, false);
+    assert_eq!(commands.prompt_input("/hidden"), None);
 }
 
 #[test]
@@ -78,4 +105,26 @@ fn a_prompt_file_edited_after_the_session_starts_is_read_at_send_time() {
         Some(serde_json::json!([{ "type": "text", "text": "second\n" }])),
         "the cached list holds the path, not the body (:4034-4036)"
     );
+}
+
+#[test]
+fn newly_added_prompts_expand_and_removed_menu_entries_fail_loudly() {
+    let home = TempDir::new("changing-home");
+    let workspace = TempDir::new("changing-cwd");
+    home.write("prompts/remove.md", "---\ndescription: Remove\n---\nbody\n");
+    let commands = home.commands(&workspace.0, false);
+    home.write("prompts/add.md", "---\ndescription: Add\n---\nnew\n");
+    assert_eq!(
+        commands.prompt_input_checked("/prompts:add"),
+        Ok(Some(
+            serde_json::json!([{ "type": "text", "text": "new\n" }])
+        )),
+        "the execution lookup observes a newly added file"
+    );
+    std::fs::remove_file(home.0.join("prompts/remove.md")).expect("remove prompt fixture");
+    assert!(commands.is_picked_command("/prompts:remove"));
+    assert!(commands
+        .prompt_input_checked("/prompts:remove")
+        .expect_err("a stale menu entry must not fall through as literal prompt text")
+        .contains("no longer available"));
 }

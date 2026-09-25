@@ -11,8 +11,6 @@
 //! `prompts:<name>` command carries — Codex's own prompt expansion, which the
 //! app-server does not perform for a text input.
 
-use std::collections::BTreeMap;
-
 /// The name of the placeholder that hides a literal `$$` from the substitution
 /// passes, exactly as Paseo names it (:779).
 const DOLLAR_PLACEHOLDER: &str = "__CODEX_DOLLAR_PLACEHOLDER__";
@@ -27,14 +25,20 @@ pub(crate) fn expand_prompt(template: &str, args: &str) -> String {
     } else {
         tokenize(trimmed)
     };
-    let mut named: BTreeMap<String, String> = BTreeMap::new();
+    let mut named: Vec<(String, String)> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
     for token in &tokens {
         // Paseo's `idx > 0` (:784): a token that starts with `=` is positional,
         // and the first `=` splits the name from the value.
         match token.find('=') {
             Some(index) if index > 0 => {
-                named.insert(token[..index].to_string(), token[index + 1..].to_string());
+                let name = token[..index].to_string();
+                let value = token[index + 1..].to_string();
+                if let Some((_, previous)) = named.iter_mut().find(|(key, _)| key == &name) {
+                    *previous = value;
+                } else {
+                    named.push((name, value));
+                }
             }
             _ => positional.push(token.clone()),
         }
@@ -50,10 +54,10 @@ pub(crate) fn expand_prompt(template: &str, args: &str) -> String {
     }
     // Longest name first (Paseo's `sort((a, b) => b.length - a.length)` :796),
     // so `$branch_name` survives a `$branch` token.
-    let mut names: Vec<&String> = named.keys().collect();
-    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
-    for name in names {
-        out = replace_dollar_word(&out, name, &named[name]);
+    let mut names: Vec<&(String, String)> = named.iter().collect();
+    names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    for (name, value) in names {
+        out = replace_dollar_word(&out, name, value);
     }
     out.replace(DOLLAR_PLACEHOLDER, "$")
 }
@@ -73,18 +77,61 @@ fn replace_dollar_word(text: &str, name: &str, value: &str) -> String {
     let name_ends_on_word = name.chars().next_back().is_some_and(is_word_character);
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
+    let mut offset = 0;
     while let Some(index) = rest.find(&needle) {
+        let absolute = offset + index;
         out.push_str(&rest[..index]);
         let after = &rest[index + needle.len()..];
         let boundary = match after.chars().next() {
             Some(next) => name_ends_on_word != is_word_character(next),
             None => name_ends_on_word,
         };
-        out.push_str(if boundary { value } else { &needle });
+        if boundary {
+            out.push_str(&js_replacement(
+                value,
+                &needle,
+                &text[..absolute],
+                &text[absolute + needle.len()..],
+            ));
+        } else {
+            out.push_str(&needle);
+        }
+        offset = absolute + needle.len();
         rest = after;
     }
     out.push_str(rest);
     out
+}
+
+fn js_replacement(value: &str, matched: &str, prefix: &str, suffix: &str) -> String {
+    let mut output = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '$' {
+            output.push(character);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('$') => {
+                chars.next();
+                output.push('$');
+            }
+            Some('&') => {
+                chars.next();
+                output.push_str(matched);
+            }
+            Some('`') => {
+                chars.next();
+                output.push_str(prefix);
+            }
+            Some('\'') => {
+                chars.next();
+                output.push_str(suffix);
+            }
+            _ => output.push('$'),
+        }
+    }
+    output
 }
 
 fn is_word_character(character: char) -> bool {
@@ -237,5 +284,12 @@ mod tests {
         // Paseo's regex does the same; this case keeps the port from quietly
         // normalising the difference away.
         assert_eq!(expand_prompt("$name", "$name=main"), "$name");
+    }
+
+    #[test]
+    fn named_values_use_paseo_replacement_string_rules_and_stable_order() {
+        assert_eq!(expand_prompt("A $name B", "name=$$"), "A $ B");
+        assert_eq!(expand_prompt("A $name B", "name=$&"), "A $name B");
+        assert_eq!(expand_prompt("$b/$a", "b=$a a=1"), "1/1");
     }
 }

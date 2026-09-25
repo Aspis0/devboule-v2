@@ -744,8 +744,15 @@ impl super::SessionRegistry {
                 return Err(internal("Agent input could not be recorded."));
             }
         }
-        // The shared out-of-band door records the submitted input before it
-        // runs a provider command. Attachment-bearing prompts bypass it.
+        // Paseo calls `tryRunOutOfBand` before `startAgentRunInner` and
+        // `steerOrReplaceActiveRun` (`agent-prompt.ts:110-116`); the Codex hook
+        // also expands picked commands only after this first-prompt composition
+        // (`codex-app-server-agent.ts:4975-5010`, `:4028-4056`). Keep this door
+        // ahead of composition so command input remains parseable. For a
+        // picked first command, the provider also skips composition below and
+        // leaves that one-shot flag owed for the next ordinary prompt; without
+        // this, the slash line becomes an unrecognisable suffix. Attachment
+        // prompts bypass the door because Paseo only resolves string prompts (:4009).
         if attachments.is_empty() && attachment_references.is_empty() {
             if let Some(commands) = out_of_band.as_ref() {
                 if commands.handles_out_of_band(text) {
@@ -896,20 +903,26 @@ impl super::SessionRegistry {
         // a message the human just wrote, which is exactly what the preamble
         // slot is for. Taken inside the closure, so the one prompt that gets it
         // is the one that consumes it.
-        let first_prompt =
-            (is_agent && !text.is_empty() && runtime.take_first_prompt()).then(|| {
-                let recovered = runtime.take_recovered_context();
-                let preamble = crate::session::session_recovery::preamble_with_recovered(
-                    preset_preamble,
-                    recovered.as_deref(),
-                );
-                compose_first_prompt(
-                    &self.standing_instructions(),
-                    spawn_prompt,
-                    preamble.as_deref(),
-                    text,
-                )
-            });
+        let skip_first_prompt_composition = out_of_band
+            .as_ref()
+            .is_some_and(|commands| commands.skips_first_prompt_composition(text));
+        let first_prompt = (is_agent
+            && !text.is_empty()
+            && !skip_first_prompt_composition
+            && runtime.take_first_prompt())
+        .then(|| {
+            let recovered = runtime.take_recovered_context();
+            let preamble = crate::session::session_recovery::preamble_with_recovered(
+                preset_preamble,
+                recovered.as_deref(),
+            );
+            compose_first_prompt(
+                &self.standing_instructions(),
+                spawn_prompt,
+                preamble.as_deref(),
+                text,
+            )
+        });
         let text = first_prompt.as_deref().unwrap_or(text);
         // (S4-10, S4-14) The last thing before the write: the slot's boundary must
         // be the turn this text actually enters. The admission registered it
