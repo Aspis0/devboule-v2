@@ -187,14 +187,20 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       // legacy `keyCode === 229` covers engines that report the composition
       // commit without setting it.
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-      // Paseo's menu keys, with Shift kept for text editing, and Paseo's rule
-      // that a menu with no rows takes none of them (so Enter still sends).
-      if (commandMenuVisible && !event.shiftKey) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setMenuDismissed(true);
-          return;
-        }
+      if (event.key === "Escape" && commandMenuVisible) {
+        event.preventDefault();
+        setMenuDismissed(true);
+        return;
+      }
+      // The menu's own keys, and only unmodified ones: Shift keeps editing, and
+      // Ctrl/Alt keep their jumps and the Q2b chord, which falls through here.
+      if (
+        commandMenuVisible &&
+        !event.shiftKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
         if (matchCount > 0) {
           if (event.key === "ArrowUp" || event.key === "ArrowDown") {
             const key = event.key;
@@ -233,6 +239,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       {queuedTrack}
       {commandMenuVisible ? (
         <WorkspaceCommandMenu
+          listId={menuId}
           commands={commandMatches}
           activeIndex={activeRow}
           activeOptionId={activeOptionId}
@@ -251,6 +258,10 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
           placeholder={COMPOSER_PLACEHOLDER}
           rows={1}
           aria-label="Message the agent"
+          role="combobox"
+          aria-expanded={commandMenuVisible}
+          aria-controls={commandMenuVisible ? menuId : undefined}
+          aria-autocomplete="list"
           aria-activedescendant={activeOptionId ?? undefined}
           disabled={disabled}
         />

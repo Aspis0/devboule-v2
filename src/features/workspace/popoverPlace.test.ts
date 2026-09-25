@@ -135,3 +135,15 @@ describe("the popovers are raised surfaces", () => {
     expect(menu).toContain("max-height: min(320px, calc((100vh - var(--crescent-band)) * 0.45));");
   });
 });
+
+describe("the command menu draws its two rows apart", () => {
+  it("gives the hovered row and the keys' row different styles", () => {
+    // Enter takes the row the keys tint, never the one the pointer is on: a
+    // shared style shows two selected-looking rows and only one is the pick.
+    const hovered = ruleBody(".workspace-command-option:hover");
+    const active = ruleBody('.workspace-command-option[aria-selected="true"]');
+    expect(hovered).toContain("background:");
+    expect(active).toContain("background:");
+    expect(hovered).not.toBe(active);
+  });
+});

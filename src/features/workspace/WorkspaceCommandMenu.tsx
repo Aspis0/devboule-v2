@@ -13,6 +13,8 @@ export interface WorkspaceCommand {
 const NO_COMMANDS_TEXT = "No commands found";
 
 interface WorkspaceCommandMenuProps {
+  /** The listbox's own id: the composer's combobox points aria-controls at it. */
+  listId: string;
   /** The filter's matches, in the order the daemon gave them. */
   commands: readonly WorkspaceCommand[];
   /** The row the keys are on; -1 while there is no row to be on. */
@@ -23,21 +25,37 @@ interface WorkspaceCommandMenuProps {
 }
 
 export function WorkspaceCommandMenu({
+  listId,
   commands,
   activeIndex,
   activeOptionId,
   onSelect,
 }: WorkspaceCommandMenuProps) {
+  const listRef = useRef<HTMLDivElement>(null);
   const activeRowRef = useRef<HTMLButtonElement>(null);
 
-  // Paseo keeps the highlighted row in view with its own offset math; here one
-  // nearest-block call follows the keys, and the list too when it changes.
+  // Paseo works this offset out inside its own list; a bare scrollIntoView
+  // would walk every scrollable ancestor — transcript and page included.
   useEffect(() => {
-    activeRowRef.current?.scrollIntoView({ block: "nearest" });
+    const row = activeRowRef.current;
+    const list = listRef.current;
+    if (row === null || list === null) return;
+    const rowTop = row.offsetTop;
+    const rowBottom = rowTop + row.offsetHeight;
+    const viewTop = list.scrollTop;
+    const viewBottom = viewTop + list.clientHeight;
+    if (rowTop < viewTop) list.scrollTop = rowTop;
+    else if (rowBottom > viewBottom) list.scrollTop = rowBottom - viewBottom;
   }, [activeIndex, commands.length]);
 
   return (
-    <div className="workspace-command-menu" role="listbox" aria-label="Available commands">
+    <div
+      className="workspace-command-menu"
+      id={listId}
+      ref={listRef}
+      role="listbox"
+      aria-label="Available commands"
+    >
       <div className="workspace-command-menu-heading">Agent commands</div>
       {commands.length > 0 ? (
         commands.map((command, index) => {

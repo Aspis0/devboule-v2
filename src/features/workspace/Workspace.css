@@ -1376,7 +1376,11 @@
   text-align: left;
 }
 
-.workspace-command-option:hover,
+.workspace-command-option:hover {
+  background: var(--fill-hover);
+}
+
+/* Pointer and keys drawn apart: Enter takes the tinted row, never the hovered one. */
 .workspace-command-option[aria-selected="true"] {
   background: var(--surface-muted);
 }
