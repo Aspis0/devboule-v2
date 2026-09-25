@@ -56,9 +56,23 @@ export class SurfaceErrorBoundary extends Component<
         >
           <h2 className="surface-fallback-title">{this.props.surfaceLabel} could not be shown.</h2>
           <pre className="surface-fallback-details">{this.state.error}</pre>
-          <button type="button" className="boundary-retry" onClick={this.retry}>
-            Retry
-          </button>
+          {/* Retry cannot recover a failed lazy() import — React caches the
+              rejection — so the fallback always offers both. */}
+          <p className="surface-fallback-note">
+            Reload restarts Devboule on the Workspace surface.
+          </p>
+          <div className="surface-fallback-actions">
+            <button type="button" className="boundary-retry" onClick={this.retry}>
+              Retry
+            </button>
+            <button
+              type="button"
+              className="boundary-reload surface-fallback-reload"
+              onClick={() => window.location.reload()}
+            >
+              Reload Devboule
+            </button>
+          </div>
         </section>
       );
     }

@@ -45,8 +45,8 @@ vi.mock("../features/workspace/presence", () => ({
 }));
 
 // The lazy Workspace resolves to a throwing component on demand: the module
-// graph below App is the real one, so a fallback here proves the boundary in
-// App.tsx caught it — not a mock of the boundary itself.
+// graph below AppRoot is the real one, so a fallback here proves the boundary
+// above App caught it — not a mock of the boundary itself.
 vi.mock("../features/workspace/Workspace", () => ({
   Workspace: () => {
     if (mocks.throwWorkspace) throw new Error("workspace render failed");

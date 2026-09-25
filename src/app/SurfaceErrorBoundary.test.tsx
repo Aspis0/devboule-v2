@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, useEffect } from "react";
+import { act, lazy, Suspense, useEffect } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,8 @@ describe("SurfaceErrorBoundary", () => {
     container.remove();
     warnSpy.mockRestore();
     errorSpy.mockRestore();
+    const location = window.location as unknown as Record<string, unknown>;
+    if (Object.hasOwn(location, "reload")) delete location.reload;
   });
 
   it("shows the surface fallback and leaves the rest of the tree mounted", async () => {
@@ -108,6 +110,34 @@ describe("SurfaceErrorBoundary", () => {
 
     expect(container.textContent).toContain("healthy surface child");
     expect(mounts).toBe(2);
+  });
+
+  it("a rejected lazy import shows the fallback with a working document reload", async () => {
+    // A failed import is cached by React forever: Retry re-renders into the
+    // same cached rejection, so the fallback must offer a document reload.
+    // (Mirrored structure: Suspense outside the boundary, as in App.tsx.)
+    const reload = vi.fn();
+    Object.defineProperty(window.location, "reload", { configurable: true, value: reload });
+    const RejectedSurface = lazy(() => Promise.reject(new Error("chunk load failed")));
+
+    await act(async () => {
+      root.render(
+        <Suspense fallback={<div>loading surface</div>}>
+          <SurfaceErrorBoundary surfaceLabel="Settings">
+            <RejectedSurface />
+          </SurfaceErrorBoundary>
+        </Suspense>,
+      );
+    });
+    await vi.waitFor(() => expect(container.querySelector(".surface-fallback")).not.toBeNull(), {
+      timeout: 5000,
+    });
+    expect(container.textContent).toContain("chunk load failed");
+
+    const reloadButton = container.querySelector<HTMLButtonElement>(".surface-fallback-reload");
+    if (reloadButton === null) throw new Error("surface reload control did not render");
+    await act(async () => reloadButton.click());
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
   it("a key change resets the boundary through a remount", async () => {

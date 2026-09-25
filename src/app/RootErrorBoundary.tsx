@@ -65,7 +65,7 @@ export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErr
 // Paseo's copy (packages/app/src/i18n/resources/en.ts:1478-1481) with our
 // name; the last body sentence is ours, because a document reload always
 // boots the default surface and the copy must say where the user lands.
-export function RootErrorFallback({ error }: { error: string }): ReactNode {
+function RootErrorFallback({ error }: { error: string }): ReactNode {
   return (
     <div className="root-fallback" role="alert">
       <div className="root-fallback-card">
@@ -76,7 +76,7 @@ export function RootErrorFallback({ error }: { error: string }): ReactNode {
         </p>
         <h2 className="root-fallback-details-label">Details</h2>
         <pre className="root-fallback-details">{error}</pre>
-        {/* Paseo's compact-footer idiom (root-error-boundary.tsx:101-107):
+        {/* Paseo's compact-footer idiom (root-error-boundary.tsx:97, footer at :148-154):
             Reload is pinned so it never scrolls away at high zoom. */}
         <div className="root-fallback-footer">
           <button

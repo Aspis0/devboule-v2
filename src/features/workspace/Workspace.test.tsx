@@ -849,8 +849,8 @@ describe("Workspace sessions", () => {
     );
 
     // The panel chrome remounts on panel switch — the side-panel boundary
-    // key covers panel and workspace — so the pre-switch node is detached;
-    // re-query the selector instead of reusing it.
+    // key is the panel id — so the pre-switch node is detached; re-query
+    // the selector instead of reusing it.
     const reopened = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
     if (reopened === null) throw new Error("side panel selector did not render");
     await act(async () => reopened.click());
@@ -860,11 +860,12 @@ describe("Workspace sessions", () => {
     expect(selectedOption?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("contains a throwing panel badge inside the side panel, not the workspace", async () => {
-    // The panel's live reads render inside the side-panel boundary: a
-    // snapshot that throws replaces the aside, while the rest of the
-    // workspace keeps working. With the boundary around the panel body only,
-    // the same throw escapes Workspace's own render and unmounts everything.
+  it("contains a throwing panel badge inside the selector, not the workspace", async () => {
+    // The panel's badge read renders inside its own boundary: a snapshot
+    // that throws replaces the badge, while the selector around it, the
+    // toolbar and the rest of the workspace keep working. With no boundary
+    // below Workspace, the same throw escapes Workspace's own render and
+    // unmounts everything.
     const throwingPanel: SidePanelEntry = {
       id: "badge-throws",
       name: "Throwing panel",
@@ -883,13 +884,50 @@ describe("Workspace sessions", () => {
     await act(async () => root.render(<Workspace sidePanelRegistry={[throwingPanel]} />));
     await act(async () => undefined);
 
-    const alert = container.querySelector(".surface-fallback");
-    if (alert === null) throw new Error("side panel fallback did not render");
+    const alert = container.querySelector(".workspace-surface-selector .surface-fallback");
+    if (alert === null) throw new Error("badge fallback did not render inside the selector");
     expect(alert.getAttribute("role")).toBe("alert");
     expect(alert.textContent).toContain("Throwing panel");
     expect(alert.textContent).toContain("badge read failed");
-    // The workspace around the broken panel keeps working.
+    // The toolbar around the broken badge keeps working…
+    const collapse = container.querySelector('button[aria-label="Collapse side panel"]');
+    expect(collapse).not.toBeNull();
+    // …and so does the workspace around the broken panel.
     expect(container.querySelector(".workspace-center-panel")).not.toBeNull();
+  });
+
+  it("leaves the panel escape controls usable when the panel body throws", async () => {
+    // The toolbar is chrome, not panel content: a body throw replaces the
+    // body fallback, while the collapse button and the selector stay mounted
+    // so the user can leave the broken panel.
+    const bodyThrows: SidePanelEntry = {
+      id: "body-throws",
+      name: "Body throws",
+      meta: "test",
+      dotTone: "green",
+      // A throw in the panel body's own render (not in the registry
+      // dispatch, which runs in Workspace's render and no boundary below it
+      // could catch).
+      render: () => <BodyThrows />,
+    };
+    function BodyThrows(): ReactNode {
+      throw new Error("panel body failed");
+    }
+
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace sidePanelRegistry={[bodyThrows]} />));
+    await act(async () => undefined);
+
+    const alert = container.querySelector(".surface-fallback");
+    if (alert === null) throw new Error("side panel fallback did not render");
+    expect(alert.textContent).toContain("panel body failed");
+
+    const collapse = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Collapse side panel"]',
+    );
+    if (collapse === null) throw new Error("collapse button did not survive the body throw");
+    await act(async () => collapse.click());
+    expect(container.querySelector('button[aria-label="Show side panel"]')).not.toBeNull();
   });
 
   describe("the Changes badge in the panel selector", () => {

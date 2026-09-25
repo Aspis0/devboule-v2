@@ -1575,80 +1575,83 @@ export function Workspace({
             <span className="workspace-vertical-label">side panel</span>
           </button>
         ) : (
-          <SurfaceErrorBoundary
-            key={`${selectedSurface.id}:${selectedWorkspace}`}
-            surfaceLabel={selectedSurface.name}
-          >
-            {/* The panel's own reads — the live badge in the toolbar, the
-                registry render below — happen inside this boundary, so one
-                failing panel leaves the workspace usable. The key resets it
-                on panel or workspace switch. */}
-            <div className="workspace-panel-open">
-              <div className="workspace-right-toolbar">
-                <button
-                  type="button"
-                  className="workspace-icon-button"
-                  onClick={() => setRightCollapsed(true)}
-                  title="Collapse"
-                  aria-label="Collapse side panel"
-                >
-                  ›
-                </button>
-                <button
-                  type="button"
-                  className="workspace-surface-selector"
-                  onClick={() => setSurfaceMenuOpen((open) => !open)}
-                  aria-haspopup="listbox"
-                  aria-expanded={surfaceMenuOpen}
-                >
-                  <span
-                    className={`workspace-status-dot workspace-surface-dot-${selectedSurface.dotTone}`}
-                  />
-                  <span className="workspace-surface-name">{selectedSurface.name}</span>
+          <div className="workspace-panel-open">
+            <div className="workspace-right-toolbar">
+              <button
+                type="button"
+                className="workspace-icon-button"
+                onClick={() => setRightCollapsed(true)}
+                title="Collapse"
+                aria-label="Collapse side panel"
+              >
+                ›
+              </button>
+              <button
+                type="button"
+                className="workspace-surface-selector"
+                onClick={() => setSurfaceMenuOpen((open) => !open)}
+                aria-haspopup="listbox"
+                aria-expanded={surfaceMenuOpen}
+              >
+                <span
+                  className={`workspace-status-dot workspace-surface-dot-${selectedSurface.dotTone}`}
+                />
+                <span className="workspace-surface-name">{selectedSurface.name}</span>
+                {/* The badge read stays inside a boundary while the selector
+                      around it stays mounted: a badge throw replaces the badge,
+                      never the switcher. */}
+                <SurfaceErrorBoundary key={selectedSurface.id} surfaceLabel={selectedSurface.name}>
                   <SidePanelMeta
                     selectedSurface={selectedSurface}
                     selectedWorkspace={selectedWorkspace}
                   />
-                  <span className="workspace-surface-chevron" aria-hidden="true">
-                    ▾
-                  </span>
-                </button>
-              </div>
+                </SurfaceErrorBoundary>
+                <span className="workspace-surface-chevron" aria-hidden="true">
+                  ▾
+                </span>
+              </button>
+            </div>
 
-              {surfaceMenuOpen ? (
-                <div
-                  className="workspace-surface-menu"
-                  role="listbox"
-                  aria-label="Show in this panel"
-                >
-                  <div className="workspace-menu-label">Show in this panel</div>
-                  <div className="workspace-surface-options">
-                    {sidePanelRegistry.map((surface) => (
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={activeSidePanel === surface.id}
-                        className={`workspace-surface-option${activeSidePanel === surface.id ? " workspace-surface-option-selected" : ""}`}
-                        key={surface.id}
-                        onClick={() => {
-                          setActiveSidePanel(surface.id);
-                          setSurfaceMenuOpen(false);
-                        }}
-                      >
-                        <span
-                          className={`workspace-status-dot workspace-surface-dot-${surface.dotTone}`}
-                        />
-                        <span className="workspace-surface-name">{surface.name}</span>
-                        <span className="workspace-surface-option-meta">
-                          {surface.liveMeta?.snapshot(selectedWorkspace) ?? surface.meta}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
+            {surfaceMenuOpen ? (
+              <div
+                className="workspace-surface-menu"
+                role="listbox"
+                aria-label="Show in this panel"
+              >
+                <div className="workspace-menu-label">Show in this panel</div>
+                <div className="workspace-surface-options">
+                  {sidePanelRegistry.map((surface) => (
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={activeSidePanel === surface.id}
+                      className={`workspace-surface-option${activeSidePanel === surface.id ? " workspace-surface-option-selected" : ""}`}
+                      key={surface.id}
+                      onClick={() => {
+                        setActiveSidePanel(surface.id);
+                        setSurfaceMenuOpen(false);
+                      }}
+                    >
+                      <span
+                        className={`workspace-status-dot workspace-surface-dot-${surface.dotTone}`}
+                      />
+                      <span className="workspace-surface-name">{surface.name}</span>
+                      <span className="workspace-surface-option-meta">
+                        {surface.liveMeta?.snapshot(selectedWorkspace) ?? surface.meta}
+                      </span>
+                    </button>
+                  ))}
                 </div>
-              ) : null}
+              </div>
+            ) : null}
 
-              <div className="workspace-scroll workspace-side-scroll">
+            <div className="workspace-scroll workspace-side-scroll">
+              {/* A body throw replaces the body only; the toolbar above stays
+                    mounted so the user can leave the panel. Panel id only: a
+                    panel switch resets the boundary, while a workspace switch
+                    keeps drafts, focus and scroll — at the price that a panel
+                    error survives it until Retry or a panel switch. */}
+              <SurfaceErrorBoundary key={selectedSurface.id} surfaceLabel={selectedSurface.name}>
                 {selectedSurface.render({
                   appBuild,
                   onReload: handleAppReload,
@@ -1656,9 +1659,9 @@ export function Workspace({
                   onOpenPullRequest: handleOpenPullRequest,
                   workspaceId: selectedWorkspace,
                 })}
-              </div>
+              </SurfaceErrorBoundary>
             </div>
-          </SurfaceErrorBoundary>
+          </div>
         )}
       </aside>
 

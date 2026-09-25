@@ -23,7 +23,8 @@ body:has(.root-fallback) {
   gap: 12px;
   width: 100%;
   max-width: 560px;
-  /* Centred when shorter than the window; top-aligned and scrolling when taller. */
+  /* Centred horizontally; always top-aligned — auto vertical margins
+     compute to zero in normal flow. */
   margin: auto;
   padding: 24px;
   background: var(--panel-card);
@@ -94,6 +95,9 @@ body:has(.root-fallback) {
   flex-direction: column;
   gap: 10px;
   min-height: 0;
+  /* The panel fallback used to inherit its scroll from the scroll div; the
+     app-level one has no scrolling ancestor, so the fallback scrolls itself. */
+  overflow-y: auto;
   padding: 18px;
   background: var(--panel-card);
   border: 1px solid var(--border);
@@ -110,6 +114,17 @@ body:has(.root-fallback) {
 .surface-fallback-details {
   max-height: 160px;
   padding: 10px;
+}
+
+.surface-fallback-note {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.surface-fallback-actions {
+  display: flex;
+  gap: 8px;
 }
 
 /* The app's pill-button vocabulary (settings.css .diagnostics-copy): the
