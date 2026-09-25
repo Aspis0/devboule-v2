@@ -353,7 +353,8 @@ extra"
     fn a_missing_binary_fails_closed_and_is_not_memoized() {
         // A failed probe must be retried on the next create, not close the
         // gate for the daemon's life: failures leave no memo behind.
-        let missing = std::env::temp_dir().join("devboule-codex-probe-does-not-exist");
+        let missing =
+            crate::test_dirs::test_temp_dir("devboule-codex-probe").join("does-not-exist");
         let missing = missing.to_string_lossy().into_owned();
         assert!(!Goals::probe(&missing, &[]).enabled());
         assert!(!Goals::probe(&missing, &["app-server".to_string()]).enabled());
