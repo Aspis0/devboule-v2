@@ -848,11 +848,48 @@ describe("Workspace sessions", () => {
       "Plugin panel content",
     );
 
-    await act(async () => selector.click());
+    // The panel chrome remounts on panel switch — the side-panel boundary
+    // key covers panel and workspace — so the pre-switch node is detached;
+    // re-query the selector instead of reusing it.
+    const reopened = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
+    if (reopened === null) throw new Error("side panel selector did not render");
+    await act(async () => reopened.click());
     const selectedOption = Array.from(
       container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
     ).find((button) => button.textContent?.includes("Plugin panel"));
     expect(selectedOption?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("contains a throwing panel badge inside the side panel, not the workspace", async () => {
+    // The panel's live reads render inside the side-panel boundary: a
+    // snapshot that throws replaces the aside, while the rest of the
+    // workspace keeps working. With the boundary around the panel body only,
+    // the same throw escapes Workspace's own render and unmounts everything.
+    const throwingPanel: SidePanelEntry = {
+      id: "badge-throws",
+      name: "Throwing panel",
+      meta: "test",
+      dotTone: "green",
+      liveMeta: {
+        subscribe: () => () => {},
+        snapshot: () => {
+          throw new Error("badge read failed");
+        },
+      },
+      render: () => <div data-testid="throwing-panel">Throwing panel content</div>,
+    };
+
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace sidePanelRegistry={[throwingPanel]} />));
+    await act(async () => undefined);
+
+    const alert = container.querySelector(".surface-fallback");
+    if (alert === null) throw new Error("side panel fallback did not render");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toContain("Throwing panel");
+    expect(alert.textContent).toContain("badge read failed");
+    // The workspace around the broken panel keeps working.
+    expect(container.querySelector(".workspace-center-panel")).not.toBeNull();
   });
 
   describe("the Changes badge in the panel selector", () => {
@@ -931,7 +968,10 @@ describe("Workspace sessions", () => {
 
       // … while Changes keeps the value it last read: no panel is mounted to
       // refresh it (DECISIONS §9: no background poller for a decoration).
-      await act(async () => selector.click());
+      // Re-query: the panel chrome remounted on the switch above.
+      const reopened = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
+      if (reopened === null) throw new Error("side panel selector did not render");
+      await act(async () => reopened.click());
       expect(option("Changes").querySelector(".workspace-surface-option-meta")?.textContent).toBe(
         "+12 −3",
       );

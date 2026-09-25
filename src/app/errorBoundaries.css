@@ -2,12 +2,19 @@
    SurfaceErrorBoundary). Tokens only — no new colours, no new type scale. */
 
 .root-fallback {
-  display: grid;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  place-items: center;
+  /* A height-constrained scroll container, not a flex child: #root is a
+     block box, so flex sizing is inert here, and body overflow is hidden —
+     without our own height and overflow the card past the fold is clipped
+     with no way to reach Reload. */
+  height: 100%;
+  overflow-y: auto;
   padding: var(--app-pad);
+}
+
+/* Outside .app-shell the body min-width rule would clamp a narrowed window;
+   mirror the design-surface opt-out while the fallback owns the window. */
+body:has(.root-fallback) {
+  min-width: 0;
 }
 
 .root-fallback-card {
@@ -16,6 +23,8 @@
   gap: 12px;
   width: 100%;
   max-width: 560px;
+  /* Centred when shorter than the window; top-aligned and scrolling when taller. */
+  margin: auto;
   padding: 24px;
   background: var(--panel-card);
   border: 1px solid var(--border);
@@ -67,6 +76,16 @@
 .root-fallback-details {
   max-height: 300px;
   padding: 12px;
+}
+
+/* Paseo's compact-footer idiom in CSS: pinned inside the scroll container so
+   Reload stays visible at high zoom or in a short window. */
+.root-fallback-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  padding: 12px 0 4px;
+  background: var(--panel-card);
 }
 
 .surface-fallback {

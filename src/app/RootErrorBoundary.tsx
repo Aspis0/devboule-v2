@@ -3,7 +3,6 @@ import "./errorBoundaries.css";
 
 interface RootErrorBoundaryProps {
   children: ReactNode;
-  onReload: () => void;
 }
 
 interface RootErrorBoundaryState {
@@ -31,9 +30,14 @@ function formatRenderError(value: unknown): string {
 
 // Translates Paseo's RootErrorBoundary
 // (packages/app/src/components/root-error-boundary.tsx:25-43): the whole app
-// sits below it, Reload remounts through a generation key owned by the caller
-// (Paseo's root-app.tsx:20-32), and the fallback carries the details because a
-// packaged Tauri window has no visible console to read them from.
+// sits below it, and the fallback carries the details because a packaged
+// Tauri window has no visible console to read them from. One deliberate
+// change: Reload is a real document reload. A generation-key remount cannot
+// recover a failed lazy() import — React caches the rejection forever (the
+// lazy payload keeps _status = 2 and every later render re-throws _result) —
+// and Paseo's reload (root-app.tsx:20-32, a key bump plus a safe route) has
+// the same gap. window.location.reload recovers both cases, so there is
+// exactly one recovery mechanism and the copy promises nothing else.
 export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErrorBoundaryState> {
   state: RootErrorBoundaryState = { error: null };
 
@@ -52,33 +56,37 @@ export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErr
 
   render(): ReactNode {
     if (this.state.error !== null) {
-      return <RootErrorFallback error={this.state.error} onReload={this.props.onReload} />;
+      return <RootErrorFallback error={this.state.error} />;
     }
     return this.props.children;
   }
 }
 
-interface RootErrorFallbackProps {
-  error: string;
-  onReload: () => void;
-}
-
 // Paseo's copy (packages/app/src/i18n/resources/en.ts:1478-1481) with our
-// name; the Reload button and the capped details box keep their meaning.
-export function RootErrorFallback({ error, onReload }: RootErrorFallbackProps): ReactNode {
+// name; the last body sentence is ours, because a document reload always
+// boots the default surface and the copy must say where the user lands.
+export function RootErrorFallback({ error }: { error: string }): ReactNode {
   return (
     <div className="root-fallback" role="alert">
       <div className="root-fallback-card">
         <h1 className="root-fallback-title">Devboule ran into a problem.</h1>
         <p className="root-fallback-body">
-          Reload the app to try again. If this keeps happening, include the details below when you
-          report it.
+          Reload restarts the app on the Workspace surface. If this keeps happening, include the
+          details below when you report it.
         </p>
         <h2 className="root-fallback-details-label">Details</h2>
         <pre className="root-fallback-details">{error}</pre>
-        <button type="button" className="boundary-reload" onClick={onReload}>
-          Reload
-        </button>
+        {/* Paseo's compact-footer idiom (root-error-boundary.tsx:101-107):
+            Reload is pinned so it never scrolls away at high zoom. */}
+        <div className="root-fallback-footer">
+          <button
+            type="button"
+            className="boundary-reload"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </button>
+        </div>
       </div>
     </div>
   );

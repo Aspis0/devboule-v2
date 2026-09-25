@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, useEffect } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,7 +40,7 @@ describe("SurfaceErrorBoundary", () => {
       root.render(
         <>
           <aside className="shell-stand-in">sidebar</aside>
-          <SurfaceErrorBoundary surfaceLabel="Workspace" resetKey="workspace">
+          <SurfaceErrorBoundary surfaceLabel="Workspace">
             <Broken />
           </SurfaceErrorBoundary>
         </>,
@@ -61,56 +61,53 @@ describe("SurfaceErrorBoundary", () => {
     );
   });
 
-  it("retry remounts the surface so a throw-once child recovers", async () => {
-    let broken = true;
-    function Flaky() {
-      if (broken) throw new Error("first render failed");
+  it("retry remounts the surface: mount and cleanup counts prove it", async () => {
+    let mounts = 0;
+    let cleanups = 0;
+    let broken = false;
+    function Child(): ReactNode {
+      useEffect(() => {
+        mounts += 1;
+        return () => {
+          cleanups += 1;
+        };
+      }, []);
+      if (broken) throw new Error("flaky surface failed");
       return <p>healthy surface child</p>;
     }
-
-    await act(async () => {
-      root.render(
-        <SurfaceErrorBoundary surfaceLabel="Polis" resetKey="polis">
-          <Flaky />
-        </SurfaceErrorBoundary>,
-      );
-    });
-    expect(container.querySelector('[role="alert"]')).not.toBeNull();
-
-    broken = false;
-    const retry = container.querySelector<HTMLButtonElement>(".boundary-retry");
-    if (retry === null) throw new Error("surface retry control did not render");
-    await act(async () => retry.click());
-
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(container.textContent).toContain("healthy surface child");
-  });
-
-  it("clears the error when the reset key changes", async () => {
-    let broken = true;
-    function Child() {
-      if (broken) throw new Error("stale panel failed");
-      return <p>recovered panel</p>;
-    }
-    function Harness({ resetKey }: { resetKey: string }) {
+    function Harness(): ReactNode {
       return (
-        <SurfaceErrorBoundary surfaceLabel="Changes" resetKey={resetKey}>
+        <SurfaceErrorBoundary surfaceLabel="Polis">
           <Child />
         </SurfaceErrorBoundary>
       );
     }
 
     await act(async () => {
-      root.render(<Harness resetKey="changes" />);
+      root.render(<Harness />);
+    });
+    expect(mounts).toBe(1);
+
+    // The update throws: React unmounts the failed subtree as it catches —
+    // Paseo asserts the same cleanup count
+    // (surface-error-boundary.test.tsx:68-69) — so the retry below cannot be
+    // a re-render of the old instance.
+    broken = true;
+    await act(async () => {
+      root.render(<Harness />);
     });
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(cleanups).toBe(1);
 
-    // Navigating away and back mounts the corrected panel under a new key.
+    // Retry clears the error and the child mounts fresh; a re-render of the
+    // old instance would not re-run its mount effect.
     broken = false;
-    await act(async () => {
-      root.render(<Harness resetKey="files" />);
-    });
-    expect(container.textContent).toContain("recovered panel");
+    const retry = container.querySelector<HTMLButtonElement>(".boundary-retry");
+    if (retry === null) throw new Error("surface retry control did not render");
+    await act(async () => retry.click());
+
+    expect(container.textContent).toContain("healthy surface child");
+    expect(mounts).toBe(2);
   });
 
   it("a key change resets the boundary through a remount", async () => {

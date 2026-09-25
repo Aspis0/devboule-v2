@@ -9,6 +9,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import { ErrorText } from "../../components/ErrorText";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
@@ -103,6 +104,25 @@ export { WorkspacePermissionCard, formatPermissionCommand };
 
 /** A subscription that never fires: the badge of a panel with no live reads. */
 const subscribeNoMeta = () => () => {};
+
+// The selected panel's badge: its own live label when the panel reports one
+// (the Changes panel, while it is open and polling), the registry's static
+// label otherwise. A component of its own so the subscription — a store read
+// that can throw on malformed data — renders inside the side-panel error
+// boundary instead of in Workspace's own render.
+function SidePanelMeta({
+  selectedSurface,
+  selectedWorkspace,
+}: {
+  selectedSurface: SidePanelEntry;
+  selectedWorkspace: string | null;
+}): ReactNode {
+  const meta = useSyncExternalStore(
+    selectedSurface.liveMeta?.subscribe ?? subscribeNoMeta,
+    () => selectedSurface.liveMeta?.snapshot(selectedWorkspace) ?? selectedSurface.meta,
+  );
+  return <span className="workspace-surface-meta">{meta}</span>;
+}
 
 /**
  * One badge list per roster row, cached by row identity: the strip maps over
@@ -445,14 +465,6 @@ export function Workspace({
     sidePanelRegistry.find((surface) => surface.id === activeSidePanel) ??
     sidePanelRegistry[0] ??
     SIDE_PANEL_REGISTRY[0];
-  // The selected panel's badge: its own live label when the panel reports one
-  // (the Changes panel, while it is open and polling), the registry's static
-  // label otherwise. Subscribed only to the selected panel — an unmounted panel
-  // reports nothing, which is exactly DECISIONS §3's "last value known".
-  const surfaceMeta = useSyncExternalStore(
-    selectedSurface.liveMeta?.subscribe ?? subscribeNoMeta,
-    () => selectedSurface.liveMeta?.snapshot(selectedWorkspace) ?? selectedSurface.meta,
-  );
   // The centre pane exists only while the strip still has the selected tab:
   // a row the strip hides (its close is in flight, the roster carried it away)
   // or another workspace's session must never keep a pane up — an empty strip
@@ -1563,76 +1575,80 @@ export function Workspace({
             <span className="workspace-vertical-label">side panel</span>
           </button>
         ) : (
-          <div className="workspace-panel-open">
-            <div className="workspace-right-toolbar">
-              <button
-                type="button"
-                className="workspace-icon-button"
-                onClick={() => setRightCollapsed(true)}
-                title="Collapse"
-                aria-label="Collapse side panel"
-              >
-                ›
-              </button>
-              <button
-                type="button"
-                className="workspace-surface-selector"
-                onClick={() => setSurfaceMenuOpen((open) => !open)}
-                aria-haspopup="listbox"
-                aria-expanded={surfaceMenuOpen}
-              >
-                <span
-                  className={`workspace-status-dot workspace-surface-dot-${selectedSurface.dotTone}`}
-                />
-                <span className="workspace-surface-name">{selectedSurface.name}</span>
-                <span className="workspace-surface-meta">{surfaceMeta}</span>
-                <span className="workspace-surface-chevron" aria-hidden="true">
-                  ▾
-                </span>
-              </button>
-            </div>
-
-            {surfaceMenuOpen ? (
-              <div
-                className="workspace-surface-menu"
-                role="listbox"
-                aria-label="Show in this panel"
-              >
-                <div className="workspace-menu-label">Show in this panel</div>
-                <div className="workspace-surface-options">
-                  {sidePanelRegistry.map((surface) => (
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={activeSidePanel === surface.id}
-                      className={`workspace-surface-option${activeSidePanel === surface.id ? " workspace-surface-option-selected" : ""}`}
-                      key={surface.id}
-                      onClick={() => {
-                        setActiveSidePanel(surface.id);
-                        setSurfaceMenuOpen(false);
-                      }}
-                    >
-                      <span
-                        className={`workspace-status-dot workspace-surface-dot-${surface.dotTone}`}
-                      />
-                      <span className="workspace-surface-name">{surface.name}</span>
-                      <span className="workspace-surface-option-meta">
-                        {surface.liveMeta?.snapshot(selectedWorkspace) ?? surface.meta}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+          <SurfaceErrorBoundary
+            key={`${selectedSurface.id}:${selectedWorkspace}`}
+            surfaceLabel={selectedSurface.name}
+          >
+            {/* The panel's own reads — the live badge in the toolbar, the
+                registry render below — happen inside this boundary, so one
+                failing panel leaves the workspace usable. The key resets it
+                on panel or workspace switch. */}
+            <div className="workspace-panel-open">
+              <div className="workspace-right-toolbar">
+                <button
+                  type="button"
+                  className="workspace-icon-button"
+                  onClick={() => setRightCollapsed(true)}
+                  title="Collapse"
+                  aria-label="Collapse side panel"
+                >
+                  ›
+                </button>
+                <button
+                  type="button"
+                  className="workspace-surface-selector"
+                  onClick={() => setSurfaceMenuOpen((open) => !open)}
+                  aria-haspopup="listbox"
+                  aria-expanded={surfaceMenuOpen}
+                >
+                  <span
+                    className={`workspace-status-dot workspace-surface-dot-${selectedSurface.dotTone}`}
+                  />
+                  <span className="workspace-surface-name">{selectedSurface.name}</span>
+                  <SidePanelMeta
+                    selectedSurface={selectedSurface}
+                    selectedWorkspace={selectedWorkspace}
+                  />
+                  <span className="workspace-surface-chevron" aria-hidden="true">
+                    ▾
+                  </span>
+                </button>
               </div>
-            ) : null}
 
-            <div className="workspace-scroll workspace-side-scroll">
-              {/* One registry panel failing leaves the workspace usable; the
-                  key remounts the boundary when the selected panel changes. */}
-              <SurfaceErrorBoundary
-                key={selectedSurface.id}
-                surfaceLabel={selectedSurface.name}
-                resetKey={selectedSurface.id}
-              >
+              {surfaceMenuOpen ? (
+                <div
+                  className="workspace-surface-menu"
+                  role="listbox"
+                  aria-label="Show in this panel"
+                >
+                  <div className="workspace-menu-label">Show in this panel</div>
+                  <div className="workspace-surface-options">
+                    {sidePanelRegistry.map((surface) => (
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={activeSidePanel === surface.id}
+                        className={`workspace-surface-option${activeSidePanel === surface.id ? " workspace-surface-option-selected" : ""}`}
+                        key={surface.id}
+                        onClick={() => {
+                          setActiveSidePanel(surface.id);
+                          setSurfaceMenuOpen(false);
+                        }}
+                      >
+                        <span
+                          className={`workspace-status-dot workspace-surface-dot-${surface.dotTone}`}
+                        />
+                        <span className="workspace-surface-name">{surface.name}</span>
+                        <span className="workspace-surface-option-meta">
+                          {surface.liveMeta?.snapshot(selectedWorkspace) ?? surface.meta}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="workspace-scroll workspace-side-scroll">
                 {selectedSurface.render({
                   appBuild,
                   onReload: handleAppReload,
@@ -1640,9 +1656,9 @@ export function Workspace({
                   onOpenPullRequest: handleOpenPullRequest,
                   workspaceId: selectedWorkspace,
                 })}
-              </SurfaceErrorBoundary>
+              </div>
             </div>
-          </div>
+          </SurfaceErrorBoundary>
         )}
       </aside>
 

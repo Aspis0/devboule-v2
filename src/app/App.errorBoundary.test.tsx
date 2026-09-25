@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   throwShell: false,
 }));
 
-vi.mock("../../lib/tauri", () => ({
+vi.mock("../lib/tauri", () => ({
   daemonStatus: mocks.daemonStatus,
   oracleAsk: mocks.oracleAsk,
   oracleFiles: mocks.oracleFiles,
@@ -63,12 +63,27 @@ vi.mock("./Shell", async (importOriginal) => {
   return { ...actual, Shell };
 });
 
-import { App } from "./App";
+import { AppRoot } from "./AppRoot";
 import { useAppStore } from "../store/appStore";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+const roots: Root[] = [];
+
+function mountApp(): HTMLDivElement {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  roots.push(createRoot(container));
+  return container;
+}
+
+function stubDocumentReload(): ReturnType<typeof vi.fn> {
+  const reload = vi.fn();
+  Object.defineProperty(window.location, "reload", { configurable: true, value: reload });
+  return reload;
+}
 
 beforeEach(() => {
   mocks.throwWorkspace = false;
@@ -101,8 +116,11 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  for (const root of roots.splice(0)) await act(async () => root.unmount());
   useAppStore.setState({ activeSurface: "workspace" });
   document.body.replaceChildren();
+  const location = window.location as unknown as Record<string, unknown>;
+  if (Object.hasOwn(location, "reload")) delete location.reload;
   vi.restoreAllMocks();
 });
 
@@ -110,10 +128,8 @@ describe("App error boundaries", () => {
   it("degrades one broken surface while the shell keeps working", async () => {
     useAppStore.setState({ activeSurface: "workspace" });
     mocks.throwWorkspace = true;
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const root: Root = createRoot(container);
-    await act(async () => root.render(<App />));
+    const container = mountApp();
+    await act(async () => roots[roots.length - 1]?.render(<AppRoot />));
     await vi.waitFor(() => expect(container.querySelector(".surface-fallback")).not.toBeNull(), {
       timeout: 10_000,
     });
@@ -124,6 +140,9 @@ describe("App error boundaries", () => {
     expect(alert.textContent).toContain("workspace render failed");
     // The crescent shell around the broken surface keeps working.
     expect(container.querySelector('[role="navigation"]')).not.toBeNull();
+    // The IPC stubs really intercept: the shell's inventory read went
+    // through the mock, not the real daemon module.
+    expect(mocks.pluginsList).toHaveBeenCalled();
 
     mocks.throwWorkspace = false;
     const retry = alert.querySelector<HTMLButtonElement>(".boundary-retry");
@@ -132,16 +151,32 @@ describe("App error boundaries", () => {
     await vi.waitFor(() => expect(container.textContent).toContain("healthy workspace"), {
       timeout: 10_000,
     });
-    await act(async () => root.unmount());
+  });
+
+  it("catches a throw in App's own effects above App", async () => {
+    // The roster watch and the presence reporter run in App's effects; an
+    // error there is attributed to App's fiber, so only a boundary above App
+    // can catch it — with the boundary in its old place inside App, React
+    // unmounts the root and this render throws out.
+    useAppStore.setState({ activeSurface: "pubvia" });
+    mocks.startPresenceReporting.mockImplementation(() => {
+      throw new Error("presence failed");
+    });
+    const container = mountApp();
+    await act(async () => roots[roots.length - 1]?.render(<AppRoot />));
+    await vi.waitFor(
+      () => expect(container.textContent).toContain("Devboule ran into a problem."),
+      { timeout: 10_000 },
+    );
+    expect(container.textContent).toContain("presence failed");
   });
 
   it("falls back to the root boundary when the shell itself throws", async () => {
     useAppStore.setState({ activeSurface: "pubvia" });
     mocks.throwShell = true;
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const root: Root = createRoot(container);
-    await act(async () => root.render(<App />));
+    const reload = stubDocumentReload();
+    const container = mountApp();
+    await act(async () => roots[roots.length - 1]?.render(<AppRoot />));
     await vi.waitFor(
       () => expect(container.textContent).toContain("Devboule ran into a problem."),
       { timeout: 10_000 },
@@ -149,17 +184,16 @@ describe("App error boundaries", () => {
 
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain("shell render failed");
-    expect(alert?.querySelector(".boundary-reload")?.textContent).toBe("Reload");
+    expect(alert?.querySelector(".root-fallback-footer .boundary-reload")?.textContent).toBe(
+      "Reload",
+    );
 
-    // Reload moves to the safe default surface and remounts the tree.
+    // A failed chunk can only recover through a document reload — a remount
+    // re-throws React's cached lazy rejection — so the button reloads.
     mocks.throwShell = false;
-    const reload = container.querySelector<HTMLButtonElement>(".boundary-reload");
-    if (reload === null) throw new Error("root reload control did not render");
-    await act(async () => reload.click());
-    expect(useAppStore.getState().activeSurface).toBe("workspace");
-    await vi.waitFor(() => expect(container.textContent).toContain("healthy workspace"), {
-      timeout: 10_000,
-    });
-    await act(async () => root.unmount());
+    const button = container.querySelector<HTMLButtonElement>(".boundary-reload");
+    if (button === null) throw new Error("root reload control did not render");
+    await act(async () => button.click());
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });
