@@ -242,6 +242,10 @@ fn main() -> io::Result<()> {
     let mut stdout = stdout.lock();
     let mut last_prompt_id = None;
     let mut permission_request_id = None;
+    // Set when the pending request is the chooser trigger's question: its
+    // answer is the whole point of that trigger, so the reply is reported
+    // on the transcript whatever `message_after_permission` says.
+    let mut chooser_active = false;
     // A real agent says what it did with the permission it was granted; the
     // stub's parked run needs that message on the child's transcript, because
     // the finish report deposits the child's last message and there would
@@ -316,7 +320,38 @@ fn main() -> io::Result<()> {
                 .and_then(|outcome| outcome.get("outcome"))
                 .and_then(Value::as_str)
                 != Some("selected");
-            if message_after_permission && !cancelled {
+            if chooser_active {
+                // Exactly what the answer carried: the option id the person
+                // picked, or the cancellation — the sentence a live check
+                // reads off the transcript to see which choice the card
+                // actually made.
+                chooser_active = false;
+                let text = if cancelled {
+                    "You cancelled".to_string()
+                } else {
+                    let option_id = request
+                        .get("result")
+                        .and_then(|result| result.get("outcome"))
+                        .and_then(|outcome| outcome.get("optionId"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    format!("You picked {option_id}")
+                };
+                emit(
+                    &mut stdout,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": "stub-session",
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": text}
+                            }
+                        }
+                    }),
+                )?;
+            } else if message_after_permission && !cancelled {
                 emit(
                     &mut stdout,
                     json!({
@@ -919,6 +954,39 @@ fn main() -> io::Result<()> {
                         });
                 }
                 if prompt_text.contains("block") {
+                    continue;
+                }
+                if prompt_text.contains("chooser") {
+                    // Checked before `permission` so a prompt naming both
+                    // takes this branch: a question-shaped card whose
+                    // repeated allow kind makes the daemon mark it a
+                    // chooser, plus a refusal so the option set is whole.
+                    chooser_active = true;
+                    permission_request_id = Some(99);
+                    emit(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 99,
+                            "method": "session/request_permission",
+                            "params": {
+                                "sessionId": "stub-session",
+                                "title": "Which colour should the fence be?",
+                                "description": "Which colour should the fence be?",
+                                "toolCall": {
+                                    "toolCallId": "tool-chooser",
+                                    "title": "Which colour should the fence be?",
+                                    "status": "in_progress"
+                                },
+                                "options": [
+                                    {"optionId": "red", "name": "Red", "kind": "allow_once"},
+                                    {"optionId": "green", "name": "Green", "kind": "allow_once"},
+                                    {"optionId": "blue", "name": "Blue", "kind": "allow_once"},
+                                    {"optionId": "none", "name": "None", "kind": "reject_once"}
+                                ]
+                            }
+                        }),
+                    )?;
                     continue;
                 }
                 if prompt_text.contains("permission") {

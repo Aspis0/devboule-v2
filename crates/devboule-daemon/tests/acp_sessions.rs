@@ -752,6 +752,97 @@ fn acp_resolved_permission_is_not_reopened_after_live_reattach() {
         .expect("close resolved session");
 }
 
+/// A2a's live check, driven through the real client and broker: a prompt
+/// naming the stub's `chooser` trigger asks a question-shaped card (three
+/// colours plus a refusal), the daemon marks it a chooser on the wire, and
+/// the stub says back exactly what the answer carried — the option id the
+/// person picked, or the cancellation — before the turn ends the normal way.
+#[test]
+fn acp_chooser_reports_the_option_the_person_picked() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    let subscription = test
+        .client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+
+    test.client
+        .session_send(&session.id, "chooser")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::PermissionRequest {
+                    tool_call_id,
+                    options,
+                    is_chooser: Some(true),
+                    ..
+                } if tool_call_id == "tool-chooser"
+                    && options.len() == 4
+                    && options.iter().filter(|option| option.kind == "allow_once").count() == 3
+            )
+        })
+    });
+    test.client
+        .session_permission_respond_with_subscription(
+            &session.id,
+            subscription,
+            "tool-chooser",
+            PermissionOutcome::AllowOnce,
+            Some("blue"),
+        )
+        .expect("pick blue");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You picked blue")
+        })
+    });
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn"
+            )
+        })
+    });
+
+    // The other arm of the same report: the interrupt releases the pending
+    // card as cancelled, and the stub says the cancellation by name.
+    test.client
+        .session_send(&session.id, "chooser")
+        .expect("second prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-chooser"
+                )
+            })
+            .count()
+            == 2
+    });
+    test.client
+        .session_interrupt(&session.id)
+        .expect("interrupt the second turn");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You cancelled")
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
 // The app attaches right after picking a provider, before any prompt. With
 // the journal configured (the daemon always configures it), attach delegates
 // delivery to the live-agent replay pull; the manifest must still arrive.
