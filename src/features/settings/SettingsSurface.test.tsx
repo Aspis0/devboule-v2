@@ -91,6 +91,7 @@ import {
 } from "../../lib/tauri";
 import type {
   AgentProfile,
+  VocabularyFeature,
   AgentProfilesDocument,
   AgentProfilesReply,
   DaemonStatus,
@@ -2621,32 +2622,23 @@ describe("Settings agents panel", () => {
     });
   });
 
-  it("lists stored features as saved but unused, and Remove deletes one", async () => {
+  it("keeps a stored feature it cannot draw, and carries it through a save", async () => {
+    // The provider was never asked what it offers: this test's mock answers the
+    // vocabulary query with no `features` axis at all, which is what a daemon
+    // older than the field replies. With no list there is nothing to prune by,
+    // so a stored key survives the save — the rule that separates "nobody could
+    // ask" from "offers nothing", and the reason the daemon's own prune is
+    // conditional in the same way.
     const featured = makeProfile({ features: { autoAccept: true, sandbox: "none" } });
     await renderAgentsPanel({ profiles: [featured], standingInstructions: "" });
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
-
-    const editor = container.querySelector(".agent-inline-editor");
-    if (!editor) throw new Error("editor did not render");
-    // The stored key and its saved value are shown read-only, with the
-    // sentence saying Devboule does not deliver them.
-    expect(editor.textContent).toContain("sandbox");
-    expect(editor.textContent).toContain('"none"');
-    expect(editor.textContent).toContain("not used by Devboule");
-    expect(editor.querySelector('[aria-label="Feature value 1"]')).toBeNull();
-
-    const remove = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Remove feature sandbox"]',
-    );
-    if (!remove) throw new Error("the feature's remove button did not render");
-    await act(async () => remove.click());
     await act(async () => sectionButton("Save").click());
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
-      profiles: [{ ...featured, features: { autoAccept: true } }],
+      profiles: [featured],
       standingInstructions: "",
     });
   });
@@ -2673,10 +2665,13 @@ describe("Settings agents panel", () => {
 
     const editor = container.querySelector(".agent-inline-editor");
     if (!editor) throw new Error("the editor did not open for the legacy profile");
-    // Absent features read as none: the editor says the profile carries no
-    // others instead of throwing on the missing map, and the fields the
-    // profile did have are in their inputs.
-    expect(editor.textContent).toContain("No other features are stored");
+    // Absent features read as none, not as a crash: the tick is drawn (this
+    // daemon answers the vocabulary query without a features axis, so the form
+    // falls back to the one feature every agent family applies) and nothing
+    // invented is stored for the keys the profile never had.
+    expect(
+      editor.querySelector('[aria-label="Auto accept for children of this profile"]'),
+    ).not.toBeNull();
     expect(editor.querySelector<HTMLInputElement>('[aria-label="Profile name"]')?.value).toBe(
       "Explorer",
     );
@@ -3522,11 +3517,21 @@ describe("Settings agents panel — new profile form", () => {
     };
   }
 
+  /** The tick row every agent family's answer carries, as the daemon answers it. */
+  function autoAcceptRow(): VocabularyFeature {
+    return { id: "autoAccept", label: "Auto accept", author: "daemon", type: "toggle" };
+  }
+
   function makeVocabulary(overrides: Partial<ProviderVocabulary> = {}): ProviderVocabulary {
     return {
       provider: "claude",
       models: { state: "absent", items: [] },
       modes: { state: "absent", items: [] },
+      // The features axis an answer carries by default in this file: the tick,
+      // which every agent family offers. A test that wants the no-answer case
+      // passes `features: undefined` — a daemon older than the field — and a
+      // test that wants a provider with more rows overrides `items`.
+      features: { state: "present", items: [autoAcceptRow()] },
       source: "probe",
       probedAtMs: null,
       ...overrides,
@@ -4683,12 +4688,16 @@ describe("Settings agents panel — new profile form", () => {
     expect(field("Thinking option").value).toBe("high");
 
     // A wrong pick: the new provider's own vocabulary is empty, not the old
-    // provider's — but the stored feature key rides along untouched.
+    // provider's — but the stored feature key rides along untouched. It is not
+    // drawn: this handshake advertises no `provider_vocabulary`, so nobody has
+    // answered what either provider offers, and a form that guessed a control
+    // for a key it cannot read would write a boolean over a value only the
+    // provider can name. Carried, not shown, and not pruned — the save below
+    // proves the carrying.
     await typeText(providerSelect, "claude");
     expect(field("Model").value).toBe("");
     expect(field("Mode").value).toBe("");
     expect(field("Thinking option").value).toBe("");
-    expect(editor.textContent).toContain("sandbox");
 
     // Text typed under the wrong provider is dropped with that provider's
     // own fields; switching back restores what grok held.
@@ -5088,8 +5097,11 @@ describe("Settings agents panel — new profile form", () => {
     // off-switch pair and the no-note sentence, the delete-confirm copy,
     // the editor's two hints (when the spawn prompt is sent, and that running
     // agents keep what they started with), the thinking option's own hint,
-    // the two stored-features sentences (none stored; and saved but not
-    // delivered, which is what the read-only rows say), the overlay add
+    // the one feature-list sentence (the provider answered and offered
+    // nothing; the read-only rows and their "saved but not delivered"
+    // sentence went with the D4 prune, and the ACP cold start renders a
+    // role=status ask that the in-flight ask below already collects),
+    // the overlay add
     // control's own sentence, the three cap refusals, the model/mode
     // refusals, the two profile-cap sentences, the two catalog sentences, the
     // heading description, the intro copy, the tick notes (including the
@@ -5099,7 +5111,7 @@ describe("Settings agents panel — new profile form", () => {
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(45);
+    expect(sentences).toHaveLength(44);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

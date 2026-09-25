@@ -1506,6 +1506,68 @@ export type VocabularyState = "present" | "none" | "absent";
  */
 export type VocabularyOrigin = "provider" | "daemon";
 
+/** One choice a `select` feature offers. `id` is what the profile stores and
+ *  the provider's wire receives; `label` is the word the form prints. */
+export interface VocabularyFeatureOption {
+  id: string;
+  label: string;
+}
+
+/** The control a profile form draws for one feature. Paseo's feature union
+ *  discriminates on the same word, and the wire keeps it. */
+export type VocabularyFeatureControl = "toggle" | "select";
+
+/**
+ * One feature a provider offers a profile. It is a **declaration** and carries
+ * no value: the value a human chose lives on the profile, so one answer can
+ * dress a form for any profile of that provider.
+ *
+ * `author` is per row because one provider's list is mixed: an ACP answer
+ * carries the agent's own declared config options beside this daemon's
+ * `autoAccept` tick, and an axis-level author would have to lie about one of
+ * the two.
+ *
+ * `models` is the model gate. Absent means every model of the family; a list
+ * means exactly those ids, and a form filters on it without holding a model
+ * name of its own.
+ */
+export interface VocabularyFeature {
+  /** The key in the profile's `features` map, spelled as the spawn path reads
+   *  it. A control whose key disagreed with the reader would save a value
+   *  nothing delivers. */
+  id: string;
+  label: string;
+  author: VocabularyOrigin;
+  type: VocabularyFeatureControl;
+  /** Non-empty exactly when `type` is `"select"`. Absent for a toggle — a
+   *  form that read `[]` and one that read `undefined` would draw two
+   *  different widgets for one row. */
+  options?: VocabularyFeatureOption[];
+  /** Absent means "every model". Typed optional because the daemon omits the
+   *  key when there is no gate — the rule `AgentProfile.features` learned the
+   *  hard way: a key the daemon may omit cannot be typed as required. */
+  models?: string[];
+}
+
+/**
+ * The features axis of a `provider_vocabulary` reply. No axis-level `origin`:
+ * authorship is per row, because an ACP list mixes the agent's declarations
+ * with this daemon's own tick.
+ *
+ * `probing` is the fourth fact this axis carries. An ACP provider's list is
+ * read by starting the provider once, so the first ask answers `absent` with
+ * `probing: true` while that read runs and a later ask answers the list; a form
+ * that read `absent` as "offers nothing" would show a profile with no features
+ * for the whole of a cold start.
+ */
+export interface VocabularyFeatures {
+  state: VocabularyState;
+  /** Omitted unless `state` is `"present"` is **not** the rule here — see
+   *  `VocabularyFeature.author`. */
+  probing?: boolean;
+  items: VocabularyFeature[];
+}
+
 /** The models axis of a `ProviderVocabulary` reply. Items are the live manifest's shape, reused. */
 export interface VocabularyModels {
   state: VocabularyState;
@@ -1534,6 +1596,13 @@ export interface ProviderVocabulary {
   provider: string;
   models: VocabularyModels;
   modes: VocabularyModes;
+  /**
+   * The features axis. **Optional on the wire, and absent means no features**:
+   * a daemon older than the field answers without it, so a reader must draw no
+   * feature controls rather than throw on the missing key. Same reason
+   * `AgentProfile.features` is optional.
+   */
+  features?: VocabularyFeatures | null;
   /** How THIS reply was produced: a cached read (`"cache"`) or a fresh probe (`"probe"`). */
   source: "cache" | "probe";
   /** When the cache entry was filled; null for probe replies, which are fresh by definition. */

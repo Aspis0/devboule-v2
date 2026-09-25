@@ -27,7 +27,13 @@ use crate::codex_view::{
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::profile_delivery::ProfileDelivery;
+use crate::provider_features::FAST_MODE_FEATURE;
 use crate::server::ServerState;
+
+/// The `serviceTier` value Codex's fast mode is spelled by. Paseo's
+/// `turn/start` parameter of the same name takes `"fast"`, and no other value
+/// is ever written here.
+const SERVICE_TIER_FAST: &str = "fast";
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const KILL_GRACE: Duration = Duration::from_secs(2);
@@ -204,6 +210,16 @@ pub(super) fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireEr
         .mode_id
         .as_deref()
         .unwrap_or(crate::codex_view::DEFAULT_MODE);
+    // A stored feature with no frame here is refused before a process exists,
+    // for the reason every family now gives: the card named it, and this client
+    // sends `model`, `effort`, `approvalPolicy`, `sandboxPolicy` and
+    // `serviceTier` and nothing else. The model gate is this family's own
+    // `serviceTier`, read from the same table the form drew (`fastMode`).
+    crate::profile_delivery::refuse_undeclared(
+        &crate::provider_features::codex_declarations(),
+        delivery.model_id.as_deref(),
+        &delivery.features,
+    )?;
     validate_mode(mode_id)?;
     if tick_contradicts(delivery) {
         return Err(WireError::new(
@@ -221,7 +237,7 @@ pub(super) fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireEr
 /// catalog is the vocabulary, so the refusal carries the two distinct
 /// sentences: a provider that publishes no models is not a provider whose
 /// named model is unknown.
-fn seed_model_and_effort(
+pub(crate) fn seed_model_and_effort(
     state: &Arc<CodexState>,
     delivery: &ProfileDelivery,
 ) -> Result<(), WireError> {
@@ -238,6 +254,60 @@ fn seed_model_and_effort(
             delivery.thinking_option_id.as_deref(),
         )?;
     }
+    Ok(())
+}
+
+/// The profile's fast-mode tick, seeded as the service tier every later
+/// `turn/start` carries. Called after [`seed_model_and_effort`] so the model
+/// the gate is read against is the model the child runs.
+///
+/// `false` seeds nothing: the tier has no "off" spelling on this wire, and the
+/// provider's default is the same state as no tick. A `true` for a model the
+/// table does not list was refused by `validate_delivery` before this child
+/// existed, so reaching here with one is a bug rather than a value to handle —
+/// and it is still refused, because silently starting unflagged is the exact
+/// silence the card rule forbids.
+pub(crate) fn seed_fast_mode(
+    state: &Arc<CodexState>,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    let Some(tick) = crate::profile_delivery::toggle_value(&delivery.features, FAST_MODE_FEATURE)?
+    else {
+        return Ok(());
+    };
+    if !tick {
+        return Ok(());
+    }
+    // The delivered model, which `validate_delivery` judged and
+    // `seed_model_and_effort` just set: the state's own current model is not
+    // read, because it is the same string by then and borrowing it out of a
+    // temporary would be a lifetime bug wearing a normal-looking line.
+    let Some(model) = delivery
+        .model_id
+        .as_deref()
+        .filter(|model| !model.is_empty())
+    else {
+        // No named model: this daemon has no fact about the provider's own
+        // default to gate a flag on, so a fast tick is refused rather than
+        // sent blind against a tier nobody named.
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "the profile asks Codex to run fast and names no model to check that against; the creation is refused",
+        ));
+    };
+    let offered = crate::provider_features::codex_declarations()
+        .iter()
+        .filter(|row| row.id == FAST_MODE_FEATURE)
+        .any(|row| crate::provider_features::offered_for(row, model));
+    if !offered {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "the profile asks Codex to run fast on model '{model}', which does not carry that feature; the creation is refused rather than started without it",
+            ),
+        ));
+    }
+    state.set_service_tier(Some(SERVICE_TIER_FAST));
     Ok(())
 }
 
@@ -440,6 +510,12 @@ fn spawn_codex(
     // handshake just brought back, so an undeliverable choice refuses here,
     // before the child is a session, instead of running something else.
     if let Err(error) = seed_model_and_effort(&state, &delivery) {
+        terminate_shared_process(&process);
+        return Err(error);
+    }
+    // The fast-mode tick, seeded after the model so the gate is read against
+    // the model the child actually runs, and before any turn can be sent.
+    if let Err(error) = seed_fast_mode(&state, &delivery) {
         terminate_shared_process(&process);
         return Err(error);
     }
@@ -826,6 +902,7 @@ impl Write for CodexWriter {
                 policy_mode.as_deref(),
                 Some(&model),
                 effort.as_deref(),
+                self.state.service_tier().as_deref(),
             ),
             "Codex",
         )
@@ -1220,6 +1297,7 @@ fn turn_start_params(
     policy_mode: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
+    service_tier: Option<&str>,
 ) -> Value {
     // The thread already carries the mode preset from `thread/start`; the
     // policy fields go back only after an explicit `set_mode`.
@@ -1235,7 +1313,22 @@ fn turn_start_params(
     if let Some(effort) = effort {
         params.insert("effort".to_string(), Value::String(effort.to_string()));
     }
+    insert_service_tier(&mut params, service_tier);
     Value::Object(params)
+}
+
+/// The profile's fast-mode tick, on the frame Codex reads its service tier
+/// from — Paseo's `params.serviceTier = "fast"`, sent on every turn because
+/// the server keeps no tier between them. `None` writes no key: a profile that
+/// never ticked fast mode sends no parameter rather than one spelling "off"
+/// the provider has no meaning for.
+fn insert_service_tier(params: &mut serde_json::Map<String, Value>, service_tier: Option<&str>) {
+    if let Some(service_tier) = service_tier {
+        params.insert(
+            "serviceTier".to_string(),
+            Value::String(service_tier.to_string()),
+        );
+    }
 }
 
 fn turn_steer_params(thread_id: &str, expected_turn_id: &str, text: &str) -> Value {
@@ -1294,6 +1387,7 @@ fn turn_start_params_with_images(
     policy_mode: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
+    service_tier: Option<&str>,
 ) -> Value {
     // The thread already carries the mode preset from `thread/start`; the
     // policy fields go back only after an explicit `set_mode`.
@@ -1310,6 +1404,7 @@ fn turn_start_params_with_images(
     if let Some(effort) = effort {
         params.insert("effort".to_string(), Value::String(effort.to_string()));
     }
+    insert_service_tier(&mut params, service_tier);
     Value::Object(params)
 }
 
@@ -1323,6 +1418,7 @@ fn turn_start_params_for_prompt(
 ) -> Value {
     let (model, effort) = state.model_and_effort();
     let policy_mode = state.mode_override();
+    let service_tier = state.service_tier();
     turn_start_params_with_images(
         &state.thread_id(),
         text,
@@ -1330,6 +1426,7 @@ fn turn_start_params_for_prompt(
         policy_mode.as_deref(),
         Some(&model),
         effort.as_deref(),
+        service_tier.as_deref(),
     )
 }
 

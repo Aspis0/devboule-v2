@@ -135,3 +135,116 @@ fn a_codex_auto_accept_tick_over_an_asking_mode_is_refused() {
         error.message
     );
 }
+
+/// A catalog with a model the fast-mode table names, so the gate has
+/// something true to answer about.
+fn two_model_catalog() -> crate::codex_view::CodexCatalog {
+    let frame = serde_json::json!({
+        "data": [
+            {"id": "gpt-5.1", "displayName": "GPT 5.1", "isDefault": true,
+             "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+             "defaultReasoningEffort": "high"},
+            {"id": "gpt-5.6", "displayName": "GPT 5.6",
+             "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+             "defaultReasoningEffort": "high"}
+        ]
+    });
+    catalog_from_response(&frame).expect("catalog")
+}
+
+fn profile(model: &str, features: serde_json::Value) -> ProfileDelivery {
+    ProfileDelivery::for_child(
+        "auto",
+        model,
+        None,
+        features.as_object().expect("an object of features"),
+    )
+}
+
+/// The tick reaches the child on the frame this family already sends: Paseo's
+/// `serviceTier: "fast"` parameter of `turn/start`, because the thread keeps no
+/// tier between turns. Pinned on the params the prompt actually sends, not on a
+/// field, so a seed that never reaches the wire fails.
+#[test]
+fn a_codex_fast_mode_tick_reaches_the_turn_parameters() {
+    let state = Arc::new(CodexState::new(
+        "thread".to_string(),
+        two_model_catalog(),
+        "auto",
+    ));
+    let delivery = profile("gpt-5.6", serde_json::json!({"fastMode": true}));
+    seed_model_and_effort(&state, &delivery).expect("the model seeds");
+    super::seed_fast_mode(&state, &delivery).expect("the flag seeds");
+
+    let params = turn_start_params_for_prompt(&state, "report your result", &[]);
+    assert_eq!(
+        params["serviceTier"], "fast",
+        "the first turn runs fast, as the card named it: {params}"
+    );
+
+    // An unticked profile sends no parameter at all: `serviceTier` has no
+    // "off" spelling, and writing one would assert an unmeasured choice.
+    let plain = Arc::new(CodexState::new(
+        "thread".to_string(),
+        two_model_catalog(),
+        "auto",
+    ));
+    let unticked = profile("gpt-5.6", serde_json::json!({}));
+    seed_model_and_effort(&plain, &unticked).expect("seeded");
+    super::seed_fast_mode(&plain, &unticked).expect("nothing to seed");
+    assert!(
+        turn_start_params_for_prompt(&plain, "report your result", &[])
+            .get("serviceTier")
+            .is_none(),
+        "no tick, no parameter"
+    );
+}
+
+/// A flag the model does not carry is refused where it is read, not dropped on
+/// the way to the wire: the card named `fastMode=true`, and a child started
+/// without it is the silence this whole gate exists to end.
+#[test]
+fn a_codex_fast_mode_tick_the_model_does_not_carry_is_refused() {
+    let state = Arc::new(CodexState::new(
+        "thread".to_string(),
+        two_model_catalog(),
+        "auto",
+    ));
+    // `gpt-5.1` is a real model of this catalog and is not in the fast table.
+    let delivery = profile("gpt-5.1", serde_json::json!({"fastMode": true}));
+    seed_model_and_effort(&state, &delivery).expect("the model itself is fine");
+    let error = super::seed_fast_mode(&state, &delivery)
+        .expect_err("the flag is not available on this model");
+    assert!(
+        error.message.contains("gpt-5.1") && error.message.contains("does not carry"),
+        "the refusal names the model and the missing feature: {}",
+        error.message
+    );
+    assert!(
+        state.service_tier().is_none(),
+        "a refused seed leaves no tier behind"
+    );
+
+    // And `false` is not a tick: nothing is asked for, so nothing is refused.
+    let off = profile("gpt-5.1", serde_json::json!({"fastMode": false}));
+    super::seed_fast_mode(&state, &off).expect("an off flag asks for nothing");
+}
+
+/// A stored feature this family has no frame for refuses the creation before a
+/// process exists — the same rule every family now applies, read from the same
+/// table the form drew its controls from.
+#[test]
+fn a_codex_feature_with_no_frame_is_refused_before_the_child() {
+    validate_delivery(&profile("gpt-5.1", serde_json::json!({"engine": "m2"})))
+        .expect_err("Codex has no `engine` frame");
+    // The declared keys pass on shape; the model gate is what refuses later.
+    validate_delivery(&profile("gpt-5.6", serde_json::json!({"fastMode": true})))
+        .expect("a declared feature on a model that carries it");
+    let error = validate_delivery(&profile("gpt-5.1", serde_json::json!({"fastMode": true})))
+        .expect_err("the same key on a model outside the gate");
+    assert!(
+        error.message.contains("does not carry that feature"),
+        "one sentence, naming the feature and the model: {}",
+        error.message
+    );
+}

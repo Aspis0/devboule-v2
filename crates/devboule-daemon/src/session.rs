@@ -120,6 +120,11 @@ mod acp_client;
 /// and the resume fixture's `AcpEnv` - must hold this lock for the span it owns.
 #[cfg(test)]
 pub(crate) use acp_client::lock_acp_env;
+
+/// The one ACP declaration read the profile form's feature axis is built on.
+/// Re-exported because the read lives with the ACP client (it spawns a child
+/// and drives the handshake) and its only caller is outside `session`.
+pub(crate) use acp_client::probe_declarations;
 /// The two bounds on a provider startup, out of a private module: the client's
 /// `session_resume` budget is sized against them (`crate::client`), and a
 /// number that decides another layer's deadline must be read here rather than

@@ -67,6 +67,10 @@ mod process_tree;
 mod profile_delivery;
 pub mod provider_catalog;
 #[cfg(feature = "server")]
+mod provider_feature_probe;
+#[cfg(feature = "server")]
+mod provider_features;
+#[cfg(feature = "server")]
 mod provider_update;
 #[cfg(feature = "server")]
 mod provider_vocabulary;

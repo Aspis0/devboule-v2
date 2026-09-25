@@ -579,6 +579,18 @@ pub(crate) struct HandshakeManifest {
     /// separate states. Read here so the same parse that produces the
     /// manifest produces the capabilities; there is no second reader.
     pub prompt_capabilities: PromptCapabilities,
+    /// The agent's own declared `select` config options **other than** the
+    /// model and effort selectors, as the two shapes the two consumers need:
+    /// `declared_features` is the declaration the profile form draws (labels
+    /// and choices), `declared_surfaces` is the same list reduced to id and
+    /// values for the create-time delivery that validates a choice against it.
+    /// Read from the same array the two switches are read from, because the
+    /// old parse walked it, took two options out and dropped the rest; a
+    /// provider-authored dial that exists on the wire and reaches nobody is the
+    /// defect these fields close. Empty is an answer, not a failure: an agent
+    /// that declares no extra select declares no feature.
+    pub declared_features: Vec<devboule_protocol::VocabularyFeature>,
+    pub declared_surfaces: Vec<ConfigOptionSurface>,
 }
 
 /// Parses the handshake pair into the manifest to publish plus the switch
@@ -653,11 +665,22 @@ pub(crate) fn merge_handshake_manifest(
         .map(|catalog| catalog.manifest.clone())
         .or_else(|| vendor.map(|catalog| catalog.manifest));
 
+    // Read **before** the struct literal, because the two fields below move
+    // `modes` and `shape`: the exclusion these lists share is the switch ids this
+    // same parse found and the mode list it must not offer a second time.
+    let taken = switch_ids(&shape);
+    let declared_features =
+        declared_features_from_options(new_session_result, &taken, modes.as_ref());
+    let declared_surfaces =
+        declared_surfaces_from_options(new_session_result, &taken, modes.as_ref());
+
     // Modes only, or nothing at all: publish the modes-only manifest (so
     // "this agent offers no model list" stays distinct from "no agent"),
     // but record no switch shape.
     HandshakeManifest {
         prompt_capabilities: prompt_capabilities_from_initialize(initialize_result),
+        declared_features,
+        declared_surfaces,
         event: event.or_else(|| {
             modes.map(|modes| SessionEvent::SessionManifest {
                 provider_id,
@@ -668,6 +691,173 @@ pub(crate) fn merge_handshake_manifest(
         }),
         shape: shape.has_any_surface().then_some(shape),
     }
+}
+
+/// Whether one declared select **is** the session's mode selector.
+///
+/// Excluded by value-set and not by `id == "mode"`, because the ACP spec makes
+/// `category` advisory and an agent may name the option anything; but an option
+/// whose choices are exactly the modes the standard `modes` block already listed
+/// is that block redressed. A profile's mode is its `modeId`, switched with
+/// `session/set_mode`, so a second control over the same values would be two
+/// sources for one setting — reached by two different verbs, one of them
+/// silently last.
+fn is_the_mode_selector(
+    option: &serde_json::Value,
+    choices: &[devboule_protocol::VocabularyFeatureOption],
+    modes: Option<&SessionModeStateView>,
+) -> bool {
+    if option.get("category").and_then(serde_json::Value::as_str) == Some("mode") {
+        return true;
+    }
+    let Some(modes) = modes else {
+        return false;
+    };
+    !choices.is_empty()
+        && choices.len() == modes.available_modes.len()
+        && choices.iter().all(|choice| {
+            modes
+                .available_modes
+                .iter()
+                .any(|mode| mode.id == choice.id)
+        })
+}
+
+/// The same options, reduced to what a delivery validates a choice against:
+/// the declared id and its declared values. One parse of the array for both
+/// shapes would have made the delivery and the form agree by accident; reading
+/// the same helper's exclusion twice, with the same taken ids, makes them
+/// agree by construction.
+/// The two option ids the daemon drives as switches, from the shape the same
+/// parse produced. One helper, so the declaration list and the surface list
+/// exclude exactly the same options.
+fn switch_ids(shape: &ModelSwitchShape) -> [Option<&str>; 2] {
+    [
+        shape
+            .model
+            .config
+            .as_ref()
+            .map(|surface| surface.id.as_str()),
+        shape
+            .effort
+            .config
+            .as_ref()
+            .map(|surface| surface.id.as_str()),
+    ]
+}
+
+pub(crate) fn declared_surfaces_from_options(
+    result: &serde_json::Value,
+    taken: &[Option<&str>],
+    modes: Option<&SessionModeStateView>,
+) -> Vec<ConfigOptionSurface> {
+    declared_features_from_options(result, taken, modes)
+        .into_iter()
+        .map(|feature| ConfigOptionSurface {
+            id: feature.id,
+            values: feature
+                .options
+                .into_iter()
+                .map(|option| option.id)
+                .collect(),
+        })
+        .collect()
+}
+
+/// The feature declarations in a `configOptions` array: every `select` option
+/// that is **not** one of the switches the daemon already drives, turned into
+/// a control whose stored key is the option's declared id.
+///
+/// `taken` is the exclusion the brief's step 1 names: the model and
+/// effort options are the `thinkingOptionId`/`model` fields of a profile
+/// already, and a second control over the same value would be two sources for
+/// one setting, disagreeing silently. `None` entries are slots no switch filled
+/// (an agent with no effort surface leaves the second one empty), so the same
+/// call works for any handshake shape.
+///
+/// A third exclusion beyond the two switch ids: a `mode`-category option, or a
+/// row the standard `modes` block already describes. A profile stores its mode
+/// in `modeId` and the daemon switches it with `session/set_mode`; a second
+/// control over the same five values would be two sources for one setting, and
+/// the identity test is by the declared **values**, because an id of `mode` is
+/// not a promise and `category` is advisory.
+///
+/// An option contributes no row when it has no `id`, or no choices at all: a
+/// dial the daemon cannot name or set. A duplicate `id` is the agent
+/// contradicting itself, and the first declaration wins — the same rule
+/// `catalog_from_config_options` applies to a duplicate model id, for the same
+/// reason (a controlled select cannot hold two options with one key).
+///
+/// The current value is deliberately **not** filtered on: unlike the switch
+/// parse, which builds a manifest from it and cannot build one from a
+/// self-inconsistent list, a feature row needs only the choices, and refusing a
+/// whole handshake over an odd current value would cost the session its model
+/// list to protect nothing.
+pub(crate) fn declared_features_from_options(
+    result: &serde_json::Value,
+    taken: &[Option<&str>],
+    modes: Option<&SessionModeStateView>,
+) -> Vec<devboule_protocol::VocabularyFeature> {
+    let options = match result
+        .get("configOptions")
+        .and_then(serde_json::Value::as_array)
+    {
+        Some(options) => options,
+        None => return Vec::new(),
+    };
+    let claimed: Vec<&str> = taken.iter().copied().flatten().collect();
+    let mut declared: Vec<devboule_protocol::VocabularyFeature> = Vec::new();
+    for option in options {
+        if option.get("type").and_then(serde_json::Value::as_str) != Some("select") {
+            continue;
+        }
+        let Some(id) = option.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if id.is_empty() || claimed.contains(&id) || declared.iter().any(|row| row.id == id) {
+            // A duplicate declaration is the agent contradicting itself; the
+            // first row wins, as the model catalog's parse does for a
+            // duplicate model id.
+            continue;
+        }
+        let mut choices: Vec<devboule_protocol::VocabularyFeatureOption> = option
+            .get("options")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let value = entry.get("value").and_then(serde_json::Value::as_str)?;
+                if value.is_empty() {
+                    return None;
+                }
+                Some(devboule_protocol::VocabularyFeatureOption {
+                    label: entry
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(value)
+                        .to_string(),
+                    id: value.to_string(),
+                })
+            })
+            .collect();
+        // Order-preserving de-duplication: a repeated choice would give a
+        // select two options with one value, which React keys collide on.
+        choices.dedup_by(|a, b| a.id == b.id);
+        if is_the_mode_selector(option, &choices, modes) {
+            continue;
+        }
+        let label = option
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(id);
+        if let Some(feature) =
+            crate::provider_features::select_declaration(id.to_string(), label.to_string(), choices)
+        {
+            declared.push(feature);
+        }
+    }
+    declared
 }
 
 fn manifest_from_vendor_models(
@@ -1222,6 +1412,14 @@ pub(crate) fn current_mode_id_from_update(
         .filter(|mode_id| !mode_id.is_empty())
         .map(str::to_string)
 }
+
+/// The feature-declaration read, in its own file: the array is the third thing
+/// the handshake parse takes from one reply, and its rules are all about which
+/// options become a control — a topic that reads better beside the fixture
+/// than at the end of a 2400-line view module.
+#[cfg(test)]
+#[path = "acp_view_declared_features_tests.rs"]
+mod declared_features_tests;
 
 #[cfg(test)]
 mod tests {

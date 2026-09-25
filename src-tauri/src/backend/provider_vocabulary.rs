@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    DaemonMessage, ErrorCode, VocabularyModels, VocabularyModes, VocabularySource,
+    DaemonMessage, ErrorCode, VocabularyFeatures, VocabularyModels, VocabularyModes,
+    VocabularySource,
 };
 use tauri::State;
 
@@ -48,6 +49,12 @@ pub struct ProviderVocabularyReply {
     pub provider: String,
     pub models: VocabularyModels,
     pub modes: VocabularyModes,
+    /// The features axis, `None` when the daemon answered without the field —
+    /// which is a daemon older than the axis, and reads as "no features".
+    /// Optional here for the reason it is optional on the wire: the object
+    /// below is what TypeScript reads, and a key the daemon may omit must be
+    /// typed optional or the panel throws on reading it.
+    pub features: Option<VocabularyFeatures>,
     pub source: VocabularySource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub probed_at_ms: Option<u64>,
@@ -66,6 +73,7 @@ pub async fn provider_vocabulary_get(
                 provider,
                 models,
                 modes,
+                features,
                 source,
                 probed_at_ms,
                 ..
@@ -73,6 +81,7 @@ pub async fn provider_vocabulary_get(
                 provider,
                 models,
                 modes,
+                features,
                 source,
                 probed_at_ms,
             }),

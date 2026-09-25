@@ -116,6 +116,13 @@ pub struct ServerState {
     /// feeds the profile form only — the live `SessionManifest` never reads
     /// it, and per-session chips keep coming from the manifest as before.
     pub(crate) provider_vocabulary: crate::provider_vocabulary::VocabularyCache,
+    /// The ACP feature reads: one per named provider per daemon run, each the
+    /// answer of a throwaway `session/new`. Separate from the vocabulary cache
+    /// above because it has no TTL and no model in its key — the read that
+    /// fills it starts a process, and re-starting one every 30 minutes or on
+    /// every keystroke in a free-text model field is the cost the vocabulary
+    /// cache exists to avoid. `provider_features` owns the rule.
+    pub(crate) acp_features: std::sync::Arc<crate::provider_feature_probe::AcpProbeCache>,
     /// The only process-launch seam for provider updates. Tests replace this
     /// runner so no npm or network is ever started by the test suite.
     pub(super) npm_install_runner: Arc<dyn NpmInstallRunner>,
@@ -333,6 +340,9 @@ impl ServerState {
             #[cfg(test)]
             version_probe_entries: AtomicU64::new(0),
             provider_vocabulary: crate::provider_vocabulary::VocabularyCache::default(),
+            acp_features: std::sync::Arc::new(
+                crate::provider_feature_probe::AcpProbeCache::default(),
+            ),
             npm_install_runner,
             paths: paths_for_state,
             journal: journal_for_peers,

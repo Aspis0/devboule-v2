@@ -1551,18 +1551,21 @@ pub enum DaemonMessage {
     AgentProfilesSetOk {
         id: u64,
     },
-    /// The reply to `ProviderVocabularyGet`: what one provider offers, both
-    /// axes, and how this answer was produced. The item shapes are the live
-    /// manifest's ([`SessionModel`], [`SessionModeView`]) reused unchanged —
-    /// the vocabulary is the same shape everywhere and only its origin
-    /// differs, which is carried explicitly rather than flattened.
+    /// The reply to `ProviderVocabularyGet`: what one provider offers — its
+    /// models, its modes and its features — and how this answer was produced.
+    /// The first two items are the live manifest's ([`SessionModel`],
+    /// [`SessionModeView`]) reused unchanged — the vocabulary is the same shape
+    /// everywhere and only its origin differs, which is carried explicitly
+    /// rather than flattened.
     ///
     /// `source` says whether THIS reply came from the cache or from a fresh
     /// probe. `probed_at_ms` is when the cache entry was filled and is
     /// therefore a cache fact: a probe reply is fresh by definition and omits
     /// it. Both optional fields are absent from the wire — never an explicit
     /// `null` — and `origin` on an axis follows one biconditional: it is set
-    /// if and only if that axis's state is `Present`.
+    /// if and only if that axis's state is `Present`. The features axis carries
+    /// no axis-level origin, so it keeps no biconditional: authorship is per row
+    /// there, and [`VocabularyFeatures`] says why.
     ProviderVocabulary {
         id: u64,
         /// The canonical provider id the reply answers for, as the profile
@@ -1570,6 +1573,15 @@ pub enum DaemonMessage {
         provider: String,
         models: VocabularyModels,
         modes: VocabularyModes,
+        /// The features the provider offers a profile, each carrying its own
+        /// model gate rather than the answer being recomputed per model: the
+        /// gate is data the daemon authored or the agent declared, so one
+        /// provider-keyed cache answers every model and an ACP provider is read
+        /// once. Optional on the wire because a daemon older than this field
+        /// answers without it, and **absent means no features** — the form
+        /// draws no controls, exactly as it would for a `none` axis.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        features: Option<VocabularyFeatures>,
         source: VocabularySource,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         probed_at_ms: Option<u64>,
@@ -2091,6 +2103,170 @@ impl VocabularyModels {
             origin,
             items,
         })
+    }
+}
+
+/// One choice a `select` feature offers. `id` is the value the profile stores
+/// and the provider's wire receives; `label` is the word the form prints.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyFeatureOption {
+    pub id: String,
+    pub label: String,
+}
+
+/// The control a profile form draws for one feature. Paseo's own feature
+/// union discriminates on the same word, and the wire keeps it: a `toggle` is
+/// a checkbox, a `select` is a select over the feature's `options`.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VocabularyFeatureControl {
+    Toggle,
+    Select,
+}
+
+/// One feature a provider offers a profile: the key the value is stored under,
+/// the label the form prints, and the control to draw. It is a **declaration**
+/// and carries no value — the value a human chose lives on the profile — so one
+/// answer can dress a form for any profile of that provider without the form
+/// knowing what any of them store.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyFeature {
+    /// The key in the profile's `features` map, spelled exactly as the spawn
+    /// path reads it: a control whose key disagreed with the reader would save
+    /// a value nothing delivers, which is the defect this whole surface exists
+    /// to prevent.
+    pub id: String,
+    pub label: String,
+    /// **Who wrote this row**, and it is per row because one provider's list is
+    /// mixed: an ACP answer carries the agent's own declared config options
+    /// beside this daemon's `autoAccept` tick. An axis-level author would have
+    /// to lie about one of the two.
+    pub author: VocabularyOrigin,
+    #[serde(rename = "type")]
+    pub control: VocabularyFeatureControl,
+    /// Non-empty exactly when `control` is `Select` — the rule
+    /// [`VocabularyFeature::new`] enforces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<VocabularyFeatureOption>,
+    /// **The model gate**: `None` offers the feature on every model of the
+    /// family, `Some(ids)` on exactly those ids. Paseo answers this by
+    /// re-running `listFeatures` per draft model — which for an ACP provider
+    /// means re-spawning it per model change. This daemon states the gate as
+    /// data instead: the same fact, without a process spawn per keystroke in a
+    /// free-text model field. The form filters on this list and holds no model
+    /// name of its own, so it is still reading the provider's declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<String>>,
+}
+
+impl VocabularyFeature {
+    /// The only two shapes a declaration may take: a toggle carries no
+    /// options, a select must carry at least one. An empty select is a widget
+    /// with nothing in it, and a select with options under a toggle is a form
+    /// that cannot draw the field it is holding.
+    pub fn new(
+        id: String,
+        label: String,
+        author: VocabularyOrigin,
+        control: VocabularyFeatureControl,
+        options: Vec<VocabularyFeatureOption>,
+    ) -> Result<Self, String> {
+        match control {
+            VocabularyFeatureControl::Toggle if !options.is_empty() => {
+                return Err("a toggle feature carries no options".to_string());
+            }
+            VocabularyFeatureControl::Select if options.is_empty() => {
+                return Err("a select feature must offer at least one option".to_string());
+            }
+            _ => {}
+        }
+        Ok(Self {
+            id,
+            label,
+            author,
+            control,
+            options,
+            models: None,
+        })
+    }
+
+    /// The declaration narrowed to what one model carries: the gate resolved
+    /// into an explicit list and the row dropped if the model is outside it.
+    /// `None` leaves the row as its own answer (`models: None` means every
+    /// model, and the form needs no further fact to draw it).
+    pub fn offered_on(&self, model: Option<&str>) -> bool {
+        match (&self.models, model) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(models), Some(model)) => models.iter().any(|id| id == model),
+        }
+    }
+}
+
+/// The features axis of a `ProviderVocabulary` reply. It carries no axis-level
+/// `origin` on purpose: authorship belongs to the row (see
+/// [`VocabularyFeature::author`]), because an ACP list mixes the agent's own
+/// declared options with this daemon's tick. What it does keep is the
+/// `present`/`none`/`absent` discipline, and the rule that a `present` axis
+/// never ships empty items — a provider that answered "I offer nothing" answers
+/// [`VocabularyState::None`].
+///
+/// `probing` is the fourth fact this axis can carry and the reason it is not
+/// just [`VocabularyState::Absent`] with a retry: an ACP provider's list is read
+/// by starting the provider once, so the first ask answers `absent` with
+/// `probing: true` while that read runs and a later ask answers the list. A form
+/// that read `absent` as "offers nothing" would show a profile with no features
+/// for the whole of a cold start, and an `absent` with `probing: false` **is**
+/// that final answer.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyFeatures {
+    pub state: VocabularyState,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub probing: bool,
+    pub items: Vec<VocabularyFeature>,
+}
+
+impl VocabularyFeatures {
+    /// The pair no builder may emit: a `present` axis with no items is a
+    /// collapsed absence, and a `none`/`absent` axis with items is a list the
+    /// state denies.
+    pub fn new(state: VocabularyState, items: Vec<VocabularyFeature>) -> Result<Self, String> {
+        if matches!(state, VocabularyState::Present) == items.is_empty() {
+            return Err(format!(
+                "a present axis carries items and any other state carries none: got {state:?} with {} items",
+                items.len()
+            ));
+        }
+        Ok(Self {
+            state,
+            probing: false,
+            items,
+        })
+    }
+
+    /// The axis builder for the state a list implies: empty means `none`, a
+    /// list means `present`. Every declaration source returns through here, so
+    /// no caller can label an empty list `present`.
+    pub fn answered(items: Vec<VocabularyFeature>) -> Self {
+        let state = if items.is_empty() {
+            VocabularyState::None
+        } else {
+            VocabularyState::Present
+        };
+        Self::new(state, items).expect("the state above always fits the list")
+    }
+
+    /// The one axis that may carry `probing`: a provider whose answer is being
+    /// read right now.
+    pub fn probing() -> Self {
+        Self {
+            state: VocabularyState::Absent,
+            probing: true,
+            items: Vec::new(),
+        }
     }
 }
 

@@ -35,14 +35,24 @@
 //! providers exist, and that answer is used below (`catalog_provider_id`). It
 //! publishes no per-provider list of models or modes at this commit — for modes
 //! `peer_policy.rs` says so in its own words ("ACP modes are defined by the
-//! agent at runtime. This function cannot answer for them"), and there is no
-//! feature table anywhere in the daemon. A membership test written here would
-//! therefore be a second list, free to drift from the provider's, and its
-//! failure mode would be refusing a profile that names a model the provider
-//! really offers. `model`, `mode_id`, `thinking_option_id` and the feature keys
-//! are stored verbatim and bounded by shape; the provider refuses an unknown
-//! mode or model itself when a creation asks it to spawn
+//! agent at runtime. This function cannot answer for them"). So a membership
+//! test on `model` and `mode_id` written here would be a second list, free to
+//! drift from the provider's, and its failure mode would be refusing a profile
+//! that names a model the provider really offers. Those three fields are stored
+//! verbatim and bounded by shape; the provider refuses an unknown mode or model
+//! itself when a creation asks it to spawn
 //! (`claude_client.rs`, `codex_view.rs`, `pi_client.rs`, `session.rs`).
+//!
+//! **The feature keys are the exception, and they are pruned rather than
+//! refused.** A feature table now exists (`provider_features.rs`) — the same one
+//! the profile form draws its controls from, so this is not a second list — and a
+//! key outside it names a value no child receives. Dropping it is the store's
+//! `D4` rule and Paseo's `pruneFeatureValues`; **refusing** would be wrong here
+//! for a reason specific to this file: `check_document` is shared by `load` and
+//! `set`, so a refusal on a stale key would quarantine a person's whole profile
+//! document over one value nothing delivered. An unread ACP provider is left alone
+//! entirely — an unknown list is not an empty one — and its keys are refused at
+//! spawn by the agent's own handshake, which is the stricter authority.
 
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -506,6 +516,30 @@ fn check_profile(
             ));
         }
     }
+    // The keys this provider cannot deliver are dropped here, on both roads
+    // that read or write this document, so nothing a creation can resolve
+    // holds a value no child receives. `provider_features::prune` states the
+    // rule and why it drops instead of refusing; the family comes from the
+    // canonical id the block above just resolved, so the prune and the spawn
+    // judge the same provider.
+    //
+    // An ACP provider whose feature read has not answered is left alone —
+    // `prune_for` says why — and its stored keys are refused at spawn by
+    // `acp_client::apply_profile_delivery`, which is not a looser rule, only a
+    // later one: the agent is the only source that knows its own list.
+    let probed = if crate::provider_catalog::session_kind_for(&profile.provider)
+        == devboule_protocol::SessionKind::Acp
+    {
+        crate::provider_feature_probe::cached_declarations(&profile.provider)
+    } else {
+        None
+    };
+    profile.features = crate::provider_features::prune_for(
+        crate::provider_catalog::session_kind_for(&profile.provider),
+        &profile.features,
+        probed,
+    )
+    .unwrap_or(profile.features.clone());
 
     // An overlay can only ever remove tools, and it removes them from the
     // broker's own closed table: a name outside it can never match a tool a
@@ -1290,19 +1324,31 @@ mod tests {
         assert!(error.to_string().contains("1026"), "{error}");
         assert!(error.to_string().contains("autoAccept"), "{error}");
 
-        // A key this daemon has never heard of is stored as written: there is no
-        // feature table to check it against, and inventing one would refuse a
-        // feature the provider really has.
+        // A key the provider family declares no control for is **dropped** on
+        // save, not refused and not stored: this daemon now has a feature table
+        // (`provider_features`), and a stored value nothing can deliver is not
+        // a feature to keep a document over. `p-1` here is a claude profile, so
+        // the claude table is the list the prune reads — and the two keys the
+        // family does declare survive.
         let mut unknown_but_shaped = profile("p-1", "Unknown feature");
         unknown_but_shaped
             .features
             .insert("someFutureFeature".to_string(), serde_json::json!(3));
+        unknown_but_shaped
+            .features
+            .insert("autoAccept".to_string(), serde_json::Value::Bool(true));
         store
             .set(document(vec![unknown_but_shaped]))
-            .expect("a bounded feature key is stored");
+            .expect("a bounded feature document is stored");
+        let stored = &store.document().profiles[0].features;
+        assert!(
+            stored.get("someFutureFeature").is_none(),
+            "an undeclared key is dropped, not stored: {stored:?}"
+        );
         assert_eq!(
-            store.document().profiles[0].features["someFutureFeature"],
-            serde_json::json!(3)
+            stored["autoAccept"],
+            serde_json::Value::Bool(true),
+            "and a declared one survives"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

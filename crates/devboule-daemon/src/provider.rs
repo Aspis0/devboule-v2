@@ -36,7 +36,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use devboule_protocol::{
-    ErrorCode, SessionKind, UnattendedState, VocabularyModels, VocabularyModes, WireError,
+    ErrorCode, SessionKind, UnattendedState, VocabularyFeatures, VocabularyModels, VocabularyModes,
+    WireError,
 };
 use portable_pty::PtySize;
 
@@ -286,6 +287,20 @@ pub(crate) trait Provider: Send + Sync {
     /// these impls are the single source.
     fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes);
 
+    /// The features a profile drawn from provider `named` can be given. Three
+    /// shapes of answer, and which one a family gives is the rule stated in
+    /// [`crate::provider_features`], not a guess made here:
+    ///
+    /// - a fixed table the daemon authored (Claude, Codex, Pi, Terminal), which
+    ///   ignores `named` because the table is the family's and not the row's;
+    /// - the agent's own declared config options, beside the daemon's tick
+    ///   (ACP), read once per provider for the run and served from the probe
+    ///   cache while the read runs or after it lands;
+    /// - `absent` when a read has not answered and cannot be started — a
+    ///   provider that is not installed — which is a different fact from
+    ///   "offers nothing" and the form says it in its own words.
+    fn features(&self, state: &Arc<ServerState>, named: &str) -> VocabularyFeatures;
+
     /// Validate what a profile delivery asks this family to impose. The
     /// refusals are the client's own (`validate_delivery` free functions,
     /// landed with slice 5b); the application stays inside the client's
@@ -472,6 +487,15 @@ impl Provider for AcpProvider {
         crate::provider_vocabulary::absent_axes()
     }
 
+    fn features(&self, state: &Arc<ServerState>, named: &str) -> VocabularyFeatures {
+        // The one family whose list is the agent's, so the one family that is
+        // read rather than recited. The read is started once per provider for
+        // the run and never re-run by a model change: it asks `session/new`
+        // on the agent's own default model, so no model choice can change what
+        // it answers.
+        crate::provider_feature_probe::acp_axis_for(state, named)
+    }
+
     fn validate_delivery(
         &self,
         _state: &Arc<ServerState>,
@@ -619,6 +643,13 @@ impl Provider for ClaudeProvider {
         crate::provider_vocabulary::claude_axes(state)
     }
 
+    fn features(&self, _state: &Arc<ServerState>, _named: &str) -> VocabularyFeatures {
+        // The daemon authored both flags this table names, so it recites them
+        // rather than asking: `--model`/`--permission-mode` and the
+        // `apply_flag_settings` frame the fast row rides.
+        crate::provider_features::claude_axis()
+    }
+
     fn validate_delivery(
         &self,
         state: &Arc<ServerState>,
@@ -753,6 +784,13 @@ impl Provider for PiProvider {
         crate::provider_vocabulary::absent_axes()
     }
 
+    fn features(&self, _state: &Arc<ServerState>, _named: &str) -> VocabularyFeatures {
+        // Pi's permission gate is the extension this family injects at spawn,
+        // driven by the delivered mode: the tick is the whole of what a pi
+        // profile can ask for, and `validate_delivery` enforces it.
+        crate::provider_features::pi_axis()
+    }
+
     fn validate_delivery(
         &self,
         _state: &Arc<ServerState>,
@@ -879,6 +917,15 @@ impl Provider for CodexProvider {
         // empty `present` and never `none` — the app renders it as a
         // free-text field with the sentence that says why.
         crate::provider_vocabulary::absent_axes()
+    }
+
+    fn features(&self, _state: &Arc<ServerState>, _named: &str) -> VocabularyFeatures {
+        // The table here is the daemon's own because the knob is: Codex's
+        // `serviceTier` is a turn parameter this client writes. `plan_mode`
+        // has no row, for the reason `provider_features::codex_declarations`
+        // states — the client reads no collaboration-mode list and sends no
+        // such parameter, so a switch for it would save a key no frame carries.
+        crate::provider_features::codex_axis()
     }
 
     fn validate_delivery(
@@ -1010,6 +1057,13 @@ impl Provider for TerminalProvider {
         // empty `present` and never `none` — the app renders it as a
         // free-text field with the sentence that says why.
         crate::provider_vocabulary::absent_axes()
+    }
+
+    fn features(&self, _state: &Arc<ServerState>, _named: &str) -> VocabularyFeatures {
+        // A terminal receives no delivery at all, so it has nothing to offer:
+        // `none` is the source answering "I have no features", which is a
+        // fact the form can state, and not the `absent` of "nobody could ask".
+        crate::provider_features::terminal_axis()
     }
 
     fn validate_delivery(

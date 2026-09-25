@@ -198,8 +198,16 @@ fn main() -> io::Result<()> {
     let hybrid_config_options = std::env::args().any(|arg| arg == "--hybrid-config-options");
     let hybrid_effort_only = std::env::args().any(|arg| arg == "--hybrid-effort-only");
     let categoryless_options = std::env::args().any(|arg| arg == "--categoryless-options");
-    let config_mode =
-        config_options || hybrid_config_options || hybrid_effort_only || categoryless_options;
+    // A vendor-authored dial beside the two switches the daemon drives. It is a
+    // modifier of the `--config-options` frame rather than its own shape, so a
+    // test that wants a feature also asks for the config surface; the check
+    // below adds the option to whatever state that shape starts from.
+    let feature_option = std::env::args().any(|arg| arg == "--feature-option");
+    let config_mode = config_options
+        || hybrid_config_options
+        || hybrid_effort_only
+        || categoryless_options
+        || feature_option;
     // Audit §1 scenario: after a daemon restart the reattach (session/load)
     // reply carries modes only — no configOptions, no models. The switch
     // shape must be None and a click must fail loudly.
@@ -222,13 +230,31 @@ fn main() -> io::Result<()> {
     // switches must not reset the effort option and vice versa. Start from
     // the verbatim captured session/new result and mutate it in place.
     let mut config_state = if config_mode {
-        Some(if hybrid_effort_only {
+        let mut state = if hybrid_effort_only {
             vendor_effort_only_result()
         } else if categoryless_options {
             categoryless_result()
         } else {
             claude_076_result("stub-session")
-        })
+        };
+        // A vendor-authored dial beyond the two switches the daemon drives, for
+        // the feature tests: the shape is a real Cursor-style `fast` option, and
+        // without it no ACP provider in this suite declares a feature at all.
+        if std::env::args().any(|arg| arg == "--feature-option") {
+            if let Some(options) = state.get_mut("configOptions").and_then(Value::as_array_mut) {
+                options.push(json!({
+                    "id": "fast",
+                    "type": "select",
+                    "name": "Fast responses",
+                    "currentValue": "off",
+                    "options": [
+                        {"value": "on", "name": "On"},
+                        {"value": "off", "name": "Off"}
+                    ]
+                }));
+            }
+        }
+        Some(state)
     } else {
         None
     };

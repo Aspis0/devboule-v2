@@ -4,8 +4,10 @@
  * the caps, the daemon's own trim and name comparison) and the tool-overlay
  * editor in `AgentProfileOverlay.tsx`; this component owns the fields, the
  * provider-vocabulary lifecycle and what a provider switch clears — which is
- * the provider's own vocabulary and nothing else: stored features travel as
- * saved, whatever provider the profile runs on.
+ * the provider's own vocabulary: model, mode and thinking option. The feature
+ * values are the profile's own and stay across a switch, because the list that
+ * decides each one's fate is the answer this fetch is about to receive, not the
+ * picker's current value.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { providerVocabularyGet } from "../../lib/tauri";
@@ -22,9 +24,12 @@ import {
 import {
   MAX_PROFILE_SPAWN_PROMPT_BYTES,
   type ProfileFormSeed,
+  offeredFeatures,
+  featuresAreProbing,
   rustTrim,
   utf8Bytes,
 } from "./AgentProfileDraft";
+import { AgentProfileFeatureFields } from "./AgentProfileFeatures";
 import { AgentProfileOverlayEditor } from "./AgentProfileOverlay";
 
 const MAX_PROFILE_NOTE_BYTES = 2 * 1024;
@@ -107,8 +112,7 @@ export function AgentProfileForm({
   const [model, setModel] = useState(seed.model);
   const [modeId, setModeId] = useState(seed.modeId);
   const [thinkingOptionId, setThinkingOptionId] = useState(seed.thinkingOptionId);
-  const [autoAccept, setAutoAccept] = useState(seed.autoAccept);
-  const [storedFeatures, setStoredFeatures] = useState(seed.storedFeatures);
+  const [features, setFeatures] = useState<Record<string, boolean | string>>(seed.features);
   const [overlay, setOverlay] = useState(seed.overlay);
   const [enabledForAgents, setEnabledForAgents] = useState(seed.enabledForAgents);
   const [vocabulary, setVocabulary] = useState<ProviderVocabulary | null>(null);
@@ -133,8 +137,8 @@ export function AgentProfileForm({
       model,
       modeId,
       thinkingOptionId,
-      autoAccept,
-      storedFeatures,
+      features,
+      offeredFeatures: offeredForSeed,
       overlay,
       enabledForAgents,
     };
@@ -232,6 +236,33 @@ export function AgentProfileForm({
       label: item.name && item.name !== item.id ? `${item.name} (${item.id})` : item.id,
     }),
   );
+  // The provider's answer, read once for both the controls and the save. A
+  // `null` here is "no answer in hand": nothing is drawn for it beyond the
+  // daemon's own tick, and nothing stored is judged away. The model gates it,
+  // which is why a model change re-reads it and no provider is asked twice for
+  // one answer.
+  const offered = offeredFeatures(vocabularyCurrent ? vocabulary : null, model);
+  const probing = featuresAreProbing(vocabularyCurrent ? vocabulary : null);
+  // The list the seed carries to the save, keyed by content and not by identity:
+  // `offeredFeatures` returns a fresh array every render, and an identity
+  // comparison below would never settle.
+  const offeredForSeed = offered === null ? null : [...offered];
+  const offeredKey = offered === null ? "none" : offered.map((feature) => feature.id).join(",");
+  const lastOfferedKeyRef = useRef<string | undefined>(undefined);
+  // The offered list is part of the draft a save prunes by, and it can change
+  // without the human touching a field: a vocabulary reply lands, or the model
+  // they typed settles into a different gate. Every other field reports itself
+  // on the change that moved it; this one has no change event, so a save reading
+  // a stale list would prune by an answer the form had already replaced.
+  useEffect(() => {
+    const key = `${offeredKey}|${probing ? "probing" : "known"}`;
+    if (lastOfferedKeyRef.current === key) {
+      return;
+    }
+    lastOfferedKeyRef.current = key;
+    onSeedChange?.(currentSeed());
+  });
+
   const noteBytes = utf8Bytes(note);
   // The counter shows the bytes Save will count — the daemon trims before it
   // caps, so an announcement of raw bytes would refuse a draft Save accepts.
@@ -267,9 +298,10 @@ export function AgentProfileForm({
     // provider's own are restored if the human has been here before:
     // switching must not let one provider's vocabulary survive into
     // another, but a wrong pick followed by switching back must not be a
-    // loss either. `autoAccept`, the stored features and the overlay stay:
-    // they belong to the profile, not to the provider's vocabulary, and a
-    // stored key nothing delivers may only go the way of Remove.
+    // loss either. The feature values and the overlay stay: they belong to the
+    // profile, not to the provider's vocabulary, and the new provider's own
+    // list — which this switch is about to fetch — decides each value's fate at
+    // save, dropping silently the keys that provider does not offer.
     providerDraftsRef.current.set(providerId, { model, modeId, thinkingOptionId });
     const restored = providerDraftsRef.current.get(next) ?? CLEARED_PROVIDER_FIELDS;
     setProviderId(next);
@@ -466,56 +498,21 @@ export function AgentProfileForm({
           </label>
         </>
       ) : null}
-      <label className="agent-profile-tick">
-        <input
-          type="checkbox"
-          aria-label="Auto accept for children of this profile"
-          checked={autoAccept}
-          disabled={busy}
-          onChange={(event) => {
-            setAutoAccept(event.target.checked);
-            onSeedChange?.({ ...currentSeed(), autoAccept: event.target.checked });
-          }}
-        />
-        <span>
-          <span>Auto accept</span>
-          <span className="agent-profile-tick-note">
-            Children created from this profile approve their own permission prompts instead of
-            asking you. This is the only feature Devboule delivers: leave it off unless you mean it.
-          </span>
-        </span>
-      </label>
-      <div className="device-field">
-        <span className="settings-subheading">Other stored features</span>
-        {storedFeatures.length === 0 ? (
-          <p className="device-field-hint">No other features are stored on this profile.</p>
-        ) : (
-          <p className="device-field-hint">
-            Saved on this profile, but not used by Devboule: the child never receives them. Removing
-            a key deletes it from the profile; nothing here can change a stored value.
-          </p>
-        )}
-        {storedFeatures.map((feature) => (
-          <div className="agent-profile-create-row" key={feature.key}>
-            <span className="device-copy">
-              {feature.key} = {JSON.stringify(feature.value)}
-            </span>
-            <button
-              type="button"
-              className="settings-device-action"
-              disabled={busy}
-              aria-label={`Remove feature ${feature.key}`}
-              onClick={() => {
-                const rows = storedFeatures.filter((kept) => kept.key !== feature.key);
-                setStoredFeatures(rows);
-                onSeedChange?.({ ...currentSeed(), storedFeatures: rows });
-              }}
-            >
-              Remove feature
-            </button>
-          </div>
-        ))}
-      </div>
+      {/* One control per feature this provider offers, read from the reply the
+          effect above fetched and never from a list written here. It sits
+          outside the `vocabularyKnown` block on purpose: with no answer in hand
+          the component still draws the daemon's own tick and says why, and the
+          model and mode fields above handle their half of that silence. */}
+      <AgentProfileFeatureFields
+        offered={offered}
+        probing={probing}
+        features={features}
+        busy={busy}
+        onChange={(next) => {
+          setFeatures(next);
+          onSeedChange?.({ ...currentSeed(), features: next });
+        }}
+      />
       <label className="agent-profile-tick">
         <input
           type="checkbox"

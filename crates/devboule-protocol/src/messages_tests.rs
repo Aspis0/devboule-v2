@@ -1,6 +1,9 @@
 //! Tests for the wire messages: serialization, defaults and the envelope shape.
 
 use super::*;
+use super::{
+    VocabularyFeature, VocabularyFeatureControl, VocabularyFeatureOption, VocabularyFeatures,
+};
 use crate::{SessionState, SessionStateSnapshot, UnattendedState};
 
 #[test]
@@ -118,6 +121,7 @@ fn the_vocabulary_reply_omits_probed_at_on_a_probe_reply_and_names_the_field_cam
             origin: Some(VocabularyOrigin::Daemon),
             items: Vec::new(),
         },
+        features: None,
         source: VocabularySource::Probe,
         probed_at_ms: None,
     };
@@ -139,6 +143,23 @@ fn the_vocabulary_reply_omits_probed_at_on_a_probe_reply_and_names_the_field_cam
             origin: None,
             items: Vec::new(),
         },
+        // The features axis the daemon answers with today: a present list
+        // whose authorship sits on the row, because one provider's list mixes
+        // the agent's declarations with this daemon's own tick.
+        features: Some(
+            VocabularyFeatures::new(
+                VocabularyState::Present,
+                vec![VocabularyFeature {
+                    id: "autoAccept".to_string(),
+                    label: "Auto accept".to_string(),
+                    author: VocabularyOrigin::Daemon,
+                    control: VocabularyFeatureControl::Toggle,
+                    options: Vec::new(),
+                    models: None,
+                }],
+            )
+            .expect("a present axis carries its items"),
+        ),
         source: VocabularySource::Cache,
         probed_at_ms: Some(1_700_000_000_000),
     };
@@ -148,6 +169,92 @@ fn the_vocabulary_reply_omits_probed_at_on_a_probe_reply_and_names_the_field_cam
         Some(&serde_json::json!(1_700_000_000_000_u64)),
         "got {json}"
     );
+    // The field's own wire shape: camelCase key, the discriminant spelled
+    // `type` as Paseo's feature union spells it, and no `options` array on a
+    // toggle — a form that read `options: []` and a form that read `undefined`
+    // would draw two different widgets for one row.
+    let feature = &json["features"]["items"][0];
+    assert_eq!(feature.get("type"), Some(&serde_json::json!("toggle")));
+    assert_eq!(feature.get("author"), Some(&serde_json::json!("daemon")));
+    assert!(feature.get("options").is_none(), "got {feature}");
+    assert!(feature.get("models").is_none(), "got {feature}");
+    // `probing` is omitted when false for the same reason `options` is: an
+    // older reader must not see a key it has no meaning for, and a reader that
+    // sees the key knows the read is running.
+    assert!(json["features"].get("probing").is_none());
+}
+
+/// The two states a form cannot afford to confuse, on the wire: a provider
+/// that was read and offered nothing (`none`, `probing` omitted) against a
+/// read still running (`absent` with `probing: true`). Collapsing them would
+/// let a cold start render as "this provider has no features", which is a
+/// claim about the provider the daemon has not earned.
+#[test]
+fn a_running_read_is_not_an_answer_of_no_features() {
+    let read = serde_json::to_value(
+        VocabularyFeatures::new(VocabularyState::None, Vec::new()).expect("an answered axis"),
+    )
+    .expect("json");
+    assert_eq!(read.get("state"), Some(&serde_json::json!("none")));
+    assert!(read.get("probing").is_none(), "got {read}");
+
+    let running = serde_json::to_value(VocabularyFeatures::probing()).expect("json");
+    assert_eq!(running.get("state"), Some(&serde_json::json!("absent")));
+    assert_eq!(running.get("probing"), Some(&serde_json::json!(true)));
+
+    // A `present` axis with nothing in it is a collapsed absence, and the
+    // constructor that every builder uses refuses it — as it does for the
+    // models and modes axes.
+    assert!(VocabularyFeatures::new(VocabularyState::Present, Vec::new()).is_err());
+    assert!(VocabularyFeatures::new(VocabularyState::Absent, Vec::new()).is_ok());
+}
+
+/// The declaration's own invariant: the control and the option list cannot
+/// disagree, because each is the reason the other exists. And the model gate
+/// is read, not stored: `None` means every model, so the row is offered on a
+/// model the daemon has never heard of, and `Some` means exactly the ids it
+/// lists.
+#[test]
+fn a_declaration_cannot_pair_a_toggle_with_choices_or_a_select_with_none() {
+    let choices = vec![VocabularyFeatureOption {
+        id: "on".to_string(),
+        label: "On".to_string(),
+    }];
+    assert!(VocabularyFeature::new(
+        "fast".to_string(),
+        "Fast".to_string(),
+        VocabularyOrigin::Provider,
+        VocabularyFeatureControl::Toggle,
+        choices.clone(),
+    )
+    .is_err());
+    assert!(VocabularyFeature::new(
+        "engine".to_string(),
+        "Engine".to_string(),
+        VocabularyOrigin::Provider,
+        VocabularyFeatureControl::Select,
+        Vec::new(),
+    )
+    .is_err());
+    let select = VocabularyFeature::new(
+        "engine".to_string(),
+        "Engine".to_string(),
+        VocabularyOrigin::Provider,
+        VocabularyFeatureControl::Select,
+        choices,
+    )
+    .expect("a select with a choice");
+    assert!(select.offered_on(None), "no gate means every model");
+
+    let gated = VocabularyFeature {
+        models: Some(vec!["claude-opus-5".to_string()]),
+        ..select.clone()
+    };
+    assert!(gated.offered_on(Some("claude-opus-5")));
+    assert!(!gated.offered_on(Some("claude-sonnet-5")));
+    // "No model chosen yet" is not "a model that carries it", and the row a
+    // human cannot have earned stays off the form until they name one.
+    assert!(!gated.offered_on(None));
 }
 
 #[test]

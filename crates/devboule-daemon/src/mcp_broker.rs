@@ -2797,8 +2797,9 @@ fn self_answer_note(state: &ServerState, caller: &McpCaller) -> Option<String> {
 /// The text states what the human is being asked to **approve**, which is the
 /// profile and what it resolves to: the provider, the model, the mode, the
 /// thinking option, whether the child will approve prompts in their place (and
-/// which mode does the answering), the feature keys the daemon does not
-/// interpret — named as uninterpreted, never silently dropped — and the
+/// which mode does the answering), the feature values the child is started with —
+/// each with the value the wire will carry, and, for an ACP provider no read has
+/// answered, the condition the agent's own handshake will place on it — and the
 /// caller's labels. A card that named only the profile would ask for a
 /// decision against a word, and the word is the one thing the human cannot
 /// check without opening Settings.
@@ -2851,24 +2852,49 @@ fn creation_card(
     // it is the difference between a child that will ask this human and one that
     // will not.
     //
-    // `autoAccept` is the feature the daemon interprets, so it is rendered by
-    // the auto-accept line — naming the **mode** that does the answering,
-    // because consent to a mechanism is not consent to a word — and every
-    // other key is named as what it is: stored, delivered never, promised
-    // never. Absent is a third state here, never a silence and never a claim.
-    let uninterpreted = profile
-        .features
-        .iter()
-        .filter(|(key, _)| key.as_str() != crate::provider_catalog::AUTO_ACCEPT_FEATURE)
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>();
-    let features = if uninterpreted.is_empty() {
+    // `autoAccept` is a constraint on the delivered mode, so the auto-accept
+    // line renders it — naming the **mode** that does the answering, because
+    // consent to a mechanism is not consent to a word. Every other key printed
+    // here is read through the same function the child's delivery is built by,
+    // so the card and the delivery cannot name two different lists: what this
+    // line prints **is** what the child is started with.
+    //
+    // The old sentence — "not interpreted by this daemon; carried but never
+    // delivered" — is gone because nothing that can reach this line is like
+    // that any more. `check_profile` prunes a key the family does not declare,
+    // and each client refuses a value it cannot put on the wire rather than
+    // starting a child without it; the keys left are exactly the ones the
+    // spawn applies. Absent stays a third state here, never a silence and never
+    // a claim.
+    let features = if profile.features.is_empty() {
         "none".to_string()
     } else {
-        format!(
-            "{} (not interpreted by this daemon; carried but never delivered)",
-            uninterpreted.join(", ")
-        )
+        let delivered = crate::profile_delivery::delivered_features(&profile.features);
+        if delivered.is_empty() {
+            "none".to_string()
+        } else {
+            let listed = delivered
+                .iter()
+                .map(|feature| format!("{}={}", feature.id(), feature.printed()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            // ACP is the one family whose list the daemon does not own, so where
+            // no read has answered it yet the card says what happens when the
+            // child's own handshake disagrees: the creation is refused, not
+            // started without the value. Every other family's table is the
+            // daemon's own, so a key that reached this line is a key the launch
+            // applies — and there a caveat would be a hedge about nothing.
+            if crate::provider_catalog::session_kind_for(&profile.provider)
+                == devboule_protocol::SessionKind::Acp
+                && crate::provider_feature_probe::cached_declarations(&profile.provider).is_none()
+            {
+                format!(
+                    "{listed} (each set on the child as the agent declares it; a feature this agent does not declare refuses the creation rather than starting without it)"
+                )
+            } else {
+                listed
+            }
+        }
     };
     // The card's auto-accept line reads the mode, and only the mode, through
     // the same prediction the birth will apply: the tick over an asking mode

@@ -441,7 +441,7 @@ fn initial_mode_test_reader_with_timeout(
             stdin,
             gate,
             timeout,
-            delivery_efforts: Arc::new(Mutex::new(HashMap::new())),
+            delivery_settings: Arc::new(Mutex::new(HashMap::new())),
         },
     )
 }
@@ -2129,6 +2129,77 @@ fn the_delivered_model_is_what_the_claude_argv_pins() {
         Some("claude-opus-5")
     );
 }
+/// The frame's shape, checked where it is built: a stored `true` names the
+/// setting the CLI reads, and a refusal of it fails the session rather than
+/// leaving a child running unflagged behind a card that said it was fast.
+#[test]
+fn the_fast_mode_frame_names_the_flag_and_its_refusal_names_it_back() {
+    let mut harness = initial_mode_test_setup();
+    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let delivery_settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
+    let fast_request_id =
+        send_initial_fast_mode(&harness.stdin, &harness.next_id, &delivery_settings, true)
+            .expect("the fast-mode frame is written synchronously");
+    let mut reader = ClaudeReader::with_mode_gate(
+        ClaudeView::new(Some(PathBuf::from(r"C:\work"))),
+        Arc::clone(&broker),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::clone(&harness.next_id),
+        ClaudeModeGateWiring {
+            stdin: Arc::clone(&harness.stdin),
+            gate: Arc::clone(&harness.gate),
+            timeout: CONTROL_RESPONSE_TIMEOUT,
+            delivery_settings,
+        },
+    );
+    let (runtime, conn) = attached(&broker);
+
+    let mode_request = read_json_line(&mut harness.stdout);
+    assert_eq!(mode_request["request"]["subtype"], "set_permission_mode");
+    let fast_echo = read_json_line(&mut harness.stdout);
+    assert_eq!(
+        fast_echo["request"]["subtype"], "apply_flag_settings",
+        "the flag rides the settings frame, not a new verb: {fast_echo}"
+    );
+    assert_eq!(fast_echo["request_id"], fast_request_id);
+    assert_eq!(
+        fast_echo["request"]["settings"]["fastMode"],
+        serde_json::json!(true),
+        "the setting is the one Paseo's SDK writes: {fast_echo}"
+    );
+
+    let refusal = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "error",
+            "request_id": fast_request_id,
+            "error": "unknown setting fastMode",
+        }
+    });
+    reader
+        .feed(
+            format!(
+                "{refusal}
+"
+            )
+            .as_bytes(),
+            &runtime,
+        )
+        .expect("fast-mode response");
+    let events = drain(&conn);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentError { message }
+                if message.contains("refused the delivered fast mode")
+                    && message.contains("unknown setting fastMode")
+        )),
+        "a CLI that will not take the flag fails the session, naming it: {:?}",
+        slice_of_kinds(&events)
+    );
+}
+
 /// R2a F2, the write: the delivery's effort frame is written
 /// **synchronously**, so a stdin that cannot take it refuses the
 /// delivery here — at the spawn, with the child still young — instead of
@@ -2136,7 +2207,7 @@ fn the_delivered_model_is_what_the_claude_argv_pins() {
 #[test]
 fn an_effort_frame_that_cannot_be_written_refuses_the_delivery() {
     let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
-    let efforts: ClaudeDeliveryEfforts = Arc::new(Mutex::new(HashMap::new()));
+    let efforts: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
     let error = send_initial_effort(&stdin, &AtomicU64::new(1), &efforts, "low")
         .expect_err("a closed stdin refuses the effort delivery");
     assert!(
@@ -2159,10 +2230,10 @@ fn an_effort_frame_that_cannot_be_written_refuses_the_delivery() {
 fn a_refused_delivery_effort_fails_the_session_instead_of_passing_silently() {
     let mut harness = initial_mode_test_setup();
     let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
-    let delivery_efforts: ClaudeDeliveryEfforts = Arc::new(Mutex::new(HashMap::new()));
+    let delivery_settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
     // The spawn's delivery, in pipe order right behind the mode frame.
     let effort_request_id =
-        send_initial_effort(&harness.stdin, &harness.next_id, &delivery_efforts, "low")
+        send_initial_effort(&harness.stdin, &harness.next_id, &delivery_settings, "low")
             .expect("the effort frame is written synchronously");
     let mut reader = ClaudeReader::with_mode_gate(
         ClaudeView::new(Some(PathBuf::from(r"C:\work"))),
@@ -2174,7 +2245,7 @@ fn a_refused_delivery_effort_fails_the_session_instead_of_passing_silently() {
             stdin: Arc::clone(&harness.stdin),
             gate: Arc::clone(&harness.gate),
             timeout: CONTROL_RESPONSE_TIMEOUT,
-            delivery_efforts,
+            delivery_settings,
         },
     );
     let (runtime, conn) = attached(&broker);

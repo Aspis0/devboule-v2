@@ -143,6 +143,16 @@ impl CodexCatalog {
 pub(crate) struct CodexState {
     thread_id: String,
     mode_id: Mutex<String>,
+    /// The service tier every `turn/start` carries, set once from the profile's
+    /// `fastMode` delivery. Codex's fast mode is Paseo's `serviceTier:
+    /// "fast"` parameter on the turn frame, and the thread keeps no memory of
+    /// it across turns, so the value lives beside the model and effort the same
+    /// parameters are read from and is written on every prompt.
+    ///
+    /// `None` sends no `serviceTier` at all: the provider's own default. That
+    /// is why an unset flag and a `false` flag are the same state here — the
+    /// turn parameter has no "off" spelling to send.
+    service_tier: Mutex<Option<String>>,
     /// The mode a `set_mode` applied after `thread/start`, if any. Paseo
     /// (`hasWorkflowModeOverride`) keeps this set for every later turn; the
     /// thread already carries the preset, so only an explicit change re-sends
@@ -157,9 +167,23 @@ impl CodexState {
         Self {
             thread_id,
             mode_id: Mutex::new(mode_id.to_string()),
+            service_tier: Mutex::new(None),
             mode_override: Mutex::new(None),
             catalog: Mutex::new(catalog),
             turn_id: Mutex::new(None),
+        }
+    }
+
+    /// The tier every later `turn/start` carries. `Some("fast")` only for a
+    /// profile whose fast tick the model gate let through
+    /// (`seed_fast_mode`); `None` writes no parameter.
+    pub(crate) fn service_tier(&self) -> Option<String> {
+        self.service_tier.lock().ok().and_then(|tier| tier.clone())
+    }
+
+    pub(crate) fn set_service_tier(&self, tier: Option<&str>) {
+        if let Ok(mut current) = self.service_tier.lock() {
+            *current = tier.map(str::to_string);
         }
     }
 

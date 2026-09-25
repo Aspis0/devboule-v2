@@ -40,7 +40,7 @@ use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
     SpawnedSession, StderrSource, StdioWaitableChild,
 };
-use crate::profile_delivery::ProfileDelivery;
+use crate::profile_delivery::{DeliveredFeature, ProfileDelivery};
 
 const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
 
@@ -870,6 +870,7 @@ fn spawn_process_with_load(
     };
     let session_id = transport.session_id();
     transport.set_model_switch_shape(handshake.shape);
+    transport.set_declared_features(handshake.declared_surfaces);
     transport.set_prompt_capabilities(handshake.prompt_capabilities);
     transport.seed_manifest_from_event(handshake.event.as_ref());
     // The profile's delivery, judged now that the handshake has spoken: the
@@ -1025,6 +1026,152 @@ fn terminate_process(process: &mut Child) {
     let _ = process.wait();
 }
 
+/// What one named ACP provider declares, read from a throwaway session: start
+/// the child, `initialize`, `session/new`, take the config options that are
+/// neither the model nor the effort selector, destroy it. The profile form's
+/// ACP feature list is the only consumer, and
+/// [`crate::provider_features`] decides whether to ask at all (it asks once per
+/// provider per run) — this function never caches and never answers for the
+/// provider it could not reach.
+///
+/// The read is the create road's own `handshake`, not a look-alike: one code
+/// path drives `initialize` and `session/new` for both, so a list read here
+/// cannot describe a surface the live child would deny. It runs with no MCP
+/// carrier and no mode switch and delivers nothing, and the value is applied
+/// by [`apply_profile_delivery`] against the handshake of the child that is
+/// really starting — which is the pair of facts that keeps a drawn control from
+/// becoming an undelivered promise.
+pub(crate) fn probe_declarations(
+    state: &Arc<ServerState>,
+    provider: &str,
+) -> Result<Vec<devboule_protocol::VocabularyFeature>, WireError> {
+    let paths = RuntimePaths::from_dir(state.sessions.runtime_dir().to_path_buf());
+    // The named road and nothing else: "the ACP family" has no declarations to
+    // report, and the default-command fallthrough would answer for whatever
+    // `DEVBOULE_ACP_COMMAND` happens to point at as though the named provider
+    // had said it.
+    let command = resolve_named(provider, &paths)?;
+    let mut child = Command::new(&command.program)
+        .args(&command.args)
+        .current_dir(&command.cwd)
+        .envs(command.env.iter().map(|(key, value)| (key, value)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("could not start {provider} to read its features: {error}"),
+            )
+        })?;
+    // Contained the same way a real child is: the job is killed on close, so a
+    // probe that outlives its own read cannot leave an agent running behind the
+    // Settings window, and an npx wrapper's grandchild goes with it.
+    #[cfg(windows)]
+    let process_job = {
+        use std::os::windows::io::AsRawHandle;
+        let process_job = match JobObject::new() {
+            Ok(job) => job,
+            Err(error) => {
+                terminate_process(&mut child);
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    format!("could not contain the feature read: {error}"),
+                ));
+            }
+        };
+        if let Err(error) = process_job.assign(child.as_raw_handle()) {
+            terminate_process(&mut child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("could not contain the feature read: {error}"),
+            ));
+        }
+        Some(process_job)
+    };
+    #[cfg(not(windows))]
+    let process_job: Option<JobObject> = None;
+    // Every early road runs this: kill, wait, then release the job. Taking the
+    // job out of the `Option` is why it is declared `mut` — a closure could not
+    // move out of a captured variable, and a job dropped without the process
+    // killed would leave an agent running behind the Settings window on the
+    // roads where the pipe, not the handshake, is what failed.
+    let mut process_job = process_job;
+    let mut teardown = |child: &mut Child| {
+        terminate_process(child);
+        drop(process_job.take());
+    };
+    let stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            teardown(&mut child);
+            return Err(probe_refused(provider, "gave no standard input"));
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            teardown(&mut child);
+            return Err(probe_refused(provider, "gave no standard output"));
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            teardown(&mut child);
+            return Err(probe_refused(provider, "gave no error output"));
+        }
+    };
+    let mut stderr_source = match AcpStderr::start(stderr) {
+        Ok(source) => source,
+        Err(error) => {
+            teardown(&mut child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("could not drain {provider}'s output: {error}"),
+            ));
+        }
+    };
+    let host = AcpHost::new(
+        command.cwd.clone(),
+        state.sessions.runtime_dir().to_path_buf(),
+    );
+    let transport = AcpTransport::new(stdin, host);
+    let mut reader = BufReader::new(stdout);
+    let read = handshake(
+        &transport,
+        &mut reader,
+        &command.cwd,
+        command.provider_id.clone(),
+        None,
+        None,
+        None,
+    );
+    let declarations = match read {
+        Ok((_deferred, handshake, _session_id, _version)) => handshake.declared_features,
+        Err(error) => {
+            teardown(&mut child);
+            let _ = stderr_source.discard_and_join();
+            drop(transport);
+            return Err(error);
+        }
+    };
+    // Read and done: the session it opened is nobody's session, and the job
+    // above is what guarantees the whole tree goes.
+    drop(transport);
+    teardown(&mut child);
+    let _ = stderr_source.discard_and_join();
+    Ok(declarations)
+}
+
+fn probe_refused(provider: &str, what: &str) -> WireError {
+    WireError::new(
+        ErrorCode::Io,
+        format!("{provider} {what}; the feature read learned nothing"),
+    )
+}
+
 #[derive(Clone, Debug)]
 enum SwitchRequest {
     Vendor {
@@ -1106,6 +1253,13 @@ pub(super) struct AcpTransport {
     current_effort: Mutex<Option<String>>,
     last_manifest: Mutex<Option<SessionEvent>>,
     model_switch_shape: Mutex<Option<ModelSwitchShape>>,
+    /// The config options this agent declared that are neither the model nor
+    /// the effort selector: the surfaces a stored feature is delivered on.
+    /// Set with the handshake beside `model_switch_shape`, from the same parse,
+    /// and read whole by the create-time delivery. Empty is the agent's own
+    /// answer that it declares none, which is why an empty list refuses a
+    /// stored feature instead of delivering nothing.
+    feature_surfaces: Mutex<Vec<ConfigOptionSurface>>,
     /// Prompt content types the agent declared in `initialize`. Session-scoped
     /// negotiated state, kept next to the other handshake results
     /// (`model_switch_shape`, `remote_modes`). Re-derived on a `session/load`
@@ -1135,6 +1289,7 @@ impl AcpTransport {
             current_effort: Mutex::new(None),
             last_manifest: Mutex::new(None),
             model_switch_shape: Mutex::new(None),
+            feature_surfaces: Mutex::new(Vec::new()),
             prompt_capabilities: Mutex::new(PromptCapabilities::default()),
         }
     }
@@ -1315,6 +1470,26 @@ impl AcpTransport {
             Err(poisoned) => poisoned.into_inner(),
         };
         *shape_slot = shape;
+    }
+
+    /// The config options the handshake found that are neither switch. Read
+    /// whole: the create-time delivery walks it once, and it is not replayed on
+    /// a later `configOptions` push (that road keeps its own two surfaces, and
+    /// a feature list that moved mid-session would make the card a promise
+    /// about a surface the child no longer has).
+    fn declared_features(&self) -> Vec<ConfigOptionSurface> {
+        match self.feature_surfaces.lock() {
+            Ok(declared) => declared.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn set_declared_features(&self, declared: Vec<ConfigOptionSurface>) {
+        let mut slot = match self.feature_surfaces.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *slot = declared;
     }
 
     fn model_switch_shape(&self) -> Option<ModelSwitchShape> {
@@ -2140,7 +2315,104 @@ fn apply_profile_delivery(
         transport.update_current_effort(Some(effort.clone()));
     }
     transport.patch_manifest_current(requested_model, requested_effort);
+    // The features the agent itself declared, delivered on the same verb the
+    // runtime switch uses and confirmed the same way. This is the whole of the
+    // ACP arm of the rule at the head of `provider_features`: a control the
+    // form drew from this agent's own `session/new` is a value this child must
+    // be started with, and one it never declared refuses the creation instead
+    // of running a configuration the card did not name.
+    deliver_declared_features(transport, reader, deferred, delivery)?;
     Ok(())
+}
+
+/// The stored feature values this agent declared a config option for,
+/// delivered one frame at a time on `session/set_config_option`.
+///
+/// The option's declared id is the key the profile stores and the `configId`
+/// the wire takes, so no mapping table sits between the control a human drew
+/// and the frame the agent reads. A stored key the agent does not declare is
+/// refused rather than skipped — for ACP the read that dressed the form may
+/// describe a different version of the agent than this child does, and a
+/// skipped key is an undelivered promise. `autoAccept` is not read here at all:
+/// it is the mode constraint above, never a config option.
+fn deliver_declared_features(
+    transport: &Arc<AcpTransport>,
+    reader: &mut BufReader<ChildStdout>,
+    deferred: &mut Vec<serde_json::Value>,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    if delivery.features.is_empty() {
+        return Ok(());
+    }
+    let frames = declared_feature_frames(&transport.declared_features(), &delivery.features)?;
+    for (config_id, choice) in frames {
+        let id = transport
+            .request(
+                "session/set_config_option",
+                serde_json::json!({
+                    "sessionId": transport.session_id(),
+                    "configId": config_id,
+                    "value": choice,
+                }),
+            )
+            .map_err(acp_io_error)?;
+        if let Err(error) = confirm_one_switch(transport, reader, deferred, id, delivery) {
+            transport.remove_pending_id(id);
+            return Err(error);
+        }
+        transport.remove_pending_id(id);
+    }
+    Ok(())
+}
+
+/// The frames one delivery owes, judged against the options this agent declared
+/// — the whole refusal rule, apart from the writing, so it can be pinned without
+/// a child. Every pair returned here is a pair the agent named: an option it did
+/// not declare, a value outside its choices, or a stored type its control could
+/// not produce each refuses instead of being skipped.
+pub(crate) fn declared_feature_frames(
+    declared: &[ConfigOptionSurface],
+    features: &[DeliveredFeature],
+) -> Result<Vec<(String, String)>, WireError> {
+    let mut frames = Vec::new();
+    for feature in features {
+        let Some(option) = declared.iter().find(|option| option.id == feature.id()) else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "the profile stores the feature '{}', which this agent declares no config option for; the creation is refused rather than started without it",
+                    feature.id()
+                ),
+            ));
+        };
+        let choice = match feature.value() {
+            serde_json::Value::String(choice) => choice,
+            // A toggle the agent declared as a select: the shape the agent
+            // published and the value the profile holds cannot be reconciled on
+            // the wire, so the card's promise cannot be kept.
+            _ => return Err(undeliverable(feature.id(), "a choice")),
+        };
+        if !option.values.contains(&choice) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "the agent's '{}' option does not offer the choice '{}' the profile stores; the creation is refused",
+                    option.id, choice,
+                ),
+            ));
+        }
+        frames.push((option.id.clone(), choice));
+    }
+    Ok(frames)
+}
+
+fn undeliverable(id: &str, wanted: &str) -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        format!(
+            "the profile stores '{id}' as {wanted}, which this agent's option cannot take; the creation is refused"
+        ),
+    )
 }
 
 /// Whether the provider is gone before the teardown, and the code it left

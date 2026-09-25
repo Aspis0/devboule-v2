@@ -5341,3 +5341,96 @@ fn the_profile_list_is_the_humans_order_with_verbatim_notes() {
         "the note arrives as the human wrote it, whole"
     );
 }
+
+/// The card names each stored feature with the value the child is started with,
+/// and says nothing about a value it does not carry: every key the map holds is
+/// one a client applies or refuses loudly, because the store pruned the rest.
+/// The old sentence — "not interpreted by this daemon; carried but never
+/// delivered" — is gone with the thing it described, and this pins that it does
+/// not come back: a card that prints an undelivered value is the defect the whole
+/// surface exists to close, so the wording itself is part of the guarantee.
+#[test]
+fn the_card_prints_a_delivered_feature_as_delivered() {
+    let creator = "s.card-features".to_string();
+    let creator_owner = owner("card-features-user", "card-features-client");
+    crate::session::insert_test_live_agent_with_kind(
+        &state_for_card().sessions,
+        &creator,
+        creator_owner.clone(),
+        SessionKind::Pi,
+    );
+    let state = state_for_card();
+    let creator = "s.card-features-two".to_string();
+    crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        &creator,
+        creator_owner,
+        SessionKind::Pi,
+    );
+    let ticket = state
+        .sessions
+        .reserve_agent_creation(&creator, 0)
+        .expect("a creation ticket");
+    let request = AgentCreateRequest {
+        profile: "runner".to_string(),
+        title: "Kid".to_string(),
+        labels: std::collections::BTreeMap::new(),
+        workspace_id: None,
+        cwd: None,
+        initial_prompt: "do the thing".to_string(),
+        notify: true,
+    };
+    let resolved = resolve_profile(
+        &profile_store(document(
+            vec![profile(
+                "runner",
+                "profile-runner",
+                "claude",
+                // A mode the daemon's broker answers, so the tick the profile
+                // carries reads as the promise it is rather than a refusal.
+                "bypassPermissions",
+                serde_json::json!({"autoAccept": true, "fastMode": true}),
+                &[],
+                true,
+            )],
+            "",
+        )),
+        "runner",
+    )
+    .expect("ticked");
+    let card = creation_card(
+        &creator,
+        "Orchestrator",
+        &request,
+        &resolved,
+        &std::collections::BTreeMap::new(),
+        &ticket,
+        None,
+    );
+    let SessionEvent::PermissionRequest { description, .. } = &card else {
+        panic!("a creation card is a permission request");
+    };
+    let description = description.as_deref().expect("a description");
+    assert!(
+        description.contains("features fastMode=true"),
+        "the delivered feature is printed with the value the child starts on: {description}"
+    );
+    assert!(
+        !description.contains("not interpreted") && !description.contains("never delivered"),
+        "the undelivered-value sentence is gone: {description}"
+    );
+    // `autoAccept` keeps its own line rather than joining the list: it is a
+    // constraint on which mode is delivered, and the card names the mode.
+    assert!(
+        description.contains("auto accept: Yes (mode bypassPermissions)"),
+        "the tick is on its own line, naming the mode that answers: {description}"
+    );
+    assert!(
+        !description.contains("autoAccept="),
+        "and never a second time as a feature: {description}"
+    );
+}
+
+fn state_for_card() -> std::sync::Arc<ServerState> {
+    ServerState::new("mcp-card-features".to_string())
+}

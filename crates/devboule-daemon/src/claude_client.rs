@@ -30,7 +30,7 @@ use crate::claude_view::ClaudeView;
 use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
-use crate::profile_delivery::ProfileDelivery;
+use crate::profile_delivery::{DeliveredFeature, ProfileDelivery};
 use crate::server::ServerState;
 
 const COMMAND_ENV: &str = "DEVBOULE_CLAUDE_COMMAND";
@@ -45,7 +45,7 @@ type ClaudeModeResponses = Arc<Mutex<HashMap<String, Sender<Result<(), String>>>
 /// refused effort fails the session the way a refused initial mode does,
 /// instead of disappearing while the child runs at the CLI's own level (the
 /// R2a audit's F2).
-type ClaudeDeliveryEfforts = Arc<Mutex<HashMap<String, String>>>;
+type ClaudeDeliverySettings = Arc<Mutex<HashMap<String, String>>>;
 
 struct ClaudePendingControl {
     request_id: String,
@@ -75,7 +75,7 @@ struct ClaudeModeGateWiring {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     gate: ClaudeModeGateRef,
     timeout: Duration,
-    delivery_efforts: ClaudeDeliveryEfforts,
+    delivery_settings: ClaudeDeliverySettings,
 }
 
 impl ClaudeModeGateWiring {
@@ -84,7 +84,7 @@ impl ClaudeModeGateWiring {
             stdin,
             gate,
             timeout: CONTROL_RESPONSE_TIMEOUT,
-            delivery_efforts: Arc::new(Mutex::new(HashMap::new())),
+            delivery_settings: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -292,6 +292,15 @@ pub(super) fn validate_delivery(
     catalog: &crate::claude_catalog::ClaudeCatalogSnapshot,
     delivery: &ProfileDelivery,
 ) -> Result<(), WireError> {
+    // Every stored feature this family has no frame for is refused here, before
+    // a process exists: the launch applies `--model`, `--permission-mode` and
+    // the flag-settings frame below and nothing else, so a key the Claude table
+    // does not carry could only ever be a card promise that went undelivered.
+    crate::profile_delivery::refuse_undeclared(
+        &crate::provider_features::claude_declarations(),
+        delivery.model_id.as_deref(),
+        &delivery.features,
+    )?;
     let mode_id = delivery
         .mode_id
         .as_deref()
@@ -672,9 +681,9 @@ fn spawn_claude_child(
     // session instead of silently running at its own level (the R2a audit's
     // F2). A write failure here is a refused creation, like a failed mode
     // write above.
-    let delivery_efforts: ClaudeDeliveryEfforts = Arc::new(Mutex::new(HashMap::new()));
+    let delivery_settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
     if let Some(thinking) = delivery.thinking_option_id.as_deref() {
-        if let Err(error) = send_initial_effort(&stdin, &next_id, &delivery_efforts, thinking) {
+        if let Err(error) = send_initial_effort(&stdin, &next_id, &delivery_settings, thinking) {
             if let Ok(mut process) = process.lock() {
                 terminate_process(&mut process);
             }
@@ -682,6 +691,28 @@ fn spawn_claude_child(
             return Err(WireError::new(
                 ErrorCode::Io,
                 format!("Could not send Claude effort request: {error}"),
+            ));
+        }
+    }
+    // The fast-mode flag the profile ticked, on the same control frame and
+    // with the same tracked answer as the effort above: a stored `false` is
+    // the CLI's own default and asks for nothing, and a CLI that will not take
+    // `true` fails the session rather than leaving a child running unflagged
+    // behind a card that said it was fast.
+    let fast_mode = delivery
+        .features
+        .iter()
+        .find(|feature| feature.id() == crate::provider_features::FAST_MODE_FEATURE)
+        .map(|feature| matches!(feature, DeliveredFeature::Toggle { on: true, .. }));
+    if fast_mode == Some(true) {
+        if let Err(error) = send_initial_fast_mode(&stdin, &next_id, &delivery_settings, true) {
+            if let Ok(mut process) = process.lock() {
+                terminate_process(&mut process);
+            }
+            drop(process_job);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not send Claude fast-mode request: {error}"),
             ));
         }
     }
@@ -720,7 +751,7 @@ fn spawn_claude_child(
         cancelled: Arc::new(AtomicBool::new(false)),
     };
     let mut wiring = ClaudeModeGateWiring::new(Arc::clone(&stdin), Arc::clone(&mode_gate));
-    wiring.delivery_efforts = Arc::clone(&delivery_efforts);
+    wiring.delivery_settings = Arc::clone(&delivery_settings);
     let reader_dispatch = ClaudeReader::with_mode_gate(
         ClaudeView::new(Some(command.cwd.clone())),
         Arc::clone(&permission_broker),
@@ -1322,7 +1353,7 @@ fn start_initial_mode(
 /// pipe order; nothing can race the flush (`start_initial_mode`'s write is
 /// synchronous for the same reason).
 ///
-/// The request is registered in `delivery_efforts` before the write, so the
+/// The request is registered in `delivery_settings` before the write, so the
 /// session reader can route the CLI's answer: success retires it, and a
 /// refusal fails the session — a refused effort is a refused card promise,
 /// not a silence. The request id is returned for tests and for the reader's
@@ -1330,25 +1361,74 @@ fn start_initial_mode(
 fn send_initial_effort(
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     next_id: &AtomicU64,
-    delivery_efforts: &ClaudeDeliveryEfforts,
+    delivery_settings: &ClaudeDeliverySettings,
     effort: &str,
 ) -> io::Result<String> {
-    let request_id = format!("initial-effort-{}", next_id.fetch_add(1, Ordering::Relaxed));
-    delivery_efforts
+    send_initial_flag_settings(
+        stdin,
+        next_id,
+        delivery_settings,
+        "initial-effort",
+        serde_json::json!({ "effortLevel": effort }),
+        &format!("thinking option '{effort}'"),
+    )
+}
+
+/// The fast-mode flag the profile ticked, delivered on the one control frame
+/// this client already writes for the thinking option. Paseo applies Claude's
+/// `fast_mode` through its SDK's `applyFlagSettings({ fastMode })`; this
+/// family speaks the frame that call turns into, so the setting key and the
+/// frame shape are copied and the road is the one already proven for
+/// `effortLevel`.
+///
+/// Like the effort it shares the registration with: a CLI that answers this
+/// with an error fails the session rather than running unflagged, because a
+/// stored tick the CLI will not take is a card that promised a configuration
+/// nobody started.
+fn send_initial_fast_mode(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    next_id: &AtomicU64,
+    delivery_settings: &ClaudeDeliverySettings,
+    on: bool,
+) -> io::Result<String> {
+    send_initial_flag_settings(
+        stdin,
+        next_id,
+        delivery_settings,
+        "initial-fast",
+        serde_json::json!({ "fastMode": on }),
+        "fast mode",
+    )
+}
+
+/// The one writer of `apply_flag_settings` at start. `names` is what the
+/// session reader puts in its refusal when the CLI answers with an error: a
+/// bare setting key would say `{"fastMode":false}` was refused where the
+/// human needs to read that the profile's fast mode was.
+fn send_initial_flag_settings(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    next_id: &AtomicU64,
+    delivery_settings: &ClaudeDeliverySettings,
+    id_prefix: &str,
+    settings: Value,
+    names: &str,
+) -> io::Result<String> {
+    let request_id = format!("{id_prefix}-{}", next_id.fetch_add(1, Ordering::Relaxed));
+    delivery_settings
         .lock()
-        .map_err(|_| io::Error::other("Claude delivery effort map lock poisoned"))?
-        .insert(request_id.clone(), effort.to_string());
+        .map_err(|_| io::Error::other("Claude delivery settings map lock poisoned"))?
+        .insert(request_id.clone(), names.to_string());
     let bytes = control_request_frame_bytes(
         &request_id,
         serde_json::json!({
             "subtype": "apply_flag_settings",
-            "settings": {"effortLevel": effort},
+            "settings": settings,
         }),
     )
-    .ok_or_else(|| io::Error::other("Could not encode Claude effort request."))?;
+    .ok_or_else(|| io::Error::other("Could not encode Claude settings request."))?;
     if let Err(error) = write_child_stdin(stdin, &bytes, "Claude") {
-        if let Ok(mut efforts) = delivery_efforts.lock() {
-            efforts.remove(&request_id);
+        if let Ok(mut settings) = delivery_settings.lock() {
+            settings.remove(&request_id);
         }
         return Err(error);
     }
@@ -1583,7 +1663,7 @@ struct ClaudeReader {
     mode_responses: ClaudeModeResponses,
     /// The delivery's effort requests this reader must answer; empty unless
     /// the spawn wrote an effort frame (see `send_initial_effort`).
-    delivery_efforts: ClaudeDeliveryEfforts,
+    delivery_settings: ClaudeDeliverySettings,
     next_id: Arc<AtomicU64>,
     stdin: Option<Arc<Mutex<Option<ChildStdin>>>>,
     mode_gate: Option<ClaudeModeGateRef>,
@@ -1638,7 +1718,7 @@ impl ClaudeReader {
             permission_broker,
             controls,
             mode_responses,
-            delivery_efforts: Arc::new(Mutex::new(HashMap::new())),
+            delivery_settings: Arc::new(Mutex::new(HashMap::new())),
             next_id,
             stdin: None,
             mode_gate: None,
@@ -1661,7 +1741,7 @@ impl ClaudeReader {
         reader.stdin = Some(wiring.stdin);
         reader.mode_gate = Some(wiring.gate);
         reader.initial_mode_timeout = wiring.timeout;
-        reader.delivery_efforts = wiring.delivery_efforts;
+        reader.delivery_settings = wiring.delivery_settings;
         reader
     }
 
@@ -1914,35 +1994,38 @@ impl ClaudeReader {
             self.complete_initial_mode(runtime, request_id, result);
             return true;
         }
-        // A delivery effort response: the profile's thinking option was the
-        // card's promise, so a refusal fails the session exactly as a
-        // refused initial mode does — an AgentError on the transcript, stdin
-        // closed so the child cannot go on to answer anything at the CLI's
-        // own level. An ignored response here is the silence the R2a audit's
-        // F2 convicted.
-        let delivered_effort = self
-            .delivery_efforts
+        // A delivery settings response: the profile's thinking option or fast
+        // mode was the card's promise, so a refusal fails the session exactly
+        // as a refused initial mode does — an AgentError on the transcript,
+        // stdin closed so the child cannot go on to answer anything at the
+        // CLI's own level. An ignored response here is the silence the R2a
+        // audit's F2 convicted.
+        //
+        // One arm serves both settings because the frame and its answer are
+        // one shape; `delivered_names` is the word the refusal names, so the
+        // message says which of the two the CLI would not take.
+        let delivered_names = self
+            .delivery_settings
             .lock()
             .ok()
-            .and_then(|mut efforts| efforts.remove(request_id));
-        if let Some(effort) = delivered_effort {
+            .and_then(|mut settings| settings.remove(request_id));
+        if let Some(names) = delivered_names {
             let failure = match value.pointer("/response/subtype").and_then(Value::as_str) {
                 Some("success") => None,
                 Some("error") => Some(
                     value
                         .pointer("/response/error")
                         .and_then(Value::as_str)
-                        .unwrap_or("Claude rejected the delivered thinking option.")
+                        .unwrap_or("Claude rejected the delivered setting.")
                         .to_string(),
                 ),
                 _ => Some(
-                    "Claude returned an invalid response to the delivered thinking option."
-                        .to_string(),
+                    "Claude returned an invalid response to the delivered setting.".to_string(),
                 ),
             };
             if let Some(error) = failure {
                 let message = format!(
-                    "Claude refused the delivered thinking option '{effort}': {error}; the child is being torn down rather than left on its own effort level."
+                    "Claude refused the delivered {names}: {error}; the child is being torn down rather than left on the CLI's own setting."
                 );
                 if let Some(mode_gate) = &self.mode_gate {
                     fail_initial_mode_parts(

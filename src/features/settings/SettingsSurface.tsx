@@ -1144,7 +1144,7 @@ function AgentProfilesPanel() {
     row.modeId = rustTrim(draft.modeId);
     const thinking = rustTrim(draft.thinkingOptionId);
     row.thinkingOptionId = thinking === "" ? null : thinking;
-    row.features = profileFeaturesFromDraft(draft);
+    row.features = profileFeaturesFromDraft(draft, draft.offeredFeatures);
     row.enabledForAgents = draft.enabledForAgents;
     // The overlay travels verbatim: whatever the draft holds is what the row
     // saved before, minus what the human removed, plus the peer pair the
@@ -1212,7 +1212,7 @@ function AgentProfilesPanel() {
       modeId: rustTrim(draft.modeId),
       thinkingOptionId:
         rustTrim(draft.thinkingOptionId) === "" ? null : rustTrim(draft.thinkingOptionId),
-      features: profileFeaturesFromDraft(draft),
+      features: profileFeaturesFromDraft(draft, draft.offeredFeatures),
       // The overlay starts exactly as the form drafted it: empty, or the
       // peer pair the tick added.
       toolOverlay: [...draft.overlay],

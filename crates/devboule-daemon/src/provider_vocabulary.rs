@@ -30,8 +30,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use devboule_protocol::{
-    DaemonMessage, ErrorCode, VocabularyModels, VocabularyModes, VocabularyOrigin,
-    VocabularySource, VocabularyState, WireError,
+    DaemonMessage, ErrorCode, VocabularyFeatures, VocabularyModels, VocabularyModes,
+    VocabularyOrigin, VocabularySource, VocabularyState, WireError,
 };
 
 use crate::server::ServerState;
@@ -252,11 +252,13 @@ pub(crate) fn provider_vocabulary_reply(
     let now_ms = crate::server::unix_millis();
     if !refresh {
         if let Some(entry) = state.provider_vocabulary.get(&canonical, &facts, now_ms) {
+            let provider_impl = crate::session::catalog_registry().provider_for(&canonical);
             return vocabulary_reply(
                 id,
                 &canonical,
                 entry.models,
                 entry.modes,
+                provider_impl.features(state, &canonical),
                 VocabularySource::Cache,
                 Some(entry.filled_at_ms),
             );
@@ -272,20 +274,36 @@ pub(crate) fn provider_vocabulary_reply(
         .provider_vocabulary
         .probes
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let (models, modes) = crate::session::catalog_registry()
-        .provider_for(&canonical)
-        .vocabulary(state);
+    let provider_impl = crate::session::catalog_registry().provider_for(&canonical);
+    let (models, modes) = provider_impl.vocabulary(state);
+    // The features axis is answered beside the other two and cached apart from
+    // them: an ACP list comes from a process read that runs once per provider
+    // per run and is not subject to this 30-minute TTL, and a static table is
+    // free to re-derive. The reply therefore carries a features axis that may
+    // be `probing` on a cold ACP provider while the models and modes come
+    // straight from the cache.
+    let features = provider_impl.features(state, &canonical);
     state
         .provider_vocabulary
         .store(&canonical, facts, now_ms, models.clone(), modes.clone());
-    vocabulary_reply(id, &canonical, models, modes, VocabularySource::Probe, None)
+    vocabulary_reply(
+        id,
+        &canonical,
+        models,
+        modes,
+        features,
+        VocabularySource::Probe,
+        None,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn vocabulary_reply(
     id: u64,
     provider: &str,
     models: VocabularyModels,
     modes: VocabularyModes,
+    features: VocabularyFeatures,
     source: VocabularySource,
     probed_at_ms: Option<u64>,
 ) -> DaemonMessage {
@@ -294,6 +312,7 @@ fn vocabulary_reply(
         provider: provider.to_string(),
         models,
         modes,
+        features: Some(features),
         source,
         probed_at_ms,
     }
@@ -339,6 +358,15 @@ fn claude_models_axis(snapshot: crate::claude_catalog::ClaudeCatalogSnapshot) ->
 
 /// The `absent` answer: items empty, origin omitted — both, in both
 /// directions, exactly as the biconditional requires.
+///
+/// Two axes, not three, and that is a cache fact: the features axis is answered
+/// by its own trait method ([`crate::provider::Provider::features`]) and lives in
+/// a cache of its own ([`crate::provider_features::AcpProbeCache`], no TTL) or a
+/// free static table, because the ACP answer comes from a process read and the
+/// others are pure functions of a model. Folding it in here would either expire
+/// an ACP read every 30 minutes — restarting a provider a person is not waiting
+/// on — or pin it forever, which would freeze a `sonnet` answer for an `opus`
+/// form. Recon `D6` names this and the split is its answer.
 pub(crate) fn absent_axes() -> (VocabularyModels, VocabularyModes) {
     (
         VocabularyModels::new(VocabularyState::Absent, None, Vec::new())

@@ -101,6 +101,7 @@ fn measured_control_frames_and_turn_modes_keep_the_wire_shapes() {
             Some("full-access"),
             None,
             None,
+            None,
         )
     );
     let interrupt = method_frame(
@@ -154,6 +155,7 @@ fn turn_start_carries_the_policy_only_after_a_mode_change() {
         state.mode_override().as_deref(),
         None,
         None,
+        state.service_tier().as_deref(),
     );
     assert!(first.get("approvalPolicy").is_none());
     assert!(first.get("sandboxPolicy").is_none());
@@ -165,6 +167,7 @@ fn turn_start_carries_the_policy_only_after_a_mode_change() {
         state.mode_override().as_deref(),
         None,
         None,
+        state.service_tier().as_deref(),
     );
     assert_eq!(changed["approvalPolicy"], "on-request");
     assert_eq!(changed["sandboxPolicy"]["type"], "readOnly");
@@ -177,6 +180,7 @@ fn turn_start_carries_the_policy_only_after_a_mode_change() {
         state.mode_override().as_deref(),
         None,
         None,
+        state.service_tier().as_deref(),
     );
     assert_eq!(later["sandboxPolicy"]["type"], "readOnly");
 }
@@ -454,6 +458,7 @@ fn a_capable_codex_prompt_plans_local_image_paths_and_no_path_line() {
         None,
         None,
         None,
+        None,
     );
     assert_eq!(params["threadId"], "thread-1");
     let input = params["input"].as_array().expect("input array");
@@ -552,9 +557,18 @@ fn a_params_builder_without_images_is_the_text_only_one() {
     // builder, including one whose paths are all path lines. With no
     // carried path it has to be the text-only `turn/start` this surface
     // has always sent: same keys, same values, same order.
-    for (policy_mode, model, effort) in [
-        (None, None, None),
-        (Some("workspace-write"), Some("gpt-5-codex"), Some("high")),
+    // The service tier is in the tuple because it is a key the two builders
+    // must also agree on: a fast-mode turn written by one and not the other
+    // would mean the static image route silently stopped running fast.
+    for (policy_mode, model, effort, tier) in [
+        (None, None, None, None),
+        (
+            Some("workspace-write"),
+            Some("gpt-5-codex"),
+            Some("high"),
+            None,
+        ),
+        (None, Some("gpt-5.6"), None, Some("fast")),
     ] {
         assert_eq!(
             turn_start_params_with_images(
@@ -564,8 +578,16 @@ fn a_params_builder_without_images_is_the_text_only_one() {
                 policy_mode,
                 model,
                 effort,
+                tier,
             ),
-            turn_start_params("thread-1", "describe this", policy_mode, model, effort),
+            turn_start_params(
+                "thread-1",
+                "describe this",
+                policy_mode,
+                model,
+                effort,
+                tier,
+            ),
             "no carried path must not move a key"
         );
     }
@@ -929,6 +951,7 @@ fn an_svg_keeps_its_path_line_beside_codex_image_paths() {
         "thread-1",
         &plan.fallback_text,
         &plan.image_paths,
+        None,
         None,
         None,
         None,

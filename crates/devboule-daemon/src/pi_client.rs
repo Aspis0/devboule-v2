@@ -985,6 +985,15 @@ pub(super) fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireEr
         .as_deref()
         .unwrap_or(DEFAULT_MODE)
         .to_string();
+    // The declaration says pi offers the tick and nothing else, and this is
+    // where that is enforced: a stored feature beyond the tick has no frame in
+    // this family (the mode and the injected extension are its whole surface),
+    // so it is refused rather than left off the child's command line.
+    crate::profile_delivery::refuse_undeclared(
+        &crate::provider_features::pi_declarations(),
+        delivery.model_id.as_deref(),
+        &delivery.features,
+    )?;
     if !mode_is_known(&mode_id) {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
