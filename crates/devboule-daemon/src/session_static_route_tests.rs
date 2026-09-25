@@ -40,6 +40,7 @@ impl StaticImageSink for RecordingStaticSink {
         _store: &AttachmentStore,
         _session_id: &str,
         _text: &str,
+        _raw_text: &str,
         _attachments: &[PromptAttachment],
     ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError> {
         self.calls.fetch_add(1, Ordering::AcqRel);

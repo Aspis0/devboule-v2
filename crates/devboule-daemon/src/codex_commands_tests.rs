@@ -236,6 +236,56 @@ fn an_older_binary_gets_neither_the_flag_nor_the_command() {
     );
 }
 
+#[test]
+fn only_a_whole_message_is_a_picked_command() {
+    // The steer guard resolves the whole prompt, as Paseo's
+    // `resolveSlashCommandInvocation` does (:4004-4021, checked in
+    // `steerActiveTurn`): a message whose last paragraph merely names a
+    // listed command still steers, and only an actual command is refused.
+    let home = TempDir::new("picked-whole-home");
+    let workspace = TempDir::new("picked-whole-cwd");
+    home.write("prompts/commit.md", "---\ndescription: Draft\n---\nDo it\n");
+    workspace.write(
+        ".codex/skills/plotting/SKILL.md",
+        "---\nname: plotting\ndescription: Draw\n---\nSteps.\n",
+    );
+    let commands = home.commands(&workspace.0, false);
+    assert!(commands.is_picked_command("/plotting sales.csv"));
+    assert!(commands.is_picked_command("/compact"));
+    assert!(
+        !commands.is_picked_command("keep going\n\n/compact is what I mean"),
+        "a steer that merely ends in a command still steers instead of killing the turn"
+    );
+    assert!(
+        !commands.is_picked_command("context\n\n/plotting sales.csv"),
+        "a later paragraph naming a command is not one"
+    );
+    assert!(!commands.is_picked_command("/unknown thing"));
+}
+
+#[test]
+fn a_command_with_a_blank_line_in_its_arguments_still_expands() {
+    // Whole-message parsing takes the trimmed remainder as the arguments, so
+    // a multi-paragraph argument is not cut at the blank line the old
+    // trailing-section split cut it at.
+    let home = TempDir::new("multiline-args-home");
+    let workspace = TempDir::new("multiline-args-cwd");
+    home.write(
+        "prompts/commit.md",
+        "---\ndescription: Draft\n---\nBody: $ARGUMENTS\n",
+    );
+    let commands = home.commands(&workspace.0, false);
+    assert_eq!(
+        commands.prompt_input("/prompts:commit line1\n\nline2"),
+        Some(serde_json::json!([{ "type": "text", "text": "Body: line1\n\nline2\n" }]))
+    );
+    assert_eq!(
+        commands.prompt_input("context\n\n/prompts:commit x"),
+        None,
+        "a later paragraph still never expands"
+    );
+}
+
 #[path = "codex_command_prompt_tests.rs"]
 mod prompt_tests;
 

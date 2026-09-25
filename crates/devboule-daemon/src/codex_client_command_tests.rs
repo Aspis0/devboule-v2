@@ -3,16 +3,55 @@
 //! skill, and what the launch line carries.
 
 use std::io::Write;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use devboule_protocol::{NoticeSeverity, SessionEvent};
 
-use super::super::OutOfBandCommands;
+use super::super::{OutOfBandCommands, StaticImageSink};
 use super::command_test_support::{
-    await_answers, out_of_band_on, run_out_of_band, stdin_of, writer_on, Fixture, FAKE_CODEX,
+    await_answers, out_of_band_on, run_out_of_band, stdin_of, thread_state, writer_on, Fixture,
+    FAKE_CODEX,
 };
-use super::{spawn_codex, CodexRequests, CodexSteerer, ThreadRoad};
+use super::{spawn_codex, CodexRequests, CodexStaticPrompt, CodexSteerer, ThreadRoad};
+use crate::attachment_store::AttachmentStore;
 use crate::codex_goals::Goals;
+
+/// A temp dir owning an [`AttachmentStore`], removed on drop — even when an
+/// assertion panics — so a failed test leaks no directory.
+struct StoreTempDir(std::path::PathBuf);
+
+impl StoreTempDir {
+    fn new(tag: &str) -> Self {
+        Self(crate::test_dirs::test_temp_dir(&format!(
+            "devboule-codex-{tag}"
+        )))
+    }
+
+    fn store(&self) -> AttachmentStore {
+        AttachmentStore::new(&self.0)
+    }
+}
+
+impl Drop for StoreTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn plan_attachment(
+    name: &str,
+    mime_type: &str,
+    bytes: &[u8],
+) -> devboule_protocol::PromptAttachment {
+    use base64::Engine;
+    devboule_protocol::PromptAttachment {
+        name: name.to_string(),
+        mime_type: mime_type.to_string(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    }
+}
 
 #[test]
 fn compact_reaches_the_app_server_as_its_own_request_and_never_as_a_turn() {
@@ -125,7 +164,7 @@ fn goal_on_an_old_binary_is_not_intercepted_and_reaches_codex_as_text() {
         let handler = out_of_band_on(stdin.clone(), commands.clone());
         assert!(!handler.handles_out_of_band("/goal ship it"));
         drop(handler);
-        let mut writer = writer_on(stdin, commands);
+        let mut writer = writer_on(stdin);
         writer
             .write_all(b"/goal ship it")
             .expect("the text is written");
@@ -229,13 +268,17 @@ fn a_picked_command_is_refused_as_a_steer() {
 }
 
 #[test]
-fn a_picked_prompt_or_skill_command_changes_the_turn_text_and_stays_a_turn() {
+fn the_writer_sends_text_literally_and_leaves_commands_to_the_static_route() {
+    // The writer's one job is writing text: a picked command that reaches it
+    // directly goes out as typed, still a turn. Expansion lives one level up,
+    // in the static plan the send path always consults first — a picked
+    // command never reaches this writer in production, so the writer must not
+    // guess which trailing section of a composed prompt is one.
     let Some(reason) = Fixture::skip_without_node() else {
         let fixture = Fixture::new("picked");
-        let commands = fixture.commands(true, false);
         let mut child = fixture.child(None);
         let stdin = stdin_of(&mut child);
-        let mut writer = writer_on(stdin, commands);
+        let mut writer = writer_on(stdin);
         for text in [
             "/prompts:commit stage",
             "/plotting sales.csv",
@@ -255,24 +298,203 @@ fn a_picked_prompt_or_skill_command_changes_the_turn_text_and_stays_a_turn() {
                 .map(|(method, _)| method.as_str())
                 .collect::<Vec<_>>(),
             ["turn/start", "turn/start", "turn/start"],
-            "a picked command is still a turn, and so is an unknown slash"
+            "every text is still a turn"
+        );
+        for (recorded, text) in seen.iter().zip([
+            "/prompts:commit stage",
+            "/plotting sales.csv",
+            "/unknown thing",
+        ]) {
+            assert_eq!(
+                recorded.1["input"],
+                serde_json::json!([{ "type": "text", "text": text }]),
+                "the writer expands nothing: {text}"
+            );
+        }
+        return;
+    };
+    eprintln!("{reason}");
+}
+
+#[test]
+fn a_composed_first_command_travels_expanded_on_the_static_route() {
+    // The composed-expansion seam both wiring lines serve:
+    // `CodexStaticPrompt::plan_prompt` resolves the picked command against
+    // the user's message, and `CodexPlannedPrompt::params` puts the expanded
+    // blocks on the wire. Deleting either line sends the literal slash line.
+    let Some(reason) = Fixture::skip_without_node() else {
+        let fixture = Fixture::new("static-wire");
+        let commands = fixture.commands(true, false);
+        let mut child = fixture.child(None);
+        let stdin = stdin_of(&mut child);
+        let route =
+            CodexStaticPrompt::new(stdin, Arc::new(AtomicU64::new(1)), thread_state(), commands);
+        let store_dir = StoreTempDir::new("static-wire");
+        let store = store_dir.store();
+        let raw = "/prompts:commit stage";
+        let composed = format!("standing instructions\n\nspawn prompt\n\n{raw}");
+        let plan = route
+            .plan_prompt(&store, "s.codex.static-wire", &composed, raw, &[])
+            .expect("planning runs")
+            .expect("a picked command is claimed by the static route");
+        plan.send().expect("the turn goes out");
+        await_answers(&mut child, 1);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            fixture.methods(),
+            vec!["turn/start".to_string()],
+            "a picked command is still a turn"
         );
         assert_eq!(
-            seen[0].1["input"][0]["text"], "On stage: stage\n",
-            "the custom prompt travels expanded, front matter and trailing newline \
-             included, as Paseo builds it (:4030-4037, :656)"
+            fixture.recorded()[0].1["input"],
+            serde_json::json!([{ "type": "text", "text": "standing instructions\n\nspawn prompt\n\nOn stage: stage\n" }]),
+            "the first-turn prefix survives command expansion on the wire"
         );
+        return;
+    };
+    eprintln!("{reason}");
+}
+
+#[test]
+fn a_composed_command_with_an_svg_attachment_expands_around_its_path_line() {
+    // The attachments-branch wiring: the plan resolves the command against
+    // the message while the SVG keeps its path line in the journal text.
+    // Deleting the plan-time assignment sends the literal slash line with
+    // the SVG path instead of the expanded body. The SVG line itself stays
+    // out of the input blocks — the recorded SVG P3, pinned deliberately.
+    let Some(reason) = Fixture::skip_without_node() else {
+        let fixture = Fixture::new("static-svg");
+        let commands = fixture.commands(true, false);
+        let mut child = fixture.child(None);
+        let stdin = stdin_of(&mut child);
+        let route =
+            CodexStaticPrompt::new(stdin, Arc::new(AtomicU64::new(1)), thread_state(), commands);
+        let store_dir = StoreTempDir::new("static-svg");
+        let store = store_dir.store();
+        let raw = "/prompts:commit stage";
+        let composed = format!("standing instructions\n\n{raw}");
+        let plan = route
+            .plan_prompt(
+                &store,
+                "s.codex.static-svg",
+                &composed,
+                raw,
+                &[plan_attachment(
+                    "drawing.svg",
+                    "image/svg+xml",
+                    b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+                )],
+            )
+            .expect("planning runs")
+            .expect("a picked command with an attachment is planned");
+        assert!(
+            plan.text().starts_with(&composed),
+            "the journal text opens with the composed prompt"
+        );
+        assert!(
+            plan.text().ends_with(".svg]"),
+            "and closes with the SVG path line: {}",
+            plan.text()
+        );
+        plan.send().expect("the turn goes out");
+        await_answers(&mut child, 1);
+        let _ = child.kill();
+        let _ = child.wait();
         assert_eq!(
-            seen[1].1["input"],
+            fixture.recorded()[0].1["input"],
+            serde_json::json!([{ "type": "text", "text": "standing instructions\n\nOn stage: stage\n" }]),
+            "the wire carries the expanded body; the SVG line stays in the journal"
+        );
+        return;
+    };
+    eprintln!("{reason}");
+}
+
+#[test]
+fn a_picked_skill_with_stored_references_sends_blocks_and_paths() {
+    // The writer-path P2: a picked command next to stored references went out
+    // literally on a first prompt, and with the path lines glued into its
+    // arguments on later ones — while the real paths never reached Codex.
+    // The static route claims the command and appends the reference lines to
+    // the blocks, so the expanded text and the paths both travel.
+    let Some(reason) = Fixture::skip_without_node() else {
+        let fixture = Fixture::new("static-refs");
+        let commands = fixture.commands(true, false);
+        let mut child = fixture.child(None);
+        let stdin = stdin_of(&mut child);
+        let route =
+            CodexStaticPrompt::new(stdin, Arc::new(AtomicU64::new(1)), thread_state(), commands);
+        let store_dir = StoreTempDir::new("static-refs");
+        let store = store_dir.store();
+        let raw = "/plotting sales.csv";
+        let composed = format!("standing instructions\n\n{raw}");
+        let mut plan = route
+            .plan_prompt(&store, "s.codex.static-refs", &composed, raw, &[])
+            .expect("planning runs")
+            .expect("a picked skill is claimed by the static route");
+        let deck = PathBuf::from("/deck/sales.pdf");
+        plan.append_reference_path_lines(std::slice::from_ref(&deck));
+        assert_eq!(
+            plan.text(),
+            format!("{composed}\n\n[Image available at: /deck/sales.pdf]"),
+            "the journal text carries the composed prompt and the path"
+        );
+        plan.send().expect("the turn goes out");
+        await_answers(&mut child, 1);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            fixture.recorded()[0].1["input"],
             serde_json::json!([
+                { "type": "text", "text": "standing instructions\n\n" },
                 { "type": "skill", "name": "plotting", "path": fixture.cwd().join(".codex").join("skills").join("plotting").join("SKILL.md") },
-                { "type": "text", "text": "$plotting sales.csv" },
+                { "type": "text", "text": "$plotting sales.csv\n\n[Image available at: /deck/sales.pdf]" },
             ]),
-            "Paseo's populated-cache form carries the skill path and text (:4044-4052)"
+            "the skill blocks travel expanded, and the reference path with them"
         );
+        return;
+    };
+    eprintln!("{reason}");
+}
+
+#[test]
+fn a_later_paragraph_naming_a_command_is_not_one_on_any_route() {
+    // The suffix P3: Paseo expands only the message that IS the command
+    // (`parseSlashCommandInput` :3986-4001 on the whole prompt). A message
+    // whose last paragraph merely names a listed command goes out literally,
+    // whether or not it was composed around.
+    let Some(reason) = Fixture::skip_without_node() else {
+        let fixture = Fixture::new("suffix");
+        let commands = fixture.commands(true, false);
+        let store_dir = StoreTempDir::new("suffix");
+        let store = store_dir.store();
+        let mut child = fixture.child(None);
+        let stdin = stdin_of(&mut child);
+        let route = CodexStaticPrompt::new(
+            stdin.clone(),
+            Arc::new(AtomicU64::new(1)),
+            thread_state(),
+            Arc::clone(&commands),
+        );
+        let text = "context\n\n/plotting sales.csv";
+        assert!(
+            route
+                .plan_prompt(&store, "s.codex.suffix", text, text, &[])
+                .expect("planning runs")
+                .is_none(),
+            "the static route claims no suffix command"
+        );
+        let mut writer = writer_on(stdin);
+        writer.write_all(text.as_bytes()).expect("written");
+        writer.flush().expect("the turn goes out");
+        await_answers(&mut child, 1);
+        let _ = child.kill();
+        let _ = child.wait();
         assert_eq!(
-            seen[2].1["input"][0]["text"], "/unknown thing",
-            "a name the table does not carry is left exactly as typed"
+            fixture.recorded()[0].1["input"],
+            serde_json::json!([{ "type": "text", "text": text }]),
+            "the writer sends the paragraphs as typed"
         );
         return;
     };
@@ -285,10 +507,9 @@ fn the_writer_keeps_builtin_compact_text_unchanged() {
     // custom prompt. Attachment bypass is exercised at the session boundary.
     let Some(reason) = Fixture::skip_without_node() else {
         let fixture = Fixture::new("attached");
-        let commands = fixture.commands(true, true);
         let mut child = fixture.child(None);
         let stdin = stdin_of(&mut child);
-        let mut writer = writer_on(stdin, commands);
+        let mut writer = writer_on(stdin);
         writer
             .write_all(b"/compact with the picture")
             .expect("the text is written");

@@ -431,7 +431,7 @@ fn session_goals(command: &PtyCommand) -> Goals {
         )
     }
     #[cfg(not(test))]
-    Goals::probe(&command.program)
+    Goals::probe(&command.program, &command.args)
 }
 
 fn spawn_codex(
@@ -604,7 +604,6 @@ fn spawn_codex(
         stdin: Arc::clone(&stdin),
         next_id: Arc::clone(&next_id),
         state: Arc::clone(&state),
-        commands: Arc::clone(&commands),
         pending: Vec::new(),
     };
     // It sends Codex's own `turn/start`: it shares the
@@ -959,18 +958,46 @@ impl super::StaticImageSink for CodexStaticPrompt {
         store: &AttachmentStore,
         session_id: &str,
         text: &str,
+        raw_text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
-        let Some(mut plan) = plan_codex_prompt(store, session_id, text, attachments)? else {
-            return Ok(None);
-        };
-        plan.command_input = command_prompt_input(&self.commands, text)?;
-        Ok(Some(Box::new(CodexPlannedPrompt {
-            stdin: Arc::clone(&self.stdin),
-            next_id: Arc::clone(&self.next_id),
-            state: Arc::clone(&self.state),
-            plan,
-        })))
+        match plan_codex_prompt(store, session_id, text, attachments)? {
+            Some(mut plan) => {
+                plan.command_input =
+                    command_prompt_input(&self.commands, raw_text, command_prefix(text, raw_text))?;
+                Ok(Some(Box::new(CodexPlannedPrompt {
+                    stdin: Arc::clone(&self.stdin),
+                    next_id: Arc::clone(&self.next_id),
+                    state: Arc::clone(&self.state),
+                    plan,
+                })))
+            }
+            None => {
+                // No attachments: the writer would send this text literally,
+                // which is Paseo's answer for ordinary text — but a picked
+                // command must still expand, because Paseo resolves slash
+                // commands on the string prompt (`resolveSlashCommandInvocation`
+                // :4004-4021). Claiming it here keeps the writer to its one
+                // job — writing text — so it never has to guess which
+                // trailing section of a composed prompt is the command, and
+                // so stored references appended later still meet the expanded
+                // blocks instead of the literal slash line.
+                let prefix = command_prefix(text, raw_text);
+                let Some(input) = command_prompt_input(&self.commands, raw_text, prefix)? else {
+                    return Ok(None);
+                };
+                Ok(Some(Box::new(CodexPlannedPrompt {
+                    stdin: Arc::clone(&self.stdin),
+                    next_id: Arc::clone(&self.next_id),
+                    state: Arc::clone(&self.state),
+                    plan: CodexPromptPlan {
+                        fallback_text: text.to_string(),
+                        image_paths: Vec::new(),
+                        command_input: Some(input),
+                    },
+                })))
+            }
+        }
     }
 }
 
@@ -1037,12 +1064,24 @@ impl super::PlannedStaticPrompt for CodexPlannedPrompt {
     }
 }
 
+/// The composed text ahead of the user's message: the standing instructions,
+/// spawn prompt and preamble the send path joined ahead of it, or `""` when
+/// the prompt was not composed. `text` always ends with `raw_text` — the send
+/// path builds it by joining parts around the message — so the prefix is a
+/// suffix strip, never a guess at which paragraph is the command.
+fn command_prefix<'a>(text: &'a str, raw_text: &str) -> &'a str {
+    text.strip_suffix(raw_text)
+        .unwrap_or("")
+        .trim_end_matches('\n')
+}
+
 fn command_prompt_input(
     commands: &CodexCommands,
-    text: &str,
+    raw_text: &str,
+    prefix: &str,
 ) -> Result<Option<Vec<Value>>, WireError> {
     commands
-        .prompt_input_checked(text)
+        .prompt_input_checked(raw_text, prefix)
         .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))
         .map(|input| input.and_then(|input| input.as_array().cloned()))
 }
@@ -1051,7 +1090,6 @@ struct CodexWriter {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     state: Arc<CodexState>,
-    commands: Arc<CodexCommands>,
     pending: Vec<u8>,
 }
 
@@ -1067,42 +1105,25 @@ impl Write for CodexWriter {
         }
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
-        // A prompt that names one of this session's commands goes as the form
-        // that command has — an expanded custom prompt, or skill and text
-        // blocks for a skill (`buildCommandPromptInput` :4028-4056). Everything else, and
-        // every `/compact` and `/goal`, keeps the text the human typed: those
-        // two are answered out of band before the writer is reached, and a
-        // prompt that carries an image is not a command at all.
-        let input = self
-            .commands
-            .prompt_input_checked(&text)
-            .map_err(io::Error::other)?;
-        // The text-only `turn/start`, unchanged. A prompt that carries
-        // images is sent by the static route's own `turn/start` instead of by
-        // this writer, so `turn_start_params_with_images` has one production
-        // caller and this literal keeps the other: with no carried path the
-        // two build the same params, which
-        // `a_params_builder_without_images_is_the_text_only_one` pins.
+        // Text only, always. A picked command never reaches this writer: the
+        // static route claims every one at plan time (a whole-message
+        // resolution, as Paseo's), so there is nothing to expand here and no
+        // trailing section to mistake for a command. What arrives is sent as
+        // the text-only `turn/start`, unchanged.
         let (model, effort) = self.state.model_and_effort();
         let policy_mode = self.state.mode_override();
         send_request(
             &self.stdin,
             &self.next_id,
             "turn/start",
-            {
-                let mut params = turn_start_params(
-                    &self.state.thread_id(),
-                    &text,
-                    policy_mode.as_deref(),
-                    Some(&model),
-                    effort.as_deref(),
-                    self.state.service_tier().as_deref(),
-                );
-                if let Some(input) = input {
-                    params["input"] = input;
-                }
-                params
-            },
+            turn_start_params(
+                &self.state.thread_id(),
+                &text,
+                policy_mode.as_deref(),
+                Some(&model),
+                effort.as_deref(),
+                self.state.service_tier().as_deref(),
+            ),
             "Codex",
         )
         .map_err(wire_to_io)

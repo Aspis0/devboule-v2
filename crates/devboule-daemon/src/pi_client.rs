@@ -2026,6 +2026,7 @@ impl super::StaticImageSink for PiStaticPrompt {
         store: &crate::attachment_store::AttachmentStore,
         session_id: &str,
         text: &str,
+        _raw_text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
         // The catalog is read here, at prompt time: a model switched since

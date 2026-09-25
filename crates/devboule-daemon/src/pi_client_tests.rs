@@ -1755,6 +1755,7 @@ fn the_static_route_answers_for_the_model_current_at_prompt_time() {
             &store,
             "pi-route",
             "describe this",
+            "describe this",
             std::slice::from_ref(&attachment),
         )
         .expect("planned")
@@ -1767,6 +1768,7 @@ fn the_static_route_answers_for_the_model_current_at_prompt_time() {
         .plan_prompt(
             &store,
             "pi-route",
+            "describe this",
             "describe this",
             std::slice::from_ref(&attachment)
         )

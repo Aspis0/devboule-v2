@@ -988,6 +988,7 @@ fn a_first_command_with_an_attachment_keeps_its_prefix_and_image_block() {
     )
     .unwrap();
     let commands = CodexCommands::new(&home, Some(&cwd), false);
+    let raw = "/prompts:commit release";
     let text = "standing\n\nspawn\n\nrecovered\n\n/prompts:commit release";
     let store = AttachmentStore::new(&temp.0.join("store"));
     let mut plan = plan_codex_prompt(
@@ -1002,7 +1003,8 @@ fn a_first_command_with_an_attachment_keeps_its_prefix_and_image_block() {
     )
     .expect("plan the attachment")
     .expect("the raster plans a path");
-    plan.command_input = command_prompt_input(&commands, text).expect("expand command");
+    plan.command_input = command_prompt_input(&commands, raw, "standing\n\nspawn\n\nrecovered")
+        .expect("expand command");
 
     let input = plan.input_blocks();
     assert_eq!(input.len(), 2);

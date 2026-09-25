@@ -223,12 +223,11 @@ pub(super) fn out_of_band_on(stdin: SharedStdin, commands: Arc<CodexCommands>) -
     CodexOutOfBand::new(stdin, Arc::new(AtomicU64::new(1)), thread_state(), commands)
 }
 
-pub(super) fn writer_on(stdin: SharedStdin, commands: Arc<CodexCommands>) -> CodexWriter {
+pub(super) fn writer_on(stdin: SharedStdin) -> CodexWriter {
     CodexWriter {
         stdin,
         next_id: Arc::new(AtomicU64::new(1)),
         state: thread_state(),
-        commands,
         pending: Vec::new(),
     }
 }

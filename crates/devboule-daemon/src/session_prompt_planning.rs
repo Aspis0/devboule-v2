@@ -479,11 +479,17 @@ pub(crate) trait StaticImageSink: Send + Sync {
     /// the frame carries and the string the journal records cannot be two
     /// different values, and so the caller never has to walk the attachments
     /// a second time through [`with_attachment_paths`].
+    ///
+    /// `text` may carry the send path's composed first-prompt prefix;
+    /// `raw_text` is the user's message underneath it. Only Codex reads the
+    /// second: it resolves picked commands against the message, never by
+    /// guessing which trailing section of the composed string is one.
     fn plan_prompt(
         &self,
         store: &AttachmentStore,
         session_id: &str,
         text: &str,
+        raw_text: &str,
         attachments: &[PromptAttachment],
     ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError>;
 }

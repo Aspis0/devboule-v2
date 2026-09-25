@@ -1128,6 +1128,7 @@ impl super::StaticImageSink for ClaudeStaticPrompt {
         store: &AttachmentStore,
         session_id: &str,
         text: &str,
+        _raw_text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
         let Some(plan) = plan_claude_prompt(store, session_id, text, attachments)? else {

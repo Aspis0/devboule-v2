@@ -1904,6 +1904,7 @@ fn the_static_route_frames_the_blocks_it_planned_through_the_mode_gate() {
             &store,
             session_id,
             "describe this",
+            "describe this",
             &[plan_attachment("photo.png", "image/png", &sent)],
         )
         .expect("planned")
@@ -1939,7 +1940,13 @@ fn the_static_route_declines_a_prompt_with_no_attachments() {
     let store = AttachmentStore::new(&temp.0);
     let route = ClaudeStaticPrompt::new(Arc::new(Mutex::new(None)), None);
     assert!(route
-        .plan_prompt(&store, "claude-route-none", "describe this", &[])
+        .plan_prompt(
+            &store,
+            "claude-route-none",
+            "describe this",
+            "describe this",
+            &[]
+        )
         .expect("planned")
         .is_none());
 }

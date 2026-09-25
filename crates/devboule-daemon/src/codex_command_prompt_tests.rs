@@ -24,6 +24,8 @@ fn a_picked_prompt_command_sends_its_expanded_body() {
 
 #[test]
 fn a_first_prompt_composes_around_a_picked_command() {
+    // The resolution runs on the user's message; the send path hands the
+    // composed prefix alongside it, so no paragraph-guessing is involved.
     let home = TempDir::new("first-command-home");
     let workspace = TempDir::new("first-command-cwd");
     home.write(
@@ -31,13 +33,13 @@ fn a_first_prompt_composes_around_a_picked_command() {
         "---\ndescription: Draft it\n---\nDo $1\n",
     );
     let commands = home.commands(&workspace.0, false);
-    let composed =
-        "standing instructions\n\nspawn prompt\n\nrecovered context\n\n/prompts:commit release";
+    let raw = "/prompts:commit release";
+    let prefix = "standing instructions\n\nspawn prompt\n\nrecovered context";
     assert_eq!(
-        commands.prompt_input(composed),
-        Some(serde_json::json!([
+        commands.prompt_input_checked(raw, prefix),
+        Ok(Some(serde_json::json!([
             { "type": "text", "text": "standing instructions\n\nspawn prompt\n\nrecovered context\n\nDo release\n" }
-        ])),
+        ]))),
         "the first-turn prefix survives command expansion once"
     );
 }
@@ -141,14 +143,14 @@ fn the_session_start_snapshot_does_not_offer_new_prompts() {
     let commands = home.commands(&workspace.0, false);
     home.write("prompts/add.md", "---\ndescription: Add\n---\nnew\n");
     assert_eq!(
-        commands.prompt_input_checked("/prompts:add"),
+        commands.prompt_input_checked("/prompts:add", ""),
         Ok(None),
         "the send path uses the session-start catalogue snapshot"
     );
     std::fs::remove_file(home.0.join("prompts/remove.md")).expect("remove prompt fixture");
     assert!(commands.is_picked_command("/prompts:remove"));
     assert!(commands
-        .prompt_input_checked("/prompts:remove")
+        .prompt_input_checked("/prompts:remove", "")
         .expect_err("the session-start snapshot still selects its saved prompt")
         .contains("selected prompt file"));
 }

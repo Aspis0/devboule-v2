@@ -398,7 +398,11 @@ fn a_compaction_from_another_thread_is_silent_on_both_channels() {
 }
 
 #[test]
-fn unfinished_root_compaction_is_closed_at_turn_end_and_late_completion_is_ignored() {
+fn a_late_completion_after_turn_end_reports_again_like_paseo() {
+    // Paseo keeps no stale set: its turn reset clears the pending ids
+    // (`resetTurnTrackingState` :6037-6059), so a completion that lands after
+    // the boundary opens a new count instead of being swallowed. The late
+    // frame below is the third report, not a duplicate of the second.
     let fixture = Fixture::new("unfinished-compaction");
     let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
     reader.dispatch_value(compaction_item("item/started"), &runtime);
@@ -425,7 +429,76 @@ fn unfinished_root_compaction_is_closed_at_turn_end_and_late_completion_is_ignor
             .iter()
             .filter(|line| *line == "Context compacted.")
             .count(),
-        2
+        3,
+        "paired, turn-end close, then the late frame as a new count: {lines:?}"
+    );
+}
+
+#[test]
+fn a_notification_before_turn_end_reports_one_compaction() {
+    // The double-emit P2: `thread/compacted` used to leave the pending item
+    // in place, so the turn end reported the same compaction again. Paseo
+    // consumes the pending item in its notification handler
+    // (`consumePendingRootCompaction` :6211), and so does this one.
+    let fixture = Fixture::new("notify-then-end");
+    let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
+    reader.dispatch_value(compaction_item("item/started"), &runtime);
+    reader.dispatch_value(thread_compacted("thread-fake"), &runtime);
+    reader.dispatch_value(
+        serde_json::json!({"method": "turn/completed",
+            "params": {"threadId": "thread-fake", "turn": {"id": "t-1", "status": "completed"}}}),
+        &runtime,
+    );
+    assert_eq!(
+        notices(&conn),
+        ["Compacting the context.", "Context compacted."],
+        "loading, then the one completion — the turn end finds nothing pending"
+    );
+}
+
+#[test]
+fn a_compacted_notification_without_a_thread_id_is_dropped() {
+    // D1, Paseo-exact: `ContextCompactedNotificationSchema` requires
+    // `threadId`, so a frame without one is an invalid payload Paseo warns
+    // and drops — never a root event. An empty string compares strictly
+    // against the current thread (:6205-6207), so it drops too.
+    for params in [serde_json::json!({}), serde_json::json!({"threadId": ""})] {
+        let fixture = Fixture::new("compacted-no-thread");
+        let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
+        reader.dispatch_value(
+            serde_json::json!({"method": "thread/compacted", "params": params}),
+            &runtime,
+        );
+        assert!(
+            notices(&conn).is_empty(),
+            "no root notice for a thread-less compacted frame: {params}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_thread_id_is_the_root_thread_on_the_optional_channels() {
+    // D1, Paseo-exact: `getSubAgentCallIdForThread` treats a missing or empty
+    // id as the root thread (:5477), for the channels whose schema leaves it
+    // optional (`item/*`, `turn/completed`).
+    let fixture = Fixture::new("empty-thread-id");
+    let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
+    reader.dispatch_value(
+        serde_json::json!({
+            "method": "item/started",
+            "params": {"threadId": "", "item": {"id": "i-empty", "type": "contextCompaction"}}
+        }),
+        &runtime,
+    );
+    reader.dispatch_value(
+        serde_json::json!({"method": "turn/completed",
+            "params": {"threadId": "", "turn": {"id": "t-1", "status": "completed"}}}),
+        &runtime,
+    );
+    assert_eq!(
+        notices(&conn),
+        ["Compacting the context.", "Context compacted."],
+        "the empty id walks the root path: loading, then the turn-end close"
     );
 }
 

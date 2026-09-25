@@ -745,14 +745,14 @@ impl super::SessionRegistry {
             }
         }
         // Paseo calls `tryRunOutOfBand` before `startAgentRunInner` and
-        // `steerOrReplaceActiveRun` (`agent-prompt.ts:110-116`); the Codex hook
-        // also expands picked commands only after this first-prompt composition
-        // (`codex-app-server-agent.ts:4975-5010`, `:4028-4056`). Keep this door
-        // ahead of composition so out-of-band input remains parseable. Picked
-        // prompt and skill commands are composed normally; Codex resolves the
-        // final slash-command section after the shared first-prompt prefix.
-        // Attachment prompts bypass the out-of-band door because Paseo only
-        // resolves string prompts (:4009).
+        // `steerOrReplaceActiveRun` (`agent-prompt.ts:110-116`); a picked Codex
+        // prompt or skill is not out-of-band — it stays a turn — and the
+        // static plan below expands it against the user's message, ahead of
+        // this first-prompt composition, so a later paragraph that merely
+        // names a command is never one. Keep this door ahead of composition
+        // so out-of-band input remains parseable. Attachment prompts bypass
+        // the out-of-band door because Paseo only resolves string prompts
+        // (:4009).
         if attachments.is_empty() && attachment_references.is_empty() {
             if let Some(commands) = out_of_band.as_ref() {
                 if commands.handles_out_of_band(text) {
@@ -918,6 +918,7 @@ impl super::SessionRegistry {
                     text,
                 )
             });
+        let raw_text = text;
         let text = first_prompt.as_deref().unwrap_or(text);
         // (S4-10, S4-14) The last thing before the write: the slot's boundary must
         // be the turn this text actually enters. The admission registered it
@@ -976,7 +977,9 @@ impl super::SessionRegistry {
         // attachments, or a provider not authorised for inline bytes) and
         // nothing was materialized for it.
         let mut static_plan = match static_image_sink.as_ref() {
-            Some(sink) => sink.plan_prompt(&self.attachments, session_id, text, attachments)?,
+            Some(sink) => {
+                sink.plan_prompt(&self.attachments, session_id, text, raw_text, attachments)?
+            }
             None => None,
         };
         // The references join the text of whichever route planned this prompt,

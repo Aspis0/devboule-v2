@@ -205,19 +205,31 @@ impl CodexCommands {
     /// Input for a picked command (`buildCommandPromptInput` :4028-4056).
     /// Custom prompts are expanded here because app-server text input does not
     /// expand them; skills carry the same skill and text blocks Paseo builds.
-    pub(crate) fn prompt_input_checked(&self, text: &str) -> Result<Option<Value>, String> {
-        let (prefix, command_text) = split_composed_command(text);
-        let Some((name, args)) = parse_slash(command_text) else {
+    ///
+    /// `raw_text` is the user's message; `prefix` is the composed first-prompt
+    /// text ahead of it (`""` when the prompt was not composed). Resolution
+    /// runs on the message alone, as Paseo's `resolveSlashCommandInvocation`
+    /// does on the whole prompt string (:4004-4021): a message whose last
+    /// paragraph merely names a command is not one, and neither is a command
+    /// with a blank line inside its arguments unexpandable — whole-string
+    /// parsing handles both. The prefix is preserved ahead of the expanded
+    /// body so the first turn keeps its standing instructions.
+    pub(crate) fn prompt_input_checked(
+        &self,
+        raw_text: &str,
+        prefix: &str,
+    ) -> Result<Option<Value>, String> {
+        let Some((name, args)) = parse_slash(raw_text) else {
             return Ok(None);
         };
         // An out-of-band name never becomes a prompt. Paseo cannot reach a
         // prompt builder with one: its intercept runs first, and a prompt
         // carrying images is not a string, so `resolveSlashCommandInvocation`
         // answers `None` and the raw text goes out (:4009). That same case does
-        // reach this daemon's writer, and leaving it alone is what keeps a
+        // reach this daemon's static plan, and leaving it alone is what keeps a
         // `/compact` with a picture attached from travelling as a `$compact`
         // prompt Codex has no command for.
-        if self.command(text).is_some() {
+        if self.command(raw_text).is_some() {
             return Ok(None);
         }
         let Some(entry) = self.entries.iter().find(|entry| entry.name == name) else {
@@ -258,24 +270,18 @@ impl CodexCommands {
 
     #[cfg(test)]
     pub(crate) fn prompt_input(&self, text: &str) -> Option<Value> {
-        self.prompt_input_checked(text).ok().flatten()
+        self.prompt_input_checked(text, "").ok().flatten()
     }
 
+    /// Whether this message names a listed command, for the steer guard.
+    /// Paseo refuses a steer only when the whole prompt resolves
+    /// (`resolveSlashCommandInvocation` :4004-4021, checked in
+    /// `steerActiveTurn`): a steer whose last paragraph merely names a
+    /// command still steers, and only an actual command is refused.
     pub(crate) fn is_picked_command(&self, text: &str) -> bool {
-        let (_, command_text) = split_composed_command(text);
-        parse_slash(command_text)
+        parse_slash(text)
             .is_some_and(|(name, _)| self.entries.iter().any(|entry| entry.name == name))
     }
-}
-
-fn split_composed_command(text: &str) -> (&str, &str) {
-    // Composition joins the standing instructions and prompt with one blank line.
-    if let Some((prefix, command)) = text.rsplit_once("\n\n") {
-        if parse_slash(command).is_some() {
-            return (prefix, command);
-        }
-    }
-    ("", text)
 }
 
 /// The body of one custom prompt file, front matter removed
