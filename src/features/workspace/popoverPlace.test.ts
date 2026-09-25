@@ -125,4 +125,13 @@ describe("the popovers are raised surfaces", () => {
     expect(menu).toContain("border: 1px solid var(--border-strong);");
     expect(menu).toContain("box-shadow: 0 12px 30px rgba(var(--ink-rgb), 0.16);");
   });
+
+  it("budgets a window height against the window the surface actually gets", () => {
+    // The band at the window's top edge (`--crescent-band`, 13px) belongs to the
+    // crescent's sliver, and every surface is laid out below it — so a menu that
+    // caps itself at a fraction of `100vh` is charging a height that does not
+    // exist. The rule's own window is `100vh - band`.
+    const menu = ruleBody(".workspace-command-menu");
+    expect(menu).toContain("max-height: min(320px, calc((100vh - var(--crescent-band)) * 0.45));");
+  });
 });

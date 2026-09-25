@@ -1334,7 +1334,12 @@
   left: 18px;
   z-index: 2;
   display: flex;
-  max-height: min(320px, 45vh);
+  /* A window-height budget, so it is charged to the band like every other one:
+     the surface this menu opens inside starts at `--crescent-band`, so 45% of
+     the WINDOW would be 45% of a height the menu does not have. 13px of band is
+     ~1.7% of a 760px window — small, and it is the difference between the last
+     row landing on the sliver and landing below it. */
+  max-height: min(320px, calc((100vh - var(--crescent-band)) * 0.45));
   flex-direction: column;
   gap: 2px;
   overflow-y: auto;
