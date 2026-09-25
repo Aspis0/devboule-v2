@@ -35,7 +35,7 @@ function formatRenderError(value: unknown): string {
 // change: Reload is a real document reload. A generation-key remount cannot
 // recover a failed lazy() import — React caches the rejection forever (the
 // lazy payload keeps _status = 2 and every later render re-throws _result) —
-// and Paseo's reload (root-app.tsx:20-32, a key bump plus a safe route) has
+// and Paseo's reload (packages/app/src/root-app.tsx:20-32, a key bump plus a safe route) has
 // the same gap. window.location.reload recovers both cases, so there is
 // exactly one recovery mechanism and the copy promises nothing else.
 export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErrorBoundaryState> {
@@ -71,8 +71,8 @@ function RootErrorFallback({ error }: { error: string }): ReactNode {
       <div className="root-fallback-card">
         <h1 className="root-fallback-title">Devboule ran into a problem.</h1>
         <p className="root-fallback-body">
-          Reload restarts the app on the Workspace surface. If this keeps happening, include the
-          details below when you report it.
+          Reload restarts the app on the Workspace surface — unsent drafts are lost. If this keeps
+          happening, include the details below when you report it.
         </p>
         <h2 className="root-fallback-details-label">Details</h2>
         <pre className="root-fallback-details">{error}</pre>

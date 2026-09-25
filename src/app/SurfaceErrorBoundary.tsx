@@ -59,7 +59,7 @@ export class SurfaceErrorBoundary extends Component<
           {/* Retry cannot recover a failed lazy() import — React caches the
               rejection — so the fallback always offers both. */}
           <p className="surface-fallback-note">
-            Reload restarts Devboule on the Workspace surface.
+            Reload restarts Devboule on the Workspace surface — unsent drafts are lost.
           </p>
           <div className="surface-fallback-actions">
             <button type="button" className="boundary-retry" onClick={this.retry}>

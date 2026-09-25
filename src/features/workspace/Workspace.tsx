@@ -1597,15 +1597,10 @@ export function Workspace({
                   className={`workspace-status-dot workspace-surface-dot-${selectedSurface.dotTone}`}
                 />
                 <span className="workspace-surface-name">{selectedSurface.name}</span>
-                {/* The badge read stays inside a boundary while the selector
-                      around it stays mounted: a badge throw replaces the badge,
-                      never the switcher. */}
-                <SurfaceErrorBoundary key={selectedSurface.id} surfaceLabel={selectedSurface.name}>
-                  <SidePanelMeta
-                    selectedSurface={selectedSurface}
-                    selectedWorkspace={selectedWorkspace}
-                  />
-                </SurfaceErrorBoundary>
+                <SidePanelMeta
+                  selectedSurface={selectedSurface}
+                  selectedWorkspace={selectedWorkspace}
+                />
                 <span className="workspace-surface-chevron" aria-hidden="true">
                   ▾
                 </span>
@@ -1647,10 +1642,12 @@ export function Workspace({
 
             <div className="workspace-scroll workspace-side-scroll">
               {/* A body throw replaces the body only; the toolbar above stays
-                    mounted so the user can leave the panel. Panel id only: a
-                    panel switch resets the boundary, while a workspace switch
-                    keeps drafts, focus and scroll — at the price that a panel
-                    error survives it until Retry or a panel switch. */}
+                    mounted so the user can leave the panel. Panel id only, so
+                    a panel switch resets the boundary — but a workspace switch
+                    neither resets a panel error (Retry or a panel switch
+                    clears it) nor the panel's own state: drafts, rename
+                    inputs, focus and scroll carry across, as they did before
+                    this slice. */}
               <SurfaceErrorBoundary key={selectedSurface.id} surfaceLabel={selectedSurface.name}>
                 {selectedSurface.render({
                   appBuild,

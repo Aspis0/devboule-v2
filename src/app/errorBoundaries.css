@@ -95,8 +95,9 @@ body:has(.root-fallback) {
   flex-direction: column;
   gap: 10px;
   min-height: 0;
-  /* The panel fallback used to inherit its scroll from the scroll div; the
-     app-level one has no scrolling ancestor, so the fallback scrolls itself. */
+  /* The fallback scrolls itself where it has no scrolling ancestor (the
+     app-level case); in the panel the scroll div is the scroller and this
+     is inert. */
   overflow-y: auto;
   padding: 18px;
   background: var(--panel-card);

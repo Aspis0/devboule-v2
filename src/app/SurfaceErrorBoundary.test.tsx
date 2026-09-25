@@ -112,7 +112,7 @@ describe("SurfaceErrorBoundary", () => {
     expect(mounts).toBe(2);
   });
 
-  it("a rejected lazy import shows the fallback with a working document reload", async () => {
+  it("a rejected lazy import shows the fallback and its Reload calls location.reload", async () => {
     // A failed import is cached by React forever: Retry re-renders into the
     // same cached rejection, so the fallback must offer a document reload.
     // (Mirrored structure: Suspense outside the boundary, as in App.tsx.)

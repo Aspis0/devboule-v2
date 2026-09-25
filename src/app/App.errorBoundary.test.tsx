@@ -188,8 +188,8 @@ describe("App error boundaries", () => {
       "Reload",
     );
 
-    // A failed chunk can only recover through a document reload — a remount
-    // re-throws React's cached lazy rejection — so the button reloads.
+    // The shell is healthy again, so the button's document reload is the
+    // recovery under test.
     mocks.throwShell = false;
     const button = container.querySelector<HTMLButtonElement>(".boundary-reload");
     if (button === null) throw new Error("root reload control did not render");
