@@ -1,12 +1,16 @@
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { composerActionLabel } from "../../lib/sendBehavior";
-
-export interface WorkspaceCommand {
-  name: string;
-  description: string;
-  hint?: string;
-}
+import { WorkspaceCommandMenu, type WorkspaceCommand } from "./WorkspaceCommandMenu";
 
 /** Height cap of the growing textarea: eight 20px lines. */
 const TEXTAREA_MAX_HEIGHT_PX = 160;
@@ -56,6 +60,14 @@ function commandQuery(input: string): string | null {
   return query.toLowerCase();
 }
 
+/** One step from the highlighted row for an arrow key, wrapping at both ends
+ * (Paseo's getNextActiveIndex); with no rows there is no row to move to. */
+function nextCommandIndex(current: number, count: number, key: "ArrowUp" | "ArrowDown"): number {
+  if (count <= 0) return current;
+  const step = key === "ArrowDown" ? 1 : -1;
+  return (current + step + count) % count;
+}
+
 export const WorkspaceComposer = memo(function WorkspaceComposer({
   streaming,
   turnActive,
@@ -74,7 +86,10 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   contextMeter = null,
 }: WorkspaceComposerProps) {
   const [input, setInput] = useState("");
+  const [menuDismissed, setMenuDismissed] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const menuId = useId();
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -127,30 +142,34 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     if (queueAvailable) queueInput();
   }, [enterQueues, queueAvailable, queueInput, sendInput]);
 
-  const handleComposerKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-      // Enter belongs to an IME while a composition is open: the keystroke
-      // commits the composition, and sending here would submit the text before
-      // the candidate is chosen. `isComposing` is the standard signal; the
-      // legacy `keyCode === 229` covers engines that report the composition
-      // commit without setting it.
-      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-      if (event.key !== "Enter" || event.shiftKey) return;
-      event.preventDefault();
-      if (event.ctrlKey || event.metaKey) runAlternateAction();
-      else runDefaultAction();
-    },
-    [runAlternateAction, runDefaultAction],
-  );
-
   const query = commandQuery(input);
-  const commandMatches =
-    query === null
-      ? []
-      : availableCommands.filter((command) => command.name.toLowerCase().includes(query));
-  const commandMenuVisible = !disabled && query !== null && availableCommands.length > 0;
-  // Paseo's submit-button words on the button that does what Enter does.
-  const actionLabel = composerActionLabel(defaultActionQueues);
+  const commandMatches = useMemo(
+    () =>
+      query === null
+        ? []
+        : availableCommands.filter((command) => command.name.toLowerCase().includes(query)),
+    [availableCommands, query],
+  );
+  const matchCount = commandMatches.length;
+  const commandMenuVisible = !disabled && query !== null && !menuDismissed;
+  // The row the keys act on: the highlight, or the first match while the
+  // highlight is out of range of the list that is on screen.
+  const activeRow =
+    matchCount === 0 ? -1 : activeIndex >= 0 && activeIndex < matchCount ? activeIndex : 0;
+  const activeOptionId =
+    commandMenuVisible && activeRow >= 0 ? `${menuId}-option-${activeRow}` : null;
+
+  // Paseo resets the highlight on a query change and clamps a row that fell
+  // out of range (use-autocomplete); the Escape's dismissal rides the same line.
+  const lastQueryRef = useRef(query);
+  useEffect(() => {
+    const queryChanged = lastQueryRef.current !== query;
+    lastQueryRef.current = query;
+    if (queryChanged) setMenuDismissed(false);
+    setActiveIndex((current) =>
+      queryChanged || current < 0 || current >= matchCount ? 0 : current,
+    );
+  }, [query, matchCount]);
 
   const selectCommand = useCallback(
     (command: WorkspaceCommand) => {
@@ -160,33 +179,65 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     [setInput],
   );
 
+  const handleComposerKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      // Enter belongs to an IME while a composition is open: the keystroke
+      // commits the composition, and sending here would submit the text before
+      // the candidate is chosen. `isComposing` is the standard signal; the
+      // legacy `keyCode === 229` covers engines that report the composition
+      // commit without setting it.
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+      // Paseo's menu keys, with Shift kept for text editing, and Paseo's rule
+      // that a menu with no rows takes none of them (so Enter still sends).
+      if (commandMenuVisible && !event.shiftKey) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setMenuDismissed(true);
+          return;
+        }
+        if (matchCount > 0) {
+          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            const key = event.key;
+            event.preventDefault();
+            setActiveIndex((current) => nextCommandIndex(current, matchCount, key));
+            return;
+          }
+          if (event.key === "Enter" || event.key === "Tab") {
+            event.preventDefault();
+            selectCommand(commandMatches[activeRow]);
+            return;
+          }
+        }
+      }
+      if (event.key !== "Enter" || event.shiftKey) return;
+      event.preventDefault();
+      if (event.ctrlKey || event.metaKey) runAlternateAction();
+      else runDefaultAction();
+    },
+    [
+      activeRow,
+      commandMatches,
+      commandMenuVisible,
+      matchCount,
+      runAlternateAction,
+      runDefaultAction,
+      selectCommand,
+    ],
+  );
+
+  // Paseo's submit-button words on the button that does what Enter does.
+  const actionLabel = composerActionLabel(defaultActionQueues);
+
   return (
     <div className="workspace-composer-wrap">
       {queuedTrack}
       {commandMenuVisible ? (
-        <div className="workspace-command-menu" role="listbox" aria-label="Available commands">
-          <div className="workspace-command-menu-heading">Agent commands</div>
-          {commandMatches.length > 0 ? (
-            commandMatches.map((command) => (
-              <button
-                type="button"
-                role="option"
-                className="workspace-command-option"
-                key={command.name}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectCommand(command)}
-              >
-                <span className="workspace-command-name">/{command.name}</span>
-                <span className="workspace-command-description">
-                  {command.description}
-                  {command.hint ? ` · ${command.hint}` : ""}
-                </span>
-              </button>
-            ))
-          ) : (
-            <div className="workspace-command-empty">No matching commands.</div>
-          )}
-        </div>
+        <WorkspaceCommandMenu
+          commands={commandMatches}
+          activeIndex={activeRow}
+          activeOptionId={activeOptionId}
+          onSelect={selectCommand}
+        />
       ) : null}
       <div className="workspace-composer">
         <textarea
@@ -200,6 +251,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
           placeholder={COMPOSER_PLACEHOLDER}
           rows={1}
           aria-label="Message the agent"
+          aria-activedescendant={activeOptionId ?? undefined}
           disabled={disabled}
         />
         <div className="workspace-composer-bar">
