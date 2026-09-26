@@ -251,7 +251,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CANCEL_AGENT_TOOL,
-        "Interrupts the current turn of one of your own live child sessions and keeps the child: the child stops what it is doing now, any permission card it had parked is resolved as interrupted, and it stays alive for your next message. This is the soft verb between doing nothing and devboule_stop_agent, which kills the process. Name the child by id or display name; you can only cancel a session you created yourself. Replies success: true only when the turn was interrupted and then stopped; success: false when the child had no turn running, or when the turn did not stop within the two-second wait - the text says which.",
+        "Interrupts the current turn of one of your own live child sessions and keeps the child: the child stops what it is doing now, any permission card it had parked is resolved as interrupted, and it stays alive for your next message. This is the soft verb between doing nothing and devboule_stop_agent, which kills the process. Name the child by id or display name; you can only cancel a session you created yourself. Replies success: true when the turn that was running when you called is no longer running - whether this interrupt ended it or it ended on its own in that instant; success: false when no turn was running, or when that turn did not stop within the two-second wait - the text says which. A turn that starts after the call is never touched.",
     ),
     (
         MCP_LIST_PENDING_PERMISSIONS_TOOL,

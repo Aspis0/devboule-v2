@@ -5789,6 +5789,11 @@ fn the_pending_list_reads_only_your_own_children_with_the_switch_off() {
         !store.get().0,
         "the list answered while the human's delegation switch was off"
     );
+    assert_eq!(
+        reply["result"]["structuredContent"]["truncated"],
+        json!(false),
+        "nothing was cut: {reply}"
+    );
 }
 
 #[test]
@@ -5815,6 +5820,11 @@ fn the_pending_list_is_empty_when_nothing_is_parked() {
         .expect("the document text");
     let parsed: Value = serde_json::from_str(text).expect("the text is the document");
     assert_eq!(parsed["permissions"], json!([]));
+    assert_eq!(
+        reply["result"]["structuredContent"]["truncated"],
+        json!(false),
+        "nothing was cut"
+    );
 }
 
 #[test]

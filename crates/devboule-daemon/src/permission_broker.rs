@@ -1142,27 +1142,21 @@ impl PermissionBroker {
             .unwrap_or(0)
     }
 
-    /// Every card this session is parked on, as `(cardId, request)` clones in
-    /// card-id order, so two reads of the same table answer alike.
-    ///
-    /// The read half the pending list and the status snapshot need: `peek`
-    /// answers one card by id and `pending_len` counts them, and neither can
-    /// enumerate. Nothing is taken — the cards stay pending for whoever
-    /// answers them.
-    pub(super) fn pending_cards(&self) -> Vec<(String, SessionEvent)> {
-        let mut cards = self
-            .pending
-            .lock()
-            .map(|table| {
-                table
-                    .entries
-                    .values()
-                    .map(|pending| (pending.tool_call_id.clone(), pending.request.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        cards.sort_by(|left, right| left.0.cmp(&right.0));
-        cards
+    /// At most `limit` of this session's pending cards, as `(cardId, request)`
+    /// clones in card-id order: keys are sorted first and only the first
+    /// `limit` are cloned, so a caller that will keep a bounded number of
+    /// cards never pays — under this lock — for the ones it would drop.
+    /// Nothing is taken: the cards stay pending for whoever answers them.
+    pub(super) fn pending_cards(&self, limit: usize) -> Vec<(String, SessionEvent)> {
+        let Ok(table) = self.pending.lock() else {
+            return Vec::new();
+        };
+        let mut ids: Vec<&String> = table.entries.keys().collect();
+        ids.sort();
+        ids.truncate(limit);
+        ids.into_iter()
+            .map(|id| (id.clone(), table.entries[id].request.clone()))
+            .collect()
     }
 
     /// Register a host-initiated permission, publish it, and block until the

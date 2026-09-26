@@ -91,11 +91,11 @@ pub(in crate::mcp_broker) fn list_pending(
     registration: &RegisteredSession,
     id: Value,
 ) -> Result<Option<Value>, Value> {
-    let cards = match state
+    let (cards, truncated) = match state
         .sessions
         .list_child_permission_cards(&registration.session_id)
     {
-        Ok(cards) => cards,
+        Ok(result) => result,
         Err(error) => {
             return Ok(Some(json!({
                 "jsonrpc": "2.0",
@@ -107,7 +107,7 @@ pub(in crate::mcp_broker) fn list_pending(
             })))
         }
     };
-    let document = json!({ "permissions": cards });
+    let document = json!({ "permissions": cards, "truncated": truncated });
     let text = serde_json::to_string(&document).map_err(|error| {
         json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": format!("Could not encode the pending list: {error}")}})
     })?;

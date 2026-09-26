@@ -7,9 +7,13 @@
 
 use super::*;
 
-/// The bounded wait for an interrupted turn to be seen ended: Paseo's own
-/// `INTERRUPT_SESSION_TIMEOUT_MS` — the same question ("did the run stop?")
-/// over the same provider round-trip, so the same two seconds.
+/// How long cancel waits for the turn it caught to be no longer active:
+/// two seconds is Paseo's own `INTERRUPT_SESSION_TIMEOUT_MS`, the same
+/// question over the same provider round-trip. The bound is where parity
+/// ends: Paseo force-cancels an acknowledged run that overruns it (and
+/// throws when nothing acknowledged); this road never force-finishes a turn
+/// it does not own, so an overrun answers `TurnStillRunning` with the turn
+/// still running — the caller decides.
 const CANCEL_TURN_END_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// One reply lists at most this many cards: a bound on what a single call can
@@ -123,18 +127,23 @@ impl super::SessionRegistry {
                 format!("none of your live children is called '{target}'"),
             ));
         };
-        if !runtime.is_running_turn() {
+        // The turn's identity, captured before anything is sent: the reply is
+        // about *this* turn. `is_turn_active` re-checks id and flag together,
+        // so a race before the send never sends, and a later turn's id can
+        // never answer for this one.
+        let turn_id = runtime.turn_counter();
+        if !runtime.is_turn_active(turn_id) {
             return Ok(CancelOutcome::NotRunning);
         }
         self.interrupt(&child_id, &owner)?;
-        // The road above only sends; `success` waits for the turn it was sent
-        // for, so a cancel nothing acknowledged reads as `TurnStillRunning`
-        // rather than a hopeful `Interrupted`. A turn that ends on its own in
-        // the window counts as ended — the caller asked for that turn to stop
-        // and it stopped.
+        // One send, then the wait is for that id: `success: true` means the
+        // caught turn is gone — this interrupt ended it, it ended on its own,
+        // or a kill ended it; the reply claims the turn's state, never the
+        // cause. A turn that starts during the wait carries a new id and is
+        // never sent an interrupt: the road sends once.
         let deadline = Instant::now() + timeout;
         loop {
-            if !runtime.is_running_turn() {
+            if !runtime.is_turn_active(turn_id) {
                 return Ok(CancelOutcome::Interrupted);
             }
             if Instant::now() >= deadline {
@@ -145,8 +154,10 @@ impl super::SessionRegistry {
     }
 
     /// `devboule_list_pending_permissions`: every card the caller's own live
-    /// children are parked on, one flat list, ordered by child and card id
-    /// and capped at [`MAX_LISTED_PENDING_CARDS`].
+    /// children are parked on, one flat list ordered by child and card id,
+    /// capped at [`MAX_LISTED_PENDING_CARDS`] — and whether the cap cut, which
+    /// the reply must say so a coordinator never mistakes a truncated list for
+    /// everything that is parked.
     ///
     /// The delegation switch gates answering, never seeing: this list is read
     /// while the switch is off, and answering still runs its own checks at the
@@ -156,7 +167,7 @@ impl super::SessionRegistry {
     pub fn list_child_permission_cards(
         &self,
         creator_session_id: &str,
-    ) -> Result<Vec<serde_json::Value>, WireError> {
+    ) -> Result<(Vec<serde_json::Value>, bool), WireError> {
         let caller_owner = {
             let map = self
                 .inner
@@ -171,24 +182,31 @@ impl super::SessionRegistry {
             entry.owner().clone()
         };
         let mut cards = Vec::new();
+        let mut truncated = false;
         for entry in self.live_agent_entries(&caller_owner)? {
-            if cards.len() >= MAX_LISTED_PENDING_CARDS {
-                break;
-            }
             if !is_child_of(entry.session.created_by.as_deref(), creator_session_id) {
                 continue;
             }
             let Some(broker) = entry.runtime.permission_broker() else {
                 continue;
             };
-            for (card_id, request) in broker.pending_cards() {
+            // The cap is asked before anything is cloned: `remaining` is all
+            // this child may contribute, `pending_cards(remaining)` clones
+            // only that many, and a child holding more than fits marks the
+            // cut — its count is O(1), and a card nobody serves is never
+            // copied out from under the broker's lock.
+            let remaining = MAX_LISTED_PENDING_CARDS.saturating_sub(cards.len());
+            if broker.pending_len() > remaining {
+                truncated = true;
+            }
+            if remaining == 0 {
+                continue;
+            }
+            for (card_id, request) in broker.pending_cards(remaining) {
                 cards.push(card_value(&entry.session.id, card_id, &request));
-                if cards.len() >= MAX_LISTED_PENDING_CARDS {
-                    break;
-                }
             }
         }
-        Ok(cards)
+        Ok((cards, truncated))
     }
 
     /// `devboule_get_agent_status`: one child's snapshot. A live child
