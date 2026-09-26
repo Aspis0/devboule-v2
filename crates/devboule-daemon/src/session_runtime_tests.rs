@@ -355,3 +355,46 @@ fn releasing_the_os_death_cascade_drops_what_its_closure_held() {
         "the released cascade is gone with everything it held"
     );
 }
+
+/// An agent error raises error attention: the premise the failed-turn
+/// test relies on, pinned without threads or timing.
+#[test]
+fn agent_error_raises_error_attention() {
+    let runtime = SessionRuntime::new();
+    runtime.publish_agent_event(
+        SessionEvent::AgentError {
+            message: "ACP request 1 failed: stub turn failure".to_string(),
+        },
+        None,
+    );
+    assert!(
+        matches!(runtime.attention(), Some(raised) if matches!(raised.reason, AttentionReason::Error)),
+        "an agent error raises error attention"
+    );
+}
+
+/// A finished turn never overwrites a standing error raise: first raise
+/// wins, the way the roster's priority order reads. This is what makes
+/// the failed turn's final snapshot deterministic.
+#[test]
+fn agent_finished_does_not_overwrite_error_attention() {
+    let runtime = SessionRuntime::new();
+    runtime.publish_agent_event(
+        SessionEvent::AgentError {
+            message: "ACP request 1 failed: stub turn failure".to_string(),
+        },
+        None,
+    );
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "error".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    assert!(
+        matches!(runtime.attention(), Some(raised) if matches!(raised.reason, AttentionReason::Error)),
+        "the turn's finish leaves the error raise standing"
+    );
+}

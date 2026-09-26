@@ -3467,19 +3467,50 @@ fn acp_attention_raises_error_for_a_real_agent_error_transition() {
     test.client
         .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
         .expect("watch sessions");
+    // A real turn failure, not a skipped line: the stub answers the
+    // prompt with a JSON-RPC error, so the daemon publishes AgentError
+    // and ends the turn with an error stop. Error attention stands —
+    // nothing overwrites or clears it here — so the last snapshot, not
+    // a transient one, carries the assertion.
     test.client
-        .session_send(&session.id, "malformed error attention turn")
-        .expect("error prompt");
+        .session_send(&session.id, "failing turn with a stub error")
+        .expect("failing prompt");
     wait_for_event_and_attention(
         &events,
         &snapshots,
         &session.id,
         AttentionReason::Error,
         |events| {
-            events
-                .iter()
-                .any(|event| matches!(event, SessionEvent::AgentError { .. }))
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "error"
+                )
+            })
         },
+    );
+    assert!(
+        events
+            .lock()
+            .expect("events lock")
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentError { .. })),
+        "the failed turn publishes its error before it ends"
+    );
+    let last = snapshots
+        .lock()
+        .expect("state snapshots lock")
+        .last()
+        .expect("at least one roster push")
+        .clone();
+    assert!(
+        last.iter().any(|entry| {
+            entry.id == session.id
+                && entry
+                    .attention
+                    .is_some_and(|attention| attention.reason == AttentionReason::Error)
+        }),
+        "the final roster snapshot carries the error attention: {last:?}"
     );
     test.client
         .session_close(&session.id)

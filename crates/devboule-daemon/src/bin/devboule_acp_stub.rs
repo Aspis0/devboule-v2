@@ -1208,6 +1208,18 @@ fn main() -> io::Result<()> {
                     )?;
                     continue;
                 }
+                if prompt_text.contains("failing turn") {
+                    // A real turn failure: the prompt is answered with a
+                    // JSON-RPC error, so the daemon ends the turn with an
+                    // error instead of a reply. No malformed line and no
+                    // further frames for this prompt.
+                    respond_error(
+                        &mut stdout,
+                        last_prompt_id.map(Value::from),
+                        json!({"code": -32603, "message": "stub turn failure"}),
+                    )?;
+                    continue;
+                }
                 if emit_malformed {
                     eprintln!("stub-agent stderr marker");
                     stdout.write_all(b"not-json\r\n")?;
