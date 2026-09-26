@@ -4,8 +4,8 @@
 //! MCP server configuration or readiness signal, so Pi sessions do not receive
 //! the daemon broker.
 
-use std::collections::HashMap;
-use std::io::{self, Read, Write};
+use std::collections::{HashMap, VecDeque};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -45,7 +45,11 @@ mod out_of_band;
 
 const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
 const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
-const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Paseo's own pi RPC budget (`DEFAULT_PI_RPC_TIMEOUT_MS` in
+/// `packages/server/src/server/agent/providers/pi/agent.ts`): the handshake
+/// covers three RPCs under one deadline where Paseo allows this per request,
+/// so this stays the stricter side. A healthy cold start measured ~6 s.
+const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
 
@@ -1372,6 +1376,22 @@ fn spawn_pi(
     let process = Arc::new(Mutex::new(child));
     let stdin = Arc::new(Mutex::new(Some(stdin)));
     let next_id = Arc::new(AtomicU64::new(1));
+    // The drain starts before the handshake reads a line: a child that logs
+    // past the pipe buffer at startup would otherwise wedge the very
+    // handshake waiting for its first stdout line.
+    let mut stderr_capture = match PiStderr::start(stderr) {
+        Ok(capture) => capture,
+        Err(error) => {
+            terminate_shared_process(&process);
+            remove_permission_extension(&extension_path);
+            remove_bridge(&bridge_path);
+            drop(process_job);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not drain Pi stderr: {error}"),
+            ));
+        }
+    };
     let mut stdout = match PiStdout::spawn(stdout) {
         Ok(stdout) => stdout,
         Err(error) => {
@@ -1391,8 +1411,13 @@ fn spawn_pi(
             terminate_shared_process(&process);
             remove_permission_extension(&extension_path);
             remove_bridge(&bridge_path);
+            let stderr_lines = stderr_capture.discard_and_join();
             drop(process_job);
-            return Err(error);
+            return Err(handshake_error_with_stderr(
+                error,
+                &stderr_lines,
+                mcp.as_ref(),
+            ));
         }
     };
 
@@ -1471,12 +1496,6 @@ fn spawn_pi(
     .with_extension_path(extension_path.clone())
     .with_commands_reply(commands_reply)
     .with_compact_guard(compact_guard);
-    let stderr_source = PiStderr::start(stderr).map_err(|error| {
-        terminate_shared_process(&process);
-        remove_permission_extension(&extension_path);
-        remove_bridge(&bridge_path);
-        WireError::new(ErrorCode::Io, format!("Could not drain Pi stderr: {error}"))
-    })?;
     // The static prompt route reads the live model from the same catalog the
     // switcher keeps, so the two share one `Arc`. The switcher is built before
     // the session is assembled because the delivery runs through it: the same
@@ -1520,7 +1539,7 @@ fn spawn_pi(
         out_of_band,
         reader: Box::new(stdout),
         reader_dispatch: Some(Box::new(reader_dispatch)),
-        stderr: Some(Box::new(stderr_source)),
+        stderr: Some(Box::new(stderr_capture)),
         permission_broker: Some(permission_broker),
         os_handle,
         peer_session_id: handshake.peer_session_id,
@@ -3261,40 +3280,167 @@ impl Read for PiStdout {
     }
 }
 
+/// Lines of pre-runtime stderr kept for the handshake error: a ring, so a
+/// chatty child costs memory bounded by this, not by its total output.
+const MAX_HANDSHAKE_STDERR_LINES: usize = 256;
+
+/// The whole handshake failure banner: the child's tail travels redacted
+/// and capped, never as a transcript.
+const MAX_HANDSHAKE_ERROR_BYTES: usize = 1024;
+
 struct PiStderr {
-    stderr: Option<ChildStderr>,
+    state: Arc<Mutex<PiStderrState>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+struct PiStderrState {
+    runtime: Option<Arc<SessionRuntime>>,
+    pending: VecDeque<String>,
 }
 
 impl PiStderr {
+    /// The drain starts at spawn, before the handshake: lines that arrive
+    /// before the session has a runtime wait in `pending` instead of sitting
+    /// in the pipe and wedging a child that logs at startup.
     fn start(stderr: ChildStderr) -> io::Result<Self> {
+        let state = Arc::new(Mutex::new(PiStderrState {
+            runtime: None,
+            pending: VecDeque::new(),
+        }));
+        let thread_state = Arc::clone(&state);
+        let handle = std::thread::Builder::new()
+            .name("session-pi-stderr".to_string())
+            .spawn(move || {
+                let mut reader = BufReader::new(stderr);
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => return,
+                        Ok(_) => {
+                            let line = line
+                                .trim_end_matches('\n')
+                                .trim_end_matches('\r')
+                                .to_string();
+                            let runtime = match thread_state.lock() {
+                                Ok(mut state) => {
+                                    if let Some(runtime) = &state.runtime {
+                                        Some(Arc::clone(runtime))
+                                    } else {
+                                        if state.pending.len() >= MAX_HANDSHAKE_STDERR_LINES {
+                                            state.pending.pop_front();
+                                        }
+                                        state.pending.push_back(line.clone());
+                                        None
+                                    }
+                                }
+                                Err(_) => return,
+                            };
+                            if let Some(runtime) = runtime {
+                                publish_stderr_line(&runtime, line);
+                            }
+                        }
+                        Err(error) => {
+                            let runtime = thread_state
+                                .lock()
+                                .ok()
+                                .and_then(|state| state.runtime.clone());
+                            if let Some(runtime) = runtime {
+                                let _ = runtime.publish_agent_event(
+                                    SessionEvent::AgentError {
+                                        message: format!("Could not read Pi stderr: {error}"),
+                                    },
+                                    None,
+                                );
+                            } else {
+                                eprintln!("could not read Pi stderr: {error}");
+                            }
+                            return;
+                        }
+                    }
+                }
+            })?;
         Ok(Self {
-            stderr: Some(stderr),
+            state,
+            handle: Some(handle),
         })
+    }
+
+    /// The handshake failed: stop the drain and take what it kept. The child
+    /// is already dead when this runs, so the join cannot wait on output.
+    fn discard_and_join(&mut self) -> Vec<String> {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        if let Ok(mut state) = self.state.lock() {
+            return state.pending.drain(..).collect();
+        }
+        Vec::new()
     }
 }
 
 impl StderrSource for PiStderr {
     fn spawn(mut self: Box<Self>, runtime: Arc<SessionRuntime>) -> io::Result<JoinHandle<()>> {
-        let mut stderr = self
-            .stderr
+        let pending = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("Pi stderr lock poisoned"))?;
+            state.runtime = Some(Arc::clone(&runtime));
+            std::mem::take(&mut state.pending)
+        };
+        for line in pending {
+            publish_stderr_line(&runtime, line);
+        }
+        self.handle
             .take()
-            .ok_or_else(|| io::Error::other("Pi stderr drain was already consumed"))?;
-        std::thread::Builder::new()
-            .name("session-pi-stderr".to_string())
-            .spawn(move || {
-                let mut buffer = [0u8; 4096];
-                loop {
-                    match stderr.read(&mut buffer) {
-                        Ok(0) => return,
-                        Ok(length) => {
-                            let data = String::from_utf8_lossy(&buffer[..length]).into_owned();
-                            publish_stderr_line(&runtime, data);
-                        }
-                        Err(_) => return,
-                    }
-                }
-            })
+            .ok_or_else(|| io::Error::other("Pi stderr drain was already consumed"))
     }
+}
+
+/// A failed handshake carries the child's last words, redacted the way
+/// every other provider line is: the broker token must not reach the caller
+/// through an error banner.
+fn handshake_error_with_stderr(
+    error: WireError,
+    stderr_lines: &[String],
+    mcp: Option<&crate::mcp_broker::McpLaunchConfig>,
+) -> WireError {
+    if stderr_lines.is_empty() {
+        let mut error = error;
+        if let Some(mcp) = mcp {
+            error.message = mcp.redact_text(&error.message);
+        }
+        return error;
+    }
+    let skip = stderr_lines
+        .len()
+        .saturating_sub(MAX_HANDSHAKE_STDERR_LINES);
+    let tail = stderr_lines[skip..].join(" | ");
+    let message = format!("{} Agent stderr: {}", error.message, tail);
+    let message = mcp
+        .map(|config| config.redact_text(&message))
+        .unwrap_or(message);
+    WireError::new(
+        error.code,
+        tail_excerpt(&message, MAX_HANDSHAKE_ERROR_BYTES),
+    )
+}
+
+/// The last bytes of `text`, cut on a character boundary with the `…`
+/// inside the budget: the end of the output names the failure, not the start.
+fn tail_excerpt(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    let mark = '…';
+    if limit < mark.len_utf8() {
+        return String::new();
+    }
+    let mut start = text.len() - (limit - mark.len_utf8());
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("{mark}{}", &text[start..])
 }
 
 /// One stderr chunk to the transcript (broker-4): published through the one

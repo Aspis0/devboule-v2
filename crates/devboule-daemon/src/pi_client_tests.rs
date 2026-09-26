@@ -2177,6 +2177,53 @@ process.stdin.on("data", (chunk) => {
 });
 "#;
 
+/// The stderr-flood fake: 256 KiB of blocking stderr writes before the
+/// first stdin read, then the real spawn handshake. `writeSync` to fd 2
+/// blocks on a full pipe the way a chatty native child does; buffered
+/// `process.stderr.write` would not — node would hold it in user memory
+/// and answer anyway, and the test would prove nothing.
+const FAKE_PI_STDERR_FLOOD: &str = r#"
+const fs = require("fs");
+const flood = "x".repeat(4096);
+for (let i = 0; i < 64; i++) {
+  fs.writeSync(2, flood + "\n");
+}
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    fs.appendFileSync(process.env.DEVBOULE_FAKE_PI_LOG, frame.type + "\n");
+    let answer = { success: true };
+    if (frame.type === "get_state") {
+      answer.data = { model: { id: "pi-model", provider: "pi-provider" }, thinkingLevel: "high" };
+    } else if (frame.type === "get_available_models") {
+      answer.data = { models: [
+        { id: "pi-model", name: "Pi Model", provider: "pi-provider", thinkingLevelMap: { high: {}, low: {} } }
+      ] };
+    } else if (frame.type === "get_available_thinking_levels") {
+      answer.data = { levels: ["high", "low"] };
+    }
+    answer.id = frame.id;
+    answer.type = "response";
+    process.stdout.write(JSON.stringify(answer) + "\n");
+  }
+});
+"#;
+
+/// The silent fake: two stderr lines, then sleep forever. It never reads
+/// stdin and never answers, so the spawn dies in the handshake timeout —
+/// and the error must carry the lines below.
+const FAKE_PI_SILENT: &str = r#"
+const fs = require("fs");
+fs.writeSync(2, "pi fake: loading permission extension\n");
+fs.writeSync(2, "pi fake-marker-stderr-tail: waiting for the runtime\n");
+setInterval(() => {}, 1000);
+"#;
+
 /// The lifecycle the R2a audit's F1 convicted: a profile delivery for pi
 /// is an awaited control rpc, and the only code that can deliver its
 /// answer is the session reader thread `start_spawned_session` starts.
@@ -2896,6 +2943,124 @@ mod lifecycle_tests {
         );
         drop(fresh_session);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two stderr-handshake tests below rewrite the same timeout env
+    /// var with different budgets while unit tests run in parallel: the
+    /// lock serialises them so neither test can read the other's value.
+    static HANDSHAKE_TIMEOUT_LOCK: Mutex<()> = Mutex::new(());
+
+    /// `DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS` for one test: restored on drop,
+    /// panic included, so a failing test cannot poison the next lock holder.
+    struct HandshakeTimeoutGuard {
+        previous: Option<String>,
+    }
+
+    impl HandshakeTimeoutGuard {
+        fn set(ms: u64) -> Self {
+            let previous = std::env::var(super::super::HANDSHAKE_TIMEOUT_ENV).ok();
+            std::env::set_var(super::super::HANDSHAKE_TIMEOUT_ENV, ms.to_string());
+            Self { previous }
+        }
+    }
+
+    impl Drop for HandshakeTimeoutGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(super::super::HANDSHAKE_TIMEOUT_ENV, value),
+                None => std::env::remove_var(super::super::HANDSHAKE_TIMEOUT_ENV),
+            }
+        }
+    }
+
+    fn stderr_handshake_command(script: &std::path::Path, log: &std::path::Path) -> PtyCommand {
+        PtyCommand::new(
+            node_program(),
+            vec![script.to_string_lossy().into_owned(), "--".to_string()],
+            crate::test_dirs::test_temp_dir("devboule-pi-cwd"),
+            vec![(
+                "DEVBOULE_FAKE_PI_LOG".to_string(),
+                log.to_string_lossy().into_owned(),
+            )],
+        )
+    }
+
+    /// The first-create failure: a pi that logs past the pipe buffer before
+    /// answering must still handshake, because the drain starts at spawn
+    /// and not after it. Without the early drain the child wedges on its
+    /// own stderr and this ends in the handshake timeout instead.
+    #[test]
+    fn a_pi_that_floods_stderr_before_answering_still_handshakes() {
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let _held = HANDSHAKE_TIMEOUT_LOCK
+            .lock()
+            .expect("handshake timeout lock");
+        let _budget = HandshakeTimeoutGuard::set(30_000);
+        let log = log_path("stderrflood");
+        let dir = log.parent().expect("log dir").to_path_buf();
+        let script = dir.join("fake-pi-flood.js");
+        std::fs::write(&script, super::FAKE_PI_STDERR_FLOOD).expect("write the fake pi entry");
+        let state = ServerState::new("pi-stderr-flood".to_string());
+        let delivery =
+            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let spawned = spawn_process(
+            &state,
+            stderr_handshake_command(&script, &log),
+            None,
+            delivery,
+        )
+        .unwrap_or_else(|error| {
+            panic!("a stderr flood before the first answer must not fail the handshake: {error:?}")
+        });
+        // The job object ends the fake when the session drops; no reader
+        // runs here.
+        drop(spawned);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The companion: a pi that never answers still fails, but the failure
+    /// names the child's own last words instead of a naked timeout.
+    #[test]
+    fn a_pi_that_never_answers_fails_with_its_stderr_tail() {
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let _held = HANDSHAKE_TIMEOUT_LOCK
+            .lock()
+            .expect("handshake timeout lock");
+        let _budget = HandshakeTimeoutGuard::set(5_000);
+        let log = log_path("stderrtail");
+        let dir = log.parent().expect("log dir").to_path_buf();
+        let script = dir.join("fake-pi-silent.js");
+        std::fs::write(&script, super::FAKE_PI_SILENT).expect("write the fake pi entry");
+        let state = ServerState::new("pi-stderr-tail".to_string());
+        let delivery =
+            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        match spawn_process(
+            &state,
+            stderr_handshake_command(&script, &log),
+            None,
+            delivery,
+        ) {
+            Ok(_) => panic!("a pi that never answers must fail the handshake"),
+            Err(error) => {
+                assert!(
+                    error.message.contains("Agent stderr:"),
+                    "the timeout must carry the child's stderr tail: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("fake-marker-stderr-tail"),
+                    "the tail must be the child's own last words: {}",
+                    error.message
+                );
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
