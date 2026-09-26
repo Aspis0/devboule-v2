@@ -27,6 +27,85 @@ pub(super) fn insert_child(
     runtime
 }
 
+/// A live agent child of `creator` whose killer answers an interrupt the way
+/// a provider does: it drains the cards (every real killer does, inside
+/// `interrupt`) and ends the turn — this test's stand-in for the provider's
+/// abort reaching the daemon. With no interrupt it does nothing, which is the
+/// half-torn session the measured `success` exists to catch. The runtime is
+/// wired after the insert — the killer exists before the runtime does —
+/// through a shared slot every clone of the killer reads.
+pub(super) fn insert_child_with_interrupt_ack(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    creator: &str,
+) -> (Arc<SessionRuntime>, Arc<AtomicBool>) {
+    let runtime_slot = Arc::new(OnceLock::new());
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let runtime = insert_live_agent_with_turn_control(
+        registry,
+        id,
+        owner,
+        SessionKind::Acp,
+        Box::new(std::io::sink()),
+        None,
+        None,
+        Box::new(InterruptAckingKiller {
+            runtime: Arc::clone(&runtime_slot),
+            interrupted: Arc::clone(&interrupted),
+        }),
+        Box::new(UnsupportedSteerer),
+    );
+    let _ = runtime_slot.set(Arc::clone(&runtime));
+    {
+        let mut map = registry.inner.lock().expect("registry");
+        let live = map
+            .get_mut(id)
+            .and_then(RegistryEntry::as_peer_visible_mut)
+            .expect("live entry");
+        live.metadata.created_by = Some(creator.to_string());
+        live.metadata.display_name = Some(format!("{id} display"));
+    }
+    (runtime, interrupted)
+}
+
+/// See [`insert_child_with_interrupt_ack`]: the killer half of the fixture.
+struct InterruptAckingKiller {
+    runtime: Arc<OnceLock<Arc<SessionRuntime>>>,
+    interrupted: Arc<AtomicBool>,
+}
+
+impl SessionKiller for InterruptAckingKiller {
+    fn kill(&mut self) {}
+
+    fn interrupt(&mut self) {
+        self.interrupted.store(true, Ordering::Release);
+        let Some(runtime) = self.runtime.get() else {
+            return;
+        };
+        if let Some(broker) = runtime.permission_broker() {
+            broker.cancel_pending();
+        }
+        // The provider's half of the acknowledgement: its abort reaches the
+        // daemon as the finish that ends the turn.
+        let _ = runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "interrupt".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+    }
+
+    fn clone_killer(&self) -> Box<dyn SessionKiller> {
+        Box::new(Self {
+            runtime: Arc::clone(&self.runtime),
+            interrupted: Arc::clone(&self.interrupted),
+        })
+    }
+}
+
 pub(super) fn park_card(_registry: &SessionRegistry, runtime: &Arc<SessionRuntime>, card_id: &str) {
     let broker = runtime.permission_broker().expect("broker");
     broker

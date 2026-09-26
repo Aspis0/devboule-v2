@@ -343,6 +343,7 @@ mod session_attribution_tests;
 /// the wire shape.
 #[path = "session_child_commands.rs"]
 mod session_child_commands;
+pub(crate) use session_child_commands::CancelOutcome;
 #[cfg(test)]
 #[path = "session_child_commands_tests.rs"]
 mod session_child_commands_tests;
@@ -3580,6 +3581,20 @@ impl SessionRegistry {
             live.metadata.display_name = Some("child".to_string());
         }
         runtime
+    }
+
+    /// Test-only: `creator`'s live child whose killer answers an interrupt
+    /// the way a provider does — it drains the cards every real killer
+    /// drains and ends the turn — plus the flag that says the interrupt road
+    /// reached it. The stand-in for "the provider acknowledged", which is
+    /// what the cancel tool's `success` measures.
+    pub(crate) fn insert_test_child_with_interrupt_ack(
+        &self,
+        id: &str,
+        owner: OwnerId,
+        creator: &str,
+    ) -> (Arc<SessionRuntime>, Arc<AtomicBool>) {
+        tests::insert_child_with_interrupt_ack(self, id, owner, creator)
     }
 
     /// Test-only: overwrite one live row's stored origin, so an out-of-module

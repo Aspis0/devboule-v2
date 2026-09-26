@@ -11,6 +11,7 @@ use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
 use crate::mcp_broker::dispatch::rpc_error;
 use crate::mcp_broker::RegisteredSession;
 use crate::server::ServerState;
+use crate::session::CancelOutcome;
 
 /// The caller names one of its children: the id or display name the other
 /// child tools take, never identity — that is the bearer's registration.
@@ -22,8 +23,9 @@ fn agent_id(message: &Value) -> Option<&str> {
 }
 
 /// `devboule_cancel_agent`: interrupt the current turn of one of the caller's
-/// own live children and keep the child. `success: false` with the child
-/// untouched when no turn was running — a fact, not an error.
+/// own live children and keep the child. `success` is the measured answer —
+/// true only when the turn was running and stopped within the wait; false when
+/// nothing was running or nothing acknowledged, and the text says which.
 pub(in crate::mcp_broker) fn cancel(
     state: &Arc<ServerState>,
     registration: &RegisteredSession,
@@ -50,19 +52,19 @@ pub(in crate::mcp_broker) fn cancel(
         .sessions
         .interrupt_agent_child(&registration.session_id, target)
     {
-        Ok(cancelled) => {
+        Ok(outcome) => {
             audit("ok");
-            let text = if cancelled {
-                "interrupted"
-            } else {
-                "no turn was running"
+            let (success, text) = match outcome {
+                CancelOutcome::Interrupted => (true, "interrupted"),
+                CancelOutcome::NotRunning => (false, "no turn was running"),
+                CancelOutcome::TurnStillRunning => (false, "the turn did not stop in time"),
             };
             Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
                     "content": [{"type": "text", "text": text}],
-                    "structuredContent": {"success": cancelled},
+                    "structuredContent": {"success": success},
                     "isError": false,
                 },
             })))
@@ -91,7 +93,7 @@ pub(in crate::mcp_broker) fn list_pending(
 ) -> Result<Option<Value>, Value> {
     let cards = match state
         .sessions
-        .list_child_permission_cards(&registration.session_id, &registration.owner)
+        .list_child_permission_cards(&registration.session_id)
     {
         Ok(cards) => cards,
         Err(error) => {

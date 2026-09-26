@@ -594,7 +594,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_cancel_agent",
     label: "Cancel Devboule agent turn",
-    description: `Interrupts the current turn of one of your own live child sessions and keeps the child: the child stops what it is doing now, any permission card it had parked is resolved as interrupted, and it stays alive for your next message. This is the soft verb between doing nothing and devboule_stop_agent, which kills the process. Name the child by id or display name; you can only cancel a session you created yourself. Replies success: true when a turn was interrupted, success: false when the child had no turn running - nothing was interrupted, and that is not an error.`,
+    description: `Interrupts the current turn of one of your own live child sessions and keeps the child: the child stops what it is doing now, any permission card it had parked is resolved as interrupted, and it stays alive for your next message. This is the soft verb between doing nothing and devboule_stop_agent, which kills the process. Name the child by id or display name; you can only cancel a session you created yourself. Replies success: true only when the turn was interrupted and then stopped; success: false when the child had no turn running, or when the turn did not stop within the two-second wait - the text says which.`,
     parameters: Type.Object(
       {
         agentId: Type.String({ description: "The id or display name of one of your own live child sessions." }),
@@ -623,7 +623,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_get_agent_status",
     label: "Read Devboule agent status",
-    description: `Reads one of your own children as a snapshot: its state (a parked card shows as input_required), provider, model, mode, profile, who created it, its depth, how long since it last published, and the permission cards it is parked on. Name the child by id or display name; you can only read a session you created yourself. A child that has been closed answers from its stored row with no pending permissions, and anything else - a sibling, a stranger's session, an invented id - reads as not found.`,
+    description: `Reads one of your own children as a snapshot: its state (a parked card shows as input_required, a closed child reads as closed), provider, model, mode, profile, who created it, its depth, how long since it last published, and how many permission cards it is parked on - their ids, titles and excerpts come only from devboule_list_pending_permissions. Name a live child by id or display name and a closed child by its id; you can only read a session you created yourself. Anything else - a sibling, a stranger's session, an invented id - reads as not found.`,
     parameters: Type.Object(
       {
         agentId: Type.String({ description: "The id or display name of one of your own live child sessions." }),

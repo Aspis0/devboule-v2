@@ -7,48 +7,115 @@
 
 use super::*;
 
-/// One card of the pending list and of the status snapshot, as both tools
-/// serve it: the same five fields wherever a card appears, so an agent that
-/// read one shape has read both.
-fn card_value(
+/// The bounded wait for an interrupted turn to be seen ended: Paseo's own
+/// `INTERRUPT_SESSION_TIMEOUT_MS` — the same question ("did the run stop?")
+/// over the same provider round-trip, so the same two seconds.
+const CANCEL_TURN_END_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// One reply lists at most this many cards: a bound on what a single call can
+/// pull into a coordinator's context, while the status snapshot keeps counting
+/// exactly. The register road already caps each child at
+/// `MAX_PENDING_ACP_PERMISSIONS`, so two saturated children fill the list.
+const MAX_LISTED_PENDING_CARDS: usize = 64;
+
+/// What one cancel attempt found: the tool's `success` and its sentence are
+/// both read off this (`D1`) — only `Interrupted` is `success: true`.
+#[derive(Debug)]
+pub(crate) enum CancelOutcome {
+    /// A turn was running, the road fired, and the turn was seen ended within
+    /// the bound.
+    Interrupted,
+    /// No turn was running: nothing was sent and nothing was touched.
+    NotRunning,
+    /// The road fired but the turn was still running at the deadline — an
+    /// interrupt no provider acknowledged.
+    TurnStillRunning,
+}
+
+/// The card's `kind`: `tool` for every card the table holds today. A2b-1
+/// parks question cards carrying their own `kind` on the event — this match
+/// is the one place that field will be read, with `tool` staying the default
+/// for a permission card that carries none. Anything else that reaches the
+/// table is named by its event kind.
+fn card_kind(request: &SessionEvent) -> &'static str {
+    match request {
+        SessionEvent::PermissionRequest { .. } => "tool",
+        other => crate::agent_activity::event_kind(other),
+    }
+}
+
+/// One card of the pending list: the same five fields wherever a card appears.
+/// Framed the way the push envelope frames it — the title through
+/// `single_line_header`, the excerpt through the cap and the neutraliser —
+/// because tool output gets re-read as text wherever it lands: a fence or a
+/// fake header line inside a child's words must not parse as structure.
+pub(super) fn card_value(
     agent_id: &str,
     card_id: String,
     request: &SessionEvent,
-) -> Option<serde_json::Value> {
-    let SessionEvent::PermissionRequest {
-        title,
-        description,
-        command,
-        ..
-    } = request
-    else {
-        // The pending table only ever holds a permission request; a card that
-        // is something else has no title to show a reader, so it shows nothing.
-        return None;
-    };
-    Some(serde_json::json!({
-        "agentId": agent_id,
-        "cardId": card_id,
-        "title": title,
-        "kind": "tool",
-        "excerpt": session_envelopes::card_excerpt(
-            description.as_deref(),
-            command.as_deref(),
+) -> serde_json::Value {
+    match request {
+        SessionEvent::PermissionRequest {
             title,
-        ),
-    }))
+            description,
+            command,
+            ..
+        } => {
+            let excerpt =
+                session_envelopes::card_excerpt(description.as_deref(), command.as_deref(), title);
+            serde_json::json!({
+                "agentId": agent_id,
+                "cardId": card_id,
+                "title": session_envelopes::neutralise_envelope_text(
+                    &session_envelopes::single_line_header(title),
+                ),
+                "kind": card_kind(request),
+                "excerpt": session_envelopes::neutralise_envelope_text(
+                    &session_envelopes::cap_excerpt_scalars(&excerpt),
+                ),
+            })
+        }
+        // A card that is not a permission request cannot be dropped: it sits
+        // in the same table `pending_len` counts, and a list that hid it would
+        // contradict its own count. Its event kind is all there is to say
+        // about it, so it says it. (The register road refuses non-permission
+        // events today — this arm is what a future card kind inherits rather
+        // than a path that runs.)
+        _ => serde_json::json!({
+            "agentId": agent_id,
+            "cardId": card_id,
+            "title": card_kind(request),
+            "kind": card_kind(request),
+            "excerpt": "",
+        }),
+    }
 }
 
 impl super::SessionRegistry {
     /// `devboule_cancel_agent`: interrupt the current turn of one of the
-    /// caller's own live children and keep the child. `Ok(true)` when a turn
-    /// was running, `Ok(false)` when it was not — Paseo's `success`, where
-    /// false is a fact and not an error, and nothing is touched in that case.
-    pub fn interrupt_agent_child(
+    /// caller's own live children and keep the child. The answer is measured,
+    /// not asserted — [`CancelOutcome::Interrupted`] only when a turn was
+    /// running and is seen ended within the bound; [`CancelOutcome::NotRunning`]
+    /// when there was nothing to interrupt; [`CancelOutcome::TurnStillRunning`]
+    /// when the road fired but the turn did not stop in time. Nothing here
+    /// fences the child's next turn: a later message restarting it is the
+    /// point of keeping the child.
+    pub(crate) fn interrupt_agent_child(
         &self,
         creator_session_id: &str,
         target: &str,
-    ) -> Result<bool, WireError> {
+    ) -> Result<CancelOutcome, WireError> {
+        self.interrupt_agent_child_within(creator_session_id, target, CANCEL_TURN_END_TIMEOUT)
+    }
+
+    /// The road above with the wait spelled out, so a test can drive the
+    /// timeout arm in milliseconds instead of paying the production bound.
+    pub(super) fn interrupt_agent_child_within(
+        &self,
+        creator_session_id: &str,
+        target: &str,
+        timeout: Duration,
+    ) -> Result<CancelOutcome, WireError> {
         let (child_id, owner) = self.resolve_own_child(creator_session_id, target)?;
         let Some((_, runtime, _)) = self.child_view(&child_id) else {
             return Err(WireError::new(
@@ -57,33 +124,57 @@ impl super::SessionRegistry {
             ));
         };
         if !runtime.is_running_turn() {
-            return Ok(false);
+            return Ok(CancelOutcome::NotRunning);
         }
         self.interrupt(&child_id, &owner)?;
-        // Paseo's cancel command resolves the agent's parked cards itself
-        // rather than trusting the interrupt to do it; a provider's killer
-        // drains this same table on interrupt, so the drain here is the
-        // command's own promise, taken over every killer.
-        if let Some(broker) = runtime.permission_broker() {
-            broker.cancel_pending();
+        // The road above only sends; `success` waits for the turn it was sent
+        // for, so a cancel nothing acknowledged reads as `TurnStillRunning`
+        // rather than a hopeful `Interrupted`. A turn that ends on its own in
+        // the window counts as ended — the caller asked for that turn to stop
+        // and it stopped.
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !runtime.is_running_turn() {
+                return Ok(CancelOutcome::Interrupted);
+            }
+            if Instant::now() >= deadline {
+                return Ok(CancelOutcome::TurnStillRunning);
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        Ok(true)
     }
 
     /// `devboule_list_pending_permissions`: every card the caller's own live
-    /// children are parked on, one flat list, ordered by child and card id.
+    /// children are parked on, one flat list, ordered by child and card id
+    /// and capped at [`MAX_LISTED_PENDING_CARDS`].
     ///
     /// The delegation switch gates answering, never seeing: this list is read
     /// while the switch is off, and answering still runs its own checks at the
     /// answer tool. Cards of children this caller did not create are not in
-    /// the scan.
+    /// the scan, and a caller with no registry row is refused the way the
+    /// other two roads refuse it.
     pub fn list_child_permission_cards(
         &self,
         creator_session_id: &str,
-        owner: &OwnerId,
     ) -> Result<Vec<serde_json::Value>, WireError> {
+        let caller_owner = {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get(creator_session_id).ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "the calling session is not registered on this daemon",
+                )
+            })?;
+            entry.owner().clone()
+        };
         let mut cards = Vec::new();
-        for entry in self.live_agent_entries(owner)? {
+        for entry in self.live_agent_entries(&caller_owner)? {
+            if cards.len() >= MAX_LISTED_PENDING_CARDS {
+                break;
+            }
             if !is_child_of(entry.session.created_by.as_deref(), creator_session_id) {
                 continue;
             }
@@ -91,8 +182,9 @@ impl super::SessionRegistry {
                 continue;
             };
             for (card_id, request) in broker.pending_cards() {
-                if let Some(card) = card_value(&entry.session.id, card_id, &request) {
-                    cards.push(card);
+                cards.push(card_value(&entry.session.id, card_id, &request));
+                if cards.len() >= MAX_LISTED_PENDING_CARDS {
+                    break;
                 }
             }
         }
@@ -101,9 +193,8 @@ impl super::SessionRegistry {
 
     /// `devboule_get_agent_status`: one child's snapshot. A live child
     /// answers from its runtime; a child that is not live falls back to its
-    /// stored row, which carries no cards and no runtime facts (D4) — model
-    /// and mode are not persisted, so a closed child answers `null` for them
-    /// rather than a guess.
+    /// stored row (D4) — a count where the live arm counts, and `null` for
+    /// model and mode because they are not persisted, never a guess.
     ///
     /// Anything that is not the caller's own child — a sibling, a stranger's
     /// session, an invented id, a row this caller did not create — ends in
@@ -134,13 +225,6 @@ impl super::SessionRegistry {
                     } => current_model_id.clone(),
                     _ => None,
                 });
-                let pending = runtime.permission_broker().map(|broker| {
-                    broker
-                        .pending_cards()
-                        .into_iter()
-                        .filter_map(|(card_id, request)| card_value(&session.id, card_id, &request))
-                        .collect::<Vec<_>>()
-                });
                 Ok(serde_json::json!({
                     "agentId": session.id,
                     "state": roster_task_state(&session, &runtime).as_str(),
@@ -153,12 +237,19 @@ impl super::SessionRegistry {
                     "idleMs": runtime
                         .activity_idle_at(Instant::now())
                         .map(|idle| idle.as_millis().try_into().unwrap_or(u64::MAX)),
-                    "pendingPermissions": pending.unwrap_or_default(),
+                    // A count, and only a count: card details exist on
+                    // `devboule_list_pending_permissions` alone, whose door
+                    // prices them at `answer_permissions` — a `view` peer
+                    // must not read a card through this snapshot.
+                    "pendingPermissions": runtime
+                        .permission_broker()
+                        .map(|broker| broker.pending_len())
+                        .unwrap_or(0),
                 }))
             }
             // A live miss only falls through to the row when the miss is a
             // "no such child" — an ambiguous name or the caller itself are
-            // verdicts the stored scan must not soften.
+            // verdicts the stored read must not soften.
             Err(error) if error.code == ErrorCode::SessionNotFound => {
                 self.stored_child_status(creator_session_id, target)
             }
@@ -166,8 +257,10 @@ impl super::SessionRegistry {
         }
     }
 
-    /// The stored half of the status snapshot: the caller's own children
-    /// among the journal's rows, live or closed, answered from the row alone.
+    /// The stored half of the status snapshot: one row, by id, filtered by
+    /// owner and creator in SQL — never a scan of anyone's history, and never
+    /// a display name two rows could share (Paseo addresses its stored rows
+    /// by id too).
     fn stored_child_status(
         &self,
         creator_session_id: &str,
@@ -185,50 +278,42 @@ impl super::SessionRegistry {
             })?;
             entry.owner().clone()
         };
-        let rows = match &self.journal {
-            Some(journal) => journal
-                .list_all()
-                .map_err(|_| internal("Session history is unavailable."))?,
+        let row = match &self.journal {
+            Some(journal) => {
+                journal.owned_child_record(target, &caller_owner.user, creator_session_id)?
+            }
             // No journal: no stored rows to fall back to, and that is the
             // honest answer rather than a read that could not happen.
-            None => Vec::new(),
+            None => None,
         };
-        let matches = rows
-            .into_iter()
-            .filter(|row| row.owner == caller_owner.user)
-            .filter(|row| is_child_of(row.created_by.as_deref(), creator_session_id))
-            // The same two doors the live resolution takes: the id, or the
-            // name the human reads (display name, title beneath it).
-            .filter(|row| {
-                row.id == target || row.display_name.as_deref().unwrap_or(&row.title) == target
-            })
-            .collect::<Vec<_>>();
-        match matches.len() {
-            1 => {
-                let row = matches.into_iter().next().expect("exactly one match");
-                let session = row.to_session();
-                Ok(serde_json::json!({
-                    "agentId": session.id,
-                    "state": session.state.task_state(false).as_str(),
-                    "provider": session.provider,
-                    "model": null,
-                    "mode": null,
-                    "profileId": session.profile_id,
-                    "createdBy": session.created_by,
-                    "depth": row.depth,
-                    "idleMs": crate::agent_activity::wall_now_ms()
-                        .saturating_sub(row.updated_at_ms),
-                    "pendingPermissions": [],
-                }))
-            }
-            0 => Err(WireError::new(
+        let Some(row) = row else {
+            return Err(WireError::new(
                 ErrorCode::SessionNotFound,
                 format!("none of your children is called '{target}'"),
-            )),
-            _ => Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                format!("more than one of your children is called '{target}'; use the session id"),
-            )),
-        }
+            ));
+        };
+        let session = row.to_session();
+        // A closed row reads `closed`: the row knows it was closed and not
+        // why (the close reason is C1b's), so borrowing the
+        // Ended-without-a-code → `failed` word would escalate a clean close
+        // into a crash a supervisor then alerts on.
+        let state = if row.closed {
+            "closed"
+        } else {
+            session.state.task_state(false).as_str()
+        };
+        Ok(serde_json::json!({
+            "agentId": session.id,
+            "state": state,
+            "provider": session.provider,
+            "model": null,
+            "mode": null,
+            "profileId": session.profile_id,
+            "createdBy": session.created_by,
+            "depth": row.depth,
+            "idleMs": crate::agent_activity::wall_now_ms()
+                .saturating_sub(row.updated_at_ms),
+            "pendingPermissions": 0,
+        }))
     }
 }

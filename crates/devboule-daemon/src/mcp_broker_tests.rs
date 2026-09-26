@@ -5576,12 +5576,14 @@ fn the_agent_command_tools_are_served_with_their_schemas() {
     );
 }
 
+/// The measured cancel: the stub's turn ends only when the interrupt road
+/// reaches it, so a road removed (the mutant) leaves the wait expired, the
+/// reply `success: false`, and this test red.
 #[test]
 fn cancel_agent_replies_success_keeps_the_child_and_resolves_its_card() {
     let harness = CommandHarness::with_caller("mcp-c1a-cancel", "c1a-cancel-caller");
     let child = "c1a-cancel-child";
-    let runtime = crate::session::insert_test_child_agent(
-        &harness.state.sessions,
+    let (runtime, interrupted) = harness.state.sessions.insert_test_child_with_interrupt_ack(
         child,
         harness.owner.clone(),
         "c1a-cancel-caller",
@@ -5610,6 +5612,10 @@ fn cancel_agent_replies_success_keeps_the_child_and_resolves_its_card() {
         json!({"success": true})
     );
     assert_eq!(reply["result"]["content"][0]["text"], json!("interrupted"));
+    assert!(
+        interrupted.load(Ordering::Acquire),
+        "the interrupt road itself reached the adapter"
+    );
     // The child is kept: cancel never kills.
     let live = harness
         .state
@@ -5880,13 +5886,43 @@ fn agent_status_reads_a_live_child() {
         snapshot["idleMs"].is_u64(),
         "idle age is a number: {snapshot}"
     );
-    let pending = snapshot["pendingPermissions"]
-        .as_array()
-        .expect("the snapshot carries its cards");
-    assert_eq!(pending.len(), 1, "{snapshot}");
-    assert_eq!(pending[0]["cardId"], json!("card-status"));
-    assert_eq!(pending[0]["kind"], json!("tool"));
-    assert_eq!(pending[0]["excerpt"], json!("echo test"));
+    // A count, and only a count: the card's id, title and excerpt exist on
+    // the pending list alone — the snapshot must not carry any of them.
+    assert_eq!(snapshot["pendingPermissions"], json!(1), "{snapshot}");
+    let document = reply.to_string();
+    assert!(!document.contains("card-status"), "no card id: {document}");
+    assert!(!document.contains("echo test"), "no excerpt: {document}");
+    assert!(
+        !document.contains("Run command"),
+        "no card title: {document}"
+    );
+    // And the door says the same split: a `view` peer may read this count,
+    // while the list that carries the details is priced at
+    // `answer_permissions`.
+    let view_peer = McpCaller::Peer {
+        device_id: "c1a-status-view".to_string(),
+        role: crate::peer_policy::PeerRole::Client,
+        caps: vec![crate::peer_policy::CAP_VIEW.to_string()],
+    };
+    assert!(
+        mcp_peer_door(
+            &view_peer,
+            Some(crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL),
+            &json!(1)
+        )
+        .is_none(),
+        "the count is a view read"
+    );
+    let refused = mcp_peer_door(
+        &view_peer,
+        Some(crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL),
+        &json!(1),
+    )
+    .expect("the card road is refused to a view peer");
+    assert_eq!(
+        refused.pointer("/error/message"),
+        Some(&json!("capability 'answer_permissions' was not negotiated"))
+    );
 
     // The same child by display name: the resolution the other tools take.
     let by_name = harness.call(
@@ -5931,10 +5967,10 @@ fn agent_status_falls_back_to_a_closed_childs_stored_row() {
     assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
     let snapshot = &reply["result"]["structuredContent"];
     assert_eq!(snapshot["agentId"], json!(child));
-    // The row's own verdict: a close reaps the row and the process reported
-    // no exit code, and `Ended` without a code is `failed` — the same word
-    // the roster and the app give this row, one vocabulary and one source.
-    assert_eq!(snapshot["state"], json!("failed"));
+    // The row knows it was closed and not why (the close reason is C1b's),
+    // so it reads `closed` — borrowing the Ended-without-a-code → `failed`
+    // word would escalate a clean close into a crash a supervisor alerts on.
+    assert_eq!(snapshot["state"], json!("closed"));
     assert!(snapshot["provider"].is_null(), "{snapshot}");
     assert!(snapshot["model"].is_null(), "not persisted: {snapshot}");
     assert!(snapshot["mode"].is_null(), "not persisted: {snapshot}");
@@ -5946,8 +5982,22 @@ fn agent_status_falls_back_to_a_closed_childs_stored_row() {
     assert!(snapshot["idleMs"].is_u64(), "{snapshot}");
     assert_eq!(
         snapshot["pendingPermissions"],
-        json!([]),
-        "a stored row carries no cards (D4): {snapshot}"
+        json!(0),
+        "a stored row counts no cards (D4): {snapshot}"
+    );
+    // A closed child is addressed by its id: the stored read is one row by
+    // id, so the display name no live child answers finds nothing.
+    let by_name = harness.call(
+        crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+        r#"{"agentId":"closed child"}"#,
+    );
+    assert_eq!(by_name["result"]["isError"], json!(true), "{by_name}");
+    assert!(
+        by_name["result"]["content"][0]["text"]
+            .as_str()
+            .expect("the refusal sentence")
+            .contains("none of your children"),
+        "{by_name}"
     );
 }
 

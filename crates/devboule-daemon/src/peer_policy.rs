@@ -1771,9 +1771,10 @@ pub(crate) mod tests {
     /// closed table rather than sampled: one capability each, and nothing
     /// else opens them. Cancel is the administrative act `SessionInterrupt`
     /// names; the pending list is the answer act it must never be weaker
-    /// than; status is the roster's read. The negative control is the
-    /// operational set — every capability but `admin` — which still refuses
-    /// the cancel while both reads open.
+    /// than; status is the roster's read — and rides `view` only because its
+    /// snapshot counts cards and can no longer show one. The negative control
+    /// is the operational set — every capability but `admin` — which still
+    /// refuses the cancel while both reads open.
     #[test]
     fn the_agent_command_tools_ride_their_wire_capabilities() {
         use crate::provider_catalog::{
@@ -1815,6 +1816,18 @@ pub(crate) mod tests {
                 mcp_tool_denial(role, &all_caps(), MCP_CANCEL_AGENT_TOOL),
                 None
             );
+        }
+        // The road to card details is the pending list alone: status must
+        // never be judged as that road, or `view` would price what
+        // `answer_permissions` protects (the broker test pins the body).
+        match mcp_tool_wire(MCP_GET_AGENT_STATUS_TOOL) {
+            Some(McpToolWire::Judged(requests)) => assert!(
+                requests.iter().all(|request| {
+                    !matches!(request, ClientMessage::SessionPermissionRespond { .. })
+                }),
+                "status is never judged as the card road: {requests:?}"
+            ),
+            other => panic!("status stays a judged read: {other:?}"),
         }
     }
 

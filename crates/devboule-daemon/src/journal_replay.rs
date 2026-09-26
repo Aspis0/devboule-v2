@@ -129,14 +129,10 @@ pub(super) fn replay_agent_page(
     })
 }
 
-/// Every session row, the closed ones included: the one read that is not
-/// roster-shaped. The status fallback takes it when a child is no longer
-/// live — a closed child's stored row is exactly what
-/// `devboule_get_agent_status` answers from — while history itself rides the
-/// transcript, never the live roster.
-pub(super) fn list_sessions_including_closed(
-    conn: &Connection,
-) -> Result<Vec<SessionRecord>, JournalError> {
+/// Every open session row: the roster's read, with `closed = 0` in SQL —
+/// closed rows accumulate for the daemon's whole life and are none of this
+/// path's business (history rides the transcript, not the live roster).
+pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
     let mut stmt = conn.prepare(
         "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
                 generation, status, exit_code, closed, last_seq, degraded,
@@ -144,20 +140,37 @@ pub(super) fn list_sessions_including_closed(
                 peer_session_id, provider, origin_kind, origin_device, origin_role,
                 display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
                 overlay, depth, disowned_peer_session_id, cwd
-         FROM sessions ORDER BY id",
+         FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(JournalError::from)
 }
 
-pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
-    // The `closed = 0` filter the SQL used to carry, taken here instead: one
-    // query, one column list, and the two reads cannot drift apart.
-    Ok(list_sessions_including_closed(conn)?
-        .into_iter()
-        .filter(|row| !row.closed)
-        .collect())
+/// One session row, by id, and only if it belongs to `owner` and was created
+/// by `created_by`: the status fallback's stored read (`devboule_get_agent_status`).
+/// One row filtered in SQL — never the roster's shape, never a scan of other
+/// users' history, and never a name two rows could share: a closed child is
+/// addressed the way Paseo addresses its stored rows, by id alone.
+pub(super) fn owned_child_record(
+    conn: &Connection,
+    session_id: &str,
+    owner: &str,
+    created_by: &str,
+) -> Result<Option<SessionRecord>, JournalError> {
+    conn.query_row(
+        "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                generation, status, exit_code, closed, last_seq, degraded,
+                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
+                peer_session_id, provider, origin_kind, origin_device, origin_role,
+                display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
+                overlay, depth, disowned_peer_session_id, cwd
+         FROM sessions WHERE id = ?1 AND owner = ?2 AND created_by = ?3",
+        params![session_id, owner, created_by],
+        row_to_session,
+    )
+    .optional()
+    .map_err(JournalError::from)
 }
 
 fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
