@@ -3024,6 +3024,92 @@ fn a_send_whose_target_is_the_callers_closed_child_says_so() {
     journal.shutdown();
 }
 
+/// The send road's own race, seen from the sender: the lookup finds the
+/// child, the admission takes its slot, and a close wins before the
+/// delivery. The tool must answer with the ordered sentence — the
+/// transport's "no session with that id" says nothing about why — and
+/// never with `accepted`.
+#[test]
+fn a_send_that_loses_the_race_to_a_close_gets_the_closed_sentence() {
+    use super::tools::messaging::send;
+    let state = ServerState::new("mcp-idle-race".to_string());
+    let owner = owner("mcp-idle-race-user", "mcp-idle-race-client");
+    let creator = "s.idle.race".to_string();
+    let child = "s.idle.raced".to_string();
+    crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+    crate::session::insert_test_live_agent(&state.sessions, &child, owner.clone());
+    let journal = state.sessions.test_journal().expect("journal");
+    let mut record = crate::journal::new_session_record(
+        &child,
+        "mcp-idle-race-user",
+        None,
+        SessionKind::Acp,
+        "Agent",
+    );
+    record.created_by = Some(creator.clone());
+    record.display_name = Some("Racer".to_string());
+    journal.create_session(record).expect("birth row");
+
+    // The close wins the gap between this sender's admission and its
+    // delivery — the window the sweep's pairing closes for the sweep's own
+    // road, which a human's close can still enter.
+    let closing = Arc::clone(&state);
+    let target = child.clone();
+    let closing_owner = owner.clone();
+    state
+        .sessions
+        .set_agent_message_after_admission_hook(Arc::new(move || {
+            let _ = closing.sessions.close(&target, &closing_owner, &None);
+        }));
+
+    let registration = RegisteredSession {
+        session_id: creator,
+        owner: owner.clone(),
+        provider_id: None,
+        depth: 0,
+        overlay: crate::provider_catalog::ToolOverlay::NONE,
+        bearer: "the bearer".to_string(),
+        claude_config_path: None,
+        runtime: None,
+        broker_ready: Arc::new(AtomicBool::new(false)),
+    };
+    let answer = send(
+        &state,
+        &registration,
+        McpCaller::Local,
+        json!(1),
+        &json!({"params": {"arguments": {"to_agent": "s.idle.raced", "text": "one more thing"}}}),
+    )
+    .expect("the handler does not fail")
+    .expect("the handler answers");
+
+    assert_eq!(
+        answer.pointer("/result/content/0/text"),
+        Some(&json!(
+            "your child 'Racer' is closed; closed sessions do not reopen — create a new one"
+        )),
+        "the loser of the race hears why, not the transport: {answer}"
+    );
+    assert_eq!(
+        answer.pointer("/result/isError"),
+        Some(&json!(true)),
+        "{answer}"
+    );
+    assert!(
+        answer.pointer("/result/structuredContent").is_none(),
+        "and never `accepted`: {answer}"
+    );
+    let roster = state
+        .sessions
+        .live_agent_entries(&owner)
+        .expect("the roster still answers");
+    assert!(
+        !roster.iter().any(|entry| entry.session.id == child),
+        "and the close that beat it stands"
+    );
+    journal.shutdown();
+}
+
 /// F4 (MAX RECALL, authority): the tool's act is performed AS the caller.
 /// The send used to act through an unmarked connection, so a peer's
 /// delivery read `local` to the receiving agent (S4-05) and carried the

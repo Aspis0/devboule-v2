@@ -101,7 +101,7 @@ pub(super) fn agent_idle_closed_envelope(
     child_origin: &SessionOrigin,
 ) -> String {
     format!(
-        "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_idle_closed\ntimestamp: {}\nchildSessionId: {}\ndisplayName: {}\nstate: closed\nidleMinutes: {idle_minutes}\nsummary: closed: idle after {idle_minutes} minutes; no turn, no pending card, nothing in flight, nobody viewing. Closed sessions do not reopen — create a new one.\n</devboule-system>",
+        "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_idle_closed\ntimestamp: {}\nchildSessionId: {}\ndisplayName: {}\nstate: closed\nidleMinutes: {idle_minutes}\nsummary: closed: idle after {idle_minutes} minutes. Closed sessions do not reopen — create a new one.\n</devboule-system>",
         origin_line(child_origin),
         neutralise_envelope_text(&single_line_header(child_session_id)),
         unix_millis(),

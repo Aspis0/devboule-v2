@@ -8,13 +8,20 @@
 //! profile read live at every sweep (D5), so a settings edit reaches children
 //! already running and `Some(0)` is the timer off.
 //!
-//! The close says "closed: idle" twice: a notice on the child's own transcript
-//! while its journal row is still in the map, then a dedicated envelope to its
-//! creator, and only then the audited `close` the app's own close uses. A
-//! message to a closed child never reopens it — the send's miss answers with
-//! [`SessionRegistry::closed_child_refusal`], whose "closed: idle" half comes
-//! from the in-memory reason map below (D6: a restart closes every session
-//! anyway, so nothing about the reason outlives the process).
+//! The act decides and takes the child out of the map in one critical
+//! section — the same lock a message admission takes to find its target and
+//! arm its slot — so no send can be armed for a child that is about to go.
+//! Only then does it say "closed: idle": a notice on the child's own
+//! transcript while its journal row is still open, a dedicated envelope to
+//! its creator (falling back to the creator's own transcript when the prompt
+//! route is shut), and the close's tail — the creator's report, the journal's
+//! closed mark, the teardown and the slot release. A message to a closed
+//! child never reopens it: a sender that misses the lookup, or whose
+//! delivery lost the child in between, is refused — with
+//! [`SessionRegistry::closed_child_refusal`]'s sentence once the row is
+//! marked closed, whose "closed: idle" half comes from the in-memory reason
+//! map below (D6: a restart closes every session anyway, so nothing about
+//! the reason outlives the process).
 
 use super::*;
 
@@ -82,16 +89,30 @@ impl SessionRegistry {
         }
         #[cfg(test)]
         self.fire_idle_close_before_act_hook();
-        // Everything the act's own words claim — no turn, no card, nothing
-        // in flight, nobody viewing — is re-read here, under the session map
-        // lock: the lock message admission holds while it finds the target
-        // and reserves its slot, so an admission is either visible in this
-        // read (the child is not closed) or it lands after the close took the
-        // target out and is refused with the closed-child sentence: never
-        // accepted and then torn down. The minutes come with them, so turning
-        // the timer off wins over a spell that has already run out.
-        let (minutes, blocked) = {
-            let Ok(_map) = self.inner.lock() else {
+        // The timer's field is read before the section, not inside it: the
+        // creation table is never taken under the map lock. A focus that is
+        // still held is caught by the viewer read inside the section; what
+        // this catches is a spell already cleared — a viewer who focused
+        // and looked away.
+        if self.idle_close_since(child) != Some(since) {
+            return false;
+        }
+        // One critical section decides and takes the child out of the map.
+        // Every condition is re-read under the session map lock — the lock a
+        // message admission holds while it finds its target and arms its
+        // slot — and the removal happens in that same hold. So a send is
+        // either armed before this read (the child stays) or can find no
+        // such child after it: never armed for a child that is already
+        // going, which is all "accepted and then torn down" would need. The
+        // minutes come with them, so ticking the timer off wins over a spell
+        // that has already run out.
+        enum Act {
+            Blocked,
+            Refused,
+            Taken(u32, Option<RegistryEntry>),
+        }
+        let act = {
+            let Ok(mut map) = self.inner.lock() else {
                 return false;
             };
             let minutes = self.idle_close_minutes_now(session.profile_id.as_deref());
@@ -100,18 +121,25 @@ impl SessionRegistry {
                 || runtime.permission_pending()
                 || self.message_in_flight_to(child)
                 || self.child_is_viewed(child, &owner.user, runtime);
-            (minutes, blocked)
+            if blocked {
+                Act::Blocked
+            } else {
+                match self.take_session_for_close(&mut map, child, owner, &None) {
+                    Ok(removed) => Act::Taken(minutes, removed),
+                    Err(_) => Act::Refused,
+                }
+            }
         };
-        if blocked {
-            self.set_idle_close_since(child, None);
-            return false;
+        match act {
+            Act::Refused => false,
+            Act::Blocked => {
+                self.set_idle_close_since(child, None);
+                false
+            }
+            Act::Taken(minutes, removed) => {
+                self.close_removed_child(state, child, &view, &creator, minutes, removed)
+            }
         }
-        // Focusing the child clears the field (`set_presence`) without any of
-        // the reads above knowing, so the armed instant is re-read last.
-        if self.idle_close_since(child) != Some(since) {
-            return false;
-        }
-        self.close_idle_child(state, child, &view, &creator, minutes)
     }
 
     /// The profile's minutes right now: read live at every use (D5), never
@@ -124,25 +152,25 @@ impl SessionRegistry {
             .unwrap_or(crate::agent_profiles::DEFAULT_IDLE_CLOSE_MINUTES)
     }
 
-    /// The close act, in the order it has to happen: the child's transcript
-    /// told while its row is still in the map (at most once per spell, no
-    /// matter how often the act is retried), the creator told, then the
-    /// audited close with the slot release that belongs to it.
-    fn close_idle_child(
+    /// The act on a child the section already took out of the map: the
+    /// child's transcript told, the creator told, then the close's tail with
+    /// the slot release that belongs to it. Publishing *after* the removal
+    /// is what keeps both messages true — nothing can take the child back —
+    /// and the runtime is still alive until the tail tears it down.
+    fn close_removed_child(
         &self,
         state: &Arc<ServerState>,
         child: &str,
         view: &(Session, Arc<SessionRuntime>, OwnerId),
         creator: &str,
         minutes: u32,
+        removed: Option<RegistryEntry>,
     ) -> bool {
         let (session, runtime, owner) = view;
-        // Claimed before it is published: a close that refuses below must not
-        // publish this again on the next sweep — the child would carry two
-        // "closed: idle" lines while still running. The quiet sweep sets its
-        // latch *after* its delivery, because a lost notice there must stay
-        // owed; here the risk is the other one.
-        if self.claim_idle_close_notice(child) {
+        // Claimed with the publish it belongs to, and cleared with the spell
+        // (see `set_idle_close_since`), so the one line per spell holds even
+        // when this act is the second attempt.
+        if removed.is_some() && self.claim_idle_close_notice(child) {
             let _ = runtime.publish_daemon_event(SessionEvent::SessionNotice {
                 text: format!("closed: idle after {minutes} minutes"),
                 severity: NoticeSeverity::Info,
@@ -156,22 +184,37 @@ impl SessionRegistry {
             // Zero wait on a creator whose broker has not come up: this runs
             // on the shared sweep thread, which owes every other child its
             // cadence, so `MCP_READY_TIMEOUT` (15 s) must never be spent here.
-            let _ = self.deliver_notice_to_creator(creator, owner, &envelope, Duration::ZERO);
-        }
-        match self.close(child, owner, &None) {
-            Ok(true) => {
-                self.record_idle_close(child);
-                state.session_finished();
-                true
+            if self
+                .deliver_notice_to_creator(creator, owner, &envelope, Duration::ZERO)
+                .is_err()
+            {
+                // The prompt route is shut and the latch is spent, so the
+                // fact would otherwise reach nobody: the creator's own
+                // transcript carries it as a daemon notice, which needs no
+                // broker to land.
+                if let Some(creator_runtime) = self.live_runtime(creator, owner) {
+                    let _ = creator_runtime.publish_daemon_event(SessionEvent::SessionNotice {
+                        text: format!(
+                            "its child '{display_name}' was closed: idle after {minutes} minutes"
+                        ),
+                        severity: NoticeSeverity::Info,
+                    });
+                }
             }
-            Ok(false) | Err(_) => false,
         }
+        let closed = matches!(self.finish_close(child, removed, owner), Ok(true));
+        if closed {
+            self.record_idle_close(child);
+            state.session_finished();
+        }
+        closed
     }
 
-    /// Claim this link's one idle-close notice: `true` the first time,
-    /// `false` for every attempt after it — whether or not the delivery
-    /// above reached anyone, the notice itself is spent.
-    fn claim_idle_close_notice(&self, child: &str) -> bool {
+    /// Claim this link's one idle-close notice: `true` the first time this
+    /// spell asks for it, `false` after — the notice and the envelope are
+    /// one publish, and one spell gets one. `pub(super)` for the test that
+    /// spends a spell's notice without closing anything.
+    pub(super) fn claim_idle_close_notice(&self, child: &str) -> bool {
         let Ok(mut table) = self.creations.lock() else {
             return false;
         };
@@ -192,7 +235,11 @@ impl SessionRegistry {
             .unwrap_or_else(|error| error.into_inner());
         let link = table.children.get_mut(child)?;
         if !idle {
+            // The spell ends here and so does its notice: the latch is the
+            // spell's, not the link's, so a child that grows quiet again is
+            // told about again.
             link.idle_close_since = None;
+            link.idle_close_notified = false;
             return None;
         }
         let since = *link.idle_close_since.get_or_insert(now);
@@ -201,11 +248,15 @@ impl SessionRegistry {
 
     /// Set one child's timer — armed by the sweep, cleared by the sweep and
     /// by `set_presence` when a viewer focuses the child. A child that is not
-    /// in the link table is left alone: nothing else closes it.
+    /// in the link table is left alone: nothing else closes it. Clearing the
+    /// spell clears its notice with it.
     pub(super) fn set_idle_close_since(&self, child: &str, since: Option<Instant>) {
         if let Ok(mut table) = self.creations.lock() {
             if let Some(link) = table.children.get_mut(child) {
                 link.idle_close_since = since;
+                if since.is_none() {
+                    link.idle_close_notified = false;
+                }
             }
         }
     }

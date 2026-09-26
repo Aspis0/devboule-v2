@@ -89,6 +89,9 @@ fn the_notice_is_written_before_the_close_and_the_creator_gets_the_envelope() {
         written.contains("closed: idle after 30 minutes"),
         "{written}"
     );
+    // The field the app's card parses and refuses to guess at: the summary
+    // carries the same words, so only this line pins the wire form itself.
+    assert!(written.contains("idleMinutes: 30"), "{written}");
     shut_down(&state, &dir);
 }
 
@@ -170,6 +173,58 @@ fn a_child_closed_by_another_road_is_simply_closed() {
             "your child 'child' is closed; closed sessions do not reopen — create a new one"
                 .to_string()
         )
+    );
+    shut_down(&state, &dir);
+}
+
+/// The prompt route to the creator refuses at once when its broker has not
+/// come up — the zero wait is what keeps the shared sweep thread off
+/// `MCP_READY_TIMEOUT` — and the envelope's latch is spent with the publish.
+/// The fact must still reach a human: it lands on the creator's own
+/// transcript as a daemon notice, which needs no broker.
+#[test]
+fn a_creator_whose_broker_is_not_ready_hears_it_on_its_own_transcript() {
+    let (state, dir) = idle_state("notice-unready");
+    let registry = &state.sessions;
+    let owner = test_owner("idle-unready-user", "idle-unready-client");
+    let creator = "idle-unready-creator";
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let creator_runtime = insert_live_agent_with_kind_and_writer(
+        registry,
+        creator,
+        owner.clone(),
+        SessionKind::Acp,
+        Box::new(RecordingWriter(Arc::clone(&received))),
+    );
+    birth_row(registry, creator, &owner, None, None);
+    // The creator hosts MCP and has never been served: the readiness gate
+    // can only refuse, never wait.
+    creator_runtime.require_mcp();
+    linked_child(registry, "idle-unready-child", &owner, creator);
+
+    let start = Instant::now();
+    assert_eq!(registry.sweep_idle_close_children(&state, start), 0);
+    assert_eq!(
+        registry.sweep_idle_close_children(&state, start + Duration::from_secs(30 * 60)),
+        1
+    );
+
+    assert!(
+        received.lock().expect("written").is_empty(),
+        "no prompt reached the creator: the gate refused before any write"
+    );
+    let journal = registry.journal.clone().expect("journal");
+    let replay = journal
+        .replay(creator)
+        .expect("the open creator still replays");
+    assert!(
+        replay.events.iter().any(|event| matches!(
+            event,
+            SessionEvent::SessionNotice { text, .. }
+                if text.contains("closed: idle after 30 minutes")
+        )),
+        "the creator's own transcript carries the fact: {:#?}",
+        replay.events
     );
     shut_down(&state, &dir);
 }

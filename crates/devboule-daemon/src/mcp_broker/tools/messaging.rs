@@ -71,13 +71,24 @@ pub(in crate::mcp_broker) fn send(
                 "isError": false,
             },
         }))),
-        Err(error) => Ok(Some(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "content": [{"type": "text", "text": error.message}],
-                "isError": true,
-            },
-        }))),
+        Err(error) => {
+            // The lookup found the child and the delivery did not: a close
+            // took it in between. The ordered sentence says what happened
+            // there; a child that is still present keeps its own error.
+            let refusal = state.sessions.closed_child_refusal(
+                &registration.owner,
+                &registration.session_id,
+                to_agent,
+            );
+            let message = refusal.unwrap_or(error.message);
+            Ok(Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text", "text": message}],
+                    "isError": true,
+                },
+            })))
+        }
     }
 }

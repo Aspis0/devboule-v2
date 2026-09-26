@@ -157,7 +157,12 @@ pub use session::{
 /// 8-speaking app renders an Other door on every question and no mask on
 /// secrets, so it would let a typed label kill an MCP approval and show a
 /// secret in the clear. Same rule: refuse, not degrade.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// Bumped to 10 for `AgentProfile.idleCloseMinutes`: the profile struct is
+/// `deny_unknown_fields`, so a 9-speaking daemon would refuse the whole
+/// `AgentProfilesSet` the moment an app saves a non-default idle timer —
+/// the human's edit lost until the daemon restarts. The handshake has to
+/// separate the two builds before that save exists.
+pub const PROTOCOL_VERSION: u32 = 10;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.

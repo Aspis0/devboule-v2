@@ -199,12 +199,6 @@ use session_spawn::{
 use session_spawn::{spawn_codex_verify_thread, start_spawned_session};
 #[path = "session_children.rs"]
 mod session_children;
-/// The terminal reads the broker's terminal tools are served from, kept out
-/// of `session.rs` beside the child reads they rhyme with: one phrase for
-/// the file — which terminals an owner may list in one workspace, and one
-/// terminal's screen.
-#[path = "session_terminals.rs"]
-mod session_terminals;
 /// The idle-close timer for coordinator-created children: the sweep that arms
 /// and acts, the four conditions it weighs, and the sentence a closed child
 /// answers a send with.
@@ -230,6 +224,12 @@ mod session_idle_close_profile_tests;
 #[cfg(test)]
 #[path = "session_idle_close_tests.rs"]
 mod session_idle_close_tests;
+/// The terminal reads the broker's terminal tools are served from, kept out
+/// of `session.rs` beside the child reads they rhyme with: one phrase for
+/// the file — which terminals an owner may list in one workspace, and one
+/// terminal's screen.
+#[path = "session_terminals.rs"]
+mod session_terminals;
 use session_messaging::forget_message_brake_target;
 #[cfg(test)]
 use session_messaging::{
@@ -913,9 +913,13 @@ impl SessionRegistry {
     }
 
     /// Arm a one-shot callback that runs after an agent message's brake admission
-    /// and before its delivery (S4-10).
+    /// and before its delivery (S4-10). `pub(crate)` for the broker's race
+    /// test, which needs the gap on the send road from outside `session`.
     #[cfg(test)]
-    fn set_agent_message_after_admission_hook(&self, hook: AgentMessageAfterAdmissionHook) {
+    pub(crate) fn set_agent_message_after_admission_hook(
+        &self,
+        hook: AgentMessageAfterAdmissionHook,
+    ) {
         *self
             .agent_message_after_admission_hook
             .lock()
@@ -2831,26 +2835,58 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            if let Some(entry) = map.get(session_id) {
-                check_user_owner(entry, owner, conn_peer)?;
-                // Close is teardown: it reaches through the delivery window
-                // exactly like the `Configuring` arm below, so the same
-                // child-slot accessor answers for both variants here. (For a
-                // windowed child the store is a no-op — `transition_ready`
-                // is not raised until the delivery lands and promotes.)
-                if let Some(session) = entry.as_child_process() {
-                    session
-                        .runtime
-                        .transition_ready
-                        .store(false, Ordering::Release);
-                }
-            }
-            // The closed session's message-brake entries go in the same critical
-            // section that takes it out of the map (A2-06): a send that found it
-            // here cannot reserve a slot for it afterwards (A2-05).
-            forget_message_brake_target(&self.message_brakes, session_id);
-            map.remove(session_id)
+            self.take_session_for_close(&mut map, session_id, owner, conn_peer)?
         };
+        self.finish_close(session_id, session, owner)
+    }
+
+    /// The guarded half of a close: the owner check, the delivery window, the
+    /// brake slots naming the target and the removal — one critical section,
+    /// under the caller's map guard. Admission takes this same lock to find
+    /// its target and arm its slot, so a sender is either done before this
+    /// holds the lock or cannot find the child after it; that is what lets a
+    /// caller decide *and* remove in one section.
+    ///
+    /// Answers what the map held: `None` when there was nothing to take.
+    fn take_session_for_close(
+        &self,
+        map: &mut HashMap<String, RegistryEntry>,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<Option<RegistryEntry>, WireError> {
+        if let Some(entry) = map.get(session_id) {
+            check_user_owner(entry, owner, conn_peer)?;
+            // Close is teardown: it reaches through the delivery window
+            // exactly like the `Configuring` arm below, so the same
+            // child-slot accessor answers for both variants here. (For a
+            // windowed child the store is a no-op — `transition_ready`
+            // is not raised until the delivery lands and promotes.)
+            if let Some(session) = entry.as_child_process() {
+                session
+                    .runtime
+                    .transition_ready
+                    .store(false, Ordering::Release);
+            }
+        }
+        // The closed session's message-brake entries go in the same critical
+        // section that takes it out of the map (A2-06): a send that found it
+        // here cannot reserve a slot for it afterwards (A2-05).
+        forget_message_brake_target(&self.message_brakes, session_id);
+        Ok(map.remove(session_id))
+    }
+
+    /// The unguarded tail of a close: everything that follows the removal —
+    /// the creator's report, the journal's closed mark, the teardown and the
+    /// transition. `session` is what [`Self::take_session_for_close`] took
+    /// out, or `None` when the map held nothing and only the previous run's
+    /// row is left to end.
+    fn finish_close(
+        &self,
+        session_id: &str,
+        session: Option<RegistryEntry>,
+        owner: &OwnerId,
+    ) -> Result<bool, WireError> {
         self.forget_agent_creator(session_id);
         match session {
             // A `Configuring` entry closes exactly like a live one: the

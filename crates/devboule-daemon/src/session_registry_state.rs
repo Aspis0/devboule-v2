@@ -81,9 +81,10 @@ impl WorkspacePathCache {
 pub(super) type JournalRosterAfterListHook = Arc<dyn Fn() + Send + Sync>;
 
 /// Runs between the brake admission and the delivery of an agent message (S4-10).
-/// Test-only: it is the only way to land a turn's end inside that gap.
+/// Test-only: it is the only way to land a turn's end inside that gap — or,
+/// from the broker's tests, a close that wins the race against it.
 #[cfg(test)]
-pub(super) type AgentMessageAfterAdmissionHook = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type AgentMessageAfterAdmissionHook = Arc<dyn Fn() + Send + Sync>;
 
 /// Runs between a deposit's ownership check and the store write (HND-01).
 /// Test-only: it is the only way to land a close inside that gap.
@@ -440,11 +441,10 @@ pub(super) struct AgentChild {
     /// spell: a viewer focusing the child clears it, and the next sweep
     /// starts a fresh spell from that moment.
     pub(super) idle_close_since: Option<Instant>,
-    /// The idle-close notice is owed until it has gone out once for this
-    /// spell. A close that refuses after publishing must not publish again
-    /// on the next sweep — the child would carry two "closed: idle" lines
-    /// while still running. The link is exactly as long as the child it
-    /// describes, so the latch dies with it.
+    /// Whether this spell's idle-close notice has gone out. Spent by the act
+    /// that publishes it — which only runs once the child is out of the map —
+    /// and cleared wherever the spell is cleared, so a later spell is told
+    /// about again instead of closing in silence.
     pub(super) idle_close_notified: bool,
 }
 

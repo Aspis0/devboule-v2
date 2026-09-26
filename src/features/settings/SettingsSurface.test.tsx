@@ -2651,6 +2651,47 @@ describe("Settings agents panel", () => {
     });
   });
 
+  it("refuses minutes that are not a number, and never shows the form's own NaN", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const idleField = container.querySelector<HTMLInputElement>(
+      '.agent-inline-editor input[aria-label="Close idle children after minutes"]',
+    );
+    if (!idleField) throw new Error("the idle-close minutes field did not render");
+
+    // A number the field cannot hold: it parses to Infinity, so the draft
+    // must carry what the human typed (the refusal names it) rather than a
+    // `String(NaN)` of the form's making — which no number input would
+    // show either.
+    await typeText(idleField, "1e999");
+    expect(idleField.value).toBe("1e999");
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("whole number of minutes");
+  });
+
+  it("wires the idle-close hint to its input, the way every other field does", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const idleField = container.querySelector<HTMLInputElement>(
+      '.agent-inline-editor input[aria-label="Close idle children after minutes"]',
+    );
+    if (!idleField) throw new Error("the idle-close minutes field did not render");
+    // The three sentences that carry the field's whole meaning — the
+    // default, the cap and what the close waits for — are read out with the
+    // control, not left beside it.
+    expect(describedText(idleField)).toContain("30 by default");
+    expect(describedText(idleField)).toContain("10080");
+    expect(describedText(idleField)).toContain("nobody looking at it");
+  });
+
   it("refuses a rename that would put two enabled profiles on one name, before sending", async () => {
     const scout = makeProfile({ id: "s1", name: "Scout", enabledForAgents: true });
     const reviewer = makeProfile({ id: "r1", name: "Reviewer", enabledForAgents: true });

@@ -123,8 +123,8 @@ fn turning_the_timer_off_at_the_expiry_instant_wins() {
 }
 
 #[test]
-fn a_close_that_refuses_publishes_the_notice_once() {
-    let (state, dir) = idle_state("recheck-latch");
+fn a_removal_that_is_refused_publishes_nothing_and_the_retry_tells_the_spell() {
+    let (state, dir) = idle_state("recheck-refused");
     let registry = &state.sessions;
     let owner = test_owner("idle-latch-user", "idle-latch-client");
     let creator = "idle-latch-creator";
@@ -132,9 +132,9 @@ fn a_close_that_refuses_publishes_the_notice_once() {
     let child = linked_child(registry, "idle-latch-child", &owner, creator);
     let child_runtime = registry.child_view(&child).expect("live child").1;
 
-    // The close is made to refuse: the entry's owner changes at the instant
-    // the act runs, so `close`'s own owner check fails — the notice and the
-    // creator's envelope are already out by then.
+    // The removal is made to refuse: the entry's owner changes at the
+    // instant the section runs, so its own owner check fails — and nothing
+    // is published for a child this sweep did not take.
     let target = child.clone();
     registry.set_idle_close_before_act_hook(Box::new(move |entry: &SessionRegistry| {
         let mut map = entry.inner.lock().expect("registry");
@@ -150,7 +150,7 @@ fn a_close_that_refuses_publishes_the_notice_once() {
     assert_eq!(
         registry.sweep_idle_close_children(&state, start + minutes(30)),
         0,
-        "the close refused, so nothing was closed"
+        "the removal was refused, so nothing was closed"
     );
     assert!(
         registry
@@ -158,20 +158,20 @@ fn a_close_that_refuses_publishes_the_notice_once() {
             .lock()
             .expect("registry")
             .contains_key(&child),
-        "the refused close left the child in place"
+        "the refused removal left the child in place"
     );
     assert_eq!(
         notices(&child_runtime),
-        1,
-        "the notice went out with the attempt that made it"
+        0,
+        "nothing is said about a child this sweep did not take"
     );
 
-    // The next sweep retries the close — and must not publish the notice a
-    // second time for the same spell.
+    // The next sweep retries — the owner now reads as the entry's own — and
+    // that attempt is the one that tells the spell.
     assert_eq!(
         registry.sweep_idle_close_children(&state, start + minutes(60)),
         1,
-        "the second attempt closes the child"
+        "the retry removes the child"
     );
     assert!(!registry
         .inner
@@ -181,7 +181,96 @@ fn a_close_that_refuses_publishes_the_notice_once() {
     assert_eq!(
         notices(&child_runtime),
         1,
-        "the latch keeps the retry silent: one \"closed: idle\" line, ever"
+        "the retry says it once: publish only after the removal"
+    );
+    shut_down(&state, &dir);
+}
+
+/// The interleaving the pairing exists for: another road takes the child
+/// between this sweep's weigh and its act. The section finds nothing to take,
+/// so the sweep must say nothing — the road that took the child reports its
+/// own end, and a notice here would claim a close that never happened.
+#[test]
+fn a_child_taken_between_the_weigh_and_the_act_is_not_narrated() {
+    let (state, dir) = idle_state("recheck-taken");
+    let registry = &state.sessions;
+    let owner = test_owner("idle-taken-user", "idle-taken-client");
+    let creator = "idle-taken-creator";
+    linked_creator(registry, creator, &owner);
+    let child = linked_child(registry, "idle-taken-child", &owner, creator);
+    let child_runtime = registry.child_view(&child).expect("live child").1;
+
+    let target = child.clone();
+    registry.set_idle_close_before_act_hook(Box::new(move |entry: &SessionRegistry| {
+        let mut map = entry.inner.lock().expect("registry");
+        map.remove(&target);
+    }));
+
+    let start = Instant::now();
+    assert_eq!(registry.sweep_idle_close_children(&state, start), 0);
+    assert_eq!(
+        registry.sweep_idle_close_children(&state, start + minutes(30)),
+        0,
+        "there was nothing left to take"
+    );
+    assert!(!registry
+        .inner
+        .lock()
+        .expect("registry")
+        .contains_key(&child));
+    assert_eq!(
+        notices(&child_runtime),
+        0,
+        "the sweep publishes only for a child it took itself"
+    );
+    shut_down(&state, &dir);
+}
+
+/// The latch is the spell's, not the link's: a notice spent by an earlier
+/// attempt clears with the spell, so a child that grows quiet again is told
+/// about instead of closing in silence.
+#[test]
+fn a_later_spell_is_told_about_after_an_earlier_attempt_spent_the_notice() {
+    let (state, dir) = idle_state("recheck-spell");
+    let registry = &state.sessions;
+    let owner = test_owner("idle-spell-user", "idle-spell-client");
+    let creator = "idle-spell-creator";
+    linked_creator(registry, creator, &owner);
+    let child = linked_child(registry, "idle-spell-child", &owner, creator);
+    let child_runtime = registry.child_view(&child).expect("live child").1;
+
+    // An earlier attempt spent this spell's notice without closing anything.
+    assert!(registry.claim_idle_close_notice(&child));
+    assert!(!registry.claim_idle_close_notice(&child), "spent");
+
+    // The spell breaks — the child starts a turn, which is where the timer
+    // (and now its notice) is cleared.
+    child_runtime.begin_turn();
+    let start = Instant::now();
+    assert_eq!(registry.sweep_idle_close_children(&state, start), 0);
+    assert_eq!(armed(registry, &child), None, "the turn broke the spell");
+
+    // A new spell begins when the turn ends.
+    child_runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "end_turn".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    let again = start + minutes(1);
+    assert_eq!(registry.sweep_idle_close_children(&state, again), 0);
+    assert_eq!(armed(registry, &child), Some(again));
+    assert_eq!(
+        registry.sweep_idle_close_children(&state, again + minutes(30)),
+        1,
+        "the new spell closes"
+    );
+    assert_eq!(
+        notices(&child_runtime),
+        1,
+        "and is told about: the earlier spend belonged to the earlier spell"
     );
     shut_down(&state, &dir);
 }

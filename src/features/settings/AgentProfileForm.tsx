@@ -60,11 +60,16 @@ const CLEARED_PROVIDER_FIELDS: ProviderSpecificFields = {
  * does correct is a typed **0**: the field's own `min` is 1, and "never" has
  * a door of its own (the tick), so a 0 the human typed must not save as the
  * daemon's `Some(0)` — the opposite of what they asked for.
+ *
+ * A text that is not a number at all stays `NaN`: it is not a minute count
+ * the field can hold, and the refusal has to see it instead of the form
+ * inventing a value for words.
  */
 function idleMinutesOf(text: string): number | null {
   const trimmed = rustTrim(text);
   if (trimmed === "") return null;
   const minutes = Number(trimmed);
+  if (!Number.isFinite(minutes)) return minutes;
   return minutes < 1 ? 1 : minutes;
 }
 
@@ -541,10 +546,13 @@ export function AgentProfileForm({
           value={idleMinutes}
           disabled={busy || idleOff}
           onChange={(event) => {
-            const minutes = idleMinutesOf(event.target.value);
+            const raw = event.target.value;
+            const minutes = idleMinutesOf(raw);
             // The corrected value is what the field shows, so a typed 0
-            // reads as the 1 it will be saved as — never as silence.
-            setIdleMinutes(minutes === null ? "" : String(minutes));
+            // reads as the 1 it will be saved as — never as silence. Text
+            // that parses to no number keeps its own characters: the save
+            // refuses it, and the refusal must name what the human sees.
+            setIdleMinutes(minutes !== null && Number.isFinite(minutes) ? String(minutes) : raw);
             onSeedChange?.({
               ...currentSeed(),
               idleCloseMinutes: idleOff ? 0 : minutes,
