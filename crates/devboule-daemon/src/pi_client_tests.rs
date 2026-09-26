@@ -2224,6 +2224,78 @@ fs.writeSync(2, "pi fake-marker-stderr-tail: waiting for the runtime\n");
 setInterval(() => {}, 1000);
 "#;
 
+/// The grandchild fake: one stderr line, then a descendant that inherits
+/// the pipe and holds it 20 s — long past the wrapper's exit. The wrapper
+/// leaves only after the descendant has proven itself on the pipe (an
+/// alive line plus a rendezvous file), so the test is never vacuous. The
+/// failed create must return on the reader budget instead of joining the
+/// drain while the pipe is held.
+const FAKE_PI_GRANDCHILD: &str = r#"
+const fs = require("fs");
+const { spawn } = require("child_process");
+const aliveFile = process.env.DEVBOULE_FAKE_PI_ALIVE_FILE;
+fs.writeSync(2, "pi fake: starting with user extensions\n");
+try { fs.unlinkSync(aliveFile); } catch (e) {}
+const grandchild = spawn(
+  process.execPath,
+  [
+    "-e",
+    "require('fs').writeSync(2, 'pi grandchild alive, holding pipe\\n'); require('fs').writeFileSync(process.env.DEVBOULE_FAKE_PI_ALIVE_FILE, 'alive'); setTimeout(() => {}, 20000);",
+  ],
+  { stdio: ["ignore", "ignore", "inherit"], detached: true }
+);
+// The spawn is async: exiting here could preempt it, so the wrapper ends
+// only once the descendant exists with the pipe open — or loudly if it
+// never starts. The 500 ms grace after the rendezvous puts the alive
+// line on the pipe long before any teardown can take the drain.
+grandchild.on("spawn", () => {
+  const deadline = Date.now() + 5000;
+  const timer = setInterval(() => {
+    if (fs.existsSync(aliveFile)) {
+      clearInterval(timer);
+      setTimeout(() => process.exit(1), 500);
+    } else if (Date.now() > deadline) {
+      clearInterval(timer);
+      fs.writeSync(2, "pi fake: alive file never appeared\n");
+      process.exit(3);
+    }
+  }, 20);
+});
+grandchild.on("error", (cause) => {
+  fs.writeSync(2, "pi fake: grandchild never started: " + cause.message + "\n");
+  process.exit(2);
+});
+"#;
+
+/// The long-stderr fake: a head marker, ~4 KiB of filler, a tail marker,
+/// then sleep. The banner must keep the head and the marker and cut the tail.
+const FAKE_PI_LONG_STDERR: &str = r#"
+const fs = require("fs");
+fs.writeSync(2, "pi HEAD-MARKER-stderr-head: loading permission extension\n");
+for (let i = 0; i < 64; i++) {
+  fs.writeSync(2, "pi filler line " + i + " " + "x".repeat(48) + "\n");
+}
+fs.writeSync(2, "pi TAIL-MARKER-stderr-tail: this line must be cut\n");
+setInterval(() => {}, 1000);
+"#;
+
+/// The bearer-echo fake: like the long one, but the first line carries the
+/// broker bearer the test passes in, so the banner must show `[redacted]`
+/// instead of it.
+const FAKE_PI_BEARER_ECHO: &str = r#"
+const fs = require("fs");
+fs.writeSync(2, "pi config: Bearer " + process.env.DEVBOULE_FAKE_PI_BEARER + "\n");
+for (let i = 0; i < 64; i++) {
+  fs.writeSync(2, "pi filler line " + i + " " + "x".repeat(48) + "\n");
+}
+fs.writeSync(2, "pi TAIL-MARKER-stderr-tail: this line must be cut\n");
+setInterval(() => {}, 1000);
+"#;
+
+/// An obviously fake bearer for the redaction test: real enough to travel
+/// the redactor, fake enough to never be a secret.
+const FAKE_BEARER: &str = "FAKE-BEARER-REDACTION-PROBE-7f3a";
+
 /// The lifecycle the R2a audit's F1 convicted: a profile delivery for pi
 /// is an awaited control rpc, and the only code that can deliver its
 /// answer is the session reader thread `start_spawned_session` starts.
@@ -2974,15 +3046,25 @@ mod lifecycle_tests {
         }
     }
 
-    fn stderr_handshake_command(script: &std::path::Path, log: &std::path::Path) -> PtyCommand {
+    fn stderr_handshake_command(
+        script: &std::path::Path,
+        log: &std::path::Path,
+        extra: &[(&str, &str)],
+    ) -> PtyCommand {
+        let mut env = vec![(
+            "DEVBOULE_FAKE_PI_LOG".to_string(),
+            log.to_string_lossy().into_owned(),
+        )];
+        env.extend(
+            extra
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string())),
+        );
         PtyCommand::new(
             node_program(),
             vec![script.to_string_lossy().into_owned(), "--".to_string()],
             crate::test_dirs::test_temp_dir("devboule-pi-cwd"),
-            vec![(
-                "DEVBOULE_FAKE_PI_LOG".to_string(),
-                log.to_string_lossy().into_owned(),
-            )],
+            env,
         )
     }
 
@@ -2998,7 +3080,7 @@ mod lifecycle_tests {
         }
         let _held = HANDSHAKE_TIMEOUT_LOCK
             .lock()
-            .expect("handshake timeout lock");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _budget = HandshakeTimeoutGuard::set(30_000);
         let log = log_path("stderrflood");
         let dir = log.parent().expect("log dir").to_path_buf();
@@ -3009,7 +3091,7 @@ mod lifecycle_tests {
             ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
         let spawned = spawn_process(
             &state,
-            stderr_handshake_command(&script, &log),
+            stderr_handshake_command(&script, &log, &[]),
             None,
             delivery,
         )
@@ -3032,7 +3114,7 @@ mod lifecycle_tests {
         }
         let _held = HANDSHAKE_TIMEOUT_LOCK
             .lock()
-            .expect("handshake timeout lock");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _budget = HandshakeTimeoutGuard::set(5_000);
         let log = log_path("stderrtail");
         let dir = log.parent().expect("log dir").to_path_buf();
@@ -3043,7 +3125,7 @@ mod lifecycle_tests {
             ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
         match spawn_process(
             &state,
-            stderr_handshake_command(&script, &log),
+            stderr_handshake_command(&script, &log, &[]),
             None,
             delivery,
         ) {
@@ -3057,6 +3139,172 @@ mod lifecycle_tests {
                 assert!(
                     error.message.contains("fake-marker-stderr-tail"),
                     "the tail must be the child's own last words: {}",
+                    error.message
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A descendant that keeps stderr open past the wrapper's death must
+    /// not hang the failed create: the tree is ended first and the drain
+    /// join is bounded, so this returns instead of joining forever. The
+    /// alive line proves the descendant ran with the pipe open past the
+    /// wrapper's exit; the time bound is the hang guard, with wide margin
+    /// over a sub-second failure.
+    #[test]
+    fn a_failed_create_returns_when_a_grandchild_holds_stderr_open() {
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let log = log_path("grandchild");
+        let dir = log.parent().expect("log dir").to_path_buf();
+        let script = dir.join("fake-pi-grandchild.js");
+        std::fs::write(&script, super::FAKE_PI_GRANDCHILD).expect("write the fake pi entry");
+        let alive = dir.join("grandchild-alive");
+        let state = ServerState::new("pi-grandchild".to_string());
+        let delivery =
+            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let started = Instant::now();
+        let alive_value = alive.to_string_lossy().into_owned();
+        match spawn_process(
+            &state,
+            stderr_handshake_command(
+                &script,
+                &log,
+                &[("DEVBOULE_FAKE_PI_ALIVE_FILE", alive_value.as_str())],
+            ),
+            None,
+            delivery,
+        ) {
+            Ok(_) => panic!("a pi that exits before answering must fail the handshake"),
+            Err(error) => {
+                assert!(
+                    error.message.contains("Could not start Pi session"),
+                    "the failure names the spawn, not the drain: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("grandchild alive, holding pipe"),
+                    "the descendant ran with the pipe open: {}",
+                    error.message
+                );
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the failed create returns on the reader budget while the pipe is still held"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The banner keeps the daemon's headline and the `Agent stderr:`
+    /// marker against more than 1 KiB of child output: only the stderr
+    /// part is truncated, never the diagnosis.
+    #[test]
+    fn a_long_stderr_tail_keeps_the_error_head_and_cuts_its_tail() {
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let _held = HANDSHAKE_TIMEOUT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _budget = HandshakeTimeoutGuard::set(5_000);
+        let log = log_path("longtail");
+        let dir = log.parent().expect("log dir").to_path_buf();
+        let script = dir.join("fake-pi-long.js");
+        std::fs::write(&script, super::FAKE_PI_LONG_STDERR).expect("write the fake pi entry");
+        let state = ServerState::new("pi-long-tail".to_string());
+        let delivery =
+            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        match spawn_process(
+            &state,
+            stderr_handshake_command(&script, &log, &[]),
+            None,
+            delivery,
+        ) {
+            Ok(_) => panic!("a pi that never answers must fail the handshake"),
+            Err(error) => {
+                assert!(
+                    error.message.contains("Could not start Pi session"),
+                    "the headline survives a long tail: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("Agent stderr:"),
+                    "the marker survives a long tail: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("HEAD-MARKER-stderr-head"),
+                    "the stderr head survives: {}",
+                    error.message
+                );
+                assert!(
+                    !error.message.contains("TAIL-MARKER-stderr-tail"),
+                    "the stderr tail is cut: {}",
+                    error.message
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The banner redacts the broker bearer the way the ACP twin's does:
+    /// the child's echo of its environment must not travel with the error.
+    #[test]
+    fn a_stderr_tail_redacts_the_broker_bearer() {
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let _held = HANDSHAKE_TIMEOUT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _budget = HandshakeTimeoutGuard::set(5_000);
+        let log = log_path("bearertail");
+        let dir = log.parent().expect("log dir").to_path_buf();
+        let script = dir.join("fake-pi-bearer.js");
+        std::fs::write(&script, super::FAKE_PI_BEARER_ECHO).expect("write the fake pi entry");
+        let state = ServerState::new("pi-bearer-tail".to_string());
+        let delivery =
+            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let mcp = crate::mcp_broker::McpLaunchConfig::for_test(
+            "http://127.0.0.1:4599/mcp",
+            super::FAKE_BEARER,
+        );
+        match spawn_process(
+            &state,
+            stderr_handshake_command(
+                &script,
+                &log,
+                &[("DEVBOULE_FAKE_PI_BEARER", super::FAKE_BEARER)],
+            ),
+            Some(mcp),
+            delivery,
+        ) {
+            Ok(_) => panic!("a pi that never answers must fail the handshake"),
+            Err(error) => {
+                assert!(
+                    error.message.contains("Could not start Pi session"),
+                    "the headline survives with a carrier: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("Agent stderr:"),
+                    "the marker survives with a carrier: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("[redacted]"),
+                    "the bearer is redacted: {}",
+                    error.message
+                );
+                assert!(
+                    !error.message.contains(super::FAKE_BEARER),
+                    "the bearer value never travels: {}",
                     error.message
                 );
             }
