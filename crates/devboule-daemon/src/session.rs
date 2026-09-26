@@ -711,6 +711,7 @@ pub struct SessionRegistry {
     deposit_after_ownership_hook: Arc<Mutex<Option<DepositAfterOwnershipHook>>>,
     #[cfg(test)]
     idle_close_before_act_hook: Arc<Mutex<Option<IdleCloseBeforeActHook>>>,
+    #[cfg(test)]
     kill_after_gate_hook: Arc<Mutex<Option<KillAfterGateHook>>>,
     /// The agent-profile store, attached by `ServerState` once both exist
     /// (`create-from-profile`).
@@ -812,6 +813,7 @@ impl SessionRegistry {
             deposit_after_ownership_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             idle_close_before_act_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
             kill_after_gate_hook: Arc::new(Mutex::new(None)),
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
