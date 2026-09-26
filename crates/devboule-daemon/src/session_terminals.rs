@@ -70,8 +70,9 @@ impl super::SessionRegistry {
     }
 
     /// The visible screen of one running terminal of `owner` inside
-    /// `workspace_id`, windowed to `lines` rows from the bottom of the grid,
-    /// and the grid's full height for the caller to compare against.
+    /// `workspace_id`, windowed to `lines` rows from the bottom of what the
+    /// terminal showed — blank rows below the last non-empty one dropped
+    /// first — and that view's height for the caller to compare against.
     ///
     /// Every id outside that scope answers this one refusal: another owner's
     /// terminal, a terminal of another peer's origin, another workspace's
@@ -113,7 +114,6 @@ impl super::SessionRegistry {
         // The cells were copied under the stream lock above; the rows are
         // formatted here, and only the rows the caller asked for.
         let screen = runtime.screen_snapshot().ok_or_else(not_found)?;
-        let total = usize::from(screen.rows);
-        Ok((screen.plain_rows_from(total.saturating_sub(lines)), total))
+        Ok(screen.plain_rows_bottom(lines))
     }
 }

@@ -772,11 +772,11 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_capture_terminal",
     label: "Read Devboule terminal screen",
-    description: `Reads the visible screen of one terminal as plain text. lines must be an integer between 1 and 200 (default 40) and counts from the bottom of the grid; any other value is refused rather than rewritten, and truncated says the grid was taller than the window you asked for. Escape sequences are stripped and the scrollback is never delivered - the visible grid only, since the journal is the durable transcript. Any terminal of the caller's own workspace may be read, the person's own included and with no confirmation, which is the owner's decision for these reads. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named.`,
+    description: `Reads the visible screen of one terminal as plain text. Blank rows below the last row that carries a character are dropped first — a window that has not filled would otherwise answer blanks — so lines (an integer between 1 and 200, default 40) counts from the bottom of what the terminal actually showed; any other value is refused rather than rewritten, and truncated says that view was taller than the window you asked for. Escape sequences are stripped and the scrollback is never delivered - the visible grid only, since the journal is the durable transcript. Any terminal of the caller's own workspace may be read, the person's own included and with no confirmation, which is the owner's decision for these reads. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named.`,
     parameters: Type.Object(
       {
         terminalId: Type.String({ description: "The id of one terminal from devboule_list_terminals." }),
-        lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "How many of the grid's bottom lines to return, 1 to 200. Default 40." })),
+        lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "How many of the bottom lines to return, 1 to 200. Blank rows below the last written row are dropped first. Default 40." })),
       },
       { required: ["terminalId"], additionalProperties: false },
     ),

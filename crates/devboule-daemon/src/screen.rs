@@ -261,20 +261,48 @@ impl ScreenSnapshot {
         self.cells.get(row * usize::from(self.cols) + col)
     }
 
-    /// The visible grid from `first_row` down as plain text: one
-    /// right-trimmed string per row.
+    /// The last `count` rows a reader actually saw, as plain text, and how
+    /// many such rows the grid holds in total.
     ///
-    /// Only the rows a caller asked for are built, and no row outgrows
+    /// Blank rows below the last row that carries a character are not part of
+    /// what the terminal showed — a window that has not filled would otherwise
+    /// answer a bottom window of nothing — so they are dropped before the
+    /// window is taken, and `total` counts what remains.
+    ///
+    /// Only the rows of that window are built, and no row outgrows
     /// `MAX_PLAIN_COLUMNS`, so the work is bounded by the request rather
     /// than by the window's size. No escape sequence can leave here — a cell
     /// holds a character rather than a byte stream, and a control character
     /// inside a cell is replaced instead of passed through — and the spacer
     /// cell behind a wide glyph is skipped, so one glyph never becomes two
     /// characters.
-    pub fn plain_rows_from(&self, first_row: usize) -> Vec<String> {
+    pub fn plain_rows_bottom(&self, count: usize) -> (Vec<String>, usize) {
+        let Some(total) = self.last_populated_row().map(|last| last + 1) else {
+            return (Vec::new(), 0);
+        };
+        let first = total.saturating_sub(count);
+        (self.plain_rows_range(first, total), total)
+    }
+
+    /// The last row that still carries a character, or `None` for a screen
+    /// that holds nothing at all. A row counts as empty when every cell on it
+    /// holds the space a cell can hold — a wide glyph's spacer included.
+    fn last_populated_row(&self) -> Option<usize> {
+        let cols = usize::from(self.cols);
+        (0..usize::from(self.rows)).rev().find(|row| {
+            self.cells
+                .iter()
+                .skip(row.saturating_mul(cols))
+                .take(cols)
+                .any(|cell| cell.c != ' ')
+        })
+    }
+
+    /// The grid's rows `first..end`: one right-trimmed string per row.
+    fn plain_rows_range(&self, first: usize, end: usize) -> Vec<String> {
         let cols = usize::from(self.cols).min(MAX_PLAIN_COLUMNS);
-        let mut rows = Vec::with_capacity(usize::from(self.rows).saturating_sub(first_row));
-        for row in first_row..usize::from(self.rows) {
+        let mut rows = Vec::with_capacity(end.saturating_sub(first));
+        for row in first..end {
             let mut text = String::with_capacity(cols);
             let mut col = 0;
             while col < cols {

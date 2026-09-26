@@ -861,7 +861,11 @@ fn capture_terminal_cuts_a_row_to_the_renderer_bound() {
         "{body}"
     );
     let document = &body["result"]["structuredContent"];
-    assert_eq!(document["totalLines"], json!(10));
+    assert_eq!(
+        document["totalLines"],
+        json!(1),
+        "one row carries a character, so the view is one row of the ten"
+    );
     let rows = document["lines"].as_array().expect("lines");
     let row = rows[0].as_str().expect("row");
     assert_eq!(
@@ -872,6 +876,88 @@ fn capture_terminal_cuts_a_row_to_the_renderer_bound() {
     assert!(
         row.chars().all(|character| character == 'x'),
         "the row is what the terminal held, cut and not rewritten"
+    );
+
+    drop(guard);
+    drop(server);
+}
+
+#[test]
+fn capture_terminal_answers_the_content_of_a_window_that_has_not_filled() {
+    // The live shape: three lines of text at the top of a 42-row grid. The
+    // rows below them are blank, so a window taken from the raw grid would
+    // answer blanks on every terminal that is not full — the window has to
+    // come from what the terminal actually showed.
+    let state = ServerState::new("mcp-term-top".to_string());
+    let owner = owner("mcp-term-top-user", "mcp-term-top-client");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "top-caller",
+        owner.clone(),
+        "ws-a",
+    );
+    let runtime = crate::session::insert_test_terminal(
+        &state.sessions,
+        "term-top",
+        owner.clone(),
+        Some("ws-a".to_string()),
+    );
+    let conn = ConnHandle::new(9);
+    state
+        .sessions
+        .attach_with_subscription("term-top", 103, None, &conn, &owner, false)
+        .expect("attach");
+    state
+        .sessions
+        .claim_resize_with_subscription("term-top", 103, &owner, &conn)
+        .expect("resize claim");
+    state
+        .sessions
+        .resize_with_subscription("term-top", 103, 120, 42, &owner, &conn)
+        .expect("resize");
+    runtime.publish_output("ready \x1b[31mred\x1b[0m\r\nsecond\r\nthird");
+
+    let guard = state
+        .mcp
+        .register("top-caller", &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token("top-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+
+    let body = call(
+        &state.mcp.url,
+        &token,
+        1,
+        MCP_CAPTURE_TERMINAL_TOOL,
+        r#"{"terminalId":"term-top","lines":5}"#,
+    );
+    assert_eq!(
+        body.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{body}"
+    );
+    let document = &body["result"]["structuredContent"];
+    let lines: Vec<&str> = document["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line.as_str().expect("line"))
+        .collect();
+    assert_eq!(
+        lines,
+        vec!["ready red", "second", "third"],
+        "the content the terminal showed, not the blank tail of the grid"
+    );
+    assert_eq!(
+        document["totalLines"],
+        json!(3),
+        "totalLines counts the view a reader saw, not the 42 raw rows"
+    );
+    assert_eq!(
+        document["truncated"],
+        json!(false),
+        "three rows fit five: nothing was cut"
     );
 
     drop(guard);
