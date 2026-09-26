@@ -26,7 +26,7 @@ vi.mock("../../lib/tauri", () => ({
   }),
   sessionAttach: vi.fn(async () => harness.nextSubscriptionId++),
   sessionDetach: vi.fn(async () => undefined),
-  sessionSend: vi.fn(async () => undefined),
+  sessionSend: vi.fn(async () => false),
   sessionInterrupt: vi.fn(async () => undefined),
   sessionSetModel: vi.fn(async () => undefined),
   sessionSetMode: vi.fn(async () => undefined),
@@ -73,9 +73,10 @@ async function renderSurface(): Promise<MessageQueue> {
 
 function pushActivity(activity: "working" | "blocked" | "idle" | "unknown"): void {
   act(() => queueOwner?.onRosterPush([sessionOf("agent-1", { activity })]));
-  if (activity === "idle") {
-    act(() => harness.emit?.({ type: "agent_finished", stopReason: "end_turn" }));
-  }
+}
+
+function finishTurn(): void {
+  act(() => harness.emit?.({ type: "agent_finished", stopReason: "end_turn" }));
 }
 
 function updateSurfaceProps(next: Record<string, unknown>): void {
@@ -201,7 +202,7 @@ describe("AgentChatSurface queue keys", () => {
     const queue = await renderSurface();
     type("hello");
     await act(async () => pressEnter());
-    expect(sessionSend).toHaveBeenCalledWith("agent-1", 41, "hello");
+    expect(vi.mocked(sessionSend).mock.calls[0]?.slice(0, 3)).toEqual(["agent-1", 41, "hello"]);
     expect(queuedTexts(queue)).toEqual([]);
   });
 
@@ -291,11 +292,35 @@ describe("AgentChatSurface queue keys", () => {
     await act(async () => acceptSend(true));
     await flush();
     expect(otherQueueAction()?.textContent).toBe("Queue message");
-    await act(async () => harness.emit?.({ type: "agent_finished", stopReason: "end_turn" }));
+    finishTurn();
     await flush();
     expect(otherQueueAction()).toBeNull();
     await act(async () => otherRoot.unmount());
     other.remove();
+  });
+
+  it("lets Stop release a held active reply", async () => {
+    const queue = await renderSurface();
+    pushActivity("idle");
+    vi.mocked(sessionSend).mockResolvedValueOnce(true);
+    type("first");
+    await clickSend();
+    await flush();
+    expect(queue.turnActive()).toBe(true);
+
+    type("follow-up");
+    await act(async () => pressEnter());
+    expect(queuedTexts(queue)).toEqual(["follow-up"]);
+
+    const stop = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Stop the current turn"]',
+    );
+    expect(stop).not.toBeNull();
+    await act(async () => stop?.click());
+    await flush();
+    expect(sessionInterrupt).toHaveBeenCalledTimes(1);
+    expect(sessionSend).toHaveBeenCalledTimes(2);
+    expect(queuedTexts(queue)).toEqual([]);
   });
 
   it("steers on Ctrl+Enter: the interrupt goes now, the text after the turn is over", async () => {

@@ -40,12 +40,18 @@ export interface QueuedMessage {
 /** Delivered the session's whole queue, once per change. */
 export type MessageQueueListener = (queue: readonly QueuedMessage[]) => void;
 
+export interface MessageQueueSendResult {
+  accepted: boolean;
+  /** `null` means the sender has no daemon turn disposition for this attempt. */
+  turnActive: boolean | null;
+}
+
 /**
  * What the queue needs from the session it drains into: a way to write, and a
  * way to stop what is running. Two things supply it — the chat surface's own
  * controller while a surface is on screen, and `queueSender.ts`, which attaches
- * per message and lets go, when none is. Neither decides *whether* the session
- * is active: the queue's `turnActive` owns that rule.
+ * per message and lets go, when none is. The queue combines roster status,
+ * unanswered submissions, and bounded reply holds.
  */
 export interface MessageQueueHost {
   /**
@@ -58,7 +64,7 @@ export interface MessageQueueHost {
     text: string,
     attachments: readonly PromptAttachment[],
     idempotencyKey: string,
-  ): Promise<{ accepted: boolean; turnActive: boolean | null }>;
+  ): Promise<MessageQueueSendResult>;
   /** Stop the running turn. Resolves even when nothing is running. */
   interrupt(): Promise<void>;
 }
@@ -103,15 +109,16 @@ export interface MessageQueue {
    * holds it; otherwise it waits for the predicate to fall.
    */
   notifyIdle(): void;
-  /** A turn is open on the roster, a send of ours is unanswered, or an active
-   * send reply is waiting for the turn to finish. */
+  /** A turn is open on the roster, a send is unanswered, or a reply hold remains. */
   turnActive(): boolean;
-  /** A surface's session_send began; its acknowledgement can lag the roster. */
-  submissionStarted(): void;
-  /** A session_send settled, accepted or refused; balances `submissionStarted`. */
-  submissionSettled(turnActive?: boolean): void;
-  /** A session event confirms a reply-confirmed active turn has ended. */
+  /** Mark one send pending and return its unique hold key. */
+  submissionStarted(): string;
+  /** Settle one send by its key; only an active reply creates a bounded hold. */
+  submissionSettled(id: string, turnActive?: boolean): void;
+  /** A session event reports that a turn finished. */
   agentFinished(): void;
+  /** Stop, disconnect or a non-running roster state invalidates reply holds. */
+  releaseActiveSends(): void;
   /** The sender binds itself; the returned function detaches it. Detaching keeps
    * the items — a surface standing down re-attaches the queue's own sender. */
   attach(host: MessageQueueHost): () => void;

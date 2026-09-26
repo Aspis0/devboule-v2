@@ -194,6 +194,7 @@ export interface AgentSessionDeps {
    * which is the half-a-wiring shape this signature exists to prevent.
    */
   onPermissionResolved?: (resolution: PermissionResolved) => void;
+  /** The session channel reported `agent_finished`; exits and disconnects use other paths. */
   onTurnFinished?: () => void;
 }
 

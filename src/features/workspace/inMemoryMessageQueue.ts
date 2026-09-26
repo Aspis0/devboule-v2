@@ -6,6 +6,7 @@ import type {
   QueuedMessage,
 } from "./messageQueue";
 import { isTurnActive } from "./queueStatus";
+import { createTurnReplyHolds } from "./turnReplyHolds";
 
 /** What a refused send says. It is said once, on the row it left behind: the
  * session has already put the daemon's own reason in the transcript, and a
@@ -40,13 +41,10 @@ function fresh(item: QueuedMessage): QueuedMessage {
  * requeue-at-front (`RECON-paseo-queue.md` §3), ours where Paseo sits silent
  * (§6 takeaway 4).
  *
- * One predicate decides everything: `turnActive` — the roster's open turn, or a
- * send of ours not yet answered. The front item goes whenever that predicate
- * falls to an idle roster, whatever made it fall, and whenever a full roster
- * push finds the row idle with the predicate down (`sessionQueueOwner.ts`). A
- * steer or a row's Send parks its text at the front for that same moment, and
- * interrupts first only when the roster reports a turn, so a cancel is never
- * raced by the send that follows it (review F6).
+ * A reply-confirmed send has a bounded hold under its own send key. A roster
+ * working-to-idle edge, finish event, disconnect, stop, non-running state, or
+ * the hold timeout releases it. Queue rows drain only with an idle roster and
+ * no pending send or hold.
  *
  * `idPrefix` — the session id — namespaces each item's retry identity, and the
  * random suffix makes that identity unique to *this item in this queue
@@ -74,11 +72,8 @@ export function createInMemoryMessageQueue(
    * row's Send can start a twin, and the list is never briefly "done" while
    * the send still needs its bearer (review F5, fix-1 P1-1). */
   let sendInFlight = false;
-  /** Composer sends still awaiting a daemon reply. Every surface shares this
-   * counter through the session's one queue. */
-  let submissionsInFlight = 0;
-  let activeReplies = 0;
-  let activeReplySawBusy = false;
+  /** Unique identities distinguish concurrent composer sends. */
+  let nextSubmissionId = 1;
   /** A row the user pressed while the wire was held, sent when it frees. */
   let wantedAfterSend: string | null = null;
   /** Retries the current head has already spent. */
@@ -161,7 +156,7 @@ export function createInMemoryMessageQueue(
   /** The roster turn, unanswered sends, or a turn confirmed active by its
    * reply. The composer's Queue offer and every drain share this predicate. */
   function turnActive(): boolean {
-    return isTurnActive(status, sendInFlight || submissionsInFlight > 0 || activeReplies > 0);
+    return isTurnActive(status, sendInFlight || replyHolds.hasPending() || replyHolds.hasHolds());
   }
 
   function mayDrain(): boolean {
@@ -183,6 +178,11 @@ export function createInMemoryMessageQueue(
     void drain();
   }
 
+  const replyHolds = createTurnReplyHolds(() => {
+    push();
+    drainIfFell(true);
+  });
+
   function armRetry(): void {
     if (discarded || retryTimer !== null || retriesUsed >= RETRY_DELAYS_MS.length) return;
     const delay = RETRY_DELAYS_MS[retriesUsed];
@@ -200,19 +200,21 @@ export function createInMemoryMessageQueue(
   /** Put one item already out of the list onto the wire as a fresh turn. */
   async function sendItem(item: QueuedMessage, current: MessageQueueHost): Promise<void> {
     let sent = false;
-    let turnActive: boolean | null = null;
+    let replyTurnActive: boolean | null = null;
+    replyHolds.begin(item.idempotencyKey);
     try {
       const result = await current.send(item.text, item.attachments, item.idempotencyKey);
       sent = result.accepted;
-      turnActive = result.turnActive;
+      replyTurnActive = result.turnActive;
     } catch {
       sent = false;
     }
     sendInFlight = false;
-    if (sent && turnActive === true) {
-      activeReplies += 1;
-      activeReplySawBusy = status === "working" || status === "blocked";
-    }
+    replyHolds.settle(
+      item.idempotencyKey,
+      sent ? (replyTurnActive ?? undefined) : false,
+      status === "working" || status === "blocked",
+    );
     if (sent) {
       retriesUsed = 0;
       headRefused = false;
@@ -344,28 +346,25 @@ export function createInMemoryMessageQueue(
     turnActive,
 
     submissionStarted() {
-      submissionsInFlight += 1;
+      const id = `${idPrefix}.submission.${nextSubmissionId++}.${crypto.randomUUID()}`;
+      replyHolds.begin(id);
       push(); // the composer's Queue offer reads `turnActive` on delivery
+      return id;
     },
 
-    submissionSettled(replyTurnActive?: boolean) {
+    submissionSettled(id, replyTurnActive?: boolean) {
       const wasActive = turnActive();
-      submissionsInFlight = Math.max(0, submissionsInFlight - 1);
-      if (replyTurnActive === true) {
-        activeReplies += 1;
-        activeReplySawBusy = status === "working" || status === "blocked";
-      }
+      replyHolds.settle(id, replyTurnActive, status === "working" || status === "blocked");
       push();
       drainIfFell(wasActive);
     },
 
     agentFinished() {
-      if (activeReplies === 0) return;
-      const wasActive = turnActive();
-      activeReplies = 0;
-      activeReplySawBusy = false;
-      push();
-      drainIfFell(wasActive);
+      replyHolds.agentFinished();
+    },
+
+    releaseActiveSends() {
+      replyHolds.invalidate();
     },
 
     attach(nextHost) {
@@ -382,12 +381,8 @@ export function createInMemoryMessageQueue(
     setTurnStatus(next) {
       if (status === next) return;
       const wasActive = turnActive();
-      if (next === "working" || next === "blocked") activeReplySawBusy = true;
       status = next;
-      if (next === "idle" && activeReplies > 0 && activeReplySawBusy) {
-        activeReplies = 0;
-        activeReplySawBusy = false;
-      }
+      replyHolds.observeActivity(next ?? "unknown");
       push();
       drainIfFell(wasActive);
     },
@@ -402,6 +397,7 @@ export function createInMemoryMessageQueue(
 
     discard() {
       discarded = true;
+      replyHolds.discard();
       stopRetry();
       wantedAfterSend = null;
       // The send in flight belongs to a session that is gone: its answer will

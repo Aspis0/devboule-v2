@@ -4,9 +4,22 @@
 // the wire per session, so a press that lands during a drain goes next, not
 // alongside it (review F5); and a refusal is reported on the row, never as a
 // second alert (review F16).
-import { describe, expect, it } from "vitest";
-import { SEND_FAILED } from "./inMemoryMessageQueue";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createInMemoryMessageQueue, SEND_FAILED } from "./inMemoryMessageQueue";
 import { createQueueHarness, flushQueueTurns } from "./queueHarness";
+import { activeTurnSender } from "./queueTestKit";
+import type { MessageQueue } from "./messageQueue";
+
+afterEach(() => vi.useRealTimers());
+
+function queueRows(queue: MessageQueue): string[] {
+  let rows: readonly { text: string }[] = [];
+  const unsubscribe = queue.subscribe((items) => {
+    rows = items;
+  });
+  unsubscribe();
+  return rows.map((item) => item.text);
+}
 
 describe("in-memory queue steer", () => {
   it("interrupts the running turn and sends only after the daemon reports idle", async () => {
@@ -19,7 +32,7 @@ describe("in-memory queue steer", () => {
     // provider that has not stopped (review F6).
     expect(harness.actions).toEqual(["interrupt"]);
 
-    harness.status = "idle"; // the daemon's `agent_finished` for that turn
+    harness.status = "idle";
     harness.queue.notifyIdle();
     await flushQueueTurns();
     expect(harness.actions).toEqual(["interrupt", "send:steer this"]);
@@ -52,10 +65,10 @@ describe("in-memory queue steer", () => {
 describe("the predicate falling while our own send was in flight", () => {
   it("holds queued work through the reply-before-roster window until agent_finished", async () => {
     const harness = createQueueHarness();
-    harness.queue.submissionStarted();
+    const sendId = harness.queue.submissionStarted();
     harness.queue.add("follow-up", []);
 
-    harness.queue.submissionSettled(true);
+    harness.queue.submissionSettled(sendId, true);
     harness.queue.notifyIdle(); // reply arrived, but the roster is still stale-idle
     await flushQueueTurns();
     expect(harness.actions).toEqual([]);
@@ -67,44 +80,63 @@ describe("the predicate falling while our own send was in flight", () => {
 
   it("lets an out-of-band send release the queue on its reply", async () => {
     const harness = createQueueHarness();
-    harness.queue.submissionStarted();
+    const sendId = harness.queue.submissionStarted();
     harness.queue.add("follow-up", []);
 
-    harness.queue.submissionSettled(false);
+    harness.queue.submissionSettled(sendId, false);
     await flushQueueTurns();
     expect(harness.actions).toEqual(["send:follow-up"]);
   });
 
-  it("releases after agent_finished even if the roster never showed working", async () => {
+  it("lets a roster working-to-idle edge release a hold without agent_finished", async () => {
     const harness = createQueueHarness();
-    harness.queue.submissionStarted();
+    const sendId = harness.queue.submissionStarted();
     harness.queue.add("follow-up", []);
-    harness.queue.submissionSettled(true);
+    harness.queue.submissionSettled(sendId, true);
     await flushQueueTurns();
     expect(harness.actions).toEqual([]);
 
-    harness.queue.agentFinished();
+    harness.status = "working";
+    harness.status = "idle";
     await flushQueueTurns();
     expect(harness.actions).toEqual(["send:follow-up"]);
+  });
+
+  it("bounds a reply that arrives after agent_finished", async () => {
+    vi.useFakeTimers();
+    const harness = createQueueHarness();
+    const sendId = harness.queue.submissionStarted();
+    harness.queue.add("follow-up", []);
+    harness.queue.agentFinished();
+    harness.queue.submissionSettled(sendId, true);
+    await flushQueueTurns();
+    expect(harness.actions).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(harness.actions).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushQueueTurns();
+    expect(harness.actions).toEqual(["send:follow-up"]);
+    vi.useRealTimers();
   });
 
   it("sends an item queued behind our send once the daemon refuses that send", async () => {
     const harness = createQueueHarness();
-    harness.queue.submissionStarted();
+    const sendId = harness.queue.submissionStarted();
     harness.queue.add("follow-up", []);
     harness.queue.notifyIdle(); // an idle push while our send is unanswered
     expect(harness.actions).toEqual([]);
 
     // Refused: no turn ever opened, so no roster edge is coming. The settle is
     // the edge (review fix-7 finding 1a).
-    harness.queue.submissionSettled();
+    harness.queue.submissionSettled(sendId);
     await flushQueueTurns();
     expect(harness.actions).toEqual(["send:follow-up"]);
   });
 
   it("sends it after the accept when the turn ran and ended before the accept", async () => {
     const harness = createQueueHarness();
-    harness.queue.submissionStarted();
+    const sendId = harness.queue.submissionStarted();
     harness.queue.add("follow-up", []);
     harness.status = "working"; // the turn our send opened…
     harness.status = "idle"; // …ended before its accept came back
@@ -112,7 +144,7 @@ describe("the predicate falling while our own send was in flight", () => {
     await flushQueueTurns();
     expect(harness.actions).toEqual([]);
 
-    harness.queue.submissionSettled(); // review fix-7 finding 1b
+    harness.queue.submissionSettled(sendId); // review fix-7 finding 1b
     await flushQueueTurns();
     expect(harness.actions).toEqual(["send:follow-up"]);
   });
@@ -120,7 +152,7 @@ describe("the predicate falling while our own send was in flight", () => {
   it("parks a press behind our unanswered send without an interrupt", async () => {
     const harness = createQueueHarness();
     harness.queue.add("pressed", []);
-    harness.queue.submissionStarted();
+    const sendId = harness.queue.submissionStarted();
 
     // No turn the roster reports, so nothing to cancel (review fix-7 finding 3).
     await harness.queue.sendNow("queued-1");
@@ -130,13 +162,32 @@ describe("the predicate falling while our own send was in flight", () => {
     // The accept is not the release: the daemon opened the turn before it
     // answered, so the predicate is still up.
     harness.status = "working";
-    harness.queue.submissionSettled();
+    harness.queue.submissionSettled(sendId);
     await flushQueueTurns();
     expect(harness.actions).toEqual([]);
 
     harness.status = "idle";
     await flushQueueTurns();
     expect(harness.actions).toEqual(["send:pressed"]);
+  });
+});
+
+describe("queued sends held by their active reply", () => {
+  it("uses the active-turn sender double and drains the next row on finish", async () => {
+    const queue = createInMemoryMessageQueue("s.active", activeTurnSender());
+    queue.setTurnStatus("idle");
+    queue.add("first", []);
+    queue.add("next", []);
+
+    queue.notifyIdle();
+    await flushQueueTurns();
+    expect(queue.turnActive()).toBe(true);
+    expect(queueRows(queue)).toEqual(["next"]);
+
+    queue.agentFinished();
+    await flushQueueTurns();
+    expect(queueRows(queue)).toEqual([]);
+    queue.agentFinished();
   });
 });
 

@@ -844,14 +844,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     async (text: string, attachments?: readonly PromptAttachment[]): Promise<boolean> => {
       const session = sessionRef.current;
       if (session === null) return false;
-      queue?.submissionStarted();
+      const submissionId = queue?.submissionStarted();
       let replyTurnActive: boolean | undefined;
       try {
-        return await session.send(text, attachments, undefined, [], undefined, (turnActive) => {
+        return await session.send(text, attachments, undefined, [], submissionId, (turnActive) => {
           replyTurnActive = turnActive;
         });
       } finally {
-        queue?.submissionSettled(replyTurnActive);
+        if (submissionId !== undefined) queue?.submissionSettled(submissionId, replyTurnActive);
       }
     },
     [queue],
@@ -1108,7 +1108,15 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             if (!sent) handDraftBack(text, true);
           });
         }}
-        onStop={() => void sessionRef.current?.interrupt()}
+        onStop={() => {
+          void (async () => {
+            try {
+              await sessionRef.current?.interrupt();
+            } finally {
+              queue?.releaseActiveSends();
+            }
+          })();
+        }}
         contextMeter={
           <SessionContextMeter
             session={sessionRef.current}

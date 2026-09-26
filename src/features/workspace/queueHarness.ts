@@ -39,6 +39,8 @@ export interface QueueHarness {
   /** The next send never settles at all: the reply the app never saw. */
   hangNextSend: boolean;
   releaseSends(): void;
+  /** Deliver the provider's finish event independently of the roster. */
+  finishTurn(): void;
   /** Release the bound host, then bind the sender again: a surface coming and
    * going, which is what the fallback in `attach` is for. */
   detach(): void;
@@ -98,7 +100,6 @@ export function createQueueHarness(idPrefix = "s.harness.1"): QueueHarness {
     set status(value: AgentActivityState | null) {
       status = value;
       queue.setTurnStatus(value);
-      if (value === "idle") queue.agentFinished();
     },
     get failNextSend() {
       return failNextSend;
@@ -127,6 +128,9 @@ export function createQueueHarness(idPrefix = "s.harness.1"): QueueHarness {
     releaseSends() {
       holdSends = false;
       for (const release of held.splice(0)) release();
+    },
+    finishTurn() {
+      queue.agentFinished();
     },
     detach() {
       detach();

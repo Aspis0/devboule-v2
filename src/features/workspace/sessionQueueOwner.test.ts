@@ -7,7 +7,7 @@
 // daemon's side of the field is
 // `crates/devboule-daemon/src/session_roster_activity_tests.rs`.
 import { describe, expect, it } from "vitest";
-import { headNote, sessionOf, texts } from "./queueTestKit";
+import { ENDED, headNote, LIVE, sessionOf, texts } from "./queueTestKit";
 import { createSenderProbe } from "./queueSenderDouble";
 import { SESSION_NOT_RUNNING } from "./queueStatus";
 import { createSessionQueueOwner } from "./sessionQueueOwner";
@@ -124,6 +124,58 @@ describe("the queue owner and the roster's turn status", () => {
     await flush();
     expect(probe.sent.map((message) => message.text)).toEqual(["first", "second"]);
     expect(texts(queue)).toEqual([]);
+  });
+
+  it("releases a headless active-reply hold on roster working-to-idle alone", async () => {
+    const { owner, probe } = harness();
+    const queue = owner.queueFor("s.a");
+    queue.add("first", []);
+    queue.add("next", []);
+    probe.activeNextWrite();
+    owner.onRosterPush([sessionOf("s.a", { activity: "idle" })]);
+    await flush();
+    expect(probe.sent.map((message) => message.text)).toEqual(["first"]);
+    expect(queue.turnActive()).toBe(true);
+
+    owner.onRosterPush([sessionOf("s.a", { activity: "working" })]);
+    owner.onRosterPush([sessionOf("s.a", { activity: "idle" })]);
+    await flush();
+    expect(probe.sent.map((message) => message.text)).toEqual(["first", "next"]);
+  });
+
+  it("releases a reply hold on disconnect", async () => {
+    const { owner, probe } = harness();
+    const queue = owner.queueFor("s.a");
+    queue.add("first", []);
+    queue.add("after reconnect", []);
+    probe.activeNextWrite();
+    owner.onRosterPush([sessionOf("s.a", { activity: "idle" })]);
+    await flush();
+    expect(queue.turnActive()).toBe(true);
+
+    owner.onDisconnect();
+    expect(queue.turnActive()).toBe(false);
+    owner.onRosterPush([sessionOf("s.a", { activity: "idle" })]);
+    await flush();
+    expect(probe.sent.map((message) => message.text)).toEqual(["first", "after reconnect"]);
+  });
+
+  it("releases a reply hold when its session leaves the running states", async () => {
+    const { owner, probe } = harness();
+    const queue = owner.queueFor("s.a");
+    queue.add("first", []);
+    queue.add("after resume", []);
+    probe.activeNextWrite();
+    owner.onRosterPush([sessionOf("s.a", { activity: "idle" })]);
+    await flush();
+    expect(queue.turnActive()).toBe(true);
+
+    owner.onRosterPush([sessionOf("s.a", { state: ENDED, activity: "unknown" })]);
+    expect(queue.turnActive()).toBe(false);
+    expect(probe.sent.map((message) => message.text)).toEqual(["first"]);
+    owner.onRosterPush([sessionOf("s.a", { state: LIVE, activity: "idle" })]);
+    await flush();
+    expect(probe.sent.map((message) => message.text)).toEqual(["first", "after resume"]);
   });
 
   it("does not drain while the row says working or blocked", async () => {

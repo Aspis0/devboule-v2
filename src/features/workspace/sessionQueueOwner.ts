@@ -118,7 +118,10 @@ export function createSessionQueueOwner(
     onDisconnect() {
       // Items and parks stay: the reconnect push re-reads every row.
       statuses.clear();
-      for (const entry of entries.values()) entry.queue.setTurnStatus(null);
+      for (const entry of entries.values()) {
+        entry.queue.setTurnStatus(null);
+        entry.queue.releaseActiveSends();
+      }
     },
 
     onRosterPush(sessions) {
@@ -140,6 +143,9 @@ export function createSessionQueueOwner(
         // and the status the queue's press and ladder defer to.
         entry.queue.setSendPath(noProcess(next, row.state) ? SESSION_NOT_RUNNING : null);
         entry.queue.setTurnStatus(next);
+        if (next === "unknown" || (row.state.type !== "live" && row.state.type !== "silent")) {
+          entry.queue.releaseActiveSends();
+        }
         if (next === "idle") entry.queue.notifyIdle();
       }
       for (const sessionId of statuses.keys()) {

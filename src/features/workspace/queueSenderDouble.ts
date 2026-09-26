@@ -26,6 +26,8 @@ export interface SenderProbe {
   refuseAttach(): void;
   /** Hold the next write open until `releaseWrites`: the reply that never came. */
   holdNextWrite(): void;
+  /** Make the next successful send answer that a turn is active. */
+  activeNextWrite(): void;
   releaseWrites(): void;
   /** The owner's `newSender`, wired to the shared counters. */
   newSender: (sessionId: string) => MessageQueueHost;
@@ -39,6 +41,7 @@ export function createSenderProbe(): SenderProbe {
   let refuseWrite = false;
   let attachRefused = false;
   let holdNext = false;
+  let activeNext = false;
 
   const deps: QueueSendDeps = {
     attach: async () => {
@@ -56,6 +59,9 @@ export function createSenderProbe(): SenderProbe {
         holdNext = false;
         await new Promise<void>((release) => held.push(release));
       }
+      const turnActive = activeNext;
+      activeNext = false;
+      return turnActive;
     },
     interrupt: async () => undefined,
     detach: async () => {
@@ -79,6 +85,9 @@ export function createSenderProbe(): SenderProbe {
     },
     holdNextWrite: () => {
       holdNext = true;
+    },
+    activeNextWrite: () => {
+      activeNext = true;
     },
     releaseWrites: () => {
       for (const release of held.splice(0)) release();
