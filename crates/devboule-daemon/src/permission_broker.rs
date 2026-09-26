@@ -137,6 +137,8 @@ pub(super) struct PendingPermission {
     responder: PermissionResponder,
     tool_call_id: String,
     session_id: String,
+    mcp_request_id: Option<serde_json::Value>,
+    mcp_cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
     request: SessionEvent,
     runtime: std::sync::Weak<SessionRuntime>,
     done: Arc<(Mutex<PermissionCompletion>, std::sync::Condvar)>,
@@ -338,10 +340,20 @@ impl PermissionBroker {
                 runtime.publish_session_notice(REUSED_ID_NOTICE.to_string(), NoticeSeverity::Info);
             return Err(PermissionResponseError::AlreadyRecorded);
         }
+        let mcp_call = matches!(&responder, PermissionResponder::Host)
+            .then(crate::mcp_broker::current_mcp_call)
+            .flatten()
+            .filter(|(session_id, _, _)| session_id == &runtime.session_id);
+        let mcp_request_id = mcp_call
+            .as_ref()
+            .map(|(_, request_id, _)| request_id.clone());
+        let mcp_cancelled = mcp_call.map(|(_, _, cancelled)| cancelled);
         let pending = Arc::new(PendingPermission {
             responder,
             tool_call_id: tool_call_id.clone(),
             session_id: runtime.session_id.clone(),
+            mcp_request_id,
+            mcp_cancelled,
             request,
             runtime: Arc::downgrade(runtime),
             done: Arc::new((
@@ -837,6 +849,37 @@ impl PermissionBroker {
             serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
             None,
             journal_outcome,
+            None,
+        )
+        .is_ok()
+    }
+
+    pub(crate) fn cancel_mcp_call(&self, session_id: &str, request_id: &serde_json::Value) -> bool {
+        let pending = self.pending.lock().ok().and_then(|table| {
+            table
+                .entries
+                .values()
+                .find(|pending| {
+                    matches!(&pending.responder, PermissionResponder::Host)
+                        && pending.session_id == session_id
+                        && pending.mcp_request_id.as_ref() == Some(request_id)
+                })
+                .cloned()
+        });
+        let Some(pending) = pending else {
+            return false;
+        };
+        let Ok(pending) = self.take(&pending.tool_call_id, Some(&pending)) else {
+            return false;
+        };
+        if let Some(cancelled) = &pending.mcp_cancelled {
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.complete(
+            &pending,
+            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+            None,
+            "cancelled",
             None,
         )
         .is_ok()
@@ -1753,6 +1796,125 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
+
+    #[test]
+    fn mcp_cancel_is_scoped_to_session_and_request_and_withdraws_host_card() {
+        let path = permission_path("mcp-cancel");
+        let journal = Arc::new(Journal::open(&path).expect("journal"));
+        let sender: Arc<PermissionSender> = Arc::new(|_, _| Ok(()));
+        let broker = PermissionBroker::with_sender(sender);
+        let session_id = "s.mcp.cancel".to_string();
+        let runtime = Arc::new(SessionRuntime::for_acp(
+            session_id.clone(),
+            Some(Arc::clone(&journal)),
+            Arc::clone(&broker),
+        ));
+        let waiting_broker = Arc::clone(&broker);
+        let waiting_runtime = Arc::clone(&runtime);
+        let request_id = serde_json::json!(41);
+        let waiting_id = request_id.clone();
+        let waiting_session_id = session_id.clone();
+        let waiter = thread::spawn(move || {
+            let _scope = crate::mcp_broker::McpCallScope::enter(&waiting_session_id, &waiting_id);
+            let decision = waiting_broker
+                .request_host_permission(permission("write:workspaces:cancel"), &waiting_runtime);
+            (
+                decision,
+                crate::mcp_broker::current_mcp_call_cancelled(&waiting_session_id),
+            )
+        });
+        for _ in 0..100 {
+            if broker
+                .pending_ids()
+                .iter()
+                .any(|id| id == "write:workspaces:cancel")
+            {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        assert!(!broker.cancel_mcp_call("s.other", &request_id));
+        assert!(!broker.cancel_mcp_call(&runtime.session_id, &serde_json::json!(42)));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(broker.cancel_mcp_call(&runtime.session_id, &request_id));
+        let (decision, cancellation_audited) = waiter.join().expect("host waiter");
+        assert_eq!(decision, super::HostDecision::Cancelled);
+        assert!(
+            cancellation_audited,
+            "the tool audit can distinguish cancellation"
+        );
+        assert_eq!(broker.pending_len(), 0);
+        assert!(!broker.cancel_mcp_call(&runtime.session_id, &request_id));
+        journal.flush().expect("flush cancellation audit");
+        let conn = rusqlite::Connection::open(&path).expect("inspect audit");
+        let outcome: String = conn
+            .query_row(
+                "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+                [&runtime.session_id, "write:workspaces:cancel"],
+                |row| row.get(0),
+            )
+            .expect("cancel audit row");
+        assert_eq!(outcome, "cancelled");
+        drop(conn);
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn mcp_cancel_racing_allow_has_one_winner() {
+        let (broker, _) = test_broker();
+        let session_id = "s.mcp.cancel-race".to_string();
+        let runtime = Arc::new(SessionRuntime::for_acp(
+            session_id.clone(),
+            None,
+            Arc::clone(&broker),
+        ));
+        let waiting_broker = Arc::clone(&broker);
+        let waiting_runtime = Arc::clone(&runtime);
+        let request_id = serde_json::json!(43);
+        let waiting_id = request_id.clone();
+        let waiting_session = session_id.clone();
+        let waiter = thread::spawn(move || {
+            let _scope = crate::mcp_broker::McpCallScope::enter(&waiting_session, &waiting_id);
+            waiting_broker
+                .request_host_permission(permission("write:workspaces:race"), &waiting_runtime)
+        });
+        for _ in 0..100 {
+            if broker
+                .pending_ids()
+                .iter()
+                .any(|id| id == "write:workspaces:race")
+            {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let gate = Arc::new(Barrier::new(3));
+        let cancel_broker = Arc::clone(&broker);
+        let cancel_gate = Arc::clone(&gate);
+        let cancel_session = session_id.clone();
+        let cancel_id = request_id.clone();
+        let cancel = thread::spawn(move || {
+            cancel_gate.wait();
+            cancel_broker.cancel_mcp_call(&cancel_session, &cancel_id)
+        });
+        let allow_broker = Arc::clone(&broker);
+        let allow_gate = Arc::clone(&gate);
+        let allow = thread::spawn(move || {
+            allow_gate.wait();
+            allow_broker
+                .respond("write:workspaces:race", PermissionOutcome::AllowOnce)
+                .is_ok()
+        });
+        gate.wait();
+        let cancelled = cancel.join().expect("cancel result");
+        let allowed = allow.join().expect("allow result");
+        assert_ne!(cancelled, allowed, "exactly one resolution wins");
+        assert_eq!(broker.pending_len(), 0);
+        let decision = waiter.join().expect("host waiter");
+        assert_eq!(decision == super::HostDecision::Cancelled, cancelled);
+    }
 
     #[test]
     fn legacy_allow_without_a_one_shot_option_stays_pending() {

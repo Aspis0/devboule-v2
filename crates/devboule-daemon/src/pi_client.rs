@@ -350,6 +350,14 @@ const BRIDGE_EXTENSION_TEMPLATE: &str = r#"import { Type } from "typebox";
 const MCP_URL = process.env.DEVBOULE_MCP_URL ?? "";
 const MCP_TOKEN = process.env.DEVBOULE_MCP_TOKEN ?? "";
 const MCP_TIMEOUT_MS = 30000;
+const MCP_CARD_WAIT_TOOLS = new Set([
+  "devboule_create_agent",
+  "devboule_create_workspace",
+  "devboule_archive_workspace",
+  "devboule_create_terminal",
+  "devboule_send_terminal_keys",
+  "devboule_kill_terminal",
+]);
 
 let nextRequestId = 1;
 
@@ -358,7 +366,10 @@ function bridgeError(method, cause) {
   return new Error(`devboule broker unreachable at ${MCP_URL || "<no broker url>"}: ${method}: ${detail}`);
 }
 
-function withTimeout(signal) {
+function withTimeout(signal, method, params) {
+  if (method === "tools/call" && MCP_CARD_WAIT_TOOLS.has(params?.name)) {
+    return signal;
+  }
   const bound = AbortSignal.timeout(MCP_TIMEOUT_MS);
   return signal ? AbortSignal.any([signal, bound]) : bound;
 }
@@ -380,12 +391,23 @@ async function mcpRequest(method, params, signal) {
         Authorization: `Bearer ${MCP_TOKEN}`,
       },
       body,
-      signal: withTimeout(signal),
+      signal: withTimeout(signal, method, params),
     });
   } catch (cause) {
+    if (cause?.name === "AbortError" || signal?.aborted) {
+      await mcpCancelled(id);
+    }
     throw bridgeError(method, cause);
   }
-  const text = await response.text();
+  let text;
+  try {
+    text = await response.text();
+  } catch (cause) {
+    if (cause?.name === "AbortError" || signal?.aborted) {
+      await mcpCancelled(id);
+    }
+    throw bridgeError(method, cause);
+  }
   if (!response.ok) {
     throw bridgeError(method, `HTTP ${response.status}: ${text.slice(0, 300)}`);
   }
@@ -412,6 +434,27 @@ async function mcpRequest(method, params, signal) {
     throw new Error(`MCP ${method} error ${payload.error.code}: ${payload.error.message}`);
   }
   return payload?.result;
+}
+
+async function mcpCancelled(requestId) {
+  try {
+    await fetch(MCP_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${MCP_TOKEN}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/cancelled",
+        params: { requestId },
+      }),
+      signal: AbortSignal.timeout(1000),
+    });
+  } catch {
+    /* The original call is already aborting. */
+  }
 }
 
 async function mcpNotify(method, params, signal) {

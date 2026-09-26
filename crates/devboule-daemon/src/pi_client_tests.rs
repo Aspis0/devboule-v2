@@ -496,6 +496,11 @@ fn pi_bridge_template_serves_the_broker_tools() {
         template.contains("MCP_TIMEOUT_MS") && template.contains("AbortSignal.timeout"),
         "every MCP fetch races the named timeout (spike S3b hung 80 s without one)"
     );
+    for name in crate::provider_catalog::MCP_CARD_WAIT_TOOLS {
+        assert!(template.contains(&format!("\"{name}\"")));
+    }
+    assert!(template.contains("notifications/cancelled"));
+    assert!(template.contains("MCP_CARD_WAIT_TOOLS.has(params?.name)"));
     assert!(
         template.contains("devboule-mcp-bridge"),
         "bridge announce rides session_start like the permission channel"
@@ -533,6 +538,51 @@ fn pi_bridge_template_serves_the_broker_tools() {
     assert!(
         !template.contains("process.argv"),
         "argv never carries identity"
+    );
+}
+
+#[test]
+fn pi_bridge_card_wait_ignores_injected_bound_but_other_tools_keep_it() {
+    let source = bridge_extension();
+    let mut script = source
+        .replace("import { Type } from \"typebox\";", "")
+        .replace(
+            "const MCP_TIMEOUT_MS = 30000;",
+            "const MCP_TIMEOUT_MS = 15;",
+        );
+    script.truncate(
+        script
+            .find("export default function (pi) {")
+            .expect("extension entry"),
+    );
+    script.push_str(
+        r#"
+globalThis.fetch = async (_url, options) => new Promise((resolve, reject) => {
+  const request = JSON.parse(options.body);
+  const finish = () => resolve(new Response(JSON.stringify({jsonrpc:"2.0",id:request.id,result:{ok:true}}), {status:200}));
+  if (request.method === "notifications/cancelled") return finish();
+  const timer = setTimeout(finish, 45);
+  options.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, {once:true});
+});
+(async () => {
+  const answered = await mcpRequest("tools/call", {name:"devboule_create_workspace"}, undefined);
+  if (!answered.ok) throw new Error("carded call lost its answer");
+  let bounded = false;
+  try { await mcpRequest("tools/call", {name:"devboule_list_agents"}, undefined); }
+  catch { bounded = true; }
+  if (!bounded) throw new Error("non-carded call escaped its bound");
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"#,
+    );
+    let output = node_command()
+        .arg("-e")
+        .arg(script)
+        .output()
+        .unwrap_or_else(|error| panic!("{}", node_unavailable("pi card timeout", &error)));
+    assert!(
+        output.status.success(),
+        "node card timeout probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

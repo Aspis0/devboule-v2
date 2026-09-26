@@ -1002,6 +1002,12 @@ fn codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env() {
                 crate::mcp_broker::MCP_SERVER_NAME,
                 crate::mcp_broker::MCP_TOKEN_ENV
             ),
+            "-c".to_string(),
+            format!(
+                "mcp_servers.{}.tool_timeout_sec={}",
+                crate::mcp_broker::MCP_SERVER_NAME,
+                "18446744073709549568.0"
+            ),
         ]
     );
     assert!(

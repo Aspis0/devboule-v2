@@ -311,6 +311,20 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Tools whose handlers can park on a host consent card.
+pub(crate) const MCP_CARD_WAIT_TOOLS: &[&str] = &[
+    MCP_CREATE_AGENT_TOOL,
+    MCP_CREATE_WORKSPACE_TOOL,
+    MCP_ARCHIVE_WORKSPACE_TOOL,
+    MCP_CREATE_TERMINAL_TOOL,
+    MCP_SEND_TERMINAL_KEYS_TOOL,
+    MCP_KILL_TERMINAL_TOOL,
+];
+
+pub(crate) fn mcp_tool_waits_on_card(name: &str) -> bool {
+    MCP_CARD_WAIT_TOOLS.contains(&name)
+}
+
 /// The read-only roster tool, and the one name a tool policy can never
 /// disable: an agent that cannot list its siblings cannot be steered at all,
 /// and the tool reads only its own bearer's roster.

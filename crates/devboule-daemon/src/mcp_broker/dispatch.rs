@@ -23,6 +23,12 @@ pub(super) fn handle_rpc(
     let Some(method) = method else {
         return Ok(Some(rpc_error(id, -32600, "Invalid Request")));
     };
+    let card_wait = message
+        .pointer("/params/name")
+        .and_then(Value::as_str)
+        .is_some_and(crate::provider_catalog::mcp_tool_waits_on_card);
+    let _call_scope = (method == "tools/call" && card_wait)
+        .then(|| super::McpCallScope::enter(&registration.session_id, &id));
     match method {
         "initialize" => Ok(Some(json!({
             "jsonrpc": "2.0",
@@ -36,7 +42,13 @@ pub(super) fn handle_rpc(
                 "serverInfo": {"name": MCP_SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
             },
         }))),
-        "notifications/initialized" | "notifications/cancelled" => Ok(None),
+        "notifications/initialized" => Ok(None),
+        "notifications/cancelled" => {
+            if let Some(request_id) = message.pointer("/params/requestId") {
+                broker.cancel_mcp_call(registration, request_id);
+            }
+            Ok(None)
+        }
         "ping" => Ok(Some(json!({"jsonrpc": "2.0", "id": id, "result": {}}))),
         "server/discover" => Ok(Some(rpc_error(
             id,
@@ -104,14 +116,25 @@ pub(super) fn handle_rpc(
                     &id,
                 )))
             } else if tool_name == Some(crate::provider_catalog::MCP_CREATE_AGENT_TOOL) {
-                tools::creation::run::create_agent_tool(
+                let result = tools::creation::run::create_agent_tool(
                     state,
                     broker,
                     caller,
                     registration,
                     id,
                     message,
-                )
+                );
+                if super::current_mcp_call_cancelled(&registration.session_id) {
+                    let caller = resolve_mcp_caller(state, &registration.session_id);
+                    audit_mcp_tool(
+                        state,
+                        &caller,
+                        crate::provider_catalog::MCP_CREATE_AGENT_TOOL,
+                        &registration.session_id,
+                        "cancelled",
+                    );
+                }
+                result
             } else if tool_name == Some(crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL) {
                 tools::permissions::answer(state, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL) {

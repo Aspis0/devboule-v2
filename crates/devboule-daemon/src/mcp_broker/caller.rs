@@ -195,6 +195,11 @@ pub(super) fn audit_mcp_tool(
             Err(_) => return,
         },
     };
+    let outcome = if crate::mcp_broker::current_mcp_call_cancelled(session_id) {
+        "cancelled"
+    } else {
+        outcome
+    };
     state.audit(AuditRecord {
         device_id,
         role,

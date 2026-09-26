@@ -26,6 +26,41 @@ use devboule_protocol::{OwnerId, SessionKind, WireError};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+thread_local! {
+    static MCP_CALL_SCOPE: std::cell::RefCell<Option<(String, Value, Arc<AtomicBool>)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) struct McpCallScope;
+
+impl McpCallScope {
+    pub(crate) fn enter(session_id: &str, request_id: &Value) -> Self {
+        MCP_CALL_SCOPE.with(|scope| {
+            *scope.borrow_mut() = Some((
+                session_id.to_string(),
+                request_id.clone(),
+                Arc::new(AtomicBool::new(false)),
+            ));
+        });
+        Self
+    }
+}
+
+impl Drop for McpCallScope {
+    fn drop(&mut self) {
+        MCP_CALL_SCOPE.with(|scope| *scope.borrow_mut() = None);
+    }
+}
+
+pub(crate) fn current_mcp_call() -> Option<(String, Value, Arc<AtomicBool>)> {
+    MCP_CALL_SCOPE.with(|scope| scope.borrow().clone())
+}
+
+pub(crate) fn current_mcp_call_cancelled(session_id: &str) -> bool {
+    current_mcp_call().is_some_and(|(active_session_id, _, cancelled)| {
+        active_session_id == session_id && cancelled.load(Ordering::Acquire)
+    })
+}
+
 use crate::server::ServerState;
 
 mod caller;
@@ -390,6 +425,7 @@ impl McpBroker {
                     MCP_SERVER_NAME: {
                         "type": "http",
                         "url": self.url,
+                        "timeout": 2147483647,
                         "headers": {
                             "Authorization": format!("Bearer {bearer}"),
                         },
@@ -513,6 +549,14 @@ impl McpBroker {
         if let Some(runtime) = registration.runtime.as_ref().and_then(Weak::upgrade) {
             runtime.mark_mcp_ready();
             runtime.set_tools_state(ToolsState::Hosted);
+        }
+    }
+
+    fn cancel_mcp_call(&self, registration: &RegisteredSession, request_id: &Value) {
+        if let Some(runtime) = registration.runtime.as_ref().and_then(Weak::upgrade) {
+            if let Some(permission_broker) = runtime.permission_broker() {
+                permission_broker.cancel_mcp_call(&registration.session_id, request_id);
+            }
         }
     }
 

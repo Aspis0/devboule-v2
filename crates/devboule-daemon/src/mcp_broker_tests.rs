@@ -3859,6 +3859,7 @@ fn claude_bearer_file_is_removed_with_the_session_guard() {
     assert!(path.exists());
     let contents = fs::read_to_string(&path).expect("config contents");
     assert!(contents.contains("Authorization"));
+    assert!(contents.contains("\"timeout\": 2147483647"));
     drop(guard);
     assert!(!path.exists());
     assert!(state.mcp.test_token(session_id).is_none());

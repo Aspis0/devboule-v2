@@ -336,6 +336,7 @@ pub(crate) fn mcp_launch(
     config: &crate::mcp_broker::McpLaunchConfig,
     _runtime_dir: &Path,
 ) -> Result<crate::mcp_broker::McpProviderConfig, WireError> {
+    const MAX_TOOL_TIMEOUT_SECONDS: &str = "18446744073709549568.0";
     Ok(crate::mcp_broker::McpProviderConfig {
         env_additions: vec![(
             crate::mcp_broker::MCP_TOKEN_ENV.to_string(),
@@ -353,6 +354,12 @@ pub(crate) fn mcp_launch(
                 "mcp_servers.{}.bearer_token_env_var=\"{}\"",
                 crate::mcp_broker::MCP_SERVER_NAME,
                 crate::mcp_broker::MCP_TOKEN_ENV
+            ),
+            "-c".to_string(),
+            format!(
+                "mcp_servers.{}.tool_timeout_sec={}",
+                crate::mcp_broker::MCP_SERVER_NAME,
+                MAX_TOOL_TIMEOUT_SECONDS
             ),
         ],
         owned_paths: Vec::new(),
