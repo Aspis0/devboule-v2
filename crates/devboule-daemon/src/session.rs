@@ -3159,7 +3159,7 @@ impl SessionRegistry {
     }
 
     /// The stored origin of the session behind `session_id`, for the MCP tool
-    /// door (`mcp_broker.rs`). Read from the registry row, never from the
+    /// door (`mcp_broker`). Read from the registry row, never from the
     /// loopback connection the broker holds: that socket is this machine's own
     /// by construction, so reading it would label a peer's child as local.
     ///

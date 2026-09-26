@@ -1,6 +1,6 @@
 //! Sessions domain — pass-3a split of `server.rs`: the `dispatch_session`
 //! request handler, the create/send roads behind it, and the creation
-//! idempotency seam (`mcp_broker.rs` reuses the three `pub(crate)` helpers).
+//! idempotency seam (`mcp_broker` reuses the three `pub(crate)` helpers).
 
 use super::*;
 

@@ -1,9 +1,30 @@
 //! Tests for the MCP broker: provider launchability, session wiring and the tool surface.
 
+use super::caller::{mcp_peer_door, McpCaller};
+use super::config_files::{cleanup_stale_configs, write_protected_json};
+use super::dispatch::{enabled_tool_list, tool_call_refusal};
+use super::tools::agents::agent_value;
+use super::tools::creation::card::{
+    auto_accept_line, card_tools_for_provider, card_tools_sentence, creation_card, self_answer_note,
+};
+use super::tools::creation::labels::{parse_labels, stamped_labels};
+use super::tools::creation::profile::{
+    list_profiles, predicted_unattended, resolve_profile, resolve_profile_for_move,
+};
+use super::tools::creation::request::{creation_fingerprint, AgentCreateRequest};
+use super::tools::creation::result::{created_result, created_result_for_tools};
+use super::tools::creation::run::{create_agent, provider_is_launchable};
+use super::transport::{is_transient_accept_error, ConnectionPermit};
 use super::*;
-use crate::provider_catalog::{MCP_CREATE_AGENT_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL};
-use std::net::Shutdown;
+use crate::provider_catalog::{
+    ToolOverlay, MCP_CREATE_AGENT_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
+};
+use devboule_protocol::{SessionEvent, SessionOrigin, ToolPolicyEntry};
+use std::fs;
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc;
+use std::time::Instant;
 
 /// A user-declared row carries its own argv, so it is launchable without
 /// being on PATH — `resolve_named` reads the live registry before the
@@ -180,7 +201,24 @@ fn mcp_predicates_are_provider_facts_not_kind_lists() {
     let two = ["SessionKind::Acp ", "| SessionKind::Claude"].concat();
     let four_tail = ["| SessionKind::Pi ", "| SessionKind::Codex"].concat();
     let sources = [
-        include_str!("mcp_broker.rs"),
+        // The broker module is a directory: its sources are listed file by file.
+        include_str!("mcp_broker/mod.rs"),
+        include_str!("mcp_broker/transport.rs"),
+        include_str!("mcp_broker/http.rs"),
+        include_str!("mcp_broker/config_files.rs"),
+        include_str!("mcp_broker/caller.rs"),
+        include_str!("mcp_broker/dispatch.rs"),
+        include_str!("mcp_broker/redact.rs"),
+        include_str!("mcp_broker/tools/mod.rs"),
+        include_str!("mcp_broker/tools/agents.rs"),
+        include_str!("mcp_broker/tools/graph.rs"),
+        include_str!("mcp_broker/tools/creation/mod.rs"),
+        include_str!("mcp_broker/tools/creation/request.rs"),
+        include_str!("mcp_broker/tools/creation/labels.rs"),
+        include_str!("mcp_broker/tools/creation/profile.rs"),
+        include_str!("mcp_broker/tools/creation/run.rs"),
+        include_str!("mcp_broker/tools/creation/result.rs"),
+        include_str!("mcp_broker/tools/creation/card.rs"),
         include_str!("session.rs"),
         include_str!("provider.rs"),
         // The session runtime's siblings: the walk has to follow the code out of

@@ -25,7 +25,7 @@ use devboule_protocol::NoticeSeverity;
 /// prompt.
 ///
 /// 32 KiB is the daemon's existing cap for a prompt it composes by itself
-/// (`crate::mcp_broker::MAX_AGENT_PROMPT_BYTES`), so a recovery is bounded by a
+/// (`crate::mcp_broker::tools::creation::request::MAX_AGENT_PROMPT_BYTES`), so a recovery is bounded by a
 /// number this codebase already answered; the human's own prompt keeps its own
 /// `MAX_WRITE_BYTES` of 64 KiB beside it. Eight thousand tokens of history is
 /// what a person reads back in a reopened session, and everything older is

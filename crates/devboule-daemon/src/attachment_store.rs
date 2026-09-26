@@ -1258,7 +1258,7 @@ fn is_regular_file(path: &Path) -> bool {
 /// byte, so no attachment is ever on disk under a weaker one than it will carry.
 /// `security.rs` owns the call so this file does not invent a second spelling of
 /// "the current user only"; it is the same one `tool_policy.rs` and
-/// `mcp_broker.rs` use.
+/// `mcp_broker` use.
 ///
 /// The DACL is applied whether or not this call created the folder. It replaces
 /// the DACL rather than merging into it (see `security.rs`), so it is idempotent,
