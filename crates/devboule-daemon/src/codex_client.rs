@@ -10,7 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use devboule_protocol::{ErrorCode, NoticeSeverity, SessionEvent, WireError};
+use devboule_protocol::{
+    ErrorCode, NoticeSeverity, PermissionOption, PermissionQuestion, PermissionQuestionOption,
+    PermissionRequestKind, SessionEvent, WireError,
+};
 use serde_json::Value;
 
 use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
@@ -1805,16 +1808,19 @@ fn handshake_error(message: &str) -> WireError {
 
 fn codex_permission_sender(
     stdin: Arc<Mutex<Option<ChildStdin>>>,
-    response_ids: Arc<Mutex<HashMap<u64, Value>>>,
+    response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
 ) -> Arc<PermissionSender> {
     Arc::new(move |broker_id, result| {
-        let request_id = response_ids
+        let pending = response_ids
             .lock()
             .map_err(|_| io::Error::other("Codex permission map lock poisoned"))?
             .get(&broker_id)
             .cloned()
             .ok_or_else(|| io::Error::other("Codex permission response had no matching request"))?;
-        let frame = permission_decision_frame(&request_id, permission_decision(&result));
+        // The recorded kind shapes the reply, never the result's shape: an
+        // approval answers with a decision, a question with its answers map,
+        // an elicitation with an action.
+        let frame = codex_permission_frame(&pending, &result);
         let result =
             send_frame(&stdin, &frame, "Codex").map_err(|error| io::Error::other(error.message));
         if result.is_ok() {
@@ -1822,6 +1828,234 @@ fn codex_permission_sender(
         }
         result
     })
+}
+
+/// What a pending Codex request is waiting for: the reply shape differs per
+/// carrier, so the recorded kind — never the params' shape — decides it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodexPendingKind {
+    Approval,
+    Question,
+    Elicitation,
+}
+
+/// One Codex request parked in the broker: the JSON-RPC id to answer, the
+/// kind that shapes the reply, and the params the answer maps against.
+#[derive(Clone)]
+struct CodexPendingResponse {
+    id: Value,
+    kind: CodexPendingKind,
+    params: Value,
+}
+
+/// One question a Codex agent asked the person, as `requestUserInput`
+/// carries it: the `id` keys the answers map, `header` is the short label.
+struct CodexQuestion {
+    id: String,
+    header: String,
+    question: String,
+    options: Vec<CodexQuestionOption>,
+    multi_select: bool,
+}
+
+struct CodexQuestionOption {
+    label: String,
+    description: Option<String>,
+}
+
+/// The model's questions out of a `requestUserInput` params object. An item
+/// without an id, header or text is not a question anyone could answer, so
+/// it is skipped; options without a label go the same way.
+fn parse_codex_questions(params: &Value) -> Vec<CodexQuestion> {
+    let Some(items) = params.get("questions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut questions = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        let header = item
+            .get("header")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        let text = item
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if id.is_empty() || header.is_empty() || text.is_empty() {
+            continue;
+        }
+        let mut options = Vec::new();
+        if let Some(raw) = item.get("options").and_then(Value::as_array) {
+            for option in raw {
+                let label = option
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                if label.is_empty() {
+                    continue;
+                }
+                options.push(CodexQuestionOption {
+                    label: label.to_string(),
+                    description: option
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .filter(|description| !description.trim().is_empty())
+                        .map(str::to_string),
+                });
+            }
+        }
+        questions.push(CodexQuestion {
+            id: id.to_string(),
+            header: header.to_string(),
+            question: text.to_string(),
+            options,
+            multi_select: item
+                .get("multiSelect")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    questions
+}
+
+/// The reply to a `requestUserInput` request: `{answers: {id: {answers}}}`
+/// on allow, `{answers: {}}` on anything else. An option pick decodes the
+/// position the card encoded; a text answer is the value verbatim for one
+/// question, or a JSON text-to-value map for several (multi-selects split
+/// back on commas, the card's own join). Anything unmappable refuses with
+/// the empty map rather than answering what nobody chose.
+fn codex_question_result(params: &Value, result: &Value) -> Value {
+    let outcome = result
+        .pointer("/outcome/outcome")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if outcome == "selected" {
+        let questions = parse_codex_questions(params);
+        let option_id = result
+            .pointer("/outcome/optionId")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let answer = result
+            .pointer("/outcome/answer")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(answers) = codex_question_answers(&questions, option_id, answer) {
+            let mut map = serde_json::Map::new();
+            for (id, labels) in answers {
+                map.insert(id, serde_json::json!({ "answers": labels }));
+            }
+            return serde_json::json!({ "answers": map });
+        }
+    }
+    serde_json::json!({ "answers": {} })
+}
+
+fn codex_question_answers(
+    questions: &[CodexQuestion],
+    option_id: &str,
+    answer: &str,
+) -> Option<std::collections::BTreeMap<String, Vec<String>>> {
+    if questions.is_empty() {
+        return None;
+    }
+    if !answer.is_empty() {
+        if questions.len() == 1 {
+            return Some(std::collections::BTreeMap::from([(
+                questions[0].id.clone(),
+                codex_answer_labels(&questions[0], answer),
+            )]));
+        }
+        let parsed: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(answer).ok()?;
+        let mut answers = std::collections::BTreeMap::new();
+        for (text, value) in parsed {
+            let question = questions.iter().find(|item| item.question == text)?;
+            if value.trim().is_empty() {
+                return None;
+            }
+            answers.insert(question.id.clone(), codex_answer_labels(question, &value));
+        }
+        return if answers.is_empty() {
+            None
+        } else {
+            Some(answers)
+        };
+    }
+    // One pick answers one question: several questions are always answered
+    // together through the text map above.
+    if questions.len() != 1 {
+        return None;
+    }
+    let rest = option_id.strip_prefix('q')?;
+    let (question, option) = rest.split_once('o')?;
+    let picked = questions
+        .get(question.parse::<usize>().ok()?)?
+        .options
+        .get(option.parse::<usize>().ok()?)?;
+    Some(std::collections::BTreeMap::from([(
+        questions[0].id.clone(),
+        vec![picked.label.clone()],
+    )]))
+}
+
+fn codex_answer_labels(question: &CodexQuestion, value: &str) -> Vec<String> {
+    if !question.multi_select {
+        return vec![value.to_string()];
+    }
+    let labels: Vec<String> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)
+        .collect();
+    if labels.is_empty() {
+        vec![value.trim().to_string()]
+    } else {
+        labels
+    }
+}
+
+/// The reply to an `mcpServer/elicitation/request`: an explicit grant is an
+/// accept with the empty content the schema asks for, an explicit refusal a
+/// decline, and an abandoned card (close, timeout, delivery-off) a cancel.
+fn codex_elicitation_result(result: &Value) -> Value {
+    let outcome = result
+        .pointer("/outcome/outcome")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let option_id = result
+        .pointer("/outcome/optionId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let (action, content) = match (outcome, option_id) {
+        ("selected", "allow") => ("accept", serde_json::json!({})),
+        ("selected", _) => ("decline", Value::Null),
+        _ => ("cancel", Value::Null),
+    };
+    serde_json::json!({ "action": action, "content": content, "_meta": null })
+}
+
+/// One parked answer shaped for the wire: the single entry point both the
+/// live sender and the tests shape through, so the two cannot drift.
+fn codex_permission_frame(pending: &CodexPendingResponse, result: &Value) -> Value {
+    match pending.kind {
+        CodexPendingKind::Approval => {
+            permission_decision_frame(&pending.id, permission_decision(result))
+        }
+        CodexPendingKind::Question => {
+            response_frame(&pending.id, codex_question_result(&pending.params, result))
+        }
+        CodexPendingKind::Elicitation => {
+            response_frame(&pending.id, codex_elicitation_result(result))
+        }
+    }
 }
 
 fn permission_decision(result: &Value) -> &'static str {
@@ -1846,7 +2080,7 @@ struct CodexReader {
     state: Arc<CodexState>,
     view: crate::codex_view::CodexView,
     permission_broker: Arc<PermissionBroker>,
-    response_ids: Arc<Mutex<HashMap<u64, Value>>>,
+    response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     requests: Arc<CodexRequests>,
@@ -1882,8 +2116,12 @@ impl CodexReader {
             return;
         }
         if let Some(method) = value.get("method").and_then(Value::as_str) {
-            if method == "item/tool/requestUserInput" || method == "mcpServer/elicitation/request" {
-                self.decline_input_request(&value, runtime);
+            if method == "item/tool/requestUserInput" || method == "tool/requestUserInput" {
+                self.dispatch_question(&value, runtime, event_seq);
+                return;
+            }
+            if method == "mcpServer/elicitation/request" {
+                self.dispatch_elicitation(&value, runtime, event_seq);
                 return;
             }
             if method == "turn/started" {
@@ -1989,7 +2227,14 @@ impl CodexReader {
         let broker_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut ids) = self.response_ids.lock() {
             if let Some(id) = value.get("id") {
-                ids.insert(broker_id, id.clone());
+                ids.insert(
+                    broker_id,
+                    CodexPendingResponse {
+                        id: id.clone(),
+                        kind: CodexPendingKind::Approval,
+                        params: Value::Null,
+                    },
+                );
             }
         }
         if let Err(error) = self
@@ -2014,23 +2259,229 @@ impl CodexReader {
         self.publish(runtime, event, seq);
     }
 
-    fn decline_input_request(&self, value: &Value, runtime: &Arc<SessionRuntime>) {
-        let result = decline_input_result(value);
-        if let Some(id) = value.get("id") {
-            let _ = send_result(&self.stdin, id, result);
+    /// A Codex `requestUserInput` (current or legacy spelling): the model's
+    /// questions become a `kind: "question"` card answered with Paseo's
+    /// `{answers: {id: {answers}}}` shape. Nothing parseable means nothing
+    /// the person could answer, so the id is answered now, not carded.
+    fn dispatch_question(
+        &mut self,
+        value: &Value,
+        runtime: &Arc<SessionRuntime>,
+        seq: Option<u64>,
+    ) {
+        let params = value.get("params").cloned().unwrap_or(Value::Null);
+        let questions = parse_codex_questions(&params);
+        if questions.is_empty() {
+            if let Some(id) = value.get("id") {
+                let _ = send_result(&self.stdin, id, serde_json::json!({ "answers": {} }));
+            }
+            return;
         }
-        let _ = runtime.publish_session_notice(
-            "Codex requested user input; Devboule declined it.".to_string(),
-            NoticeSeverity::Info,
-        );
+        let broker_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let tool_call_id = params
+            .get("itemId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("codex-question-{broker_id}"));
+        let labels: Vec<&str> = questions[0]
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        // One broker option per offered label, its id encoding the position
+        // the reply decodes; a free-text-only question offers none, and the
+        // card answers through the text door instead.
+        let mut options = Vec::new();
+        for (question_index, question) in questions.iter().enumerate() {
+            for (option_index, option) in question.options.iter().enumerate() {
+                options.push(PermissionOption {
+                    option_id: format!("q{question_index}o{option_index}"),
+                    name: option.label.clone(),
+                    kind: "allow_once".to_string(),
+                });
+            }
+        }
+        let event = SessionEvent::PermissionRequest {
+            tool_call_id,
+            title: questions[0].question.clone(),
+            description: if labels.is_empty() {
+                None
+            } else {
+                Some(labels.join(" / "))
+            },
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            options,
+            is_chooser: None,
+            kind: Some(PermissionRequestKind::Question),
+            questions: Some(
+                questions
+                    .iter()
+                    .map(|question| PermissionQuestion {
+                        question: question.question.clone(),
+                        header: Some(question.header.clone()),
+                        options: question
+                            .options
+                            .iter()
+                            .map(|option| PermissionQuestionOption {
+                                label: option.label.clone(),
+                                description: option.description.clone(),
+                            })
+                            .collect(),
+                        multi_select: question.multi_select,
+                    })
+                    .collect(),
+            ),
+            // A placeholder the daemon overwrites with the session's stored
+            // origin before the request leaves for a subscriber.
+            origin: devboule_protocol::SessionOrigin::unknown(),
+            create_agent: None,
+        };
+        if let Ok(mut ids) = self.response_ids.lock() {
+            if let Some(id) = value.get("id") {
+                ids.insert(
+                    broker_id,
+                    CodexPendingResponse {
+                        id: id.clone(),
+                        kind: CodexPendingKind::Question,
+                        params: params.clone(),
+                    },
+                );
+            }
+        }
+        if let Err(error) = self
+            .permission_broker
+            .register(broker_id, event.clone(), runtime)
+        {
+            self.response_ids
+                .lock()
+                .ok()
+                .map(|mut ids| ids.remove(&broker_id));
+            if let Some(id) = value.get("id") {
+                let _ = send_result(&self.stdin, id, serde_json::json!({ "answers": {} }));
+            }
+            if !matches!(error, PermissionResponseError::AlreadyRecorded) {
+                // The repeat-refusal's one plain notice is already up; only
+                // the empty answers go back for that case.
+                let _ = runtime.publish_session_notice(
+                    format!("Could not queue Codex question: {error}"),
+                    NoticeSeverity::Warning,
+                );
+            }
+            return;
+        }
+        self.publish(runtime, event, seq);
     }
-}
 
-fn decline_input_result(value: &Value) -> Value {
-    if value.get("method").and_then(Value::as_str) == Some("mcpServer/elicitation/request") {
-        serde_json::json!({ "action": "decline" })
-    } else {
-        serde_json::json!({ "answers": {} })
+    /// An `mcpServer/elicitation/request`: a permission in disguise — one
+    /// message asking whether the MCP server may run a tool — so it becomes
+    /// an ordinary Allow/Deny card (`kind: tool`) answered with Paseo's
+    /// `{action, content, _meta}` shape. A `url` card and a schema with
+    /// required fields ask for more than the pair can give and are declined
+    /// at once, the way Paseo declines them.
+    fn dispatch_elicitation(
+        &mut self,
+        value: &Value,
+        runtime: &Arc<SessionRuntime>,
+        seq: Option<u64>,
+    ) {
+        let params = value.get("params").cloned().unwrap_or(Value::Null);
+        let required = params
+            .pointer("/requestedSchema/required")
+            .and_then(Value::as_array)
+            .is_some_and(|required| !required.is_empty());
+        if params.get("mode").and_then(Value::as_str) == Some("url") || required {
+            if let Some(id) = value.get("id") {
+                let _ = send_result(
+                    &self.stdin,
+                    id,
+                    serde_json::json!({ "action": "decline", "content": null, "_meta": null }),
+                );
+            }
+            return;
+        }
+        let broker_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let server = params
+            .get("serverName")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let tool_call_id = params
+            .get("elicitationId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("mcp-elicitation-{broker_id}"));
+        let event = SessionEvent::PermissionRequest {
+            tool_call_id,
+            title: format!("MCP approval: {server}"),
+            description: params
+                .get("message")
+                .and_then(Value::as_str)
+                .filter(|message| !message.trim().is_empty())
+                .map(str::to_string),
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            options: vec![
+                PermissionOption {
+                    option_id: "allow".to_string(),
+                    name: "Allow once".to_string(),
+                    kind: "allow_once".to_string(),
+                },
+                PermissionOption {
+                    option_id: "deny".to_string(),
+                    name: "Deny".to_string(),
+                    kind: "reject_once".to_string(),
+                },
+            ],
+            is_chooser: None,
+            kind: None,
+            questions: None,
+            // A placeholder the daemon overwrites with the session's stored
+            // origin before the request leaves for a subscriber.
+            origin: devboule_protocol::SessionOrigin::unknown(),
+            create_agent: None,
+        };
+        if let Ok(mut ids) = self.response_ids.lock() {
+            if let Some(id) = value.get("id") {
+                ids.insert(
+                    broker_id,
+                    CodexPendingResponse {
+                        id: id.clone(),
+                        kind: CodexPendingKind::Elicitation,
+                        params: Value::Null,
+                    },
+                );
+            }
+        }
+        if let Err(error) = self
+            .permission_broker
+            .register(broker_id, event.clone(), runtime)
+        {
+            self.response_ids
+                .lock()
+                .ok()
+                .map(|mut ids| ids.remove(&broker_id));
+            // The card never reached the person, so this is an abandonment,
+            // not a refusal.
+            if let Some(id) = value.get("id") {
+                let _ = send_result(
+                    &self.stdin,
+                    id,
+                    serde_json::json!({ "action": "cancel", "content": null, "_meta": null }),
+                );
+            }
+            if !matches!(error, PermissionResponseError::AlreadyRecorded) {
+                let _ = runtime.publish_session_notice(
+                    format!("Could not queue Codex MCP approval: {error}"),
+                    NoticeSeverity::Warning,
+                );
+            }
+            return;
+        }
+        self.publish(runtime, event, seq);
     }
 }
 

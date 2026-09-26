@@ -6,13 +6,14 @@ use super::super::event_pull::ConnHandle;
 use super::super::permission_broker::PermissionBroker;
 use super::super::session_runtime::SessionRuntime;
 use super::{
-    carried_image_paths, codex_delivery, codex_local_image_entry, command_prompt_input,
-    decline_input_result, empty_commands, initialize_params, interrupt_params, mcp_launch,
-    mode_values, notification_frame, permission_decision, permission_decision_frame,
-    plan_codex_prompt, request_frame, send_interrupt_request, steer_params_if_current,
-    thread_resume_params, thread_start_params, turn_id_from_response, turn_start_params,
-    turn_start_params_for_prompt, turn_start_params_with_images, turn_steer_params, validate_mode,
-    CodexCommands, CodexReader, CodexRequests, CodexSteerer, ThreadRoad,
+    carried_image_paths, codex_delivery, codex_elicitation_result, codex_local_image_entry,
+    codex_permission_frame, codex_question_result, command_prompt_input, empty_commands,
+    initialize_params, interrupt_params, mcp_launch, mode_values, notification_frame,
+    parse_codex_questions, permission_decision, permission_decision_frame, plan_codex_prompt,
+    request_frame, send_interrupt_request, steer_params_if_current, thread_resume_params,
+    thread_start_params, turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
+    turn_start_params_with_images, turn_steer_params, validate_mode, CodexCommands,
+    CodexPendingResponse, CodexReader, CodexRequests, CodexSteerer, ThreadRoad,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
@@ -308,44 +309,50 @@ fn turn_start_response_records_the_turn_before_started_notification() {
     assert_eq!(state.current_turn().as_deref(), Some("turn-7"));
 }
 
-#[test]
-fn declined_input_is_a_session_notice_and_keeps_the_decline_shapes() {
-    assert_eq!(
-        decline_input_result(&serde_json::json!({
-            "method": "item/tool/requestUserInput"
-        })),
-        serde_json::json!({ "answers": {} })
-    );
-    assert_eq!(
-        decline_input_result(&serde_json::json!({
-            "method": "mcpServer/elicitation/request"
-        })),
-        serde_json::json!({ "action": "decline" })
-    );
+// --- input requests: questions and elicitations --------------------------
+//
+// Codex asks two ways: `requestUserInput` (a real question) and
+// `mcpServer/elicitation/request` (an MCP tool approval in disguise). Both
+// used to be declined unseen; both now reach the person as cards. Frames
+// below are built from Paseo's zod shapes plus the one elicitation frame
+// quoted in RECON-A2b §3 — the journal holds no `requestUserInput` row.
 
-    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
-    let runtime = Arc::new(SessionRuntime::new());
-    runtime.stream.lock().unwrap().screen = None;
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        "s.codex.notice",
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
-    let mut reader = CodexReader {
+/// One parked Codex answer shaped for the wire through the same entry point
+/// the live sender uses, captured instead of written.
+fn capturing_codex_sender(
+    captured: &Arc<Mutex<Vec<serde_json::Value>>>,
+    response_ids: &Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
+) -> Arc<super::super::permission_broker::PermissionSender> {
+    let captured = Arc::clone(captured);
+    let response_ids = Arc::clone(response_ids);
+    Arc::new(move |broker_id, result| {
+        let pending = response_ids
+            .lock()
+            .map_err(|_| std::io::Error::other("Codex permission map lock poisoned"))?
+            .remove(&broker_id)
+            .ok_or_else(|| {
+                std::io::Error::other("Codex permission response had no matching request")
+            })?;
+        captured
+            .lock()
+            .map_err(|_| std::io::Error::other("captured lock poisoned"))?
+            .push(codex_permission_frame(&pending, &result));
+        Ok(())
+    })
+}
+
+fn question_reader(
+    broker: Arc<PermissionBroker>,
+    response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
+) -> CodexReader {
+    CodexReader {
         commands: empty_commands(),
         available_commands: None,
         buffer: Vec::new(),
         discarding_oversized_line: false,
         deferred: Vec::new(),
         manifest: None,
-        state: Arc::new(CodexState::new(
+        state: Arc::new(crate::codex_view::CodexState::new(
             "thread".to_string(),
             catalog_from_response(&serde_json::json!({
                 "data": [{ "id": "model", "isDefault": true }]
@@ -355,31 +362,508 @@ fn declined_input_is_a_session_notice_and_keeps_the_decline_shapes() {
         )),
         view: CodexView::new(None),
         permission_broker: Arc::clone(&broker),
-        response_ids: Arc::new(Mutex::new(HashMap::new())),
+        response_ids,
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
         requests: Arc::new(CodexRequests::new()),
         compactions: crate::codex_compaction::CodexCompactions::default(),
-    };
+    }
+}
+
+type QuestionHarness = (
+    Arc<PermissionBroker>,
+    Arc<Mutex<Vec<serde_json::Value>>>,
+    Arc<SessionRuntime>,
+    Arc<ConnHandle>,
+    CodexReader,
+);
+
+fn question_harness() -> QuestionHarness {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let response_ids = Arc::new(Mutex::new(HashMap::new()));
+    let broker = PermissionBroker::for_test(capturing_codex_sender(&captured, &response_ids));
+    let (runtime, conn) = attached_runtime("s.codex.questions", Arc::clone(&broker));
+    let reader = question_reader(Arc::clone(&broker), Arc::clone(&response_ids));
+    (broker, captured, runtime, conn, reader)
+}
+
+fn user_input_line(method: &str, params: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "server-1",
+        "method": method,
+        "params": params,
+    })
+}
+
+fn fence_question_params() -> serde_json::Value {
+    serde_json::json!({
+        "itemId": "item-1",
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "questions": [{
+            "id": "q1",
+            "header": "Fence colour",
+            "question": "Which colour should I paint the fence?",
+            "options": [
+                {"label": "Forest green (Recommended)", "description": "Blends in."},
+                {"label": "Barn red", "description": "Classic."}
+            ]
+        }, {
+            "id": "q2",
+            "header": "Toppings",
+            "question": "Which toppings?",
+            "multiSelect": true,
+            "options": [
+                {"label": "Cheese"},
+                {"label": "Pepperoni"}
+            ]
+        }]
+    })
+}
+
+fn single_question_params() -> serde_json::Value {
+    // One question, one pick, one answer: the shape a lone option pick and
+    // a text answer travel. (A bare option id on a multi-question card is
+    // not an answer to anything — the card always submits the whole map.)
+    serde_json::json!({
+        "itemId": "item-1",
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "questions": [{
+            "id": "q1",
+            "header": "Fence colour",
+            "question": "Which colour should I paint the fence?",
+            "options": [
+                {"label": "Forest green (Recommended)", "description": "Blends in."},
+                {"label": "Barn red", "description": "Classic."}
+            ]
+        }]
+    })
+}
+
+fn asked_question(events: &[crate::session::PendingEvent]) -> SessionEvent {
+    events
+        .iter()
+        .find_map(|event| match &event.envelope.event {
+            SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "item-1" => {
+                Some(event.envelope.event.clone())
+            }
+            _ => None,
+        })
+        .expect("question card")
+}
+
+#[test]
+fn request_user_input_builds_a_question_card() {
+    let (broker, _, runtime, conn, mut reader) = question_harness();
     reader.dispatch_value(
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "server-1",
-            "method": "item/tool/requestUserInput",
-            "params": {}
-        }),
+        user_input_line("item/tool/requestUserInput", fence_question_params()),
         &runtime,
     );
     let events = conn.pull_events();
-    assert!(events.iter().any(|event| matches!(
-        event.envelope.event,
-        SessionEvent::SessionNotice { ref text, severity }
-            if text == "Codex requested user input; Devboule declined it."
-                && severity == devboule_protocol::NoticeSeverity::Info
-    )));
-    assert!(!events
+    match asked_question(&events) {
+        SessionEvent::PermissionRequest {
+            title,
+            description,
+            options,
+            kind,
+            questions,
+            ..
+        } => {
+            assert_eq!(
+                kind,
+                Some(devboule_protocol::PermissionRequestKind::Question)
+            );
+            assert_eq!(title, "Which colour should I paint the fence?");
+            assert_eq!(
+                description.as_deref(),
+                Some("Forest green (Recommended) / Barn red")
+            );
+            assert_eq!(
+                options
+                    .iter()
+                    .map(|option| option.option_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["q0o0", "q0o1", "q1o0", "q1o1"]
+            );
+            let questions = questions.expect("question items");
+            assert_eq!(questions.len(), 2);
+            assert_eq!(
+                questions[0].question,
+                "Which colour should I paint the fence?"
+            );
+            assert_eq!(questions[0].header.as_deref(), Some("Fence colour"));
+            assert!(!questions[0].multi_select);
+            assert_eq!(
+                questions[0].options[0].description.as_deref(),
+                Some("Blends in.")
+            );
+            assert!(questions[1].multi_select);
+        }
+        _ => panic!("expected a permission request"),
+    }
+    assert_eq!(broker.pending_len(), 1);
+    // The blanket decline is gone: no refusal notice goes up.
+    assert!(!conn
+        .pull_events()
         .iter()
-        .any(|event| matches!(event.envelope.event, SessionEvent::AgentMessage { .. })));
+        .any(|event| matches!(event.envelope.event, SessionEvent::SessionNotice { .. })));
+}
+
+#[test]
+fn question_option_pick_answers_paseo_shape() {
+    let (broker, captured, runtime, conn, mut reader) = question_harness();
+    reader.dispatch_value(
+        user_input_line("item/tool/requestUserInput", single_question_params()),
+        &runtime,
+    );
+    let _ = conn.pull_events();
+    broker
+        .respond_with_option(
+            "item-1",
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            Some("q0o1".to_string()),
+            None,
+        )
+        .expect("option pick");
+    let frames = captured.lock().expect("captured");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        frames[0]["result"],
+        serde_json::json!({ "answers": { "q1": { "answers": ["Barn red"] } } })
+    );
+}
+
+#[test]
+fn question_other_answer_maps_by_question_id() {
+    let (broker, captured, runtime, conn, mut reader) = question_harness();
+    reader.dispatch_value(
+        user_input_line("item/tool/requestUserInput", single_question_params()),
+        &runtime,
+    );
+    let _ = conn.pull_events();
+    broker
+        .respond_with_option(
+            "item-1",
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            None,
+            Some("Teal, obviously".to_string()),
+        )
+        .expect("Other answer");
+    let frames = captured.lock().expect("captured");
+    // One question answered through the text door: Paseo's per-id shape
+    // with the person's words verbatim. (A two-question card answers
+    // through the JSON text map instead — covered below.)
+    assert_eq!(
+        frames[0]["result"],
+        serde_json::json!({ "answers": { "q1": { "answers": ["Teal, obviously"] } } })
+    );
+}
+
+#[test]
+fn question_multi_answer_maps_each_id() {
+    // The card joins a multi-select the provider's own way and answers both
+    // questions at once through the JSON text map, keyed by question text.
+    let answer = serde_json::json!({
+        "Which colour should I paint the fence?": "Barn red",
+        "Which toppings?": "Cheese, Pepperoni"
+    })
+    .to_string();
+    let params = fence_question_params();
+    let result = serde_json::json!({
+        "outcome": { "outcome": "selected", "answer": answer }
+    });
+    assert_eq!(
+        codex_question_result(&params, &result),
+        serde_json::json!({ "answers": {
+            "q1": { "answers": ["Barn red"] },
+            "q2": { "answers": ["Cheese", "Pepperoni"] }
+        } })
+    );
+}
+
+#[test]
+fn question_dismissal_answers_empty() {
+    let (broker, captured, runtime, conn, mut reader) = question_harness();
+    reader.dispatch_value(
+        user_input_line("item/tool/requestUserInput", fence_question_params()),
+        &runtime,
+    );
+    let _ = conn.pull_events();
+    broker
+        .respond_with_option(
+            "item-1",
+            devboule_protocol::PermissionOutcome::Deny,
+            None,
+            None,
+        )
+        .expect("dismissal");
+    let frames = captured.lock().expect("captured");
+    assert_eq!(frames[0]["result"], serde_json::json!({ "answers": {} }));
+}
+
+#[test]
+fn legacy_request_user_input_matches() {
+    let (broker, captured, runtime, conn, mut reader) = question_harness();
+    reader.dispatch_value(
+        user_input_line("tool/requestUserInput", single_question_params()),
+        &runtime,
+    );
+    let events = conn.pull_events();
+    assert!(matches!(
+        asked_question(&events),
+        SessionEvent::PermissionRequest { .. }
+    ));
+    broker
+        .respond_with_option(
+            "item-1",
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            Some("q0o1".to_string()),
+            None,
+        )
+        .expect("option pick");
+    let frames = captured.lock().expect("captured");
+    assert_eq!(
+        frames[0]["result"],
+        serde_json::json!({ "answers": { "q1": { "answers": ["Barn red"] } } })
+    );
+}
+
+#[test]
+fn unparseable_question_answers_empty_at_once() {
+    // Nothing the person could answer: the id is answered now, not carded.
+    let (broker, _, runtime, conn, mut reader) = question_harness();
+    reader.dispatch_value(
+        user_input_line(
+            "item/tool/requestUserInput",
+            serde_json::json!({
+                "itemId": "item-empty",
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "questions": [{"header": "No text"}]
+            }),
+        ),
+        &runtime,
+    );
+    assert_eq!(broker.pending_len(), 0);
+    assert!(!conn
+        .pull_events()
+        .iter()
+        .any(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })));
+    // And the empty map is the shape a dismissal carries.
+    assert_eq!(
+        codex_question_result(
+            &serde_json::json!({}),
+            &serde_json::json!({ "outcome": { "outcome": "cancelled" } })
+        ),
+        serde_json::json!({ "answers": {} })
+    );
+}
+
+fn elicitation_line(message: &str) -> serde_json::Value {
+    user_input_line(
+        "mcpServer/elicitation/request",
+        serde_json::json!({
+            "threadId": "01a0d638-b8ec-71e0-8fbe-dcd38ecb4657",
+            "turnId": "01a0d638-f6a7-7030-bbb5-0bd8df1299cf",
+            "serverName": "devboule",
+            "mode": "form",
+            "message": message,
+            "requestedSchema": {"type": "object", "properties": {}}
+        }),
+    )
+}
+
+#[test]
+fn elicitation_accept_decline_and_cancel() {
+    let (broker, captured, runtime, conn, mut reader) = question_harness();
+    for (index, tool_call) in [
+        "mcp-elicitation-1",
+        "mcp-elicitation-2",
+        "mcp-elicitation-3",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let mut line = elicitation_line("Allow the devboule MCP server to run a tool?");
+        line["id"] = serde_json::json!(format!("server-{index}"));
+        line["params"]["elicitationId"] = serde_json::json!(tool_call);
+        reader.dispatch_value(line, &runtime);
+    }
+    let events = conn.pull_events();
+    let cards = events
+        .iter()
+        .filter(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. }))
+        .count();
+    assert_eq!(cards, 3);
+    assert_eq!(broker.pending_len(), 3);
+    // The card is an ordinary Allow/Deny pair on the agent's own message.
+    match asked_elicitation(&events, "mcp-elicitation-1") {
+        SessionEvent::PermissionRequest {
+            title, description, ..
+        } => {
+            assert_eq!(title, "MCP approval: devboule");
+            assert_eq!(
+                description.as_deref(),
+                Some("Allow the devboule MCP server to run a tool?")
+            );
+        }
+        _ => panic!("expected a permission request"),
+    }
+    broker
+        .respond_with_option(
+            "mcp-elicitation-1",
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            Some("allow".to_string()),
+            None,
+        )
+        .expect("accept");
+    broker
+        .respond_with_option(
+            "mcp-elicitation-2",
+            devboule_protocol::PermissionOutcome::Deny,
+            Some("deny".to_string()),
+            None,
+        )
+        .expect("decline");
+    broker.close();
+    let frames = captured.lock().expect("captured");
+    assert_eq!(frames.len(), 3);
+    assert_eq!(
+        frames[0]["result"],
+        serde_json::json!({ "action": "accept", "content": {}, "_meta": null })
+    );
+    assert_eq!(
+        frames[1]["result"],
+        serde_json::json!({ "action": "decline", "content": null, "_meta": null })
+    );
+    assert_eq!(
+        frames[2]["result"],
+        serde_json::json!({ "action": "cancel", "content": null, "_meta": null })
+    );
+}
+
+fn asked_elicitation(events: &[crate::session::PendingEvent], tool_call_id: &str) -> SessionEvent {
+    events
+        .iter()
+        .find_map(|event| match &event.envelope.event {
+            SessionEvent::PermissionRequest {
+                tool_call_id: id, ..
+            } if id == tool_call_id => Some(event.envelope.event.clone()),
+            _ => None,
+        })
+        .expect("elicitation card")
+}
+
+#[test]
+fn elicitation_url_and_required_decline_at_once() {
+    let (broker, captured, runtime, conn, mut reader) = question_harness();
+    let mut url = elicitation_line("Open this page?");
+    url["params"]["mode"] = serde_json::json!("url");
+    reader.dispatch_value(url, &runtime);
+    let mut required = elicitation_line("Fill this in?");
+    required["params"]["requestedSchema"] =
+        serde_json::json!({"type": "object", "required": ["name"]});
+    reader.dispatch_value(required, &runtime);
+    assert_eq!(broker.pending_len(), 0);
+    assert!(!conn
+        .pull_events()
+        .iter()
+        .any(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })));
+    assert!(captured.lock().expect("captured").is_empty());
+    // The declined bytes are pinned, not the stdin write (which has no
+    // child in tests): decline carries no content, cancel neither.
+    assert_eq!(
+        codex_elicitation_result(
+            &serde_json::json!({ "outcome": { "outcome": "selected", "optionId": "deny" } })
+        ),
+        serde_json::json!({ "action": "decline", "content": null, "_meta": null })
+    );
+}
+
+#[test]
+fn child_creation_elicitation_accepts() {
+    // RECON-A2b §3's frame: Codex cannot create a child today because this
+    // exact request is declined unseen. The card must appear, and accepting
+    // must answer accept — the child-creation card downstream is untouched.
+    let (broker, captured, runtime, conn, mut reader) = question_harness();
+    reader.dispatch_value(
+        elicitation_line("Allow the devboule MCP server to run tool \"devboule_create_agent\"?"),
+        &runtime,
+    );
+    let events = conn.pull_events();
+    let card = events
+        .iter()
+        .find_map(|event| match &event.envelope.event {
+            SessionEvent::PermissionRequest { .. } => Some(event.envelope.event.clone()),
+            _ => None,
+        })
+        .expect("MCP approval card");
+    match card {
+        SessionEvent::PermissionRequest { title, .. } => {
+            assert_eq!(title, "MCP approval: devboule");
+        }
+        _ => unreachable!(),
+    }
+    let tool_call_id = events
+        .iter()
+        .find_map(|event| match &event.envelope.event {
+            SessionEvent::PermissionRequest { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .expect("no tool call id");
+    broker
+        .respond_with_option(
+            &tool_call_id,
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            Some("allow".to_string()),
+            None,
+        )
+        .expect("accept the MCP approval");
+    let frames = captured.lock().expect("captured");
+    assert_eq!(
+        frames[0]["result"],
+        serde_json::json!({ "action": "accept", "content": {}, "_meta": null })
+    );
+}
+
+#[test]
+fn pending_question_answered_on_close() {
+    let (broker, captured, runtime, conn, mut reader) = question_harness();
+    reader.dispatch_value(
+        user_input_line("item/tool/requestUserInput", fence_question_params()),
+        &runtime,
+    );
+    let _ = conn.pull_events();
+    assert_eq!(broker.pending_len(), 1);
+    broker.close();
+    let frames = captured.lock().expect("captured");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["result"], serde_json::json!({ "answers": {} }));
+}
+
+#[test]
+fn parse_codex_questions_skips_what_nobody_could_answer() {
+    let questions = parse_codex_questions(&serde_json::json!({
+        "questions": [
+            {"id": "ok", "header": "H", "question": "Q?",
+             "options": [{"label": "A", "description": "The A."}, {"nope": 1}, {"label": " "}],
+             "multiSelect": true},
+            {"header": "No id"},
+            {"id": "x", "question": "No header"},
+            "a string", 42, null
+        ]
+    }));
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0].id, "ok");
+    assert!(questions[0].multi_select);
+    assert_eq!(questions[0].options.len(), 1);
+    assert_eq!(questions[0].options[0].label, "A");
+    assert_eq!(
+        questions[0].options[0].description.as_deref(),
+        Some("The A.")
+    );
 }
 
 // --- image delivery (the static route) --------------------------------
