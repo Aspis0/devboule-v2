@@ -190,9 +190,11 @@ fn create_terminal(
     if !state.session_started() {
         return Err(TerminalError::Refused(SHUTTING_DOWN.to_string()));
     }
-    // One release point for the live-session slot: the card may refuse, the
-    // workspace may go, the spawn may fail, and either way the slot goes
-    // back with the terminal that never came to be.
+    // The slot is held by a guard, not by hand: the card, the spawn and
+    // every lock between here and the answer can panic, and a panic must not
+    // leak what `session_started` took. It is disarmed the moment the
+    // terminal exists — from there its own close gives the slot back.
+    let mut live_slot = LiveSessionSlot::taken(state);
     let created = (|| {
         let (subject, facts) = create_card_facts(&workspace, &cwd, name.as_deref());
         write_after_card(
@@ -215,13 +217,9 @@ fn create_terminal(
             )
             .map_err(|error| TerminalError::Refused(error.message))
     })();
-    let session = match created {
-        Ok(session) => session,
-        Err(error) => {
-            state.session_finished();
-            return Err(error);
-        }
-    };
+    // `?` releases the slot through the guard above on the way out.
+    let session = created?;
+    live_slot.disarm();
     if let Some(key) = retry_key.as_deref() {
         crate::server::remember_creation_session(
             state,
@@ -349,4 +347,34 @@ fn terminal_document(session: &devboule_protocol::Session) -> Value {
         "title": session.title,
         "cwd": session.cwd,
     })
+}
+
+/// The live-session slot one create took (`session_started`): released on
+/// every way out of that create — a refusal, a denied card, a failed spawn,
+/// a panic — and disarmed as soon as the terminal it was taken for exists,
+/// because from then its own close is what gives the slot back.
+struct LiveSessionSlot<'a> {
+    state: &'a Arc<ServerState>,
+    armed: bool,
+}
+
+impl<'a> LiveSessionSlot<'a> {
+    /// The slot `session_started` just registered, armed for release.
+    fn taken(state: &'a Arc<ServerState>) -> Self {
+        Self { state, armed: true }
+    }
+
+    /// The terminal exists and owns the slot now; this guard must not give
+    /// it back when it drops.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LiveSessionSlot<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state.session_finished();
+        }
+    }
 }

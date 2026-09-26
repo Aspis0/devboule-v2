@@ -296,8 +296,11 @@ pub(crate) struct TerminalSlotReservation<'a> {
 
 impl Drop for TerminalSlotReservation<'_> {
     fn drop(&mut self) {
-        let Ok(mut slots) = self.slots.lock() else {
-            return;
+        // Poisoned or not, the count goes back: swallowing the poison here
+        // would leak the reservation until the process restarts.
+        let mut slots = match self.slots.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
         };
         match slots.get(&self.creator).copied() {
             Some(held) if held <= 1 => {

@@ -13,6 +13,7 @@ use super::*;
 use crate::mcp_broker::tools::first_use::{
     ensure_write_allowed, TERMINAL_CREATE_GROUP, TERMINAL_KEYS_GROUP, TERMINAL_KILL_GROUP,
 };
+use crate::provider_catalog::MCP_LIST_TERMINALS_TOOL;
 use devboule_protocol::{OwnerId, PermissionOutcome, WorkspaceIsolation};
 
 /// The one owner every terminal-write test belongs to: each test builds its
@@ -269,6 +270,19 @@ pub(super) fn join_without_a_card(
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// The caller's live terminals as the roster answers them: the count several
+/// terminal-write tests pin, read through the tool so the roster's own scope
+/// is what is being counted.
+pub(super) fn live_terminals(state: &Arc<ServerState>, token: &str) -> Vec<String> {
+    let listed = call(&state.mcp.url, token, 99, MCP_LIST_TERMINALS_TOOL, "{}");
+    listed["result"]["structuredContent"]["terminals"]
+        .as_array()
+        .expect("terminals")
+        .iter()
+        .map(|terminal| terminal["id"].as_str().expect("id").to_string())
+        .collect()
 }
 
 /// One value a document must carry, or the test says which one is missing.

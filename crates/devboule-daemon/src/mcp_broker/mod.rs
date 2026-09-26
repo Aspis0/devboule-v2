@@ -697,19 +697,31 @@ pub(crate) fn ready_timeout() -> Duration {
 /// their own.
 #[cfg(test)]
 mod terminal_tools_tests;
-/// The refusals that surround a terminal write: one consent group per act,
-/// the cap's reservation, the shutdown guard, the conflicting retry, the
-/// empty payload, and the supervision verbs' agent-only scope.
+/// The closed argument sets a terminal write refuses before it is asked: an
+/// empty payload and a name that is not plain text.
+#[cfg(test)]
+mod terminal_write_arg_tests;
+/// The consent surface, one act at a time: a session granted one terminal
+/// write is still carded for the other two.
+#[cfg(test)]
+mod terminal_write_consent_tests;
+/// What a create refuses before it opens a shell: a retry whose payload
+/// changed, two calls racing the cap, a workspace with no directory to name.
+#[cfg(test)]
+mod terminal_write_create_tests;
+/// The guards that make a terminal write refuse instead of act: the daemon
+/// going down, a supervision verb pointed at a terminal, a kill whose close
+/// removed nothing.
 #[cfg(test)]
 mod terminal_write_guard_tests;
 /// What every terminal-write test drives: one owner, one project workspace,
 /// the loopback call, and the first-use card's plumbing.
 #[cfg(test)]
 mod terminal_write_harness;
-/// The terminal *write* tools' own end-to-end tests, split by topic from the
-/// reads' above: the kind gate in front of every body, the card's three
-/// choices, the create's cap and guard, and the audit row that records the
-/// act and never the bytes.
+/// The terminal *write* tools' own end-to-end tests: the kind gate in front
+/// of every body, the workspace scope, the bytes that reach a pty, and the
+/// audit row that records the act and never the bytes. The refusals around
+/// a write live in the four topic files above it.
 #[cfg(test)]
 mod terminal_write_tools_tests;
 #[cfg(test)]

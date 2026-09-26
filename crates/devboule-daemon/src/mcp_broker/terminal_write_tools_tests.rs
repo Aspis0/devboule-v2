@@ -5,10 +5,9 @@
 //!
 //! Sections: the kind gate, owner and origin scope, create, consent, keys,
 //! kill, audit and privacy, the doors. The fixtures, the loopback call and
-//! the card plumbing live in `terminal_write_harness`; the refusals that
-//! surround a write — one consent group per act, the cap's reservation, the
-//! shutdown guard, the conflicting retry — live in
-//! `terminal_write_guard_tests`.
+//! the card plumbing live in `terminal_write_harness`; the refusals around a
+//! write live in its four topic siblings — `_consent_`, `_create_`, `_arg_`
+//! and `_guard_` — one topic per file.
 
 use std::time::{Duration, Instant};
 
