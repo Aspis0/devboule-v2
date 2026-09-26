@@ -1,14 +1,17 @@
 //! The act's own guards: what the sweep's re-read just before the close
-//! catches. Each case lands its event at the expiry instant through the
-//! registry's one-shot hook — the moment between the first weigh of the four
-//! conditions and the re-read that precedes the act — so nothing here sleeps
-//! or races the sweep it is testing.
+//! catches. Most cases land their event at the expiry instant through the
+//! registry's one-shot hook — the moment between the first weigh of the
+//! conditions and the section that decides — and the wire-send case gates
+//! the provider's own pipe instead, so nothing here sleeps or races the
+//! sweep it is testing.
 
 use super::session_idle_close_profile_tests::{profile_child, set_profile_minutes};
 use super::session_idle_close_tests::{
-    armed, idle_state, linked_child, linked_creator, minutes, shut_down,
+    armed, birth_row, idle_state, linked_child, linked_creator, minutes, shut_down,
 };
-use super::tests::test_owner;
+use super::tests::{
+    attach_live_agent_for_test, insert_live_agent_with_kind_and_writer, test_owner,
+};
 use super::*;
 
 /// How many notices a child's own transcript has carried. The activity feed
@@ -226,51 +229,129 @@ fn a_child_taken_between_the_weigh_and_the_act_is_not_narrated() {
     shut_down(&state, &dir);
 }
 
-/// The latch is the spell's, not the link's: a notice spent by an earlier
-/// attempt clears with the spell, so a child that grows quiet again is told
-/// about instead of closing in silence.
+/// A writer that reports the moment the daemon starts writing a prompt into
+/// the provider's pipe, and then holds it open until the test lets go: the
+/// window between the writer's resolution and the turn's start, made
+/// deterministic.
+struct GatedWriter {
+    entered: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Write for GatedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        {
+            let (flag, cvar) = &*self.entered;
+            let mut guard = flag.lock().expect("gate");
+            *guard = true;
+            cvar.notify_all();
+        }
+        {
+            let (flag, cvar) = &*self.release;
+            let mut guard = flag.lock().expect("gate");
+            while !*guard {
+                guard = cvar.wait(guard).expect("gate");
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The road that arms no brake: a human's prompt resolves its writer under
+/// the map lock and then writes with no lock held, so the delivery marks
+/// itself there instead. The section either sees the mark — the child stays —
+/// or the send finds no child at all; never a prompt written into a session
+/// that is already going.
 #[test]
-fn a_later_spell_is_told_about_after_an_earlier_attempt_spent_the_notice() {
-    let (state, dir) = idle_state("recheck-spell");
+fn a_prompt_being_written_holds_the_child() {
+    let (state, dir) = idle_state("wire-flight");
     let registry = &state.sessions;
-    let owner = test_owner("idle-spell-user", "idle-spell-client");
-    let creator = "idle-spell-creator";
+    let owner = test_owner("idle-flight-user", "idle-flight-client");
+    let creator = "idle-flight-creator";
     linked_creator(registry, creator, &owner);
-    let child = linked_child(registry, "idle-spell-child", &owner, creator);
-    let child_runtime = registry.child_view(&child).expect("live child").1;
 
-    // An earlier attempt spent this spell's notice without closing anything.
-    assert!(registry.claim_idle_close_notice(&child));
-    assert!(!registry.claim_idle_close_notice(&child), "spent");
+    let entered = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let child = "idle-flight-child";
+    let child_runtime = insert_live_agent_with_kind_and_writer(
+        registry,
+        child,
+        owner.clone(),
+        SessionKind::Acp,
+        Box::new(GatedWriter {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        }),
+    );
+    {
+        let mut map = registry.inner.lock().expect("registry");
+        let live = map
+            .get_mut(child)
+            .and_then(RegistryEntry::as_peer_visible_mut)
+            .expect("live entry");
+        live.metadata.created_by = Some(creator.to_string());
+        live.metadata.display_name = Some("child".to_string());
+    }
+    registry.commit_agent_child_for_test(creator, child, true);
+    birth_row(registry, child, &owner, Some(creator), Some("child"));
 
-    // The spell breaks — the child starts a turn, which is where the timer
-    // (and now its notice) is cleared.
-    child_runtime.begin_turn();
+    let conn = attach_live_agent_for_test(&child_runtime, child, 91);
+    let send_state = Arc::clone(&state);
+    let send_owner = owner.clone();
+    let send_conn = Arc::clone(&conn);
+    let sender = std::thread::spawn(move || {
+        send_state.sessions.send_with_subscription(
+            child,
+            91,
+            "do the thing",
+            &[],
+            &[],
+            &send_owner,
+            &send_conn,
+        )
+    });
+    {
+        let (flag, cvar) = &*entered;
+        let mut guard = flag.lock().expect("gate");
+        while !*guard {
+            guard = cvar.wait(guard).expect("gate");
+        }
+    }
+    // The send holds its writer and is inside the write. Its subscription is
+    // the only thing still attached to the child, and a tab that closes
+    // mid-send is a tab gone — which is how the sweep sees this child the way
+    // it would see one nobody is watching.
+    registry.detach_conn(&conn);
+
     let start = Instant::now();
     assert_eq!(registry.sweep_idle_close_children(&state, start), 0);
-    assert_eq!(armed(registry, &child), None, "the turn broke the spell");
+    assert_eq!(
+        registry.sweep_idle_close_children(&state, start + minutes(30)),
+        0,
+        "a prompt being written holds the child"
+    );
+    assert!(
+        registry.inner.lock().expect("registry").contains_key(child),
+        "and the child is still there for the write to finish in"
+    );
 
-    // A new spell begins when the turn ends.
-    child_runtime.publish_agent_event(
-        SessionEvent::AgentFinished {
-            stop_reason: "end_turn".to_string(),
-            model_id: None,
-            usage: None,
-        },
-        None,
+    {
+        let (flag, cvar) = &*release;
+        *flag.lock().expect("gate") = true;
+        cvar.notify_all();
+    }
+    let delivered = sender.join().expect("the send thread");
+    assert!(
+        delivered.is_ok(),
+        "the send the sweep stood aside for goes through: {delivered:?}"
     );
-    let again = start + minutes(1);
-    assert_eq!(registry.sweep_idle_close_children(&state, again), 0);
-    assert_eq!(armed(registry, &child), Some(again));
-    assert_eq!(
-        registry.sweep_idle_close_children(&state, again + minutes(30)),
-        1,
-        "the new spell closes"
-    );
-    assert_eq!(
-        notices(&child_runtime),
-        1,
-        "and is told about: the earlier spend belonged to the earlier spell"
+    assert!(
+        child_runtime.is_running_turn(),
+        "the prompt it wrote is the turn that starts"
     );
     shut_down(&state, &dir);
 }

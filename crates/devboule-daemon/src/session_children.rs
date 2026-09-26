@@ -262,7 +262,6 @@ impl super::SessionRegistry {
                 report_owed: true,
                 quiet_notified: false,
                 idle_close_since: None,
-                idle_close_notified: false,
             },
         );
         let caps = table
@@ -320,7 +319,6 @@ impl super::SessionRegistry {
                 report_owed: true,
                 quiet_notified: false,
                 idle_close_since: None,
-                idle_close_notified: false,
             },
         );
     }
@@ -582,7 +580,6 @@ impl super::SessionRegistry {
                 report_owed: true,
                 quiet_notified: false,
                 idle_close_since: None,
-                idle_close_notified: false,
             },
         );
         (true, deferred)

@@ -3210,7 +3210,7 @@ describe("creator daemon notice cards", () => {
         "displayName: worker one",
         "state: closed",
         "idleMinutes: 30",
-        "summary: closed: idle after 30 minutes; no turn, no pending card, nothing in flight, nobody viewing.",
+        "summary: closed: idle after 30 minutes. Closed sessions do not reopen — create a new one.",
         "</devboule-system>",
       ].join("\n"),
     );

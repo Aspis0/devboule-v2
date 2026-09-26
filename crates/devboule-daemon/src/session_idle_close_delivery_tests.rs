@@ -11,7 +11,7 @@ use super::*;
 use devboule_protocol::NoticeSeverity;
 
 #[test]
-fn the_notice_is_written_before_the_close_and_the_creator_gets_the_envelope() {
+fn the_notice_is_written_before_the_teardown_and_the_creator_gets_the_envelope() {
     let (state, dir) = idle_state("notice");
     let registry = &state.sessions;
     let owner = test_owner("idle-notice-user", "idle-notice-client");
@@ -71,15 +71,15 @@ fn the_notice_is_written_before_the_close_and_the_creator_gets_the_envelope() {
             .all(|row| row.id != "idle-notice-child"),
         "the roster list drops the closed row, which is why the send's refusal has its own read"
     );
-    // Ordering, not just presence: a publish no longer lands once the close
-    // has torn the stream down, so the notice above can only have been
-    // written while the row was still in the map.
+    // The notice was written before the teardown: a publish no longer lands
+    // once the close has torn the stream down, so the one above can only
+    // have come from the child's last open moment.
     assert!(
         !child_runtime.publish_daemon_event(SessionEvent::SessionNotice {
             text: "after the close".to_string(),
             severity: NoticeSeverity::Info,
         }),
-        "a closed stream refuses a publish — which is what orders the notice before the close"
+        "a closed stream refuses a publish — which is what orders the notice before the teardown"
     );
 
     // The creator's own envelope, in its frame and its words.

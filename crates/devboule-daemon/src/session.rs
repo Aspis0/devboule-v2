@@ -2847,6 +2847,11 @@ impl SessionRegistry {
     /// holds the lock or cannot find the child after it; that is what lets a
     /// caller decide *and* remove in one section.
     ///
+    /// The id itself is validated by [`Self::close`] first. A caller that
+    /// comes straight here — the idle sweep — holds ids the spawn composed,
+    /// never text a peer sent, which is the same reason it skips the
+    /// `conn_peer` door.
+    ///
     /// Answers what the map held: `None` when there was nothing to take.
     fn take_session_for_close(
         &self,

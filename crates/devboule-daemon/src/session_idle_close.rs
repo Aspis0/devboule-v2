@@ -9,14 +9,14 @@
 //! already running and `Some(0)` is the timer off.
 //!
 //! The act decides and takes the child out of the map in one critical
-//! section — the same lock a message admission takes to find its target and
-//! arm its slot — so no send can be armed for a child that is about to go.
+//! section — the lock an agent message takes to find its target and arm its
+//! brake, and the lock a prompt's delivery takes to resolve the writer it
+//! marks itself with — so no send is writing to a child that is about to go.
 //! Only then does it say "closed: idle": a notice on the child's own
-//! transcript while its journal row is still open, a dedicated envelope to
-//! its creator (falling back to the creator's own transcript when the prompt
-//! route is shut), and the close's tail — the creator's report, the journal's
-//! closed mark, the teardown and the slot release. A message to a closed
-//! child never reopens it: a sender that misses the lookup, or whose
+//! transcript, a dedicated envelope to its creator (falling back to the
+//! creator's own transcript when the prompt route is shut), and the close's
+//! tail — the creator's report, the journal's closed mark, the teardown and
+//! the slot release. A message to a closed child never reopens it: a sender
 //! delivery lost the child in between, is refused — with
 //! [`SessionRegistry::closed_child_refusal`]'s sentence once the row is
 //! marked closed, whose "closed: idle" half comes from the in-memory reason
@@ -80,6 +80,10 @@ impl SessionRegistry {
             && !runtime.is_running_turn()
             && !runtime.permission_pending()
             && !self.message_in_flight_to(child)
+            // A prompt written straight to the provider arms no brake — the
+            // wire road passes `message_slot: None` — so the delivery marks
+            // itself instead, under this same lock.
+            && !runtime.delivery_in_flight()
             && !self.child_is_viewed(child, &owner.user, runtime);
         let Some((since, creator)) = self.arm_idle_close(child, idle, now) else {
             return false;
@@ -98,14 +102,14 @@ impl SessionRegistry {
             return false;
         }
         // One critical section decides and takes the child out of the map.
-        // Every condition is re-read under the session map lock — the lock a
-        // message admission holds while it finds its target and arms its
-        // slot — and the removal happens in that same hold. So a send is
-        // either armed before this read (the child stays) or can find no
-        // such child after it: never armed for a child that is already
-        // going, which is all "accepted and then torn down" would need. The
-        // minutes come with them, so ticking the timer off wins over a spell
-        // that has already run out.
+        // Everything is re-read under the session map lock — the lock an
+        // agent message holds while it arms its brake, and the lock a
+        // prompt's delivery holds while it resolves the writer it marks
+        // itself with — and the removal happens in that same hold. So a send
+        // is either marked before this read (the child stays) or finds no
+        // such child after it: never a write into a child that is already
+        // going. The minutes come with them, so ticking the timer off wins
+        // over a spell that has already run out.
         enum Act {
             Blocked,
             Refused,
@@ -120,6 +124,7 @@ impl SessionRegistry {
                 || runtime.is_running_turn()
                 || runtime.permission_pending()
                 || self.message_in_flight_to(child)
+                || runtime.delivery_in_flight()
                 || self.child_is_viewed(child, &owner.user, runtime);
             if blocked {
                 Act::Blocked
@@ -167,10 +172,10 @@ impl SessionRegistry {
         removed: Option<RegistryEntry>,
     ) -> bool {
         let (session, runtime, owner) = view;
-        // Claimed with the publish it belongs to, and cleared with the spell
-        // (see `set_idle_close_since`), so the one line per spell holds even
-        // when this act is the second attempt.
-        if removed.is_some() && self.claim_idle_close_notice(child) {
+        // A child this sweep did not take is narrated by the road that took
+        // it: only a removal this section made is talked about here, and the
+        // entry leaving the map in that removal makes it one shot.
+        if removed.is_some() {
             let _ = runtime.publish_daemon_event(SessionEvent::SessionNotice {
                 text: format!("closed: idle after {minutes} minutes"),
                 severity: NoticeSeverity::Info,
@@ -188,14 +193,15 @@ impl SessionRegistry {
                 .deliver_notice_to_creator(creator, owner, &envelope, Duration::ZERO)
                 .is_err()
             {
-                // The prompt route is shut and the latch is spent, so the
-                // fact would otherwise reach nobody: the creator's own
+                // The prompt route is shut and the child is already gone, so
+                // the fact would otherwise reach nobody: the creator's own
                 // transcript carries it as a daemon notice, which needs no
                 // broker to land.
                 if let Some(creator_runtime) = self.live_runtime(creator, owner) {
                     let _ = creator_runtime.publish_daemon_event(SessionEvent::SessionNotice {
                         text: format!(
-                            "its child '{display_name}' was closed: idle after {minutes} minutes"
+                            "its child '{}' was closed: idle after {minutes} minutes",
+                            neutralise_envelope_text(&single_line_header(&display_name))
                         ),
                         severity: NoticeSeverity::Info,
                     });
@@ -210,22 +216,6 @@ impl SessionRegistry {
         closed
     }
 
-    /// Claim this link's one idle-close notice: `true` the first time this
-    /// spell asks for it, `false` after — the notice and the envelope are
-    /// one publish, and one spell gets one. `pub(super)` for the test that
-    /// spends a spell's notice without closing anything.
-    pub(super) fn claim_idle_close_notice(&self, child: &str) -> bool {
-        let Ok(mut table) = self.creations.lock() else {
-            return false;
-        };
-        let Some(link) = table.children.get_mut(child) else {
-            return false;
-        };
-        let owed = !link.idle_close_notified;
-        link.idle_close_notified = true;
-        owed
-    }
-
     /// Arm the timer while this child is idle and clear it when it is not,
     /// answering the instant its idle spell began (`None` when it did not).
     fn arm_idle_close(&self, child: &str, idle: bool, now: Instant) -> Option<(Instant, String)> {
@@ -235,11 +225,7 @@ impl SessionRegistry {
             .unwrap_or_else(|error| error.into_inner());
         let link = table.children.get_mut(child)?;
         if !idle {
-            // The spell ends here and so does its notice: the latch is the
-            // spell's, not the link's, so a child that grows quiet again is
-            // told about again.
             link.idle_close_since = None;
-            link.idle_close_notified = false;
             return None;
         }
         let since = *link.idle_close_since.get_or_insert(now);
@@ -248,15 +234,11 @@ impl SessionRegistry {
 
     /// Set one child's timer — armed by the sweep, cleared by the sweep and
     /// by `set_presence` when a viewer focuses the child. A child that is not
-    /// in the link table is left alone: nothing else closes it. Clearing the
-    /// spell clears its notice with it.
+    /// in the link table is left alone: nothing else closes it.
     pub(super) fn set_idle_close_since(&self, child: &str, since: Option<Instant>) {
         if let Ok(mut table) = self.creations.lock() {
             if let Some(link) = table.children.get_mut(child) {
                 link.idle_close_since = since;
-                if since.is_none() {
-                    link.idle_close_notified = false;
-                }
             }
         }
     }

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -270,6 +270,13 @@ pub(crate) struct SessionRuntime {
     /// every publish appends, the oldest drops past the cap, and no payload
     /// text is ever kept here.
     activity_feed: Mutex<VecDeque<crate::agent_activity::ActivityMark>>,
+    /// Prompts whose write has begun and whose turn has not yet started:
+    /// taken when the send resolves the writer under the session map lock
+    /// (`session_messaging.rs`) and given back when the send returns, so the
+    /// idle-close section — which takes the same lock — sees a delivery in
+    /// flight instead of a child that looks idle with a prompt half-written
+    /// into it.
+    deliveries_in_flight: AtomicU32,
 }
 
 struct McpReadiness {
@@ -534,6 +541,7 @@ impl SessionRuntime {
             first_prompt_owed: AtomicBool::new(true),
             recovered_context: Mutex::new(None),
             activity_feed: Mutex::new(VecDeque::new()),
+            deliveries_in_flight: AtomicU32::new(0),
         }
     }
 
@@ -1958,6 +1966,24 @@ impl SessionRuntime {
         self.lock_stream()
             .map(|stream| !stream.output_closed)
             .unwrap_or(false)
+    }
+
+    /// A prompt's write is under way for this session: taken under the
+    /// session map lock, next to the writer it resolved, and given back when
+    /// the send returns — the map lock is what makes the mark and the
+    /// idle-close section's removal two things that cannot interleave.
+    pub(crate) fn begin_delivery(&self) {
+        self.deliveries_in_flight.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn end_delivery(&self) {
+        self.deliveries_in_flight.fetch_sub(1, Ordering::Release);
+    }
+
+    /// Whether a prompt is being written to this session right now — the
+    /// fifth way a child is not idle, for the road that arms no brake.
+    pub(crate) fn delivery_in_flight(&self) -> bool {
+        self.deliveries_in_flight.load(Ordering::Acquire) > 0
     }
 
     /// `None` means no client is attached. A pending request is retained until

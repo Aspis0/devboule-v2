@@ -690,6 +690,11 @@ impl super::SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = peer_entry(&map, session_id, owner, &conn.conn_peer)?;
             let session = entry.as_peer_visible().ok_or_else(process_gone)?;
+            // Taken under the map lock, beside the writer it resolves: the
+            // idle-close section takes that same lock, so it either sees
+            // this delivery in flight or this resolution finds no session —
+            // never a write into a child the section has just taken.
+            session.runtime.begin_delivery();
             (
                 Arc::clone(&session.writer),
                 session.image_sink.clone(),
@@ -706,6 +711,12 @@ impl super::SessionRegistry {
                 crate::mcp_broker::hosts_mcp(&session.metadata.kind),
             )
         };
+        // Given back only when this function returns: the prompt is not
+        // through until its turn has begun, and the sweep must not take the
+        // child apart anywhere in between — every early return below drops
+        // this guard with the mark still set.
+        let delivery_runtime = Arc::clone(&runtime);
+        let _delivery = ReleaseGuard::armed(move |_: bool| delivery_runtime.end_delivery());
         // A terminal's writer is a PTY, so an appended line is typed, not
         // read: nothing there can open a path. Writing the bytes would leave a
         // file behind for a session that can never consume it, and the pipe

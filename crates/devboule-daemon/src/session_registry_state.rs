@@ -441,11 +441,6 @@ pub(super) struct AgentChild {
     /// spell: a viewer focusing the child clears it, and the next sweep
     /// starts a fresh spell from that moment.
     pub(super) idle_close_since: Option<Instant>,
-    /// Whether this spell's idle-close notice has gone out. Spent by the act
-    /// that publishes it — which only runs once the child is out of the map —
-    /// and cleared wherever the spell is cleared, so a later spell is told
-    /// about again instead of closing in silence.
-    pub(super) idle_close_notified: bool,
 }
 
 /// One parked child end (audit-2 §2): what the end path still had in hand when
