@@ -111,13 +111,13 @@ export interface MessageQueue {
   notifyIdle(): void;
   /** A turn is open on the roster, a send is unanswered, or a reply hold remains. */
   turnActive(): boolean;
-  /** Mark one send pending and return its unique hold key. */
+  /** Mark one composer send pending and return its local hold key. */
   submissionStarted(): string;
   /** Settle one send by its key; only an active reply creates a bounded hold. */
   submissionSettled(id: string, turnActive?: boolean): void;
   /** A session event reports that a turn finished. */
   agentFinished(): void;
-  /** Stop, disconnect or a non-running roster state invalidates reply holds. */
+  /** Clear reply holds on Stop, disconnect or a non-running state; pending sends settle separately. */
   releaseActiveSends(): void;
   /** The sender binds itself; the returned function detaches it. Detaching keeps
    * the items — a surface standing down re-attaches the queue's own sender. */

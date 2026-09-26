@@ -153,8 +153,7 @@ export function createInMemoryMessageQueue(
     push();
   }
 
-  /** The roster turn, unanswered sends, or a turn confirmed active by its
-   * reply. The composer's Queue offer and every drain share this predicate. */
+  /** The roster, pending sends, in-flight queue writes, and bounded reply holds share this predicate. */
   function turnActive(): boolean {
     return isTurnActive(status, sendInFlight || replyHolds.hasPending() || replyHolds.hasHolds());
   }

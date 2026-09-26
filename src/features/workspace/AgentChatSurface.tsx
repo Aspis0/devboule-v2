@@ -847,7 +847,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       const submissionId = queue?.submissionStarted();
       let replyTurnActive: boolean | undefined;
       try {
-        return await session.send(text, attachments, undefined, [], submissionId, (turnActive) => {
+        return await session.send(text, attachments, undefined, [], undefined, (turnActive) => {
           replyTurnActive = turnActive;
         });
       } finally {
@@ -1108,15 +1108,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             if (!sent) handDraftBack(text, true);
           });
         }}
-        onStop={() => {
-          void (async () => {
-            try {
-              await sessionRef.current?.interrupt();
-            } finally {
-              queue?.releaseActiveSends();
-            }
-          })();
-        }}
+        onStop={() => void sessionRef.current?.interrupt()}
         contextMeter={
           <SessionContextMeter
             session={sessionRef.current}

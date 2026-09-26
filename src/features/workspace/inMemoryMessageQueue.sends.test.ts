@@ -187,7 +187,9 @@ describe("queued sends held by their active reply", () => {
     queue.agentFinished();
     await flushQueueTurns();
     expect(queueRows(queue)).toEqual([]);
+    expect(queue.turnActive()).toBe(true);
     queue.agentFinished();
+    expect(queue.turnActive()).toBe(false);
   });
 });
 

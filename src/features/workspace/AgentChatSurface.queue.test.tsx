@@ -202,7 +202,7 @@ describe("AgentChatSurface queue keys", () => {
     const queue = await renderSurface();
     type("hello");
     await act(async () => pressEnter());
-    expect(vi.mocked(sessionSend).mock.calls[0]?.slice(0, 3)).toEqual(["agent-1", 41, "hello"]);
+    expect(sessionSend).toHaveBeenCalledWith("agent-1", 41, "hello");
     expect(queuedTexts(queue)).toEqual([]);
   });
 
@@ -299,7 +299,7 @@ describe("AgentChatSurface queue keys", () => {
     other.remove();
   });
 
-  it("lets Stop release a held active reply", async () => {
+  it("keeps a reply hold through Stop until the turn finishes", async () => {
     const queue = await renderSurface();
     pushActivity("idle");
     vi.mocked(sessionSend).mockResolvedValueOnce(true);
@@ -319,6 +319,11 @@ describe("AgentChatSurface queue keys", () => {
     await act(async () => stop?.click());
     await flush();
     expect(sessionInterrupt).toHaveBeenCalledTimes(1);
+    expect(sessionSend).toHaveBeenCalledTimes(1);
+    expect(queuedTexts(queue)).toEqual(["follow-up"]);
+
+    finishTurn();
+    await flush();
     expect(sessionSend).toHaveBeenCalledTimes(2);
     expect(queuedTexts(queue)).toEqual([]);
   });
