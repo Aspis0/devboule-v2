@@ -53,6 +53,19 @@ const durableChooserRequest: PermissionRequest = {
   ],
 };
 
+/** A first-use gate card: one call, or the group for this session. */
+const sessionChooserRequest: PermissionRequest = {
+  type: "permission_request",
+  toolCallId: "write:workspaces:session-1:1-1",
+  title: "Allow creating workspaces",
+  isChooser: true,
+  options: [
+    { optionId: "once", name: "Allow this call", kind: "allow_once" },
+    { optionId: "session", name: "Allow workspaces for this session", kind: "allow_session" },
+    { optionId: "deny", name: "Deny", kind: "reject_once" },
+  ],
+};
+
 /** The stub's own question: three colours plus the refusal option. */
 const rejectOptionChooserRequest: PermissionRequest = {
   type: "permission_request",
@@ -153,6 +166,30 @@ describe("PermissionCard chooser answers", () => {
     const { root, card } = await renderCard(standardRequest);
 
     expect(actionButtons(card).map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+
+    await act(async () => root.unmount());
+  });
+
+  it("a session choice reads as allowed for this session and names the option picked", async () => {
+    const { root, card } = await renderCard(sessionChooserRequest);
+    const session = findButton(card, "Allow workspaces for this session");
+    if (session === undefined) throw new Error("the session option button did not render");
+
+    await act(async () => session.click());
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "write:workspaces:session-1:1-1",
+      "allow_once",
+      "session",
+    );
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Allowed for this session \u00b7 running",
+    );
+    expect(card.querySelector(".permission-card-choice")?.textContent).toBe(
+      "Chosen: Allow workspaces for this session",
+    );
 
     await act(async () => root.unmount());
   });

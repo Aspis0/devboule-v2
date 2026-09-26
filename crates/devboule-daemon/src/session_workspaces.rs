@@ -164,7 +164,7 @@ impl super::SessionRegistry {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         #[cfg(test)]
-        let _probe = WorktreeCreationProbe::enter();
+        let _probe = self.worktree_probe.enter();
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let project = self.require_project(journal, project_id)?;
         let project_path = PathBuf::from(&project.path);
@@ -196,10 +196,24 @@ impl super::SessionRegistry {
                 ),
             )
         })?;
+        self.note_worktree_add_start(&checkout);
         if let Err(error) =
             crate::worktree::run_worktree_add_command(&project_path, &checkout, &branch, "HEAD")
         {
             let checkout_path = crate::workspace::plain_path(&checkout.to_string_lossy());
+            // A killed add is repaired, not judged: git may have registered
+            // the path before dying, which no listing can tell from a
+            // winner — but the recorded path is always this call's own, so
+            // it is removed and pruned exactly, and nothing else is touched.
+            if error == crate::worktree::WorktreeAddError::TimedOut
+                && self.take_worktree_add_start(&checkout)
+            {
+                return Err(WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    repair_killed_worktree_add(project_id, &project_path, &checkout),
+                ));
+            }
+            self.clear_worktree_add_start();
             return Err(WireError::new(
                 ErrorCode::WorkspaceUnavailable,
                 match loser_checkout_cleanup(&project_path, &checkout, &branch) {
@@ -215,6 +229,7 @@ impl super::SessionRegistry {
                 },
             ));
         }
+        self.clear_worktree_add_start();
         let checkout = std::fs::canonicalize(&checkout).unwrap_or(checkout);
         let mut record = crate::workspace::worktree_workspace_record(&project, &checkout, &branch);
         if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
@@ -500,6 +515,58 @@ pub(super) fn refuse_worktree_unless_live_git_allows(
     )
 }
 
+impl super::SessionRegistry {
+    fn note_worktree_add_start(&self, checkout: &Path) {
+        if let Ok(mut in_flight) = self.worktree_add_in_flight.lock() {
+            *in_flight = Some(checkout.to_path_buf());
+        }
+    }
+
+    /// Take the recorded path when it is this call's checkout. Under the
+    /// creation serial a recorded path is always the recorder's own; a
+    /// mismatch means a bug elsewhere, and the caller falls back to the
+    /// listing guard instead of touching anything.
+    fn take_worktree_add_start(&self, checkout: &Path) -> bool {
+        let Ok(mut in_flight) = self.worktree_add_in_flight.lock() else {
+            return false;
+        };
+        match in_flight.take() {
+            Some(recorded) => recorded.as_path() == checkout,
+            None => false,
+        }
+    }
+
+    fn clear_worktree_add_start(&self) {
+        if let Ok(mut in_flight) = self.worktree_add_in_flight.lock() {
+            *in_flight = None;
+        }
+    }
+}
+
+/// Repair a `git worktree add` killed mid-registration: remove exactly the
+/// recorded path and prune the worktree metadata git may have written for
+/// it. The path is this call's own (taken from the in-flight record), so
+/// no winner's checkout is reachable here.
+pub(crate) fn repair_killed_worktree_add(project_id: &str, repo: &Path, checkout: &Path) -> String {
+    let checkout_path = crate::workspace::plain_path(&checkout.to_string_lossy());
+    let base = format!("Could not add git worktree for '{project_id}': git timed out");
+    match cleanup_failed_worktree_add(repo, checkout) {
+        Err(error) => format!("{base}; leftover checkout at '{checkout_path}' ({error})"),
+        Ok(()) => {
+            match crate::worktree::run_worktree_command(
+                &crate::worktree::build_worktree_prune_command(repo),
+            ) {
+                Ok(()) => {
+                    format!("{base}; removed the partial checkout at '{checkout_path}' and pruned")
+                }
+                Err(error) => format!(
+                    "{base}; removed the partial checkout at '{checkout_path}' but pruning failed ({error})"
+                ),
+            }
+        }
+    }
+}
+
 fn cleanup_failed_worktree_add(repo: &Path, checkout: &Path) -> Result<(), String> {
     let remove = crate::worktree::build_worktree_remove_command(repo, checkout, true);
     crate::worktree::run_worktree_remove_command_with_recovery(&remove, repo, checkout, true)
@@ -539,45 +606,53 @@ pub(crate) fn loser_checkout_cleanup(repo: &Path, checkout: &Path, branch: &str)
     }
 }
 
-/// The most worktree creates observed inside the creation serial at once,
-/// for the test that pins the serial itself. Test-only: production takes
-/// the lock and never looks back.
+/// Concurrency observed inside the creation serial, per registry: the test
+/// that pins the serial reads its own registry's probe, so worktree creates
+/// on other registries in parallel tests cannot move its maximum.
+/// Test-only: production takes the lock and never looks back.
 #[cfg(test)]
-static WORKTREE_CREATION_IN_FLIGHT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
-static WORKTREE_CREATION_MAX_SEEN: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+#[derive(Debug, Default)]
+pub(crate) struct WorktreeCreationProbe {
+    in_flight: std::sync::atomic::AtomicUsize,
+    max_seen: std::sync::atomic::AtomicUsize,
+}
 
 #[cfg(test)]
-struct WorktreeCreationProbe;
+pub(crate) struct WorktreeProbeGuard {
+    probe: std::sync::Arc<WorktreeCreationProbe>,
+}
 
 #[cfg(test)]
 impl WorktreeCreationProbe {
-    fn enter() -> Self {
-        let in_flight =
-            WORKTREE_CREATION_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        WORKTREE_CREATION_MAX_SEEN.fetch_max(in_flight, std::sync::atomic::Ordering::SeqCst);
-        Self
+    pub(crate) fn enter(self: &std::sync::Arc<Self>) -> WorktreeProbeGuard {
+        let in_flight = self
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.max_seen
+            .fetch_max(in_flight, std::sync::atomic::Ordering::SeqCst);
+        WorktreeProbeGuard {
+            probe: std::sync::Arc::clone(self),
+        }
+    }
+
+    pub(crate) fn reset(&self) {
+        self.in_flight.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.max_seen.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn max_seen(&self) -> usize {
+        self.max_seen.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
 #[cfg(test)]
-impl Drop for WorktreeCreationProbe {
+impl Drop for WorktreeProbeGuard {
     fn drop(&mut self) {
-        WORKTREE_CREATION_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.probe
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
-}
-
-#[cfg(test)]
-pub(crate) fn reset_worktree_creation_probe() {
-    WORKTREE_CREATION_IN_FLIGHT.store(0, std::sync::atomic::Ordering::SeqCst);
-    WORKTREE_CREATION_MAX_SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(test)]
-pub(crate) fn max_worktree_creations_seen() -> usize {
-    WORKTREE_CREATION_MAX_SEEN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 fn worktree_branch_seed() -> u64 {

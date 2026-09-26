@@ -589,7 +589,7 @@ fn concurrent_worktree_creates_never_overlap() {
         .project_add(root.to_str().expect("project path"))
         .expect("project row");
 
-    super::session_workspaces::reset_worktree_creation_probe();
+    registry.worktree_probe.reset();
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
     let handles: Vec<_> = (0..8)
         .map(|index| {
@@ -614,10 +614,131 @@ fn concurrent_worktree_creates_never_overlap() {
     }
     assert_eq!(created, 8, "the serial orders creates, it never fails them");
     assert_eq!(
-        super::session_workspaces::max_worktree_creations_seen(),
+        registry.worktree_probe.max_seen(),
         1,
         "no two creates share the function"
     );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The loser's guard, arm by arm, without threads: a path git does not
+/// list is attempted (never kept), and a live checkout on another branch
+/// is kept (never removed).
+#[test]
+fn loser_cleanup_attempts_a_missing_path_and_keeps_a_mismatch() {
+    use super::session_workspaces::{loser_checkout_cleanup, LoserCleanup};
+
+    let (dir, registry, journal) = tmp_delete_registry();
+    let root = dir.join("GuardProject");
+    std::fs::create_dir_all(&root).expect("project folder");
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    run(&["init"]);
+    std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
+    run(&["add", "seed.txt"]);
+    run(&["commit", "-m", "seed"]);
+    let project = registry
+        .project_add(root.to_str().expect("project path"))
+        .expect("project row");
+
+    // Missing: nothing is live there, so the guard removes rather than
+    // keeping — on an absent path the removal recovery reports success,
+    // since there is nothing to clean.
+    assert_eq!(
+        loser_checkout_cleanup(&root, &root.join("no-such-checkout"), "b"),
+        LoserCleanup::Removed
+    );
+
+    // BranchMismatch: a live checkout on another branch is kept, untouched.
+    let winner = registry
+        .workspace_create(
+            &project.id,
+            WorkspaceIsolation::Worktree,
+            Some("guard-branch".to_string()),
+        )
+        .expect("winner row");
+    let winner_path = std::path::PathBuf::from(&winner.path);
+    assert_eq!(
+        loser_checkout_cleanup(&root, &winner_path, "other-branch"),
+        LoserCleanup::KeptLive
+    );
+    assert!(winner_path.is_dir(), "a foreign checkout stands");
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The killed-add aftermath, repaired exactly: a listed checkout with no
+/// journal row (what a `git worktree add` killed mid-registration leaves)
+/// is removed and pruned, and the message says what happened.
+#[test]
+fn a_killed_add_repairs_exactly_its_recorded_debris() {
+    use super::session_workspaces::repair_killed_worktree_add;
+
+    let (dir, registry, journal) = tmp_delete_registry();
+    let root = dir.join("KillProject");
+    std::fs::create_dir_all(&root).expect("project folder");
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    run(&["init"]);
+    std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
+    run(&["add", "seed.txt"]);
+    run(&["commit", "-m", "seed"]);
+    let project = registry
+        .project_add(root.to_str().expect("project path"))
+        .expect("project row");
+
+    // The debris: git registered it, the journal never saw it.
+    let debris = root.join("debris-checkout");
+    run(&[
+        "worktree",
+        "add",
+        "-b",
+        "debris-branch",
+        debris.to_str().expect("debris path"),
+        "HEAD",
+    ]);
+    assert!(debris.is_dir(), "the debris stands before the repair");
+
+    let message = repair_killed_worktree_add("p.kill", &root, &debris);
+    assert!(
+        message.contains("removed the partial checkout") && message.contains("pruned"),
+        "the repair is reported: {message}"
+    );
+    assert!(!debris.exists(), "exactly that path is gone");
+    let list = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&root)
+        .output()
+        .expect("git list runs");
+    let list = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        !list.contains("debris"),
+        "prune cleared the registration: {list}"
+    );
+    let _ = project;
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }

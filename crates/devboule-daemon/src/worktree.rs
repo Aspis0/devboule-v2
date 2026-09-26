@@ -460,18 +460,60 @@ pub(crate) fn worktree_list_contains_path(repo_root: &Path, path: &Path) -> Resu
         .any(|entry| canonical_or_original(&entry.path) == expected))
 }
 
+/// Why a `git worktree add` did not happen. A kill is its own variant:
+/// the daemon may have died mid-registration, so the caller repairs the
+/// path it recorded instead of asking what git lists.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WorktreeAddError {
+    TimedOut,
+    Failed(String),
+}
+
+impl std::fmt::Display for WorktreeAddError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorktreeAddError::TimedOut => formatter.write_str("git timed out"),
+            WorktreeAddError::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
 pub(crate) fn run_worktree_add_command(
     repo_root: &Path,
     path: &Path,
     branch: &str,
     base: &str,
-) -> Result<(), String> {
-    let command = if local_branch_exists(repo_root, branch)? {
+) -> Result<(), WorktreeAddError> {
+    let command = if local_branch_exists(repo_root, branch).map_err(WorktreeAddError::Failed)? {
         build_worktree_add_existing_branch_command(repo_root, path, branch)
     } else {
         build_worktree_add_new_branch_command(repo_root, path, branch, base)
     };
-    run_worktree_command(&command)
+    match crate::git::run_git_args(&command.args) {
+        Err(crate::git::GitRunError::TimedOut) => Err(WorktreeAddError::TimedOut),
+        Err(crate::git::GitRunError::NotFound) => {
+            Err(WorktreeAddError::Failed("git is not available".to_string()))
+        }
+        Err(crate::git::GitRunError::SpawnFailed) => Err(WorktreeAddError::Failed(
+            "git could not be started".to_string(),
+        )),
+        Ok(output) if output.success => Ok(()),
+        Ok(output) => Err(WorktreeAddError::Failed(
+            output.error_message(&command.program),
+        )),
+    }
+}
+
+pub(crate) fn build_worktree_prune_command(repo_root: &Path) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            git_path_arg(repo_root),
+            "worktree".to_string(),
+            "prune".to_string(),
+        ],
+    }
 }
 
 pub(crate) fn run_worktree_remove_command_with_recovery(

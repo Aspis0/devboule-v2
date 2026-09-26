@@ -661,6 +661,17 @@ pub struct SessionRegistry {
     /// add` and the journal row, so a loser always sees the winner's
     /// finished state when it decides what to clean.
     worktree_creation: Arc<Mutex<()>>,
+    /// The checkout path the serial holder is currently adding, if any.
+    /// A killed `git worktree add` leaves debris git still lists, which no
+    /// listing can tell from a winner — so the kill arm repairs exactly
+    /// this path instead of asking. Under the serial above, a recorded path
+    /// is always the recorder's own.
+    worktree_add_in_flight: Arc<Mutex<Option<PathBuf>>>,
+    /// Concurrency observed inside the serial above, for the test that pins
+    /// it. Per registry, so parallel tests on other registries cannot move
+    /// this registry's maximum.
+    #[cfg(test)]
+    worktree_probe: Arc<session_workspaces::WorktreeCreationProbe>,
 }
 
 impl SessionRegistry {
@@ -724,6 +735,9 @@ impl SessionRegistry {
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
             worktree_creation: Arc::new(Mutex::new(())),
+            worktree_add_in_flight: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            worktree_probe: Arc::new(session_workspaces::WorktreeCreationProbe::default()),
         };
         spawn_os_liveness_sweeper(&registry);
         registry.reconcile_worktree_journal();
