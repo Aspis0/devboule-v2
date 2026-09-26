@@ -336,7 +336,9 @@ pub(crate) fn mcp_launch(
     config: &crate::mcp_broker::McpLaunchConfig,
     _runtime_dir: &Path,
 ) -> Result<crate::mcp_broker::McpProviderConfig, WireError> {
-    const MAX_TOOL_TIMEOUT_SECONDS: &str = "18446744073709549568.0";
+    // 24 days matches Claude's ~24.86-day ceiling. The u32::MAX bound keeps
+    // Codex's Instant deadline in a portable monotonic-clock range.
+    const TOOL_TIMEOUT_SECONDS: u64 = 2_073_600;
     Ok(crate::mcp_broker::McpProviderConfig {
         env_additions: vec![(
             crate::mcp_broker::MCP_TOKEN_ENV.to_string(),
@@ -359,7 +361,7 @@ pub(crate) fn mcp_launch(
             format!(
                 "mcp_servers.{}.tool_timeout_sec={}",
                 crate::mcp_broker::MCP_SERVER_NAME,
-                MAX_TOOL_TIMEOUT_SECONDS
+                TOOL_TIMEOUT_SECONDS
             ),
         ],
         owned_paths: Vec::new(),

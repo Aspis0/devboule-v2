@@ -338,26 +338,17 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// `Accept: application/json, text/event-stream` (takes the broker's JSON branch);
 /// `result`/`error` parsed, never HTTP status (RPC errors ride HTTP 200); `202`
 /// with an empty body is success without a result (never parsed, never failed).
-/// Timeout + error text (spike S3b/S3a): every MCP fetch races a named
-/// `AbortSignal.timeout`, and failures re-throw with the broker URL + cause,
-/// never bare `fetch failed`.
+/// Non-carded fetches race `AbortSignal.timeout`; failures re-throw with the
+/// broker URL + cause, never bare `fetch failed`.
 const BRIDGE_EXTENSION_TEMPLATE: &str = r#"import { Type } from "typebox";
 
 // The Devboule MCP bridge: the daemon's broker tools as first-class pi tools.
-// Identity by environment, never argv. Timeouts and error text are load-bearing:
-// a wedged broker must end the tool (never hang the turn) with a sentence that
-// names the broker URL and the cause.
+// Carded calls have no client timer and still honor pi's signal; other calls
+// keep a timeout so a stalled read cannot hold the turn indefinitely.
 const MCP_URL = process.env.DEVBOULE_MCP_URL ?? "";
 const MCP_TOKEN = process.env.DEVBOULE_MCP_TOKEN ?? "";
 const MCP_TIMEOUT_MS = 30000;
-const MCP_CARD_WAIT_TOOLS = new Set([
-  "devboule_create_agent",
-  "devboule_create_workspace",
-  "devboule_archive_workspace",
-  "devboule_create_terminal",
-  "devboule_send_terminal_keys",
-  "devboule_kill_terminal",
-]);
+const MCP_CARD_WAIT_TOOLS = new Set(__MCP_CARD_WAIT_TOOLS__);
 
 let nextRequestId = 1;
 
@@ -940,7 +931,9 @@ export default function (pi) {
 /// per-session. A single function so the S5 walking test drives the exact
 /// string `write_bridge_extension` persists.
 fn bridge_extension() -> String {
-    BRIDGE_EXTENSION_TEMPLATE.to_string()
+    let card_wait_tools = serde_json::to_string(crate::provider_catalog::MCP_CARD_WAIT_TOOLS)
+        .expect("Pi card-wait catalog is serializable");
+    BRIDGE_EXTENSION_TEMPLATE.replace("__MCP_CARD_WAIT_TOOLS__", &card_wait_tools)
 }
 
 pub(crate) fn write_bridge_extension(path: &std::path::Path) -> io::Result<()> {

@@ -27,8 +27,33 @@ pub(super) fn handle_rpc(
         .pointer("/params/name")
         .and_then(Value::as_str)
         .is_some_and(crate::provider_catalog::mcp_tool_waits_on_card);
-    let _call_scope = (method == "tools/call" && card_wait)
-        .then(|| super::McpCallScope::enter(&registration.session_id, &id));
+    let _call_scope = if method == "tools/call" && card_wait {
+        match broker.begin_mcp_call(&registration.session_id, &id) {
+            Ok(scope) => Some(scope),
+            Err(()) => {
+                return Ok(Some(rpc_error(
+                    id,
+                    -32600,
+                    "A request with this id is already in flight or recently completed.",
+                )))
+            }
+        }
+    } else {
+        None
+    };
+    if super::current_mcp_call_cancelled(&registration.session_id) {
+        if let Some(tool_name) = message.pointer("/params/name").and_then(Value::as_str) {
+            let caller = resolve_mcp_caller(state, &registration.session_id);
+            audit_mcp_tool(
+                state,
+                &caller,
+                tool_name,
+                &registration.session_id,
+                "cancelled",
+            );
+        }
+        return Ok(Some(rpc_error(id, -32800, "Request cancelled")));
+    }
     match method {
         "initialize" => Ok(Some(json!({
             "jsonrpc": "2.0",
@@ -124,16 +149,28 @@ pub(super) fn handle_rpc(
                     id,
                     message,
                 );
-                if super::current_mcp_call_cancelled(&registration.session_id) {
-                    let caller = resolve_mcp_caller(state, &registration.session_id);
-                    audit_mcp_tool(
-                        state,
-                        &caller,
-                        crate::provider_catalog::MCP_CREATE_AGENT_TOOL,
-                        &registration.session_id,
-                        "cancelled",
-                    );
-                }
+                let outcome = result
+                    .as_ref()
+                    .ok()
+                    .and_then(Option::as_ref)
+                    .map(|reply| {
+                        if reply.get("error").is_some()
+                            || reply.pointer("/result/isError") == Some(&Value::Bool(true))
+                        {
+                            "denied"
+                        } else {
+                            "ok"
+                        }
+                    })
+                    .unwrap_or("denied");
+                let caller = resolve_mcp_caller(state, &registration.session_id);
+                audit_mcp_tool(
+                    state,
+                    &caller,
+                    crate::provider_catalog::MCP_CREATE_AGENT_TOOL,
+                    &registration.session_id,
+                    outcome,
+                );
                 result
             } else if tool_name == Some(crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL) {
                 tools::permissions::answer(state, registration, caller, id, message)

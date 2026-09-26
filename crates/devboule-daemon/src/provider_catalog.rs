@@ -312,6 +312,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
 ];
 
 /// Tools whose handlers can park on a host consent card.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) const MCP_CARD_WAIT_TOOLS: &[&str] = &[
     MCP_CREATE_AGENT_TOOL,
     MCP_CREATE_WORKSPACE_TOOL,
@@ -321,6 +322,7 @@ pub(crate) const MCP_CARD_WAIT_TOOLS: &[&str] = &[
     MCP_KILL_TERMINAL_TOOL,
 ];
 
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) fn mcp_tool_waits_on_card(name: &str) -> bool {
     MCP_CARD_WAIT_TOOLS.contains(&name)
 }

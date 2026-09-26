@@ -24,7 +24,55 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+#[test]
+fn active_request_ids_are_unique_and_reusable_after_the_call_finishes() {
+    let registry = Arc::new(Mutex::new(McpCallRegistry::default()));
+    let session_id = "s.mcp.registry";
+    let request_id = serde_json::json!(71);
+    let scope = McpCallScope::enter(Arc::clone(&registry), session_id, &request_id)
+        .expect("active request scope");
+    let first_token = current_mcp_call().expect("active token").2;
+    assert!(McpCallScope::enter(Arc::clone(&registry), session_id, &request_id).is_err());
+    drop(scope);
+    let scope = McpCallScope::enter(Arc::clone(&registry), session_id, &request_id)
+        .expect("completed ids may be reused");
+    let second_token = current_mcp_call().expect("new active token").2;
+    assert!(!Arc::ptr_eq(&first_token, &second_token));
+    let matching = registry
+        .lock()
+        .expect("call registry")
+        .mark_cancelled(session_id, &request_id)
+        .expect("cancel selects the current call");
+    assert!(Arc::ptr_eq(&matching, &second_token));
+    drop(scope);
+}
+
+#[test]
+fn mcp_cancel_selects_only_the_matching_session_and_request() {
+    let registry = Arc::new(Mutex::new(McpCallRegistry::default()));
+    let session_id = "s.mcp.match";
+    let request_id = serde_json::json!(72);
+    let scope =
+        McpCallScope::enter(Arc::clone(&registry), session_id, &request_id).expect("call scope");
+    let token = current_mcp_call().expect("active call").2;
+    let mut calls = registry.lock().expect("call registry");
+    assert!(calls.mark_cancelled("s.other", &request_id).is_none());
+    assert!(calls
+        .mark_cancelled(session_id, &serde_json::json!(73))
+        .is_none());
+    assert!(!token.is_cancelled());
+    assert!(Arc::ptr_eq(
+        &calls
+            .mark_cancelled(session_id, &request_id)
+            .expect("matching active call"),
+        &token
+    ));
+    drop(calls);
+    drop(scope);
+}
 
 /// A user-declared row carries its own argv, so it is launchable without
 /// being on PATH — `resolve_named` reads the live registry before the

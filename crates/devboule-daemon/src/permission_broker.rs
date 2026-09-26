@@ -138,7 +138,7 @@ pub(super) struct PendingPermission {
     tool_call_id: String,
     session_id: String,
     mcp_request_id: Option<serde_json::Value>,
-    mcp_cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    mcp_cancelled: Option<Arc<crate::mcp_broker::McpCallCancellation>>,
     request: SessionEvent,
     runtime: std::sync::Weak<SessionRuntime>,
     done: Arc<(Mutex<PermissionCompletion>, std::sync::Condvar)>,
@@ -368,6 +368,13 @@ impl PermissionBroker {
             .pending
             .lock()
             .map_err(|_| io_error("permission broker lock poisoned"))?;
+        if pending
+            .mcp_cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.is_cancelled())
+        {
+            return Err(PermissionResponseError::NotFound);
+        }
         if table.closed {
             return Err(PermissionResponseError::InvalidRequest(
                 "permission broker is closed".to_string(),
@@ -403,6 +410,9 @@ impl PermissionBroker {
             return Err(PermissionResponseError::InvalidRequest(format!(
                 "session has reached the maximum of {MAX_PENDING_ACP_PERMISSIONS} pending permission requests"
             )));
+        }
+        if let Some(cancelled) = &pending.mcp_cancelled {
+            cancelled.mark_waiting();
         }
         table.entries.insert(tool_call_id, Arc::clone(&pending));
         drop(table);
@@ -854,27 +864,38 @@ impl PermissionBroker {
         .is_ok()
     }
 
-    pub(crate) fn cancel_mcp_call(&self, session_id: &str, request_id: &serde_json::Value) -> bool {
-        let pending = self.pending.lock().ok().and_then(|table| {
-            table
-                .entries
-                .values()
-                .find(|pending| {
-                    matches!(&pending.responder, PermissionResponder::Host)
-                        && pending.session_id == session_id
-                        && pending.mcp_request_id.as_ref() == Some(request_id)
-                })
-                .cloned()
-        });
+    /// The table lock closes the gap between checking cancellation and inserting a card.
+    pub(crate) fn cancel_mcp_call(
+        &self,
+        session_id: &str,
+        request_id: &serde_json::Value,
+        cancelled: &Arc<crate::mcp_broker::McpCallCancellation>,
+    ) -> bool {
+        let pending = {
+            let Ok(table) = self.pending.lock() else {
+                return false;
+            };
+            let pending = table.entries.values().find(|pending| {
+                matches!(&pending.responder, PermissionResponder::Host)
+                    && pending.session_id == session_id
+                    && pending.mcp_request_id.as_ref() == Some(request_id)
+                    && pending
+                        .mcp_cancelled
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, cancelled))
+            });
+            if pending.is_none() {
+                return cancelled.cancel_before_card();
+            }
+            pending.cloned()
+        };
         let Some(pending) = pending else {
-            return false;
+            return true;
         };
         let Ok(pending) = self.take(&pending.tool_call_id, Some(&pending)) else {
             return false;
         };
-        if let Some(cancelled) = &pending.mcp_cancelled {
-            cancelled.store(true, std::sync::atomic::Ordering::Release);
-        }
+        cancelled.mark_cancelled();
         self.complete(
             &pending,
             serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
@@ -1809,43 +1830,25 @@ mod tests {
             Some(Arc::clone(&journal)),
             Arc::clone(&broker),
         ));
-        let waiting_broker = Arc::clone(&broker);
-        let waiting_runtime = Arc::clone(&runtime);
         let request_id = serde_json::json!(41);
-        let waiting_id = request_id.clone();
-        let waiting_session_id = session_id.clone();
-        let waiter = thread::spawn(move || {
-            let _scope = crate::mcp_broker::McpCallScope::enter(&waiting_session_id, &waiting_id);
-            let decision = waiting_broker
-                .request_host_permission(permission("write:workspaces:cancel"), &waiting_runtime);
-            (
-                decision,
-                crate::mcp_broker::current_mcp_call_cancelled(&waiting_session_id),
-            )
-        });
-        for _ in 0..100 {
-            if broker
-                .pending_ids()
-                .iter()
-                .any(|id| id == "write:workspaces:cancel")
-            {
-                break;
-            }
-            thread::sleep(std::time::Duration::from_millis(1));
-        }
-
-        assert!(!broker.cancel_mcp_call("s.other", &request_id));
-        assert!(!broker.cancel_mcp_call(&runtime.session_id, &serde_json::json!(42)));
+        let _scope = crate::mcp_broker::McpCallScope::enter_for_test(&session_id, &request_id);
+        let call_token = crate::mcp_broker::current_mcp_call()
+            .expect("active call")
+            .2;
+        let pending = broker
+            .register_host(permission("write:workspaces:cancel"), &runtime)
+            .expect("card is registered synchronously");
+        let _ = runtime.publish_agent_event(pending.request.clone(), None);
+        let waiting_broker = Arc::clone(&broker);
+        let waiter = thread::spawn(move || waiting_broker.wait_for_decision(&pending));
         assert_eq!(broker.pending_len(), 1);
-        assert!(broker.cancel_mcp_call(&runtime.session_id, &request_id));
-        let (decision, cancellation_audited) = waiter.join().expect("host waiter");
+        assert!(broker.cancel_mcp_call(&runtime.session_id, &request_id, &call_token));
+        let decision = waiter.join().expect("host waiter");
         assert_eq!(decision, super::HostDecision::Cancelled);
-        assert!(
-            cancellation_audited,
-            "the tool audit can distinguish cancellation"
-        );
+        assert!(crate::mcp_broker::current_mcp_call_cancelled(
+            &runtime.session_id
+        ));
         assert_eq!(broker.pending_len(), 0);
-        assert!(!broker.cancel_mcp_call(&runtime.session_id, &request_id));
         journal.flush().expect("flush cancellation audit");
         let conn = rusqlite::Connection::open(&path).expect("inspect audit");
         let outcome: String = conn
@@ -1862,6 +1865,31 @@ mod tests {
     }
 
     #[test]
+    fn mcp_cancel_before_host_card_prevents_registration() {
+        let (broker, _) = test_broker();
+        let session_id = "s.mcp.cancel-before-card".to_string();
+        let runtime = Arc::new(SessionRuntime::for_acp(
+            session_id.clone(),
+            None,
+            Arc::clone(&broker),
+        ));
+        let request_id = serde_json::json!(44);
+        let _scope = crate::mcp_broker::McpCallScope::enter_for_test(&session_id, &request_id);
+        let call_token = crate::mcp_broker::current_mcp_call()
+            .expect("active call")
+            .2;
+        let cancelled = broker.cancel_mcp_call(&session_id, &request_id, &call_token);
+        let decision = broker
+            .request_host_permission(permission("write:workspaces:cancel-before-card"), &runtime);
+        assert!(
+            cancelled,
+            "cancel is retained until the call reaches its card"
+        );
+        assert_eq!(decision, super::HostDecision::Cancelled);
+        assert_eq!(broker.pending_len(), 0, "a cancelled caller gets no card");
+    }
+
+    #[test]
     fn mcp_cancel_racing_allow_has_one_winner() {
         let (broker, _) = test_broker();
         let session_id = "s.mcp.cancel-race".to_string();
@@ -1870,34 +1898,26 @@ mod tests {
             None,
             Arc::clone(&broker),
         ));
-        let waiting_broker = Arc::clone(&broker);
-        let waiting_runtime = Arc::clone(&runtime);
         let request_id = serde_json::json!(43);
-        let waiting_id = request_id.clone();
-        let waiting_session = session_id.clone();
-        let waiter = thread::spawn(move || {
-            let _scope = crate::mcp_broker::McpCallScope::enter(&waiting_session, &waiting_id);
-            waiting_broker
-                .request_host_permission(permission("write:workspaces:race"), &waiting_runtime)
-        });
-        for _ in 0..100 {
-            if broker
-                .pending_ids()
-                .iter()
-                .any(|id| id == "write:workspaces:race")
-            {
-                break;
-            }
-            thread::sleep(std::time::Duration::from_millis(1));
-        }
+        let _scope = crate::mcp_broker::McpCallScope::enter_for_test(&session_id, &request_id);
+        let call_token = crate::mcp_broker::current_mcp_call()
+            .expect("active call")
+            .2;
+        let pending = broker
+            .register_host(permission("write:workspaces:race"), &runtime)
+            .expect("card is registered synchronously");
+        let _ = runtime.publish_agent_event(pending.request.clone(), None);
+        let waiting_broker = Arc::clone(&broker);
+        let waiter = thread::spawn(move || waiting_broker.wait_for_decision(&pending));
         let gate = Arc::new(Barrier::new(3));
         let cancel_broker = Arc::clone(&broker);
         let cancel_gate = Arc::clone(&gate);
         let cancel_session = session_id.clone();
         let cancel_id = request_id.clone();
+        let cancel_token = Arc::clone(&call_token);
         let cancel = thread::spawn(move || {
             cancel_gate.wait();
-            cancel_broker.cancel_mcp_call(&cancel_session, &cancel_id)
+            cancel_broker.cancel_mcp_call(&cancel_session, &cancel_id, &cancel_token)
         });
         let allow_broker = Arc::clone(&broker);
         let allow_gate = Arc::clone(&gate);

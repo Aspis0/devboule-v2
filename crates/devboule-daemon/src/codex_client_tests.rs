@@ -1006,7 +1006,7 @@ fn codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env() {
             format!(
                 "mcp_servers.{}.tool_timeout_sec={}",
                 crate::mcp_broker::MCP_SERVER_NAME,
-                "18446744073709549568.0"
+                "2073600"
             ),
         ]
     );
@@ -1017,6 +1017,29 @@ fn codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env() {
             .any(|arg| arg.contains("secret-bearer-launch")),
         "argv stays token-free"
     );
+}
+
+#[test]
+fn codex_mcp_timeout_is_finite_and_fits_instant_on_every_platform() {
+    let carrier = super::mcp_launch(
+        &crate::mcp_broker::McpLaunchConfig::for_test("http://127.0.0.1:4321/mcp", "test"),
+        Path::new("unused"),
+    )
+    .expect("carrier");
+    let timeout = carrier
+        .arg_additions
+        .windows(2)
+        .find(|pair| pair[0] == "-c" && pair[1].contains("tool_timeout_sec"))
+        .expect("tool timeout override")[1]
+        .split_once('=')
+        .expect("timeout setting")
+        .1
+        .parse::<f64>()
+        .expect("finite seconds");
+    assert!(timeout.is_finite());
+    assert!(timeout < u32::MAX as f64);
+    let duration = std::time::Duration::from_secs_f64(timeout);
+    assert!(std::time::Instant::now().checked_add(duration).is_some());
 }
 
 /// A fake `codex app-server` (node): answers initialize/model-list and both
@@ -1335,8 +1358,8 @@ fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
         "the env-var pointer rides a `-c` override: {argv}"
     );
     assert!(
-        argv.lines().filter(|line| *line == "-c").count() == 2,
-        "exactly the two overrides: {argv}"
+        argv.lines().filter(|line| *line == "-c").count() == 3,
+        "the URL, bearer pointer and finite timeout are the only overrides: {argv}"
     );
     assert!(
         !argv.contains(&bearer),

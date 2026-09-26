@@ -26,38 +26,146 @@ use devboule_protocol::{OwnerId, SessionKind, WireError};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-thread_local! {
-    static MCP_CALL_SCOPE: std::cell::RefCell<Option<(String, Value, Arc<AtomicBool>)>> = const { std::cell::RefCell::new(None) };
+pub(crate) struct McpCallCancellation {
+    cancelled: AtomicBool,
+    waiting: AtomicBool,
 }
 
-pub(crate) struct McpCallScope;
+impl McpCallCancellation {
+    fn new(cancelled: bool) -> Self {
+        Self {
+            cancelled: AtomicBool::new(cancelled),
+            waiting: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn cancel_before_card(&self) -> bool {
+        if self.waiting.load(Ordering::Acquire) {
+            false
+        } else {
+            self.cancelled.store(true, Ordering::Release);
+            true
+        }
+    }
+
+    pub(crate) fn mark_waiting(&self) {
+        self.waiting.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn mark_cancelled(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct McpCallKey {
+    session_id: String,
+    request_id: Value,
+}
+
+/// Active entries disappear with their handler; the listener caps them at 64 connections.
+#[derive(Default)]
+struct McpCallRegistry {
+    active: HashMap<McpCallKey, Arc<McpCallCancellation>>,
+}
+
+impl McpCallRegistry {
+    fn mark_cancelled(
+        &mut self,
+        session_id: &str,
+        request_id: &Value,
+    ) -> Option<Arc<McpCallCancellation>> {
+        let key = McpCallKey {
+            session_id: session_id.to_string(),
+            request_id: request_id.clone(),
+        };
+        self.active.get(&key).cloned()
+    }
+}
+
+thread_local! {
+    static MCP_CALL_SCOPE: std::cell::RefCell<Option<(String, Value, Arc<McpCallCancellation>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Bridges the handler thread to the separate cancel POST through one shared token.
+pub(crate) struct McpCallScope {
+    registry: Arc<Mutex<McpCallRegistry>>,
+    key: McpCallKey,
+    cancelled: Arc<McpCallCancellation>,
+}
 
 impl McpCallScope {
-    pub(crate) fn enter(session_id: &str, request_id: &Value) -> Self {
+    fn enter(
+        registry: Arc<Mutex<McpCallRegistry>>,
+        session_id: &str,
+        request_id: &Value,
+    ) -> Result<Self, ()> {
+        let key = McpCallKey {
+            session_id: session_id.to_string(),
+            request_id: request_id.clone(),
+        };
+        let cancelled = {
+            let mut calls = registry.lock().unwrap_or_else(|error| error.into_inner());
+            if calls.active.contains_key(&key) {
+                return Err(());
+            }
+            let cancelled = Arc::new(McpCallCancellation::new(false));
+            calls.active.insert(key.clone(), Arc::clone(&cancelled));
+            cancelled
+        };
         MCP_CALL_SCOPE.with(|scope| {
             *scope.borrow_mut() = Some((
                 session_id.to_string(),
                 request_id.clone(),
-                Arc::new(AtomicBool::new(false)),
+                Arc::clone(&cancelled),
             ));
         });
-        Self
+        Ok(Self {
+            registry,
+            key,
+            cancelled,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enter_for_test(session_id: &str, request_id: &Value) -> Self {
+        Self::enter(
+            Arc::new(Mutex::new(McpCallRegistry::default())),
+            session_id,
+            request_id,
+        )
+        .expect("fresh test call id")
     }
 }
 
 impl Drop for McpCallScope {
     fn drop(&mut self) {
         MCP_CALL_SCOPE.with(|scope| *scope.borrow_mut() = None);
+        let mut calls = self
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if calls
+            .active
+            .get(&self.key)
+            .is_some_and(|active| Arc::ptr_eq(active, &self.cancelled))
+        {
+            calls.active.remove(&self.key);
+        }
     }
 }
 
-pub(crate) fn current_mcp_call() -> Option<(String, Value, Arc<AtomicBool>)> {
+pub(crate) fn current_mcp_call() -> Option<(String, Value, Arc<McpCallCancellation>)> {
     MCP_CALL_SCOPE.with(|scope| scope.borrow().clone())
 }
 
 pub(crate) fn current_mcp_call_cancelled(session_id: &str) -> bool {
     current_mcp_call().is_some_and(|(active_session_id, _, cancelled)| {
-        active_session_id == session_id && cancelled.load(Ordering::Acquire)
+        active_session_id == session_id && cancelled.is_cancelled()
     })
 }
 
@@ -340,6 +448,7 @@ pub(crate) struct McpBroker {
     pub(in crate::mcp_broker) write_gates: tools::first_use::FirstUseGates,
     stop: Arc<AtomicBool>,
     active_connections: AtomicUsize,
+    mcp_calls: Arc<Mutex<McpCallRegistry>>,
 }
 
 impl McpBroker {
@@ -358,6 +467,7 @@ impl McpBroker {
             }),
             stop: Arc::new(AtomicBool::new(false)),
             active_connections: AtomicUsize::new(0),
+            mcp_calls: Arc::new(Mutex::new(McpCallRegistry::default())),
             write_gates: tools::first_use::FirstUseGates::default(),
         })
     }
@@ -552,12 +662,32 @@ impl McpBroker {
         }
     }
 
+    fn begin_mcp_call(&self, session_id: &str, request_id: &Value) -> Result<McpCallScope, ()> {
+        McpCallScope::enter(Arc::clone(&self.mcp_calls), session_id, request_id)
+    }
+
     fn cancel_mcp_call(&self, registration: &RegisteredSession, request_id: &Value) {
+        let Some(cancelled) = self.mark_mcp_call_cancelled(&registration.session_id, request_id)
+        else {
+            return;
+        };
         if let Some(runtime) = registration.runtime.as_ref().and_then(Weak::upgrade) {
             if let Some(permission_broker) = runtime.permission_broker() {
-                permission_broker.cancel_mcp_call(&registration.session_id, request_id);
+                permission_broker.cancel_mcp_call(&registration.session_id, request_id, &cancelled);
             }
         }
+    }
+
+    fn mark_mcp_call_cancelled(
+        &self,
+        session_id: &str,
+        request_id: &Value,
+    ) -> Option<Arc<McpCallCancellation>> {
+        let mut calls = self
+            .mcp_calls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        calls.mark_cancelled(session_id, request_id)
     }
 
     fn fail_all(&self, message: &str) {

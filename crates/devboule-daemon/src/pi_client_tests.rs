@@ -494,11 +494,27 @@ fn pi_bridge_template_serves_the_broker_tools() {
     );
     assert!(
         template.contains("MCP_TIMEOUT_MS") && template.contains("AbortSignal.timeout"),
-        "every MCP fetch races the named timeout (spike S3b hung 80 s without one)"
+        "non-carded MCP fetches keep the named timeout"
     );
-    for name in crate::provider_catalog::MCP_CARD_WAIT_TOOLS {
-        assert!(template.contains(&format!("\"{name}\"")));
-    }
+    let list_start = template
+        .find("const MCP_CARD_WAIT_TOOLS = new Set(")
+        .expect("generated card-wait set");
+    let list_start = list_start + "const MCP_CARD_WAIT_TOOLS = new Set(".len();
+    let list_end = template[list_start..]
+        .find(");")
+        .map(|offset| list_start + offset)
+        .expect("card-wait set terminator");
+    let generated: Vec<String> = serde_json::from_str(&template[list_start..list_end])
+        .expect("generated card-wait names are JSON");
+    assert!(!generated.is_empty(), "card-wait set must not be empty");
+    let catalog: Vec<String> = crate::provider_catalog::MCP_CARD_WAIT_TOOLS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    assert_eq!(
+        generated, catalog,
+        "Pi derives this list from the daemon catalog"
+    );
     assert!(template.contains("notifications/cancelled"));
     assert!(template.contains("MCP_CARD_WAIT_TOOLS.has(params?.name)"));
     assert!(
@@ -548,7 +564,7 @@ fn pi_bridge_card_wait_ignores_injected_bound_but_other_tools_keep_it() {
         .replace("import { Type } from \"typebox\";", "")
         .replace(
             "const MCP_TIMEOUT_MS = 30000;",
-            "const MCP_TIMEOUT_MS = 15;",
+            "const MCP_TIMEOUT_MS = 20;",
         );
     script.truncate(
         script
@@ -561,7 +577,7 @@ globalThis.fetch = async (_url, options) => new Promise((resolve, reject) => {
   const request = JSON.parse(options.body);
   const finish = () => resolve(new Response(JSON.stringify({jsonrpc:"2.0",id:request.id,result:{ok:true}}), {status:200}));
   if (request.method === "notifications/cancelled") return finish();
-  const timer = setTimeout(finish, 45);
+  const timer = setTimeout(finish, 300);
   options.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, {once:true});
 });
 (async () => {
