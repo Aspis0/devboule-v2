@@ -17,7 +17,7 @@ use agent_client_protocol::schema::v1::{
     ClientCapabilities, FileSystemCapabilities, Implementation, InitializeRequest,
 };
 use agent_client_protocol::schema::ProtocolVersion;
-use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, WireError};
+use devboule_protocol::{ErrorCode, NoticeSeverity, PermissionOption, SessionEvent, WireError};
 
 use super::acp_host::{AcpHost, RpcError, RpcRespond};
 use crate::acp_view::{
@@ -31,6 +31,10 @@ use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::server::ServerState;
 
+use super::acp_questions::{
+    acp_question_sender, grok_card_id, grok_payload, grok_question_event, parse_grok_questions,
+    GrokPending,
+};
 use super::permission_broker::{
     PermissionBroker, PermissionResponseError, MAX_ACP_PERMISSION_FIELD_BYTES,
     MAX_ACP_PERMISSION_OPTIONS,
@@ -500,21 +504,6 @@ impl TurnWatch {
 impl Drop for TurnWatch {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-    }
-}
-
-impl PermissionBroker {
-    fn new(stdin: Arc<Mutex<Option<ChildStdin>>>) -> Arc<Self> {
-        Self::with_sender(Arc::new(move |id, result| {
-            let mut bytes = serde_json::to_vec(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": result,
-            }))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            bytes.push(b'\n');
-            write_child_stdin(&stdin, &bytes, "ACP")
-        }))
     }
 }
 
@@ -1296,6 +1285,7 @@ enum PendingSwitch {
 pub(super) struct AcpTransport {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     permission_broker: Arc<PermissionBroker>,
+    grok_questions: GrokPending,
     host: Arc<AcpHost>,
     turn: Arc<TurnWatch>,
     next_id: AtomicU64,
@@ -1329,8 +1319,13 @@ pub(super) struct AcpTransport {
 impl AcpTransport {
     fn new(stdin: ChildStdin, host: Arc<AcpHost>) -> Self {
         let stdin = Arc::new(Mutex::new(Some(stdin)));
+        let grok_questions: GrokPending = Arc::new(Mutex::new(HashMap::new()));
         Self {
-            permission_broker: PermissionBroker::new(Arc::clone(&stdin)),
+            permission_broker: PermissionBroker::with_sender(acp_question_sender(
+                Arc::clone(&stdin),
+                Arc::clone(&grok_questions),
+            )),
+            grok_questions,
             host,
             turn: TurnWatch::new(),
             stdin,
@@ -1513,6 +1508,12 @@ impl AcpTransport {
 
     fn pending_ids(&self) -> Arc<Mutex<HashSet<u64>>> {
         Arc::clone(&self.pending)
+    }
+
+    /// The parked grok questions the broker's sender maps answers against.
+    /// Shared with the reader so carding and answering read one map.
+    fn question_pending(&self) -> GrokPending {
+        Arc::clone(&self.grok_questions)
     }
 
     fn model_switch_ids(&self) -> Arc<Mutex<HashMap<u64, PendingSwitch>>> {
@@ -3183,6 +3184,10 @@ struct AcpReader {
     host: Arc<AcpHost>,
     turn: Arc<TurnWatch>,
     transport: Option<Arc<AcpTransport>>,
+    /// grok questions parked by JSON-RPC id, read by the broker's sender
+    /// when it shapes the answer. From the transport's map in production,
+    /// fresh in unit tests (see `for_test_with_questions`).
+    grok_questions: GrokPending,
     deferred: Vec<serde_json::Value>,
     provider_id: Option<String>,
     handshake_manifest: Option<SessionEvent>,
@@ -3218,6 +3223,10 @@ impl AcpReader {
             permission_broker,
             host,
             turn,
+            grok_questions: transport
+                .as_ref()
+                .map(|transport| transport.question_pending())
+                .unwrap_or_default(),
             transport,
             deferred,
             provider_id,
@@ -3262,6 +3271,18 @@ impl AcpReader {
             None,
             None,
         )
+    }
+
+    #[cfg(test)]
+    fn for_test_with_questions(
+        pending: Arc<Mutex<HashSet<u64>>>,
+        session_id: String,
+        permission_broker: Arc<PermissionBroker>,
+        grok_questions: GrokPending,
+    ) -> Self {
+        let mut reader = Self::for_test(pending, session_id, permission_broker);
+        reader.grok_questions = grok_questions;
+        reader
     }
 
     #[cfg(test)]
@@ -3559,6 +3580,10 @@ impl AcpReader {
             Some(AcpLineKind::Request { method }) => {
                 if method == "session/request_permission" {
                     self.dispatch_permission(&value, runtime, event_seq);
+                    return;
+                }
+                if method == "_x.ai/ask_user_question" {
+                    self.dispatch_grok_question(&value, runtime, event_seq);
                     return;
                 }
                 self.dispatch_client_request(&method, &value, runtime);
@@ -4128,6 +4153,137 @@ impl AcpReader {
         }
     }
 
+    /// grok's `_x.ai/ask_user_question`: the vendor question carrier. The
+    /// host cannot answer it — its gate returns only a decision, never the
+    /// labels grok's result shape needs — so it is carded here, next to
+    /// `session/request_permission`, behind the same guards.
+    fn dispatch_grok_question(
+        &self,
+        value: &serde_json::Value,
+        runtime: &Arc<SessionRuntime>,
+        event_seq: Option<u64>,
+    ) {
+        let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: "Grok question had no numeric id.".to_string(),
+                },
+            );
+            return;
+        };
+        let payload = grok_payload(value);
+        if let Some(session_id) = payload.get("sessionId").and_then(serde_json::Value::as_str) {
+            if session_id != self.session_id {
+                self.answer_grok_at_once(
+                    id,
+                    payload,
+                    runtime,
+                    Some("Grok question targeted another session and was cancelled.".to_string()),
+                );
+                return;
+            }
+        }
+        let questions = parse_grok_questions(payload);
+        if questions.is_empty() {
+            // Nothing the person could answer: the id is answered now.
+            self.answer_grok_at_once(id, payload, runtime, None);
+            return;
+        }
+        let tool_call_id = payload
+            .get("toolCallId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(grok_card_id);
+        let event = grok_question_event(tool_call_id.clone(), &questions);
+        let delivery = runtime.permission_delivery_enabled();
+        if !self.turn.prompt_is_live() {
+            self.answer_grok_at_once(
+                id,
+                payload,
+                runtime,
+                Some("Grok question arrived after the turn ended and was cancelled.".to_string()),
+            );
+            return;
+        }
+        if let Ok(mut pending) = self.grok_questions.lock() {
+            pending.insert(id, payload.clone());
+        }
+        let pending = match self.permission_broker.register(id, event.clone(), runtime) {
+            Ok(pending) => pending,
+            Err(error) => {
+                // The entry stays parked for the send below: the sender
+                // shapes the grok `cancelled` result from it and releases
+                // it, so every id is answered exactly once.
+                if !matches!(error, PermissionResponseError::AlreadyRecorded) {
+                    // The repeat-refusal's one plain notice is already up;
+                    // only the cancelled frame goes back for that case.
+                    let _ = runtime.publish_session_notice(
+                        format!("Could not queue grok question: {error}"),
+                        NoticeSeverity::Warning,
+                    );
+                }
+                let _ = self.permission_broker.send(
+                    id,
+                    serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                );
+                return;
+            }
+        };
+        if !self.turn.prompt_is_live() {
+            let _ = self
+                .permission_broker
+                .cancel(&tool_call_id, &pending, "cancelled");
+            return;
+        }
+        match self.permission_broker.auto_answer(&tool_call_id, runtime) {
+            // Unreachable for a question — the broker never auto-answers
+            // one — but a grant here must not fall through to the card.
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!("Could not auto-answer grok question: {error}"),
+                    },
+                );
+                return;
+            }
+        }
+        if delivery == Some(false) {
+            let _ =
+                self.permission_broker
+                    .cancel(&tool_call_id, &pending, "capability_not_supported");
+            return;
+        }
+        let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
+    }
+
+    /// Answer a grok id at once, without a card: the payload waits in the
+    /// pending map so the sender shapes the grok `cancelled` result, and
+    /// the send itself releases the entry.
+    fn answer_grok_at_once(
+        &self,
+        id: u64,
+        payload: &serde_json::Value,
+        runtime: &SessionRuntime,
+        notice: Option<String>,
+    ) {
+        if let Ok(mut pending) = self.grok_questions.lock() {
+            pending.insert(id, payload.clone());
+        }
+        let _ = self.permission_broker.send(
+            id,
+            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+        );
+        if let Some(notice) = notice {
+            self.publish(runtime, SessionEvent::AgentError { message: notice });
+        }
+    }
+
     fn cancel_permission_request(&self, id: u64, runtime: &SessionRuntime, reason: String) {
         let _ = self.permission_broker.send(
             id,
@@ -4448,6 +4604,20 @@ fn publish_stderr_line(runtime: &SessionRuntime, line: String) {
         None,
     );
 }
+
+#[cfg(test)]
+#[path = "acp_client_question_support.rs"]
+mod question_support;
+
+/// grok `_x.ai/ask_user_question` cards: labels on, exact reply bytes out.
+#[cfg(test)]
+#[path = "acp_client_questions_tests.rs"]
+mod grok_question_tests;
+
+/// Every grok question id gets an answer: close time and refusal paths.
+#[cfg(test)]
+#[path = "acp_client_answers_tests.rs"]
+mod grok_answer_tests;
 
 #[cfg(test)]
 #[path = "acp_client_tests.rs"]

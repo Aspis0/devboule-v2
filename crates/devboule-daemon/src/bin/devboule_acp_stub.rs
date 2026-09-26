@@ -279,6 +279,11 @@ fn main() -> io::Result<()> {
     // answer is the whole point of that trigger, so the reply is reported
     // on the transcript whatever `message_after_permission` says.
     let mut chooser_active = false;
+    // The grok question trigger below (`grok-question`): the pending vendor
+    // request id plus a sequence for fresh tool call ids, mirroring the
+    // permission/chooser roads above.
+    let mut grok_request_id = None;
+    let mut grok_seq = 0u32;
     // A real agent says what it did with the permission it was granted; the
     // stub's parked run needs that message on the child's transcript, because
     // the finish report deposits the child's last message and there would
@@ -401,6 +406,45 @@ fn main() -> io::Result<()> {
                     }),
                 )?;
             }
+            respond(
+                &mut stdout,
+                last_prompt_id.map(Value::from),
+                json!({"stopReason": if cancelled { "cancelled" } else { "end_turn" }}),
+            )?;
+            continue;
+        }
+        if method.is_empty() && grok_request_id == request.get("id").and_then(Value::as_u64) {
+            grok_request_id = None;
+            // grok is answered with labels, never option ids: the first
+            // label of the first answered question is the sentence the live
+            // check reads off the transcript to see what the card decided.
+            let picked = request
+                .pointer("/result/answers")
+                .and_then(Value::as_object)
+                .and_then(|answers| answers.values().next())
+                .and_then(|labels| labels.as_array())
+                .and_then(|labels| labels.first())
+                .and_then(Value::as_str);
+            let cancelled =
+                request.pointer("/result/outcome").and_then(Value::as_str) != Some("accepted");
+            let text = match picked {
+                Some(label) => format!("You picked {label}"),
+                None => "You cancelled".to_string(),
+            };
+            emit(
+                &mut stdout,
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "stub-session",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": text}
+                        }
+                    }
+                }),
+            )?;
             respond(
                 &mut stdout,
                 last_prompt_id.map(Value::from),
@@ -1061,6 +1105,42 @@ fn main() -> io::Result<()> {
                                     {"optionId": "blue", "name": "Blue", "kind": "allow_once"},
                                     {"optionId": "none", "name": "None", "kind": "reject_once"}
                                 ]
+                            }
+                        }),
+                    )?;
+                    continue;
+                }
+                if prompt_text.contains("grok-question") {
+                    // grok's vendor question carrier, in the enveloped params
+                    // shape of the live 1.0.25/26 frame. The unenveloped
+                    // 1.0.40 shape is covered at unit level; the daemon
+                    // accepts both.
+                    grok_request_id = Some(98);
+                    grok_seq += 1;
+                    let tool_call_id = if reuse_permission_ids {
+                        "tool-grok".to_string()
+                    } else {
+                        format!("tool-grok-{grok_seq}")
+                    };
+                    emit(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 98,
+                            "method": "_x.ai/ask_user_question",
+                            "params": {
+                                "sessionId": "stub-session",
+                                "toolCallId": tool_call_id,
+                                "questions": [{
+                                    "question": "Which colour should the fence be?",
+                                    "options": [
+                                        {"label": "Forest green (Recommended)", "description": "Blends in."},
+                                        {"label": "Barn red", "description": "Classic red."},
+                                        {"label": "Weathered grey", "description": "Aged look."}
+                                    ],
+                                    "multiSelect": null
+                                }],
+                                "mode": "default"
                             }
                         }),
                     )?;

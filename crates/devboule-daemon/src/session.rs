@@ -133,6 +133,8 @@ pub(crate) use acp_client::probe_declarations;
 pub(crate) use acp_client::{ACP_FIRST_RESPONSE_TIMEOUT, ACP_RESPONSE_TIMEOUT};
 #[path = "acp_host.rs"]
 mod acp_host;
+#[path = "acp_questions.rs"]
+mod acp_questions;
 #[path = "claude_client.rs"]
 mod claude_client;
 #[path = "codex_client.rs"]

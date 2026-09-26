@@ -25,8 +25,9 @@ use devboule_daemon::{
 };
 use devboule_protocol::{
     AgentTaskState, AttentionReason, ClientHello, Cursor, DaemonMessage, ErrorCode, FinishArtifact,
-    NoticeSeverity, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
-    SessionEvent, SessionKind, SessionStateSnapshot, WorkspaceIsolation,
+    NoticeSeverity, OwnerId, PermissionOutcome, PermissionRequestKind, Persistence,
+    PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionStateSnapshot,
+    WorkspaceIsolation,
 };
 use rusqlite::Connection;
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -1065,6 +1066,220 @@ fn acp_reused_answered_question_id_gets_no_card_and_one_plain_notice() {
         .query_row(
             "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
             [&session.id, "tool-chooser"],
+            |row| row.get(0),
+        )
+        .expect("the first answer's row still exists");
+    assert_eq!(
+        outcome, "allow_once",
+        "the audit row keeps the first answer"
+    );
+    drop(connection);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+/// grok's `_x.ai/ask_user_question` becomes a question card with the agent's
+/// labels; the person's pick travels back as labels, which the stub reports
+/// before the turn ends the normal way.
+#[test]
+fn acp_grok_question_answers_with_labels() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    let subscription = test
+        .client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+
+    test.client
+        .session_send(&session.id, "grok-question")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::PermissionRequest {
+                    tool_call_id,
+                    options,
+                    kind: Some(PermissionRequestKind::Question),
+                    ..
+                } if tool_call_id == "tool-grok-1"
+                    && options.len() == 3
+                    && options.iter().all(|option| option.kind == "allow_once")
+            )
+        })
+    });
+    test.client
+        .session_permission_respond_with_subscription(
+            &session.id,
+            subscription,
+            "tool-grok-1",
+            PermissionOutcome::AllowOnce,
+            Some("q0o0"),
+            None,
+        )
+        .expect("pick the first label");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You picked Forest green (Recommended)")
+        })
+    });
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn"
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+/// Dismissing a grok question answers `cancelled`, and the stub says so.
+#[test]
+fn acp_grok_question_dismiss_is_cancelled() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    let subscription = test
+        .client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+
+    test.client
+        .session_send(&session.id, "grok-question")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-grok-1"
+            )
+        })
+    });
+    test.client
+        .session_permission_respond_with_subscription(
+            &session.id,
+            subscription,
+            "tool-grok-1",
+            PermissionOutcome::Deny,
+            None,
+            None,
+        )
+        .expect("dismiss");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You cancelled")
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+/// A repeated grok tool call id is refused from the journal before any card
+/// exists: one plain notice, no second card, and the audit row keeps the
+/// first answer.
+#[test]
+fn acp_grok_reused_tool_call_id_gets_no_card_and_one_plain_notice() {
+    let _test_lock = lock_tests();
+    std::env::set_var("DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS", "1");
+    let mut test = AcpTest::new(&[]);
+    test._env
+        .names
+        .push("DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS");
+    let session = test.create_session();
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    let subscription = test
+        .client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+
+    test.client
+        .session_send(&session.id, "grok-question")
+        .expect("first prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-grok"
+            )
+        })
+    });
+    test.client
+        .session_permission_respond_with_subscription(
+            &session.id,
+            subscription,
+            "tool-grok",
+            PermissionOutcome::AllowOnce,
+            Some("q0o2"),
+            None,
+        )
+        .expect("pick the third label");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You picked Weathered grey")
+        })
+    });
+
+    test.client
+        .session_send(&session.id, "grok-question")
+        .expect("second prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionNotice {
+                    text,
+                    severity: NoticeSeverity::Info,
+                } if text
+                    == "The agent reused the id of a question this session already closed, so this request was declined."
+            )
+        })
+    });
+    let card_count = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-grok"
+            )
+        })
+        .count();
+    assert_eq!(card_count, 1, "the repeat never became a card");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You cancelled")
+        })
+    });
+
+    test.client
+        .journal_usage()
+        .expect("flush the permission row");
+    let connection = Connection::open(test._harness.paths.journal_file()).expect("open journal");
+    let outcome: String = connection
+        .query_row(
+            "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+            [&session.id, "tool-grok"],
             |row| row.get(0),
         )
         .expect("the first answer's row still exists");
