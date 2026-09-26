@@ -279,7 +279,7 @@ fn send_keys_to_terminal(
             &workspace,
         )
         .map_err(|error| TerminalError::Refused(error.message))?;
-    let subject = format!("sending keys to terminal '{}'", target.title);
+    let subject = format!("send keys to terminal '{}'", target.title);
     let opener = opener_label(target.created_by.as_deref(), &registration.session_id);
     let mut facts = target_facts(&target, &workspace, opener);
     facts.push(("keys", keys_preview(&request.keys, request.literal)));
@@ -322,7 +322,7 @@ fn kill_one_terminal(
         .sessions
         .terminal_target(terminal, &registration.owner, conn_peer, &workspace)
         .map_err(|error| TerminalError::Refused(error.message))?;
-    let subject = format!("killing terminal '{}'", target.title);
+    let subject = format!("close terminal '{}'", target.title);
     let opener = opener_label(target.created_by.as_deref(), &registration.session_id);
     let facts = target_facts(&target, &workspace, opener);
     write_after_card(

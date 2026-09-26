@@ -553,8 +553,8 @@ fn the_create_card_states_the_workspace_and_a_denied_create_writes_nothing() {
     );
     let answered = handle.join().expect("create thread");
     assert!(
-        title.contains("creating a terminal"),
-        "the card names the act: {title}"
+        title.contains("Approve request to create a terminal"),
+        "the card names the act in the infinitive the title reads after 'to': {title}"
     );
     let description = description.expect("description");
     assert!(
@@ -768,7 +768,7 @@ fn the_keys_card_counts_the_keys_and_never_carries_them() {
         );
     }
     assert!(
-        title.contains("sending keys to terminal 'Terminal'"),
+        title.contains("Approve request to send keys to terminal 'Terminal'"),
         "the card names the act and the target: {title}"
     );
     assert!(

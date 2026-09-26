@@ -55,7 +55,7 @@ pub(super) fn create_card_facts(
     if let Some(name) = name {
         facts.push(("name", name.to_string()));
     }
-    ("creating a terminal".to_string(), facts)
+    ("create a terminal".to_string(), facts)
 }
 
 /// The facts both target cards carry: which terminal, in which workspace,

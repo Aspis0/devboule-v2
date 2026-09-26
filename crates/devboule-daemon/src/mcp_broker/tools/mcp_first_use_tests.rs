@@ -387,3 +387,46 @@ fn forgetting_a_session_clears_its_marks() {
         None
     );
 }
+
+#[test]
+fn no_rendered_card_carries_a_group_id() {
+    // One walk over every first-use group: the button and the sentence are
+    // built from the label, so the id the marks are keyed by — an
+    // underscore-joined token — has nowhere to appear in what a person reads.
+    for (group, label) in FIRST_USE_GROUP_LABELS {
+        let card = write_gate_card("s.labels.1", group, "do the thing", &[("fact", "value")]);
+        let SessionEvent::PermissionRequest {
+            title,
+            description,
+            options,
+            ..
+        } = card
+        else {
+            panic!("the gate raises a permission request");
+        };
+        let description = description.expect("description");
+        let rendered = std::iter::once(title.as_str())
+            .chain(std::iter::once(description.as_str()))
+            .chain(options.iter().map(|option| option.name.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if group != label {
+            assert!(
+                !rendered.contains(group),
+                "{group} leaked into its own card:\n{rendered}"
+            );
+        }
+        assert!(
+            rendered.contains(&format!("Allow {label} for this session")),
+            "{group}'s button reads from the label: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("approves {label} from this session from now on")),
+            "{group}'s sentence reads from the label: {rendered}"
+        );
+        assert!(
+            !rendered.contains('_'),
+            "no underscore reaches the person: {rendered}"
+        );
+    }
+}

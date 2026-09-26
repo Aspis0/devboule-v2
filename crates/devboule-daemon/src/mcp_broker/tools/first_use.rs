@@ -27,6 +27,19 @@ pub(in crate::mcp_broker) const TERMINAL_KEYS_GROUP: &str = "terminal_keys";
 /// See [`TERMINAL_CREATE_GROUP`].
 pub(in crate::mcp_broker) const TERMINAL_KILL_GROUP: &str = "terminal_kill";
 
+/// Every first-use group's label, one table for all of them: the approval
+/// card's button and its sentence both read from here, so a group id — the
+/// underscore-joined token the marks are keyed by — never reaches the person.
+/// A new group belongs in this table; what forgets its entry still renders
+/// as words ([`group_label`]), never as the id.
+const FIRST_USE_GROUP_LABELS: &[(&str, &str)] = &[
+    (WORKSPACES_GROUP, "workspaces"),
+    (WORKSPACE_ARCHIVE_GROUP, "workspace archiving"),
+    (TERMINAL_CREATE_GROUP, "creating terminals"),
+    (TERMINAL_KEYS_GROUP, "typing into terminals"),
+    (TERMINAL_KILL_GROUP, "closing terminals"),
+];
+
 /// The card choice that approves only the call it was raised for.
 const CHOICE_ONCE: &str = "once";
 /// The card choice that approves the group for the calling session. Its
@@ -227,20 +240,20 @@ fn write_gate_card(
         .collect::<Vec<_>>()
         .join("\n");
     let subject = oneline(subject);
-    let session_label = session_permission_label(group);
-    let session_scope = session_scope_label(group);
+    let label = group_label(group);
+    let session_label = format!("Allow {label} for this session");
     let description = if listed.is_empty() {
         format!(
             "An agent requested permission to {subject} for the first time. \
              \"Allow this call\" approves only this call. \
-             \"{session_label}\" approves {session_scope} from this session from now on."
+             \"{session_label}\" approves {label} from this session from now on."
         )
     } else {
         let marked = mark_fact_lines(&listed).join("\n");
         format!(
             "An agent requested permission to {subject} for the first time:\n{marked}\n\n\
              \"Allow this call\" approves only this call. \
-             \"{session_label}\" approves {session_scope} from this session from now on."
+             \"{session_label}\" approves {label} from this session from now on."
         )
     };
     SessionEvent::PermissionRequest {
@@ -280,22 +293,15 @@ fn write_gate_card(
     }
 }
 
-fn session_permission_label(group: &str) -> String {
-    if group == WORKSPACE_ARCHIVE_GROUP {
-        "Allow workspace archiving for this session".to_string()
-    } else {
-        format!("Allow {group} for this session")
-    }
-}
-
-fn session_scope_label(group: &str) -> String {
-    if group == WORKSPACE_ARCHIVE_GROUP {
-        "workspace archiving".to_string()
-    } else if group == WORKSPACES_GROUP {
-        "workspace writes".to_string()
-    } else {
-        format!("{group} writes")
-    }
+/// One group's label as the person reads it: the table above, and for a
+/// group that forgot its entry the id spelled as words — a card must never
+/// show `some_group` as a noun.
+fn group_label(group: &str) -> String {
+    FIRST_USE_GROUP_LABELS
+        .iter()
+        .find(|(name, _)| *name == group)
+        .map(|(_, label)| (*label).to_string())
+        .unwrap_or_else(|| group.replace('_', " "))
 }
 
 /// One line of card text with no surprises in it: every line break a
