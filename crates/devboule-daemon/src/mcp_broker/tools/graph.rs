@@ -1,13 +1,17 @@
 //! Project-graph and Oracle search tools: their arguments and their reply shape.
 
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
+use crate::mcp_broker::RegisteredSession;
+use crate::server::ServerState;
 
 /// The arguments of a project-graph call, absent when the request carries
 /// none: the tools' own parser is the one place that decides what their closed
 /// argument set is, exactly as the create tool's parser does.
-pub(in crate::mcp_broker) fn project_graph_arguments(message: &Value) -> Value {
+fn project_graph_arguments(message: &Value) -> Value {
     message
         .pointer("/params/arguments")
         .cloned()
@@ -20,7 +24,7 @@ pub(in crate::mcp_broker) fn project_graph_arguments(message: &Value) -> Value {
 /// (`isError: true`) carrying the sentence that names the missing fact when the
 /// answer cannot be produced. A refusal is deliberately not an empty document:
 /// `[]` would read as "this node has no neighbours".
-pub(in crate::mcp_broker) fn project_graph_reply(
+fn project_graph_reply(
     id: &Value,
     result: Result<Value, crate::mcp_project_graph::GraphError>,
 ) -> Result<Option<Value>, Value> {
@@ -46,4 +50,76 @@ pub(in crate::mcp_broker) fn project_graph_reply(
             Ok(Some(tool_error(id, &message)))
         }
     }
+}
+
+pub(in crate::mcp_broker) fn neighborhood(
+    state: &Arc<ServerState>,
+    registration: &RegisteredSession,
+    id: Value,
+    message: &Value,
+) -> Result<Option<Value>, Value> {
+    // The caller's own workspace decides the graph; the bearer is
+    // the identity, and no argument names a path.
+    project_graph_reply(
+        &id,
+        crate::mcp_project_graph::neighborhood(
+            state,
+            &registration.session_id,
+            &registration.owner,
+            &project_graph_arguments(message),
+        ),
+    )
+}
+
+pub(in crate::mcp_broker) fn imports(
+    state: &Arc<ServerState>,
+    registration: &RegisteredSession,
+    id: Value,
+    message: &Value,
+) -> Result<Option<Value>, Value> {
+    project_graph_reply(
+        &id,
+        crate::mcp_project_graph::imports(
+            state,
+            &registration.session_id,
+            &registration.owner,
+            &project_graph_arguments(message),
+        ),
+    )
+}
+
+pub(in crate::mcp_broker) fn importers(
+    state: &Arc<ServerState>,
+    registration: &RegisteredSession,
+    id: Value,
+    message: &Value,
+) -> Result<Option<Value>, Value> {
+    project_graph_reply(
+        &id,
+        crate::mcp_project_graph::importers(
+            state,
+            &registration.session_id,
+            &registration.owner,
+            &project_graph_arguments(message),
+        ),
+    )
+}
+
+pub(in crate::mcp_broker) fn oracle_search(
+    state: &Arc<ServerState>,
+    registration: &RegisteredSession,
+    id: Value,
+    message: &Value,
+) -> Result<Option<Value>, Value> {
+    // The caller's own workspace decides the search; the bearer
+    // is the identity, and no argument names a path.
+    project_graph_reply(
+        &id,
+        crate::oracle_forward::search(
+            state,
+            &registration.session_id,
+            &registration.owner,
+            &project_graph_arguments(message),
+        ),
+    )
 }

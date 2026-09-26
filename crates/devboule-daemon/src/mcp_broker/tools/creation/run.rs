@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::mcp_broker::caller::McpCaller;
-use crate::mcp_broker::dispatch::tool_error;
+use crate::mcp_broker::dispatch::{rpc_error, tool_error};
 use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::server::ServerState;
 
@@ -300,4 +300,29 @@ pub(in crate::mcp_broker) fn provider_is_launchable(provider: &str) -> bool {
         .user_row_for(provider)
         .is_some()
         || crate::provider_catalog::find_available(provider).is_some()
+}
+
+pub(in crate::mcp_broker) fn create_agent_tool(
+    state: &Arc<ServerState>,
+    broker: &McpBroker,
+    caller: McpCaller,
+    registration: &RegisteredSession,
+    id: Value,
+    message: &Value,
+) -> Result<Option<Value>, Value> {
+    let arguments = message
+        .pointer("/params/arguments")
+        .cloned()
+        .unwrap_or(Value::Null);
+    match AgentCreateRequest::parse(&arguments) {
+        Ok(request) => Ok(Some(create_agent(
+            state,
+            broker,
+            &caller,
+            registration,
+            &id,
+            request,
+        ))),
+        Err(message) => Ok(Some(rpc_error(id, -32602, &message))),
+    }
 }
