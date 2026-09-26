@@ -4,7 +4,7 @@
 // size; the strip only wires the handlers.
 
 import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
-import type { Session } from "../../types/ipc";
+import type { Session } from "../../../types/ipc";
 
 interface TabSelectionArgs {
   sessions: readonly Session[];

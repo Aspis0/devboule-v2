@@ -9,14 +9,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const css = readFileSync(new URL("./Workspace.css", import.meta.url), "utf8");
-const tsx = readFileSync(new URL("./Workspace.tsx", import.meta.url), "utf8");
+const css = readFileSync(new URL("./strip.css", import.meta.url), "utf8");
+const tsx = readFileSync(new URL("./SessionStrip.tsx", import.meta.url), "utf8");
 
 /** The body of the top-level rule whose selector is exactly `selector`. */
 function ruleBody(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const body = css.match(new RegExp(`^${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`, "m"))?.[1];
-  if (body === undefined) throw new Error(`no rule in Workspace.css for ${selector}`);
+  if (body === undefined) throw new Error(`no rule in strip.css for ${selector}`);
   return body;
 }
 
@@ -25,7 +25,7 @@ describe("the session strip", () => {
     const scroller = ruleBody(".workspace-session-tabs-scroll");
     expect(scroller).toContain("overflow-x: auto;");
     // A lone `overflow-x: auto` computes the other axis to `auto`, and the row
-    // then grows a vertical bar beside 29 px tabs.
+    // then grows a vertical bar beside 28 px tabs.
     expect(scroller).toContain("overflow-y: hidden;");
   });
 
@@ -47,24 +47,22 @@ describe("the session strip", () => {
   });
 
   it("stays a single row", () => {
-    // Wrapping would put a second 44 px row of tabs over the panel's content.
+    // Wrapping would put a second 36 px row of tabs over the panel's content.
     expect(ruleBody(".workspace-session-tabs")).not.toContain("flex-wrap: wrap");
   });
 
   it("leaves the add button outside the box that scrolls", () => {
+    // Rows render through StripChip now, so div-counting cannot see the
+    // structure; the placement pin lives in the source order instead: the
+    // scrollport's closing tag comes before the add wrapper opens, and the
+    // DOM test in SessionStrip.test.tsx proves the same on elements.
     const scrollerAt = tsx.indexOf("workspace-session-tabs-scroll");
     expect(scrollerAt).toBeGreaterThan(-1);
-    const openEnd = tsx.indexOf(">", scrollerAt) + 1;
-    // Where the add button's wrapper opens, every box opened before it —
-    // the scroller and each tab row inside it — is closed again: the
-    // wrapper is the scroller's sibling, not a passenger. (The one div
-    // still open at that point in the source is the wrapper's own.)
     const addWrapAt = tsx.indexOf("workspace-session-add-wrap");
-    expect(addWrapAt).toBeGreaterThan(openEnd);
-    const between = tsx.slice(openEnd, addWrapAt);
-    const opened = (between.match(/<div/g) ?? []).length;
-    const closed = (between.match(/<\/div>/g) ?? []).length;
-    expect(closed).toBe(opened);
+    expect(addWrapAt).toBeGreaterThan(scrollerAt);
+    const between = tsx.slice(scrollerAt, addWrapAt);
+    expect(between).toContain("</div>");
+    expect(between).not.toContain('workspace-session-add"');
   });
 
   it("marks multi-selected tabs distinctly from the active tab", () => {

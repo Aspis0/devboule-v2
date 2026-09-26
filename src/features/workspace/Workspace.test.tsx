@@ -1198,9 +1198,13 @@ describe("Workspace sessions", () => {
       expect.stringContaining("recovered agent"),
       expect.stringContaining("running agent"),
     ]);
-    // The recovered tab is visibly not live: the daemon's own word, not a
-    // second name for the same state.
-    expect(container.textContent).toContain("recovered · unverifiable");
+    // The recovered tab is visibly not live: a ring dot, and the plain
+    // words in its tooltip — never the daemon's raw integrity words.
+    const recovered = tabs[0].querySelector(".strip-dot-recovered");
+    expect(recovered).not.toBeNull();
+    expect(tabs[0].getAttribute("title")).toContain("Recovered");
+    expect(container.textContent).not.toContain("recovered · unverifiable");
+    expect(tabs[1].querySelector(".strip-dot-live")).not.toBeNull();
   });
 
   it("keeps healthy projects visible, marks a failed project, and retries its load", async () => {
@@ -3036,15 +3040,13 @@ describe("Workspace sessions", () => {
         return tab;
       };
 
-      expect(findTab("agent finished").querySelector(".workspace-tab-attention")?.textContent).toBe(
-        "finished",
-      );
-      expect(findTab("agent error").querySelector(".workspace-tab-attention")?.textContent).toBe(
-        "error",
-      );
+      expect(findTab("agent finished").querySelector(".workspace-tab-attention")).toBeNull();
+      expect(findTab("agent finished").getAttribute("title")).toContain("Done");
+      expect(findTab("agent error").querySelector(".workspace-tab-attention")).toBeNull();
+      expect(findTab("agent error").getAttribute("title")).toContain("Failed");
       expect(
         findTab("agent permission").querySelector(".workspace-tab-attention")?.textContent,
-      ).toBe("needs approval");
+      ).toBe("Needs your approval");
       const quiet = findTab("agent quiet");
       expect(quiet.querySelector(".workspace-tab-attention")).toBeNull();
     });
@@ -3065,7 +3067,7 @@ describe("Workspace sessions", () => {
       // from its text content — which must carry the reason, not just a colour.
       expect(tab.getAttribute("aria-label")).toBeNull();
       expect(tab.textContent).toContain("agent blocked");
-      expect(tab.textContent).toContain("needs approval");
+      expect(tab.textContent).toContain("Needs your approval");
     });
   });
 
@@ -3176,38 +3178,33 @@ describe("Workspace sessions", () => {
     const tab = container.querySelector(".workspace-session-tab");
     if (tab === null) throw new Error("session tab did not render");
     expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
+    expect(tab.getAttribute("title") ?? "").not.toContain("from ");
   });
 
-  it("marks an unknown origin on the tab of a session the daemon did not describe", async () => {
+  it("marks an unknown origin in the tooltip of a session the daemon did not describe", async () => {
     // The default fixture carries no origin, which is what an older daemon
-    // sends: the tab says so instead of reading as a local session.
+    // sends: the tooltip says so instead of reading as a local session.
     root = createRoot(container);
     await act(async () => {
       root.render(<Workspace />);
     });
 
-    const badge = await vi.waitFor(() => {
-      const found = container.querySelector<HTMLElement>(
-        ".workspace-session-tab .workspace-session-origin-badge",
-      );
-      if (found === null) throw new Error("origin badge did not render");
-      expect(found.textContent).toBe("origin unknown");
+    const tab = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>(".workspace-session-tab");
+      if (found === null) throw new Error("session tab did not render");
       return found;
     });
+    expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
     // The full text survives the tab's truncation, which CSS does.
-    expect(badge.title).toBe("origin unknown");
-    // Its own class beside the peer pill's, so the two are never one element.
-    expect(badge.className).toBe(
-      "workspace-session-origin-badge workspace-session-origin-badge-unknown",
-    );
+    expect(tab.title).toBe("Running\norigin unknown");
     // And never the peer badge's wording.
-    expect(badge.textContent).not.toContain("from ");
+    expect(tab.title).not.toContain("from ");
   });
 
-  it("marks an unknown origin on the tab of a session the daemon could not place", async () => {
+  it("marks an unknown origin in the tooltip of a session the daemon could not place", async () => {
     // The daemon stamps `unknown` on a journal row whose origin column it could
-    // not interpret. That is not a local session: the tab gets the same badge
-    // and the same pill an absent origin gets, and never the peer pill.
+    // not interpret. That is not a local session: the tooltip gets the same line
+    // an absent origin gets, and never the peer line.
     vi.mocked(sessionsList).mockResolvedValue([
       { ...terminal("unplaced-session", "remote shell"), origin: { kind: "unknown" } },
     ]);
@@ -3216,19 +3213,14 @@ describe("Workspace sessions", () => {
       root.render(<Workspace />);
     });
 
-    const badge = await vi.waitFor(() => {
-      const found = container.querySelector<HTMLElement>(
-        ".workspace-session-tab .workspace-session-origin-badge",
-      );
-      if (found === null) throw new Error("origin badge did not render");
-      expect(found.textContent).toBe("origin unknown");
+    const tab = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>(".workspace-session-tab");
+      if (found === null) throw new Error("session tab did not render");
       return found;
     });
-    expect(badge.title).toBe("origin unknown");
-    expect(badge.className).toBe(
-      "workspace-session-origin-badge workspace-session-origin-badge-unknown",
-    );
-    expect(badge.textContent).not.toContain("from ");
+    expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
+    expect(tab.title).toContain("origin unknown");
+    expect(tab.title).not.toContain("from ");
   });
 
   it("names the device on a peer session's tab", async () => {
@@ -3252,12 +3244,10 @@ describe("Workspace sessions", () => {
       devicesRead.resolve(devicesReply);
     });
 
-    const badge = container.querySelector<HTMLElement>(
-      ".workspace-session-tab .workspace-session-origin-badge",
-    );
-    expect(badge?.textContent).toBe("from Xiaomi 14");
+    const tab = container.querySelector<HTMLElement>(".workspace-session-tab");
+    expect(tab?.querySelector(".workspace-session-origin-badge")).toBeNull();
     // The full text survives the tab's truncation, which CSS does.
-    expect(badge?.title).toBe("from Xiaomi 14");
+    expect(tab?.title).toContain("from Xiaomi 14");
   });
 
   it("keeps the peer badge on a tab whose peer origin names no device", async () => {
@@ -3272,18 +3262,15 @@ describe("Workspace sessions", () => {
       root.render(<Workspace />);
     });
 
-    const badge = await vi.waitFor(() => {
-      const found = container.querySelector<HTMLElement>(
-        ".workspace-session-tab .workspace-session-origin-badge",
-      );
-      if (found === null) throw new Error("origin badge did not render");
-      expect(found.textContent).toBe("from unknown");
+    const tab = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>(".workspace-session-tab");
+      if (found === null) throw new Error("session tab did not render");
       return found;
     });
-    // Still the peer pill, not the one an absent origin gets: a peer whose
+    expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
+    // Still the peer line, not the one an absent origin gets: a peer whose
     // device is unknown is still a named peer.
-    expect(badge.className).toBe("workspace-session-origin-badge");
-    expect(badge.title).toBe("from unknown");
+    expect(tab.title).toContain("from unknown");
   });
 
   it("falls back to the device id for a device the list does not know", async () => {
@@ -3298,14 +3285,16 @@ describe("Workspace sessions", () => {
       root.render(<Workspace />);
     });
 
-    // Poll the DOM instead of guessing how many ticks React needs: the badge is
+    // Poll the DOM instead of guessing how many ticks React needs: the line is
     // there exactly when the devices read has been applied.
     await vi.waitFor(() => {
-      expect(
-        container.querySelector(".workspace-session-tab .workspace-session-origin-badge")
-          ?.textContent,
-      ).toBe("from device-unseen");
+      expect(container.querySelector(".workspace-session-tab")?.getAttribute("title")).toContain(
+        "from device-unseen",
+      );
     });
+    expect(
+      container.querySelector(".workspace-session-tab .workspace-session-origin-badge"),
+    ).toBeNull();
   });
 
   it("names a created child's creator on the child's tab", async () => {
@@ -3328,18 +3317,14 @@ describe("Workspace sessions", () => {
       return found;
     });
 
-    // The session's own name is the tab's label; the creator is its own pill
-    // beside it, never part of that text.
+    // The session's own name is the tab's label; the creator is a tooltip
+    // line beside it, never part of that text.
     expect(tab.querySelector(".workspace-tab-label")?.textContent).toBe("worker one");
-    const pills = [...tab.querySelectorAll<HTMLElement>(".workspace-session-origin-badge")];
-    const creatorPill = pills.find((pill) => pill.textContent === "created by Design runner");
-    expect(creatorPill).not.toBeUndefined();
-    // Same pill as the peer device's: one class, no second badge style.
-    expect(creatorPill?.className).toBe("workspace-session-origin-badge");
+    expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
     // The full text survives the tab's truncation, which CSS does.
-    expect(creatorPill?.title).toBe("created by Design runner");
+    expect(tab.title).toContain("created by Design runner");
     // And nothing here names the A2A task state: the roster never carries one.
-    expect(pills.map((pill) => pill.textContent)).not.toContain("input_required");
+    expect(tab.title).not.toContain("input_required");
   });
 
   it("leaves a parked session's reason to the attention pill", async () => {
@@ -3360,14 +3345,12 @@ describe("Workspace sessions", () => {
       return found;
     });
 
-    const pills = [...tab.querySelectorAll<HTMLElement>(".workspace-session-origin-badge")].map(
-      (pill) => pill.textContent,
-    );
-    expect(pills.some((text) => text?.startsWith("created by"))).toBe(false);
-    expect(pills).not.toContain("input_required");
+    expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
+    expect(tab.title ?? "").not.toContain("created by");
+    expect(tab.title ?? "").not.toContain("input_required");
     // The one roster-level fact behind a parked card is the attention the daemon
-    // raises, and this is the pill that names it — the words a person reads.
-    expect(tab.querySelector(".workspace-tab-attention")?.textContent).toBe("needs approval");
+    // raises, and this is the words that name it — the words a person reads.
+    expect(tab.querySelector(".workspace-tab-attention")?.textContent).toBe("Needs your approval");
   });
 
   it("names the peer device on the permission card's provenance line", async () => {
@@ -3482,9 +3465,12 @@ describe("delegation on the roster", () => {
     await pushRoster([unattendedChild, activeChild]);
     await act(async () => undefined);
 
-    const loud = container.querySelector(".workspace-tab-delegation-unattended");
+    const loud = container.querySelector(".strip-dot-unattended");
     expect(loud).not.toBeNull();
-    expect(loud?.textContent).toBe("runs unattended \u00b7 created in an auto-accepting profile");
+    const loudTab = loud?.closest(".workspace-session-tab");
+    expect(loudTab?.getAttribute("title")).toContain(
+      "runs unattended \u00b7 created in an auto-accepting profile",
+    );
     // The take-back sits beside the row it can act on, and its accessible
     // name declares the global scope.
     const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
@@ -3510,12 +3496,12 @@ describe("delegation on the roster", () => {
     // asked for `false` — not merely mirrored optimistically in the store.
     expect(set).toHaveBeenCalledWith(false);
     expect(delegation.getState().enabled).toBe(false);
-    // The pill is a fact of the child's birth: it does NOT disappear or
+    // The dot is a fact of the child's birth: it does NOT disappear or
     // change because the live switch did. Deriving it from the setting is
     // the named red mutation.
-    const loudAfter = container.querySelector(".workspace-tab-delegation-unattended");
+    const loudAfter = container.querySelector(".strip-dot-unattended");
     expect(loudAfter).not.toBeNull();
-    expect(loudAfter?.textContent).toBe(
+    expect(loudAfter?.closest(".workspace-session-tab")?.getAttribute("title")).toContain(
       "runs unattended \u00b7 created in an auto-accepting profile",
     );
     // A control that cannot act is gone.
@@ -3670,10 +3656,11 @@ describe("delegation on the roster", () => {
     await act(async () => undefined);
 
     expect(container.querySelector(".workspace-tab-delegation")).toBeNull();
+    expect(container.querySelector(".strip-dot-unattended")).toBeNull();
     expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
   });
 
-  it("renders the quiet answering pill with the answered count from the push", async () => {
+  it("renders the quiet answering line in the tooltip with the answered count from the push", async () => {
     const delegation = enabledController();
     root = createRoot(container);
     await act(async () => {
@@ -3691,8 +3678,9 @@ describe("delegation on the roster", () => {
     ]);
     await act(async () => undefined);
 
-    const pill = container.querySelector(".workspace-tab-delegation-active");
-    expect(pill?.textContent).toBe("answers to its creator \u00b7 answered \u00d73");
+    expect(container.querySelector(".workspace-tab-delegation-active")).toBeNull();
+    const tab = container.querySelector(".workspace-session-tab");
+    expect(tab?.getAttribute("title")).toContain("answers to its creator \u00b7 answered \u00d73");
   });
 
   it("shows a creator-answered card resolving with its attribution instead of vanishing", async () => {

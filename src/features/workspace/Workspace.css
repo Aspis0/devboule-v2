@@ -247,75 +247,6 @@
   user-select: none !important;
 }
 
-.workspace-session-tabs {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 3px;
-  height: 44px;
-  padding: 0 12px;
-}
-
-/* The tabs scroll; they never shrink. Each tab is a swipe surface that clips its
-   own reveal (`overflow: hidden` below), and a flex item whose overflow is not
-   `visible` has no automatic minimum size — so with no scrollport the row
-   squeezed every tab to a sliver, and the clipped content carried Archive and
-   Delete outside their own hit boxes. `overflow-y: hidden` is not decoration:
-   a lone `overflow-x: auto` computes the other axis to `auto`. The add button
-   stays outside this box, because a button that scrolls away is a regression. */
-.workspace-session-tabs-scroll {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-.workspace-session-tab {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 29px;
-  padding: 0 12px;
-  color: var(--ink-soft);
-  background: transparent;
-  border-radius: 9px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.workspace-session-tab:hover,
-.workspace-session-tab:focus-visible {
-  background: var(--surface-muted);
-}
-
-.workspace-session-tab-selected {
-  background: var(--selection);
-}
-
-.workspace-session-tab-selected:hover,
-.workspace-session-tab-selected:focus-visible {
-  background: var(--selection);
-}
-
-/* The active tab is a fill; multi-selection is an outline, so a tab can be
-   both without lying about which is which. */
-.workspace-session-tab-multiselected {
-  outline: 2px solid var(--terracotta);
-  outline-offset: -2px;
-}
-
-.workspace-session-tab .workspace-status-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.workspace-tab-label {
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.workspace-tab-meta,
 .workspace-rate,
 .workspace-session-cwd,
 .workspace-diff-header,
@@ -326,119 +257,6 @@
 .workspace-browser-status,
 .workspace-pr-number {
   font-family: "JetBrains Mono", monospace;
-}
-
-.workspace-tab-meta {
-  color: var(--silence);
-  font-size: 10px;
-}
-
-/* Attention: the daemon flags sessions the user is not looking at. The badge
-   text carries the reason (so the tab's accessible name says why), the ochre
-   dot tone makes it spottable at a glance. */
-.workspace-session-tab-attention .workspace-status-dot {
-  background: var(--ochre);
-}
-
-.workspace-tab-attention {
-  padding: 1px 7px;
-  border: 1px solid var(--ochre);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--ochre-deep);
-  font-size: 10px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-/* The peer-origin badge names the device a session belongs to. It is its own
-   element beside the title, never part of the tab's text, so the session's own
-   title cannot pass as provenance. A long device name truncates inside the tab
-   instead of widening it; the full text stays on the element's `title`. */
-.workspace-session-origin-badge {
-  max-width: 16ch;
-  overflow: hidden;
-  padding: 1px 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  color: var(--ink-soft);
-  background: var(--surface-muted);
-  font-size: 10px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The unknown-origin badge (A14's third state): same slot, dashed and dimmer, so
-   a session whose origin the daemon did not send never reads as a device and
-   never reads as a local one either. */
-.workspace-session-origin-badge-unknown {
-  border-style: dashed;
-  color: var(--silence);
-  background: transparent;
-  font-style: italic;
-}
-
-/* The delegation pills sit in the origin badge's slot. Three tones, three
-   truths, never collapsed into one another:
-
-   - `-unattended` is the loud one: the attention pill's severity palette and
-     a filled ground, because a child that can run without asking must stay
-     visible after the excitement of creation has passed — it is a fact of the
-     child's birth, not of the current switch.
-   - `-unknown` is the softer marker that must nonetheless be PRESENT: dashed
-     and italic like the unknown-origin badge, since both name a fact the app
-     holds but could not establish. It never renders as nothing.
-   - `-active` is the quiet ledger line: who answers for this child, and how
-     many of its cards have been answered so far. */
-.workspace-tab-delegation {
-  max-width: 20ch;
-  overflow: hidden;
-  padding: 1px 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  color: var(--ink-soft);
-  background: var(--surface-muted);
-  font-size: 10px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-tab-delegation-unattended {
-  border-color: var(--ochre);
-  background: var(--surface);
-  color: var(--ochre-deep);
-  font-weight: 700;
-}
-
-.workspace-tab-delegation-unknown {
-  border-style: dashed;
-  color: var(--silence);
-  background: transparent;
-  font-style: italic;
-}
-
-/* The take-back is a sibling of its tab, never a control inside it (a button
-   cannot answer inside another button). It sits tight to the row it belongs
-   to and disappears with it: qualifying rows only, while the one switch is
-   on. Its accessible name carries the global scope — this takes back the
-   power everywhere, not on this row. */
-.workspace-tab-takeback {
-  padding: 2px 8px;
-  border: 1px solid var(--terracotta);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--terracotta-deep);
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.workspace-tab-takeback:hover {
-  background: var(--terracotta-pressed);
-  color: var(--surface);
 }
 
 /* The parsed `agent_permission_request` envelope: the relayed sentence, and
@@ -534,54 +352,6 @@
   margin-top: 4px;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.workspace-session-add {
-  width: 25px;
-  height: 25px;
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1;
-}
-
-/* The provider choice menu opened from the tab strip floats below the +
-   button; the strip itself keeps its fixed height. */
-.workspace-session-add-wrap {
-  display: flex;
-}
-
-/* The + menu and the provider picker no longer open inside the strip: they
-   portal to document.body and take position: fixed from their anchor's
-   rectangle (popoverPlace.tsx), so the scoped anchor rule above them is
-   gone with the clipping it could not prevent. */
-
-/* The selection's size is announced politely; this only keeps the sentence
-   out of the picture. */
-.workspace-sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-.workspace-session-add:hover,
-.workspace-session-add:focus-visible {
-  color: var(--terracotta-deep);
-  background: var(--surface-muted);
-}
-
-.workspace-tabs-spacer {
-  flex: 1;
-}
-
-.workspace-rate {
-  color: var(--silence);
-  font-size: 10.5px;
-  white-space: nowrap;
 }
 
 /* The spec's inline error line (SPEC-regions "Empty and error"): one 12px
@@ -1269,7 +1039,6 @@
 }
 
 .workspace-row-selected .workspace-row-meta,
-.workspace-session-tab-selected .workspace-tab-meta,
 .workspace-surface-option-selected .workspace-surface-option-meta {
   color: var(--ink-soft);
 }
@@ -2738,76 +2507,6 @@
   border: 0;
 }
 
-/* One row per session tab: the tab button, the trailing close chip, and the
-   take-back. The row is what right-clicks and hover land on; flex:none keeps
-   the strip scrolling instead of squeezing a tab below its content. */
-.workspace-session-row {
-  position: relative;
-  display: flex;
-  flex: none;
-  align-items: center;
-  border-radius: 9px;
-}
-
-/* Paseo's trailing close chip: an overlay about 48 px wide on the row's
-   right edge, scrimmed with the tab's own background, carrying one 18×18 "×"
-   whose glyph is 12 px. Hidden means unclickable (visibility plus
-   pointer-events), so it can never take a click meant for the label. */
-.workspace-session-chip {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  width: 48px;
-  padding-right: 4px;
-  border-radius: 0 9px 9px 0;
-  overflow: hidden;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition:
-    opacity 120ms ease-out,
-    visibility 120ms;
-}
-
-.workspace-session-chip::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: var(--surface-muted);
-}
-
-.workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before {
-  background: var(--selection);
-}
-
-.workspace-session-row:hover .workspace-session-chip,
-.workspace-session-row:focus-within .workspace-session-chip {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-}
-
-.workspace-session-chip-close {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  color: var(--ink-soft);
-  cursor: pointer;
-}
-
-.workspace-session-chip-close:hover,
-.workspace-session-chip-close:focus-visible {
-  background: var(--border-strong);
-}
-
 /* The menu's Delete entry reads as what it is: the one entry that destroys. */
 .workspace-menu-separator {
   height: 1px;
@@ -2817,10 +2516,4 @@
 
 .workspace-menu-option-destructive {
   color: var(--terracotta-deep);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .workspace-session-chip {
-    transition: none;
-  }
 }

@@ -5,9 +5,9 @@
 // newer close — and reports a target that went stale between the ask and
 // the click.
 
-import type { Session } from "../../types/ipc";
-import { isCommandError } from "../../lib/commandError";
-import { errorSentence } from "../../lib/errorSentence";
+import type { Session } from "../../../types/ipc";
+import { isCommandError } from "../../../lib/commandError";
+import { errorSentence } from "../../../lib/errorSentence";
 import type { CloseIntent } from "./closePolicy";
 
 /** The key an OLDER build persisted its undo-window intents under. The new

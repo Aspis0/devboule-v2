@@ -3,7 +3,7 @@
 // close is an archive (session_stop), so the process stops and every message
 // stays in History, where Paseo destroys the closed terminal.
 
-import { isAgentKind, type Session } from "../../types/ipc";
+import { isAgentKind, type Session } from "../../../types/ipc";
 
 interface BulkCloseCounts {
   agents: number;

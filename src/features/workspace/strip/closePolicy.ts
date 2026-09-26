@@ -9,7 +9,7 @@
 // delete — which destroys the session — always asks. When in doubt, ask: an
 // extra confirmation is cheap, stopping a working agent is not.
 
-import { isAgentKind, type Session } from "../../types/ipc";
+import { isAgentKind, type Session } from "../../../types/ipc";
 
 export type CloseIntent = "archive" | "delete";
 

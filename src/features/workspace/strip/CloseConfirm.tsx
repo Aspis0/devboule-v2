@@ -10,7 +10,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react";
-import { AnchoredPopover } from "./popoverPlace";
+import { AnchoredPopover } from "../popoverPlace";
 
 interface CloseConfirmProps {
   anchorRef: RefObject<HTMLElement | null>;

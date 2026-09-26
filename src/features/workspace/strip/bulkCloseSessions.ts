@@ -3,7 +3,7 @@
 // slicing in workspace-screen.tsx), and a multi-selection intersected with
 // what is on screen.
 
-import type { Session } from "../../types/ipc";
+import type { Session } from "../../../types/ipc";
 
 export type TabCloseAction = "close" | "left" | "right" | "others";
 

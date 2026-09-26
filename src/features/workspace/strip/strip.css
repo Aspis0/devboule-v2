@@ -1,0 +1,325 @@
+/* The tab strip: the h36 row, the scrolling tablist, the h28 chips, the
+   28×28 "+" pinned after the scrollport, and the count. Moved out of
+   Workspace.css so the strip's geometry lives with its render. */
+
+.workspace-session-tabs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 8px;
+}
+
+/* The tabs scroll; they never shrink. Each tab is a swipe surface that clips its
+   own reveal (`overflow: hidden` below), and a flex item whose overflow is not
+   `visible` has no automatic minimum size — so with no scrollport the row
+   squeezed every tab to a sliver, and the clipped content carried Archive and
+   Delete outside their own hit boxes. `overflow-y: hidden` is not decoration:
+   a lone `overflow-x: auto` computes the other axis to `auto`. The add button
+   stays outside this box, because a button that scrolls away is a regression. */
+.workspace-session-tabs-scroll {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.workspace-session-tabs-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* The 36 px fade to the pane ground, only on the side that still hides
+   chips — the strip sets data-fade-left/right from its scroll position. */
+.workspace-session-tabs-scroll[data-fade-right="true"] {
+  mask-image: linear-gradient(to right, black calc(100% - 36px), transparent);
+}
+
+.workspace-session-tabs-scroll[data-fade-left="true"] {
+  mask-image: linear-gradient(to left, black calc(100% - 36px), transparent);
+}
+
+.workspace-session-tabs-scroll[data-fade-left="true"][data-fade-right="true"] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 36px,
+    black calc(100% - 36px),
+    transparent
+  );
+}
+
+.workspace-session-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  min-width: 96px;
+  max-width: 160px;
+  padding: 0 8px;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.workspace-session-tab:hover,
+.workspace-session-tab:focus-visible {
+  color: var(--ink);
+  background: var(--fill-chip-hover);
+}
+
+.workspace-session-tab-selected {
+  background: var(--selection);
+}
+
+.workspace-session-tab-selected:hover,
+.workspace-session-tab-selected:focus-visible {
+  background: var(--selection);
+}
+
+.workspace-session-tab-selected,
+.workspace-session-tab-selected:hover,
+.workspace-session-tab-selected:focus-visible {
+  color: var(--ink);
+}
+
+/* The active tab is a fill; multi-selection is a soft fill plus an inset
+   outline, so a tab can be both without lying about which is which. */
+.workspace-session-tab-multiselected {
+  background: var(--fill-selected-soft);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.workspace-session-tab .workspace-status-dot {
+  width: 6px;
+  height: 6px;
+}
+
+/* The spec's dot tones. Live breathes through the shared pulse; recovered
+   is a ring, never a fill; silence and stops keep the old quiet tones. */
+.strip-dot-live {
+  background: var(--green);
+}
+
+.strip-dot-attention {
+  background: var(--tone-attention);
+}
+
+.strip-dot-unattended {
+  background: var(--tone-unattended);
+}
+
+.strip-dot-recovered {
+  background: transparent;
+  outline: 1.5px solid var(--tone-recovered);
+  outline-offset: -1px;
+}
+
+.strip-dot-idle {
+  background: var(--border-strong);
+}
+
+.strip-dot-ended,
+.strip-dot-unknown {
+  background: var(--terracotta);
+}
+
+.strip-kind {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--silence);
+}
+
+.workspace-session-tab-selected .strip-kind {
+  color: var(--ink-soft);
+}
+
+.workspace-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The one chip that still uses words: a session asking for an action. */
+.workspace-tab-attention {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--ochre);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ochre-deep);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.workspace-session-add {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--fill-plus);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* The provider choice menu opened from the tab strip floats below the +
+   button; the strip itself keeps its fixed height. */
+.workspace-session-add-wrap {
+  display: flex;
+}
+
+/* The + menu and the provider picker no longer open inside the strip: they
+   portal to document.body and take position: fixed from their anchor's
+   rectangle (popoverPlace.tsx), so the scoped anchor rule above them is
+   gone with the clipping it could not prevent. */
+
+/* The selection's size is announced politely; this only keeps the sentence
+   out of the picture. */
+.workspace-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.workspace-session-add:hover,
+.workspace-session-add:focus-visible {
+  color: var(--terracotta-deep);
+  background: var(--surface-muted);
+}
+
+.workspace-session-add:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.workspace-tabs-spacer {
+  flex: 1;
+}
+
+.workspace-rate {
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+/* One row per session tab: the tab button, the trailing close chip, and the
+   take-back. The row is what right-clicks and hover land on; flex:none keeps
+   the strip scrolling instead of squeezing a tab below its content. */
+.workspace-session-row {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  border-radius: 6px;
+}
+
+/* The trailing close chip: an overlay about 48 px wide on the row's
+   right edge, scrimmed with the tab's own background, carrying one 18×18 "×"
+   whose glyph is 12 px. Hidden means unclickable (visibility plus
+   pointer-events), so it can never take a click meant for the label. */
+.workspace-session-chip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 48px;
+  padding-right: 4px;
+  border-radius: 0 6px 6px 0;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease-out,
+    visibility 120ms;
+}
+
+.workspace-session-chip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--ground-center);
+}
+
+.workspace-session-row:hover .workspace-session-chip::before,
+.workspace-session-row:focus-within .workspace-session-chip::before {
+  background: var(--fill-chip-hover);
+}
+
+.workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before {
+  background: var(--selection);
+}
+
+.workspace-session-row:hover .workspace-session-chip,
+.workspace-session-row:focus-within .workspace-session-chip {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.workspace-session-chip-close {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.workspace-session-chip-close:hover,
+.workspace-session-chip-close:focus-visible {
+  background: var(--border-strong);
+}
+
+/* The take-back is a sibling of its tab, never a control inside it (a button
+   cannot answer inside another button). It sits tight to the row it belongs
+   to and disappears with it: qualifying rows only, while the one switch is
+   on. Its accessible name carries the global scope — this takes back the
+   power everywhere, not on this row. */
+.workspace-tab-takeback {
+  padding: 2px 8px;
+  border: 1px solid var(--terracotta);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--terracotta-deep);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.workspace-tab-takeback:hover {
+  background: var(--terracotta-pressed);
+  color: var(--surface);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-session-chip {
+    transition: none;
+  }
+}

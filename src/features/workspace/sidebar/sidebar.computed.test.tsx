@@ -72,10 +72,13 @@ afterEach(async () => {
 });
 
 describe("sidebar computed styles (real stylesheets, no app launch)", () => {
-  // Sheet order matches the bundle: tokens, global, workspace, sidebar.
+  // Sheet order matches the bundle: tokens, global, strip (pulled in by
+  // SessionStrip, which Workspace imports before its own CSS), workspace,
+  // sidebar.
   const stripped = [
     withoutComments(read("src/styles/tokens.css")),
     withoutComments(read("src/styles/global.css")),
+    withoutComments(read("src/features/workspace/strip/strip.css")),
     withoutComments(read("src/features/workspace/Workspace.css")),
     withoutComments(read("src/features/workspace/sidebar/sidebar.css")),
   ];
@@ -265,7 +268,30 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     if (strip === null) throw new Error("session tab strip did not render");
     const style = getComputedStyle(strip);
     expect(style.display).toBe("flex");
-    expect(style.height).toBe("44px");
+    expect(style.height).toBe("36px");
+  });
+
+  it("the tab chip and the add button keep the spec geometry", async () => {
+    inject([".workspace-session-tab", ".workspace-session-add", ".workspace-tab-label"]);
+    await renderWorkspace();
+    const chip = document.querySelector<HTMLElement>(".workspace-session-tab");
+    if (chip === null) throw new Error("session tab did not render");
+    const chipStyle = getComputedStyle(chip);
+    expect(chipStyle.height).toBe("28px");
+    expect(chipStyle.minWidth).toBe("96px");
+    expect(chipStyle.maxWidth).toBe("160px");
+    expect(chipStyle.borderRadius).toBe("6px");
+    expect(chipStyle.paddingTop).toBe("0px");
+    expect(chipStyle.paddingRight).toBe("8px");
+    const label = chip.querySelector<HTMLElement>(".workspace-tab-label");
+    if (label === null) throw new Error("tab label did not render");
+    expect(getComputedStyle(label).overflow).toBe("hidden");
+    const add = document.querySelector<HTMLElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add did not render");
+    const addStyle = getComputedStyle(add);
+    expect(addStyle.width).toBe("28px");
+    expect(addStyle.height).toBe("28px");
+    expect(addStyle.borderRadius).toBe("6px");
   });
 
   it("diff removed lines keep their colour rule", () => {

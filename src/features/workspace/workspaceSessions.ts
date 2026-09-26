@@ -287,6 +287,25 @@ export function sessionCreatorBadge(
   return `created by ${name ?? boundByGraphemes(createdBy, 8)}`;
 }
 
+/**
+ * The tab tooltip's creator line, or null for one a person started.
+ *
+ * The chip no longer carries the creator badge; the tooltip does, and it
+ * names the creator by the title the roster shows for it — never the raw
+ * session id. A creator the roster no longer holds reads "created by an
+ * agent": the child does have a creator, and the id is not a name.
+ */
+export function sessionCreatorTooltip(
+  session: Pick<Session, "createdBy">,
+  roster: readonly Pick<Session, "id" | "title" | "kind" | "displayName">[],
+): string | null {
+  const createdBy = session.createdBy?.trim();
+  if (!createdBy) return null;
+  const creator = roster.find((row) => row.id === createdBy);
+  if (creator === undefined) return "created by an agent";
+  return `created by ${sessionTitle(creator)}`;
+}
+
 /** What a row's delegation pill says, and how loudly. */
 export interface DelegationBadge {
   /** `unattended` is the loud one; `unknown` the softer, present one. */

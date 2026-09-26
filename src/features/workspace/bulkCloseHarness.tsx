@@ -98,7 +98,7 @@ vi.mock("./AgentChatSurface", () => ({
 
 import { projectsList, providersList, sessionsList, workspacesList } from "../../lib/tauri";
 import { Workspace } from "./Workspace";
-import { resetSharedCloseActionsForTests } from "./closeActions";
+import { resetSharedCloseActionsForTests } from "./strip/closeActions";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe } from "./queueSenderDouble";
 import type { Workspace as IpcWorkspace } from "../../types/ipc";

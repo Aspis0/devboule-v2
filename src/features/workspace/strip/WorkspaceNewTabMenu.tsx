@@ -14,7 +14,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { AnchoredPopover } from "./popoverPlace";
+import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "./menuNav";
 
 interface WorkspaceNewTabMenuProps {

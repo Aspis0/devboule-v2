@@ -3,7 +3,7 @@
 // selection intersected with what is on screen.
 
 import { describe, expect, it } from "vitest";
-import type { Session } from "../../types/ipc";
+import type { Session } from "../../../types/ipc";
 import { sessionsForSelection, sessionsForTabAction } from "./bulkCloseSessions";
 
 function session(id: string, kind: Session["kind"] = "terminal"): Session {

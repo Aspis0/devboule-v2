@@ -18,13 +18,11 @@ import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
-import { CloseConfirm } from "./CloseConfirm";
-import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
-import { SessionTabMenu } from "./SessionTabMenu";
-import { useTabSelection } from "./useTabSelection";
-import { sessionTabElementId, useTabCloseFlow } from "./useTabCloseFlow";
-import { discardPersistedPendingCloses, sharedCloseActions } from "./closeActions";
-import type { CloseIntent } from "./closePolicy";
+import { useTabSelection } from "./strip/useTabSelection";
+import { useTabCloseFlow } from "./strip/useTabCloseFlow";
+import { SessionStrip } from "./strip/SessionStrip";
+import { discardPersistedPendingCloses, sharedCloseActions } from "./strip/closeActions";
+import type { CloseIntent } from "./strip/closePolicy";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { reportSelection } from "./presence";
 import { createDaemonRecovery } from "./daemonRecovery";
@@ -39,9 +37,8 @@ import { useWorkspaceProjects } from "./workspaceProjects";
 import { Sidebar } from "./sidebar/Sidebar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
 import { useProviderConsent } from "./useProviderConsent";
-import { focusIsWhereTheFlowLeftIt, useStripFocus } from "./stripFocus";
+import { focusIsWhereTheFlowLeftIt, useStripFocus } from "./strip/stripFocus";
 import { AnchoredPopover } from "./popoverPlace";
-import { useSelectedTabVisible } from "./stripScroll";
 import {
   DELEGATION_CAPABILITY,
   delegationController,
@@ -57,14 +54,7 @@ import {
   peerDeviceNames,
   requiresConsent,
   sessionCreateFromProvider,
-  sessionCreatorBadge,
-  sessionDelegationBadges,
-  sessionDelegationTakeBack,
-  sessionDisplayNames,
-  sessionDotTone,
-  sessionOriginBadge,
-  sessionOriginUnknown,
-  sessionStateLabel,
+  sessionCreatorTooltip,
   sessionTitle,
   isRecoveredSession,
   sharedSessionController,
@@ -72,14 +62,12 @@ import {
 } from "./workspaceSessions";
 import {
   heldAssistantTextFor,
-  sessionAttentionLabel,
   setAttentionHeldContentProvider,
   workspaceHeldContentProvider,
 } from "./attentionNotice";
 import { RecoveredSessionBar } from "./recoveredSessionBar";
 import { DaemonRestartNotice } from "./daemonRestartNotice";
 import type { PermissionRequest, PermissionResolved, ProviderInfo, Session } from "../../types/ipc";
-import type { DelegationBadge } from "./workspaceSessions";
 import { isAgentKind } from "../../types/ipc";
 import {
   daemonRestart,
@@ -123,24 +111,6 @@ function SidePanelMeta({
     () => selectedSurface.liveMeta?.snapshot(selectedWorkspace) ?? selectedSurface.meta,
   );
   return <span className="workspace-surface-meta">{meta}</span>;
-}
-
-/**
- * One badge list per roster row, cached by row identity: the strip maps over
- * it on every render of the workspace (including every keystroke and daemon
- * status tick), and the rows themselves only change when a push replaces
- * them. Without the cache each render allocated fresh arrays and objects per
- * row for the same answer. The cache can hold a stale list only if a row
- * object were ever mutated in place — Session rows are replaced, never
- * edited — and the entries are tiny.
- */
-const delegationBadgeCache = new WeakMap<Session, DelegationBadge[]>();
-function cachedDelegationBadges(session: Session): DelegationBadge[] {
-  const cached = delegationBadgeCache.get(session);
-  if (cached !== undefined) return cached;
-  const badges = sessionDelegationBadges(session);
-  delegationBadgeCache.set(session, badges);
-  return badges;
 }
 
 interface WorkspaceProps {
@@ -394,11 +364,6 @@ export function Workspace({
     setSelectedWorkspace,
     selectSession,
   ]);
-  // The strip scrolls its selected tab into full view. The arithmetic and the
-  // effect live in stripScroll.ts, unit-tested there — happy-dom computes no
-  // layout to prove them against here.
-  const stripScrollportRef = useRef<HTMLDivElement>(null);
-  useSelectedTabVisible(stripScrollportRef, selectedSessionId, visibleSessions);
   // One close, one act: the flow has already asked where the policy says so
   // and resolved its targets; what lands here fires now, a target that went
   // stale between the ask and the click is reported, never touched, and a
@@ -438,23 +403,22 @@ export function Workspace({
     },
     [closeActions, refreshWorkspaceStats, sessions],
   );
-  // Multi-select (ours) and the tab close flow (Paseo's menu plus the
-  // confirmation) live in their own files; the strip only wires handlers.
-  // The "+" button's ref is the flow's last focus fallback (no active tab).
+  // Multi-select and the tab close flow live in the strip's folder; the
+  // strip only wires their handlers. The "+" button's ref is the flow's
+  // last focus fallback (no active tab).
   const addButtonRef = useRef<HTMLButtonElement>(null);
-  const {
-    selection,
-    announcement: selectionAnnouncement,
-    handleTabClick,
-    clearSelection,
-  } = useTabSelection({ sessions: visibleSessions, selectedSessionId, selectSession });
+  const tabSelection = useTabSelection({
+    sessions: visibleSessions,
+    selectedSessionId,
+    selectSession,
+  });
   const tabClose = useTabCloseFlow({
     sessions: visibleSessions,
     selectedSessionId,
-    selection,
+    selection: tabSelection.selection,
     onClose: runClose,
     selectSession,
-    clearSelection,
+    clearSelection: tabSelection.clearSelection,
     addButtonRef,
   });
   // The roster is the authority on what a close is still hiding: a row it
@@ -490,11 +454,6 @@ export function Workspace({
   // destroy a message the user queued (review F1, F2, F13).
   const sessionQueue =
     paneSession === null ? null : sharedSessionQueueOwner().queueFor(paneSession.id);
-  // The names the roster carries, for the badge that resolves a child's
-  // `createdBy` back to the session that created it. Memoized on the roster:
-  // the map is a projection of the same array the tab strip maps over, and
-  // rebuilding it on unrelated renders bought nothing.
-  const sessionNames = useMemo(() => sessionDisplayNames(sessions), [sessions]);
   // The recovery decision is a small external store: it holds the episode, the
   // roster answer, and the attempt-failed note, which only change from pushed
   // updates. Both pushes happen in effects below — no ref is read during render.
@@ -1161,220 +1120,29 @@ export function Workspace({
       />
 
       <main className="workspace-center-panel">
-        {/* The tab strip is a plain row: the tablist is the scrollport itself,
-            so the "New tab" button and its menu are siblings of the tablist,
-            never descendants of it. */}
-        <div className="workspace-session-tabs">
-          {/* The row of tabs scrolls; the add button below it stays outside
-              the scrollport, so a full strip cannot carry it off screen. */}
-          <div
-            className="workspace-session-tabs-scroll workspace-scroll"
-            role="tablist"
-            aria-label="Sessions"
-            ref={stripScrollportRef}
-          >
-            {visibleSessions.map((session) => {
-              const originBadge = sessionOriginBadge(session, peerNames);
-              // A badge for a session the daemon described as a peer's, or the
-              // unknown one for a session it did not describe at all. The two are
-              // told apart by their words and by the mark on the unknown pill.
-              const originUnknown = sessionOriginUnknown(session);
-              // Identity badge: who created this session, in the same pill the
-              // peer device uses. Null for a session a person started.
-              // No `input_required` badge belongs here: the A2A task state is
-              // reported to the creator (finish envelope + `child_finished`), not
-              // to the roster, and the parked card a person must answer is what
-              // the attention pill below already names. See
-              // `workspaceSessions.ts` for the measurement before re-adding one.
-              const creatorBadge = sessionCreatorBadge(session, sessionNames);
-              // The delegation ledger, in pills: nothing for a session that is
-              // not an agent-created child, the loud unattended pill for one that
-              // asks nobody, the quiet answering pill for one whose creator
-              // answers, the softer cannot-establish marker where the daemon
-              // honestly could not.
-              const delegationBadges = cachedDelegationBadges(session);
-              // The take-back lives on the row that can act, beside its pill:
-              // qualifying rows only, while the one switch is on.
-              const rowTakeBack = takeBackAvailable && sessionDelegationTakeBack(session);
-              const tabTitle = sessionTitle(session);
-              return (
-                // One row per session: the tab button, the trailing close
-                // chip (a sibling — a button cannot live inside a button),
-                // and the take-back. The right-click lives on the ROW, so a
-                // right-click anywhere on it — over the chip included —
-                // opens the tab menu.
-                <div
-                  className="workspace-session-row"
-                  key={session.id}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    tabClose.openMenu(session.id);
-                  }}
-                >
-                  <button
-                    type="button"
-                    role="tab"
-                    id={sessionTabElementId(session.id)}
-                    aria-selected={selectedSessionId === session.id}
-                    aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
-                    aria-haspopup="menu"
-                    aria-expanded={tabClose.menu?.sessionId === session.id}
-                    className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${selection.has(session.id) ? " workspace-session-tab-multiselected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
-                    onClick={(event) => handleTabClick(session, event)}
-                    onAuxClick={(event) => {
-                      // Paseo's middle click: button 1 closes the tab, by
-                      // the same policy as every other close.
-                      if (event.button === 1) {
-                        event.preventDefault();
-                        tabClose.closeSingle(session.id);
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-                        event.preventDefault();
-                        tabClose.openMenu(session.id);
-                      }
-                    }}
-                  >
-                    <span
-                      className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
-                    />
-                    <span className="workspace-tab-label">{sessionTitle(session)}</span>
-                    {originBadge !== null ? (
-                      <span
-                        className={
-                          originUnknown
-                            ? "workspace-session-origin-badge workspace-session-origin-badge-unknown"
-                            : "workspace-session-origin-badge"
-                        }
-                        title={originBadge}
-                      >
-                        {originBadge}
-                      </span>
-                    ) : null}
-                    {creatorBadge !== null ? (
-                      <span className="workspace-session-origin-badge" title={creatorBadge}>
-                        {creatorBadge}
-                      </span>
-                    ) : null}
-                    {delegationBadges.map((badge) => (
-                      <span
-                        // Tone alone is not unique: two unknown-tone markers
-                        // (a delegation ledger the daemon could not describe
-                        // beside an unattended mode it could not establish)
-                        // are exactly the row the honesty rules can produce.
-                        key={`${badge.tone}:${badge.label}`}
-                        className={`workspace-tab-delegation workspace-tab-delegation-${badge.tone}`}
-                        title={badge.label}
-                      >
-                        {badge.label}
-                      </span>
-                    ))}
-                    <span className="workspace-tab-meta">
-                      {sessionStateLabel(session.state, session.elapsedMs)}
-                    </span>
-                    {session.attention ? (
-                      <span
-                        className={`workspace-tab-attention workspace-attention-${session.attention.reason}`}
-                      >
-                        {sessionAttentionLabel(session.attention.reason)}
-                      </span>
-                    ) : null}
-                  </button>
-                  <span className="workspace-session-chip">
-                    <button
-                      type="button"
-                      className="workspace-session-chip-close"
-                      aria-label={`Close ${tabTitle}`}
-                      title={`Close ${tabTitle}`}
-                      onClick={() => tabClose.closeSingle(session.id)}
-                    >
-                      <svg
-                        width={12}
-                        height={12}
-                        viewBox="0 0 12 12"
-                        aria-hidden="true"
-                        focusable="false"
-                      >
-                        <path
-                          d="M2 2l8 8M10 2l-8 8"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                          fill="none"
-                        />
-                      </svg>
-                    </button>
-                  </span>
-                  {rowTakeBack ? (
-                    <button
-                      type="button"
-                      className="workspace-tab-takeback"
-                      // A sibling of its tab, never a control inside one: the
-                      // tab is a button, and a button cannot answer inside
-                      // another. Global scope is the control's whole honesty —
-                      // it takes back the power everywhere, not on this row.
-                      aria-label="Take back — stops every agent from answering for its children"
-                      title="Take back — stops every agent from answering for its children"
-                      onClick={takeBack}
-                    >
-                      Take back
-                    </button>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-          <div className="workspace-session-add-wrap">
-            <button
-              ref={addButtonRef}
-              type="button"
-              className="workspace-session-add"
-              onClick={() => setNewTabMenuOpen((open) => !open)}
-              title="New tab"
-              aria-label="New tab"
-              aria-haspopup="menu"
-              aria-expanded={newTabMenuOpen}
-              disabled={sessionCreating || providerChoosing}
-            >
-              +
-            </button>
-            {newTabMenuOpen ? (
-              <WorkspaceNewTabMenu
-                triggerRef={addButtonRef}
-                creating={sessionCreating || providerChoosing}
-                workspaceSelected={selectedWorkspace !== null}
-                onAgent={handleNewTabAgent}
-                onTerminal={handleNewTabTerminal}
-                onClose={dismissNewTabMenu}
-              />
-            ) : null}
-            {providerAnchor?.kind === "strip" ? providerMenu : null}
-          </div>
-          <span className="workspace-tabs-spacer" />
-          <span className="workspace-rate">{sessionStatusText}</span>
-        </div>
-        <div className="workspace-sr-only" role="status" aria-live="polite">
-          {selectionAnnouncement}
-        </div>
-        {tabClose.menu !== null ? (
-          <SessionTabMenu
-            anchorRef={tabClose.anchorRef}
-            entries={tabClose.menu.entries}
-            onEntry={tabClose.activateEntry}
-            onClose={tabClose.closeMenu}
-          />
-        ) : null}
-        {tabClose.confirm !== null ? (
-          <CloseConfirm
-            anchorRef={tabClose.anchorRef}
-            title={tabClose.confirm.title}
-            message={tabClose.confirm.message}
-            confirmLabel={tabClose.confirm.confirmLabel}
-            onConfirm={tabClose.confirmClose}
-            onCancel={tabClose.cancelClose}
-          />
-        ) : null}
+        <SessionStrip
+          sessions={visibleSessions}
+          selectedSessionId={selectedSessionId}
+          selectSession={selectSession}
+          tabSelection={tabSelection}
+          tabClose={tabClose}
+          addButtonRef={addButtonRef}
+          newTab={{
+            open: newTabMenuOpen,
+            creating: sessionCreating || providerChoosing,
+            workspaceSelected: selectedWorkspace !== null,
+            onToggle: () => setNewTabMenuOpen((open) => !open),
+            onAgent: handleNewTabAgent,
+            onTerminal: handleNewTabTerminal,
+            onCloseMenu: dismissNewTabMenu,
+          }}
+          providerMenu={providerAnchor?.kind === "strip" ? providerMenu : null}
+          peerNames={peerNames}
+          resolveCreator={(session) => sessionCreatorTooltip(session, sessions)}
+          takeBackAvailable={takeBackAvailable}
+          onTakeBack={takeBack}
+          statusText={sessionStatusText}
+        />
         <DaemonRestartNotice
           instanceId={daemon.instanceId}
           hasRecovered={sessions.some(isRecoveredSession)}

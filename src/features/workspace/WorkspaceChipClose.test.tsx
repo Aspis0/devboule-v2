@@ -23,7 +23,7 @@ import {
   tabElement,
   terminalSession,
 } from "./bulkCloseHarness";
-import { OLDER_BUILD_PENDING_KEY } from "./closeActions";
+import { OLDER_BUILD_PENDING_KEY } from "./strip/closeActions";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 import type { MessageQueue } from "./messageQueue";
 import { sessionStop, sessionsList } from "../../lib/tauri";

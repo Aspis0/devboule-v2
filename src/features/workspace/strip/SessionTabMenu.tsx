@@ -11,7 +11,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react";
-import { AnchoredPopover } from "./popoverPlace";
+import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "./menuNav";
 import type { TabMenuEntry } from "./tabCloseMenu";
 

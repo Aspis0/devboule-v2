@@ -6,7 +6,7 @@
 // nothing waits for a window: the owner's decision took the undo away.
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { isAgentKind, type Session } from "../../types/ipc";
+import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionsForSelection, sessionsForTabAction } from "./bulkCloseSessions";
 import type { CloseIntent } from "./closePolicy";
 import { closeNeedsConfirmation } from "./closePolicy";
@@ -19,7 +19,7 @@ import {
   countSessions,
   deleteSessionConfirm,
 } from "./bulkCloseCopy";
-import { sessionTitle } from "./workspaceSessions";
+import { sessionTitle } from "../workspaceSessions";
 import { buildSelectionCloseEntry, buildTabCloseEntries, type TabMenuEntry } from "./tabCloseMenu";
 
 /** The DOM id of a session's tab. Workspace renders it; the flow's focus

@@ -5,7 +5,7 @@
 // delete always asks.
 
 import { describe, expect, it } from "vitest";
-import type { Session } from "../../types/ipc";
+import type { Session } from "../../../types/ipc";
 import { closeNeedsConfirmation } from "./closePolicy";
 
 function session(kind: Session["kind"], state: Session["state"]): Session {

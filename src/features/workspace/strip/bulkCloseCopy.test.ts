@@ -4,7 +4,7 @@
 // stays in History, where Paseo destroys the closed terminal.
 
 import { describe, expect, it } from "vitest";
-import type { Session } from "../../types/ipc";
+import type { Session } from "../../../types/ipc";
 import {
   archiveRunningAgentConfirm,
   bulkActionTitle,
