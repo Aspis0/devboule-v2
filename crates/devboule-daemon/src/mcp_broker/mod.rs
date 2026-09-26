@@ -697,6 +697,12 @@ pub(crate) fn ready_timeout() -> Duration {
 /// their own.
 #[cfg(test)]
 mod terminal_tools_tests;
+/// The terminal *write* tools' own end-to-end tests, split by topic from the
+/// reads' above: the kind gate in front of every body, the card's three
+/// choices, the create's cap and guard, and the audit row that records the
+/// act and never the bytes.
+#[cfg(test)]
+mod terminal_write_tools_tests;
 #[cfg(test)]
 #[path = "../mcp_broker_tests.rs"]
 mod tests;

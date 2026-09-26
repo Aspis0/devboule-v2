@@ -17,6 +17,10 @@ pub(in crate::mcp_broker) const WORKSPACES_GROUP: &str = "workspaces";
 /// Removing a workspace has a separate mark because it closes sessions and
 /// removes an existing checkout.
 pub(in crate::mcp_broker) const WORKSPACE_ARCHIVE_GROUP: &str = "workspace_archiving";
+/// The write group the three terminal writes gate on: opening a terminal,
+/// typing into one and killing one are one consent surface for the person —
+/// "terminal writes from this session" — so they share one card and one mark.
+pub(in crate::mcp_broker) const TERMINALS_GROUP: &str = "terminals";
 
 /// The card choice that approves only the call it was raised for.
 const CHOICE_ONCE: &str = "once";

@@ -151,6 +151,12 @@ pub(super) fn handle_rpc(
                 tools::terminals::capture(state, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_ARCHIVE_WORKSPACE_TOOL) {
                 tools::archive::archive(state, broker, caller, registration, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_CREATE_TERMINAL_TOOL) {
+                tools::terminal_writes::create(state, broker, registration, caller, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_SEND_TERMINAL_KEYS_TOOL) {
+                tools::terminal_writes::send_keys(state, broker, registration, caller, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_KILL_TERMINAL_TOOL) {
+                tools::terminal_writes::kill(state, broker, registration, caller, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -304,6 +310,41 @@ pub(super) fn enabled_tool_list(
                 json!({"type": "object", "properties": {}, "additionalProperties": false})
             } else if *name == crate::provider_catalog::MCP_CAPTURE_TERMINAL_TOOL {
                 crate::provider_catalog::terminal_capture_input_schema()
+            } else if *name == crate::provider_catalog::MCP_CREATE_TERMINAL_TOOL {
+                // Closed like the create-workspace schema it rhymes with: the
+                // workspace is never a parameter — the caller's own row
+                // decides it — so the only thing to accept is the optional
+                // title.
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "The terminal's display name, at most 60 characters. Empty means untitled."},
+                    },
+                    "additionalProperties": false,
+                })
+            } else if *name == crate::provider_catalog::MCP_SEND_TERMINAL_KEYS_TOOL {
+                // Closed and stated in full, because the token list is the
+                // tool's whole vocabulary: what is not named here is refused
+                // by name at the parser.
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "terminalId": {"type": "string", "description": "The id of one terminal from devboule_list_terminals."},
+                        "keys": {"type": "string", "description": "Literal text, or one named key: Enter, Tab, Escape, Space, BSpace, C-c, C-d, C-z, C-l, C-a, C-e. At most 64 KiB."},
+                        "literal": {"type": "boolean", "description": "Write keys exactly as typed instead of resolving a named key. Default false."},
+                    },
+                    "required": ["terminalId", "keys"],
+                    "additionalProperties": false,
+                })
+            } else if *name == crate::provider_catalog::MCP_KILL_TERMINAL_TOOL {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "terminalId": {"type": "string", "description": "The id of one terminal from devboule_list_terminals."},
+                    },
+                    "required": ["terminalId"],
+                    "additionalProperties": false,
+                })
             } else if *name == crate::provider_catalog::MCP_ACTIVITY_TOOL {
                 crate::provider_catalog::agent_activity_input_schema()
             } else if *name == crate::provider_catalog::MCP_STOP_AGENT_TOOL

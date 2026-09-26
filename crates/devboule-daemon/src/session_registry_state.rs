@@ -317,6 +317,12 @@ pub(crate) struct LiveAgentEntry {
 /// At most this many live children may one creator session hold at once
 /// (`S5` decision 5).
 pub(crate) const MAX_LIVE_CHILDREN_PER_CREATOR: usize = 3;
+/// At most this many live terminals may one creator session hold at once.
+///
+/// The terminal twin of [`MAX_LIVE_CHILDREN_PER_CREATOR`]: a terminal costs a
+/// process and a PTY like a child does, so the session that opens them is the
+/// one that is capped, counted from the `created_by` link the create stamps.
+pub(crate) const MAX_LIVE_TERMINALS_PER_CREATOR: usize = 3;
 /// At most this many creations may leave one creator session inside the window.
 pub(crate) const MAX_CREATIONS_PER_WINDOW: u32 = 10;
 /// The creation window: one hour, from the first creation that opened it.

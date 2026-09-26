@@ -224,10 +224,11 @@ mod session_idle_close_profile_tests;
 #[cfg(test)]
 #[path = "session_idle_close_tests.rs"]
 mod session_idle_close_tests;
-/// The terminal reads the broker's terminal tools are served from, kept out
-/// of `session.rs` beside the child reads they rhyme with: one phrase for
-/// the file — which terminals an owner may list in one workspace, and one
-/// terminal's screen.
+/// The registry side of the broker's five terminal tools, kept out of
+/// `session.rs` beside the child reads they rhyme with: one phrase for
+/// the file — which terminals an owner may reach inside one workspace, one
+/// terminal's screen, and the three writes (open, type, kill) behind the
+/// same door.
 #[path = "session_terminals.rs"]
 mod session_terminals;
 use session_messaging::forget_message_brake_target;
@@ -290,7 +291,7 @@ use session_registry_state::{
 };
 pub(crate) use session_registry_state::{
     AgentCreation, AgentCreationTicket, AgentCreator, ChildProfileFacts, LiveAgentEntry,
-    PermissionResponse, MAX_AGENT_ARTIFACT_BYTES, MAX_AGENT_DEPTH,
+    PermissionResponse, MAX_AGENT_ARTIFACT_BYTES, MAX_AGENT_DEPTH, MAX_LIVE_TERMINALS_PER_CREATOR,
 };
 #[cfg(test)]
 use session_registry_state::{
@@ -3752,6 +3753,27 @@ pub(crate) fn insert_test_terminal(
     tests::insert_terminal(registry, id, owner, workspace_id)
 }
 
+/// Test-only live terminal whose writer records what the terminal write road
+/// typed, with the bytes handed back — the shape `devboule_send_terminal_keys`
+/// is proved against: what reached the PTY, and what a refusal never reached.
+#[cfg(test)]
+pub(crate) fn insert_test_terminal_with_recording_writer(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: Option<String>,
+) -> Arc<Mutex<Vec<u8>>> {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    tests::insert_terminal_with_writer(
+        registry,
+        id,
+        owner,
+        workspace_id,
+        Box::new(tests::RecordingWriter(Arc::clone(&received))),
+    );
+    received
+}
+
 /// Test-only live agent of one explicit kind (S9): the door reads origin, not
 /// kind, so a pi/Codex-kind caller must meet exactly the judgment an ACP-kind
 /// caller meets. Delegates to the same helper as the default insert.
@@ -3786,6 +3808,27 @@ pub(crate) fn insert_test_live_agent_with_recording_writer(
         id,
         owner,
         kind,
+        Box::new(tests::RecordingWriter(Arc::clone(&received))),
+    );
+    received
+}
+
+/// Test-only live agent of one workspace whose writer records what reached
+/// it, with the bytes handed back: the target the terminal writes' kind gate
+/// refuses, in the shape that proves the refusal wrote nothing.
+#[cfg(test)]
+pub(crate) fn insert_test_agent_in_workspace_with_recording_writer(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: &str,
+) -> Arc<Mutex<Vec<u8>>> {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    tests::insert_live_agent_in_workspace_with_writer(
+        registry,
+        id,
+        owner,
+        workspace_id,
         Box::new(tests::RecordingWriter(Arc::clone(&received))),
     );
     received

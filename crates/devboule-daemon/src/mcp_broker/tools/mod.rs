@@ -8,5 +8,7 @@ pub(super) mod graph;
 pub(super) mod messaging;
 pub(super) mod peers;
 pub(super) mod permissions;
+pub(super) mod terminal_common;
+pub(super) mod terminal_writes;
 pub(super) mod terminals;
 pub(super) mod workspaces;

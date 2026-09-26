@@ -246,6 +246,29 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_ARCHIVE_WORKSPACE_TOOL,
         requires_confirmation: false,
     },
+    // Terminal open: consented by the broker's own first-use card, which
+    // names the workspace and the directory the shell opens in; a generic
+    // confirm would be a second card with none of those facts, and the
+    // origin door judges a peer before the body runs.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_CREATE_TERMINAL_TOOL,
+        requires_confirmation: false,
+    },
+    // Terminal keys: the same card and the same scope, with the registry's
+    // `kind == Terminal` gate in front of every write — a provider's stdin
+    // is what it must never reach. What bounds the write is that gate, the
+    // owner-and-origin door and the audit row, which records the act and
+    // never the bytes.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_SEND_TERMINAL_KEYS_TOOL,
+        requires_confirmation: false,
+    },
+    // Terminal kill: the same card and scope, then the registry's own close
+    // path — the process tree dies and the row and transcript stay.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_KILL_TERMINAL_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -296,7 +319,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// twenty-three `pi.registerTool` entries, one per broker tool, closed schemas matching the
+/// twenty-six `pi.registerTool` entries, one per broker tool, closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -810,6 +833,59 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_archive_workspace", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_create_terminal",
+    label: "Open Devboule terminal",
+    description: `Opens a new terminal in the calling session's own workspace and answers its id, title and working directory. The workspace comes from the calling session's row, never from an argument, so no argument can choose where the shell opens; name is optional and titles the terminal (trimmed, an empty name means untitled, at most 60 characters). The human is asked to approve terminal writes from this session the first time, and a creator already holding its full share of live terminals is refused with a sentence that says how to make room. A retry carrying the same request id answers the terminal the first call opened rather than opening a second one, a daemon that is shutting down refuses the call, and this tool never creates an agent session.`,
+    parameters: Type.Object(
+      {
+        name: Type.Optional(Type.String({ description: "The terminal's display name, at most 60 characters. Empty means untitled." })),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_create_terminal", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_send_terminal_keys",
+    label: "Type into Devboule terminal",
+    description: `Types into one running terminal of the calling session's own workspace. keys is either literal text or one named key - Enter, Tab, Escape, Space, BSpace, C-c, C-d, C-z, C-l, C-a, C-e - resolved to the bytes that key stands for; literal true writes keys exactly as typed, and a name the list does not hold is the text it is, so ordinary text types itself either way. The payload is capped at 64 KiB and a larger one is refused rather than cut. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named: this tool types into a terminal's pty and never into a provider's stdin. The human is asked to approve terminal writes from this session the first time. The typed keys reach no log, no audit row and no card beyond a count of characters.`,
+    parameters: Type.Object(
+      {
+        terminalId: Type.String({ description: "The id of one terminal from devboule_list_terminals." }),
+        keys: Type.String({ description: "Literal text, or one named key: Enter, Tab, Escape, Space, BSpace, C-c, C-d, C-z, C-l, C-a, C-e. At most 64 KiB." }),
+        literal: Type.Optional(Type.Boolean({ description: "Write keys exactly as typed instead of resolving a named key. Default false." })),
+      },
+      { required: ["terminalId", "keys"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_send_terminal_keys", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_kill_terminal",
+    label: "Kill Devboule terminal",
+    description: `Kills one running terminal of the calling session's own workspace: its process tree dies and the live session ends, while the journal row and the transcript stay in history. The scope and the refusal are devboule_send_terminal_keys' own - the caller's own user, origin and workspace, a terminal that is running - so any other id answers 'No session with that id.' and an agent session is never killable through this tool. The human is asked to approve terminal writes from this session the first time.`,
+    parameters: Type.Object(
+      {
+        terminalId: Type.String({ description: "The id of one terminal from devboule_list_terminals." }),
+      },
+      { required: ["terminalId"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_kill_terminal", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });

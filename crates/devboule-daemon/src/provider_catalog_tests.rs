@@ -1334,26 +1334,36 @@ fn every_catalog_provider_has_a_cell_and_only_design_has_an_overlay() {
     }
 }
 
-/// The `design` overlay removes exactly seven tools — send, create, both
-/// workspace writes, and the three supervision verbs — and keeps the roster.
+/// The `design` overlay removes exactly ten tools — send, create, both
+/// workspace writes, the three terminal writes, and the three supervision
+/// verbs (the soft one and the two destructive ones) — and both presets keep
+/// the roster.
 #[test]
 fn the_design_overlay_hides_send_create_and_all_supervision_verbs_and_keeps_the_roster() {
     let design = super::ToolOverlay::DESIGN;
     assert!(!design.allows(super::MCP_CREATE_AGENT_TOOL));
     assert!(!design.allows(super::MCP_SEND_MESSAGE_TOOL));
     assert!(!design.allows(super::MCP_CREATE_WORKSPACE_TOOL));
+    assert!(!design.allows(super::MCP_CREATE_TERMINAL_TOOL));
+    assert!(!design.allows(super::MCP_SEND_TERMINAL_KEYS_TOOL));
+    assert!(!design.allows(super::MCP_KILL_TERMINAL_TOOL));
     assert!(!design.allows(super::MCP_CANCEL_AGENT_TOOL));
     assert!(!design.allows(super::MCP_STOP_AGENT_TOOL));
     assert!(!design.allows(super::MCP_CLOSE_AGENT_TOOL));
     assert!(!design.allows(super::MCP_ARCHIVE_WORKSPACE_TOOL));
     assert!(design.allows(super::MCP_ROSTER_TOOL));
     assert!(design.allows(super::MCP_LIST_WORKSPACES_TOOL));
+    assert!(design.allows(super::MCP_LIST_TERMINALS_TOOL));
+    assert!(design.allows(super::MCP_CAPTURE_TERMINAL_TOOL));
     assert_eq!(
         design.denied(),
         vec![
             super::MCP_SEND_MESSAGE_TOOL,
             super::MCP_CREATE_AGENT_TOOL,
             super::MCP_CREATE_WORKSPACE_TOOL,
+            super::MCP_CREATE_TERMINAL_TOOL,
+            super::MCP_SEND_TERMINAL_KEYS_TOOL,
+            super::MCP_KILL_TERMINAL_TOOL,
             super::MCP_CANCEL_AGENT_TOOL,
             super::MCP_STOP_AGENT_TOOL,
             super::MCP_CLOSE_AGENT_TOOL,

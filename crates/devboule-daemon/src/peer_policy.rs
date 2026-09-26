@@ -557,15 +557,26 @@ pub enum McpToolWire {
 ///   for the same reason. No wire frame stands behind it — a screen reaches a
 ///   client through an attachment, never through a judged request — so the
 ///   door checks the capability itself.
+/// - Terminal open (`devboule_create_terminal`) makes a shell on this machine
+///   in the caller's own workspace: `SessionCreate`, the same act the create
+///   agent tool declares, under `create_sessions`.
+/// - Terminal keys (`devboule_send_terminal_keys`) types into a pty:
+///   `SessionSend`, the act `send` names — the same capability the send tool
+///   meets, since the ownership door holds the same target scope over both.
+/// - Terminal kill (`devboule_kill_terminal`) ends a terminal's live session:
+///   `SessionClose`, the act `admin` names, like the close agent tool — the
+///   destructive supervisor verb, whatever it is pointed at.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_ARCHIVE_WORKSPACE_TOOL,
         MCP_CANCEL_AGENT_TOOL, MCP_CAPTURE_TERMINAL_TOOL, MCP_CLOSE_AGENT_TOOL,
-        MCP_CREATE_AGENT_TOOL, MCP_CREATE_WORKSPACE_TOOL, MCP_GET_AGENT_STATUS_TOOL,
-        MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
+        MCP_CREATE_AGENT_TOOL, MCP_CREATE_TERMINAL_TOOL, MCP_CREATE_WORKSPACE_TOOL,
+        MCP_GET_AGENT_STATUS_TOOL, MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL,
+        MCP_KILL_TERMINAL_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
         MCP_LIST_PENDING_PERMISSIONS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_LIST_TERMINALS_TOOL,
-        MCP_LIST_WORKSPACES_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL,
-        MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
+        MCP_LIST_WORKSPACES_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL,
+        MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL, MCP_SEND_TERMINAL_KEYS_TOOL,
+        MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
         Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
@@ -782,6 +793,45 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         // the project graph needs it: content of this machine's workspace
         // travelling to a paired device.
         Some(McpToolWire::Requires(CAP_ADMIN))
+    } else if tool == MCP_CREATE_TERMINAL_TOOL {
+        // Opening a shell is the wire's own create act, judged as the
+        // `SessionCreate` the create agent tool declares (the placeholder
+        // kind never decides: that arm reads only the capability set), so a
+        // device the owner lets create sessions here may open one in the
+        // caller's workspace and a device without `create_sessions` is
+        // refused with that capability's name.
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionCreate {
+            id: 0,
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            provider: None,
+            mode: None,
+            display_name: None,
+            idempotency_key: None,
+        }]))
+    } else if tool == MCP_SEND_TERMINAL_KEYS_TOOL {
+        // Typing into a pty is the send act: the same `send` capability the
+        // send tool meets, and no weaker one — the bytes land in a process
+        // of this machine, which is what a send always does.
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionSend {
+            id: 0,
+            session_id: String::new(),
+            subscription_id: 0,
+            text: String::new(),
+            attachments: Vec::new(),
+            active_turn_behavior: None,
+            idempotency_key: None,
+            attachment_references: Vec::new(),
+        }]))
+    } else if tool == MCP_KILL_TERMINAL_TOOL {
+        // Ending a session is the destructive supervisor act, judged as the
+        // wire's `SessionClose` exactly like `devboule_close_agent`: the
+        // administrative capability opens it, and nothing weaker does.
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionClose {
+            id: 0,
+            session_id: String::new(),
+            idempotency_key: None,
+        }]))
     } else {
         None
     }
@@ -1973,6 +2023,77 @@ pub(crate) mod tests {
             // And the parity half: with the whole table neither read is
             // refused at the door.
             for name in [MCP_LIST_TERMINALS_TOOL, MCP_CAPTURE_TERMINAL_TOOL] {
+                assert_eq!(mcp_tool_denial(role, &all_caps(), name), None, "{name}");
+            }
+        }
+    }
+
+    /// The three terminal writes' arms, walked over the closed capability
+    /// table rather than sampled: opening a shell rides `create_sessions`,
+    /// typing rides `send`, killing rides `admin` — and each capability opens
+    /// its own write only, never a sibling's.
+    #[test]
+    fn the_terminal_writes_are_judged_at_the_door() {
+        use crate::provider_catalog::{
+            MCP_CREATE_TERMINAL_TOOL, MCP_KILL_TERMINAL_TOOL, MCP_SEND_TERMINAL_KEYS_TOOL,
+        };
+        use devboule_protocol::PEER_CAPS;
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            for cap in PEER_CAPS {
+                let create = if cap == CAP_CREATE_SESSIONS {
+                    None
+                } else {
+                    Some(CAP_CREATE_SESSIONS)
+                };
+                let keys = if cap == CAP_SEND {
+                    None
+                } else {
+                    Some(CAP_SEND)
+                };
+                let kill = if cap == CAP_ADMIN {
+                    None
+                } else {
+                    Some(CAP_ADMIN)
+                };
+                assert_eq!(
+                    mcp_tool_denial(role, &caps(&[cap]), MCP_CREATE_TERMINAL_TOOL),
+                    create,
+                    "{role:?} holding {cap} on the terminal open"
+                );
+                assert_eq!(
+                    mcp_tool_denial(role, &caps(&[cap]), MCP_SEND_TERMINAL_KEYS_TOOL),
+                    keys,
+                    "{role:?} holding {cap} on the terminal keys"
+                );
+                assert_eq!(
+                    mcp_tool_denial(role, &caps(&[cap]), MCP_KILL_TERMINAL_TOOL),
+                    kill,
+                    "{role:?} holding {cap} on the terminal kill"
+                );
+            }
+            // The negative control that matters: every act-named capability
+            // except the administrative one, and still no kill — while the
+            // same set opens the other two writes, each through its own.
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_CREATE_TERMINAL_TOOL),
+                None
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_SEND_TERMINAL_KEYS_TOOL),
+                None
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_KILL_TERMINAL_TOOL),
+                Some(CAP_ADMIN),
+                "{role:?} without admin must not kill through the tool"
+            );
+            // And the parity half: with the whole table no write is refused
+            // at the door.
+            for name in [
+                MCP_CREATE_TERMINAL_TOOL,
+                MCP_SEND_TERMINAL_KEYS_TOOL,
+                MCP_KILL_TERMINAL_TOOL,
+            ] {
                 assert_eq!(mcp_tool_denial(role, &all_caps(), name), None, "{name}");
             }
         }

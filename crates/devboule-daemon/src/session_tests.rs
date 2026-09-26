@@ -1417,6 +1417,32 @@ pub(super) fn insert_live_agent_in_workspace(
     )
 }
 
+/// One live agent of one workspace whose writer a test hands in: the shape
+/// the terminal writes' kind gate is proved against — the bytes of a write
+/// that reached this session are here to read, and a refused one leaves the
+/// recorder empty.
+pub(super) fn insert_live_agent_in_workspace_with_writer(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: &str,
+    writer: Box<dyn Write + Send>,
+) -> Arc<SessionRuntime> {
+    insert_live_agent_full(
+        registry,
+        id,
+        owner,
+        SessionKind::Acp,
+        writer,
+        None,
+        None,
+        None,
+        Box::new(NoopKiller),
+        Box::new(UnsupportedSteerer),
+        Some(workspace_id.to_string()),
+    )
+}
+
 /// A test-only live terminal: the kind the terminal tools serve, with the
 /// workspace they scope by. It goes through the agent insert — same registry
 /// road, same runtime — and then spells the facts an agent's metadata would
@@ -1428,12 +1454,31 @@ pub(super) fn insert_terminal(
     owner: OwnerId,
     workspace_id: Option<String>,
 ) -> Arc<SessionRuntime> {
+    insert_terminal_with_writer(
+        registry,
+        id,
+        owner,
+        workspace_id,
+        Box::new(FailingWriter) as Box<dyn Write + Send>,
+    )
+}
+
+/// One live terminal whose writer a test hands in: the shape the terminal
+/// write road is proved against — the bytes the road types land in `writer`,
+/// and a refusal that never reaches the writer leaves it untouched.
+pub(super) fn insert_terminal_with_writer(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: Option<String>,
+    writer: Box<dyn Write + Send>,
+) -> Arc<SessionRuntime> {
     let runtime = insert_live_agent_full(
         registry,
         id,
         owner,
         SessionKind::Terminal,
-        Box::new(FailingWriter) as Box<dyn Write + Send>,
+        writer,
         None,
         None,
         None,
