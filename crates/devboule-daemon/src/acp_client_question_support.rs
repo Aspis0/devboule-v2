@@ -1,97 +1,171 @@
-//! Test support for the grok question cards: the capturing sender, the
-//! reader harness, and the enveloped/unenveloped fixtures the topic test
-//! files share.
+//! Test support for the grok question cards: the echo harness that answers
+//! through the production sender, and the enveloped/unenveloped fixtures
+//! the topic test files share.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use devboule_protocol::SessionEvent;
 
-use super::super::acp_questions::{grok_question_result, GrokPending};
 use super::super::event_pull::ConnHandle;
-use super::super::permission_broker::{PermissionBroker, PermissionSender};
+use super::super::permission_broker::{permission_path, PermissionBroker};
 use super::super::session_runtime::SessionRuntime;
 use super::AcpReader;
+use crate::journal::Journal;
 
 pub(super) const SESSION: &str = "s.acp.grok";
 pub(super) const FENCE: &str = "Which colour should I paint the fence?";
 pub(super) const TOPPINGS: &str = "Which toppings?";
 
-pub(super) type Captured = Arc<Mutex<Vec<serde_json::Value>>>;
+static ECHO_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// The production sender's translation, captured instead of written: a
-/// parked grok id answers in grok's shape, every other id passes through.
-fn capturing_sender(captured: &Captured, pending: &GrokPending) -> Arc<PermissionSender> {
-    let captured = Arc::clone(captured);
-    let pending = Arc::clone(pending);
-    Arc::new(move |broker_id, result| {
-        let params = pending
-            .lock()
-            .map(|map| map.get(&broker_id).cloned())
-            .unwrap_or(None);
-        let is_grok = params.is_some();
-        let result = match &params {
-            Some(params) => grok_question_result(params, &result),
-            None => result,
-        };
-        captured
-            .lock()
-            .expect("captured lock")
-            .push(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": broker_id,
-                "result": result,
-            }));
-        if is_grok {
-            let _ = pending.lock().map(|mut map| map.remove(&broker_id));
-        }
-        Ok(())
-    })
+pub(super) fn node_gated() -> bool {
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return true;
+    }
+    false
 }
 
-pub(super) struct Harness {
+/// A fake ACP child that echoes stdin to stdout, so a test reads the exact
+/// bytes the production sender wrote. The broker is the transport's own —
+/// require-journal and all — with a throwaway journal behind it, so answers
+/// take the recorded road exactly as in production.
+pub(super) struct EchoHarness {
     pub(super) broker: Arc<PermissionBroker>,
-    pub(super) captured: Captured,
     pub(super) runtime: Arc<SessionRuntime>,
     pub(super) conn: Arc<ConnHandle>,
     pub(super) reader: AcpReader,
+    stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
+    child: Option<std::process::Child>,
+    journal: Arc<Journal>,
 }
 
-impl Harness {
-    pub(super) fn new() -> Self {
-        let pending: GrokPending = Arc::new(Mutex::new(HashMap::new()));
-        let captured: Captured = Arc::new(Mutex::new(Vec::new()));
-        let broker = PermissionBroker::for_test(capturing_sender(&captured, &pending));
-        let runtime = SessionRuntime::for_acp(SESSION.to_string(), None, Arc::clone(&broker));
-        let conn = ConnHandle::new(1);
-        let outcome = runtime
-            .try_attach_with_replay(None, &conn, true)
-            .expect("attach");
-        conn.track_with_agent_replay(
-            SESSION,
-            Arc::clone(&runtime),
-            false,
-            None,
-            outcome.generation,
-            outcome.live_agent_replay,
-        );
-        let reader = AcpReader::for_test_with_questions(
-            Arc::new(Mutex::new(HashSet::new())),
-            SESSION.to_string(),
-            Arc::clone(&broker),
-            pending,
-        );
-        Harness {
-            broker,
-            captured,
-            runtime,
-            conn,
-            reader,
+impl Drop for EchoHarness {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
+}
 
+impl EchoHarness {
     pub(super) fn dispatch(&self, frame: &serde_json::Value) {
         self.reader.dispatch_value(frame, &self.runtime);
+        // The conn replays durable rows before it serves the live queue,
+        // and the envelope row lands on a background thread: flush so one
+        // pull deterministically sees replay and live together.
+        self.journal.flush().expect("journal flush");
+    }
+
+    /// One frame the child echoed. Blocks up to the timeout, so a dropped
+    /// write fails the test instead of hanging it.
+    pub(super) fn read_frame(&mut self) -> serde_json::Value {
+        use std::io::BufRead;
+        let mut stdout = self.stdout.take().expect("stdout taken");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let read = stdout.read_line(&mut line);
+            let _ = tx.send((read, line, stdout));
+        });
+        let (read, line, stdout) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("answer frame written");
+        self.stdout = Some(stdout);
+        read.expect("frame read");
+        serde_json::from_str(&line).expect("frame json")
+    }
+}
+
+/// Caller must have gated on node first (`node_gated`).
+pub(super) fn echo_harness() -> EchoHarness {
+    let mut child = std::process::Command::new("node")
+        .args([
+            "-e",
+            "process.stdin.on('data', data => process.stdout.write(data))",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("node echo child");
+    let stdin = child.stdin.take().expect("stdin");
+    let stdout = std::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let (transport, broker, _) = super::AcpReader::test_transport(stdin);
+    let seq = ECHO_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let journal = Arc::new(
+        Journal::open(&permission_path(&format!("acp-grok-echo-{seq}"))).expect("journal"),
+    );
+    journal
+        .upsert_blocking(crate::journal::SessionRecord {
+            id: SESSION.to_string(),
+            owner: "owner".to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: devboule_protocol::SessionKind::Acp,
+            provider: None,
+            title: "grok echo".to_string(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            generation: 1,
+            status: crate::journal::PersistStatus::Live,
+            exit_code: None,
+            closed: false,
+            last_seq: 0,
+            degraded: false,
+            dropped_frames: 0,
+            dropped_bytes: 0,
+            payload_bytes: 0,
+            trimmed_bytes: 0,
+            reaped: false,
+            peer_session_id: None,
+            disowned_peer_session_id: None,
+            origin: devboule_protocol::SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended_state: devboule_protocol::UnattendedState::Unknown,
+            labels: Default::default(),
+            overlay: None,
+            depth: None,
+        })
+        .expect("session row");
+    let runtime = SessionRuntime::for_acp(
+        SESSION.to_string(),
+        Some(Arc::clone(&journal)),
+        Arc::clone(&broker),
+    );
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        SESSION,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let dir = crate::test_dirs::test_temp_dir("devboule-acp-echo-host");
+    let reader = AcpReader::for_test_with_transport(
+        Arc::new(Mutex::new(HashSet::new())),
+        SESSION.to_string(),
+        Arc::clone(&broker),
+        super::super::acp_host::AcpHost::new(dir.clone(), dir),
+        transport,
+    );
+    EchoHarness {
+        broker,
+        runtime,
+        conn,
+        reader,
+        stdout: Some(stdout),
+        child: Some(child),
+        journal,
     }
 }
 

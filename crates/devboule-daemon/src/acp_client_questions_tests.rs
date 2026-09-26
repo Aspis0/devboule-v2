@@ -1,20 +1,26 @@
 //! Tests for grok's `_x.ai/ask_user_question` cards: the card carries the
 //! agent's own labels in both params shapes, and a pick, an "Other" answer
-//! and a dismiss produce the exact reply bytes.
+//! and a dismiss produce the exact reply bytes — read off a fake child's
+//! stdout, through the production sender. Deleting the write fails the test
+//! on timeout instead of passing silently.
 
 use devboule_protocol::{PermissionOutcome, PermissionRequestKind, SessionEvent};
 
 use super::super::acp_questions::{grok_question_result, parse_grok_questions};
 use super::question_support::{
-    asked, enveloped, fence_params, live_turn, unenveloped, Harness, FENCE, TOPPINGS,
+    asked, echo_harness, enveloped, fence_params, has_notice, live_turn, node_gated, unenveloped,
+    FENCE, TOPPINGS,
 };
 
 #[test]
 fn grok_question_raises_a_card_with_the_agents_labels() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&enveloped(0));
-    let events = harness.conn.pull_events();
+    if node_gated() {
+        return;
+    }
+    let echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let events = echo.conn.pull_events();
     match asked(&events, "call-fence-0") {
         SessionEvent::PermissionRequest {
             title,
@@ -22,6 +28,7 @@ fn grok_question_raises_a_card_with_the_agents_labels() {
             options,
             kind,
             questions,
+            is_chooser,
             ..
         } => {
             assert_eq!(
@@ -29,6 +36,7 @@ fn grok_question_raises_a_card_with_the_agents_labels() {
                 Some(PermissionRequestKind::Question),
                 "a model's question is never auto-answered"
             );
+            assert_eq!(is_chooser, Some(false), "a question is not a chooser");
             assert_eq!(title, FENCE);
             assert_eq!(
                 description.as_deref(),
@@ -58,19 +66,22 @@ fn grok_question_raises_a_card_with_the_agents_labels() {
         }
         _ => panic!("expected a permission request"),
     }
-    assert_eq!(harness.broker.pending_len(), 1);
+    assert_eq!(echo.broker.pending_len(), 1);
     assert!(
-        !super::question_support::has_notice(&harness.conn.pull_events()),
+        !has_notice(&echo.conn.pull_events()),
         "a question is asked, not refused"
     );
 }
 
 #[test]
 fn unenveloped_params_raise_the_same_card() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&unenveloped(5));
-    let events = harness.conn.pull_events();
+    if node_gated() {
+        return;
+    }
+    let echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&unenveloped(5));
+    let events = echo.conn.pull_events();
     match asked(&events, "call-bare-5") {
         SessionEvent::PermissionRequest { title, kind, .. } => {
             assert_eq!(kind, Some(PermissionRequestKind::Question));
@@ -78,17 +89,19 @@ fn unenveloped_params_raise_the_same_card() {
         }
         _ => panic!("expected a permission request"),
     }
-    assert_eq!(harness.broker.pending_len(), 1);
+    assert_eq!(echo.broker.pending_len(), 1);
 }
 
 #[test]
 fn option_pick_answers_accepted_with_labels() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&enveloped(0));
-    let _ = harness.conn.pull_events();
-    harness
-        .broker
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let _ = echo.conn.pull_events();
+    echo.broker
         .respond_with_option(
             "call-fence-0",
             PermissionOutcome::AllowOnce,
@@ -96,10 +109,8 @@ fn option_pick_answers_accepted_with_labels() {
             None,
         )
         .expect("option pick");
-    let captured = harness.captured.lock().expect("captured");
-    assert_eq!(captured.len(), 1);
     assert_eq!(
-        captured[0],
+        echo.read_frame(),
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 0,
@@ -114,12 +125,14 @@ fn option_pick_answers_accepted_with_labels() {
 
 #[test]
 fn other_answer_travels_verbatim() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&enveloped(0));
-    let _ = harness.conn.pull_events();
-    harness
-        .broker
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let _ = echo.conn.pull_events();
+    echo.broker
         .respond_with_option(
             "call-fence-0",
             PermissionOutcome::AllowOnce,
@@ -127,9 +140,8 @@ fn other_answer_travels_verbatim() {
             Some("Teal, obviously".to_string()),
         )
         .expect("Other answer");
-    let captured = harness.captured.lock().expect("captured");
     assert_eq!(
-        captured[0]["result"],
+        echo.read_frame()["result"],
         serde_json::json!({
             "outcome": "accepted",
             "answers": { FENCE: ["Teal, obviously"] },
@@ -138,28 +150,32 @@ fn other_answer_travels_verbatim() {
 }
 
 #[test]
-fn dismiss_answers_cancelled() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&enveloped(0));
-    let _ = harness.conn.pull_events();
-    harness
-        .broker
+fn dismiss_answers_skip_interview() {
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let _ = echo.conn.pull_events();
+    echo.broker
         .respond_with_option("call-fence-0", PermissionOutcome::Deny, None, None)
         .expect("dismissal");
-    let captured = harness.captured.lock().expect("captured");
-    assert_eq!(captured.len(), 1);
     assert_eq!(
-        captured[0]["result"],
-        serde_json::json!({ "outcome": "cancelled" })
+        echo.read_frame()["result"],
+        serde_json::json!({ "outcome": "skip_interview" }),
+        "a dismiss is grok's decline variant, not a cancelled outcome"
     );
 }
 
 #[test]
 fn multi_question_answers_map_each_text() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&serde_json::json!({
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "_x.ai/ask_user_question",
@@ -174,7 +190,7 @@ fn multi_question_answers_map_each_text() {
             "mode": "default",
         },
     }));
-    let events = harness.conn.pull_events();
+    let events = echo.conn.pull_events();
     match asked(&events, "call-multi-1") {
         SessionEvent::PermissionRequest { questions, .. } => {
             assert_eq!(questions.expect("items").len(), 2);
@@ -185,8 +201,7 @@ fn multi_question_answers_map_each_text() {
     // questions at once through the JSON text map, keyed by question text.
     let answer =
         serde_json::json!({ FENCE: "Barn red", TOPPINGS: "Cheese, Pepperoni" }).to_string();
-    harness
-        .broker
+    echo.broker
         .respond_with_option(
             "call-multi-1",
             PermissionOutcome::AllowOnce,
@@ -194,9 +209,8 @@ fn multi_question_answers_map_each_text() {
             Some(answer),
         )
         .expect("multi answer");
-    let captured = harness.captured.lock().expect("captured");
     assert_eq!(
-        captured[0]["result"],
+        echo.read_frame()["result"],
         serde_json::json!({
             "outcome": "accepted",
             "answers": { FENCE: ["Barn red"], TOPPINGS: ["Cheese", "Pepperoni"] },
@@ -213,7 +227,7 @@ fn result_mapping_refuses_what_nobody_chose() {
             &params,
             &serde_json::json!({ "outcome": { "outcome": "selected", "optionId": "deny" } })
         ),
-        serde_json::json!({ "outcome": "cancelled" })
+        serde_json::json!({ "outcome": "skip_interview" })
     );
     // A bare pick cannot answer several questions at once.
     let multi = serde_json::json!({
@@ -224,15 +238,15 @@ fn result_mapping_refuses_what_nobody_chose() {
             &multi,
             &serde_json::json!({ "outcome": { "outcome": "selected", "optionId": "q0o0" } })
         ),
-        serde_json::json!({ "outcome": "cancelled" })
+        serde_json::json!({ "outcome": "skip_interview" })
     );
-    // And the empty map is the shape a dismissal carries.
+    // And the decline variant is the shape a dismissal carries.
     assert_eq!(
         grok_question_result(
             &serde_json::json!({}),
             &serde_json::json!({ "outcome": { "outcome": "cancelled" } })
         ),
-        serde_json::json!({ "outcome": "cancelled" })
+        serde_json::json!({ "outcome": "skip_interview" })
     );
 }
 

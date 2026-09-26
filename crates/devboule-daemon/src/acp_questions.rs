@@ -5,15 +5,12 @@
 //! The request frame is confirmed from our own journal (grok 1.0.25/26):
 //! `params` carries `{sessionId, toolCallId, questions[], mode}`. Newer grok
 //! (1.0.40) sends the same fields directly under the method, without the
-//! `params` envelope. Both shapes are accepted; the reply shape
-//! (`accepted` with answers keyed by full question text, `cancelled` for
-//! anything else) follows the probed-frame implementation, with a free-text
-//! answer travelling verbatim like the sibling Codex carrier.
+//! `params` envelope. Both shapes are accepted. The reply follows grok's own
+//! response enum: `accepted` with answers keyed by full question text, and
+//! the `skip_interview` decline variant for anything else — including a
+//! free-text answer, which travels verbatim like the sibling Codex carrier.
 
-use std::collections::{BTreeMap, HashMap};
-use std::io;
-use std::process::ChildStdin;
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
 
 use devboule_protocol::{
     PermissionOption, PermissionQuestion, PermissionQuestionOption, PermissionRequestKind,
@@ -22,14 +19,6 @@ use devboule_protocol::{
 use serde_json::Value;
 
 use super::codex_input_requests::generated_card_id;
-use super::permission_broker::PermissionSender;
-use super::write_child_stdin;
-
-/// Pending grok questions by JSON-RPC id: the broker's sender only sees the
-/// numeric id, so the params the answer maps against wait here. An entry is
-/// removed once its answer is written; anything still parked when the broker
-/// closes is answered `cancelled` through the same map.
-pub(super) type GrokPending = Arc<Mutex<HashMap<u64, Value>>>;
 
 /// One question grok asked the person: text plus the offered labels. There
 /// is no per-question id on this wire — answers are keyed by the full
@@ -148,7 +137,7 @@ pub(super) fn grok_question_event(
         cwd: None,
         env: None,
         options,
-        is_chooser: None,
+        is_chooser: Some(false),
         kind: Some(PermissionRequestKind::Question),
         questions: Some(
             questions
@@ -177,13 +166,19 @@ pub(super) fn grok_question_event(
     }
 }
 
+/// grok's decline answer: the `skip_interview` response variant, on its
+/// own. One constructor so every refusal path spells it the same way.
+pub(super) fn grok_skip_interview() -> Value {
+    serde_json::json!({ "outcome": "skip_interview" })
+}
+
 /// The reply to an `_x.ai/ask_user_question` request: `{outcome, answers}`
-/// with **labels** on allow, `{outcome: "cancelled"}` on anything else. An
-/// option pick decodes the position the card encoded; a text answer is the
-/// value verbatim for one question, or a JSON text-to-value map for several
-/// (multi-selects split back on commas, the card's own join). Anything
-/// unmappable refuses with the cancelled shape rather than answering what
-/// nobody chose.
+/// with **labels** on allow, grok's `skip_interview` decline variant on
+/// anything else. An option pick decodes the position the card encoded; a
+/// text answer is the value verbatim for one question, or a JSON
+/// text-to-value map for several (multi-selects split back on commas, the
+/// card's own join). Anything unmappable refuses with the decline variant
+/// rather than answering what nobody chose.
 pub(super) fn grok_question_result(params: &Value, result: &Value) -> Value {
     let outcome = result
         .pointer("/outcome/outcome")
@@ -207,7 +202,7 @@ pub(super) fn grok_question_result(params: &Value, result: &Value) -> Value {
             return serde_json::json!({ "outcome": "accepted", "answers": map });
         }
     }
-    serde_json::json!({ "outcome": "cancelled" })
+    grok_skip_interview()
 }
 
 fn grok_question_answers(
@@ -275,36 +270,6 @@ fn grok_answer_labels(question: &GrokQuestion, value: &str) -> Vec<String> {
     } else {
         labels
     }
-}
-
-/// The sender an ACP session installs when it may carry grok questions: a
-/// parked grok id answers in grok's shape, every other id passes through in
-/// the ACP `session/request_permission` shape the broker already built. A
-/// written answer releases its pending entry, so a later frame reusing the
-/// id starts clean.
-pub(super) fn acp_question_sender(
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
-    pending: GrokPending,
-) -> Arc<PermissionSender> {
-    Arc::new(move |broker_id, result| {
-        let params = pending
-            .lock()
-            .map(|map| map.get(&broker_id).cloned())
-            .unwrap_or(None);
-        let result = match &params {
-            Some(params) => grok_question_result(params, &result),
-            None => result,
-        };
-        let frame = serde_json::json!({ "jsonrpc": "2.0", "id": broker_id, "result": result });
-        let mut bytes = serde_json::to_vec(&frame)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        bytes.push(b'\n');
-        let written = write_child_stdin(&stdin, &bytes, "ACP");
-        if written.is_ok() && params.is_some() {
-            let _ = pending.lock().map(|mut map| map.remove(&broker_id));
-        }
-        written
-    })
 }
 
 /// A card id the provider did not choose, in the same shape as the sibling

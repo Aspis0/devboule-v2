@@ -418,17 +418,25 @@ fn main() -> io::Result<()> {
             // grok is answered with labels, never option ids: the first
             // label of the first answered question is the sentence the live
             // check reads off the transcript to see what the card decided.
-            let picked = request
+            // The key is checked too — an answer filed under the wrong
+            // question text would otherwise pass unnoticed.
+            let first = request
                 .pointer("/result/answers")
                 .and_then(Value::as_object)
-                .and_then(|answers| answers.values().next())
-                .and_then(|labels| labels.as_array())
+                .and_then(|answers| answers.iter().next());
+            let picked = first
+                .and_then(|(_, labels)| labels.as_array())
                 .and_then(|labels| labels.first())
                 .and_then(Value::as_str);
             let cancelled =
                 request.pointer("/result/outcome").and_then(Value::as_str) != Some("accepted");
             let text = match picked {
-                Some(label) => format!("You picked {label}"),
+                Some(label)
+                    if first.is_some_and(|(key, _)| key == "Which colour should the fence be?") =>
+                {
+                    format!("You picked {label}")
+                }
+                Some(label) => format!("You picked {label} for a different question"),
                 None => "You cancelled".to_string(),
             };
             emit(

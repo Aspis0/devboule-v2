@@ -1,56 +1,65 @@
 //! Tests that every grok question id gets an answer: pending cards at
 //! session close, and requests that arrive when the broker already refuses
-//! new cards. Each test reads the exact frame off the capturing sender —
-//! deleting the write fails the test on timeout instead of passing silently.
+//! new cards. Each test reads the exact frame off a fake child's stdout,
+//! through the production sender — deleting the write fails the test on
+//! timeout instead of passing silently.
 
 use devboule_protocol::SessionEvent;
 
-use super::question_support::{enveloped, has_notice, live_turn, Harness, SESSION};
+use super::question_support::{
+    echo_harness, enveloped, has_notice, live_turn, node_gated, SESSION,
+};
 
 #[test]
 fn pending_question_answered_on_close() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&enveloped(0));
-    let _ = harness.conn.pull_events();
-    assert_eq!(harness.broker.pending_len(), 1);
-    harness.broker.close();
-    let captured = harness.captured.lock().expect("captured");
-    assert_eq!(captured.len(), 1);
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let _ = echo.conn.pull_events();
+    assert_eq!(echo.broker.pending_len(), 1);
+    echo.broker.close();
     assert_eq!(
-        captured[0],
+        echo.read_frame(),
         serde_json::json!({
-            "jsonrpc": "2.0", "id": 0, "result": { "outcome": "cancelled" },
+            "jsonrpc": "2.0", "id": 0, "result": { "outcome": "skip_interview" },
         })
     );
 }
 
 #[test]
 fn closed_broker_answers_at_once() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.broker.close();
-    harness.dispatch(&enveloped(0));
-    assert_eq!(harness.broker.pending_len(), 0);
-    assert!(!harness
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.broker.close();
+    echo.dispatch(&enveloped(0));
+    assert_eq!(echo.broker.pending_len(), 0);
+    assert!(!echo
         .conn
         .pull_events()
         .iter()
         .any(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })));
-    let captured = harness.captured.lock().expect("captured");
-    assert_eq!(captured.len(), 1, "the id is answered, not dropped");
     assert_eq!(
-        captured[0]["result"],
-        serde_json::json!({ "outcome": "cancelled" })
+        echo.read_frame()["result"],
+        serde_json::json!({ "outcome": "skip_interview" }),
+        "the id is answered, not dropped"
     );
 }
 
 #[test]
 fn duplicate_tool_call_id_answers_at_once() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&enveloped(0));
-    let _ = harness.conn.pull_events();
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let _ = echo.conn.pull_events();
     let second = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -62,31 +71,80 @@ fn duplicate_tool_call_id_answers_at_once() {
             "mode": "default",
         },
     });
-    harness.dispatch(&second);
-    assert_eq!(harness.broker.pending_len(), 1, "no second card");
-    let cards = harness
+    echo.dispatch(&second);
+    assert_eq!(echo.broker.pending_len(), 1, "no second card");
+    let cards = echo
         .conn
         .pull_events()
         .into_iter()
         .filter(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. }))
         .count();
     assert_eq!(cards, 0, "the repeat never becomes a card");
-    let captured = harness.captured.lock().expect("captured");
-    assert_eq!(captured.len(), 1);
     assert_eq!(
-        captured[0],
+        echo.read_frame(),
         serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "result": { "outcome": "cancelled" },
+            "jsonrpc": "2.0", "id": 1, "result": { "outcome": "skip_interview" },
         })
     );
 }
 
 #[test]
-fn unparseable_frame_answers_at_once() {
-    // Nothing the person could answer: the id is answered now, not carded.
-    let harness = Harness::new();
-    live_turn(&harness.reader);
-    harness.dispatch(&serde_json::json!({
+fn reused_wire_id_leaves_the_parked_card_alone() {
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let _ = echo.conn.pull_events();
+    // The same wire id, still waiting, for another question: the duplicate
+    // is answered at once without touching the parked record.
+    echo.dispatch(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "_x.ai/ask_user_question",
+        "params": {
+            "sessionId": SESSION,
+            "toolCallId": "call-other-0",
+            "questions": [{"question": "Another?"}],
+            "mode": "default",
+        },
+    }));
+    assert_eq!(echo.broker.pending_len(), 1, "no second card");
+    assert_eq!(
+        echo.read_frame(),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "result": { "outcome": "skip_interview" },
+        })
+    );
+    // And the first card still answers against its own questions.
+    echo.broker
+        .respond_with_option(
+            "call-fence-0",
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            Some("q0o1".to_string()),
+            None,
+        )
+        .expect("option pick");
+    assert_eq!(
+        echo.read_frame()["result"],
+        serde_json::json!({
+            "outcome": "accepted",
+            "answers": { super::question_support::FENCE: ["Barn red"] },
+        })
+    );
+}
+
+#[test]
+fn unparseable_frame_is_said_out_loud_and_answered() {
+    if node_gated() {
+        return;
+    }
+    // Nothing the person could answer: the id is answered at once, and the
+    // transcript says so instead of dropping the frame in silence.
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 3,
         "method": "_x.ai/ask_user_question",
@@ -97,47 +155,94 @@ fn unparseable_frame_answers_at_once() {
             "mode": "default",
         },
     }));
-    assert_eq!(harness.broker.pending_len(), 0);
-    assert!(!harness
-        .conn
-        .pull_events()
+    assert_eq!(echo.broker.pending_len(), 0);
+    let events = echo.conn.pull_events();
+    assert!(!events
         .iter()
         .any(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })));
-    let captured = harness.captured.lock().expect("captured");
-    assert_eq!(captured.len(), 1);
+    assert!(has_notice(&events));
     assert_eq!(
-        captured[0]["result"],
-        serde_json::json!({ "outcome": "cancelled" })
+        echo.read_frame()["result"],
+        serde_json::json!({ "outcome": "skip_interview" })
     );
 }
 
 #[test]
 fn foreign_session_question_answers_at_once() {
-    let harness = Harness::new();
-    live_turn(&harness.reader);
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
     let mut frame = enveloped(0);
     frame["params"]["sessionId"] = serde_json::json!("another-session");
-    harness.dispatch(&frame);
-    assert_eq!(harness.broker.pending_len(), 0);
-    assert!(has_notice(&harness.conn.pull_events()));
-    let captured = harness.captured.lock().expect("captured");
-    assert_eq!(captured.len(), 1);
+    echo.dispatch(&frame);
+    assert_eq!(echo.broker.pending_len(), 0);
+    assert!(has_notice(&echo.conn.pull_events()));
     assert_eq!(
-        captured[0]["result"],
-        serde_json::json!({ "outcome": "cancelled" })
+        echo.read_frame()["result"],
+        serde_json::json!({ "outcome": "skip_interview" })
+    );
+}
+
+#[test]
+fn missing_session_question_answers_at_once() {
+    if node_gated() {
+        return;
+    }
+    // Every shape grok sends carries the session: an absent one is refused
+    // like a wrong one.
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    let mut frame = enveloped(0);
+    frame["params"]
+        .as_object_mut()
+        .expect("params object")
+        .remove("sessionId");
+    echo.dispatch(&frame);
+    assert_eq!(echo.broker.pending_len(), 0);
+    assert!(has_notice(&echo.conn.pull_events()));
+    assert_eq!(
+        echo.read_frame()["result"],
+        serde_json::json!({ "outcome": "skip_interview" })
     );
 }
 
 #[test]
 fn question_after_turn_end_answers_at_once() {
-    let harness = Harness::new();
-    harness.dispatch(&enveloped(0));
-    assert_eq!(harness.broker.pending_len(), 0);
-    assert!(has_notice(&harness.conn.pull_events()));
-    let captured = harness.captured.lock().expect("captured");
-    assert_eq!(captured.len(), 1);
+    if node_gated() {
+        return;
+    }
+    let mut echo = echo_harness();
+    echo.dispatch(&enveloped(0));
+    assert_eq!(echo.broker.pending_len(), 0);
+    assert!(has_notice(&echo.conn.pull_events()));
     assert_eq!(
-        captured[0]["result"],
-        serde_json::json!({ "outcome": "cancelled" })
+        echo.read_frame()["result"],
+        serde_json::json!({ "outcome": "skip_interview" })
+    );
+}
+
+#[test]
+fn oversize_question_is_refused_and_answered() {
+    if node_gated() {
+        return;
+    }
+    // Past the broker's field bound: no card, and the id still gets the
+    // decline frame.
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    let mut frame = enveloped(0);
+    frame["params"]["questions"][0]["question"] = serde_json::json!("Q".repeat(9 * 1024));
+    echo.dispatch(&frame);
+    assert_eq!(echo.broker.pending_len(), 0);
+    assert!(!echo
+        .conn
+        .pull_events()
+        .iter()
+        .any(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })));
+    assert_eq!(
+        echo.read_frame()["result"],
+        serde_json::json!({ "outcome": "skip_interview" })
     );
 }

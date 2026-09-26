@@ -31,9 +31,9 @@ use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::server::ServerState;
 
+use super::acp_pending::{acp_response_sender, AcpPending, AcpPendingKind, AcpPendingResponse};
 use super::acp_questions::{
-    acp_question_sender, grok_card_id, grok_payload, grok_question_event, parse_grok_questions,
-    GrokPending,
+    grok_card_id, grok_payload, grok_question_event, grok_skip_interview, parse_grok_questions,
 };
 use super::permission_broker::{
     PermissionBroker, PermissionResponseError, MAX_ACP_PERMISSION_FIELD_BYTES,
@@ -1285,7 +1285,7 @@ enum PendingSwitch {
 pub(super) struct AcpTransport {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     permission_broker: Arc<PermissionBroker>,
-    grok_questions: GrokPending,
+    pending_responses: AcpPending,
     host: Arc<AcpHost>,
     turn: Arc<TurnWatch>,
     next_id: AtomicU64,
@@ -1319,13 +1319,13 @@ pub(super) struct AcpTransport {
 impl AcpTransport {
     fn new(stdin: ChildStdin, host: Arc<AcpHost>) -> Self {
         let stdin = Arc::new(Mutex::new(Some(stdin)));
-        let grok_questions: GrokPending = Arc::new(Mutex::new(HashMap::new()));
+        let pending_responses: AcpPending = Arc::new(Mutex::new(HashMap::new()));
         Self {
-            permission_broker: PermissionBroker::with_sender(acp_question_sender(
+            permission_broker: PermissionBroker::with_sender(acp_response_sender(
                 Arc::clone(&stdin),
-                Arc::clone(&grok_questions),
+                Arc::clone(&pending_responses),
             )),
-            grok_questions,
+            pending_responses,
             host,
             turn: TurnWatch::new(),
             stdin,
@@ -1510,10 +1510,10 @@ impl AcpTransport {
         Arc::clone(&self.pending)
     }
 
-    /// The parked grok questions the broker's sender maps answers against.
+    /// The parked answers the broker's sender shapes replies from.
     /// Shared with the reader so carding and answering read one map.
-    fn question_pending(&self) -> GrokPending {
-        Arc::clone(&self.grok_questions)
+    fn pending_responses(&self) -> AcpPending {
+        Arc::clone(&self.pending_responses)
     }
 
     fn model_switch_ids(&self) -> Arc<Mutex<HashMap<u64, PendingSwitch>>> {
@@ -3184,10 +3184,10 @@ struct AcpReader {
     host: Arc<AcpHost>,
     turn: Arc<TurnWatch>,
     transport: Option<Arc<AcpTransport>>,
-    /// grok questions parked by JSON-RPC id, read by the broker's sender
-    /// when it shapes the answer. From the transport's map in production,
-    /// fresh in unit tests (see `for_test_with_questions`).
-    grok_questions: GrokPending,
+    /// One record per broker registration, read by the sender when it
+    /// shapes the answer. From the transport's map in production, fresh in
+    /// unit tests without one.
+    pending_responses: AcpPending,
     deferred: Vec<serde_json::Value>,
     provider_id: Option<String>,
     handshake_manifest: Option<SessionEvent>,
@@ -3223,9 +3223,9 @@ impl AcpReader {
             permission_broker,
             host,
             turn,
-            grok_questions: transport
+            pending_responses: transport
                 .as_ref()
-                .map(|transport| transport.question_pending())
+                .map(|transport| transport.pending_responses())
                 .unwrap_or_default(),
             transport,
             deferred,
@@ -3274,15 +3274,18 @@ impl AcpReader {
     }
 
     #[cfg(test)]
-    fn for_test_with_questions(
-        pending: Arc<Mutex<HashSet<u64>>>,
-        session_id: String,
-        permission_broker: Arc<PermissionBroker>,
-        grok_questions: GrokPending,
-    ) -> Self {
-        let mut reader = Self::for_test(pending, session_id, permission_broker);
-        reader.grok_questions = grok_questions;
-        reader
+    /// Test road into a live-wired transport: the echo harness answers
+    /// through the production sender, so the bytes it reads are the bytes
+    /// a real agent would get.
+    #[cfg(test)]
+    pub(super) fn test_transport(
+        stdin: std::process::ChildStdin,
+    ) -> (Arc<AcpTransport>, Arc<PermissionBroker>, AcpPending) {
+        let dir = crate::test_dirs::test_temp_dir("devboule-acp-echo");
+        let transport = Arc::new(AcpTransport::new(stdin, AcpHost::new(dir.clone(), dir)));
+        let broker = Arc::clone(&transport.permission_broker);
+        let pending = transport.pending_responses();
+        (transport, broker, pending)
     }
 
     #[cfg(test)]
@@ -4173,21 +4176,37 @@ impl AcpReader {
             return;
         };
         let payload = grok_payload(value);
-        if let Some(session_id) = payload.get("sessionId").and_then(serde_json::Value::as_str) {
-            if session_id != self.session_id {
-                self.answer_grok_at_once(
-                    id,
-                    payload,
-                    runtime,
-                    Some("Grok question targeted another session and was cancelled.".to_string()),
-                );
-                return;
-            }
+        // The session check dispatch_permission applies: every shape grok
+        // sends carries the session, so an absent one is refused like a
+        // wrong one.
+        if payload.get("sessionId").and_then(serde_json::Value::as_str)
+            != Some(self.session_id.as_str())
+        {
+            self.answer_grok_at_once(
+                id,
+                payload,
+                runtime,
+                Some("Grok question targeted another session and was cancelled.".to_string()),
+            );
+            return;
+        }
+        if self.refuse_duplicate(
+            id,
+            value,
+            runtime,
+            grok_skip_interview(),
+            "Grok question reused an id that is still waiting and was cancelled.",
+        ) {
+            return;
         }
         let questions = parse_grok_questions(payload);
         if questions.is_empty() {
-            // Nothing the person could answer: the id is answered now.
-            self.answer_grok_at_once(id, payload, runtime, None);
+            self.answer_grok_at_once(
+                id,
+                payload,
+                runtime,
+                Some("Grok question had no usable questions and was cancelled.".to_string()),
+            );
             return;
         }
         let tool_call_id = payload
@@ -4208,15 +4227,20 @@ impl AcpReader {
             );
             return;
         }
-        if let Ok(mut pending) = self.grok_questions.lock() {
-            pending.insert(id, payload.clone());
+        if let Ok(mut pending) = self.pending_responses.lock() {
+            pending.insert(
+                id,
+                AcpPendingResponse {
+                    kind: AcpPendingKind::Question,
+                    params: payload.clone(),
+                },
+            );
         }
         let pending = match self.permission_broker.register(id, event.clone(), runtime) {
             Ok(pending) => pending,
             Err(error) => {
-                // The entry stays parked for the send below: the sender
-                // shapes the grok `cancelled` result from it and releases
-                // it, so every id is answered exactly once.
+                // The parked record shapes the decline below, and the send
+                // takes it back out.
                 if !matches!(error, PermissionResponseError::AlreadyRecorded) {
                     // The repeat-refusal's one plain notice is already up;
                     // only the cancelled frame goes back for that case.
@@ -4262,9 +4286,8 @@ impl AcpReader {
         let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
     }
 
-    /// Answer a grok id at once, without a card: the payload waits in the
-    /// pending map so the sender shapes the grok `cancelled` result, and
-    /// the send itself releases the entry.
+    /// Answer a grok id at once, without a card: the parked record shapes
+    /// the grok decline, and the send takes the record back out.
     fn answer_grok_at_once(
         &self,
         id: u64,
@@ -4272,15 +4295,62 @@ impl AcpReader {
         runtime: &SessionRuntime,
         notice: Option<String>,
     ) {
-        if let Ok(mut pending) = self.grok_questions.lock() {
-            pending.insert(id, payload.clone());
-        }
+        self.park(id, AcpPendingKind::Question, payload.clone());
         let _ = self.permission_broker.send(
             id,
             serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
         );
         if let Some(notice) = notice {
             self.publish(runtime, SessionEvent::AgentError { message: notice });
+        }
+    }
+
+    /// Park one wire id's answer record: the kind the sender shapes with.
+    fn park(&self, id: u64, kind: AcpPendingKind, params: serde_json::Value) {
+        if let Ok(mut pending) = self.pending_responses.lock() {
+            pending.insert(id, AcpPendingResponse { kind, params });
+        }
+    }
+
+    /// A wire id that is still waiting belongs to another request: answer
+    /// this one straight at the transport, leaving the parked record alone
+    /// so the open card keeps its route to a correct reply. True when it
+    /// answered.
+    fn refuse_duplicate(
+        &self,
+        id: u64,
+        value: &serde_json::Value,
+        runtime: &Arc<SessionRuntime>,
+        result: serde_json::Value,
+        notice: &str,
+    ) -> bool {
+        let waiting = self
+            .pending_responses
+            .lock()
+            .map(|pending| pending.contains_key(&id))
+            .unwrap_or(false);
+        if !waiting {
+            return false;
+        }
+        let wire = value
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::from(id));
+        self.send_acp_result(&wire, result);
+        self.publish(
+            runtime,
+            SessionEvent::AgentError {
+                message: notice.to_string(),
+            },
+        );
+        true
+    }
+
+    /// One JSON-RPC result straight at the agent, past the broker: only for
+    /// ids the broker never parked, whose answer no record shapes.
+    fn send_acp_result(&self, id: &serde_json::Value, result: serde_json::Value) {
+        if let Some(transport) = &self.transport {
+            let _ = transport.send_result(id.clone(), Ok(result));
         }
     }
 
@@ -4307,6 +4377,18 @@ impl AcpReader {
             );
             return;
         };
+        if self.refuse_duplicate(
+            id,
+            value,
+            runtime,
+            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+            "ACP permission request reused an id that is still waiting and was cancelled.",
+        ) {
+            return;
+        }
+        // Parked before every send below, so each one shapes through this
+        // record — including the refusals, whose bytes stay what they were.
+        self.park(id, AcpPendingKind::Permission, serde_json::Value::Null);
         let Some(params) = value.get("params") else {
             self.cancel_permission_request(
                 id,
