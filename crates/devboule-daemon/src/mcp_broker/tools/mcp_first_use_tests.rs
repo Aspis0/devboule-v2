@@ -100,6 +100,16 @@ fn spawn_gate_in(
     })
 }
 
+/// The calling session's kind, set the way the spawn path sets it for
+/// every live session: the gate reads it, so a test that means a mode
+/// must also mean its family.
+fn set_kind(state: &Arc<ServerState>, id: &str, kind: SessionKind) {
+    state
+        .sessions
+        .live_runtime(id, &owner())
+        .expect("live session")
+        .set_agent_kind(kind);
+}
 /// The calling session's current mode, read at call time like the gate
 /// reads it: set after the insert, never at it.
 fn set_mode(state: &Arc<ServerState>, id: &str, mode: &str) {
@@ -432,12 +442,18 @@ fn automatic_modes_proceed_with_no_card_and_no_mark() {
         TERMINAL_KEYS_GROUP,
         TERMINAL_KILL_GROUP,
     ];
-    for mode in ["bypass", "auto_accept", "bypassPermissions", "full-access"] {
+    for (kind, mode) in [
+        (SessionKind::Pi, "bypass"),
+        (SessionKind::Acp, "auto_accept"),
+        (SessionKind::Claude, "bypassPermissions"),
+        (SessionKind::Codex, "full-access"),
+    ] {
         for group in groups {
             let tag = format!("first-use-auto-{mode}-{group}");
             let state = ServerState::new(tag);
             let id = format!("fu-auto-{group}");
             session(&state, &id);
+            set_kind(&state, &id, kind.clone());
             set_mode(&state, &id, mode);
             let handle = spawn_gate_in(&state, &id, group);
             assert!(
@@ -468,12 +484,16 @@ fn plan_and_read_only_refuse_before_the_card() {
         TERMINAL_KEYS_GROUP,
         TERMINAL_KILL_GROUP,
     ];
-    for mode in ["plan", "read-only"] {
+    for (kind, mode) in [
+        (SessionKind::Claude, "plan"),
+        (SessionKind::Codex, "read-only"),
+    ] {
         for group in groups {
             let tag = format!("first-use-refuse-{mode}-{group}");
             let state = ServerState::new(tag);
             let id = format!("fu-refuse-{group}");
             session(&state, &id);
+            set_kind(&state, &id, kind.clone());
             set_mode(&state, &id, mode);
             let handle = spawn_gate_in(&state, &id, group);
             let start = Instant::now();
@@ -494,10 +514,8 @@ fn plan_and_read_only_refuse_before_the_card() {
             match card {
                 None => assert_eq!(
                     handle.join().expect("gate thread"),
-                    Err(format!(
-                        "This session is in {mode} mode; switch mode to let the agent proceed."
-                    )),
-                    "{mode} {group}: refuses naming the mode"
+                    Err(crate::provider_catalog::mode_refusal_sentence(mode)),
+                    "{mode:?} {group}: refuses with the catalog sentence"
                 ),
                 Some(card) => {
                     answer(&state, &id, &card, PermissionOutcome::Deny, "deny");
@@ -537,12 +555,42 @@ fn asking_modes_raise_the_card() {
     }
 }
 
+/// Another family's spelling answers nothing on this gate: an ACP agent in
+/// `full-access` or `plan`, and a Codex session in pi's `bypass`, all card
+/// like any asker.
+#[test]
+fn cross_family_spellings_raise_the_card() {
+    for (kind, mode) in [
+        (SessionKind::Acp, "full-access"),
+        (SessionKind::Acp, "plan"),
+        (SessionKind::Acp, "bypassPermissions"),
+        (SessionKind::Codex, "bypass"),
+        (SessionKind::Claude, "full-access"),
+        (SessionKind::Pi, "bypassPermissions"),
+    ] {
+        let state = ServerState::new(format!("first-use-cross-{mode}"));
+        let id = format!("fu-cross-{mode}");
+        session(&state, &id);
+        set_kind(&state, &id, kind.clone());
+        set_mode(&state, &id, mode);
+        let handle = spawn_gate(&state, &id);
+        let card = wait_for_card(&state, &id);
+        answer(&state, &id, &card, PermissionOutcome::Deny, "deny");
+        assert_eq!(
+            handle.join().expect("gate thread"),
+            Err("permission refused".to_string()),
+            "{kind:?} {mode}: the card decides"
+        );
+    }
+}
+
 /// The mode can change mid-session: an automatic call sets no mark, so the
 /// next call in an asking mode cards again.
 #[test]
 fn switching_from_automatic_to_ask_cards_again() {
     let state = ServerState::new("first-use-switch".to_string());
     session(&state, "fu-switch");
+    set_kind(&state, "fu-switch", SessionKind::Pi);
     set_mode(&state, "fu-switch", "bypass");
     let handle = spawn_gate(&state, "fu-switch");
     assert!(

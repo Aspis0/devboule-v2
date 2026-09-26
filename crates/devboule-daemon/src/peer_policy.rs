@@ -387,11 +387,11 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
 /// prediction and the tests have always read, now answered through the
 /// registry. The rule, unchanged, in the shape the impls carry it:
 ///
-/// - **Route A — the daemon answers itself.** A delivered mode carrying one
-///   of the provider-agnostic ids `provider_catalog::mode_is_auto_answered`
-///   lists is answered by the daemon's own broker, whatever *agent* family
-///   the session belongs to; the shared helper in `provider.rs` is the one
-///   list, and every agent impl's dictionary sits behind it. A terminal is
+/// - **Route A — the daemon answers itself.** A delivered mode carrying an
+///   id the daemon's own table answers for that family
+///   (`provider_catalog::mode_gate_for`) is answered by the daemon's own
+///   broker; the shared helper in `provider.rs` is the one table, and every
+///   agent impl's dictionary sits behind it. A terminal is
 ///   **not** an agent family: the broker's auto-answer call sites cover the
 ///   agent clients only, and a terminal has no permission mechanism at all,
 ///   so there is no permission moment for anything to answer and no mode id
@@ -1591,13 +1591,17 @@ pub(crate) mod tests {
     #[test]
     fn the_unattended_derivation_has_three_reachable_arms() {
         use devboule_protocol::UnattendedState;
-        // Route A: the shared helper, for every agent family, however the
-        // mode reached the child.
-        for kind in [SessionKind::Acp, SessionKind::Claude, SessionKind::Pi] {
+        // Route A: the daemon's own table, one id per family it owns.
+        for (kind, mode) in [
+            (SessionKind::Claude, "bypassPermissions"),
+            (SessionKind::Codex, "full-access"),
+            (SessionKind::Pi, "bypass"),
+            (SessionKind::Acp, "auto_accept"),
+        ] {
             assert_eq!(
-                unattended_mode(kind.clone(), Some("bypass")),
+                unattended_mode(kind.clone(), Some(mode)),
                 UnattendedState::Yes,
-                "{kind:?}: the daemon's own broker answers this id"
+                "{kind:?}: the daemon's own table answers this id"
             );
         }
         // Route A does not reach a terminal: the broker is wired for the

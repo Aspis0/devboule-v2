@@ -1981,17 +1981,15 @@ mod delivery_tests {
         }
         let validate_delivery = super::super::validate_delivery;
 
-        // The closed table intersects pi's own vocabulary at exactly
-        // `bypass`: that intersection is the route a tick rides, so it
-        // is asserted, not assumed.
-        let broker = crate::provider_catalog::auto_answered_modes();
-        assert!(
-            broker.contains(&"bypass"),
-            "bypass is the pi mode the daemon's broker answers"
-        );
+        // The table answers `bypass` for the pi family, and only `bypass`:
+        // that intersection is the route a tick rides, so it is asserted,
+        // not assumed.
         let vocabulary = ["bypass", "ask"];
         for mode_id in vocabulary {
-            if crate::provider_catalog::mode_is_auto_answered(mode_id) {
+            if crate::provider_catalog::mode_is_auto_answered(
+                Some(devboule_protocol::SessionKind::Pi),
+                mode_id,
+            ) {
                 validate_delivery(&delivery(mode_id, true)).unwrap_or_else(|error| {
                     panic!("{mode_id} answers its own prompts: {}", error.message)
                 });

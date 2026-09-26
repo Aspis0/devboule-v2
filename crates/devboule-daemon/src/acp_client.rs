@@ -2307,7 +2307,10 @@ fn apply_profile_delivery(
                 "the profile asks this agent to approve its own permission prompts, but the agent's handshake declared no modes the daemon can judge; the creation is refused",
             )
         })?;
-        if !crate::provider_catalog::mode_is_auto_answered(mode_id) {
+        if !crate::provider_catalog::mode_is_auto_answered(
+            Some(devboule_protocol::SessionKind::Acp),
+            mode_id,
+        ) {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 format!(

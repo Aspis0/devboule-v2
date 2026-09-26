@@ -88,17 +88,21 @@ impl From<UnattendedAnswer> for UnattendedState {
 }
 
 /// Route A of the `unattended` marker, shared by the four agent impls: the
-/// daemon's own broker answers the delivered mode itself, whatever family
-/// the child belongs to. Route B — the daemon authored the knob — is the
-/// per-impl `dictionary` each family passes. A terminal never reaches this
-/// helper: it has no permission mechanism, so no mode id can make route A
-/// true for it, and its impl answers `No` without consulting anything.
+/// daemon's own table answers the delivered mode for that family, whatever
+/// agent the session belongs to. Route B — the daemon authored the knob — is
+/// the per-impl `dictionary` each family passes. A terminal never reaches
+/// this helper: it has no permission mechanism, so no mode id can make
+/// route A true for it, and its impl answers `No` without consulting
+/// anything.
 fn agent_unattended_mode(
+    kind: SessionKind,
     delivered_mode: Option<&str>,
     dictionary: impl FnOnce(Option<&str>) -> UnattendedState,
 ) -> UnattendedAnswer {
     let delivered_mode = delivered_mode.filter(|mode| !mode.is_empty());
-    if delivered_mode.is_some_and(crate::provider_catalog::mode_is_auto_answered) {
+    if delivered_mode
+        .is_some_and(|mode| crate::provider_catalog::mode_is_auto_answered(Some(kind), mode))
+    {
         return UnattendedAnswer::Yes;
     }
     dictionary(delivered_mode).into()
@@ -521,7 +525,9 @@ impl Provider for AcpProvider {
         // An ACP agent's modes are prose the agent authored; no table here
         // judges them, so outside the route-A ids the answer is
         // `CannotEstablish`.
-        agent_unattended_mode(delivered_mode, |_| UnattendedState::Unknown)
+        agent_unattended_mode(SessionKind::Acp, delivered_mode, |_| {
+            UnattendedState::Unknown
+        })
     }
 }
 
@@ -676,7 +682,11 @@ impl Provider for ClaudeProvider {
     fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer {
         // Route B is the launcher's own mode table — the vocabulary the
         // daemon delivers and therefore knows.
-        agent_unattended_mode(delivered_mode, crate::claude_view::unattended_answer)
+        agent_unattended_mode(
+            SessionKind::Claude,
+            delivered_mode,
+            crate::claude_view::unattended_answer,
+        )
     }
 }
 
@@ -822,7 +832,11 @@ impl Provider for PiProvider {
     fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer {
         // Route B is the family's own mode table — the vocabulary the
         // daemon delivers and therefore knows.
-        agent_unattended_mode(delivered_mode, crate::session::pi_unattended_answer)
+        agent_unattended_mode(
+            SessionKind::Pi,
+            delivered_mode,
+            crate::session::pi_unattended_answer,
+        )
     }
 }
 
@@ -964,7 +978,11 @@ impl Provider for CodexProvider {
     fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer {
         // Route B is the family's own mode table — the vocabulary the
         // daemon delivers and therefore knows.
-        agent_unattended_mode(delivered_mode, crate::codex_view::unattended_answer)
+        agent_unattended_mode(
+            SessionKind::Codex,
+            delivered_mode,
+            crate::codex_view::unattended_answer,
+        )
     }
 }
 

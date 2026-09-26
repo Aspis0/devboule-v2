@@ -142,7 +142,7 @@ impl SlotFixture {
         let ticket = self
             .state
             .sessions
-            .reserve_agent_creation(&self.creator, 1)
+            .reserve_agent_creation(&self.creator, 1, true)
             .expect("a creation slot");
         arm(&self.state.sessions);
         self.state.sessions.create_session_for_agent(

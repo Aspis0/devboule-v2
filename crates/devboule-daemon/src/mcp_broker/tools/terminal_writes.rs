@@ -142,6 +142,16 @@ fn create_terminal(
     id: &Value,
     name: &Option<String>,
 ) -> Result<Value, TerminalError> {
+    // The session's mode before any reservation: a plan or read-only mode
+    // of the session's own family refuses before the retry hold and the cap
+    // slot are spent. The gate repeats the full rule later.
+    if let Some(crate::provider_catalog::ModeGate::Refuse(sentence)) = state
+        .sessions
+        .live_runtime(&registration.session_id, &registration.owner)
+        .map(|runtime| runtime.mode_gate())
+    {
+        return Err(TerminalError::Refused(sentence));
+    }
     let workspace = caller_workspace(state, registration, conn_peer)?;
     // The retry identity first, in the order the wire's create road takes
     // it: a retry answers the terminal the first call opened, and a retry

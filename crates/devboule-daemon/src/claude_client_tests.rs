@@ -2093,7 +2093,10 @@ fn a_claude_auto_accept_tick_over_an_asking_mode_is_refused() {
     for mode_id in &vocabulary {
         let mut delivery = ProfileDelivery::for_request(Some(mode_id.clone()));
         delivery.auto_accept = true;
-        if crate::provider_catalog::mode_is_auto_answered(mode_id) {
+        if crate::provider_catalog::mode_is_auto_answered(
+            Some(devboule_protocol::SessionKind::Claude),
+            mode_id,
+        ) {
             validate_delivery(&catalog, &delivery).unwrap_or_else(|error| {
                 panic!("{mode_id} answers its own prompts: {}", error.message)
             });

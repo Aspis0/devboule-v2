@@ -62,6 +62,7 @@ impl super::SessionRegistry {
         &self,
         creator: &str,
         depth: u32,
+        needs_card: bool,
     ) -> Result<AgentCreationTicket<'_>, WireError> {
         if depth > MAX_AGENT_DEPTH {
             return Err(WireError::new(
@@ -103,21 +104,25 @@ impl super::SessionRegistry {
             ));
         }
         // The once-per-session card, decided here rather than by the caller
-        // (audit S5-06). A card that is already with the human blocks this
-        // caller *before* it spends a slot: it is not a refusal the caller can
-        // act on by retrying something else, it is "wait for the answer".
+        // (audit S5-06). A card that is already with the human blocks a
+        // caller that would raise one *before* it spends a slot: it is not
+        // a refusal the caller can act on by retrying something else, it is
+        // "wait for the answer". A cardless caller (an automatic mode,
+        // which raises no card) never parks, never waits and never marks:
+        // the gate is the card's, and it has no card.
         let card_owed = match caps.gate {
-            CreationGate::Pending => {
+            CreationGate::Pending if needs_card => {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
                     "creation permission pending; retry",
                 ))
             }
-            CreationGate::Closed => {
+            CreationGate::Pending => false,
+            CreationGate::Closed if needs_card => {
                 caps.gate = CreationGate::Pending;
                 true
             }
-            CreationGate::Open => false,
+            CreationGate::Closed | CreationGate::Open => false,
         };
         // The child's id is reserved here rather than inside the spawn
         // (audit S5B-04): the link below names it, and the link has to exist
@@ -167,21 +172,6 @@ impl super::SessionRegistry {
             .unwrap_or_else(|error| error.into_inner());
         if let Some(caps) = table.creators.get_mut(creator) {
             caps.gate = CreationGate::Open;
-        }
-    }
-
-    /// An automatic mode proceeds with no card and no mark: the gate this
-    /// reservation just set to Pending goes back to Closed, so asking again
-    /// later still asks instead of finding a licence nobody granted.
-    pub(crate) fn reset_agent_creation_gate(&self, creator: &str) {
-        let mut table = self
-            .creations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(caps) = table.creators.get_mut(creator) {
-            if caps.gate == CreationGate::Pending {
-                caps.gate = CreationGate::Closed;
-            }
         }
     }
 
@@ -294,7 +284,7 @@ impl super::SessionRegistry {
         creator: &str,
         depth: u32,
     ) -> Result<AgentCreationTicket<'_>, WireError> {
-        self.reserve_agent_creation(creator, depth)
+        self.reserve_agent_creation(creator, depth, true)
     }
 
     /// Register a child the test named itself, the way the spawn path does for

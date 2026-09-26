@@ -1167,8 +1167,8 @@ struct PiMode {
     id: &'static str,
     name: &'static str,
     description: &'static str,
-    /// `bypass` is route A and route B in one mode: it is one of the
-    /// provider-agnostic ids the daemon's own broker answers, and the
+    /// `bypass` is route A and route B in one mode: it is the id the
+    /// daemon's own table answers for the pi family, and the
     /// mechanism is the permission extension **this daemon writes** ceasing
     /// to gate. `ask` stops at the human for every tool.
     unattended: UnattendedState,
@@ -1232,7 +1232,11 @@ pub(crate) fn unattended_answer(delivered_mode: Option<&str>) -> UnattendedState
 /// gate's `Contradicts` for pi must name exactly the pairs this refuses.
 pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
     let mode_id = delivery.mode_id.as_deref().unwrap_or(DEFAULT_MODE);
-    delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(mode_id)
+    delivery.auto_accept
+        && !crate::provider_catalog::mode_is_auto_answered(
+            Some(devboule_protocol::SessionKind::Pi),
+            mode_id,
+        )
 }
 
 pub(super) fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {

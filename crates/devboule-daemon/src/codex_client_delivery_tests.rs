@@ -53,27 +53,28 @@ fn delivery(mode: &str, auto_accept: bool) -> ProfileDelivery {
     delivery
 }
 
-/// The daemon's broker answers the provider-agnostic ids it owns, and
-/// `full-access` is this client's own knob, whose approval policy is
-/// `never` — the provider never asks anybody. Both admit an
-/// `autoAccept` tick; everything else asks the human.
-///
-/// The broker half is **walked, not hand-listed** (the R2a audit's F9):
-/// the test iterates the table itself, so a fifth id added to
-/// `auto_answered_modes` is asserted to answer here the moment it
-/// exists, and a codex-side predicate change is caught against whatever
-/// the table holds. `full-access` now rides both routes — the daemon's
-/// list and this client's row-read — and the assertions hold either way.
+/// The daemon's table answers `full-access` for the Codex family, and this
+/// client's own knob agrees: `approvalPolicy: never` — the provider never
+/// asks anybody. Both admit an `autoAccept` tick; everything else asks the
+/// human. Other families' spellings answer nothing here: `bypass`,
+/// `auto_accept` and `bypassPermissions` are not Codex modes.
 #[test]
-fn codex_auto_answer_modes_are_the_broker_list() {
+fn codex_auto_answer_modes_are_full_access_only() {
     assert!(
         mode_answers_own_prompts("full-access"),
         "approvalPolicy never"
     );
-    for mode_id in crate::provider_catalog::auto_answered_modes() {
+    for mode_id in [
+        "bypass",
+        "auto_accept",
+        "bypassPermissions",
+        "ask",
+        "default",
+        "plan",
+    ] {
         assert!(
-            mode_answers_own_prompts(mode_id),
-            "route A: {mode_id} answers its own prompts"
+            !mode_answers_own_prompts(mode_id),
+            "{mode_id} is another family's spelling: it asks"
         );
     }
     assert!(!mode_answers_own_prompts("auto"), "on-request asks");

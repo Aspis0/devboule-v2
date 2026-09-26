@@ -111,6 +111,33 @@ fn the_creation_card_is_owed_once_per_creator_session_and_a_refusal_keeps_it_shu
     let _ = std::fs::remove_dir_all(&_dir);
 }
 
+/// A cardless reservation never parks, waits or marks: two automatic-mode
+/// creations racing on one session both proceed owing no card, and neither
+/// meets a pending-permission sentence for a card that does not exist —
+/// while a later asking call still finds the gate shut.
+#[test]
+fn a_cardless_reservation_never_sees_a_pending_gate() {
+    let (_dir, registry, journal) = tmp_delete_registry();
+    let creator = "session-auto";
+    let first = registry
+        .reserve_agent_creation(creator, 1, false)
+        .expect("cardless proceeds");
+    assert!(!first.card_owed(), "no card to owe");
+    let second = registry
+        .reserve_agent_creation(creator, 1, false)
+        .expect("cardless never waits on a gate");
+    assert!(!second.card_owed());
+    drop(first);
+    drop(second);
+    let third = registry
+        .reserve_agent_creation(creator, 1, true)
+        .expect("the gate is still shut");
+    assert!(third.card_owed(), "a later asking mode still cards");
+    registry.abandon_agent_creation_for_test(creator);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&_dir);
+}
+
 #[test]
 fn the_hourly_cap_is_ten_and_a_sweep_rolls_the_window() {
     let (_dir, registry, journal) = tmp_delete_registry();

@@ -183,25 +183,27 @@ pub(super) fn resolve_command(paths: &RuntimePaths) -> Result<PtyCommand, WireEr
 
 /// Whether a Codex child in this mode answers its own permission prompts —
 /// the fact an `autoAccept` delivery demands of the delivered mode. Two
-/// routes, never a provider-name table: the daemon's broker answers the
-/// provider-agnostic ids it owns (`mode_is_auto_answered`), and Codex's own
-/// knob is read from the row that owns it — the `CodexMode` table's
-/// `unattended: Yes` answer, the same fact the marker derives — so a new
-/// `Yes` row is answered here without this predicate learning its name.
-/// `full-access` is that knob today, with approval policy `never`: the
-/// provider never asks anybody, so the child runs alone however the broker
-/// feels. The other modes keep `on-request`, so the human may be asked and
-/// a profile that ticked `autoAccept` on one is a contradiction.
+/// routes: the daemon's table for the Codex family
+/// (`mode_is_auto_answered`), and Codex's own knob read from the row that
+/// owns it — the `CodexMode` table's `unattended: Yes` answer, the same fact
+/// the marker derives — so a new `Yes` row is answered here without this
+/// predicate learning its name. `full-access` rides both routes today, with
+/// approval policy `never`: the provider never asks anybody, so the child
+/// runs alone however the broker feels. The other modes keep `on-request`,
+/// so the human may be asked and a profile that ticked `autoAccept` on one
+/// is a contradiction.
 fn mode_answers_own_prompts(mode_id: &str) -> bool {
-    crate::provider_catalog::mode_is_auto_answered(mode_id)
-        || crate::codex_view::unattended_answer(Some(mode_id))
-            == devboule_protocol::UnattendedState::Yes
+    crate::provider_catalog::mode_is_auto_answered(
+        Some(devboule_protocol::SessionKind::Codex),
+        mode_id,
+    ) || crate::codex_view::unattended_answer(Some(mode_id))
+        == devboule_protocol::UnattendedState::Yes
 }
 
 /// The tick half of [`validate_delivery`] as one predicate, shared with the
 /// tests that cross it against the pre-card gate (the re-audit's P1): the
 /// pre-card gate must never refuse a pair this rule accepts, and `full-access`
-/// + tick is the pair that convicts — accepted here, `NotOursToJudge` there.
+/// + tick is the pair that convicts — accepted here, `Consistent` there.
 pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
     let mode_id = delivery
         .mode_id

@@ -40,6 +40,19 @@ fn solo_resolve(name: &str) -> Result<ChildProfileFacts, String> {
     }
 }
 
+/// The same move onto the family's own automatic id: the ratchet tests move
+/// a child and assert the marker follows, so the fixture must earn a `Yes`
+/// under the per-family table.
+fn auto_resolve(name: &str) -> Result<ChildProfileFacts, String> {
+    if name == "Solo" {
+        Ok(facts("auto_accept", "model-b", "p-1"))
+    } else {
+        Err(format!(
+            "unknown profile; call devboule_list_profiles ({name})"
+        ))
+    }
+}
+
 pub(super) fn journal_row_of(journal: &Arc<Journal>, id: &str) -> SessionRecord {
     journal
         .list()
@@ -113,7 +126,7 @@ fn a_landed_move_pushes_the_fresh_row_to_the_transition_sink() {
         owner.clone(),
         &creator,
         "Worker",
-        &["bypass"],
+        &["auto_accept"],
         Some("model-a"),
         true,
         false,
@@ -128,7 +141,7 @@ fn a_landed_move_pushes_the_fresh_row_to_the_transition_sink() {
         fired.lock().expect("sink log").push(pushed.user.clone());
     }));
     registry
-        .set_agent_child_profile(&creator, "Worker", "Solo", &solo_resolve)
+        .set_agent_child_profile(&creator, "Worker", "Solo", &auto_resolve)
         .expect("the move lands");
     assert_eq!(
         *sink_log.lock().expect("sink log"),
@@ -175,7 +188,7 @@ fn the_sink_reads_the_moved_row_the_push_announces() {
         owner.clone(),
         &creator,
         "Worker",
-        &["bypass"],
+        &["auto_accept"],
         Some("model-a"),
         true,
         false,
@@ -197,7 +210,7 @@ fn the_sink_reads_the_moved_row_the_push_announces() {
         recorded.lock().expect("sink record").push(found);
     }));
     registry
-        .set_agent_child_profile(&creator, "Worker", "Solo", &solo_resolve)
+        .set_agent_child_profile(&creator, "Worker", "Solo", &auto_resolve)
         .expect("the move lands");
     assert_eq!(
         seen.lock().expect("sink record").as_slice(),
@@ -231,7 +244,7 @@ fn a_landed_move_marks_the_rosters_delegation_column_unattended() {
         owner.clone(),
         &creator,
         "Worker",
-        &["bypass"],
+        &["auto_accept"],
         Some("model-a"),
         true,
         false,
@@ -248,7 +261,7 @@ fn a_landed_move_marks_the_rosters_delegation_column_unattended() {
         "the switch is on and the child has never run unattended"
     );
     registry
-        .set_agent_child_profile(&creator, "Worker", "Solo", &solo_resolve)
+        .set_agent_child_profile(&creator, "Worker", "Solo", &auto_resolve)
         .expect("the move lands");
     let after = registry
         .state_snapshots(&owner)
@@ -426,14 +439,14 @@ fn the_live_marker_ratchet_never_lowers_for_a_lower_judging_delivery() {
         owner.clone(),
         &creator,
         "Worker",
-        &["bypass", "deep-work"],
+        &["auto_accept", "deep-work"],
         Some("model-a"),
         true,
         false,
         false,
     );
     let resolve = |name: &str| match name {
-        "Solo" => Ok(facts("bypass", "model-b", "p-yes")),
+        "Solo" => Ok(facts("auto_accept", "model-b", "p-yes")),
         "Deep" => Ok(facts("deep-work", "model-a", "p-unknown")),
         other => Err(format!("unknown profile ({other})")),
     };

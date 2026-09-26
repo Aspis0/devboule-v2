@@ -537,9 +537,8 @@ const CODEX_MODES: &[CodexMode] = &[
         approvals_reviewer: Some("auto_review"),
     },
     // The daemon's own knob, spelled in its own turn parameters:
-    // `approvalPolicy: never`. Codex asks nobody, which the broker's
-    // route-A ids alone would never say — the case that proves two values do
-    // not suffice.
+    // `approvalPolicy: never`. Codex asks nobody — the daemon's table
+    // answers it for the Codex family, and this row agrees.
     CodexMode {
         id: "full-access",
         unattended: UnattendedState::Yes,

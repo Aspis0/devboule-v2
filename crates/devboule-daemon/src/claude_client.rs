@@ -293,7 +293,11 @@ pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
         .mode_id
         .as_deref()
         .unwrap_or(crate::claude_view::DEFAULT_MODE);
-    delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(mode_id)
+    delivery.auto_accept
+        && !crate::provider_catalog::mode_is_auto_answered(
+            Some(devboule_protocol::SessionKind::Claude),
+            mode_id,
+        )
 }
 
 pub(super) fn validate_delivery(

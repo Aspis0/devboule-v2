@@ -115,21 +115,19 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     subject: &str,
     facts: &[(&str, &str)],
 ) -> Result<(), String> {
-    // The calling session's current mode, read now: it can change
+    // The calling session's mode, read now: it can change
     // mid-session, so it is never cached and never stored as a mark. An
-    // automatic mode proceeds with no card; a plan or read-only mode is
-    // refused before the card, naming the mode; anything else cards.
-    let mode_id = state
+    // automatic mode proceeds with no card; a plan or read-only mode of the
+    // session's own family is refused before the card, naming the mode;
+    // anything else cards.
+    let gate = state
         .sessions
         .live_runtime(session_id, owner)
-        .and_then(|runtime| runtime.current_mode_id());
-    if let Some(mode) = mode_id.as_deref() {
-        if crate::provider_catalog::mode_is_auto_answered(mode) {
-            return Ok(());
-        }
-        if crate::provider_catalog::mode_refuses_writes(mode) {
-            return Err(crate::provider_catalog::mode_refusal_sentence(mode));
-        }
+        .map(|runtime| runtime.mode_gate());
+    match gate {
+        Some(crate::provider_catalog::ModeGate::Auto) => return Ok(()),
+        Some(crate::provider_catalog::ModeGate::Refuse(sentence)) => return Err(sentence),
+        _ => {}
     }
     {
         let mut marks = broker

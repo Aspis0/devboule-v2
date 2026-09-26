@@ -801,8 +801,8 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 /// two named providers document as unattended, spelled as they spell them. It
 /// serves the preset table's property tests and nothing else — it is **not**
 /// what decides a permission prompt at run time (that is
-/// `PermissionBroker::auto_answer`, which honours exactly the four
-/// provider-agnostic ids [`mode_is_auto_answered`] lists), and **nothing new
+/// `PermissionBroker::auto_answer`, which honours the per-family table
+/// [`mode_gate_for`] names), and **nothing new
 /// may be derived from it** (rev 11: the provider axis is open, so no new
 /// table, `match` or constant may grow from a list of provider or mode names —
 /// the next providers are queued and some will be user-defined).
@@ -814,8 +814,8 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 ///
 /// Three sources, all named:
 ///
-/// - the four provider-agnostic ids the daemon itself answers a permission
-///   request in ([`mode_is_auto_answered`]);
+/// - the per-family automatic ids the daemon itself answers a permission
+///   request in ([`mode_gate_for`]);
 /// - Codex's own unattended pair: `full-access` is `approvalPolicy: never`, and
 ///   `auto-review` hands approvals to a model reviewer;
 /// - Claude's `acceptEdits`, which approves every edit tool without prompting,
@@ -830,7 +830,7 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
     const CODEX_UNATTENDED: &[&str] = &["full-access", "auto-review"];
     const CLAUDE_UNATTENDED: &[&str] = &["acceptEdits", "auto"];
-    if mode_is_auto_answered(mode_id) {
+    if mode_is_auto_answered(Some(session_kind_for(provider)), mode_id) {
         return true;
     }
     match catalog_provider_id(provider).as_deref() {
@@ -840,39 +840,52 @@ pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
     }
 }
 
-/// The mode ids the daemon itself answers a permission request in, and the
-/// one list of them.
-///
-/// Three callers, one list, so the three cannot drift: `PermissionBroker::
-/// auto_answer` grants from this predicate at run time — a session in one of
-/// these modes never asks a human — `peer_policy::unattended_mode` checks
-/// it first at a child's birth, so the marker a child carries names exactly a
-/// mode the broker would have honoured, and the first-use gates
-/// (`ensure_write_allowed`) and the creation card proceed in them with no
-/// card at all. The list is provider-agnostic by construction: these are the
-/// ids the daemon speaks itself, and no provider name is reachable from here.
-/// `full-access` rides it because Codex's own `approvalPolicy` there is
-/// `never` — Codex never asks anybody, so following the provider means
-/// answering there too.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub(crate) fn auto_answered_modes() -> &'static [&'static str] {
-    &["bypass", "auto_accept", "bypassPermissions", "full-access"]
+/// What a calling session's mode says about a write-shaped act: one table
+/// keyed by the provider family that owns the mode id, so no family's
+/// spelling leaks into another's. Every reader — the broker's auto-answer,
+/// the birth marker, the first-use gates and the creation card — decides
+/// from this match, so the four cannot drift.
+pub(crate) enum ModeGate {
+    /// The session's mode never asks: proceed with no card and no mark.
+    Auto,
+    /// The session's mode never approves a write: refuse with the sentence
+    /// before any card, reservation or mark.
+    Refuse(String),
+    /// The card, as today.
+    Card,
 }
 
-/// The modes whose sessions never approve a write, so a write tool is
-/// refused before the card, naming the mode.
-///
-/// Claude `plan` analyses without executing tools or edits, Codex
-/// `read-only` cannot edit files or reach the network, and qwen's measured
-/// `session/new` advertises `plan`: carding one of these sessions would ask
-/// a person for an act the session's own mode forbids.
+/// The one table every mode decision reads: the family's own automatic
+/// and never-write ids, and the card for everything else — an unknown
+/// family, no mode at all, or an agent-authored id we cannot classify
+/// (including every ACP plan-like spelling) fails toward the card, never
+/// toward auto-open and never toward refusal.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub(crate) fn mode_refuses_writes(mode_id: &str) -> bool {
-    matches!(mode_id, "plan" | "read-only")
+pub(crate) fn mode_gate_for(
+    kind: Option<devboule_protocol::SessionKind>,
+    mode_id: Option<&str>,
+) -> ModeGate {
+    use devboule_protocol::SessionKind;
+    match (kind, mode_id) {
+        (Some(SessionKind::Claude), Some("bypassPermissions")) => ModeGate::Auto,
+        (Some(SessionKind::Claude), Some("plan")) => {
+            ModeGate::Refuse(mode_refusal_sentence("plan"))
+        }
+        // `approvalPolicy: never` — Codex never asks anybody there.
+        (Some(SessionKind::Codex), Some("full-access")) => ModeGate::Auto,
+        (Some(SessionKind::Codex), Some("read-only")) => {
+            ModeGate::Refuse(mode_refusal_sentence("read-only"))
+        }
+        (Some(SessionKind::Pi), Some("bypass")) => ModeGate::Auto,
+        // The daemon's own synthesized id: it describes our broker's
+        // behavior, not the agent's vocabulary.
+        (Some(SessionKind::Acp), Some("auto_accept")) => ModeGate::Auto,
+        _ => ModeGate::Card,
+    }
 }
 
-/// The one-sentence refusal a write tool answers in a mode from
-/// [`mode_refuses_writes`]: it names the session's own mode and the way out.
+/// The one-sentence refusal a write tool answers in a mode the table
+/// refuses: it names the session's own mode and the way out.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) fn mode_refusal_sentence(mode_id: &str) -> String {
     format!("This session is in {mode_id} mode; switch mode to let the agent proceed.")
@@ -881,8 +894,11 @@ pub(crate) fn mode_refusal_sentence(mode_id: &str) -> String {
 /// The client-only build answers no permission requests, so this has no
 /// caller there — the gate that reads it is server-only by definition.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub(crate) fn mode_is_auto_answered(mode_id: &str) -> bool {
-    auto_answered_modes().contains(&mode_id)
+pub(crate) fn mode_is_auto_answered(
+    kind: Option<devboule_protocol::SessionKind>,
+    mode_id: &str,
+) -> bool {
+    matches!(mode_gate_for(kind, Some(mode_id)), ModeGate::Auto)
 }
 
 /// The pre-card verdict on an `autoAccept` tick against the profile's own
@@ -900,9 +916,9 @@ pub(crate) fn mode_is_auto_answered(mode_id: &str) -> bool {
 #[cfg(feature = "server")]
 pub(crate) enum AutoAcceptTick {
     /// The daemon knows the pair is consistent: the tick is off, or the mode
-    /// is one of the provider-agnostic ids [`mode_is_auto_answered`] lists —
-    /// the one piece of mode vocabulary the daemon owns, and one every
-    /// family's spawn-time check honours.
+    /// is one the daemon's own table answers for that family
+    /// ([`mode_gate_for`]) — the one piece of mode vocabulary the daemon
+    /// owns, and one every family's spawn-time check honours.
     Consistent,
     /// The daemon owns this family's tick rule and the profile violates it,
     /// so the creation is refused before the card. Two families only: for
@@ -916,13 +932,12 @@ pub(crate) enum AutoAcceptTick {
     Contradicts,
     /// The mode id is not the daemon's, so whether the tick contradicts is
     /// not the daemon's fact to state: the family that owns the knob judges
-    /// at spawn time, where the delivered mode is the fact. Codex's rule is
-    /// its own row-read (`full-access` is `approvalPolicy: never`), which now
-    /// agrees with the daemon's table — either route answers it — an ACP agent's modes are authored at
-    /// runtime and judged post-handshake, and a user-defined provider —
-    /// which resolves to the ACP family — fails safe the same way: it is
-    /// judged by the client that will speak for it, never refused by a
-    /// table that never heard of it.
+    /// at spawn time, where the delivered mode is the fact. Codex's own
+    /// row-read agrees with the daemon's table on `full-access`, and every
+    /// other non-table id — an ACP agent's runtime-authored modes, a
+    /// user-defined provider's — fails safe the same way: judged by the
+    /// client that will speak for it, never refused by a table that never
+    /// heard of it.
     NotOursToJudge,
 }
 
@@ -930,7 +945,7 @@ pub(crate) enum AutoAcceptTick {
 /// mode (`R2a` F7, narrowed by the re-audit's P1 into the authorship split
 /// [`AutoAcceptTick`] names).
 ///
-/// [`mode_is_auto_answered`] is still the only mode table this reads. What
+/// [`mode_gate_for`] is still the only mode table this reads. What
 /// changed is the conclusion a non-table id licenses: the old shape read
 /// "not broker-answered" as "asks the human" — a fact about vocabulary the
 /// daemon did not author, and wrong for exactly the modes providers spell
@@ -946,10 +961,11 @@ pub(crate) fn judge_auto_accept_tick(
     if !crate::profile_delivery::feature_is_true(features, AUTO_ACCEPT_FEATURE) {
         return AutoAcceptTick::Consistent;
     }
-    if mode_is_auto_answered(mode_id) {
+    let kind = session_kind_for(provider);
+    if mode_is_auto_answered(Some(kind.clone()), mode_id) {
         return AutoAcceptTick::Consistent;
     }
-    match session_kind_for(provider) {
+    match kind {
         devboule_protocol::SessionKind::Claude | devboule_protocol::SessionKind::Pi => {
             AutoAcceptTick::Contradicts
         }

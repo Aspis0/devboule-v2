@@ -4546,12 +4546,13 @@ fn a_profile_resolves_to_exactly_what_was_saved() {
     assert!(!resolved.overlay.allows("devboule_send_message"));
     assert!(resolved.overlay.allows("devboule_list_agents"));
     // The marker is no longer a field on the resolution: the birth derives
-    // it from the delivery. The same prediction the list serves says what
-    // this profile's mode would earn.
+    // it from the delivery. A cross-family spelling earns no `Yes`: grok
+    // never authored `bypass`, so the same prediction the list serves says
+    // `unknown` for it.
     assert_eq!(
         predicted_unattended(&resolved.provider, &resolved.mode),
-        devboule_protocol::UnattendedState::Yes,
-        "the mode auto-answers permission prompts"
+        devboule_protocol::UnattendedState::Unknown,
+        "another family's spelling is not the daemon's fact to state"
     );
 }
 
@@ -4608,7 +4609,7 @@ fn the_creation_card_carries_the_spawn_prompt_in_full() {
     );
     let ticket = state
         .sessions
-        .reserve_agent_creation(&creator, 0)
+        .reserve_agent_creation(&creator, 0, true)
         .expect("a creation ticket");
     let request = AgentCreateRequest {
         profile: "runner".to_string(),
@@ -4705,7 +4706,7 @@ fn a_spawn_prompt_cannot_forge_the_card_metadata() {
     );
     let ticket = state
         .sessions
-        .reserve_agent_creation(&creator, 0)
+        .reserve_agent_creation(&creator, 0, true)
         .expect("a creation ticket");
     let request = AgentCreateRequest {
         profile: "runner".to_string(),
@@ -4899,7 +4900,7 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
     {
         let _ticket = state
             .sessions
-            .reserve_agent_creation(&creator, 1)
+            .reserve_agent_creation(&creator, 1, true)
             .expect("a reservation to arm the gate");
         // The ticket's Drop releases the slot without committing.
     }
@@ -5056,7 +5057,7 @@ fn a_unicode_separator_cannot_escape_the_card_block() {
     );
     let ticket = state
         .sessions
-        .reserve_agent_creation(&creator, 0)
+        .reserve_agent_creation(&creator, 0, true)
         .expect("a creation ticket");
     let request = AgentCreateRequest {
         profile: "runner".to_string(),
@@ -5459,7 +5460,7 @@ fn the_profile_list_is_the_humans_order_with_verbatim_notes() {
                 "first",
                 "profile-1",
                 "grok",
-                "bypass",
+                "auto_accept",
                 serde_json::json!({"autoAccept": true}),
                 &[],
                 true,
@@ -5564,7 +5565,7 @@ fn the_card_prints_a_delivered_feature_as_delivered() {
     );
     let ticket = state
         .sessions
-        .reserve_agent_creation(&creator, 0)
+        .reserve_agent_creation(&creator, 0, true)
         .expect("a creation ticket");
     let request = AgentCreateRequest {
         profile: "runner".to_string(),

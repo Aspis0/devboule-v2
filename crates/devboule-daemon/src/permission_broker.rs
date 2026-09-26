@@ -787,12 +787,11 @@ impl PermissionBroker {
         )
     }
 
-    /// Auto-answer the modes `provider_catalog::mode_is_auto_answered` lists —
-    /// the one list, shared with the `unattended` marker a child's birth
-    /// writes and with the first-use gates, which answer from it before any
-    /// card — and only when the agent offers one allow choice; chooser
-    /// requests stay with the client, and so does every question: a model's
-    /// question is never auto-answered, in any mode. Paseo's chooser rule:
+    /// Auto-answer the modes the daemon's table answers for the session's
+    /// own family ([`crate::provider_catalog::mode_gate_for`]) — and only
+    /// when the agent offers one allow choice; chooser requests stay with
+    /// the client, and so does every question: a model's question is never
+    /// auto-answered, in any mode. Paseo's chooser rule:
     /// the same kind twice — allow or reject — is a question, the standard
     /// `allow_once`/`allow_always`/`reject_once` batch (three distinct kinds)
     /// is not. Prefer allow_once, then allow_always; a request with no allow
@@ -803,10 +802,7 @@ impl PermissionBroker {
         tool_call_id: &str,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<bool, PermissionResponseError> {
-        let Some(mode_id) = runtime.current_mode_id() else {
-            return Ok(false);
-        };
-        if !crate::provider_catalog::mode_is_auto_answered(mode_id.as_str()) {
+        if !matches!(runtime.mode_gate(), crate::provider_catalog::ModeGate::Auto) {
             return Ok(false);
         }
         let Some(AutoAnswer { pending, option }) = self.take_auto_answerable(tool_call_id)? else {
@@ -815,15 +811,10 @@ impl PermissionBroker {
         let result = serde_json::json!({
             "outcome": { "outcome": "selected", "optionId": option.option_id }
         });
-        // The session's own mode answered, not a person: the audit row names
-        // it, so a reader tells the mode's Allow from a person's.
-        self.complete(
-            &pending,
-            result,
-            Some(&option),
-            &option.kind,
-            Some(mode_id.as_str()),
-        )?;
+        // No attribution: `answered_by` names a delegating session, and a
+        // mode id there would render as one. Mode attribution needs its own
+        // protocol field.
+        self.complete(&pending, result, Some(&option), &option.kind, None)?;
         Ok(true)
     }
 
@@ -924,14 +915,19 @@ impl PermissionBroker {
     /// Decide the auto-answer and remove the entry in the same lock. The
     /// entry is removed only once an allow option has been selected, so a
     /// chooser or an allow-less request stays pending for the client. A
-    /// first-use id answers here like any other: the gate's own road never
-    /// parks one in an automatic mode, but the list reads no id prefix.
+    /// first-use gate is never answered here, whatever its shape: the gates
+    /// decide the mode before any card is raised, and the broker must never
+    /// auto-answer a gate card.
     fn take_auto_answerable(
         &self,
         tool_call_id: &str,
     ) -> Result<Option<AutoAnswer>, PermissionResponseError> {
-        // No id-prefix rule: a first-use gate answers from the one list
-        // like any other card.
+        // A first-use gate is never auto-answered: each call must reach
+        // the person unless the gate itself opened it, and the gate decides
+        // the mode before any card is raised.
+        if crate::mcp_broker::is_first_use_card(tool_call_id) {
+            return Ok(None);
+        }
         let mut table = self
             .pending
             .lock()
@@ -1256,10 +1252,9 @@ fn permission_resolved_event(
 }
 
 /// The durable attribution record for one resolution. Every resolution
-/// carries it — a cancellation answers `None` exactly as a person's answer
-/// does, while an auto-answer names the session's mode — so the replayed
-/// count and the live ledger count the same events, and a reader tells the
-/// mode's Allow from a person's.
+/// carries it — a cancellation and an auto-answer answer `None` exactly as a
+/// person's answer does — so the replayed count and the live ledger count the
+/// same events.
 fn permission_answered_event(
     pending: &PendingPermission,
     answered_by: Option<&str>,
@@ -1751,7 +1746,9 @@ mod tests {
         MAX_PENDING_FOR_PEER,
     };
     use crate::journal::Journal;
-    use devboule_protocol::{PeerRole, PermissionOutcome, SessionEvent, SessionOrigin};
+    use devboule_protocol::{
+        PeerRole, PermissionOutcome, SessionEvent, SessionKind, SessionOrigin,
+    };
     use rusqlite::Connection;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
@@ -1869,6 +1866,7 @@ mod tests {
     fn bypass_mode_auto_answers_without_a_client_permission_request() {
         let (broker, sent) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Pi);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("pi".to_string()),
             current_model_id: None,
@@ -1893,6 +1891,7 @@ mod tests {
     fn bypass_mode_leaves_a_duplicate_allow_chooser_for_the_client() {
         let (broker, sent) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Pi);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("pi".to_string()),
             current_model_id: None,
@@ -1927,6 +1926,7 @@ mod tests {
     fn bypass_mode_leaves_a_reject_side_chooser_for_the_client() {
         let (broker, sent) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Pi);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("pi".to_string()),
             current_model_id: None,
@@ -1962,6 +1962,7 @@ mod tests {
     fn bypass_mode_auto_answers_the_standard_option_triple() {
         let (broker, sent) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Pi);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("pi".to_string()),
             current_model_id: None,
@@ -1998,6 +1999,7 @@ mod tests {
     fn bypass_mode_leaves_a_request_without_an_allow_option_for_the_client() {
         let (broker, sent) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Pi);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("pi".to_string()),
             current_model_id: None,
@@ -2092,12 +2094,12 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// A first-use gate answers from the one list, like any other card: in
-    /// an automatic mode the broker grants the one-shot, and the gate's own
-    /// road never parks one there — an automatic mode returns before the
-    /// card. Reverses the old rule that refused first-use ids structurally.
+    /// A first-use gate is never auto-answered: the id-prefix refusal is
+    /// structural, so no option shape and no mode can open one here — the
+    /// gates decide the mode before any card is raised, and the broker must
+    /// never auto-answer a gate card.
     #[test]
-    fn auto_answer_answers_first_use_cards_in_automatic_modes() {
+    fn auto_answer_never_answers_first_use_cards() {
         let path = permission_path("session-auto");
         let journal = Arc::new(Journal::open(&path).expect("journal"));
         let (broker, sent) = test_broker();
@@ -2106,6 +2108,7 @@ mod tests {
             Some(Arc::clone(&journal)),
             Arc::clone(&broker),
         );
+        runtime.set_agent_kind(SessionKind::Pi);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("grok".to_string()),
             current_model_id: None,
@@ -2126,63 +2129,58 @@ mod tests {
             )
             .expect("register");
 
-        assert!(broker
+        assert!(!broker
             .auto_answer("write:workspaces:s:1-1", &runtime)
-            .expect("an automatic mode answers the gate card"));
-        assert_eq!(broker.pending_len(), 0);
-        assert_eq!(
-            sent.lock().expect("sent lock")[0].1["outcome"]["optionId"],
-            "once"
-        );
-        journal.flush().expect("journal flush");
-        let conn = Connection::open(&path).expect("inspect journal");
-        let outcome: String = conn
-            .query_row(
-                "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
-                ["s.permission.session-auto", "write:workspaces:s:1-1"],
-                |row| row.get(0),
-            )
-            .expect("permission row");
-        assert_eq!(outcome, "allow_once");
-        drop(conn);
+            .expect("a gate card is not answerable"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
         journal.shutdown();
         let _ = std::fs::remove_file(path);
     }
 
-    /// `full-access` is `approvalPolicy: never`: Codex never asks there, so
-    /// the one list answers it like bypass.
+    /// `full-access` is Codex's own spelling, answered for Codex only: an
+    /// ACP agent advertising the same id gets nothing from it.
     #[test]
-    fn full_access_auto_answers_a_provider_card() {
-        let (broker, sent) = test_broker();
-        let runtime = Arc::new(SessionRuntime::new());
-        runtime.store_session_manifest(SessionEvent::SessionManifest {
-            provider_id: Some("codex".to_string()),
-            current_model_id: None,
-            models: Vec::new(),
-            modes: Some(devboule_protocol::SessionModeStateView {
-                current_mode_id: "full-access".to_string(),
-                available_modes: Vec::new(),
-            }),
-        });
-        broker
-            .register(70, permission("codex-full-access"), &runtime)
-            .expect("register");
+    fn full_access_answers_for_codex_only() {
+        for (kind, provider, answered) in [
+            (SessionKind::Codex, "codex", true),
+            (SessionKind::Acp, "grok", false),
+            (SessionKind::Claude, "claude", false),
+        ] {
+            let (broker, sent) = test_broker();
+            let runtime = Arc::new(SessionRuntime::new());
+            runtime.set_agent_kind(kind.clone());
+            runtime.store_session_manifest(SessionEvent::SessionManifest {
+                provider_id: Some(provider.to_string()),
+                current_model_id: None,
+                models: Vec::new(),
+                modes: Some(devboule_protocol::SessionModeStateView {
+                    current_mode_id: "full-access".to_string(),
+                    available_modes: Vec::new(),
+                }),
+            });
+            let card = format!("card-full-access-{provider}");
+            broker
+                .register(70, permission(&card), &runtime)
+                .expect("register");
 
-        assert!(broker
-            .auto_answer("codex-full-access", &runtime)
-            .expect("full-access answers"));
-        assert_eq!(broker.pending_len(), 0);
-        assert_eq!(
-            sent.lock().expect("sent lock")[0].1["outcome"]["optionId"],
-            "allow"
-        );
+            assert_eq!(
+                broker.auto_answer(&card, &runtime).expect("policy"),
+                answered,
+                "{provider} full-access"
+            );
+            assert_eq!(broker.pending_len(), usize::from(!answered));
+            assert_eq!(sent.lock().expect("sent lock").is_empty(), !answered);
+        }
     }
 
-    /// Every other mode still parks the gate card for the person.
+    /// Every other mode still parks the card for the person — and a gate
+    /// card never reaches the mode check at all.
     #[test]
     fn auto_answer_leaves_first_use_cards_for_asking_modes() {
         let (broker, sent) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Pi);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("pi".to_string()),
             current_model_id: None,
@@ -2211,17 +2209,40 @@ mod tests {
     }
 
     /// Codex approvals reach the person through the client's own road (it
-    /// registers and publishes, never auto-answers), so adding `full-access`
-    /// to the one list changes nothing there. Pinned structurally: this fails
-    /// the moment that road learns an auto-answer call, which would answer
-    /// Codex's own cards from the daemon's list.
+    /// registers and publishes, never auto-answers): with the guard above,
+    /// a gate id parked on that road still could not be answered from the
+    /// table even in `full-access`.
     #[test]
-    fn codex_approval_road_never_auto_answers() {
-        let source = include_str!("codex_client.rs");
-        assert!(
-            !source.contains(".auto_answer("),
-            "the Codex approval road must keep parking its cards for the person"
-        );
+    fn codex_approval_road_cannot_auto_answer_a_gate_card() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Codex);
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("codex".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "full-access".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        // The road parks without asking the broker: register only, the way
+        // the Codex approval dispatch holds the card for the person.
+        broker
+            .register(
+                72,
+                permission_with_kinds(
+                    "write:workspaces:s:1-3",
+                    &[("once", "allow_once"), ("session", "allow_session")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+        assert!(!broker
+            .auto_answer("write:workspaces:s:1-3", &runtime)
+            .expect("a gate card is not answerable"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
     }
 
     #[test]
@@ -2243,6 +2264,7 @@ mod tests {
             Some(Arc::clone(&journal)),
             Arc::clone(&broker),
         );
+        runtime.set_agent_kind(SessionKind::Acp);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("grok".to_string()),
             current_model_id: None,
@@ -2484,6 +2506,7 @@ mod tests {
         });
         let broker = PermissionBroker::for_test(sender);
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Pi);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("pi".to_string()),
             current_model_id: None,
@@ -2509,6 +2532,7 @@ mod tests {
     fn ask_mode_leaves_permission_request_for_the_broker() {
         let (broker, _) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Acp);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("grok".to_string()),
             current_model_id: None,
@@ -2530,6 +2554,7 @@ mod tests {
     fn auto_accept_prefers_allow_once_then_allow_always() {
         let (broker, sent) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_agent_kind(SessionKind::Acp);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("grok".to_string()),
             current_model_id: None,
@@ -3043,11 +3068,12 @@ mod question_tests {
     };
     use crate::journal::Journal;
     use crate::session::SessionRuntime;
-    use devboule_protocol::{PermissionOutcome, SessionEvent};
+    use devboule_protocol::{PermissionOutcome, SessionEvent, SessionKind};
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
 
     fn manifest_with_mode(runtime: &SessionRuntime, mode_id: &str) {
+        runtime.set_agent_kind(SessionKind::Claude);
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("claude".to_string()),
             current_model_id: None,

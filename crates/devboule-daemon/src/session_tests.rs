@@ -968,17 +968,19 @@ fn a_delegated_answer_journals_its_attribution_and_the_humans_stays_none() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An auto-answered card names the session's mode on the audit row: a reader
-/// tells the mode's Allow (the mode) from a person's (nobody) and a
-/// delegate's (a session).
+/// An auto-answered card carries no session attribution: `answered_by`
+/// names a delegating session, and a mode id there would render as one —
+/// mode attribution needs its own protocol field, so the audit row reads
+/// the grant, not a name.
 #[test]
-fn an_auto_answered_card_names_the_mode_on_the_audit_row() {
+fn an_auto_answered_card_carries_no_session_attribution() {
     let (dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("s5b-auto-attr", "proc-1");
     let agent = compose_session_id(&owner.session_token(), "ag1").expect("id");
     let runtime = insert_live_agent(&registry, &agent, owner.clone());
     let conn = ConnHandle::new(1);
     attach_tracked(&runtime, &conn);
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Pi);
     runtime.store_session_manifest(SessionEvent::SessionManifest {
         provider_id: Some("pi".to_string()),
         current_model_id: None,
@@ -1008,21 +1010,16 @@ fn an_auto_answered_card_names_the_mode_on_the_audit_row() {
     });
     assert_eq!(
         answered,
-        Some((
-            "card-auto-mode".to_string(),
-            Some("bypass".to_string()),
-            "allow_once".to_string()
-        )),
-        "the live record names the mode: {events:?}"
+        Some(("card-auto-mode".to_string(), None, "allow_once".to_string())),
+        "the live record names no session for a mode's grant: {events:?}"
     );
     let resolved = events.iter().find_map(|event| match event {
         SessionEvent::PermissionResolved { answered_by, .. } => answered_by.clone(),
         _ => None,
     });
     assert_eq!(
-        resolved,
-        Some("bypass".to_string()),
-        "the resolved event carries the same attribution"
+        resolved, None,
+        "the resolved event carries the same absence"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

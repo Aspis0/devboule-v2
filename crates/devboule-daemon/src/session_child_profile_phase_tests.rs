@@ -178,12 +178,12 @@ fn record_partial_move_records_the_ratchet_only_and_reports_what_stands() {
     let error = registry
         .record_partial_move(
             &child_session,
-            &facts("bypass", "model-b", "p-1"),
+            &facts("auto_accept", "model-b", "p-1"),
             "the provider refused the model",
         )
         .expect_err("the partial arm is a refusal");
     assert!(
-        error.contains("mode was switched to 'bypass'")
+        error.contains("mode was switched to 'auto_accept'")
             && error.contains("no profile change is recorded"),
         "the answer reports exactly the partial state: {error}"
     );

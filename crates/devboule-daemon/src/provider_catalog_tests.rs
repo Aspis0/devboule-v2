@@ -1499,25 +1499,38 @@ fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
     let prediction = |provider: &str, mode: &str| {
         crate::peer_policy::unattended_mode(super::session_kind_for(provider), Some(mode))
     };
-    // Route A: the four ids the daemon itself auto-answers a permission
-    // request in, whatever the family — including a provider the catalog
-    // has never heard of (the mechanical test: a user-defined provider's
-    // child is answered without any code path noticing the name).
-    // `full-access` rides route A because it never asks, whatever family
-    // delivers it.
-    for provider in [
-        "grok",
-        "codex",
-        "claude",
-        "a-provider-that-does-not-exist-yet",
+    // Route A: the daemon's own table answers for the delivering family —
+    // including a provider the catalog has never heard of, which derives
+    // under ACP (the mechanical test: a user-defined provider's child is
+    // answered without any code path noticing the name).
+    for (provider, mode) in [
+        ("claude", "bypassPermissions"),
+        ("codex", "full-access"),
+        ("pi", "bypass"),
+        ("grok", "auto_accept"),
+        ("a-provider-that-does-not-exist-yet", "auto_accept"),
     ] {
-        for mode in ["bypass", "auto_accept", "bypassPermissions", "full-access"] {
-            assert_eq!(
-                prediction(provider, mode),
-                UnattendedState::Yes,
-                "{provider} {mode}: the daemon's own broker answers it"
-            );
-        }
+        assert_eq!(
+            prediction(provider, mode),
+            UnattendedState::Yes,
+            "{provider} {mode}: the daemon's own table answers it"
+        );
+    }
+    // Cross-family spellings answer nothing: an ACP agent advertising
+    // `full-access` gets no auto-answer from Codex's spelling.
+    for (provider, mode) in [
+        ("grok", "full-access"),
+        ("grok", "bypassPermissions"),
+        ("grok", "bypass"),
+        ("claude", "full-access"),
+        ("codex", "bypassPermissions"),
+        ("a-provider-that-does-not-exist-yet", "full-access"),
+    ] {
+        assert_ne!(
+            prediction(provider, mode),
+            UnattendedState::Yes,
+            "{provider} {mode}: another family's spelling answers nothing"
+        );
     }
     // The human's own toggle is **not an input**: the marker reads the
     // mode the delivery carries, and a tick can never move the answer.
@@ -1576,40 +1589,113 @@ fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
     assert_eq!(prediction("pi", "bypass"), UnattendedState::Yes);
 }
 
-/// The one list the broker grants from and the birth marker reads: exactly
-/// the four provider-agnostic ids, and no provider's own spelling beyond
-/// the never-asking one the daemon answers like bypass.
+/// The one table the daemon answers from: each family's own automatic id,
+/// and nothing else's. An ACP agent advertising `full-access` gets nothing
+/// from Codex's spelling, and no family's asking id answers anywhere.
 #[test]
-fn the_auto_answer_list_is_exactly_the_four_provider_agnostic_ids() {
-    for mode in ["bypass", "auto_accept", "bypassPermissions", "full-access"] {
-        assert!(super::mode_is_auto_answered(mode), "{mode}");
+fn the_auto_answer_table_is_per_family() {
+    use super::mode_is_auto_answered as answers;
+    use devboule_protocol::SessionKind;
+    for (kind, mode) in [
+        (SessionKind::Claude, "bypassPermissions"),
+        (SessionKind::Codex, "full-access"),
+        (SessionKind::Pi, "bypass"),
+        (SessionKind::Acp, "auto_accept"),
+    ] {
+        assert!(answers(Some(kind.clone()), mode), "{kind:?} {mode}");
     }
-    for mode in ["ask", "default", "auto-review", "acceptEdits", "auto", ""] {
-        assert!(!super::mode_is_auto_answered(mode), "{mode}");
+    // Cross-family spellings answer nothing: each id is one family's.
+    for (kind, mode) in [
+        (SessionKind::Acp, "full-access"),
+        (SessionKind::Acp, "bypassPermissions"),
+        (SessionKind::Acp, "bypass"),
+        (SessionKind::Claude, "full-access"),
+        (SessionKind::Claude, "bypass"),
+        (SessionKind::Claude, "auto_accept"),
+        (SessionKind::Codex, "bypassPermissions"),
+        (SessionKind::Codex, "bypass"),
+        (SessionKind::Codex, "auto_accept"),
+        (SessionKind::Pi, "full-access"),
+        (SessionKind::Pi, "bypassPermissions"),
+        (SessionKind::Pi, "auto_accept"),
+    ] {
+        assert!(!answers(Some(kind.clone()), mode), "{kind:?} {mode}");
     }
-}
-
-/// The modes whose sessions never approve a write: plan and read-only
-/// refuse before the card, and nothing else does.
-#[test]
-fn plan_and_read_only_refuse_writes_and_nothing_else_does() {
-    for mode in ["plan", "read-only"] {
-        assert!(super::mode_refuses_writes(mode), "{mode}");
-    }
+    // Asking ids answer nowhere, and an unknown family never auto-opens.
     for mode in [
-        "bypass",
-        "auto_accept",
-        "bypassPermissions",
-        "full-access",
         "ask",
         "default",
         "auto",
         "acceptEdits",
         "auto-review",
+        "plan",
+        "read-only",
         "",
     ] {
-        assert!(!super::mode_refuses_writes(mode), "{mode}");
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Codex,
+            SessionKind::Pi,
+            SessionKind::Acp,
+            SessionKind::Terminal,
+        ] {
+            assert!(!answers(Some(kind.clone()), mode), "{kind:?} {mode}");
+        }
+        assert!(!answers(None, mode), "unknown family {mode}");
     }
+}
+
+/// The refusal half of the same table: each family's own never-write id
+/// refuses, everything agent-authored that the table does not name cards —
+/// including every ACP plan-like spelling, which no family owns.
+#[test]
+fn only_the_familys_own_never_write_mode_refuses() {
+    use super::{mode_gate_for, ModeGate};
+    use devboule_protocol::SessionKind;
+    match mode_gate_for(Some(SessionKind::Claude), Some("plan")) {
+        ModeGate::Refuse(sentence) => assert!(sentence.contains("plan")),
+        _ => panic!("Claude plan refuses"),
+    }
+    match mode_gate_for(Some(SessionKind::Codex), Some("read-only")) {
+        ModeGate::Refuse(sentence) => assert!(sentence.contains("read-only")),
+        _ => panic!("Codex read-only refuses"),
+    }
+    // Agent-authored ids fail toward the card, never toward refusal —
+    // whatever they sound like.
+    for mode in [
+        "plan",
+        "plan_mode",
+        "readOnly",
+        "read-only",
+        "read-only-mode",
+        "ro",
+        "full-access",
+        "ask",
+    ] {
+        assert!(
+            matches!(
+                mode_gate_for(Some(SessionKind::Acp), Some(mode)),
+                ModeGate::Card
+            ),
+            "Acp {mode}: the card"
+        );
+    }
+    assert!(
+        matches!(
+            mode_gate_for(Some(SessionKind::Acp), Some("auto_accept")),
+            ModeGate::Auto
+        ),
+        "the daemon's own synthesized id still auto-answers"
+    );
+    // No kind or no mode is not a fact the gate can state: the card.
+    assert!(matches!(
+        mode_gate_for(None, Some("bypass")),
+        ModeGate::Card
+    ));
+    assert!(matches!(
+        mode_gate_for(Some(SessionKind::Pi), None),
+        ModeGate::Card
+    ));
 }
 
 /// The write refusal names the session's own mode and the way out, in one
@@ -1656,15 +1742,19 @@ fn the_pre_card_tick_judgement_refuses_only_where_the_daemon_owns_the_rule() {
             );
         }
     }
-    // A tick over a daemon-owned id: satisfied, whatever the family.
-    for provider in ["claude", "pi", "codex", "devboule-acp-stub"] {
-        for mode in super::auto_answered_modes() {
-            assert_eq!(
-                super::judge_auto_accept_tick(provider, mode, &features),
-                Consistent,
-                "{provider} {mode}: the broker answers this mode"
-            );
-        }
+    // A tick over a table id: satisfied, whatever the family — each id
+    // answered for the family that owns it.
+    for (provider, mode) in [
+        ("claude", "bypassPermissions"),
+        ("codex", "full-access"),
+        ("pi", "bypass"),
+        ("devboule-acp-stub", "auto_accept"),
+    ] {
+        assert_eq!(
+            super::judge_auto_accept_tick(provider, mode, &features),
+            Consistent,
+            "{provider} {mode}: the table answers this mode"
+        );
     }
     // The daemon-owned tick rules: Claude and Pi refuse any other mode id.
     for provider in ["claude", "pi"] {

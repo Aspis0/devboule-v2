@@ -15,32 +15,6 @@ use super::profile::resolve_profile;
 use super::request::{creation_fingerprint, AgentCreateRequest};
 use super::result::created_result;
 
-/// What the creator's current mode says about the creation card: the same
-/// rule the first-use gates follow, decided here so the road below reads one
-/// verdict.
-pub(in crate::mcp_broker) enum CreationModeStep {
-    /// An automatic mode: proceed with no card and no mark.
-    Proceed,
-    /// A plan or read-only mode: refuse with the sentence.
-    Refuse(String),
-    /// Every other mode, and no mode at all: the card, as today.
-    Card,
-}
-
-/// The creation card's mode rule, read at call time like the gates read it:
-/// the mode can change mid-session, so the road never caches it.
-pub(in crate::mcp_broker) fn creation_mode_step(mode_id: Option<&str>) -> CreationModeStep {
-    match mode_id {
-        Some(mode) if crate::provider_catalog::mode_is_auto_answered(mode) => {
-            CreationModeStep::Proceed
-        }
-        Some(mode) if crate::provider_catalog::mode_refuses_writes(mode) => {
-            CreationModeStep::Refuse(crate::provider_catalog::mode_refusal_sentence(mode))
-        }
-        _ => CreationModeStep::Card,
-    }
-}
-
 /// The `devboule_create_agent` tool (`S5` §2 and §3; `create-from-profile`).
 ///
 /// The caller is the session whose Bearer authenticated the connection: the
@@ -210,58 +184,53 @@ pub(in crate::mcp_broker) fn create_agent(
     );
     // Read before `creator` moves into the creation below.
     let context_id = creator.context_id.clone();
-    let ticket = match state.sessions.reserve_agent_creation(&creator_id, depth) {
+    // The creator's mode, read on every call and before the reservation: a
+    // plan or read-only mode of the creator's own family refuses even with
+    // an open gate, and an automatic mode skips the card without opening one.
+    let creator_runtime = state
+        .sessions
+        .live_runtime(&creator_id, &registration.owner);
+    let creator_gate = creator_runtime.as_ref().map(|runtime| runtime.mode_gate());
+    if let Some(crate::provider_catalog::ModeGate::Refuse(sentence)) = &creator_gate {
+        return tool_error(id, sentence);
+    }
+    let needs_card = !matches!(creator_gate, Some(crate::provider_catalog::ModeGate::Auto));
+    let ticket = match state
+        .sessions
+        .reserve_agent_creation(&creator_id, depth, needs_card)
+    {
         Ok(ticket) => ticket,
         Err(error) => return tool_error(id, &error.message),
     };
     if ticket.card_owed() {
-        // The creation card follows the creator's current mode, like the
-        // first-use gates: read now, never cached. An automatic mode skips
-        // the card without opening the gate, so asking again later still
-        // asks; a plan or read-only mode is refused naming the mode.
-        let creator_runtime = state
-            .sessions
-            .live_runtime(&creator_id, &registration.owner);
-        let mode_id = creator_runtime
+        // The card is raised on the creator's own session, through the same
+        // broker entry every other card uses: the same decision frame answers
+        // it, the same per-device budget bounds a peer's, and a refusal leaves
+        // the gate shut (`S5` decision 4).
+        if creator_runtime
             .as_ref()
-            .and_then(|runtime| runtime.current_mode_id());
-        match creation_mode_step(mode_id.as_deref()) {
-            CreationModeStep::Proceed => {
-                state.sessions.reset_agent_creation_gate(&creator_id);
-            }
-            CreationModeStep::Refuse(sentence) => return tool_error(id, &sentence),
-            CreationModeStep::Card => {
-                // The card is raised on the creator's own session, through the same
-                // broker entry every other card uses: the same decision frame answers
-                // it, the same per-device budget bounds a peer's, and a refusal leaves
-                // the gate shut (`S5` decision 4).
-                if creator_runtime
-                    .as_ref()
-                    .and_then(|runtime| runtime.permission_broker())
-                    .is_none()
-                {
-                    return tool_error(id, "permission refused");
-                }
-                let self_answer_note = self_answer_note(state, caller);
-                let card = creation_card(
-                    &creator_id,
-                    creator.name(),
-                    &request,
-                    &profile,
-                    &labels,
-                    &ticket,
-                    self_answer_note.as_deref(),
-                );
-                let authorized =
-                    state
-                        .sessions
-                        .ask_creation_card(&creator_id, &registration.owner, card);
-                if !authorized {
-                    return tool_error(id, "permission refused");
-                }
-                state.sessions.accept_agent_creation(&creator_id);
-            }
+            .and_then(|runtime| runtime.permission_broker())
+            .is_none()
+        {
+            return tool_error(id, "permission refused");
         }
+        let self_answer_note = self_answer_note(state, caller);
+        let card = creation_card(
+            &creator_id,
+            creator.name(),
+            &request,
+            &profile,
+            &labels,
+            &ticket,
+            self_answer_note.as_deref(),
+        );
+        let authorized = state
+            .sessions
+            .ask_creation_card(&creator_id, &registration.owner, card);
+        if !authorized {
+            return tool_error(id, "permission refused");
+        }
+        state.sessions.accept_agent_creation(&creator_id);
     }
     let creator_runtime = state
         .sessions
@@ -367,40 +336,5 @@ pub(in crate::mcp_broker) fn create_agent_tool(
             request,
         ))),
         Err(message) => Ok(Some(rpc_error(id, -32602, &message))),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::creation_mode_step;
-    use super::CreationModeStep;
-
-    /// The creation card follows the one list: automatic modes proceed,
-    /// plan and read-only refuse naming the mode, everything else cards.
-    #[test]
-    fn the_creation_card_follows_the_callers_mode() {
-        for mode in ["bypass", "auto_accept", "bypassPermissions", "full-access"] {
-            assert!(
-                matches!(creation_mode_step(Some(mode)), CreationModeStep::Proceed),
-                "{mode}: proceeds with no card"
-            );
-        }
-        for mode in ["plan", "read-only"] {
-            match creation_mode_step(Some(mode)) {
-                CreationModeStep::Refuse(sentence) => assert!(
-                    sentence.contains(mode) && sentence.contains("switch mode"),
-                    "{mode}: refuses naming the mode"
-                ),
-                CreationModeStep::Proceed | CreationModeStep::Card => {
-                    panic!("{mode}: must refuse")
-                }
-            }
-        }
-        for mode in [None, Some("ask"), Some("default"), Some("auto")] {
-            assert!(
-                matches!(creation_mode_step(mode), CreationModeStep::Card),
-                "{mode:?}: the card, as today"
-            );
-        }
     }
 }

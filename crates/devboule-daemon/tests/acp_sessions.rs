@@ -6583,7 +6583,7 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
         "profiles": [stub_profile_with(
             "runner",
             "profile-runner",
-            "bypass",
+            "auto_accept",
             "stub-model-new",
             serde_json::json!({}),
             &[],
@@ -6591,13 +6591,17 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
         )],
         "standingInstructions": "",
     });
-    let test = Slice5Test::with_profiles(
+    // The stub must declare the mode the profile names: the delivery is
+    // judged against the handshake's modes, and only the daemon's own
+    // synthesized `auto_accept` earns the marker for an ACP child.
+    let test = Slice5Test::with_profiles_and_args(
         &serde_json::json!({
             "title": "runner-child",
             "profile": "runner",
             "initialPrompt": "report your result",
         }),
         &ticked,
+        &[("DEVBOULE_STUB_MODES", "ask,default,auto_accept")],
         &[],
     );
     let creator = test.creator_session();
@@ -6616,7 +6620,7 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
         "profiles": [stub_profile_with(
             "runner",
             "profile-runner",
-            "bypass",
+            "auto_accept",
             "stub-model-new",
             serde_json::json!({}),
             &[],
@@ -6698,28 +6702,29 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
 fn the_unattended_marker_survives_a_daemon_restart_and_a_resume() {
     let _test_lock = lock_tests();
     // The delivery is judged against the modes the agent publishes at the
-    // handshake, so the stub must declare the route-A id the create names.
-    // Process-global like AcpTest's own knobs, and safe under the test lock;
-    // the guard keeps a failure from leaking it into the next test.
+    // handshake, so the stub must declare the daemon's own synthesized id
+    // the create names. Process-global like AcpTest's own knobs, and safe
+    // under the test lock; the guard keeps a failure from leaking it into
+    // the next test.
     struct ClearModes;
     impl Drop for ClearModes {
         fn drop(&mut self) {
             std::env::remove_var("DEVBOULE_STUB_MODES");
         }
     }
-    std::env::set_var("DEVBOULE_STUB_MODES", "ask,bypass");
+    std::env::set_var("DEVBOULE_STUB_MODES", "ask,auto_accept");
     let _clear = ClearModes;
     let mut test = AcpTest::new(&[]);
-    // Route A: the daemon's own broker answers this delivered id whatever
-    // the agent's own vocabulary says — the same fact the profile battery's
-    // bypass children carry, reached without a profile.
+    // Route A: the daemon's own table answers this delivered id for the
+    // ACP family — the same fact the profile battery's auto_accept children
+    // carry, reached without a profile.
     let session = test
         .client
         .session_create_with(
             None,
             SessionKind::Acp,
             None,
-            Some("bypass".to_string()),
+            Some("auto_accept".to_string()),
             None,
         )
         .expect("create an unattended ACP session");

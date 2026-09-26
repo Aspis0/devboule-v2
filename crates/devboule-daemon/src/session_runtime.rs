@@ -2394,6 +2394,13 @@ impl SessionRuntime {
         }
     }
 
+    /// What this session's mode says about a write-shaped act
+    /// ([`crate::provider_catalog::ModeGate`]): read at call time, never
+    /// cached. A session with no kind or no mode fails toward the card.
+    pub(crate) fn mode_gate(&self) -> crate::provider_catalog::ModeGate {
+        crate::provider_catalog::mode_gate_for(self.agent_kind(), self.current_mode_id().as_deref())
+    }
+
     pub(crate) fn set_agent_kind(&self, kind: SessionKind) {
         if let Ok(mut stored) = self.agent_kind.lock() {
             *stored = Some(kind);
