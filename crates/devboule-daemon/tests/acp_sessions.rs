@@ -301,6 +301,9 @@ fn collect_state_handler(
     })
 }
 
+/// A delivery wait, not a producer wait: the presence RPC clears the
+/// attention and queues the push synchronously before it returns, so the
+/// fact is already queued when this clock starts.
 fn wait_for_cleared_attention(
     snapshots: &Mutex<Vec<Vec<SessionStateSnapshot>>>,
     session_id: &str,
