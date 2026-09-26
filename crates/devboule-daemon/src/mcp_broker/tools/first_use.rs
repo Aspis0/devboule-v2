@@ -77,6 +77,19 @@ impl McpBroker {
             .copied()
     }
 
+    #[cfg(test)]
+    pub(in crate::mcp_broker) fn open_first_use_gate_for_test(
+        &self,
+        session_id: &str,
+        group: &str,
+    ) {
+        self.write_gates
+            .marks
+            .lock()
+            .expect("first-use gate lock")
+            .insert((session_id.to_string(), group.to_string()), GateMark::Open);
+    }
+
     /// Forget every mark of one session: called when its bearer goes away,
     /// so a later session never inherits an approval it did not ask for.
     pub(in crate::mcp_broker) fn forget_first_use(&self, session_id: &str) {

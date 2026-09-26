@@ -28,13 +28,15 @@ use uuid::Uuid;
 
 pub(crate) struct McpCallCancellation {
     cancelled: AtomicBool,
+    requested: AtomicBool,
     waiting: AtomicBool,
 }
 
 impl McpCallCancellation {
-    fn new(cancelled: bool) -> Self {
+    fn new() -> Self {
         Self {
-            cancelled: AtomicBool::new(cancelled),
+            cancelled: AtomicBool::new(false),
+            requested: AtomicBool::new(false),
             waiting: AtomicBool::new(false),
         }
     }
@@ -47,9 +49,13 @@ impl McpCallCancellation {
         if self.waiting.load(Ordering::Acquire) {
             false
         } else {
-            self.cancelled.store(true, Ordering::Release);
+            self.requested.store(true, Ordering::Release);
             true
         }
+    }
+
+    pub(crate) fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
     }
 
     pub(crate) fn mark_waiting(&self) {
@@ -113,7 +119,7 @@ impl McpCallScope {
             if calls.active.contains_key(&key) {
                 return Err(());
             }
-            let cancelled = Arc::new(McpCallCancellation::new(false));
+            let cancelled = Arc::new(McpCallCancellation::new());
             calls.active.insert(key.clone(), Arc::clone(&cancelled));
             cancelled
         };

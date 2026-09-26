@@ -34,26 +34,13 @@ pub(super) fn handle_rpc(
                 return Ok(Some(rpc_error(
                     id,
                     -32600,
-                    "A request with this id is already in flight or recently completed.",
+                    "A request with this id is already in flight.",
                 )))
             }
         }
     } else {
         None
     };
-    if super::current_mcp_call_cancelled(&registration.session_id) {
-        if let Some(tool_name) = message.pointer("/params/name").and_then(Value::as_str) {
-            let caller = resolve_mcp_caller(state, &registration.session_id);
-            audit_mcp_tool(
-                state,
-                &caller,
-                tool_name,
-                &registration.session_id,
-                "cancelled",
-            );
-        }
-        return Ok(Some(rpc_error(id, -32800, "Request cancelled")));
-    }
     match method {
         "initialize" => Ok(Some(json!({
             "jsonrpc": "2.0",
@@ -126,6 +113,16 @@ pub(super) fn handle_rpc(
                         );
                     }
                     return Ok(Some(rpc_error(id, -32601, reason)));
+                }
+                if super::current_mcp_call_cancelled(&registration.session_id) {
+                    audit_mcp_tool(
+                        state,
+                        &caller,
+                        tool_name,
+                        &registration.session_id,
+                        "cancelled",
+                    );
+                    return Ok(Some(rpc_error(id, -32800, "Request cancelled")));
                 }
                 // The overlay is folded into the same refusal, above: one
                 // sentence for both rules (`S5` §2).

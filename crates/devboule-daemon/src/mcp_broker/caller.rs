@@ -209,3 +209,56 @@ pub(super) fn audit_mcp_tool(
         outcome: outcome.to_string(),
     });
 }
+
+#[cfg(test)]
+mod cancellation_audit_tests {
+    use super::{audit_mcp_tool, McpCaller};
+    use crate::mcp_broker::tools::first_use::{ensure_write_allowed, WORKSPACES_GROUP};
+    use crate::mcp_broker::{current_mcp_call, McpCallScope};
+    use crate::server::ServerState;
+    use devboule_protocol::OwnerId;
+
+    #[test]
+    fn cancel_during_an_open_gate_act_keeps_the_act_audit_outcome() {
+        let state = ServerState::new("mcp-open-gate-cancel-audit".to_string());
+        let session_id = "s.open-gate-cancel";
+        let request_id = serde_json::json!(81);
+        let owner = OwnerId::new("mcp-open-gate-user", "mcp-open-gate-client").unwrap();
+        let _scope = McpCallScope::enter_for_test(session_id, &request_id);
+        state
+            .mcp
+            .open_first_use_gate_for_test(session_id, WORKSPACES_GROUP);
+
+        ensure_write_allowed(
+            &state,
+            &state.mcp,
+            session_id,
+            &owner,
+            WORKSPACES_GROUP,
+            "create workspace",
+            &[],
+        )
+        .expect("open gate passes without a card");
+        let call = current_mcp_call().expect("active call").2;
+        assert!(call.cancel_before_card(), "cancel arrives during the act");
+
+        audit_mcp_tool(
+            &state,
+            &McpCaller::Local,
+            "devboule_create_workspace",
+            session_id,
+            "ok",
+        );
+        let connection =
+            rusqlite::Connection::open(state.sessions.runtime_dir().join("journal.db"))
+                .expect("journal database");
+        let outcome: String = connection
+            .query_row(
+                "SELECT outcome FROM audit WHERE action = ?1 AND session_id = ?2",
+                ["devboule_create_workspace", session_id],
+                |row| row.get(0),
+            )
+            .expect("audit row");
+        assert_eq!(outcome, "ok");
+    }
+}

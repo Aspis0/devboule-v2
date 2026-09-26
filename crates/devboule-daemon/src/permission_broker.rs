@@ -371,8 +371,11 @@ impl PermissionBroker {
         if pending
             .mcp_cancelled
             .as_ref()
-            .is_some_and(|cancelled| cancelled.is_cancelled())
+            .is_some_and(|cancelled| cancelled.is_requested())
         {
+            if let Some(cancelled) = &pending.mcp_cancelled {
+                cancelled.mark_cancelled();
+            }
             return Err(PermissionResponseError::NotFound);
         }
         if table.closed {
@@ -1839,6 +1842,32 @@ mod tests {
             .register_host(permission("write:workspaces:cancel"), &runtime)
             .expect("card is registered synchronously");
         let _ = runtime.publish_agent_event(pending.request.clone(), None);
+        let other_session_id = "s.mcp.other-session".to_string();
+        let other_request_id = request_id.clone();
+        let other_call_token = thread::spawn(move || {
+            let _other_scope = crate::mcp_broker::McpCallScope::enter_for_test(
+                &other_session_id,
+                &other_request_id,
+            );
+            crate::mcp_broker::current_mcp_call()
+                .expect("other session call")
+                .2
+        })
+        .join()
+        .expect("other session call token");
+        other_call_token.mark_waiting();
+        assert!(!broker.cancel_mcp_call(&session_id, &request_id, &other_call_token,));
+        assert_eq!(
+            broker.pending_len(),
+            1,
+            "another session's token cannot withdraw the card"
+        );
+        assert!(!broker.cancel_mcp_call("s.mcp.other-session", &request_id, &call_token));
+        assert_eq!(
+            broker.pending_len(),
+            1,
+            "another session cannot withdraw the card"
+        );
         let waiting_broker = Arc::clone(&broker);
         let waiter = thread::spawn(move || waiting_broker.wait_for_decision(&pending));
         assert_eq!(broker.pending_len(), 1);
@@ -1886,6 +1915,7 @@ mod tests {
             "cancel is retained until the call reaches its card"
         );
         assert_eq!(decision, super::HostDecision::Cancelled);
+        assert!(crate::mcp_broker::current_mcp_call_cancelled(&session_id));
         assert_eq!(broker.pending_len(), 0, "a cancelled caller gets no card");
     }
 
