@@ -189,6 +189,12 @@ use session_spawn::{
 use session_spawn::{spawn_codex_verify_thread, start_spawned_session};
 #[path = "session_children.rs"]
 mod session_children;
+/// The terminal reads the broker's terminal tools are served from, kept out
+/// of `session.rs` beside the child reads they rhyme with: one phrase for
+/// the file — which terminals an owner may list in one workspace, and one
+/// terminal's screen.
+#[path = "session_terminals.rs"]
+mod session_terminals;
 use session_messaging::forget_message_brake_target;
 #[cfg(test)]
 use session_messaging::{
@@ -3519,6 +3525,19 @@ pub(crate) fn insert_test_child_agent(
     creator: &str,
 ) -> Arc<SessionRuntime> {
     tests::insert_child(registry, id, owner, creator)
+}
+
+/// Test-only live terminal of one workspace: the rows `devboule_list_terminals`
+/// and `devboule_capture_terminal` read, in the two shapes a test needs —
+/// inside a workspace, or with none.
+#[cfg(test)]
+pub(crate) fn insert_test_terminal(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: Option<String>,
+) -> Arc<SessionRuntime> {
+    tests::insert_terminal(registry, id, owner, workspace_id)
 }
 
 /// Test-only live agent of one explicit kind (S9): the door reads origin, not

@@ -255,6 +255,36 @@ impl ScreenSnapshot {
         self.cells.get(row * usize::from(self.cols) + col)
     }
 
+    /// The visible grid as plain text: one right-trimmed string per row, in
+    /// top-to-bottom order.
+    ///
+    /// No escape sequence can leave here — a cell holds a character rather
+    /// than a byte stream, and a control character inside a cell is replaced
+    /// instead of passed through — and the spacer cell behind a wide glyph
+    /// is skipped, so one glyph never becomes two characters.
+    pub fn plain_rows(&self) -> Vec<String> {
+        let cols = usize::from(self.cols);
+        let mut rows = Vec::with_capacity(usize::from(self.rows));
+        for row in 0..usize::from(self.rows) {
+            let mut text = String::with_capacity(cols);
+            let mut col = 0;
+            while col < cols {
+                let cell = snapshot_cell(self, row, col);
+                if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    write_cell_text(&mut text, &cell);
+                }
+                let step = if cell.flags.contains(Flags::WIDE_CHAR) {
+                    2
+                } else {
+                    1
+                };
+                col += step;
+            }
+            rows.push(text.trim_end().to_string());
+        }
+        rows
+    }
+
     /// Render this owned state as canonical ANSI/VT.
     pub fn render_ansi(&self) -> String {
         render_ansi(self)

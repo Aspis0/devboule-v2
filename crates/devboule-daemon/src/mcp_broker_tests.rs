@@ -1219,7 +1219,7 @@ fn pi_bridge_fetch_hygiene_against_the_real_broker() {
     drop(server);
 }
 
-fn owner(user: &str, client: &str) -> OwnerId {
+pub(super) fn owner(user: &str, client: &str) -> OwnerId {
     OwnerId::new(user, client).expect("owner")
 }
 
@@ -1232,7 +1232,7 @@ fn endpoint(url: &str) -> String {
         .to_string()
 }
 
-fn http_request(url: &str, authorization: Option<&str>, body: &str) -> String {
+pub(super) fn http_request(url: &str, authorization: Option<&str>, body: &str) -> String {
     let mut stream = TcpStream::connect(endpoint(url)).expect("MCP listener");
     let authorization = authorization
         .map(|value| format!("Authorization: {value}\r\n"))
@@ -1248,7 +1248,7 @@ fn http_request(url: &str, authorization: Option<&str>, body: &str) -> String {
     String::from_utf8(response).expect("HTTP response")
 }
 
-fn response_json(response: &str) -> Value {
+pub(super) fn response_json(response: &str) -> Value {
     serde_json::from_str(
         response
             .split_once("\r\n\r\n")

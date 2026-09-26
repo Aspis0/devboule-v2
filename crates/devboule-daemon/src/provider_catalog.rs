@@ -285,6 +285,14 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_CREATE_WORKSPACE_TOOL,
         "Creates a workspace inside the calling session's own project, as the project folder itself or a new git worktree beside it, and answers the new workspace record. The human is asked to approve workspace writes from this session the first time. branch names the worktree branch and is worktree-only; name sets the workspace title. No path is accepted: the checkout is the project folder or a sibling worktree of it, never an agent-named directory.",
     ),
+    (
+        MCP_LIST_TERMINALS_TOOL,
+        "Lists the terminal sessions in the calling session's own workspace: each one's id, title, working directory, the session that created it, and whether its process is still running. Terminals only — never agent sessions — and only those of the calling session's own user inside the calling session's own workspace; a terminal of another workspace or another owner is not in the list. The workspace comes from the calling session's row, never from an argument, so a session started outside any workspace is refused rather than shown every workspace-less terminal of its user.",
+    ),
+    (
+        MCP_CAPTURE_TERMINAL_TOOL,
+        "Reads the visible screen of one terminal as plain text: at most the number of lines you ask for, counted from the bottom of the grid (default 40, at most 200), with escape sequences stripped. Never the scrollback — the terminal's visible grid only, since the journal is the durable transcript. The terminal must be one of the calling session's own user inside the calling session's own workspace, and it must still be running; any other id — an agent session, another owner's terminal, another workspace's terminal, or one that has exited — answers 'No session with that id.', which never says which of them the id named.",
+    ),
 ];
 
 /// The read-only roster tool, and the one name a tool policy can never
@@ -441,6 +449,25 @@ pub const MCP_LIST_WORKSPACES_TOOL: &str = "devboule_list_workspaces";
 /// a design child commissions no checkouts. The door judges it as the wire's
 /// `WorkspaceCreate`, under the administrative capability.
 pub const MCP_CREATE_WORKSPACE_TOOL: &str = "devboule_create_workspace";
+/// The terminal roster tool: the terminals of the caller's own owner inside
+/// the caller's own workspace, live and exited alike — a read like the
+/// roster, subject to the provider tool policy like `devboule_send_message`:
+/// a stored policy may take it away, and taking it away is the safe
+/// direction. Never always-on. It hands out metadata only (id, title,
+/// directory, creator, running or not), never a screen.
+pub const MCP_LIST_TERMINALS_TOOL: &str = "devboule_list_terminals";
+/// The terminal screen read: the visible grid of one in-scope running
+/// terminal, as plain text with no escape sequence and no scrollback.
+///
+/// Same policy subject as [`MCP_LIST_TERMINALS_TOOL`], and the stronger
+/// premise: a screen is content — it can hold a prompt, a token or a
+/// password — so the peer door requires the administrative capability for
+/// it, the capability that opens the project graph, and not the weaker
+/// metadata reads. Scope is the caller's owner and workspace from the rows,
+/// plus `kind == Terminal`: an agent session's id answers "not found",
+/// because a screen behind that id belongs to a provider's stdin, not to a
+/// terminal.
+pub const MCP_CAPTURE_TERMINAL_TOOL: &str = "devboule_capture_terminal";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
 ///
@@ -614,6 +641,35 @@ pub(crate) fn peer_agents_input_schema() -> serde_json::Value {
             }
         },
         "required": ["deviceId"],
+        "additionalProperties": false
+    })
+}
+
+/// The `tools/list` input schema of [`MCP_CAPTURE_TERMINAL_TOOL`].
+///
+/// Closed on purpose, like the other read schemas: the terminal is named by
+/// the id `devboule_list_terminals` answered, and `lines` is optional. There
+/// is deliberately no workspace, owner or path parameter — the scope is the
+/// calling session's own row, and a caller cannot widen it by stating one.
+/// The parser reads this document back for its known-parameter check, so a
+/// parameter can never be described here and unchecked there.
+#[cfg(feature = "server")]
+pub(crate) fn terminal_capture_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "terminalId": {
+                "type": "string",
+                "description": "The id of one terminal from devboule_list_terminals."
+            },
+            "lines": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "description": "How many of the grid's bottom lines to return. Default 40, max 200."
+            }
+        },
+        "required": ["terminalId"],
         "additionalProperties": false
     })
 }

@@ -471,7 +471,8 @@ pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
 /// capability set holds that name, and nothing on the wire is judged: the act
 /// has no `ClientMessage` frame, it happens inside the broker. The refusal is
 /// therefore a plain capability refusal and renders with the wire's own
-/// sentence. The only such tool is the Oracle search (below).
+/// sentence. The tools that answer this way are the Oracle search and the
+/// terminal screen read (below).
 ///
 /// `None` (from [`mcp_tool_wire`]) is an unknown tool name — not served by the
 /// broker. The door lets it through to the broker's own `Unknown tool` arm,
@@ -546,12 +547,23 @@ pub enum McpToolWire {
 ///   ships source text from this machine — snippets, paths, line ranges — so
 ///   it rides its own capability, granted per device from the Devices panel,
 ///   and not `admin`, whose switch names settings, projects and shutdown.
+/// - Terminal roster (`devboule_list_terminals`) reads metadata about the
+///   caller's own workspace's terminals — id, title, directory, creator,
+///   running or not — so it is the wire read `SessionsList`, the same act the
+///   agent roster names, judged under `view`.
+/// - Terminal screen (`devboule_capture_terminal`) ships one terminal's
+///   visible grid, which is content and can hold a prompt or a password, so
+///   it is `Requires(CAP_ADMIN)`: the capability that opens the project graph
+///   for the same reason. No wire frame stands behind it — a screen reaches a
+///   client through an attachment, never through a judged request — so the
+///   door checks the capability itself.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
-        MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CANCEL_AGENT_TOOL, MCP_CLOSE_AGENT_TOOL,
-        MCP_CREATE_AGENT_TOOL, MCP_CREATE_WORKSPACE_TOOL, MCP_GET_AGENT_STATUS_TOOL,
-        MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
-        MCP_LIST_PENDING_PERMISSIONS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_LIST_WORKSPACES_TOOL,
+        MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CANCEL_AGENT_TOOL,
+        MCP_CAPTURE_TERMINAL_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
+        MCP_CREATE_WORKSPACE_TOOL, MCP_GET_AGENT_STATUS_TOOL, MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL,
+        MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL, MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        MCP_LIST_PROFILES_TOOL, MCP_LIST_TERMINALS_TOOL, MCP_LIST_WORKSPACES_TOOL,
         MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
         MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
     };
@@ -747,6 +759,23 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         // frame stands behind the act, so the door checks the capability
         // directly instead of judging a placeholder request.
         Some(McpToolWire::Requires(CAP_SEARCH))
+    } else if tool == MCP_LIST_TERMINALS_TOOL {
+        // The terminal roster hands out metadata about the caller's own
+        // workspace — id, title, directory, creator, running or not — so it
+        // is judged as the wire's `SessionsList`, exactly like the agent
+        // roster, and rides `view`.
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
+            id: 0,
+        }]))
+    } else if tool == MCP_CAPTURE_TERMINAL_TOOL {
+        // The screen is content, not metadata: a terminal's visible grid can
+        // hold a prompt, a token or a password. No wire frame stands behind
+        // the act — a screen reaches a client through an attachment, never
+        // through a judged request — so the door checks the capability
+        // directly, and it is the administrative capability for the reason
+        // the project graph needs it: content of this machine's workspace
+        // travelling to a paired device.
+        Some(McpToolWire::Requires(CAP_ADMIN))
     } else {
         None
     }
@@ -1890,6 +1919,55 @@ pub(crate) mod tests {
                     None,
                     "{role:?} holding every capability must reach the served tool {name}"
                 );
+            }
+        }
+    }
+
+    /// The two terminal reads' arms, walked over the closed capability table
+    /// rather than sampled: the roster is a metadata read like the agent
+    /// roster and rides `view`, the screen is content and needs `admin` like
+    /// the project graph — and neither capability opens the other's tool.
+    #[test]
+    fn the_terminal_reads_are_judged_at_the_door() {
+        use crate::provider_catalog::{MCP_CAPTURE_TERMINAL_TOOL, MCP_LIST_TERMINALS_TOOL};
+        use devboule_protocol::PEER_CAPS;
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            for cap in PEER_CAPS {
+                let roster = if cap == CAP_VIEW {
+                    None
+                } else {
+                    Some(CAP_VIEW)
+                };
+                let screen = if cap == CAP_ADMIN {
+                    None
+                } else {
+                    Some(CAP_ADMIN)
+                };
+                assert_eq!(
+                    mcp_tool_denial(role, &caps(&[cap]), MCP_LIST_TERMINALS_TOOL),
+                    roster,
+                    "{role:?} holding {cap} on the terminal roster"
+                );
+                assert_eq!(
+                    mcp_tool_denial(role, &caps(&[cap]), MCP_CAPTURE_TERMINAL_TOOL),
+                    screen,
+                    "{role:?} holding {cap} on the terminal screen read"
+                );
+            }
+            // The negative control: every act-named capability at once opens
+            // the roster and still does not open the screen.
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_LIST_TERMINALS_TOOL),
+                None
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_CAPTURE_TERMINAL_TOOL),
+                Some(CAP_ADMIN)
+            );
+            // And the parity half: with the whole table neither read is
+            // refused at the door.
+            for name in [MCP_LIST_TERMINALS_TOOL, MCP_CAPTURE_TERMINAL_TOOL] {
+                assert_eq!(mcp_tool_denial(role, &all_caps(), name), None, "{name}");
             }
         }
     }

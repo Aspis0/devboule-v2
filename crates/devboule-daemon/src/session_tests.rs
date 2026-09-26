@@ -1417,6 +1417,49 @@ pub(super) fn insert_live_agent_in_workspace(
     )
 }
 
+/// A test-only live terminal: the kind the terminal tools serve, with the
+/// workspace they scope by. It goes through the agent insert — same registry
+/// road, same runtime — and then spells the facts an agent's metadata would
+/// state wrongly for a terminal: its title, no provider, and the directory
+/// the row echoes as its cwd.
+pub(super) fn insert_terminal(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: Option<String>,
+) -> Arc<SessionRuntime> {
+    let runtime = insert_live_agent_full(
+        registry,
+        id,
+        owner,
+        SessionKind::Terminal,
+        Box::new(FailingWriter) as Box<dyn Write + Send>,
+        None,
+        None,
+        None,
+        Box::new(NoopKiller),
+        Box::new(UnsupportedSteerer),
+        workspace_id,
+    );
+    let mut map = registry.inner.lock().expect("registry");
+    let live = map
+        .get_mut(id)
+        .and_then(RegistryEntry::as_peer_visible_mut)
+        .expect("live terminal");
+    live.metadata.title = "Terminal".to_string();
+    live.metadata.provider = None;
+    live.metadata.cwd = Some("/tmp/devboule-terminal".to_string());
+    drop(map);
+    // The insert road above is the agent one, whose runtime drops the screen
+    // (ACP speaks structured messages rather than a terminal grid). A
+    // terminal's runtime keeps the emulator its spawn road builds.
+    {
+        let mut stream = runtime.stream.lock().expect("stream");
+        stream.screen = Some(Screen::new(INITIAL_COLS, INITIAL_ROWS));
+    }
+    runtime
+}
+
 #[allow(clippy::too_many_arguments)]
 fn insert_live_agent_full(
     registry: &SessionRegistry,

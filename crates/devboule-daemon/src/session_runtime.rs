@@ -24,7 +24,7 @@ use super::{
 use crate::journal::{output_record, Journal, Replay};
 use crate::outbound::ConnOut;
 use crate::process_tree::ProcessHandle;
-use crate::screen::Screen;
+use crate::screen::{Screen, ScreenSnapshot};
 
 /// The byte a published status is remembered as. Written as a match beside
 /// [`AgentActivityState`] rather than a cast: four states and a sentinel, and
@@ -922,6 +922,16 @@ impl SessionRuntime {
                 Err(())
             }
         }
+    }
+
+    /// The visible grid of this session's emulator, or `None` when the
+    /// session has no screen — a transcript, or a session whose provider
+    /// speaks structured messages instead of a screen. This is the one read
+    /// of the screen outside an attachment, and like every snapshot the
+    /// daemon sends it carries the visible grid only, never scrollback.
+    pub(crate) fn screen_snapshot(&self) -> Option<ScreenSnapshot> {
+        let stream = self.lock_stream().ok()?;
+        stream.screen.as_ref().map(Screen::snapshot)
     }
 
     pub(crate) fn mark_terminal_dead(&self, reason: &str) {

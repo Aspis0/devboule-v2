@@ -692,6 +692,11 @@ pub(crate) fn ready_timeout() -> Duration {
         .unwrap_or(MCP_READY_TIMEOUT)
 }
 
+/// The terminal read tools' own end-to-end tests, split by topic: `tests`
+/// below is already every other tool's, and these two add a scope rule of
+/// their own.
+#[cfg(test)]
+mod terminal_tools_tests;
 #[cfg(test)]
 #[path = "../mcp_broker_tests.rs"]
 mod tests;

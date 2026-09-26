@@ -218,6 +218,22 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_CREATE_WORKSPACE_TOOL,
         requires_confirmation: false,
     },
+    // Terminal roster: the terminals of the caller's own workspace, scoped
+    // from the caller's own row like every other read; the origin door
+    // judges peers before the body runs.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_LIST_TERMINALS_TOOL,
+        requires_confirmation: false,
+    },
+    // Terminal screen: one in-scope running terminal's visible grid, scoped
+    // by owner and workspace and gated on `kind == Terminal`. The origin
+    // door refuses every peer without the administrative capability, so a
+    // generic confirm would ask about nothing the door and the scope have
+    // not already said.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_CAPTURE_TERMINAL_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -268,7 +284,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (twenty today), closed schemas matching the
+/// `pi.registerTool` per broker tool (twenty-two today), closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -721,6 +737,18 @@ export default function (pi) {
   });
 
   pi.registerTool({
+    name: "devboule_list_terminals",
+    label: "List Devboule terminals",
+    description: `Lists the terminal sessions in the calling session's own workspace: each one's id, title, working directory, the session that created it, and whether its process is still running. Terminals only — never agent sessions — and only those of the calling session's own user inside the calling session's own workspace; a terminal of another workspace or another owner is not in the list. The workspace comes from the calling session's row, never from an argument, so a session started outside any workspace is refused rather than shown every workspace-less terminal of its user.`,
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_toolCallId, _params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_list_terminals", arguments: {} }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
     name: "devboule_create_workspace",
     label: "Create Devboule workspace",
     description: `Creates a workspace inside the calling session's own project, as the project folder itself or a new git worktree beside it, and answers the new workspace record. The human is asked to approve workspace writes from this session the first time. branch names the worktree branch and is worktree-only; name sets the workspace title. No path is accepted: the checkout is the project folder or a sibling worktree of it, never an agent-named directory.`,
@@ -737,6 +765,24 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_create_workspace", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_capture_terminal",
+    label: "Read Devboule terminal screen",
+    description: `Reads the visible screen of one terminal as plain text: at most the number of lines you ask for, counted from the bottom of the grid (default 40, at most 200), with escape sequences stripped. Never the scrollback — the terminal's visible grid only, since the journal is the durable transcript. The terminal must be one of the calling session's own user inside the calling session's own workspace, and it must still be running; any other id — an agent session, another owner's terminal, another workspace's terminal, or one that has exited — answers 'No session with that id.', which never says which of them the id named.`,
+    parameters: Type.Object(
+      {
+        terminalId: Type.String({ description: "The id of one terminal from devboule_list_terminals." }),
+        lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "How many of the grid's bottom lines to return. Default 40, max 200." })),
+      },
+      { required: ["terminalId"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_capture_terminal", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });

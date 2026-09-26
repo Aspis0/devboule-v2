@@ -136,6 +136,10 @@ pub(super) fn handle_rpc(
                 tools::workspaces::list(state, registration, id)
             } else if tool_name == Some(crate::provider_catalog::MCP_CREATE_WORKSPACE_TOOL) {
                 tools::workspaces::create(state, broker, caller, registration, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_LIST_TERMINALS_TOOL) {
+                tools::terminals::list(state, registration, id)
+            } else if tool_name == Some(crate::provider_catalog::MCP_CAPTURE_TERMINAL_TOOL) {
+                tools::terminals::capture(state, registration, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -273,12 +277,15 @@ pub(super) fn enabled_tool_list(
                 crate::provider_catalog::agent_id_input_schema()
             } else if *name == crate::provider_catalog::MCP_LIST_DEVICES_TOOL
                 || *name == crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL
+                || *name == crate::provider_catalog::MCP_LIST_TERMINALS_TOOL
             {
-                // Spelled in its own arm rather than left to the default arm
+                // Spelled in their own arm rather than left to the default arm
                 // at the bottom: a parameterless tool's schema is a claim
                 // about the tool, and nothing walks this table to keep a
                 // silent default true.
                 json!({"type": "object", "properties": {}, "additionalProperties": false})
+            } else if *name == crate::provider_catalog::MCP_CAPTURE_TERMINAL_TOOL {
+                crate::provider_catalog::terminal_capture_input_schema()
             } else if *name == crate::provider_catalog::MCP_ACTIVITY_TOOL {
                 crate::provider_catalog::agent_activity_input_schema()
             } else if *name == crate::provider_catalog::MCP_STOP_AGENT_TOOL
