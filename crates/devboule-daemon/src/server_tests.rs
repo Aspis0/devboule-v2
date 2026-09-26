@@ -700,6 +700,7 @@ fn permission_response_requires_the_negotiated_typed_capability() {
             request_id: "tool-1".to_string(),
             outcome: PermissionOutcome::AllowOnce,
             option_id: None,
+            answer: None,
             idempotency_key: None,
         },
         &conn,

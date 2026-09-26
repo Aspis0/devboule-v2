@@ -809,6 +809,8 @@ fn a_preset_spelled_creation_card_hydrates_on_replay() {
             kind: "allow_once".to_string(),
         }],
         is_chooser: None,
+        kind: None,
+        questions: None,
         origin: devboule_protocol::SessionOrigin::local(),
         create_agent: Some(Box::new(devboule_protocol::CreateAgentCard {
             creator_session_id: "s.p.card".to_string(),

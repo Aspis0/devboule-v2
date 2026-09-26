@@ -121,11 +121,12 @@ pub use session::{
     AgentTaskStatus, Attention, AttentionReason, AvailableCommandView, CreateAgentCaps,
     CreateAgentCard, Cursor, CursorShape, DelegationRunState, DelegationState, FinishArtifact,
     FinishArtifactPart, FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar,
-    PermissionOption, PermissionOutcome, Persistence, PersistenceKind, PlanCredits, PlanWindow,
-    ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView,
-    SessionModeView, SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind,
-    SessionState, SessionStateSnapshot, SubscriptionId, ToolLocation, TranscriptIntegrity,
-    TurnUsage, UnattendedState, UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
+    PermissionOption, PermissionOutcome, PermissionQuestion, PermissionQuestionOption,
+    PermissionRequestKind, Persistence, PersistenceKind, PlanCredits, PlanWindow, ResumeResult,
+    ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView,
+    SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState,
+    SessionStateSnapshot, SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
+    UnattendedState, UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
 };
 
 /// Current protocol dialect spoken by this crate.

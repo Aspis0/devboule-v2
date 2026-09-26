@@ -180,6 +180,7 @@
     },
     "env": [],
     "isChooser": true,
+    "kind": "tool",
     "options": [
       {
         "kind": "allow_once",

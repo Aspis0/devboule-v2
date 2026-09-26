@@ -16,7 +16,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, SessionModel, WireError};
+use devboule_protocol::{
+    ErrorCode, PermissionOption, PermissionQuestion, PermissionQuestionOption,
+    PermissionRequestKind, SessionEvent, SessionModel, WireError,
+};
 use serde_json::Value;
 
 use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
@@ -886,7 +889,24 @@ fn control_response_frame(request_id: &str, input: &Value, result: &Value) -> Va
         .pointer("/outcome/optionId")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let response = if outcome == "selected" && option_id == "allow" {
+    let answer = result
+        .pointer("/outcome/answer")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let response = if outcome == "selected" && !parse_ask_user_questions(input).is_empty() {
+        match question_answers(input, option_id, answer) {
+            Some(answers) => serde_json::json!({
+                "behavior": "allow",
+                "updatedInput": question_updated_input(input, &answers),
+            }),
+            // An unmappable pick answers nothing: refuse rather than grant
+            // on a choice the person never made.
+            None => serde_json::json!({
+                "behavior": "deny",
+                "message": "The user declined this question.",
+            }),
+        }
+    } else if outcome == "selected" && option_id == "allow" {
         serde_json::json!({
             "behavior": "allow",
             "updatedInput": input,
@@ -909,6 +929,139 @@ fn control_response_frame(request_id: &str, input: &Value, result: &Value) -> Va
             "response": response,
         }
     })
+}
+
+/// The model's questions out of an `AskUserQuestion` input: each item's
+/// text, its offered labels with descriptions, and its multi-select flag.
+/// Anything else — another tool, a missing or empty `questions` array, an
+/// item without text — yields nothing, and the caller keeps the ordinary
+/// two-button card. String options are accepted beside `{label,
+/// description}` objects.
+fn parse_ask_user_questions(input: &Value) -> Vec<PermissionQuestion> {
+    let Some(items) = input.get("questions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut questions = Vec::with_capacity(items.len());
+    for item in items {
+        let text = item
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if text.is_empty() {
+            continue;
+        }
+        let mut options = Vec::new();
+        if let Some(raw) = item.get("options").and_then(Value::as_array) {
+            for option in raw {
+                if let Some(label) = option.as_str() {
+                    let label = label.trim();
+                    if !label.is_empty() {
+                        options.push(PermissionQuestionOption {
+                            label: label.to_string(),
+                            description: None,
+                        });
+                    }
+                } else {
+                    let label = option
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if label.is_empty() {
+                        continue;
+                    }
+                    options.push(PermissionQuestionOption {
+                        label: label.to_string(),
+                        description: option
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
+            }
+        }
+        questions.push(PermissionQuestion {
+            question: text.to_string(),
+            header: item
+                .get("header")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|header| !header.is_empty())
+                .map(str::to_string),
+            options,
+            multi_select: item
+                .get("multiSelect")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    questions
+}
+
+/// The `answers` map for an `AskUserQuestion` allow: keyed by the full
+/// question text. An option pick decodes the position the daemon encoded
+/// when it built the card; a text answer is the value verbatim for one
+/// question, or a JSON object of text-to-value for several. Anything
+/// unmappable yields nothing, and the caller refuses.
+fn question_answers(
+    input: &Value,
+    option_id: &str,
+    answer: &str,
+) -> Option<serde_json::Map<String, Value>> {
+    let questions = parse_ask_user_questions(input);
+    if questions.is_empty() {
+        return None;
+    }
+    if !answer.is_empty() {
+        if questions.len() == 1 {
+            let mut answers = serde_json::Map::new();
+            answers.insert(
+                questions[0].question.clone(),
+                Value::String(answer.to_string()),
+            );
+            return Some(answers);
+        }
+        let parsed: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(answer).ok()?;
+        let mut answers = serde_json::Map::new();
+        for (key, value) in parsed {
+            if value.is_empty() || !questions.iter().any(|item| item.question == key) {
+                return None;
+            }
+            answers.insert(key, Value::String(value));
+        }
+        return if answers.is_empty() {
+            None
+        } else {
+            Some(answers)
+        };
+    }
+    // One pick answers one question: several questions are always answered
+    // together through the text map above.
+    if questions.len() != 1 {
+        return None;
+    }
+    let rest = option_id.strip_prefix('q')?;
+    let (question, option) = rest.split_once('o')?;
+    let picked = questions
+        .get(question.parse::<usize>().ok()?)?
+        .options
+        .get(option.parse::<usize>().ok()?)?;
+    let mut answers = serde_json::Map::new();
+    answers.insert(
+        questions[0].question.clone(),
+        Value::String(picked.label.clone()),
+    );
+    Some(answers)
+}
+
+fn question_updated_input(input: &Value, answers: &serde_json::Map<String, Value>) -> Value {
+    let mut updated = input.clone();
+    if let Some(object) = updated.as_object_mut() {
+        object.insert("answers".to_string(), Value::Object(answers.clone()));
+    }
+    updated
 }
 
 fn frame_user_message(
@@ -2383,14 +2536,24 @@ impl ClaudeReader {
             .unwrap_or(request_id)
             .to_string();
         let input = request.get("input").cloned().unwrap_or(Value::Null);
+        // A model's question is a question, not a permission:
+        // `AskUserQuestion` carries its items in `input.questions`, and the
+        // card renders them instead of the ordinary pair. Anything else —
+        // another tool, or a question-less `AskUserQuestion` — keeps the
+        // tool card.
+        let asked = if tool_name == "AskUserQuestion" {
+            parse_ask_user_questions(&input)
+        } else {
+            Vec::new()
+        };
         // Paseo never shows `decision_reason`: for every tool but
-        // AskUserQuestion the permission summary is empty
-        // (packages/server/src/server/agent/providers/claude/agent.ts:1055-1077
-        // and :4624-4660). `decision_reason` is the permission engine's
-        // internal vocabulary ("Contains simple_expansion"), so it is not
+        // AskUserQuestion the permission summary is empty. `decision_reason`
+        // is the permission engine's internal vocabulary, so it is not
         // surfaced at all — the daemon has no debug-log facility. The
         // description is the request-level string when present, else the
-        // input's own `description` when it is a string, else nothing.
+        // input's own `description` when it is a string, else nothing; a
+        // question replaces both with its own summary (first text, first
+        // labels joined).
         let description = request
             .get("description")
             .and_then(Value::as_str)
@@ -2400,27 +2563,68 @@ impl ClaudeReader {
             .get("command")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let (title, description, options, kind, questions) = if asked.is_empty() {
+            (
+                display_name.to_string(),
+                description,
+                vec![
+                    PermissionOption {
+                        option_id: "allow".to_string(),
+                        name: "Allow once".to_string(),
+                        kind: "allow_once".to_string(),
+                    },
+                    PermissionOption {
+                        option_id: "deny".to_string(),
+                        name: "Deny".to_string(),
+                        kind: "reject_once".to_string(),
+                    },
+                ],
+                None,
+                None,
+            )
+        } else {
+            let labels: Vec<&str> = asked[0]
+                .options
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect();
+            // One broker option per offered label, its id encoding the
+            // position the reply decodes; a free-text-only question offers
+            // none, and the card answers through the text door instead.
+            let mut options = Vec::new();
+            for (question_index, question) in asked.iter().enumerate() {
+                for (option_index, option) in question.options.iter().enumerate() {
+                    options.push(PermissionOption {
+                        option_id: format!("q{question_index}o{option_index}"),
+                        name: option.label.clone(),
+                        kind: "allow_once".to_string(),
+                    });
+                }
+            }
+            (
+                asked[0].question.clone(),
+                if labels.is_empty() {
+                    None
+                } else {
+                    Some(labels.join(" / "))
+                },
+                options,
+                Some(PermissionRequestKind::Question),
+                Some(asked),
+            )
+        };
         let event = SessionEvent::PermissionRequest {
             tool_call_id: tool_use_id,
-            title: display_name.to_string(),
+            title,
             description,
             command,
             args: None,
             cwd: None,
             env: None,
-            options: vec![
-                PermissionOption {
-                    option_id: "allow".to_string(),
-                    name: "Allow once".to_string(),
-                    kind: "allow_once".to_string(),
-                },
-                PermissionOption {
-                    option_id: "deny".to_string(),
-                    name: "Deny".to_string(),
-                    kind: "reject_once".to_string(),
-                },
-            ],
+            options,
             is_chooser: None,
+            kind,
+            questions,
             // A placeholder the daemon overwrites with the session's stored
             // origin before the request leaves for a subscriber.
             origin: devboule_protocol::SessionOrigin::unknown(),

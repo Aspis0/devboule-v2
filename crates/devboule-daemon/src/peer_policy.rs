@@ -617,6 +617,7 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
                 request_id: String::new(),
                 outcome: devboule_protocol::PermissionOutcome::Deny,
                 option_id: None,
+                answer: None,
                 idempotency_key: None,
             },
         ]))
@@ -965,6 +966,7 @@ pub(crate) mod tests {
             request_id: "tool-1".to_string(),
             outcome: devboule_protocol::PermissionOutcome::AllowOnce,
             option_id: None,
+            answer: None,
             idempotency_key: None,
         };
         let set_mode = || ClientMessage::SessionSetMode {
@@ -2299,6 +2301,7 @@ pub(crate) mod tests {
                 request_id: "tool-1".to_string(),
                 outcome: devboule_protocol::PermissionOutcome::AllowOnce,
                 option_id: None,
+                answer: None,
                 idempotency_key: None,
             },
             ClientMessage::SessionReportAgent {

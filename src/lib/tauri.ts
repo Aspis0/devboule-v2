@@ -180,6 +180,13 @@ export type CommandArgs = {
     requestId: Id;
     outcome: PermissionOutcome;
     optionId?: string | null;
+    /**
+     * The person's free-text answer to a `"question"` request: the
+     * "Other" field, the joined labels of a multi-select, or the
+     * question-to-answer map for several questions. Absent for option
+     * picks, which travel as `optionId`.
+     */
+    answer?: string | null;
   };
   session_presence: { focusedSessionId: Id | null; appVisible: boolean };
   session_resize: { id: Id; subscriptionId: SubscriptionId; cols: number; rows: number };
@@ -429,7 +436,14 @@ export const COMMAND_ARG_KEYS = {
   session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
   session_set_mode: ["id", "modeId"],
-  session_permission_respond: ["id", "subscriptionId", "requestId", "outcome", "optionId"],
+  session_permission_respond: [
+    "id",
+    "subscriptionId",
+    "requestId",
+    "outcome",
+    "optionId",
+    "answer",
+  ],
   session_presence: ["focusedSessionId", "appVisible"],
   session_resize: ["id", "subscriptionId", "cols", "rows"],
   session_detach: ["subscriptionId"],
@@ -798,6 +812,7 @@ export const sessionPermissionRespond = (
   requestId: Id,
   outcome: PermissionOutcome,
   optionId?: string | null,
+  answer?: string | null,
 ) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key here must be `requestId`, not `request_id` (the command has no
@@ -809,6 +824,7 @@ export const sessionPermissionRespond = (
     requestId,
     outcome,
     ...(optionId === undefined ? {} : { optionId }),
+    ...(answer === undefined ? {} : { answer }),
   });
 /**
  * Reports which session this window is looking at and whether the app is

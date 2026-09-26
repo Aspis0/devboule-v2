@@ -417,6 +417,13 @@ pub enum ClientMessage {
         outcome: PermissionOutcome,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         option_id: Option<String>,
+        /// The person's free-text answer to a `question` request (the
+        /// "Other" field, or the joined labels of a multi-select). Absent
+        /// for option picks, which travel as `option_id`, and for every
+        /// non-question request. Never journalled: it passes from this
+        /// frame to the provider's reply and nowhere else.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },

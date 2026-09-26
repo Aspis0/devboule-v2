@@ -822,6 +822,7 @@ fn acp_chooser_reports_the_option_the_person_picked() {
             "tool-chooser-1",
             PermissionOutcome::AllowOnce,
             Some("blue"),
+            None,
         )
         .expect("pick blue");
     wait_for(&events, Duration::from_secs(5), |events| {
@@ -913,6 +914,7 @@ fn acp_chooser_reject_option_by_id_is_journaled_and_resolves_denied() {
             "tool-chooser-1",
             PermissionOutcome::Deny,
             Some("none"),
+            None,
         )
         .expect("the reject pick is an answer, not an error");
     wait_for(&events, Duration::from_secs(5), |events| {
@@ -1012,6 +1014,7 @@ fn acp_reused_answered_question_id_gets_no_card_and_one_plain_notice() {
             "tool-chooser",
             PermissionOutcome::AllowOnce,
             Some("green"),
+            None,
         )
         .expect("pick green");
     wait_for(&events, Duration::from_secs(5), |events| {

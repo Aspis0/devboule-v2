@@ -207,6 +207,13 @@ fn session_event_samples() -> Vec<SessionEvent> {
             // is what pins the wire name, and a sample that omitted the
             // field would leave `isChooser` unexercised by it.
             is_chooser: Some(true),
+            // The sample carries the explicit default rather than `None`:
+            // the committed snapshot is what pins the wire name, and a
+            // sample that omitted the field would leave `kind` unexercised
+            // by it. `questions` stays absent — this sample is the ordinary
+            // tool card, the same variant with the field absent.
+            kind: Some(crate::PermissionRequestKind::Tool),
+            questions: None,
             origin: crate::SessionOrigin::unknown(),
             // The sample carries the creation payload rather than `None`: the
             // ordinary card is the same variant with the field absent, and a

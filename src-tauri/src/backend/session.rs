@@ -252,6 +252,7 @@ pub async fn session_permission_respond(
     request_id: String,
     outcome: PermissionOutcome,
     option_id: Option<String>,
+    answer: Option<String>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     if request_id.is_empty() {
@@ -270,6 +271,7 @@ pub async fn session_permission_respond(
             &request_id,
             outcome,
             option_id.as_deref(),
+            answer.as_deref(),
         )
     })
     .await

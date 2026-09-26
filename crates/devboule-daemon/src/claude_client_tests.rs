@@ -2890,3 +2890,252 @@ fn spawn_wires_the_initialize_handshake_to_its_reader() {
     session.child.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(test)]
+mod question_tests {
+    use super::ReaderDispatch;
+    use super::{attached, test_reader};
+    use super::{ClaudePendingControl, PermissionBroker, PermissionSender};
+    use devboule_protocol::{PermissionOutcome, PermissionRequestKind, SessionEvent};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn question_line(tool_use_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "control_request",
+            "request_id": "ask-1",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "AskUserQuestion",
+                "display_name": "AskUserQuestion",
+                "input": {
+                    "questions": [{
+                        "question": "Which colour should I paint the fence?",
+                        "header": "Fence colour",
+                        "multiSelect": false,
+                        "options": [
+                            {"label": "Forest green (Recommended)", "description": "Blends in."},
+                            {"label": "Barn red", "description": "Classic."}
+                        ]
+                    }]
+                },
+                "tool_use_id": tool_use_id
+            }
+        })
+    }
+
+    type Harness = (
+        Arc<PermissionBroker>,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+        Arc<Mutex<HashMap<u64, ClaudePendingControl>>>,
+        Arc<super::SessionRuntime>,
+        Arc<crate::session::ConnHandle>,
+    );
+
+    fn harness() -> Harness {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let controls = Arc::new(Mutex::new(HashMap::new()));
+        let captured_for_sender = Arc::clone(&captured);
+        let controls_for_sender = Arc::clone(&controls);
+        let sender: Arc<PermissionSender> = Arc::new(move |id, result| {
+            let pending: ClaudePendingControl = controls_for_sender
+                .lock()
+                .expect("controls")
+                .remove(&id)
+                .expect("pending control");
+            let frame = super::control_response_frame(&pending.request_id, &pending.input, &result);
+            captured_for_sender.lock().expect("captured").push(frame);
+            Ok(())
+        });
+        let broker = PermissionBroker::for_test(sender);
+        let reader_controls = Arc::clone(&controls);
+        let mut reader = test_reader(Arc::clone(&broker), reader_controls);
+        let (runtime, conn) = attached(&broker);
+        reader
+            .feed(
+                format!("{}\n", question_line("toolu_question")).as_bytes(),
+                &runtime,
+            )
+            .expect("feed question");
+        // The harness reader is dropped; answering goes through the broker.
+        let _ = reader;
+        (broker, captured, controls, runtime, conn)
+    }
+
+    fn asked(events: &[SessionEvent]) -> SessionEvent {
+        events
+            .iter()
+            .find(|event| {
+                matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. }
+                    if tool_call_id == "toolu_question")
+            })
+            .expect("question card")
+            .clone()
+    }
+
+    #[test]
+    fn ask_user_question_builds_a_question_card() {
+        let (broker, _, _, _, conn) = harness();
+        let events = super::drain(&conn);
+        match asked(&events) {
+            SessionEvent::PermissionRequest {
+                title,
+                description,
+                options,
+                kind,
+                questions,
+                ..
+            } => {
+                assert_eq!(kind, Some(PermissionRequestKind::Question));
+                assert_eq!(title, "Which colour should I paint the fence?");
+                assert_eq!(
+                    description.as_deref(),
+                    Some("Forest green (Recommended) / Barn red")
+                );
+                assert_eq!(
+                    options
+                        .iter()
+                        .map(|option| option.option_id.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["q0o0", "q0o1"]
+                );
+                let questions = questions.expect("question items");
+                assert_eq!(questions.len(), 1);
+                assert_eq!(
+                    questions[0].question,
+                    "Which colour should I paint the fence?"
+                );
+                assert_eq!(questions[0].header.as_deref(), Some("Fence colour"));
+                assert!(!questions[0].multi_select);
+                assert_eq!(questions[0].options[0].label, "Forest green (Recommended)");
+                assert_eq!(
+                    questions[0].options[0].description.as_deref(),
+                    Some("Blends in.")
+                );
+            }
+            _ => panic!("expected a permission request"),
+        }
+        assert_eq!(broker.pending_len(), 1);
+    }
+
+    #[test]
+    fn ask_user_question_option_pick_answers_by_full_text() {
+        let (broker, captured, _, _, conn) = harness();
+        let _ = super::drain(&conn);
+        broker
+            .respond_with_option(
+                "toolu_question",
+                PermissionOutcome::AllowOnce,
+                Some("q0o1".to_string()),
+                None,
+            )
+            .expect("option pick");
+        let frames = captured.lock().expect("captured");
+        assert_eq!(frames.len(), 1);
+        let reply = &frames[0]["response"]["response"];
+        assert_eq!(reply["behavior"], "allow");
+        assert_eq!(
+            reply["updatedInput"]["answers"]["Which colour should I paint the fence?"],
+            "Barn red"
+        );
+        // The provider's own input travels on, with the answers added.
+        assert!(reply["updatedInput"]["questions"].is_array());
+    }
+
+    #[test]
+    fn ask_user_question_other_answer_maps_by_full_text() {
+        let (broker, captured, _, _, conn) = harness();
+        let _ = super::drain(&conn);
+        broker
+            .respond_with_option(
+                "toolu_question",
+                PermissionOutcome::AllowOnce,
+                None,
+                Some("Teal, obviously".to_string()),
+            )
+            .expect("Other answer");
+        let frames = captured.lock().expect("captured");
+        let reply = &frames[0]["response"]["response"];
+        assert_eq!(reply["behavior"], "allow");
+        assert_eq!(
+            reply["updatedInput"]["answers"]["Which colour should I paint the fence?"],
+            "Teal, obviously"
+        );
+    }
+
+    #[test]
+    fn ask_user_question_multi_select_answer_travels_verbatim() {
+        // The card joins several picks the provider's own way (`", "`);
+        // the daemon maps the joined text verbatim under the full-text key.
+        let (broker, captured, _, _, conn) = harness();
+        let _ = super::drain(&conn);
+        broker
+            .respond_with_option(
+                "toolu_question",
+                PermissionOutcome::AllowOnce,
+                None,
+                Some("Forest green (Recommended), Barn red".to_string()),
+            )
+            .expect("multi-select answer");
+        let frames = captured.lock().expect("captured");
+        let reply = &frames[0]["response"]["response"];
+        assert_eq!(reply["behavior"], "allow");
+        assert_eq!(
+            reply["updatedInput"]["answers"]["Which colour should I paint the fence?"],
+            "Forest green (Recommended), Barn red"
+        );
+    }
+
+    #[test]
+    fn ask_user_question_dismissal_denies() {
+        let (broker, captured, _, _, conn) = harness();
+        let _ = super::drain(&conn);
+        broker
+            .respond_with_option("toolu_question", PermissionOutcome::Deny, None, None)
+            .expect("dismissal");
+        let frames = captured.lock().expect("captured");
+        assert_eq!(frames[0]["response"]["response"]["behavior"], "deny");
+    }
+
+    #[test]
+    fn ask_user_question_without_items_stays_a_tool_card() {
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = test_reader(Arc::clone(&broker), Arc::new(Mutex::new(HashMap::new())));
+        let (runtime, conn) = attached(&broker);
+        let line = serde_json::json!({
+            "type": "control_request",
+            "request_id": "ask-empty",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "AskUserQuestion",
+                "display_name": "AskUserQuestion",
+                "input": {"questions": []},
+                "tool_use_id": "toolu_empty"
+            }
+        });
+        reader
+            .feed(format!("{line}\n").as_bytes(), &runtime)
+            .expect("feed");
+        let events = super::drain(&conn);
+        match events
+            .iter()
+            .find(|event| {
+                matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. }
+                    if tool_call_id == "toolu_empty")
+            })
+            .expect("fallback card")
+        {
+            SessionEvent::PermissionRequest {
+                kind,
+                questions,
+                options,
+                ..
+            } => {
+                assert_eq!(*kind, None);
+                assert_eq!(*questions, None);
+                assert_eq!(options.len(), 2);
+            }
+            _ => panic!("expected a permission request"),
+        }
+    }
+}

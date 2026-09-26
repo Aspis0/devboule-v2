@@ -35,6 +35,7 @@ pub(super) fn child_answer_caps_refusal(
         request_id: String::new(),
         outcome: devboule_protocol::PermissionOutcome::Deny,
         option_id: None,
+        answer: None,
         idempotency_key: None,
     };
     if let crate::peer_policy::PeerDecision::Deny(reason) =

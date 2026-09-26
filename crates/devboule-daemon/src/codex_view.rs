@@ -671,6 +671,8 @@ pub(crate) fn permission_request_event(params: &Value, file_change: bool) -> Opt
             },
         ],
         is_chooser: None,
+        kind: None,
+        questions: None,
         // A placeholder the daemon overwrites with the session's stored origin
         // before the request leaves for a subscriber.
         origin: devboule_protocol::SessionOrigin::unknown(),

@@ -539,6 +539,8 @@ fn permission_request_round_trips_with_tool_call_correlation() {
             kind: "allow_once".to_string(),
         }],
         is_chooser: None,
+        kind: None,
+        questions: None,
         origin: SessionOrigin::peer("device-phone", PeerRole::Client),
         create_agent: None,
     };
@@ -589,6 +591,8 @@ fn a_permission_request_origin_round_trips_and_absence_is_a_wire_error() {
         env: None,
         options: Vec::new(),
         is_chooser: None,
+        kind: None,
+        questions: None,
         origin: SessionOrigin::local(),
         create_agent: None,
     };
@@ -1520,4 +1524,95 @@ fn the_roster_snapshot_carries_the_marker_on_every_push() {
         UnattendedState::Unknown,
         "a push the daemon has not said anything about is unknown, never no"
     );
+}
+
+#[test]
+fn question_kind_and_items_round_trip_with_exact_wire_shape() {
+    let event = SessionEvent::PermissionRequest {
+        tool_call_id: "call-q1".to_string(),
+        title: "Which colour should I paint the fence?".to_string(),
+        description: Some("Forest green (Recommended) / Barn red".to_string()),
+        command: None,
+        args: None,
+        cwd: None,
+        env: None,
+        options: vec![
+            PermissionOption {
+                option_id: "q0o0".to_string(),
+                name: "Forest green (Recommended)".to_string(),
+                kind: "allow_once".to_string(),
+            },
+            PermissionOption {
+                option_id: "q0o1".to_string(),
+                name: "Barn red".to_string(),
+                kind: "allow_once".to_string(),
+            },
+        ],
+        is_chooser: None,
+        kind: Some(PermissionRequestKind::Question),
+        questions: Some(vec![PermissionQuestion {
+            question: "Which colour should I paint the fence?".to_string(),
+            header: None,
+            options: vec![
+                PermissionQuestionOption {
+                    label: "Forest green (Recommended)".to_string(),
+                    description: Some("Blends in.".to_string()),
+                },
+                PermissionQuestionOption {
+                    label: "Barn red".to_string(),
+                    description: None,
+                },
+            ],
+            multi_select: false,
+        }]),
+        origin: SessionOrigin::local(),
+        create_agent: None,
+    };
+    let encoded = serde_json::to_value(&event).expect("json");
+    assert_eq!(encoded["kind"], "question");
+    assert_eq!(
+        encoded["questions"][0]["question"],
+        "Which colour should I paint the fence?"
+    );
+    assert_eq!(
+        encoded["questions"][0]["options"][0]["label"],
+        "Forest green (Recommended)"
+    );
+    assert_eq!(
+        encoded["questions"][0]["options"][0]["description"],
+        "Blends in."
+    );
+    assert_eq!(encoded["questions"][0]["multiSelect"], false);
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, event);
+}
+
+#[test]
+fn permission_request_without_kind_reads_as_tool() {
+    // Bytes, not Rust-to-Rust: a daemon older than the field sends no `kind`,
+    // and every such request is an ordinary tool permission.
+    let frame = serde_json::json!({
+        "type": "permission_request",
+        "toolCallId": "call-old",
+        "title": "Run command",
+        "options": [
+            {"optionId": "allow", "name": "Allow once", "kind": "allow_once"},
+            {"optionId": "deny", "name": "Deny", "kind": "reject_once"}
+        ],
+        "origin": {"kind": "local"}
+    });
+    assert!(frame.get("kind").is_none());
+    let decoded: SessionEvent = serde_json::from_value(frame).expect("older frame");
+    match decoded {
+        SessionEvent::PermissionRequest {
+            kind, questions, ..
+        } => {
+            assert_eq!(
+                kind, None,
+                "absent kind is the tool default, never a question"
+            );
+            assert_eq!(questions, None);
+        }
+        _ => panic!("expected a permission request"),
+    }
 }

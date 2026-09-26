@@ -16,11 +16,16 @@ pub(super) type TransitionSink =
 pub(super) type JournalRosterCache = Arc<Mutex<Option<(u64, Vec<SessionRecord>)>>>;
 
 /// One client answer to a pending permission request.
+///
+/// `answer` carries the person's free-text answer to a `question` request
+/// and is absent otherwise. It is passed to the provider's reply frame and
+/// never to the journal or any log.
 pub struct PermissionResponse<'a> {
     pub session_id: &'a str,
     pub request_id: &'a str,
     pub outcome: PermissionOutcome,
     pub option_id: Option<&'a str>,
+    pub answer: Option<&'a str>,
 }
 
 pub(super) const WORKSPACE_PATH_CACHE_CAP: usize = 1024;

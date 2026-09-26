@@ -131,6 +131,7 @@ describe("PermissionCard chooser answers", () => {
       "tool-chooser",
       "allow_once",
       "opt-beta",
+      undefined,
     );
 
     await act(async () => root.unmount());

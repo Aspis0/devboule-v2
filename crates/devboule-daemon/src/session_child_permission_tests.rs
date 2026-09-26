@@ -65,6 +65,8 @@ pub(super) fn raise_permission_attention(runtime: &Arc<SessionRuntime>) {
             env: None,
             options: Vec::new(),
             is_chooser: None,
+            kind: None,
+            questions: None,
             origin: SessionOrigin::local(),
             create_agent: None,
         },

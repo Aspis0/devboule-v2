@@ -781,6 +781,7 @@ impl DaemonClient {
             request_id,
             outcome,
             None,
+            None,
         )
     }
 
@@ -791,6 +792,7 @@ impl DaemonClient {
         request_id: &str,
         outcome: PermissionOutcome,
         option_id: Option<&str>,
+        answer: Option<&str>,
     ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionPermissionRespond {
@@ -800,6 +802,7 @@ impl DaemonClient {
             request_id: request_id.to_string(),
             outcome,
             option_id: option_id.map(str::to_string),
+            answer: answer.map(str::to_string),
             idempotency_key: None,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),

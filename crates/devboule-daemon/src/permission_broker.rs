@@ -6,8 +6,8 @@ use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use devboule_protocol::{
-    NoticeSeverity, PermissionOption, PermissionOutcome, SessionEvent, SessionOrigin,
-    SessionOriginKind,
+    NoticeSeverity, PermissionOption, PermissionOutcome, PermissionRequestKind, SessionEvent,
+    SessionOrigin, SessionOriginKind,
 };
 
 use super::SessionRuntime;
@@ -102,6 +102,10 @@ fn release_card_slot(request: &SessionEvent) {
 
 pub(super) const MAX_ACP_PERMISSION_FIELD_BYTES: usize = 8 * 1024;
 pub(super) const MAX_ACP_PERMISSION_OPTIONS: usize = 32;
+/// How many questions one `question` request may carry. Claude's
+/// `AskUserQuestion` holds at most four; eight leaves headroom without
+/// letting one card become a questionnaire.
+const MAX_QUESTIONS_PER_REQUEST: usize = 8;
 const MAX_ACP_PERMISSION_ARGS: usize = 256;
 const MAX_ACP_PERMISSION_ENV: usize = 64;
 
@@ -395,7 +399,7 @@ impl PermissionBroker {
         tool_call_id: &str,
         outcome: PermissionOutcome,
     ) -> Result<(), PermissionResponseError> {
-        self.respond_with_option(tool_call_id, outcome, None)
+        self.respond_with_option(tool_call_id, outcome, None, None)
     }
 
     pub(super) fn respond_with_option(
@@ -403,8 +407,9 @@ impl PermissionBroker {
         tool_call_id: &str,
         outcome: PermissionOutcome,
         option_id: Option<String>,
+        answer: Option<String>,
     ) -> Result<(), PermissionResponseError> {
-        let options = {
+        let (options, is_question) = {
             let table = self
                 .pending
                 .lock()
@@ -414,10 +419,73 @@ impl PermissionBroker {
                 .get(tool_call_id)
                 .ok_or(PermissionResponseError::NotFound)?;
             match &pending.request {
-                SessionEvent::PermissionRequest { options, .. } => options.clone(),
-                _ => Vec::new(),
+                SessionEvent::PermissionRequest { options, kind, .. } => (
+                    options.clone(),
+                    matches!(kind, Some(PermissionRequestKind::Question)),
+                ),
+                _ => (Vec::new(), false),
             }
         };
+        // A question's free-text answer travels beside the option pick,
+        // never in it: one carrier per answer, and a grant names what the
+        // person chose — the implicit first-option pick below would answer
+        // what was never picked.
+        if is_question {
+            if option_id.is_some() && answer.is_some() {
+                return Err(PermissionResponseError::InvalidRequest(
+                    "a question answer names an option or carries text, not both".to_string(),
+                ));
+            }
+            if let Some(answer) = answer {
+                if outcome != PermissionOutcome::AllowOnce {
+                    return Err(PermissionResponseError::InvalidRequest(
+                        "a question's text answer must grant, not refuse".to_string(),
+                    ));
+                }
+                validate_permission_field("answer", &answer)?;
+                let pending = self.take(tool_call_id, None)?;
+                #[cfg(test)]
+                self.run_after_take_hook();
+                // The text itself goes only to the provider's reply frame
+                // below: the journal records the request plus `allow_once`,
+                // and the resolved event names no option, so the person's
+                // own words are persisted nowhere.
+                return self.complete(
+                    &pending,
+                    serde_json::json!({
+                        "outcome": { "outcome": "selected", "answer": answer }
+                    }),
+                    None,
+                    "allow_once",
+                    None,
+                );
+            }
+            if outcome == PermissionOutcome::Deny && option_id.is_none() {
+                // Dismissing the question card: a refusal with nothing to
+                // name. Always an answer — including for a single-option
+                // question, which is not a chooser and would otherwise
+                // report the completed cancel as an error.
+                let pending = self.take(tool_call_id, None)?;
+                #[cfg(test)]
+                self.run_after_take_hook();
+                return self.complete(
+                    &pending,
+                    serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                    None,
+                    "cancelled",
+                    None,
+                );
+            }
+            if outcome == PermissionOutcome::AllowOnce && option_id.is_none() {
+                return Err(PermissionResponseError::InvalidRequest(
+                    "a question grant must name the picked option or carry its text".to_string(),
+                ));
+            }
+        } else if answer.is_some() {
+            return Err(PermissionResponseError::InvalidRequest(
+                "only a question request carries a text answer".to_string(),
+            ));
+        }
         let option = select_option(&options, outcome, option_id.as_deref())
             .map_err(PermissionResponseError::InvalidRequest)?;
         let pending = self.take(tool_call_id, None)?;
@@ -679,7 +747,8 @@ impl PermissionBroker {
     /// Auto-answer the modes `provider_catalog::mode_is_auto_answered` lists —
     /// the one list, shared with the `unattended` marker a child's birth
     /// writes — and only when the agent offers one allow choice; chooser
-    /// requests stay with the client. Paseo's chooser rule:
+    /// requests stay with the client, and so does every question: a model's
+    /// question is never auto-answered, in any mode. Paseo's chooser rule:
     /// the same kind twice — allow or reject — is a question, the standard
     /// `allow_once`/`allow_always`/`reject_once` batch (three distinct kinds)
     /// is not. Prefer allow_once, then allow_always; a request with no allow
@@ -816,10 +885,19 @@ impl PermissionBroker {
         let Some(current) = table.entries.get(tool_call_id) else {
             return Err(PermissionResponseError::NotFound);
         };
-        let options = match &current.request {
-            SessionEvent::PermissionRequest { options, .. } => options.clone(),
+        let (options, is_question) = match &current.request {
+            SessionEvent::PermissionRequest { options, kind, .. } => (
+                options.clone(),
+                matches!(kind, Some(PermissionRequestKind::Question)),
+            ),
             _ => return Ok(None),
         };
+        // Semantic, not structural: a question is never auto-answered, in
+        // any mode — including bypass or "may run without asking". The
+        // chooser rule below stays for every other request.
+        if is_question {
+            return Ok(None);
+        }
         if options_form_a_chooser(&options) {
             return Ok(None);
         }
@@ -1071,6 +1149,8 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
             origin: _,
             create_agent,
             is_chooser,
+            kind,
+            questions,
         } => SessionEvent::PermissionRequest {
             tool_call_id,
             title,
@@ -1081,6 +1161,8 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
             env,
             options,
             is_chooser,
+            kind,
+            questions,
             origin,
             create_agent,
         },
@@ -1135,6 +1217,8 @@ fn validate_permission_request(
         cwd,
         env,
         options,
+        questions,
+        kind,
         ..
     } = request
     else {
@@ -1181,7 +1265,9 @@ fn validate_permission_request(
             }
         }
     }
-    if options.is_empty() {
+    // A free-text-only question offers no options: the person answers in
+    // the "Other" field, so emptiness is legal exactly then.
+    if options.is_empty() && !matches!(kind, Some(PermissionRequestKind::Question)) {
         return Err(PermissionResponseError::InvalidRequest(
             "permission request has no options".to_string(),
         ));
@@ -1206,6 +1292,33 @@ fn validate_permission_request(
             )));
         }
         option_ids.push(&option.option_id);
+    }
+    if let Some(questions) = questions {
+        // A question's text is the agent's own words — bounded like every
+        // other card field, but never confused with the person's answer,
+        // which has no field on the request at all.
+        if questions.len() > MAX_QUESTIONS_PER_REQUEST {
+            return Err(PermissionResponseError::InvalidRequest(format!(
+                "permission request has more than the maximum of {MAX_QUESTIONS_PER_REQUEST} questions"
+            )));
+        }
+        for question in questions {
+            validate_permission_field("question", &question.question)?;
+            if let Some(header) = question.header.as_deref() {
+                validate_permission_field("question header", header)?;
+            }
+            if question.options.len() > MAX_ACP_PERMISSION_OPTIONS {
+                return Err(PermissionResponseError::InvalidRequest(format!(
+                    "permission question has more than the maximum of {MAX_ACP_PERMISSION_OPTIONS} options"
+                )));
+            }
+            for option in &question.options {
+                validate_permission_field("question option label", &option.label)?;
+                if let Some(description) = option.description.as_deref() {
+                    validate_permission_field("question option description", description)?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1352,6 +1465,93 @@ pub(super) fn permission_with_kinds(tool_call_id: &str, kinds: &[(&str, &str)]) 
         // The publish path stamps the chooser verdict on the way out, the
         // same way it stamps the origin.
         is_chooser: None,
+        kind: None,
+        questions: None,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn permission_question_single_option(tool_call_id: &str) -> SessionEvent {
+    use devboule_protocol::{PermissionQuestion, PermissionQuestionOption, PermissionRequestKind};
+    // One offered label: structurally auto-answerable (no repeated kind),
+    // so only the semantic question gate keeps it pending. This is the
+    // case the chooser heuristic cannot see.
+    SessionEvent::PermissionRequest {
+        tool_call_id: tool_call_id.to_string(),
+        title: "Shall I paint the fence green?".to_string(),
+        description: None,
+        command: None,
+        args: None,
+        cwd: None,
+        env: None,
+        options: vec![PermissionOption {
+            option_id: "q0o0".to_string(),
+            name: "Yes, green".to_string(),
+            kind: "allow_once".to_string(),
+        }],
+        origin: SessionOrigin::local(),
+        create_agent: None,
+        is_chooser: None,
+        kind: Some(PermissionRequestKind::Question),
+        questions: Some(vec![PermissionQuestion {
+            question: "Shall I paint the fence green?".to_string(),
+            header: None,
+            options: vec![PermissionQuestionOption {
+                label: "Yes, green".to_string(),
+                description: None,
+            }],
+            multi_select: false,
+        }]),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn permission_question(tool_call_id: &str) -> SessionEvent {
+    use devboule_protocol::{PermissionQuestion, PermissionQuestionOption, PermissionRequestKind};
+    SessionEvent::PermissionRequest {
+        tool_call_id: tool_call_id.to_string(),
+        title: "Which colour should I paint the fence?".to_string(),
+        description: Some("Forest green (Recommended) / Barn red".to_string()),
+        command: None,
+        args: None,
+        cwd: None,
+        env: None,
+        options: vec![
+            PermissionOption {
+                option_id: "q0o0".to_string(),
+                name: "Forest green (Recommended)".to_string(),
+                kind: "allow_once".to_string(),
+            },
+            PermissionOption {
+                option_id: "q0o1".to_string(),
+                name: "Barn red".to_string(),
+                kind: "allow_once".to_string(),
+            },
+        ],
+        // A provider client writes `local` as a placeholder; the daemon
+        // overwrites it with the session's own origin before the request leaves
+        // for a subscriber.
+        origin: SessionOrigin::local(),
+        create_agent: None,
+        // The publish path stamps the chooser verdict on the way out, the
+        // same way it stamps the origin.
+        is_chooser: None,
+        kind: Some(PermissionRequestKind::Question),
+        questions: Some(vec![PermissionQuestion {
+            question: "Which colour should I paint the fence?".to_string(),
+            header: None,
+            options: vec![
+                PermissionQuestionOption {
+                    label: "Forest green (Recommended)".to_string(),
+                    description: None,
+                },
+                PermissionQuestionOption {
+                    label: "Barn red".to_string(),
+                    description: None,
+                },
+            ],
+            multi_select: false,
+        }]),
     }
 }
 
@@ -1424,6 +1624,7 @@ mod tests {
                 "durable-only",
                 PermissionOutcome::AllowOnce,
                 Some("always".to_string()),
+                None,
             )
             .expect("explicit durable option");
         let sent = sent.lock().expect("sent lock");
@@ -1452,6 +1653,7 @@ mod tests {
                 "explicit",
                 PermissionOutcome::AllowOnce,
                 Some("allow-once".to_string()),
+                None,
             )
             .expect("explicit option");
         let sent = sent.lock().expect("sent lock");
@@ -1475,6 +1677,7 @@ mod tests {
                 "wrong-intent",
                 PermissionOutcome::AllowOnce,
                 Some("deny".to_string()),
+                None,
             )
             .expect_err("wrong intent");
         assert!(error.to_string().contains("cannot be used"));
@@ -1769,6 +1972,7 @@ mod tests {
                 "durable-human",
                 PermissionOutcome::AllowOnce,
                 Some("always".to_string()),
+                None,
             )
             .expect("the named durable option is honored");
         assert_eq!(
@@ -2479,5 +2683,248 @@ mod tests {
             broker.respond("once", PermissionOutcome::Deny),
             Err(super::PermissionResponseError::NotFound)
         ));
+    }
+}
+
+#[cfg(test)]
+mod question_tests {
+    use super::{
+        permission_path, permission_question, permission_question_single_option, test_broker,
+        PermissionBroker, PermissionSender,
+    };
+    use crate::journal::Journal;
+    use crate::session::SessionRuntime;
+    use devboule_protocol::{PermissionOutcome, SessionEvent};
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn manifest_with_mode(runtime: &SessionRuntime, mode_id: &str) {
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: mode_id.to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+    }
+
+    /// A question is never auto-answered, in any mode — including bypass
+    /// and "may run without asking". The gate is semantic (`kind`), not
+    /// the option-kind heuristic: the registry holds a single-option
+    /// question here, which no repeated kind marks as a chooser, so only
+    /// the `kind` refusal can keep it pending.
+    #[test]
+    fn question_is_never_auto_answered_in_any_mode() {
+        for (index, mode_id) in [
+            "bypass",
+            "auto_accept",
+            "bypassPermissions",
+            "default",
+            "acceptEdits",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (broker, sent) = test_broker();
+            let runtime = Arc::new(SessionRuntime::new());
+            manifest_with_mode(&runtime, mode_id);
+            let tool_call_id = format!("question-{mode_id}");
+            broker
+                .register(
+                    200 + index as u64,
+                    permission_question_single_option(&tool_call_id),
+                    &runtime,
+                )
+                .expect("register");
+            assert!(
+                !broker
+                    .auto_answer(&tool_call_id, &runtime)
+                    .expect("auto-answer policy"),
+                "a question must stay pending in mode {mode_id}"
+            );
+            assert_eq!(broker.pending_len(), 1);
+            assert!(sent.lock().expect("sent lock").is_empty());
+        }
+    }
+
+    #[test]
+    fn question_option_pick_reports_the_option_id() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(210, permission_question("question-pick"), &runtime)
+            .expect("register");
+        broker
+            .respond_with_option(
+                "question-pick",
+                PermissionOutcome::AllowOnce,
+                Some("q0o1".to_string()),
+                None,
+            )
+            .expect("option pick");
+        let sent = sent.lock().expect("sent lock");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1["outcome"]["outcome"], "selected");
+        assert_eq!(sent[0].1["outcome"]["optionId"], "q0o1");
+        assert!(sent[0].1["outcome"].get("answer").is_none());
+        assert_eq!(broker.pending_len(), 0);
+    }
+
+    #[test]
+    fn question_grant_without_pick_or_text_stays_pending() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(211, permission_question("question-empty-grant"), &runtime)
+            .expect("register");
+        let error = broker
+            .respond_with_option(
+                "question-empty-grant",
+                PermissionOutcome::AllowOnce,
+                None,
+                None,
+            )
+            .expect_err("a grant must name what was picked");
+        assert!(error.to_string().contains("must name the picked option"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    #[test]
+    fn question_refuses_both_carriers_at_once() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(212, permission_question("question-both"), &runtime)
+            .expect("register");
+        let error = broker
+            .respond_with_option(
+                "question-both",
+                PermissionOutcome::AllowOnce,
+                Some("q0o0".to_string()),
+                Some("Forest green".to_string()),
+            )
+            .expect_err("one carrier per answer");
+        assert!(error.to_string().contains("not both"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    #[test]
+    fn question_dismissal_without_an_option_cancels_cleanly() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(213, permission_question("question-dismiss"), &runtime)
+            .expect("register");
+        broker
+            .respond_with_option("question-dismiss", PermissionOutcome::Deny, None, None)
+            .expect("dismissal is an answer");
+        let sent = sent.lock().expect("sent lock");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1["outcome"]["outcome"], "cancelled");
+        assert_eq!(broker.pending_len(), 0);
+    }
+
+    #[test]
+    fn tool_request_refuses_a_text_answer() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(214, super::permission("tool-with-answer"), &runtime)
+            .expect("register");
+        let error = broker
+            .respond_with_option(
+                "tool-with-answer",
+                PermissionOutcome::AllowOnce,
+                None,
+                Some("not a question".to_string()),
+            )
+            .expect_err("tools have no text door");
+        assert!(error.to_string().contains("only a question"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    /// The free-text answer reaches the provider's reply frame and nowhere
+    /// else: the journal row holds the request plus `allow_once`, and the
+    /// resolved event names no option — so the person's own words are
+    /// persisted nowhere.
+    #[test]
+    fn question_free_text_answer_is_journaled_without_its_words() {
+        let secret = "chartreuse, the fence nobody else has";
+        let path = permission_path("question-answer");
+        let _ = std::fs::remove_file(&path);
+        let journal = Arc::new(Journal::open(&path).expect("journal"));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_for_sender = Arc::clone(&sent);
+        let sender: Arc<PermissionSender> = Arc::new(move |id, result| {
+            sent_for_sender
+                .lock()
+                .expect("sent lock")
+                .push((id, result));
+            Ok(())
+        });
+        let broker = PermissionBroker::with_sender(sender);
+        let runtime = SessionRuntime::for_acp(
+            "s.permission.question-answer".to_string(),
+            Some(Arc::clone(&journal)),
+            Arc::clone(&broker),
+        );
+        let pending = broker
+            .register(215, permission_question("question-answer"), &runtime)
+            .expect("register");
+        broker
+            .respond_with_option(
+                "question-answer",
+                PermissionOutcome::AllowOnce,
+                None,
+                Some(secret.to_string()),
+            )
+            .expect("free-text answer");
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["answer"],
+            secret
+        );
+        // The resolved event for a text answer names no option: there is no
+        // option field carrying the person's words to any subscriber.
+        let resolved = super::permission_resolved_event(&pending, None, None);
+        match resolved {
+            SessionEvent::PermissionResolved {
+                selected_option_id,
+                selected_option_kind,
+                selected_option_name,
+                ..
+            } => {
+                assert_eq!(selected_option_id, None);
+                assert_eq!(selected_option_kind, None);
+                assert_eq!(selected_option_name, None);
+            }
+            _ => panic!("expected a permission resolution"),
+        }
+        journal.flush().expect("journal flush");
+        let conn = Connection::open(&path).expect("inspect journal");
+        let (outcome, payload): (String, Vec<u8>) = conn
+            .query_row(
+                "SELECT outcome, payload FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+                ["s.permission.question-answer", "question-answer"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("permission row");
+        assert_eq!(outcome, "allow_once");
+        let payload = String::from_utf8_lossy(&payload);
+        assert!(
+            !payload.contains(secret),
+            "the journal payload must not hold the person's answer"
+        );
+        assert!(
+            payload.contains("Which colour should I paint the fence?"),
+            "the journal payload still holds the question itself: {payload}"
+        );
+        drop(conn);
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
     }
 }

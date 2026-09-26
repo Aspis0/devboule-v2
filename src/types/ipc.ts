@@ -388,6 +388,20 @@ export interface PermissionOption {
   kind: string;
 }
 
+/** One offered answer to a model's question, as carried on a `"question"` request. */
+export interface PermissionQuestionOption {
+  label: string;
+  description?: string;
+}
+
+/** One question a model asked the person, as carried on a `"question"` request. */
+export interface PermissionQuestion {
+  question: string;
+  header?: string;
+  options: PermissionQuestionOption[];
+  multiSelect: boolean;
+}
+
 export interface ToolLocation {
   path: string;
   line?: number;
@@ -418,6 +432,23 @@ export interface PermissionRequest {
    * never re-derives the rule from the option list.
    */
   isChooser?: boolean;
+  /**
+   * Why the daemon is asking: an ordinary tool permission or a model's
+   * question for the person. Absent reads as `"tool"` — every request
+   * from a daemon older than this field is one. The card renders the
+   * question form only for `"question"`; a marked chooser the daemon
+   * stamped underneath stays the fallback for older clients.
+   */
+  kind?: "tool" | "question";
+  /**
+   * The model's questions, one entry per asked item. Present only on a
+   * `"question"` request; the card renders one group per entry (radio
+   * options, or checkboxes when `multiSelect` is set, plus an "Other"
+   * text field). The broker's `options` still carry one entry per
+   * offered label, so an option pick travels as the existing `optionId`
+   * while free text travels as the respond call's `answer`.
+   */
+  questions?: PermissionQuestion[];
   /**
    * The origin of the session this request belongs to, when the daemon sends
    * it. The card renders a `peer` origin as its own provenance line, in its own

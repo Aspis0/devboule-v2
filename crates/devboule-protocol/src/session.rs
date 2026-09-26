@@ -990,6 +990,20 @@ pub enum SessionEvent {
         /// list.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is_chooser: Option<bool>,
+        /// Why the daemon is asking: an ordinary tool permission or a
+        /// model's question for the person. Absent reads as `tool` — every
+        /// request before this field, and every non-question request, is
+        /// one. The broker never auto-answers a `question`, in any mode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<PermissionRequestKind>,
+        /// The model's questions, one entry per `input.questions` item the
+        /// provider sent. Present only when `kind` is `question`; the card
+        /// renders one group per entry (radio options, or checkboxes when
+        /// `multi_select` is set, plus an "Other" text field). The
+        /// broker's `options` still carry one entry per offered label, so
+        /// an option pick travels as the existing `optionId`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        questions: Option<Vec<PermissionQuestion>>,
         /// The origin of the session this request belongs to. Always on the
         /// wire, and deliberately **not** `Option`: an absent origin would be
         /// read as local by every consumer, so "absent" must not be
@@ -1250,6 +1264,42 @@ pub struct PermissionOption {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+}
+
+/// Why a [`SessionEvent::PermissionRequest`] is asking.
+///
+/// Absent on the wire reads as [`PermissionRequestKind::Tool`]: the default
+/// is deliberate, so every request from a daemon older than this field keeps
+/// its meaning.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionRequestKind {
+    #[default]
+    Tool,
+    Question,
+}
+
+/// One question a model asked the person, as carried on a `question`
+/// [`SessionEvent::PermissionRequest`].
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionQuestion {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub options: Vec<PermissionQuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
+/// One offered answer to a [`PermissionQuestion`].
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionQuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// One environment variable shown with a host-initiated permission prompt.

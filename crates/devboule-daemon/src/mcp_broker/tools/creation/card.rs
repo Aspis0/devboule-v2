@@ -297,6 +297,8 @@ pub(in crate::mcp_broker) fn creation_card(
             },
         ],
         is_chooser: None,
+        kind: None,
+        questions: None,
         // A placeholder: the permission broker stamps the creator's own origin
         // on the way in, exactly as it does for a provider's own card.
         origin: SessionOrigin::unknown(),

@@ -2234,6 +2234,7 @@ impl SessionRegistry {
                 request_id,
                 outcome,
                 option_id: None,
+                answer: None,
             },
             conn.id,
             conn,
@@ -2253,6 +2254,7 @@ impl SessionRegistry {
             request_id,
             outcome,
             option_id,
+            answer,
         } = response;
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -2271,7 +2273,12 @@ impl SessionRegistry {
             )
         })?;
         broker
-            .respond_with_option(request_id, outcome, option_id.map(str::to_string))
+            .respond_with_option(
+                request_id,
+                outcome,
+                option_id.map(str::to_string),
+                answer.map(str::to_string),
+            )
             .map_err(|error| {
                 let code = match error {
                     permission_broker::PermissionResponseError::NotFound => {

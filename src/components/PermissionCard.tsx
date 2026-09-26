@@ -4,7 +4,12 @@ import { optionOutcome } from "../lib/optionOutcome";
 import { sessionPermissionRespond } from "../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import { ErrorText } from "./ErrorText";
-import type { DaemonConnectionState, PermissionRequest, SessionOrigin } from "../types/ipc";
+import type {
+  DaemonConnectionState,
+  PermissionQuestion,
+  PermissionRequest,
+  SessionOrigin,
+} from "../types/ipc";
 import "./PermissionCard.css";
 
 export type PermissionState = "waiting" | "submitting" | "allowed" | "allowed_always" | "denied";
@@ -349,7 +354,7 @@ export interface PermissionCardProps {
    * never earn the creator label, only the named-session one.
    */
   creatorId?: string | null;
-  onRespond?: (outcome: "allow_once" | "deny", optionId?: string) => Promise<void>;
+  onRespond?: (outcome: "allow_once" | "deny", optionId?: string, answer?: string) => Promise<void>;
   onResolved?: (sessionId: string, toolCallId: string) => void;
 }
 
@@ -374,6 +379,13 @@ export function PermissionCard({
   // set when THIS card answers with an option id, so its resolved state says
   // which choice it was. An outside answer's name arrives on `resolution`.
   const [localChoice, setLocalChoice] = useState<string | null>(null);
+  // A question card's own answers: one picked-option set per question, and
+  // one "Other" text per question. Maps, not arrays, so answering one
+  // question never disturbs another's.
+  const [pickedOptions, setPickedOptions] = useState<ReadonlyMap<number, ReadonlySet<number>>>(
+    () => new Map(),
+  );
+  const [otherTexts, setOtherTexts] = useState<ReadonlyMap<number, string>>(() => new Map());
   const submittingRef = useRef(false);
   // Set false on unmount so a late answer never stamps state (or fires
   // onResolved) after the host closed the run and removed the card.
@@ -395,6 +407,8 @@ export function PermissionCard({
     setPermission("waiting");
     setError(null);
     setLocalChoice(null);
+    setPickedOptions(new Map());
+    setOtherTexts(new Map());
   }, [sessionId, request.toolCallId, subscriptionId]);
 
   if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
@@ -436,7 +450,7 @@ export function PermissionCard({
     : PERMISSION_LABELS[permission];
   const cardTone = resolvedByCreator ? (resolution.outcome ?? "unclaimed") : permission;
 
-  const respond = async (outcome: "allow_once" | "deny", optionId?: string) => {
+  const respond = async (outcome: "allow_once" | "deny", optionId?: string, answer?: string) => {
     if (resolvedByCreator || submittingRef.current || permission !== "waiting") return;
     const generation = generationRef.current;
     submittingRef.current = true;
@@ -445,9 +459,10 @@ export function PermissionCard({
     try {
       // The ordinary pair posts no option id: its options are unambiguous,
       // so the daemon's own pick is the right one. A chooser answer names the
-      // option it is answering with.
-      await (onRespond?.(outcome, optionId) ??
-        (optionId === undefined
+      // option it is answering with. A question's free text travels as the
+      // answer beside it.
+      await (onRespond?.(outcome, optionId, answer) ??
+        (optionId === undefined && answer === undefined
           ? sessionPermissionRespond(sessionId, subscriptionId, request.toolCallId, outcome)
           : sessionPermissionRespond(
               sessionId,
@@ -455,6 +470,7 @@ export function PermissionCard({
               request.toolCallId,
               outcome,
               optionId,
+              answer,
             )));
       if (!mountedRef.current || generationRef.current !== generation) return;
       const chosen =
@@ -481,6 +497,101 @@ export function PermissionCard({
       setPermission("waiting");
       setError(errorSentence(cause));
     }
+  };
+
+  // A model's question renders its own form, never the chooser's buttons:
+  // one group per asked item, radios or checkboxes per its multi-select
+  // flag, an "Other" field per group, and one Submit for the whole card.
+  // `questions` absent or empty falls through to the branches below, so a
+  // question mark the daemon stamped without items stays answerable.
+  const askedQuestions: readonly PermissionQuestion[] =
+    request.kind === "question" && Array.isArray(request.questions) ? request.questions : [];
+  const isQuestion = askedQuestions.length > 0;
+
+  const questionOther = (index: number): string => otherTexts.get(index) ?? "";
+  const questionAnswered = (index: number): boolean => {
+    if ((pickedOptions.get(index)?.size ?? 0) > 0) return true;
+    return questionOther(index).trim().length > 0;
+  };
+  const allQuestionsAnswered =
+    isQuestion && askedQuestions.every((_, index) => questionAnswered(index));
+  // The value one question contributes: typed text wins over picks, and
+  // several picks join the way the provider's own answers map reads them.
+  const questionValue = (question: PermissionQuestion, index: number): string => {
+    const other = questionOther(index).trim();
+    if (other.length > 0) return other;
+    const picked = pickedOptions.get(index);
+    if (picked === undefined || picked.size === 0) return "";
+    return Array.from(picked)
+      .sort((left, right) => left - right)
+      .map((optionIndex) => question.options[optionIndex]?.label ?? "")
+      .filter((label) => label.length > 0)
+      .join(", ");
+  };
+
+  const toggleQuestionOption = (questionIndex: number, optionIndex: number) => {
+    if (permission !== "waiting" || resolvedByCreator) return;
+    const multi = askedQuestions[questionIndex]?.multiSelect === true;
+    setPickedOptions((previous) => {
+      const next = new Map(previous);
+      if (multi) {
+        const current = new Set(next.get(questionIndex) ?? []);
+        if (current.has(optionIndex)) current.delete(optionIndex);
+        else current.add(optionIndex);
+        if (current.size === 0) next.delete(questionIndex);
+        else next.set(questionIndex, current);
+      } else {
+        next.set(questionIndex, new Set([optionIndex]));
+      }
+      return next;
+    });
+  };
+
+  const setQuestionOther = (questionIndex: number, text: string) => {
+    if (permission !== "waiting" || resolvedByCreator) return;
+    setOtherTexts((previous) => {
+      const next = new Map(previous);
+      if (text.length === 0) next.delete(questionIndex);
+      else next.set(questionIndex, text);
+      return next;
+    });
+  };
+
+  const submitQuestions = () => {
+    if (!isQuestion || !allQuestionsAnswered) return;
+    const values = askedQuestions.map((question, index) => questionValue(question, index));
+    // A lone single-select pick without typed text travels as the existing
+    // option id; everything else — multi-selects, typed text, several
+    // questions — travels as the answer the daemon maps into the provider's
+    // own answers. The flat position below repeats the daemon's own order
+    // (question-major, option-minor); a misaligned id list falls back to
+    // the answer door rather than naming the wrong option.
+    if (
+      askedQuestions.length === 1 &&
+      !askedQuestions[0].multiSelect &&
+      questionOther(0).trim().length === 0 &&
+      (pickedOptions.get(0)?.size ?? 0) === 1
+    ) {
+      const only = Array.from(pickedOptions.get(0) ?? [])[0];
+      const optionId = only === undefined ? undefined : request.options[only]?.optionId;
+      if (optionId !== undefined) {
+        // The card's own resolved state names the option, as usual.
+        void respond("allow_once", optionId);
+        return;
+      }
+    }
+    const answer =
+      askedQuestions.length === 1
+        ? values[0]
+        : JSON.stringify(
+            Object.fromEntries(
+              askedQuestions.map((question, index) => [question.question, values[index]]),
+            ),
+          );
+    const choice = values.length === 1 ? values[0] : `${values.length} answers`;
+    void respond("allow_once", undefined, answer).then(() => {
+      if (mountedRef.current) setLocalChoice(choice);
+    });
   };
 
   return (
@@ -513,11 +624,50 @@ export function PermissionCard({
           The daemon is not reachable. Reconnect to answer this request.
         </div>
       ) : null}
-      {!isChooser && (!allowSupported || !denySupported) ? (
+      {!isQuestion && !isChooser && (!allowSupported || !denySupported) ? (
         <div className="permission-card-unavailable" role="status">
           {!allowSupported ? "Allow once is not offered for this request." : null}
           {!allowSupported && !denySupported ? " " : null}
           {!denySupported ? "Deny is not offered for this request." : null}
+        </div>
+      ) : null}
+      {isQuestion && !resolvedByCreator ? (
+        <div className="permission-card-questions">
+          {askedQuestions.map((question, questionIndex) => (
+            <fieldset key={questionIndex} className="permission-card-question">
+              <legend className="permission-card-question-text">{question.question}</legend>
+              {question.options.map((option, optionIndex) => {
+                const checked = pickedOptions.get(questionIndex)?.has(optionIndex) ?? false;
+                return (
+                  <label key={optionIndex} className="permission-card-question-option">
+                    <input
+                      type={question.multiSelect ? "checkbox" : "radio"}
+                      name={`permission-question-${request.toolCallId}-${questionIndex}`}
+                      checked={checked}
+                      onChange={() => toggleQuestionOption(questionIndex, optionIndex)}
+                      disabled={permission !== "waiting" || !daemonReachable}
+                    />
+                    <span className="permission-card-question-label">{option.label}</span>
+                    {option.description ? (
+                      <span className="permission-card-question-description">
+                        {option.description}
+                      </span>
+                    ) : null}
+                  </label>
+                );
+              })}
+              <label className="permission-card-question-other">
+                <span className="permission-card-question-label">Other</span>
+                <input
+                  type="text"
+                  value={questionOther(questionIndex)}
+                  onChange={(event) => setQuestionOther(questionIndex, event.target.value)}
+                  placeholder="Type another answer…"
+                  disabled={permission !== "waiting" || !daemonReachable}
+                />
+              </label>
+            </fieldset>
+          ))}
         </div>
       ) : null}
       {chosenName ? <div className="permission-card-choice">Chosen: {chosenName}</div> : null}
@@ -541,6 +691,27 @@ export function PermissionCard({
           >
             Clear
           </button>
+        ) : isQuestion ? (
+          // A question is submitted whole, or dismissed: one Submit for
+          // every group, and a Dismiss that refuses without naming anything.
+          <>
+            <button
+              type="button"
+              className="permission-card-secondary-action permission-card-deny-action"
+              onClick={() => void respond("deny")}
+              disabled={permission !== "waiting" || !daemonReachable}
+            >
+              Dismiss
+            </button>
+            <button
+              type="button"
+              className="permission-card-primary-action"
+              onClick={submitQuestions}
+              disabled={permission !== "waiting" || !daemonReachable || !allQuestionsAnswered}
+            >
+              Submit
+            </button>
+          </>
         ) : isChooser ? (
           <>
             {!hasRejectOption ? (

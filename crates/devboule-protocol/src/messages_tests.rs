@@ -1337,6 +1337,7 @@ fn create_send_permission_carry_idempotency_key() {
         request_id: "r1".to_string(),
         outcome: PermissionOutcome::AllowOnce,
         option_id: Some("allow-once".to_string()),
+        answer: None,
         idempotency_key: Some("k3".to_string()),
     };
     assert_eq!(create.idempotency_key(), Some("k1"));
@@ -1396,6 +1397,7 @@ fn legacy_permission_frames_without_option_fields_still_parse() {
             request_id: "r1".to_string(),
             outcome: PermissionOutcome::AllowOnce,
             option_id: None,
+            answer: None,
             idempotency_key: None,
         }
     );

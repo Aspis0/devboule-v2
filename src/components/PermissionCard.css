@@ -231,3 +231,55 @@
   background: var(--surface-muted);
   border-color: var(--silence);
 }
+
+/* A model's question: one group per asked item, in the card's own measure.
+   The fieldset draws no box of its own — the card is the box — so the groups
+   read as rows of the same request, not as nested cards. */
+.permission-card-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 11px 6px 25px;
+}
+
+.permission-card-question {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.permission-card-question-text {
+  padding: 0 0 4px;
+  color: var(--ink);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.permission-card-question-option,
+.permission-card-question-other {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 2px 0;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.permission-card-question-label {
+  flex: none;
+}
+
+.permission-card-question-description {
+  color: var(--ink-soft);
+}
+
+.permission-card-question-other input[type="text"] {
+  min-width: 0;
+  flex: 1;
+  padding: 3px 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  font: inherit;
+}

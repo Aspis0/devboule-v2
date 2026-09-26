@@ -2874,6 +2874,8 @@ fn permission_request_from_ui(value: &Value, request_id: &str) -> SessionEvent {
             },
         ],
         is_chooser: None,
+        kind: None,
+        questions: None,
         // A placeholder the daemon overwrites with the session's stored origin
         // before the request leaves for a subscriber.
         origin: devboule_protocol::SessionOrigin::unknown(),

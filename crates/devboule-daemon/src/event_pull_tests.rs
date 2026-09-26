@@ -232,6 +232,8 @@ fn a_published_permission_request_carries_the_sessions_stored_origin() {
                 env: None,
                 options: Vec::new(),
                 is_chooser: None,
+                kind: None,
+                questions: None,
                 origin: devboule_protocol::SessionOrigin::unknown(),
                 create_agent: None,
             },

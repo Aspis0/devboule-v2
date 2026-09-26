@@ -373,8 +373,13 @@ pub(super) fn dispatch_session(
             request_id,
             outcome,
             option_id,
+            answer,
             idempotency_key,
         } => {
+            // The fingerprint keys the idempotent reply: outcome plus the
+            // picked option. The free-text `answer` is deliberately not
+            // part of it — keying (or logging) the person's own words
+            // would persist them outside the provider reply.
             let fingerprint = format!(
                 "permission:{session_id}:{request_id}:{outcome:?}:{}",
                 option_id.as_deref().unwrap_or("")
@@ -390,6 +395,7 @@ pub(super) fn dispatch_session(
                     request_id: &request_id,
                     outcome,
                     option_id: option_id.as_deref(),
+                    answer: answer.as_deref(),
                 },
                 subscription_id,
                 conn,
