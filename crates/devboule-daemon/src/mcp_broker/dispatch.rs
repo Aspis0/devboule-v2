@@ -137,9 +137,9 @@ pub(super) fn handle_rpc(
             } else if tool_name == Some(crate::provider_catalog::MCP_CREATE_WORKSPACE_TOOL) {
                 tools::workspaces::create(state, broker, caller, registration, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_LIST_TERMINALS_TOOL) {
-                tools::terminals::list(state, registration, id)
+                tools::terminals::list(state, registration, caller, id)
             } else if tool_name == Some(crate::provider_catalog::MCP_CAPTURE_TERMINAL_TOOL) {
-                tools::terminals::capture(state, registration, id, message)
+                tools::terminals::capture(state, registration, caller, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {

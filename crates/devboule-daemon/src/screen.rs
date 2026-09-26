@@ -21,6 +21,12 @@ const MIN_SCREEN_LINES: usize = 1;
 /// Maximum title length retained in screen state and emitted by the presenter.
 pub const MAX_TITLE_CHARS: usize = 256;
 
+/// Columns one plain-text row may carry, whatever the window's width is.
+///
+/// A window can be resized to thousands of columns, so the renderer bounds a
+/// row instead of trusting the terminal's size; a row beyond this is cut.
+const MAX_PLAIN_COLUMNS: usize = 1024;
+
 #[derive(Default)]
 struct PendingEvents {
     pty_writes: VecDeque<String>,
@@ -255,17 +261,20 @@ impl ScreenSnapshot {
         self.cells.get(row * usize::from(self.cols) + col)
     }
 
-    /// The visible grid as plain text: one right-trimmed string per row, in
-    /// top-to-bottom order.
+    /// The visible grid from `first_row` down as plain text: one
+    /// right-trimmed string per row.
     ///
-    /// No escape sequence can leave here — a cell holds a character rather
-    /// than a byte stream, and a control character inside a cell is replaced
-    /// instead of passed through — and the spacer cell behind a wide glyph
-    /// is skipped, so one glyph never becomes two characters.
-    pub fn plain_rows(&self) -> Vec<String> {
-        let cols = usize::from(self.cols);
-        let mut rows = Vec::with_capacity(usize::from(self.rows));
-        for row in 0..usize::from(self.rows) {
+    /// Only the rows a caller asked for are built, and no row outgrows
+    /// `MAX_PLAIN_COLUMNS`, so the work is bounded by the request rather
+    /// than by the window's size. No escape sequence can leave here — a cell
+    /// holds a character rather than a byte stream, and a control character
+    /// inside a cell is replaced instead of passed through — and the spacer
+    /// cell behind a wide glyph is skipped, so one glyph never becomes two
+    /// characters.
+    pub fn plain_rows_from(&self, first_row: usize) -> Vec<String> {
+        let cols = usize::from(self.cols).min(MAX_PLAIN_COLUMNS);
+        let mut rows = Vec::with_capacity(usize::from(self.rows).saturating_sub(first_row));
+        for row in first_row..usize::from(self.rows) {
             let mut text = String::with_capacity(cols);
             let mut col = 0;
             while col < cols {

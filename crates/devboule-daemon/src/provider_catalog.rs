@@ -287,11 +287,11 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_LIST_TERMINALS_TOOL,
-        "Lists the terminal sessions in the calling session's own workspace: each one's id, title, working directory, the session that created it, and whether its process is still running. Terminals only — never agent sessions — and only those of the calling session's own user inside the calling session's own workspace; a terminal of another workspace or another owner is not in the list. The workspace comes from the calling session's row, never from an argument, so a session started outside any workspace is refused rather than shown every workspace-less terminal of its user.",
+        "Lists the running terminals of the calling session's own workspace: each one's id, title, working directory and the session that created it. Any terminal of that workspace is listed - the person's own included, with no confirmation, which is the owner's decision for these reads - and only while its process runs: a terminal that has exited keeps its history in the journal and is not listed, because devboule_capture_terminal refuses it too. Terminals only - never agent sessions - and only within the calling session's own user, origin and workspace; the workspace comes from the calling session's row, never from an argument, so a session started outside any workspace is refused rather than shown every workspace-less terminal of its user.",
     ),
     (
         MCP_CAPTURE_TERMINAL_TOOL,
-        "Reads the visible screen of one terminal as plain text: at most the number of lines you ask for, counted from the bottom of the grid (default 40, at most 200), with escape sequences stripped. Never the scrollback — the terminal's visible grid only, since the journal is the durable transcript. The terminal must be one of the calling session's own user inside the calling session's own workspace, and it must still be running; any other id — an agent session, another owner's terminal, another workspace's terminal, or one that has exited — answers 'No session with that id.', which never says which of them the id named.",
+        "Reads the visible screen of one terminal as plain text. lines must be an integer between 1 and 200 (default 40) and counts from the bottom of the grid; any other value is refused rather than rewritten, and truncated says the grid was taller than the window you asked for. Escape sequences are stripped and the scrollback is never delivered - the visible grid only, since the journal is the durable transcript. Any terminal of the caller's own workspace may be read, the person's own included and with no confirmation, which is the owner's decision for these reads. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named.",
     ),
 ];
 
@@ -466,7 +466,9 @@ pub const MCP_LIST_TERMINALS_TOOL: &str = "devboule_list_terminals";
 /// metadata reads. Scope is the caller's owner and workspace from the rows,
 /// plus `kind == Terminal`: an agent session's id answers "not found",
 /// because a screen behind that id belongs to a provider's stdin, not to a
-/// terminal.
+/// terminal. Any terminal of that workspace is readable, the person's own
+/// included — the owner's decision, no card — so the scope is the workspace
+/// and not the creator.
 pub const MCP_CAPTURE_TERMINAL_TOOL: &str = "devboule_capture_terminal";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
@@ -666,7 +668,7 @@ pub(crate) fn terminal_capture_input_schema() -> serde_json::Value {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 200,
-                "description": "How many of the grid's bottom lines to return. Default 40, max 200."
+                "description": "How many of the grid's bottom lines to return, 1 to 200. Default 40."
             }
         },
         "required": ["terminalId"],

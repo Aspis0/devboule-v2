@@ -929,6 +929,10 @@ impl SessionRuntime {
     /// speaks structured messages instead of a screen. This is the one read
     /// of the screen outside an attachment, and like every snapshot the
     /// daemon sends it carries the visible grid only, never scrollback.
+    ///
+    /// The cells are copied while the stream lock is held and the copy is
+    /// what leaves here, so a caller formats the snapshot and never the live
+    /// grid under the lock.
     pub(crate) fn screen_snapshot(&self) -> Option<ScreenSnapshot> {
         let stream = self.lock_stream().ok()?;
         stream.screen.as_ref().map(Screen::snapshot)

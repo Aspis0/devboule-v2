@@ -1365,20 +1365,6 @@ impl super::SessionRegistry {
         };
         self.workspace_cwd(workspace_id).map(Some)
     }
-
-    /// The workspace id the calling session's own row names, for a read
-    /// scoped to the caller's project (`devboule_list_terminals` and its
-    /// screen read). Same door and same answer as
-    /// [`Self::session_workspace_root`]: a session whose row carries no
-    /// workspace answers `None`, so the caller refuses instead of reading
-    /// every workspace-less session's terminals.
-    pub(crate) fn session_workspace_id(
-        &self,
-        session_id: &str,
-        owner: &OwnerId,
-    ) -> Result<Option<String>, WireError> {
-        Ok(self.agent_creator(session_id, owner)?.workspace_id)
-    }
 }
 
 /// What one admission answered: the slot it took, and whether the message went

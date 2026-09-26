@@ -2,10 +2,12 @@
 //! share, the screen reply, and the two gates that can still take them away.
 
 use super::dispatch::{enabled_tool_list, tool_call_refusal};
-use super::tests::{http_request, owner, response_json};
+use super::tests::{http_request, owner, peer_row, response_json};
 use super::*;
+use crate::peer_policy::PeerRole;
 use crate::provider_catalog::{ToolOverlay, MCP_CAPTURE_TERMINAL_TOOL, MCP_LIST_TERMINALS_TOOL};
 use crate::session::ConnHandle;
+use devboule_protocol::SessionOrigin;
 
 /// One `tools/call` against the loopback broker, answered already parsed.
 fn call(url: &str, token: &str, id: u64, name: &str, arguments: &str) -> Value {
@@ -119,17 +121,19 @@ fn list_terminals_serves_the_callers_workspace_and_nothing_else() {
         .collect();
     assert_eq!(
         ids,
-        vec!["term-exited", "term-live"],
-        "the caller's own workspace's terminals only — no agent session, \
-         no other workspace, no other owner"
+        vec!["term-live"],
+        "the caller's own workspace's running terminals only — no agent session, \
+         no other workspace, no other owner, and no terminal whose process has \
+         gone: capture refuses those, so the roster must not name them either"
     );
-    let live = &terminals[1];
-    assert_eq!(live["live"], json!(true));
+    let live = &terminals[0];
     assert_eq!(live["title"], json!("Terminal"));
     assert_eq!(live["cwd"], json!("/tmp/devboule-terminal"));
     assert_eq!(live["createdBy"], json!(null));
-    // An exited terminal keeps its place in the roster, honestly labelled.
-    assert_eq!(terminals[0]["live"], json!(false));
+    assert!(
+        live.get("live").is_none(),
+        "only running terminals are listed, so the roster carries no live flag: {live}"
+    );
 
     drop(guard);
     drop(server);
@@ -223,6 +227,11 @@ fn capture_terminal_answers_the_visible_grid_without_escape_sequences() {
         total,
         "the default window is wider than the grid, so the whole grid answers"
     );
+    assert_eq!(
+        document["truncated"],
+        json!(false),
+        "nothing was cut: the whole grid fits the window"
+    );
     assert_eq!(lines[0], json!("ready red"), "styled text, no escape bytes");
     assert_eq!(lines[1], json!("second line"));
     for line in lines {
@@ -304,29 +313,36 @@ fn capture_terminal_caps_the_window_from_the_bottom() {
             .iter()
             .map(|line| line.as_str().expect("line").to_string())
             .collect();
-        (lines, document["totalLines"].as_u64().expect("totalLines"))
+        (
+            lines,
+            document["totalLines"].as_u64().expect("totalLines"),
+            document["truncated"].as_bool().expect("truncated"),
+        )
     };
 
     // The default window is 40 lines, taken from the bottom of a 250-row
     // grid that shows L10..L259.
-    let (lines, total) = window(1, r#"{"terminalId":"term-tall"}"#);
+    let (lines, total, truncated) = window(1, r#"{"terminalId":"term-tall"}"#);
     assert_eq!(total, 250);
     assert_eq!(lines.len(), 40);
     assert_eq!(lines.first().map(String::as_str), Some("L220"));
     assert_eq!(lines.last().map(String::as_str), Some("L259"));
+    assert!(
+        truncated,
+        "the grid is taller than the window: {total} rows"
+    );
 
-    let (lines, total) = window(2, r#"{"terminalId":"term-tall","lines":3}"#);
+    let (lines, total, truncated) = window(2, r#"{"terminalId":"term-tall","lines":3}"#);
     assert_eq!(total, 250);
     assert_eq!(lines, vec!["L257", "L258", "L259"], "the bottom window");
+    assert!(truncated, "three of {total} rows is a cut");
 
-    // Over the hard maximum: clamped to 200 rather than refused, and 0 is
-    // clamped up to one line. Both are the range the schema states.
-    let (lines, total) = window(3, r#"{"terminalId":"term-tall","lines":5000}"#);
+    // The top of the published range answers; there is no silent rewrite.
+    let (lines, total, truncated) = window(3, r#"{"terminalId":"term-tall","lines":200}"#);
     assert_eq!(total, 250);
     assert_eq!(lines.len(), 200);
     assert_eq!(lines.first().map(String::as_str), Some("L60"));
-    let (lines, _) = window(4, r#"{"terminalId":"term-tall","lines":0}"#);
-    assert_eq!(lines, vec!["L259"]);
+    assert!(truncated);
 
     // The argument set is closed, out of the published schema itself.
     let unknown = call(
@@ -512,6 +528,436 @@ fn a_stored_policy_can_take_the_terminal_tools_away() {
             "{name}"
         );
         assert_eq!(tool_call_refusal(None, &ToolOverlay::NONE, name), None);
+    }
+
+    drop(guard);
+    drop(server);
+}
+
+#[test]
+fn capture_terminal_refuses_lines_outside_the_published_range() {
+    // The schema's minimum and maximum and the parser are one rule: an
+    // integer outside the range is refused with that range, and a value that
+    // is not an integer says so. Neither is silently rewritten into something
+    // the caller did not ask for.
+    let state = ServerState::new("mcp-term-lines".to_string());
+    let owner = owner("mcp-term-lines-user", "mcp-term-lines-client");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "lines-caller",
+        owner.clone(),
+        "ws-a",
+    );
+    crate::session::insert_test_terminal(
+        &state.sessions,
+        "term-lines",
+        owner.clone(),
+        Some("ws-a".to_string()),
+    );
+
+    let guard = state
+        .mcp
+        .register("lines-caller", &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token("lines-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+
+    // The published bounds and the refusal carry the same two numbers.
+    let listed = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+    let listed_body = response_json(&listed);
+    let served = listed_body["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == MCP_CAPTURE_TERMINAL_TOOL)
+        .expect("the screen read is served");
+    assert_eq!(
+        served["inputSchema"]["properties"]["lines"]["minimum"],
+        json!(1)
+    );
+    assert_eq!(
+        served["inputSchema"]["properties"]["lines"]["maximum"],
+        json!(200)
+    );
+
+    for (id, arguments, sentence) in [
+        (
+            2,
+            r#"{"terminalId":"term-lines","lines":0}"#,
+            "lines must be between 1 and 200",
+        ),
+        (
+            3,
+            r#"{"terminalId":"term-lines","lines":-1}"#,
+            "lines must be between 1 and 200",
+        ),
+        (
+            4,
+            r#"{"terminalId":"term-lines","lines":5000}"#,
+            "lines must be between 1 and 200",
+        ),
+        (
+            5,
+            r#"{"terminalId":"term-lines","lines":3.5}"#,
+            "lines must be an integer",
+        ),
+        (
+            6,
+            r#"{"terminalId":"term-lines","lines":"3"}"#,
+            "lines must be an integer",
+        ),
+    ] {
+        let body = call(
+            &state.mcp.url,
+            &token,
+            id,
+            MCP_CAPTURE_TERMINAL_TOOL,
+            arguments,
+        );
+        assert_eq!(
+            body.pointer("/error/code"),
+            Some(&json!(-32602)),
+            "{arguments}: {body}"
+        );
+        assert_eq!(
+            body.pointer("/error/message"),
+            Some(&json!(sentence)),
+            "{arguments}: {body}"
+        );
+    }
+
+    // Both ends of the range the schema states still answer.
+    for (id, arguments) in [
+        (7, r#"{"terminalId":"term-lines","lines":1}"#),
+        (8, r#"{"terminalId":"term-lines","lines":200}"#),
+    ] {
+        let body = call(
+            &state.mcp.url,
+            &token,
+            id,
+            MCP_CAPTURE_TERMINAL_TOOL,
+            arguments,
+        );
+        assert_eq!(
+            body.pointer("/result/isError"),
+            Some(&json!(false)),
+            "{arguments}: {body}"
+        );
+    }
+
+    drop(guard);
+    drop(server);
+}
+
+#[test]
+fn a_daemon_origin_caller_reads_only_terminals_of_its_own_origin() {
+    // The origin rule, not the owner name: every session below shares one
+    // owner user, so the owner filter alone would hand a device paired as
+    // `Daemon` the person's own terminal. The door decides, and it grants as
+    // well as refuses — the terminal that device created here stays readable.
+    let state = ServerState::new("mcp-term-daemon".to_string());
+    let owner = owner("mcp-term-daemon-user", "mcp-term-daemon-client");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "daemon-caller",
+        owner.clone(),
+        "ws-a",
+    );
+    state.sessions.set_test_origin(
+        "daemon-caller",
+        SessionOrigin::peer("device-d", PeerRole::Daemon),
+    );
+    crate::session::insert_test_terminal(
+        &state.sessions,
+        "term-human",
+        owner.clone(),
+        Some("ws-a".to_string()),
+    );
+    crate::session::insert_test_terminal(
+        &state.sessions,
+        "term-own",
+        owner.clone(),
+        Some("ws-a".to_string()),
+    );
+    state.sessions.set_test_origin(
+        "term-own",
+        SessionOrigin::peer("device-d", PeerRole::Daemon),
+    );
+    // The door lets the tool through on the way in: both reads are judged
+    // against this device's own capabilities first.
+    state
+        .peer_upsert(peer_row("device-d", &["view", "admin"]))
+        .expect("store a peer");
+
+    let guard = state
+        .mcp
+        .register("daemon-caller", &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token("daemon-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+
+    let listed = call(&state.mcp.url, &token, 1, MCP_LIST_TERMINALS_TOOL, "{}");
+    assert_eq!(
+        listed.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{listed}"
+    );
+    let terminals = listed["result"]["structuredContent"]["terminals"]
+        .as_array()
+        .expect("terminals");
+    let ids: Vec<&str> = terminals
+        .iter()
+        .map(|terminal| terminal["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["term-own"],
+        "only the terminals this device created here — never the person's: {ids:?}"
+    );
+
+    // The person's terminal is as unknown to the screen read as an id the
+    // daemon never saw, and the device's own terminal still answers.
+    let human = call(
+        &state.mcp.url,
+        &token,
+        2,
+        MCP_CAPTURE_TERMINAL_TOOL,
+        r#"{"terminalId":"term-human"}"#,
+    );
+    assert_eq!(refusal(&human), "No session with that id.");
+    let own = call(
+        &state.mcp.url,
+        &token,
+        3,
+        MCP_CAPTURE_TERMINAL_TOOL,
+        r#"{"terminalId":"term-own"}"#,
+    );
+    assert_eq!(
+        own.pointer("/result/isError"),
+        Some(&json!(false)),
+        "its own terminal stays readable: {own}"
+    );
+
+    drop(guard);
+    drop(server);
+}
+
+#[test]
+fn a_peer_caller_without_a_paired_user_is_refused() {
+    // A `Client` peer speaks for the user that paired it, and a row that
+    // never recorded that user speaks for nobody: the caller's own row is
+    // refused at the door, so every read behind it is out of reach.
+    let state = ServerState::new("mcp-term-peer".to_string());
+    let owner = owner("mcp-term-peer-user", "mcp-term-peer-client");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "peer-caller",
+        owner.clone(),
+        "ws-a",
+    );
+    state.sessions.set_test_origin(
+        "peer-caller",
+        SessionOrigin::peer("device-p", PeerRole::Client),
+    );
+    crate::session::insert_test_terminal(
+        &state.sessions,
+        "term-peer",
+        owner.clone(),
+        Some("ws-a".to_string()),
+    );
+    state
+        .peer_upsert(peer_row("device-p", &["view", "admin"]))
+        .expect("store a peer");
+
+    let guard = state
+        .mcp
+        .register("peer-caller", &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token("peer-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+
+    let listed = call(&state.mcp.url, &token, 1, MCP_LIST_TERMINALS_TOOL, "{}");
+    assert_eq!(
+        listed.pointer("/result/isError"),
+        Some(&json!(true)),
+        "the roster is refused before it names anything: {listed}"
+    );
+    let captured = call(
+        &state.mcp.url,
+        &token,
+        2,
+        MCP_CAPTURE_TERMINAL_TOOL,
+        r#"{"terminalId":"term-peer"}"#,
+    );
+    assert_eq!(
+        captured.pointer("/result/isError"),
+        Some(&json!(true)),
+        "and so is the screen read: {captured}"
+    );
+
+    drop(guard);
+    drop(server);
+}
+
+#[test]
+fn capture_terminal_cuts_a_row_to_the_renderer_bound() {
+    // A window can be resized to thousands of columns, so the renderer caps
+    // a row instead of trusting the terminal's size: what one reply costs is
+    // decided by the request, never by the window.
+    let state = ServerState::new("mcp-term-wide".to_string());
+    let owner = owner("mcp-term-wide-user", "mcp-term-wide-client");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "wide-caller",
+        owner.clone(),
+        "ws-a",
+    );
+    let runtime = crate::session::insert_test_terminal(
+        &state.sessions,
+        "term-wide",
+        owner.clone(),
+        Some("ws-a".to_string()),
+    );
+    let conn = ConnHandle::new(8);
+    state
+        .sessions
+        .attach_with_subscription("term-wide", 102, None, &conn, &owner, false)
+        .expect("attach");
+    state
+        .sessions
+        .claim_resize_with_subscription("term-wide", 102, &owner, &conn)
+        .expect("resize claim");
+    state
+        .sessions
+        .resize_with_subscription("term-wide", 102, 2000, 10, &owner, &conn)
+        .expect("resize");
+    runtime.publish_output(&"x".repeat(2000));
+
+    let guard = state
+        .mcp
+        .register("wide-caller", &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token("wide-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+
+    let body = call(
+        &state.mcp.url,
+        &token,
+        1,
+        MCP_CAPTURE_TERMINAL_TOOL,
+        r#"{"terminalId":"term-wide","lines":10}"#,
+    );
+    assert_eq!(
+        body.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{body}"
+    );
+    let document = &body["result"]["structuredContent"];
+    assert_eq!(document["totalLines"], json!(10));
+    let rows = document["lines"].as_array().expect("lines");
+    let row = rows[0].as_str().expect("row");
+    assert_eq!(
+        row.len(),
+        1024,
+        "one row stops at the renderer's bound instead of shipping 2000 columns"
+    );
+    assert!(
+        row.chars().all(|character| character == 'x'),
+        "the row is what the terminal held, cut and not rewritten"
+    );
+
+    drop(guard);
+    drop(server);
+}
+
+#[test]
+fn every_terminal_read_is_audited() {
+    // A read of somebody's screen leaves a row either way — which session
+    // read which terminal, and whether it was granted — so the journal can
+    // answer "who saw it" after the fact.
+    let state = ServerState::new("mcp-term-audit".to_string());
+    let owner = owner("mcp-term-audit-user", "mcp-term-audit-client");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "audit-caller",
+        owner.clone(),
+        "ws-a",
+    );
+    crate::session::insert_test_terminal(
+        &state.sessions,
+        "term-audit",
+        owner.clone(),
+        Some("ws-a".to_string()),
+    );
+
+    let guard = state
+        .mcp
+        .register("audit-caller", &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token("audit-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+
+    let granted = call(
+        &state.mcp.url,
+        &token,
+        1,
+        MCP_CAPTURE_TERMINAL_TOOL,
+        r#"{"terminalId":"term-audit"}"#,
+    );
+    assert_eq!(
+        granted.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{granted}"
+    );
+    let listed = call(&state.mcp.url, &token, 2, MCP_LIST_TERMINALS_TOOL, "{}");
+    assert_eq!(
+        listed.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{listed}"
+    );
+    let refused = call(
+        &state.mcp.url,
+        &token,
+        3,
+        MCP_CAPTURE_TERMINAL_TOOL,
+        r#"{"terminalId":"term-audit-gone"}"#,
+    );
+    assert_eq!(
+        refused.pointer("/result/isError"),
+        Some(&json!(true)),
+        "{refused}"
+    );
+
+    let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+    let connection =
+        rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+    let mut statement = connection
+        .prepare("SELECT action, session_id, outcome FROM audit ORDER BY id")
+        .expect("prepare");
+    let rows: Vec<(String, Option<String>, String)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("query")
+        .map(Result::unwrap)
+        .collect();
+    let caller = Some("audit-caller".to_string());
+    for (action, outcome) in [
+        (MCP_CAPTURE_TERMINAL_TOOL, "ok"),
+        (MCP_LIST_TERMINALS_TOOL, "ok"),
+        (MCP_CAPTURE_TERMINAL_TOOL, "denied"),
+    ] {
+        assert!(
+            rows.contains(&(action.to_string(), caller.clone(), outcome.to_string())),
+            "{action} as {outcome} is audited with its actor session: {rows:?}"
+        );
     }
 
     drop(guard);

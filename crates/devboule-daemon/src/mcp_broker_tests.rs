@@ -2088,7 +2088,7 @@ fn a_move_through_the_tool_is_audited_with_its_actor() {
 // ------------------------------------------------------------------
 
 /// A `peers` row the door's capability reads can see.
-fn peer_row(device_id: &str, caps: &[&str]) -> crate::journal::PeerRecord {
+pub(super) fn peer_row(device_id: &str, caps: &[&str]) -> crate::journal::PeerRecord {
     crate::journal::PeerRecord {
         device_id: device_id.to_string(),
         display_name: "Peer".to_string(),
