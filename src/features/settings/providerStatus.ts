@@ -1,0 +1,106 @@
+import type { ProviderInfo, ToolPolicyEntry } from "../../types/ipc";
+
+/** Status label for one provider, derived from the daemon's measured authentication. */
+export function providerStatusText(provider: ProviderInfo): string {
+  const viaNpx = provider.origin === "npx-wrapper" ? "available via npx" : "installed";
+  if (provider.authentication === "ok") return `${viaNpx} · last start ok`;
+  if (provider.authentication.startsWith("failed:")) {
+    const reason = provider.authentication.slice("failed:".length).trim();
+    return reason.length > 0 ? `start failed — ${reason}` : "start failed";
+  }
+  return `${viaNpx} · authentication unknown`;
+}
+
+/**
+ * Version segments for one provider card, in display order, or an empty list
+ * when nothing is known. The agent segment is only kept when it disagrees with
+ * the installed CLI version (or none is installed); otherwise it is noise.
+ * Each segment carries its own tooltip; the render maps without re-deriving.
+ */
+interface ProviderVersionSegment {
+  text: string;
+  /** Hover explanation; absent when the text speaks for itself. */
+  title?: string;
+}
+
+const AGENT_VERSION_TITLE =
+  "Version the running agent adapter reported during its last live handshake; it may differ from the installed CLI version.";
+
+const LATEST_VERSION_TITLE =
+  "Latest known version from the last registry check; Refresh revalidates.";
+
+export function providerVersionSegments(provider: ProviderInfo): ProviderVersionSegment[] {
+  // The daemon may send empty strings in place of absent versions; treat both
+  // as "unknown" so "" never half-triggers a branch.
+  const installed = provider.installedVersion || undefined;
+  const latest = provider.latestVersion || undefined;
+  const agent = provider.agentVersion || undefined;
+  const segments: ProviderVersionSegment[] = [];
+  if (installed) {
+    segments.push({ text: `v${installed}` });
+    if (latest && latest !== installed) {
+      segments.push({ text: `v${latest} available`, title: LATEST_VERSION_TITLE });
+    } else if (latest) {
+      segments.push({ text: "up to date", title: LATEST_VERSION_TITLE });
+    }
+  } else if (latest) {
+    segments.push({
+      text:
+        provider.installChannel === "npx-registry" ? `v${latest} via npx` : `v${latest} available`,
+      title: LATEST_VERSION_TITLE,
+    });
+  }
+  if (agent && agent !== installed) {
+    segments.push({ text: `agent reports v${agent}`, title: AGENT_VERSION_TITLE });
+  }
+  return segments;
+}
+
+/**
+ * Update applies only to npm-installed CLIs whose package is known and whose
+ * latest version differs from the installed one.
+ */
+export function providerCanUpdate(provider: ProviderInfo): boolean {
+  if (provider.installChannel !== "npm") return false;
+  if (!provider.npmPackage || !provider.latestVersion) return false;
+  return provider.latestVersion !== provider.installedVersion;
+}
+
+/** Last 500 characters of an npm log; the head is noise for a failed install. */
+export function logTail(log: string): string {
+  return log.length > 500 ? log.slice(-500) : log;
+}
+
+/** The tool the daemon never gates: disabling it would hide the agent roster. */
+export const ALWAYS_ON_TOOL = "devboule_list_agents";
+
+/** One-line reason shown next to the always-on tool's disabled switch. */
+export const ALWAYS_ON_REASON = "Always on: sessions need the agent roster.";
+
+/**
+ * The handshake capability that gates every tool-policy RPC. It is advertised
+ * beside `devices`, and it is deliberately spelled exactly like the daemon's
+ * own name for it. A daemon that does not advertise it cannot answer
+ * `tool_policy_get`, so the toggles are not drawn and no request is sent.
+ */
+export const TOOL_POLICY_CAPABILITY = "tool_policy";
+
+/**
+ * What one provider's toggles read from a stored row. `undefined` is the
+ * same as enabled: `ToolPolicyGet` returns stored rows only, so a provider
+ * with no row is enabled by default — never an error, never "unknown".
+ */
+export function toolPolicyFor(
+  providerId: string,
+  policies: readonly ToolPolicyEntry[] | null,
+): { enabled: boolean; disabledTools: readonly string[] } {
+  const row = policies?.find((entry) => entry.providerId === providerId);
+  if (row === undefined) return { enabled: true, disabledTools: [] };
+  return {
+    enabled: row.enabled !== false,
+    // A stored row that names the always-on tool is stale daemon data:
+    // the daemon never gates it, so the panel drops it on read and never
+    // sends it back (persist strips again as the wire choke point).
+    disabledTools: (row.disabledTools ?? []).filter((name) => name !== ALWAYS_ON_TOOL),
+  };
+}
