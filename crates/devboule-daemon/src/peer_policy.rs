@@ -541,9 +541,10 @@ pub enum McpToolWire {
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
-        MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
-        MCP_LIST_PROFILES_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL,
-        MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
+        MCP_CREATE_WORKSPACE_TOOL, MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_LIST_DEVICES_TOOL,
+        MCP_LIST_PEER_AGENTS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_LIST_WORKSPACES_TOOL,
+        MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
+        MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
         Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
@@ -675,6 +676,25 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         Some(McpToolWire::Judged(vec![ClientMessage::WorkspacesList {
             id: 0,
             project_id: String::new(),
+        }]))
+    } else if tool == MCP_LIST_WORKSPACES_TOOL {
+        // The workspace inventory read of the caller's own project: judged as
+        // the wire's own inventory read, under the administrative capability.
+        // The scope comes from the caller's session row, never from an
+        // argument, so the capability set alone decides here.
+        Some(McpToolWire::Judged(vec![ClientMessage::WorkspacesList {
+            id: 0,
+            project_id: String::new(),
+        }]))
+    } else if tool == MCP_CREATE_WORKSPACE_TOOL {
+        // The workspace write: judged as the wire's own `WorkspaceCreate`,
+        // which rides the administrative capability — a device the owner
+        // granted the whole surface reaches it, one without is refused.
+        Some(McpToolWire::Judged(vec![ClientMessage::WorkspaceCreate {
+            id: 0,
+            project_id: String::new(),
+            isolation: devboule_protocol::WorkspaceIsolation::Local,
+            branch: None,
         }]))
     } else if tool == MCP_ORACLE_SEARCH_TOOL {
         // The semantic search ships source text — snippets, paths, line

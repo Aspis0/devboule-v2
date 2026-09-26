@@ -302,6 +302,7 @@ pub(crate) struct McpBroker {
     url: String,
     listener: Mutex<Option<TcpListener>>,
     sessions: Mutex<SessionIndex>,
+    pub(in crate::mcp_broker) write_gates: tools::first_use::FirstUseGates,
     stop: Arc<AtomicBool>,
     active_connections: AtomicUsize,
 }
@@ -322,6 +323,7 @@ impl McpBroker {
             }),
             stop: Arc::new(AtomicBool::new(false)),
             active_connections: AtomicUsize::new(0),
+            write_gates: tools::first_use::FirstUseGates::default(),
         })
     }
 
@@ -584,6 +586,7 @@ impl McpBroker {
     }
 
     fn cleanup_session(&self, session_id: &str) {
+        self.forget_first_use(session_id);
         let registration = self.sessions.lock().ok().and_then(|mut sessions| {
             let registration = sessions.by_session.remove(session_id)?;
             sessions.by_bearer.remove(&registration.bearer);
@@ -595,6 +598,7 @@ impl McpBroker {
     }
 
     fn remove_if_current(&self, session_id: &str, bearer: &str, claude_config_path: Option<&Path>) {
+        self.forget_first_use(session_id);
         let removed = self.sessions.lock().ok().and_then(|mut sessions| {
             if sessions.by_bearer.get(bearer).map(String::as_str) != Some(session_id) {
                 return None;

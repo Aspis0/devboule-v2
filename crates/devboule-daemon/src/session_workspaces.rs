@@ -59,6 +59,16 @@ impl super::SessionRegistry {
         isolation: WorkspaceIsolation,
         branch: Option<String>,
     ) -> Result<Workspace, WireError> {
+        self.workspace_create_titled(project_id, isolation, branch, None)
+    }
+
+    pub(crate) fn workspace_create_titled(
+        &self,
+        project_id: &str,
+        isolation: WorkspaceIsolation,
+        branch: Option<String>,
+        title: Option<&str>,
+    ) -> Result<Workspace, WireError> {
         match isolation {
             WorkspaceIsolation::Local => {
                 if branch.is_some() {
@@ -67,18 +77,67 @@ impl super::SessionRegistry {
                         "Local workspaces do not take a branch.",
                     ));
                 }
-                self.create_local_workspace(project_id)
+                self.create_local_workspace(project_id, title)
             }
-            WorkspaceIsolation::Worktree => self.create_worktree_workspace(project_id, branch),
+            WorkspaceIsolation::Worktree => {
+                self.create_worktree_workspace(project_id, branch, title)
+            }
         }
     }
 
-    fn create_local_workspace(&self, project_id: &str) -> Result<Workspace, WireError> {
+    /// The caller's workspace and its project, from the session row and never
+    /// from a request field. A session with no workspace names no project.
+    pub(crate) fn caller_workspace_scope(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+    ) -> Result<(String, String), WireError> {
+        let creator = self.agent_creator(session_id, owner)?;
+        let workspace_id = creator.workspace_id.ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "This session has no workspace, so there is no project to scope this call to.",
+            )
+        })?;
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        let project_id = journal
+            .workspace_get(&workspace_id)
+            .map_err(WireError::from)?
+            .map(|record| record.project_id)
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "This session's workspace is gone from the journal.",
+                )
+            })?;
+        Ok((workspace_id, project_id))
+    }
+
+    /// The project's workspace rows with their branches, which the wire
+    /// `Workspace` drops.
+    pub(crate) fn workspace_records(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<crate::journal::WorkspaceRecord>, WireError> {
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .workspaces_list(project_id)
+            .map_err(WireError::from)
+    }
+
+    fn create_local_workspace(
+        &self,
+        project_id: &str,
+        title: Option<&str>,
+    ) -> Result<Workspace, WireError> {
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let project = self.require_project(journal, project_id)?;
-        let workspace = journal
-            .workspace_create(crate::workspace::local_workspace_record(&project))
-            .map_err(WireError::from)?;
+        let mut record = crate::workspace::local_workspace_record(&project);
+        if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+            record.title = title.to_string();
+        }
+        let workspace = journal.workspace_create(record).map_err(WireError::from)?;
         self.remember_workspace_path(&workspace.id, PathBuf::from(&workspace.path));
         Ok(workspace.to_workspace())
     }
@@ -87,6 +146,7 @@ impl super::SessionRegistry {
         &self,
         project_id: &str,
         branch: Option<String>,
+        title: Option<&str>,
     ) -> Result<Workspace, WireError> {
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let project = self.require_project(journal, project_id)?;
@@ -135,7 +195,10 @@ impl super::SessionRegistry {
             ));
         }
         let checkout = std::fs::canonicalize(&checkout).unwrap_or(checkout);
-        let record = crate::workspace::worktree_workspace_record(&project, &checkout, &branch);
+        let mut record = crate::workspace::worktree_workspace_record(&project, &checkout, &branch);
+        if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+            record.title = title.to_string();
+        }
         let workspace = match journal.workspace_create(record) {
             Ok(workspace) => workspace,
             Err(error) => {

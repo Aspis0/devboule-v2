@@ -1044,6 +1044,25 @@ impl PermissionBroker {
         }
     }
 
+    /// Test-only road into the pending table for suites outside the session
+    /// module: the write gate's own tests answer the card a human answers.
+    #[cfg(test)]
+    pub(crate) fn test_pending_ids(&self) -> Vec<String> {
+        self.pending_ids()
+    }
+
+    /// Answer one pending card with the named option, as a human does.
+    #[cfg(test)]
+    pub(crate) fn test_answer(
+        &self,
+        tool_call_id: &str,
+        outcome: PermissionOutcome,
+        option_id: &str,
+    ) -> Result<(), String> {
+        self.respond_with_option(tool_call_id, outcome, Some(option_id.to_string()))
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) fn pending_len(&self) -> usize {
         self.pending
             .lock()

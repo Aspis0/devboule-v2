@@ -125,6 +125,10 @@ pub(super) fn handle_rpc(
                 tools::graph::importers(state, registration, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL) {
                 tools::graph::oracle_search(state, registration, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_LIST_WORKSPACES_TOOL) {
+                tools::workspaces::list(state, registration, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_CREATE_WORKSPACE_TOOL) {
+                tools::workspaces::create(state, broker, caller, registration, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -218,6 +222,27 @@ pub(super) fn enabled_tool_list(
                     "type": "object",
                     "properties": {"file": {"type": "string"}},
                     "required": ["file"],
+                    "additionalProperties": false,
+                })
+            } else if *name == crate::provider_catalog::MCP_LIST_WORKSPACES_TOOL {
+                // Spelled in its own arm like the device list: a parameterless
+                // tool's schema is a claim about the tool, and nothing walks
+                // this table to keep a silent default true.
+                json!({"type": "object", "properties": {}, "additionalProperties": false})
+            } else if *name == crate::provider_catalog::MCP_CREATE_WORKSPACE_TOOL {
+                // Closed like the create-agent schema it rhymes with: the
+                // project is never a parameter — identity is imposed from the
+                // bearer's registration — and no path is accepted at all.
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "isolation": {"type": "string", "enum": ["local", "worktree"], "description": "The workspace shape: the project folder itself, or a new git worktree beside it."},
+                        "name": {"type": "string", "description": "The workspace title."},
+                        "branch": {"type": "string", "description": "The worktree branch. Worktree only."},
+                        "path": {"type": "string", "description": "Not accepted: workspaces are created inside your project, never at an agent-named directory."},
+                        "projectId": {"type": "string", "description": "Must be your own project, when given."},
+                    },
+                    "required": ["isolation"],
                     "additionalProperties": false,
                 })
             } else if *name == crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL {

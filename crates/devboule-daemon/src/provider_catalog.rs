@@ -265,6 +265,14 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_ORACLE_SEARCH_TOOL,
         "Answers questions about the code of the calling session's own workspace by meaning, not by keyword: the Oracle index built for that folder is searched and the closest chunks come back as citations. query is the question in natural language; limit is how many chunks to return (1 to 10, default 10). Each result carries a repository-relative path, a line range, a narrower focus span when one was scored, the chunk text, a score that is a rank fusion (RRF) rather than a cosine similarity, and whether the chunk was found densely, lexically, or both. The folder searched is the calling session's own workspace, taken from the session's row and never from an argument; a session with no workspace is refused. This tool needs the Devboule desktop app running: the engine, the index and the local models live in the app, so with the app closed the call fails with a sentence that says exactly that. The project-graph tools (devboule_project_neighborhood, devboule_project_imports, devboule_project_importers) do not need the app. Fail-closed: no index, no model, no vectors, or a model still loading each answers with its own reason and the action to take - never an empty result list standing in for a missing fact, and never an answer from another project's index.",
     ),
+    (
+        MCP_LIST_WORKSPACES_TOOL,
+        "Lists the workspaces of the calling session's own project: each workspace's id, name, checkout path, kind and branch. Only the caller's project is ever listed, and the project comes from the session's row, never from an argument.",
+    ),
+    (
+        MCP_CREATE_WORKSPACE_TOOL,
+        "Creates a workspace inside the calling session's own project, as the project folder itself or a new git worktree beside it, and answers the new workspace record. The human is asked to approve workspace writes from this session the first time. branch names the worktree branch and is worktree-only; name sets the workspace title. No path is accepted: the checkout is the project folder or a sibling worktree of it, never an agent-named directory.",
+    ),
 ];
 
 /// The read-only roster tool, and the one name a tool policy can never
@@ -370,6 +378,23 @@ pub const MCP_IMPORTERS_TOOL: &str = "devboule_project_importers";
 /// and the local models live in the app, so the description says so and the
 /// tool's refusal when the app is closed says so too.
 pub const MCP_ORACLE_SEARCH_TOOL: &str = "devboule_oracle_search";
+/// The workspace inventory read: the workspaces of the calling session's own
+/// project, scoped through its session row.
+///
+/// A read like the roster, subject to the provider tool policy like
+/// `devboule_send_message` — a stored policy may take the inventory away,
+/// and taking it away is the safe direction. The sibling checkouts it names
+/// are the caller's own project, so the door judges it as the wire's
+/// workspace inventory read, under the administrative capability.
+pub const MCP_LIST_WORKSPACES_TOOL: &str = "devboule_list_workspaces";
+/// The workspace write: a new checkout inside the calling session's own
+/// project, behind the first-use human card.
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_create_agent`, and denied to the design preset outright:
+/// a design child commissions no checkouts. The door judges it as the wire's
+/// `WorkspaceCreate`, under the administrative capability.
+pub const MCP_CREATE_WORKSPACE_TOOL: &str = "devboule_create_workspace";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
 ///
@@ -830,12 +855,16 @@ impl ToolOverlay {
     pub(crate) const NONE: Self = Self {
         disabled: OverlayNames::Preset(&[]),
     };
-    /// A design child: no `devboule_send_message` and no
-    /// `devboule_create_agent`. It keeps the roster, which is its own bearer's
-    /// read-only view. Depth alone would not stop it (a depth-1 child may
-    /// create), so the deny list is the rule.
+    /// A design child: no `devboule_send_message`, no `devboule_create_agent`
+    /// and no `devboule_create_workspace`. It keeps the roster, which is its
+    /// own bearer's read-only view. Depth alone would not stop it (a depth-1
+    /// child may create), so the deny list is the rule.
     pub(crate) const DESIGN: Self = Self {
-        disabled: OverlayNames::Preset(&[MCP_SEND_MESSAGE_TOOL, MCP_CREATE_AGENT_TOOL]),
+        disabled: OverlayNames::Preset(&[
+            MCP_SEND_MESSAGE_TOOL,
+            MCP_CREATE_AGENT_TOOL,
+            MCP_CREATE_WORKSPACE_TOOL,
+        ]),
     };
 
     /// A profile's overlay: the tools the human's profile denies, by name.

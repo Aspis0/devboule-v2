@@ -184,6 +184,20 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL,
         requires_confirmation: false,
     },
+    // Workspaces: the inventory read of the caller's own project, scoped
+    // through its session row; a peer's read is the wire inventory read
+    // under the administrative capability, judged at the origin door.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_LIST_WORKSPACES_TOOL,
+        requires_confirmation: false,
+    },
+    // Create workspace: consented by the broker's own first-use card, which
+    // carries the project facts; a generic confirm here would be a second
+    // card with none of them.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_CREATE_WORKSPACE_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -234,7 +248,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (fifteen today), closed schemas matching the
+/// `pi.registerTool` per broker tool (seventeen today), closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -624,6 +638,39 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_oracle_search", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_list_workspaces",
+    label: "List Devboule workspaces",
+    description: `Lists the workspaces of the calling session's own project: each workspace's id, name, checkout path, kind and branch. Only the caller's project is ever listed, and the project comes from the session's row, never from an argument.`,
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_toolCallId, _params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_list_workspaces", arguments: {} }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_create_workspace",
+    label: "Create Devboule workspace",
+    description: `Creates a workspace inside the calling session's own project, as the project folder itself or a new git worktree beside it, and answers the new workspace record. The human is asked to approve workspace writes from this session the first time. branch names the worktree branch and is worktree-only; name sets the workspace title. No path is accepted: the checkout is the project folder or a sibling worktree of it, never an agent-named directory.`,
+    parameters: Type.Object(
+      {
+        isolation: Type.Union([Type.Literal("local"), Type.Literal("worktree")], { description: "The workspace shape: the project folder itself, or a new git worktree beside it." }),
+        name: Type.Optional(Type.String({ description: "The workspace title." })),
+        branch: Type.Optional(Type.String({ description: "The worktree branch. Worktree only." })),
+        path: Type.Optional(Type.String({ description: "Not accepted: workspaces are created inside your project, never at an agent-named directory." })),
+        projectId: Type.Optional(Type.String({ description: "Must be your own project, when given." })),
+      },
+      { required: ["isolation"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_create_workspace", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });

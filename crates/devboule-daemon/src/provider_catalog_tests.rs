@@ -1334,17 +1334,23 @@ fn every_catalog_provider_has_a_cell_and_only_design_has_an_overlay() {
     }
 }
 
-/// The `design` overlay removes exactly the two tools, and both presets
-/// keep the roster.
+/// The `design` overlay removes exactly the two message/creation tools plus
+/// the workspace write (C3a), and both presets keep the roster.
 #[test]
 fn the_design_overlay_hides_send_and_create_and_keeps_the_roster() {
     let design = super::ToolOverlay::DESIGN;
     assert!(!design.allows(super::MCP_CREATE_AGENT_TOOL));
     assert!(!design.allows(super::MCP_SEND_MESSAGE_TOOL));
+    assert!(!design.allows(super::MCP_CREATE_WORKSPACE_TOOL));
     assert!(design.allows(super::MCP_ROSTER_TOOL));
+    assert!(design.allows(super::MCP_LIST_WORKSPACES_TOOL));
     assert_eq!(
         design.denied(),
-        vec![super::MCP_SEND_MESSAGE_TOOL, super::MCP_CREATE_AGENT_TOOL]
+        vec![
+            super::MCP_SEND_MESSAGE_TOOL,
+            super::MCP_CREATE_AGENT_TOOL,
+            super::MCP_CREATE_WORKSPACE_TOOL
+        ]
     );
     let worker = super::ToolOverlay::NONE;
     for tool in [
