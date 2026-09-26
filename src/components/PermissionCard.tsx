@@ -534,17 +534,23 @@ export function PermissionCard({
   const isQuestion = askedQuestions.length > 0;
 
   const questionOther = (index: number): string => otherTexts.get(index) ?? "";
-  const questionAnswered = (index: number): boolean => {
+  // The free-text door stands open when the question has no options to
+  // pick, or the provider allowed it; an absent mark is an old daemon,
+  // which always offered it.
+  const questionTextAllowed = (question: PermissionQuestion): boolean =>
+    question.options.length === 0 || question.allowOther !== false;
+  const questionAnswered = (question: PermissionQuestion, index: number): boolean => {
     if ((pickedOptions.get(index)?.size ?? 0) > 0) return true;
-    return questionOther(index).trim().length > 0;
+    return questionTextAllowed(question) && questionOther(index).trim().length > 0;
   };
   const allQuestionsAnswered =
-    isQuestion && askedQuestions.every((_, index) => questionAnswered(index));
+    isQuestion && askedQuestions.every((question, index) => questionAnswered(question, index));
   // The value one question contributes: typed text wins over picks, and
   // several picks join the way the provider's own answers map reads them.
+  // Text counts only where the question allows it.
   const questionValue = (question: PermissionQuestion, index: number): string => {
     const other = questionOther(index).trim();
-    if (other.length > 0) return other;
+    if (other.length > 0 && questionTextAllowed(question)) return other;
     const picked = pickedOptions.get(index);
     if (picked === undefined || picked.size === 0) return "";
     return Array.from(picked)
@@ -585,6 +591,9 @@ export function PermissionCard({
   const submitQuestions = () => {
     if (!isQuestion || !allQuestionsAnswered) return;
     const values = askedQuestions.map((question, index) => questionValue(question, index));
+    // A secret answer is never echoed back on screen: without this, the
+    // resolved line would print the very words the masked field just hid.
+    const hasSecret = askedQuestions.some((question) => question.secret === true);
     // A lone single-select pick without typed text travels as the existing
     // option id; everything else — multi-selects, typed text, several
     // questions — travels as the answer the daemon maps into the provider's
@@ -600,8 +609,11 @@ export function PermissionCard({
       const only = Array.from(pickedOptions.get(0) ?? [])[0];
       const optionId = only === undefined ? undefined : request.options[only]?.optionId;
       if (optionId !== undefined) {
-        // The card's own resolved state names the option, as usual.
-        void respond({ outcome: "allow_once", optionId });
+        // The card's own resolved state names the option, as usual — unless
+        // the card asks something secret, where no echo follows the send.
+        void respond({ outcome: "allow_once", optionId }).then(() => {
+          if (hasSecret && mountedRef.current) setLocalChoice(null);
+        });
         return;
       }
     }
@@ -617,7 +629,7 @@ export function PermissionCard({
     // The name prints only once the answer is sent: `respond` reports
     // success, so a rejection leaves the error without a "Chosen" line.
     void respond({ outcome: "allow_once", answer }).then((sent) => {
-      if (sent && mountedRef.current) setLocalChoice(choice);
+      if (sent && mountedRef.current && !hasSecret) setLocalChoice(choice);
     });
   };
 
@@ -686,16 +698,18 @@ export function PermissionCard({
                   </label>
                 );
               })}
-              <label className="permission-card-question-other">
-                <span className="permission-card-question-label">Other</span>
-                <input
-                  type="text"
-                  value={questionOther(questionIndex)}
-                  onChange={(event) => setQuestionOther(questionIndex, event.target.value)}
-                  placeholder="Type another answer…"
-                  disabled={permission !== "waiting" || !daemonReachable}
-                />
-              </label>
+              {questionTextAllowed(question) ? (
+                <label className="permission-card-question-other">
+                  <span className="permission-card-question-label">Other</span>
+                  <input
+                    type={question.secret === true ? "password" : "text"}
+                    value={questionOther(questionIndex)}
+                    onChange={(event) => setQuestionOther(questionIndex, event.target.value)}
+                    placeholder="Type another answer…"
+                    disabled={permission !== "waiting" || !daemonReachable}
+                  />
+                </label>
+              ) : null}
             </fieldset>
           ))}
         </div>

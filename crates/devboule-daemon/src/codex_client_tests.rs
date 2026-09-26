@@ -251,6 +251,7 @@ fn unknown_server_request_gets_a_method_not_supported_error() {
         response_ids: Arc::new(Mutex::new(HashMap::new())),
         stdin,
         next_id: Arc::new(AtomicU64::new(1)),
+        spawn_nonce: "test-spawn".to_string(),
         requests: Arc::new(CodexRequests::new()),
         compactions: crate::codex_compaction::CodexCompactions::default(),
     };
@@ -627,6 +628,7 @@ fn a_codex_steer_is_not_left_waiting_when_the_app_server_ends() {
         response_ids: Arc::new(Mutex::new(HashMap::new())),
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
+        spawn_nonce: "test-spawn".to_string(),
         requests: Arc::clone(&requests),
         compactions: crate::codex_compaction::CodexCompactions::default(),
     };

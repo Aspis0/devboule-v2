@@ -50,6 +50,9 @@ fn request_user_input_builds_a_question_card() {
             );
             assert_eq!(questions[0].header.as_deref(), Some("Fence colour"));
             assert!(!questions[0].multi_select);
+            // Absent wire flags arrive as explicit false, not absent.
+            assert_eq!(questions[0].allow_other, Some(false));
+            assert_eq!(questions[0].secret, Some(false));
             assert_eq!(
                 questions[0].options[0].description.as_deref(),
                 Some("Blends in.")
@@ -59,7 +62,7 @@ fn request_user_input_builds_a_question_card() {
         _ => panic!("expected a permission request"),
     }
     assert_eq!(broker.pending_len(), 1);
-    // The blanket decline is gone: no refusal notice goes up.
+    // A question is asked, not refused: no notice goes up.
     assert!(!conn
         .pull_events()
         .iter()
@@ -222,7 +225,7 @@ fn parse_codex_questions_skips_what_nobody_could_answer() {
         "questions": [
             {"id": "ok", "header": "H", "question": "Q?",
              "options": [{"label": "A", "description": "The A."}, {"nope": 1}, {"label": " "}],
-             "multiSelect": true},
+             "multiSelect": true, "isOther": true, "isSecret": true},
             {"header": "No id"},
             {"id": "x", "question": "No header"},
             "a string", 42, null
@@ -237,4 +240,6 @@ fn parse_codex_questions_skips_what_nobody_could_answer() {
         questions[0].options[0].description.as_deref(),
         Some("The A.")
     );
+    assert!(questions[0].allow_other);
+    assert!(questions[0].secret);
 }

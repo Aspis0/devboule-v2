@@ -1,7 +1,6 @@
 //! Test support for the Codex input-request cards: the capturing sender, the
-//! reader harness and the question/elicitation fixtures the topic test files
-//! share. Frames are built from Paseo's zod shapes plus the one elicitation
-//! frame RECON-A2b §3 quotes — the journal holds no `requestUserInput` row.
+//! reader harness, the echo-child harness, and the question/elicitation
+//! fixtures the topic test files share.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
@@ -16,14 +15,7 @@ use super::super::session_runtime::SessionRuntime;
 use super::{catalog_from_response, empty_commands, CodexReader, CodexRequests};
 use crate::codex_view::CodexView;
 
-// --- input requests: questions and elicitations --------------------------
-//
-// Codex asks two ways: `requestUserInput` (a real question) and
-// `mcpServer/elicitation/request` (an MCP tool approval in disguise). Both
-// used to be declined unseen; both now reach the person as cards. Frames
-// below are built from Paseo's zod shapes plus the one elicitation frame
-// quoted in RECON-A2b §3 — the journal holds no `requestUserInput` row.
-
+/// Fixtures: question and elicitation params in the providers' shapes.
 /// One parked Codex answer shaped for the wire through the same entry point
 /// the live sender uses, captured instead of written.
 fn capturing_codex_sender(
@@ -72,6 +64,7 @@ fn question_reader(
         response_ids,
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
+        spawn_nonce: "test-spawn".to_string(),
         requests: Arc::new(CodexRequests::new()),
         compactions: crate::codex_compaction::CodexCompactions::default(),
     }
@@ -201,4 +194,107 @@ pub(super) fn asked_elicitation(
             _ => None,
         })
         .expect("elicitation card")
+}
+
+/// A fake Codex child that echoes stdin to stdout, so a test reads the exact
+/// bytes the client wrote — the same arrangement the steer tests use. The
+/// broker is wired to the REAL sender: the only double in the room is the
+/// child process itself.
+pub(super) struct EchoHarness {
+    pub broker: Arc<PermissionBroker>,
+    pub runtime: Arc<SessionRuntime>,
+    pub conn: Arc<ConnHandle>,
+    pub next_id: Arc<AtomicU64>,
+    stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
+    response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
+    stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
+    child: Option<std::process::Child>,
+}
+
+impl Drop for EchoHarness {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl EchoHarness {
+    pub(super) fn deps(&self, salt: &str) -> super::super::codex_input_requests::CodexInputDeps {
+        super::super::codex_input_requests::CodexInputDeps {
+            stdin: Arc::clone(&self.stdin),
+            response_ids: Arc::clone(&self.response_ids),
+            next_id: Arc::clone(&self.next_id),
+            spawn_nonce: salt.to_string(),
+            permission_broker: Arc::clone(&self.broker),
+        }
+    }
+
+    /// One frame the child echoed. Blocks up to the timeout, so a dropped
+    /// write fails the test instead of hanging it.
+    pub(super) fn read_frame(&mut self) -> serde_json::Value {
+        use std::io::BufRead;
+        let mut stdout = self.stdout.take().expect("stdout taken");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let read = stdout.read_line(&mut line);
+            let _ = tx.send((read, line, stdout));
+        });
+        let (read, line, stdout) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("answer frame written");
+        self.stdout = Some(stdout);
+        read.expect("frame read");
+        serde_json::from_str(&line).expect("frame json")
+    }
+}
+
+/// Caller must have gated on node first
+/// (`test_support::external_program_skip_reason`).
+pub(super) fn echo_harness(
+    session: &str,
+    journal: Option<Arc<crate::journal::Journal>>,
+) -> EchoHarness {
+    let mut child = std::process::Command::new("node")
+        .args([
+            "-e",
+            "process.stdin.on('data', data => process.stdout.write(data))",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("node echo child");
+    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    let stdout = std::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let response_ids = Arc::new(Mutex::new(HashMap::new()));
+    let broker =
+        PermissionBroker::for_test(super::super::codex_input_requests::codex_permission_sender(
+            Arc::clone(&stdin),
+            Arc::clone(&response_ids),
+        ));
+    let runtime = SessionRuntime::for_acp(session.to_string(), journal, Arc::clone(&broker));
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        session,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    EchoHarness {
+        broker,
+        runtime,
+        conn,
+        next_id: Arc::new(AtomicU64::new(1)),
+        stdin,
+        response_ids,
+        stdout: Some(stdout),
+        child: Some(child),
+    }
 }

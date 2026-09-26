@@ -1647,6 +1647,8 @@ pub(super) fn permission_question_single_option(tool_call_id: &str) -> SessionEv
                 description: None,
             }],
             multi_select: false,
+            allow_other: Some(true),
+            secret: None,
         }]),
     }
 }
@@ -1697,6 +1699,8 @@ pub(super) fn permission_question(tool_call_id: &str) -> SessionEvent {
                 },
             ],
             multi_select: false,
+            allow_other: Some(true),
+            secret: None,
         }]),
     }
 }

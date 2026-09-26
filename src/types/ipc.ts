@@ -400,6 +400,18 @@ export interface PermissionQuestion {
   header?: string;
   options: PermissionQuestionOption[];
   multiSelect: boolean;
+  /**
+   * Whether the card offers a free-text "Other" field for this question.
+   * Absent reads as offered — every request from a daemon older than this
+   * field offered one. A question with no options always offers text.
+   */
+  allowOther?: boolean;
+  /**
+   * Whether the answer must not be shown in the clear: the card masks the
+   * field and never echoes the words back. The answer still travels to the
+   * provider that asked.
+   */
+  secret?: boolean;
 }
 
 export interface ToolLocation {

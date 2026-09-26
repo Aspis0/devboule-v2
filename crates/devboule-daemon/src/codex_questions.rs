@@ -24,6 +24,8 @@ pub(super) struct CodexQuestion {
     pub(super) question: String,
     pub(super) options: Vec<CodexQuestionOption>,
     pub(super) multi_select: bool,
+    pub(super) allow_other: bool,
+    pub(super) secret: bool,
 }
 
 pub(super) struct CodexQuestionOption {
@@ -88,6 +90,14 @@ pub(super) fn parse_codex_questions(params: &Value) -> Vec<CodexQuestion> {
                 .get("multiSelect")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            allow_other: item
+                .get("isOther")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            secret: item
+                .get("isSecret")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         });
     }
     questions
@@ -125,7 +135,7 @@ pub(super) fn codex_question_result(params: &Value, result: &Value) -> Value {
     serde_json::json!({ "answers": {} })
 }
 
-pub(super) fn codex_question_answers(
+fn codex_question_answers(
     questions: &[CodexQuestion],
     option_id: &str,
     answer: &str,
@@ -173,7 +183,7 @@ pub(super) fn codex_question_answers(
     )]))
 }
 
-pub(super) fn codex_answer_labels(question: &CodexQuestion, value: &str) -> Vec<String> {
+fn codex_answer_labels(question: &CodexQuestion, value: &str) -> Vec<String> {
     if !question.multi_select {
         return vec![value.to_string()];
     }
@@ -213,7 +223,7 @@ pub(super) fn dispatch_question(
         .get("itemId")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| format!("codex-question-{broker_id}"));
+        .unwrap_or_else(|| format!("codex-question-{}-{broker_id}", deps.spawn_nonce));
     let labels: Vec<&str> = questions[0]
         .options
         .iter()
@@ -262,6 +272,8 @@ pub(super) fn dispatch_question(
                         })
                         .collect(),
                     multi_select: question.multi_select,
+                    allow_other: Some(question.allow_other),
+                    secret: Some(question.secret),
                 })
                 .collect(),
         ),

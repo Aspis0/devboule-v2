@@ -26,6 +26,7 @@ pub(super) struct CodexInputDeps {
     pub(super) stdin: Arc<Mutex<Option<ChildStdin>>>,
     pub(super) response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
     pub(super) next_id: Arc<AtomicU64>,
+    pub(super) spawn_nonce: String,
     pub(super) permission_broker: Arc<PermissionBroker>,
 }
 

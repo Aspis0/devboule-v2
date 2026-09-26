@@ -1291,6 +1291,17 @@ pub struct PermissionQuestion {
     pub options: Vec<PermissionQuestionOption>,
     #[serde(default)]
     pub multi_select: bool,
+    /// Whether the card offers a free-text "Other" field for this
+    /// question. Absent reads as offered — every request from a daemon
+    /// older than this field offered one, so silence must not hide it.
+    /// A question with no options always offers text, whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_other: Option<bool>,
+    /// Whether the person's answer must not be shown in the clear. The
+    /// answer still travels to the provider that asked (it is the answer),
+    /// but the card masks the field and never echoes the words back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<bool>,
 }
 
 /// One offered answer to a [`PermissionQuestion`].

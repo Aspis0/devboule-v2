@@ -2,6 +2,8 @@
 //! card, its three answers, the immediate declines, and the child-creation
 //! approval from RECON-A2b §3.
 
+use std::sync::Arc;
+
 use devboule_protocol::SessionEvent;
 
 use super::super::codex_elicitations::codex_elicitation_result;
@@ -103,10 +105,10 @@ fn elicitation_url_and_required_decline_at_once() {
 }
 
 #[test]
-fn child_creation_elicitation_accepts() {
-    // RECON-A2b §3's frame: Codex cannot create a child today because this
-    // exact request is declined unseen. The card must appear, and accepting
-    // must answer accept — the child-creation card downstream is untouched.
+fn create_agent_elicitation_accepts() {
+    // The MCP approval a Codex child creation rides: the card appears, and
+    // accepting answers accept. Child creation itself happens downstream of
+    // this reply and is not exercised here.
     let (broker, captured, runtime, conn, mut reader) = question_harness();
     reader.dispatch_value(
         elicitation_line("Allow the devboule MCP server to run tool \"devboule_create_agent\"?"),
@@ -146,4 +148,73 @@ fn child_creation_elicitation_accepts() {
         frames[0]["result"],
         serde_json::json!({ "action": "accept", "content": {}, "_meta": null })
     );
+}
+
+#[test]
+fn resumed_session_raises_a_new_card_for_its_first_elicitation() {
+    // A form elicitation carries no elicitationId, so the card id is
+    // generated — and it must be unique across spawns of one session. The
+    // journal's reused-id ledger is sticky per session while the request
+    // counter restarts, so a bare counter answers the resumed session's
+    // first approval with `cancel` and no card.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    use super::super::codex_elicitations::dispatch_elicitation;
+    use super::input_test_support::echo_harness;
+    use crate::journal::Journal;
+
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-resume");
+    let path = dir.join("resume.sqlite");
+    let _ = std::fs::remove_file(&path);
+    let journal = Arc::new(Journal::open(&path).expect("journal"));
+    let line = || elicitation_line("Allow the devboule MCP server to run a tool?");
+
+    // First spawn: card, answer, journal row.
+    let mut first = echo_harness("s.codex.resume", Some(Arc::clone(&journal)));
+    dispatch_elicitation(&first.deps("aaaa"), &line(), &first.runtime, None);
+    let first_id = first
+        .conn
+        .pull_events()
+        .into_iter()
+        .find_map(|event| match event.envelope.event {
+            SessionEvent::PermissionRequest { tool_call_id, .. } => Some(tool_call_id),
+            _ => None,
+        })
+        .expect("first card");
+    assert_eq!(first_id, "mcp-elicitation-aaaa-1");
+    first
+        .broker
+        .respond_with_option(
+            &first_id,
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            Some("allow".to_string()),
+            None,
+        )
+        .expect("accept");
+    assert_eq!(
+        first.read_frame()["result"],
+        serde_json::json!({ "action": "accept", "content": {}, "_meta": null })
+    );
+    journal.flush().expect("journal flush");
+
+    // Second spawn, same session and journal: the counter restarts, but the
+    // salt does not repeat, so the card is raised instead of refused.
+    let second = echo_harness("s.codex.resume", Some(Arc::clone(&journal)));
+    dispatch_elicitation(&second.deps("bbbb"), &line(), &second.runtime, None);
+    let second_id = second
+        .conn
+        .pull_events()
+        .into_iter()
+        .find_map(|event| match event.envelope.event {
+            SessionEvent::PermissionRequest { tool_call_id, .. } => Some(tool_call_id),
+            _ => None,
+        })
+        .expect("resumed session raises a new card");
+    assert_eq!(second_id, "mcp-elicitation-bbbb-1");
+
+    journal.shutdown();
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_dir_all(dir);
 }

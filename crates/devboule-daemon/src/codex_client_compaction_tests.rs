@@ -67,6 +67,7 @@ fn started_reader(
         response_ids: Arc::new(Mutex::new(HashMap::new())),
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
+        spawn_nonce: "test-spawn".to_string(),
         requests: Arc::new(CodexRequests::new()),
         compactions: crate::codex_compaction::CodexCompactions::default(),
     };

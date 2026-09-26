@@ -69,7 +69,7 @@ pub(super) fn dispatch_elicitation(
         .get("elicitationId")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| format!("mcp-elicitation-{broker_id}"));
+        .unwrap_or_else(|| format!("mcp-elicitation-{}-{broker_id}", deps.spawn_nonce));
     let event = SessionEvent::PermissionRequest {
         tool_call_id,
         title: format!("MCP approval: {server}"),

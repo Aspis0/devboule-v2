@@ -1564,6 +1564,8 @@ fn question_kind_and_items_round_trip_with_exact_wire_shape() {
                 },
             ],
             multi_select: false,
+            allow_other: Some(true),
+            secret: None,
         }]),
         origin: SessionOrigin::local(),
         create_agent: None,
@@ -1583,6 +1585,8 @@ fn question_kind_and_items_round_trip_with_exact_wire_shape() {
         "Blends in."
     );
     assert_eq!(encoded["questions"][0]["multiSelect"], false);
+    assert_eq!(encoded["questions"][0]["allowOther"], true);
+    assert!(encoded["questions"][0].get("secret").is_none());
     let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
     assert_eq!(decoded, event);
 }

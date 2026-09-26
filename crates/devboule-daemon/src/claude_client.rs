@@ -1009,6 +1009,10 @@ fn parse_ask_user_questions(input: &Value) -> Vec<PermissionQuestion> {
                 .get("multiSelect")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            // Claude's schema leaves "Other" to the host, so the host
+            // always offers it.
+            allow_other: Some(true),
+            secret: None,
         });
     }
     questions

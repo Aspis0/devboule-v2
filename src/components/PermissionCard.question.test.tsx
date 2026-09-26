@@ -93,7 +93,7 @@ function checkboxes(card: Element): HTMLInputElement[] {
 }
 
 function otherInput(card: Element): HTMLInputElement | null {
-  return card.querySelector<HTMLInputElement>('.permission-card-question-other input[type="text"]');
+  return card.querySelector<HTMLInputElement>(".permission-card-question-other input");
 }
 
 describe("PermissionCard question answers", () => {
@@ -266,6 +266,88 @@ describe("PermissionCard question answers", () => {
       undefined,
       undefined,
     );
+
+    await act(async () => root.unmount());
+  });
+
+  it("hides Other when the question disallows it, and a pick still answers", async () => {
+    const { root, card } = await renderCard({
+      ...singleRequest,
+      toolCallId: "tool-no-other",
+      questions: [
+        {
+          question: "Which colour should I paint the fence?",
+          options: [{ label: "Forest green" }, { label: "Barn red" }],
+          multiSelect: false,
+          allowOther: false,
+        },
+      ],
+    });
+
+    // No free-text door: an approval-as-question carrier's options are the
+    // only answers, so an unrecognized typed label can never reach Codex.
+    expect(otherInput(card)).toBeNull();
+    expect(findButton(card, "Submit")?.disabled).toBe(true);
+
+    await act(async () => radios(card)[0].click());
+    expect(findButton(card, "Submit")?.disabled).toBe(false);
+    const submit = findButton(card, "Submit");
+    if (submit === undefined) throw new Error("Submit did not render");
+    await act(async () => submit.click());
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "tool-no-other",
+      "allow_once",
+      "q0o0",
+      undefined,
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("masks a secret answer and never echoes it back", async () => {
+    const { root, card } = await renderCard({
+      ...singleRequest,
+      toolCallId: "tool-secret",
+      options: [],
+      questions: [
+        {
+          question: "What is the deploy token?",
+          options: [],
+          multiSelect: false,
+          secret: true,
+        },
+      ],
+    });
+
+    const other = otherInput(card);
+    if (other === null) throw new Error("Other field did not render");
+    // Option-less questions always offer text, secret or not.
+    expect(other.type).toBe("password");
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      nativeSetter?.call(other, "hunter2");
+      other.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const submit = findButton(card, "Submit");
+    if (submit === undefined) throw new Error("Submit did not render");
+    await act(async () => submit.click());
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "tool-secret",
+      "allow_once",
+      undefined,
+      "hunter2",
+    );
+    // The words travel to the provider that asked, and nowhere on screen.
+    expect(card.querySelector(".permission-card-choice")).toBeNull();
 
     await act(async () => root.unmount());
   });
