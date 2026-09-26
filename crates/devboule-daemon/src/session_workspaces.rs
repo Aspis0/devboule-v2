@@ -113,6 +113,15 @@ impl super::SessionRegistry {
         Ok((workspace_id, project_id))
     }
 
+    /// The project's folder, for surfaces that name where a create will
+    /// land before the create runs.
+    pub(crate) fn project_path(&self, project_id: &str) -> Result<PathBuf, WireError> {
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        Ok(PathBuf::from(
+            self.require_project(journal, project_id)?.path,
+        ))
+    }
+
     /// The project's workspace rows with their branches, which the wire
     /// `Workspace` drops.
     pub(crate) fn workspace_records(
@@ -148,6 +157,10 @@ impl super::SessionRegistry {
         branch: Option<String>,
         title: Option<&str>,
     ) -> Result<Workspace, WireError> {
+        let _serial = self
+            .worktree_creation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let project = self.require_project(journal, project_id)?;
         let project_path = PathBuf::from(&project.path);
@@ -182,7 +195,8 @@ impl super::SessionRegistry {
         if let Err(error) =
             crate::worktree::run_worktree_add_command(&project_path, &checkout, &branch, "HEAD")
         {
-            let cleanup = cleanup_failed_worktree_add(&project_path, &checkout);
+            let cleanup =
+                cleanup_failed_worktree_add_unless_live(&project_path, &checkout, &branch);
             return Err(WireError::new(
                 ErrorCode::WorkspaceUnavailable,
                 match cleanup {
@@ -482,6 +496,23 @@ pub(super) fn refuse_worktree_unless_live_git_allows(
 fn cleanup_failed_worktree_add(repo: &Path, checkout: &Path) -> Result<(), String> {
     let remove = crate::worktree::build_worktree_remove_command(repo, checkout, true);
     crate::worktree::run_worktree_remove_command_with_recovery(&remove, repo, checkout, true)
+}
+
+/// The loser's cleanup after a failed `git worktree add`: remove the
+/// leftover only when it is not somebody's live checkout. Under the
+/// creation serial above, a same-branch winner is fully finished by the
+/// time the loser asks, so a path git still lists on the expected branch
+/// is the winner's — never the loser's to remove.
+fn cleanup_failed_worktree_add_unless_live(
+    repo: &Path,
+    checkout: &Path,
+    branch: &str,
+) -> Result<(), String> {
+    let live = crate::worktree::list_existing_worktrees(repo).unwrap_or_default();
+    match crate::worktree::identify_worktree_at_path(&live, checkout, branch) {
+        crate::worktree::WorktreeIdentity::Match => Ok(()),
+        _ => cleanup_failed_worktree_add(repo, checkout),
+    }
 }
 
 fn worktree_branch_seed() -> u64 {

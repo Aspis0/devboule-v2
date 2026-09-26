@@ -1,6 +1,6 @@
 //! Shared permission broker for ACP and Claude stream-json sessions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -204,6 +204,14 @@ pub(crate) struct PermissionBroker {
     sender: Arc<PermissionSender>,
     pending: Mutex<PermissionTable>,
     require_journal: bool,
+    /// Cards whose answer a first-use gate is waiting on. Watched only
+    /// while a gate waits: the gate un-watches when its wait ends either
+    /// way, so this never grows past the gates in flight.
+    watch_choices: Mutex<HashSet<String>>,
+    /// The option id each watched card was answered with, taken once by
+    /// the gate that watched it. The journal keeps the grant kind; only
+    /// the option id tells a one-shot allow from a session licence.
+    choice_answers: Mutex<HashMap<String, Option<String>>>,
     #[cfg(test)]
     after_take_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -250,6 +258,8 @@ impl PermissionBroker {
                 closed: false,
             }),
             require_journal: false,
+            watch_choices: Mutex::new(HashSet::new()),
+            choice_answers: Mutex::new(HashMap::new()),
             #[cfg(test)]
             after_take_hook: Mutex::new(None),
         })
@@ -267,6 +277,8 @@ impl PermissionBroker {
                 closed: false,
             }),
             require_journal: true,
+            watch_choices: Mutex::new(HashSet::new()),
+            choice_answers: Mutex::new(HashMap::new()),
             #[cfg(test)]
             after_take_hook: Mutex::new(None),
         })
@@ -940,6 +952,7 @@ impl PermissionBroker {
         journal_outcome: &str,
         answered_by: Option<&str>,
     ) -> Result<(), PermissionResponseError> {
+        self.note_watched_choice(&pending.tool_call_id, selected_option);
         let runtime = pending.runtime.upgrade();
         let recorded = runtime
             .as_ref()
@@ -1051,6 +1064,18 @@ impl PermissionBroker {
         self.pending_ids()
     }
 
+    /// Read one pending card's request, without touching it — what the
+    /// card shows a person, for the tests that pin a card's facts.
+    #[cfg(test)]
+    pub(crate) fn test_pending_request(&self, tool_call_id: &str) -> Option<SessionEvent> {
+        self.pending
+            .lock()
+            .ok()?
+            .entries
+            .get(tool_call_id)
+            .map(|pending| pending.request.clone())
+    }
+
     /// Answer one pending card with the named option, as a human does.
     #[cfg(test)]
     pub(crate) fn test_answer(
@@ -1061,6 +1086,37 @@ impl PermissionBroker {
     ) -> Result<(), String> {
         self.respond_with_option(tool_call_id, outcome, Some(option_id.to_string()))
             .map_err(|error| error.to_string())
+    }
+
+    /// Watch one card's answer for a first-use gate: the next `complete`
+    /// of this id remembers which option was chosen.
+    pub(crate) fn watch_card_choice(&self, tool_call_id: &str) {
+        if let Ok(mut watch) = self.watch_choices.lock() {
+            watch.insert(tool_call_id.to_string());
+        }
+    }
+
+    /// Take a watched card's answer: the option id it was answered with,
+    /// or `None` when it was answered without an option. `None` itself
+    /// means the card never completed. Un-watches either way.
+    pub(crate) fn take_card_choice(&self, tool_call_id: &str) -> Option<Option<String>> {
+        if let Ok(mut watch) = self.watch_choices.lock() {
+            watch.remove(tool_call_id);
+        }
+        self.choice_answers.lock().ok()?.remove(tool_call_id)
+    }
+
+    fn note_watched_choice(&self, tool_call_id: &str, selected_option: Option<&PermissionOption>) {
+        if let Ok(mut watch) = self.watch_choices.lock() {
+            if watch.remove(tool_call_id) {
+                if let Ok(mut answers) = self.choice_answers.lock() {
+                    answers.insert(
+                        tool_call_id.to_string(),
+                        selected_option.map(|option| option.option_id.clone()),
+                    );
+                }
+            }
+        }
     }
 
     pub(super) fn pending_len(&self) -> usize {

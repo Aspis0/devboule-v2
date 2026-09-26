@@ -69,14 +69,11 @@ pub(in crate::mcp_broker) fn list(
     state: &Arc<ServerState>,
     registration: &RegisteredSession,
     id: Value,
-    message: &Value,
 ) -> Result<Option<Value>, Value> {
     // The caller's own project decides the listing; the bearer is the
-    // identity, and no argument names a project.
-    let arguments = workspace_arguments(message);
-    if let Err(message) = closed_no_arguments(&arguments) {
-        return Ok(Some(rpc_error(id, -32602, &message)));
-    }
+    // identity. Deliberately no arguments are read, like the roster tool:
+    // `arguments` is optional in tools/call, and a parameterless tool's
+    // schema promises there is nothing to send.
     workspace_reply(
         &id,
         list_workspaces(state, &registration.session_id, &registration.owner),
@@ -116,17 +113,6 @@ pub(in crate::mcp_broker) fn create(
         if result.is_ok() { "ok" } else { "denied" },
     );
     workspace_reply(&id, result)
-}
-
-/// `devboule_list_workspaces` takes no arguments.
-fn closed_no_arguments(arguments: &Value) -> Result<(), String> {
-    let object = arguments
-        .as_object()
-        .ok_or_else(|| "arguments must be an object".to_string())?;
-    if let Some(key) = object.keys().next() {
-        return Err(format!("unknown parameter '{key}'"));
-    }
-    Ok(())
 }
 
 fn list_workspaces(
@@ -251,7 +237,21 @@ fn create_workspace(
             return Err(refused("This project already has a local workspace."));
         }
     }
-    ensure_write_allowed(state, broker, session_id, owner, WORKSPACES_GROUP).map_err(refused)?;
+    let (subject, facts) = create_card_facts(state, &project_id, request);
+    let fact_refs = facts
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect::<Vec<_>>();
+    ensure_write_allowed(
+        state,
+        broker,
+        session_id,
+        owner,
+        WORKSPACES_GROUP,
+        &subject,
+        &fact_refs,
+    )
+    .map_err(refused)?;
     let workspace = state
         .sessions
         .workspace_create_titled(
@@ -270,6 +270,67 @@ fn create_workspace(
         .find(|record| record.id == workspace.id)
         .map(workspace_document)
         .ok_or_else(|| refused("The workspace was created but could not be read back."))
+}
+
+/// What the gate card shows for one create: the project, the isolation, the
+/// branch, the name and the checkout the call is about to make. Paths are
+/// previews, never promises — a worktree without a branch gets its branch
+/// and its sibling checkout at creation — and every lookup failure reads as
+/// a plain fallback, never as a second refusal: the create itself re-checks
+/// everything it needs.
+fn create_card_facts(
+    state: &ServerState,
+    project_id: &str,
+    request: &CreateRequest,
+) -> (String, Vec<(&'static str, String)>) {
+    let isolation = match request.isolation {
+        WorkspaceIsolation::Local => "local",
+        WorkspaceIsolation::Worktree => "worktree",
+    };
+    let subject = match (&request.name, &request.branch) {
+        (Some(name), Some(branch)) => {
+            format!("creating {isolation} workspace '{name}' on branch '{branch}'")
+        }
+        (Some(name), None) => format!("creating {isolation} workspace '{name}'"),
+        (None, Some(branch)) => format!("creating {isolation} workspace on branch '{branch}'"),
+        (None, None) => format!("creating {isolation} workspace"),
+    };
+    let path = preview_checkout_path(state, project_id, request)
+        .unwrap_or_else(|| "(decided at creation)".to_string());
+    let facts = vec![
+        ("project", project_id.to_string()),
+        ("isolation", isolation.to_string()),
+        (
+            "branch",
+            request.branch.as_deref().unwrap_or("default").to_string(),
+        ),
+        (
+            "name",
+            request.name.as_deref().unwrap_or("default").to_string(),
+        ),
+        ("path", path),
+    ];
+    (subject, facts)
+}
+
+/// The checkout a create will make, when it is already determined: the
+/// project folder for local, the sibling checkout for a worktree with an
+/// explicit branch.
+fn preview_checkout_path(
+    state: &ServerState,
+    project_id: &str,
+    request: &CreateRequest,
+) -> Option<String> {
+    let project_path = state.sessions.project_path(project_id).ok()?;
+    match request.isolation {
+        WorkspaceIsolation::Local => Some(crate::workspace::plain_path(
+            &project_path.to_string_lossy(),
+        )),
+        WorkspaceIsolation::Worktree => request.branch.as_deref().and_then(|branch| {
+            crate::worktree::checkout_path_for_branch(&project_path, branch)
+                .map(|path| crate::workspace::plain_path(&path.to_string_lossy()))
+        }),
+    }
 }
 
 /// One optional trimmed string: absent and null are missing, anything else

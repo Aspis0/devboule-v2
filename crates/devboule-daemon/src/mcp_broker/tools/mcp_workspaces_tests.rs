@@ -90,6 +90,8 @@ fn allow_gate(state: &Arc<ServerState>, session: &str) {
             &session,
             &owner(),
             WORKSPACES_GROUP,
+            "testing the gate",
+            &[("fact", "value")],
         )
     });
     let start = Instant::now();
@@ -105,7 +107,7 @@ fn allow_gate(state: &Arc<ServerState>, session: &str) {
         std::thread::sleep(Duration::from_millis(10));
     };
     broker
-        .test_answer(&card, PermissionOutcome::AllowOnce, "allow")
+        .test_answer(&card, PermissionOutcome::AllowOnce, "session")
         .expect("answer the gate card");
     assert!(handle.join().expect("gate thread").is_ok());
 }
@@ -470,6 +472,126 @@ fn the_listed_schemas_are_closed() {
     assert!(listed.iter().any(|tool| tool["name"] == MCP_ROSTER_TOOL));
 }
 
+#[test]
+fn the_create_card_carries_the_call_facts() {
+    let state = ServerState::new("mcp-workspaces-facts".to_string());
+    let (project, _dir) = git_project(&state, "facts");
+    let local = state
+        .sessions
+        .workspace_create(&project, WorkspaceIsolation::Local, None)
+        .expect("local row");
+    live_in(&state, "ws-facts", &local.id);
+
+    let request = CreateRequest::parse(&json!({
+        "isolation": "worktree",
+        "branch": "fact-branch",
+        "name": "Fact desk",
+    }))
+    .expect("parse");
+    let thread_state = Arc::clone(&state);
+    let handle = std::thread::spawn(move || {
+        create_workspace(
+            &thread_state,
+            &thread_state.mcp,
+            "ws-facts",
+            &owner(),
+            &request,
+        )
+    });
+    let broker = state
+        .sessions
+        .live_runtime("ws-facts", &owner())
+        .expect("live session")
+        .permission_broker()
+        .expect("test broker");
+    let start = Instant::now();
+    let card = loop {
+        let mut ids = broker.test_pending_ids();
+        if let Some(id) = ids.pop() {
+            break id;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the create raised no card"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let request = broker
+        .test_pending_request(&card)
+        .expect("the pending card");
+    let devboule_protocol::SessionEvent::PermissionRequest {
+        title, description, ..
+    } = request
+    else {
+        panic!("the gate raises a permission request");
+    };
+    assert!(
+        title.contains("creating worktree workspace"),
+        "title: {title}"
+    );
+    let description = description.expect("description");
+    for fact in [&project, "worktree", "fact-branch", "Fact desk"] {
+        assert!(
+            description.contains(fact),
+            "the card carries {fact}: {description}"
+        );
+    }
+    broker
+        .test_answer(&card, PermissionOutcome::Deny, "deny")
+        .expect("answer the gate card");
+    assert!(handle.join().expect("create thread").is_err());
+}
+
+#[test]
+fn two_racing_same_branch_creates_keep_the_winners_checkout() {
+    let state = ServerState::new("mcp-workspaces-race".to_string());
+    let (project, _dir) = git_project(&state, "race");
+    let local = state
+        .sessions
+        .workspace_create(&project, WorkspaceIsolation::Local, None)
+        .expect("local row");
+    live_in(&state, "ws-race", &local.id);
+    allow_gate(&state, "ws-race");
+
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let run = |state: Arc<ServerState>, barrier: Arc<std::sync::Barrier>| {
+        std::thread::spawn(move || {
+            barrier.wait();
+            let request = CreateRequest::parse(&json!({
+                "isolation": "worktree",
+                "branch": "race-branch",
+            }))
+            .expect("parse");
+            create_workspace(&state, &state.mcp, "ws-race", &owner(), &request)
+        })
+    };
+    let first = run(Arc::clone(&state), Arc::clone(&barrier));
+    let second = run(Arc::clone(&state), Arc::clone(&barrier));
+    let (first, second) = (
+        first.join().expect("thread"),
+        second.join().expect("thread"),
+    );
+    assert!(
+        first.is_ok() != second.is_ok(),
+        "exactly one same-branch create wins"
+    );
+    let winner = first.or(second).expect("the winner");
+    assert!(
+        std::path::Path::new(winner["path"].as_str().expect("path")).is_dir(),
+        "the loser's cleanup keeps the winner's checkout"
+    );
+    let listed = list_workspaces(&state, "ws-race", &owner()).expect("list");
+    assert_eq!(
+        listed["workspaces"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter(|row| row["branch"] == "race-branch")
+            .count(),
+        1
+    );
+}
+
 // The HTTP road: the two dispatch lines, once each, with the gate answered
 // the way a human answers it.
 
@@ -519,6 +641,29 @@ fn http_state(tag: &str) -> (Arc<ServerState>, String, std::path::PathBuf) {
     std::mem::forget(_guard);
     let _ = project;
     (state, format!("ws-http-{tag}"), dir)
+}
+
+#[test]
+fn the_list_tool_answers_without_an_arguments_field() {
+    let (state, session, _dir) = http_state("noargs");
+    let token = state.mcp.test_token(&session).expect("token");
+    let _server = state.mcp.start(&state).expect("MCP server");
+
+    // `arguments` is optional in tools/call: a parameterless tool answers
+    // when the field is absent, like the roster tool.
+    let answer = http_post(
+        state.mcp.url(),
+        &token,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_list_workspaces"}}"#,
+    );
+    assert_eq!(answer["result"]["isError"], false);
+    assert_eq!(
+        answer["result"]["structuredContent"]["workspaces"]
+            .as_array()
+            .expect("workspaces")
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -589,7 +734,7 @@ fn the_create_tool_waits_for_the_card_and_mints_over_http() {
         std::thread::sleep(Duration::from_millis(10));
     };
     broker
-        .test_answer(&card, PermissionOutcome::AllowOnce, "allow")
+        .test_answer(&card, PermissionOutcome::AllowOnce, "session")
         .expect("answer the gate card");
     let answer = handle.join().expect("http thread");
     assert_eq!(answer["result"]["isError"], false);

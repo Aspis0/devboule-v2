@@ -126,7 +126,7 @@ pub(super) fn handle_rpc(
             } else if tool_name == Some(crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL) {
                 tools::graph::oracle_search(state, registration, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_LIST_WORKSPACES_TOOL) {
-                tools::workspaces::list(state, registration, id, message)
+                tools::workspaces::list(state, registration, id)
             } else if tool_name == Some(crate::provider_catalog::MCP_CREATE_WORKSPACE_TOOL) {
                 tools::workspaces::create(state, broker, caller, registration, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {

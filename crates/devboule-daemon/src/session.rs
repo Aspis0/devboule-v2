@@ -655,6 +655,12 @@ pub struct SessionRegistry {
     /// every reader here asks it at the moment it decides, per the
     /// read-cadence rule at `delegation_store.rs`.
     delegation: std::sync::OnceLock<Arc<crate::delegation_store::DelegationStore>>,
+    /// Serialises worktree creates: two same-branch creates compute the
+    /// same checkout path, and without this the loser's cleanup removes the
+    /// winner's live checkout. Held across path computation, `git worktree
+    /// add` and the journal row, so a loser always sees the winner's
+    /// finished state when it decides what to clean.
+    worktree_creation: Arc<Mutex<()>>,
 }
 
 impl SessionRegistry {
@@ -717,6 +723,7 @@ impl SessionRegistry {
             deposit_after_ownership_hook: Arc::new(Mutex::new(None)),
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
+            worktree_creation: Arc::new(Mutex::new(())),
         };
         spawn_os_liveness_sweeper(&registry);
         registry.reconcile_worktree_journal();

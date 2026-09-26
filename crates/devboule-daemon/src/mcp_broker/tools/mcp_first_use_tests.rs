@@ -1,8 +1,9 @@
-//! Tests for the first-use write gate: one human card per session and group.
+//! Tests for the first-use write gate: one human card per session and group,
+//! with the two choices the card offers.
 
 use super::*;
 use crate::server::ServerState;
-use devboule_protocol::{OwnerId, PermissionOutcome, SessionKind};
+use devboule_protocol::{OwnerId, PermissionOutcome, SessionEvent, SessionKind};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,18 @@ fn pending_ids(state: &Arc<ServerState>, id: &str) -> Vec<String> {
         .permission_broker()
         .expect("test broker")
         .test_pending_ids()
+}
+
+fn pending_card(state: &Arc<ServerState>, id: &str) -> SessionEvent {
+    let card_id = wait_for_card(state, id);
+    state
+        .sessions
+        .live_runtime(id, &owner())
+        .expect("live session")
+        .permission_broker()
+        .expect("test broker")
+        .test_pending_request(&card_id)
+        .expect("the pending card")
 }
 
 /// The pending gate card, waited for: the call runs on another thread because
@@ -73,47 +86,124 @@ fn spawn_gate(state: &Arc<ServerState>, id: &str) -> std::thread::JoinHandle<Res
             &id,
             &owner(),
             WORKSPACES_GROUP,
+            "testing the gate",
+            &[("fact", "value")],
         )
     })
 }
 
 #[test]
-fn the_first_call_raises_a_card_and_an_allow_opens_the_group() {
-    let state = ServerState::new("first-use-allow".to_string());
-    session(&state, "fu-allow");
+fn the_card_names_both_choices_and_the_facts() {
+    let state = ServerState::new("first-use-card".to_string());
+    session(&state, "fu-card");
 
-    let handle = spawn_gate(&state, "fu-allow");
-    let card = wait_for_card(&state, "fu-allow");
+    let handle = spawn_gate(&state, "fu-card");
+    let card = pending_card(&state, "fu-card");
+    let SessionEvent::PermissionRequest {
+        tool_call_id,
+        title,
+        description,
+        options,
+        is_chooser,
+        ..
+    } = card
+    else {
+        panic!("the gate raises a permission request");
+    };
     assert!(
-        card.starts_with("write:workspaces:fu-allow:"),
-        "the card names the group and the session: {card}"
+        tool_call_id.starts_with("write:workspaces:fu-card:"),
+        "the card names the group and the session: {tool_call_id}"
     );
-
-    // A second call racing the first is refused as pending, not parked twice.
+    assert!(title.contains("testing the gate"), "title: {title}");
+    let description = description.expect("description");
+    assert!(description.contains("fact: value"), "facts: {description}");
+    assert!(
+        description.contains("Allow this call") && description.contains("for this session"),
+        "both choices: {description}"
+    );
+    let kinds: Vec<(&str, &str)> = options
+        .iter()
+        .map(|option| (option.option_id.as_str(), option.kind.as_str()))
+        .collect();
     assert_eq!(
-        ensure_write_allowed(&state, &state.mcp, "fu-allow", &owner(), WORKSPACES_GROUP),
-        Err("permission pending; retry".to_string())
+        kinds,
+        vec![
+            ("once", "allow_once"),
+            ("session", "allow_once"),
+            ("deny", "reject_once")
+        ],
+        "a chooser: one kind twice, so the app names both and no agent answers"
     );
-    assert_eq!(pending_ids(&state, "fu-allow").len(), 1);
-
+    assert_eq!(is_chooser, Some(true), "stamped a chooser at registration");
     answer(
         &state,
-        "fu-allow",
+        "fu-card",
+        &tool_call_id,
+        PermissionOutcome::Deny,
+        "deny",
+    );
+    assert!(handle.join().expect("gate thread").is_err());
+}
+
+#[test]
+fn allow_this_call_proceeds_without_opening_the_group() {
+    let state = ServerState::new("first-use-once".to_string());
+    session(&state, "fu-once");
+
+    let handle = spawn_gate(&state, "fu-once");
+    let card = wait_for_card(&state, "fu-once");
+    answer(
+        &state,
+        "fu-once",
         &card,
         PermissionOutcome::AllowOnce,
-        "allow",
+        "once",
+    );
+    assert!(handle.join().expect("gate thread").is_ok());
+    assert_eq!(state.mcp.first_use_mark("fu-once", WORKSPACES_GROUP), None);
+
+    // The group stays shut: the next call raises a fresh card.
+    let handle = spawn_gate(&state, "fu-once");
+    let card = wait_for_card(&state, "fu-once");
+    answer(&state, "fu-once", &card, PermissionOutcome::Deny, "deny");
+    assert_eq!(
+        handle.join().expect("gate thread"),
+        Err("permission refused".to_string())
+    );
+}
+
+#[test]
+fn allow_for_this_session_opens_the_group() {
+    let state = ServerState::new("first-use-session".to_string());
+    session(&state, "fu-session");
+
+    let handle = spawn_gate(&state, "fu-session");
+    let card = wait_for_card(&state, "fu-session");
+    answer(
+        &state,
+        "fu-session",
+        &card,
+        PermissionOutcome::AllowOnce,
+        "session",
     );
     assert!(handle.join().expect("gate thread").is_ok());
     assert_eq!(
-        state.mcp.first_use_mark("fu-allow", WORKSPACES_GROUP),
+        state.mcp.first_use_mark("fu-session", WORKSPACES_GROUP),
         Some(GateMark::Open)
     );
 
     // The second call raises no card: the group stays allowed for the session.
-    assert!(
-        ensure_write_allowed(&state, &state.mcp, "fu-allow", &owner(), WORKSPACES_GROUP).is_ok()
-    );
-    assert!(pending_ids(&state, "fu-allow").is_empty());
+    assert!(ensure_write_allowed(
+        &state,
+        &state.mcp,
+        "fu-session",
+        &owner(),
+        WORKSPACES_GROUP,
+        "testing the gate",
+        &[("fact", "value")],
+    )
+    .is_ok());
+    assert!(pending_ids(&state, "fu-session").is_empty());
 }
 
 #[test]
@@ -133,6 +223,36 @@ fn a_deny_refuses_and_leaves_the_gate_shut() {
 }
 
 #[test]
+fn a_second_call_racing_the_first_is_pending_not_parked_twice() {
+    let state = ServerState::new("first-use-pending".to_string());
+    session(&state, "fu-pending");
+
+    let handle = spawn_gate(&state, "fu-pending");
+    let card = wait_for_card(&state, "fu-pending");
+    assert_eq!(
+        ensure_write_allowed(
+            &state,
+            &state.mcp,
+            "fu-pending",
+            &owner(),
+            WORKSPACES_GROUP,
+            "testing the gate",
+            &[("fact", "value")],
+        ),
+        Err("permission pending; retry".to_string())
+    );
+    assert_eq!(pending_ids(&state, "fu-pending").len(), 1);
+    answer(
+        &state,
+        "fu-pending",
+        &card,
+        PermissionOutcome::AllowOnce,
+        "session",
+    );
+    assert!(handle.join().expect("gate thread").is_ok());
+}
+
+#[test]
 fn the_gate_is_per_session() {
     let state = ServerState::new("first-use-per-session".to_string());
     session(&state, "fu-first");
@@ -145,7 +265,7 @@ fn the_gate_is_per_session() {
         "fu-first",
         &card,
         PermissionOutcome::AllowOnce,
-        "allow",
+        "session",
     );
     assert!(first.join().expect("gate thread").is_ok());
 
@@ -164,10 +284,58 @@ fn the_gate_is_per_session() {
 }
 
 #[test]
+fn a_delegated_answer_is_refused_like_every_question() {
+    let state = ServerState::new("first-use-delegated".to_string());
+    session(&state, "fu-creator");
+    crate::session::insert_test_child_agent(&state.sessions, "fu-child", owner(), "fu-creator");
+    state.delegation.set(true).expect("delegation on");
+
+    let handle = spawn_gate(&state, "fu-child");
+    let card = wait_for_card(&state, "fu-child");
+    // Even a peer holding answer_permissions cannot open the gate: the card
+    // is a chooser, and a chooser stays pending for a person.
+    let error = state
+        .sessions
+        .answer_child_permission("fu-creator", &card, PermissionOutcome::AllowOnce, &|_| {
+            vec![crate::peer_policy::CAP_ANSWER_PERMISSIONS.to_string()]
+        })
+        .expect_err("a gate card is not delegatable");
+    assert!(
+        error.contains("chooser"),
+        "the question rule refuses it: {error}"
+    );
+    assert_eq!(pending_ids(&state, "fu-child").len(), 1);
+    assert_eq!(
+        state.mcp.first_use_mark("fu-child", WORKSPACES_GROUP),
+        Some(GateMark::Pending),
+        "the refusal leaves the gate waiting on the person"
+    );
+
+    // The person still can: answering "once" proceeds without opening.
+    answer(
+        &state,
+        "fu-child",
+        &card,
+        PermissionOutcome::AllowOnce,
+        "once",
+    );
+    assert!(handle.join().expect("gate thread").is_ok());
+    assert_eq!(state.mcp.first_use_mark("fu-child", WORKSPACES_GROUP), None);
+}
+
+#[test]
 fn a_session_with_no_live_row_is_refused_without_a_card() {
     let state = ServerState::new("first-use-absent".to_string());
     assert_eq!(
-        ensure_write_allowed(&state, &state.mcp, "fu-gone", &owner(), WORKSPACES_GROUP),
+        ensure_write_allowed(
+            &state,
+            &state.mcp,
+            "fu-gone",
+            &owner(),
+            WORKSPACES_GROUP,
+            "testing the gate",
+            &[("fact", "value")],
+        ),
         Err("permission refused".to_string())
     );
     assert_eq!(state.mcp.first_use_mark("fu-gone", WORKSPACES_GROUP), None);
@@ -185,7 +353,7 @@ fn forgetting_a_session_clears_its_marks() {
         "fu-leaver",
         &card,
         PermissionOutcome::AllowOnce,
-        "allow",
+        "session",
     );
     assert!(handle.join().expect("gate thread").is_ok());
     state.mcp.forget_first_use("fu-leaver");
