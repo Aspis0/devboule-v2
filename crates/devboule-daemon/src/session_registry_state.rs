@@ -391,6 +391,10 @@ pub(super) struct AgentCreatorCaps {
     /// under this table's lock so two creations racing on one session cannot
     /// both be told to ask.
     pub(super) gate: CreationGate,
+    /// The reservation that set the gate to Pending, if any: a release
+    /// clears the gate only for the reservation that took it, so a cardless
+    /// caller failing beside an open card cannot end someone else's wait.
+    pub(super) gate_owner: Option<u64>,
     /// Set when the creator session is gone: the entry then lives until its
     /// last child finishes, because that is what releases the daemon-wide
     /// count.
@@ -405,6 +409,7 @@ impl AgentCreatorCaps {
             window_started: now,
             creations_in_window: 0,
             gate: CreationGate::Closed,
+            gate_owner: None,
             creator_gone: false,
         }
     }

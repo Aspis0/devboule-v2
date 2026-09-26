@@ -1441,6 +1441,7 @@ fn claude_bypass_auto_answers_can_use_tool_without_client_prompt() {
     let controls = Arc::new(Mutex::new(HashMap::new()));
     let mut reader = test_reader(Arc::clone(&broker), controls);
     let (runtime, conn) = attached(&broker);
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Claude);
     runtime.store_session_manifest(SessionEvent::SessionManifest {
         provider_id: Some("claude".to_string()),
         current_model_id: None,
@@ -1476,6 +1477,7 @@ fn claude_bypass_auto_answers_can_use_tool_without_client_prompt() {
     let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
     let mut reader = test_reader(Arc::clone(&broker), Arc::new(Mutex::new(HashMap::new())));
     let (runtime, conn) = attached(&broker);
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Claude);
     runtime.store_session_manifest(SessionEvent::SessionManifest {
         provider_id: Some("claude".to_string()),
         current_model_id: None,

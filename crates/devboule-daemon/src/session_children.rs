@@ -120,6 +120,7 @@ impl super::SessionRegistry {
             CreationGate::Pending => false,
             CreationGate::Closed if needs_card => {
                 caps.gate = CreationGate::Pending;
+                caps.gate_owner = Some(reservation);
                 true
             }
             CreationGate::Closed | CreationGate::Open => false,
@@ -172,6 +173,7 @@ impl super::SessionRegistry {
             .unwrap_or_else(|error| error.into_inner());
         if let Some(caps) = table.creators.get_mut(creator) {
             caps.gate = CreationGate::Open;
+            caps.gate_owner = None;
         }
     }
 
@@ -203,8 +205,12 @@ impl super::SessionRegistry {
         {
             let caps = table.creators.get_mut(creator).expect("the entry above");
             caps.creations_in_window = caps.creations_in_window.saturating_sub(1);
-            if caps.gate == CreationGate::Pending {
+            // Only the reservation that set Pending ends it: a cardless
+            // caller failing beside another caller's open card leaves that
+            // wait alone.
+            if caps.gate_owner == Some(reservation) {
                 caps.gate = CreationGate::Closed;
+                caps.gate_owner = None;
             }
         }
         if table.children.get(&child).is_some_and(|link| !link.started) {
@@ -761,11 +767,13 @@ impl super::SessionRegistry {
                 // window's count.
                 caps.in_flight.remove(&reservation);
                 caps.creations_in_window = caps.creations_in_window.saturating_sub(1);
-                if caps.gate == CreationGate::Pending {
-                    // The same rule as a released reservation (`S5B-02`): the
-                    // question left with the child, so the next creation asks
-                    // it again instead of being refused forever.
+                // The same rule as a released reservation (`S5B-02`): the
+                // question left with the child, so the next creation asks
+                // it again instead of being refused forever — but only when
+                // this reservation owned the pending gate.
+                if caps.gate_owner == Some(reservation) {
                     caps.gate = CreationGate::Closed;
+                    caps.gate_owner = None;
                 }
             }
         }

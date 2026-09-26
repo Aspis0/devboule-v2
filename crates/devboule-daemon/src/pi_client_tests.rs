@@ -18,7 +18,6 @@ use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch, SessionRuntime, 
 use crate::test_support::steer_through_the_turn;
 use devboule_protocol::{ErrorCode, PromptAttachment, SessionEvent, WireError};
 use std::collections::HashMap;
-use std::io::BufRead;
 use std::path::Path;
 use std::process::ChildStdin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -307,6 +306,7 @@ fn pi_auto_answer_failure_still_denies_the_extension_confirm() {
         Arc::new(std::sync::atomic::AtomicBool::new(true)),
     );
     let runtime = Arc::new(crate::session::SessionRuntime::new());
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Pi);
     let request = serde_json::json!({
         "type": "extension_ui_request",
         "method": "confirm",
@@ -317,10 +317,14 @@ fn pi_auto_answer_failure_still_denies_the_extension_confirm() {
     reader
         .feed(format!("{request}\n").as_bytes(), &runtime)
         .expect("confirm request");
-    let mut line = String::new();
-    stdout
-        .read_line(&mut line)
-        .expect("definite extension response");
+    // Bounded: an extension the broker never answers must fail this test,
+    // never hang the suite waiting on its stdout.
+    let line = crate::session::acp_client::read_line_bounded(
+        &mut stdout,
+        std::time::Instant::now() + std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(30),
+    )
+    .expect("definite extension response");
     let response: serde_json::Value = serde_json::from_str(&line).expect("response json");
     assert_eq!(response["type"], "extension_ui_response");
     assert_eq!(response["id"], "ui-1");

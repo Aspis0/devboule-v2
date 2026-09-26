@@ -111,28 +111,37 @@ fn the_creation_card_is_owed_once_per_creator_session_and_a_refusal_keeps_it_shu
     let _ = std::fs::remove_dir_all(&_dir);
 }
 
-/// A cardless reservation never parks, waits or marks: two automatic-mode
-/// creations racing on one session both proceed owing no card, and neither
-/// meets a pending-permission sentence for a card that does not exist —
-/// while a later asking call still finds the gate shut.
+/// A cardless release never clears another caller's pending gate: an
+/// asking caller parks (its reservation owns the gate), a cardless caller
+/// racing it proceeds, and when the cardless one fails its release leaves
+/// the asker's gate alone — the next asking call still waits on the open
+/// card instead of raising a duplicate.
 #[test]
-fn a_cardless_reservation_never_sees_a_pending_gate() {
+fn a_cardless_release_never_clears_anothers_pending_gate() {
     let (_dir, registry, journal) = tmp_delete_registry();
     let creator = "session-auto";
-    let first = registry
-        .reserve_agent_creation(creator, 1, false)
-        .expect("cardless proceeds");
-    assert!(!first.card_owed(), "no card to owe");
-    let second = registry
+    let asker = registry
+        .reserve_agent_creation(creator, 1, true)
+        .expect("asking parks");
+    assert!(asker.card_owed(), "the asker owns the gate");
+    // A cardless caller racing the parked card: proceeds, owing nothing —
+    // this is the `Pending => false` branch.
+    let racing = registry
         .reserve_agent_creation(creator, 1, false)
         .expect("cardless never waits on a gate");
-    assert!(!second.card_owed());
-    drop(first);
-    drop(second);
-    let third = registry
+    assert!(!racing.card_owed());
+    // The cardless creation fails: its release must not end the pending.
+    drop(racing);
+    let blocked = registry
         .reserve_agent_creation(creator, 1, true)
-        .expect("the gate is still shut");
-    assert!(third.card_owed(), "a later asking mode still cards");
+        .expect_err("the asker's card is still out");
+    assert_eq!(blocked.message, "creation permission pending; retry");
+    // The asker's own release ends it; the next asking call cards again.
+    drop(asker);
+    let owed = registry
+        .reserve_agent_creation(creator, 1, true)
+        .expect("the gate is shut again");
+    assert!(owed.card_owed());
     registry.abandon_agent_creation_for_test(creator);
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&_dir);

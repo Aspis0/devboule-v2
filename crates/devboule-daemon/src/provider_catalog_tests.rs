@@ -1685,7 +1685,7 @@ fn only_the_familys_own_never_write_mode_refuses() {
             mode_gate_for(Some(SessionKind::Acp), Some("auto_accept")),
             ModeGate::Auto
         ),
-        "the daemon's own synthesized id still auto-answers"
+        "a declared `auto_accept` is asking to auto-accept"
     );
     // No kind or no mode is not a fact the gate can state: the card.
     assert!(matches!(

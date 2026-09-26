@@ -850,7 +850,7 @@ pub(crate) enum ModeGate {
     Auto,
     /// The session's mode never approves a write: refuse with the sentence
     /// before any card, reservation or mark.
-    Refuse(String),
+    Refuse(#[cfg_attr(not(feature = "server"), allow(dead_code))] String),
     /// The card, as today.
     Card,
 }
@@ -877,8 +877,9 @@ pub(crate) fn mode_gate_for(
             ModeGate::Refuse(mode_refusal_sentence("read-only"))
         }
         (Some(SessionKind::Pi), Some("bypass")) => ModeGate::Auto,
-        // The daemon's own synthesized id: it describes our broker's
-        // behavior, not the agent's vocabulary.
+        // An agent that declares `auto_accept` is asking to auto-accept,
+        // so following the provider means answering there — whether the id
+        // came from our synthesis or the agent's own handshake.
         (Some(SessionKind::Acp), Some("auto_accept")) => ModeGate::Auto,
         _ => ModeGate::Card,
     }

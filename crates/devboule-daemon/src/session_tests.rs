@@ -348,7 +348,7 @@ fn a_move_switches_the_mode_then_the_model_and_records_the_row() {
         owner.clone(),
         &creator,
         "Worker",
-        &["bypass", "ask"],
+        &["auto_accept", "ask"],
         Some("model-a"),
         true,
         false,
@@ -357,7 +357,7 @@ fn a_move_switches_the_mode_then_the_model_and_records_the_row() {
     registry
         .set_agent_child_profile(&creator, "Worker", "Solo", &|name| {
             if name == "Solo" {
-                Ok(move_facts("bypass", "model-b", "p-1"))
+                Ok(move_facts("auto_accept", "model-b", "p-1"))
             } else {
                 Err("unknown profile; call devboule_list_profiles".to_string())
             }
@@ -659,7 +659,7 @@ fn a_model_refusal_after_a_landed_mode_reports_the_partial_state_and_still_ratch
         owner.clone(),
         &creator,
         "Worker",
-        &["bypass"],
+        &["auto_accept"],
         Some("model-a"),
         true,
         false,
@@ -667,11 +667,11 @@ fn a_model_refusal_after_a_landed_mode_reports_the_partial_state_and_still_ratch
     );
     let error = registry
         .set_agent_child_profile(&creator, "Worker", "Solo", &|_name| {
-            Ok(move_facts("bypass", "model-b", "p-1"))
+            Ok(move_facts("auto_accept", "model-b", "p-1"))
         })
         .expect_err("the model ask is refused");
     assert!(
-        error.contains("mode was switched to 'bypass'")
+        error.contains("mode was switched to 'auto_accept'")
             && error.contains("no profile change is recorded"),
         "the answer reports exactly the partial state: {error}"
     );
@@ -708,14 +708,14 @@ fn the_marker_ratchets_upward_and_reads_the_delivered_mode() {
         owner.clone(),
         &creator,
         "Worker",
-        &["bypass", "deep-work"],
+        &["auto_accept", "deep-work"],
         Some("model-a"),
         true,
         false,
         false,
     );
     let resolve = |name: &str| match name {
-        "Solo" => Ok(move_facts("bypass", "model-b", "p-yes")),
+        "Solo" => Ok(move_facts("auto_accept", "model-b", "p-yes")),
         "Deep" => Ok(move_facts("deep-work", "model-a", "p-unknown")),
         other => Err(format!("unknown profile ({other})")),
     };
@@ -1598,7 +1598,7 @@ fn insert_live_agent_full(
         id: id.to_string(),
         workspace_id,
         cwd: None,
-        kind,
+        kind: kind.clone(),
         title: "Agent".to_string(),
         state: SessionState::Live { generation: 1 },
         elapsed_ms: Some(0),
@@ -1616,6 +1616,10 @@ fn insert_live_agent_full(
     };
     let (broker, _) = permission_broker::test_broker();
     let runtime = SessionRuntime::for_acp(id.to_string(), registry.journal.clone(), broker);
+    // The helper's name promises the kind: the runtime carries it, the way
+    // the spawn path sets it for every live session, so a gate reading the
+    // runtime classifies what the metadata already says.
+    runtime.set_agent_kind(kind);
     registry.configure_runtime_attention(&runtime, &owner);
     let session = PtySession {
         metadata,
