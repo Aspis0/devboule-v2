@@ -274,16 +274,8 @@ pub fn validate_display_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("the device name is empty".to_string());
     }
-    for character in name.chars() {
-        if character.is_control() {
-            return Err("the device name contains a control character".to_string());
-        }
-        if crate::text_safety::is_invisible_format(character) {
-            return Err("the device name contains an invisible formatting character".to_string());
-        }
-        if crate::text_safety::is_mandatory_line_break(character) {
-            return Err("the device name contains a line break character".to_string());
-        }
+    if let Some(category) = crate::text_safety::unsafe_character(name) {
+        return Err(format!("the device name contains {category}"));
     }
     Ok(())
 }

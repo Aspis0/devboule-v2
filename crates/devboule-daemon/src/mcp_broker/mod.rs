@@ -697,6 +697,15 @@ pub(crate) fn ready_timeout() -> Duration {
 /// their own.
 #[cfg(test)]
 mod terminal_tools_tests;
+/// The refusals that surround a terminal write: one consent group per act,
+/// the cap's reservation, the shutdown guard, the conflicting retry, the
+/// empty payload, and the supervision verbs' agent-only scope.
+#[cfg(test)]
+mod terminal_write_guard_tests;
+/// What every terminal-write test drives: one owner, one project workspace,
+/// the loopback call, and the first-use card's plumbing.
+#[cfg(test)]
+mod terminal_write_harness;
 /// The terminal *write* tools' own end-to-end tests, split by topic from the
 /// reads' above: the kind gate in front of every body, the card's three
 /// choices, the create's cap and guard, and the audit row that records the

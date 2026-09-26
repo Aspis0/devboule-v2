@@ -296,7 +296,8 @@ pub(crate) use session_registry_state::{
 #[cfg(test)]
 use session_registry_state::{
     AgentMessageAfterAdmissionHook, DepositAfterOwnershipHook, IdleCloseBeforeActHook,
-    JournalRosterAfterListHook, CREATION_WINDOW, DEFERRED_SLOT_EXPIRY, WORKSPACE_PATH_CACHE_CAP,
+    JournalRosterAfterListHook, KillAfterGateHook, CREATION_WINDOW, DEFERRED_SLOT_EXPIRY,
+    WORKSPACE_PATH_CACHE_CAP,
 };
 /// The move road's named phases: `set_agent_child_profile` in the parent is
 /// the thin sequence, and this sibling holds the phases it composes. A
@@ -690,6 +691,12 @@ pub struct SessionRegistry {
     /// the message brakes and under the same discipline: one lock over the
     /// whole table, taken on its own and never across another.
     creations: Arc<Mutex<AgentCreationTable>>,
+    /// The in-flight half of the live-terminal cap: how many terminal opens
+    /// one session is holding while they ask, counted beside the live
+    /// terminals they will become. Its own lock, taken *before* the registry
+    /// lock and never after it, so a count and the reservation it answers
+    /// with cannot be split by another create.
+    terminal_slots: Arc<Mutex<HashMap<String, usize>>>,
     #[cfg(test)]
     journal_list_calls: Arc<AtomicU64>,
     #[cfg(test)]
@@ -704,6 +711,7 @@ pub struct SessionRegistry {
     deposit_after_ownership_hook: Arc<Mutex<Option<DepositAfterOwnershipHook>>>,
     #[cfg(test)]
     idle_close_before_act_hook: Arc<Mutex<Option<IdleCloseBeforeActHook>>>,
+    kill_after_gate_hook: Arc<Mutex<Option<KillAfterGateHook>>>,
     /// The agent-profile store, attached by `ServerState` once both exist
     /// (`create-from-profile`).
     ///
@@ -789,6 +797,7 @@ impl SessionRegistry {
             state_roster_cache: Arc::new(Mutex::new(HashMap::new())),
             message_brakes: Arc::new(Mutex::new(MessageBrakeTable::default())),
             creations: Arc::new(Mutex::new(AgentCreationTable::default())),
+            terminal_slots: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             journal_list_calls: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
@@ -803,6 +812,7 @@ impl SessionRegistry {
             deposit_after_ownership_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             idle_close_before_act_hook: Arc::new(Mutex::new(None)),
+            kill_after_gate_hook: Arc::new(Mutex::new(None)),
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
             worktree_creation: Arc::new(Mutex::new(())),
@@ -999,6 +1009,27 @@ impl SessionRegistry {
             .and_then(|mut hook| hook.take());
         if let Some(hook) = hook {
             hook(self);
+        }
+    }
+
+    /// Arm a one-shot callback that runs after a terminal's kill gate and
+    /// before its close: the only way a test can land a close inside that
+    /// gap and pin what the kill answers when its own close then removes
+    /// nothing.
+    #[cfg(test)]
+    pub(crate) fn set_kill_after_gate_hook(&self, hook: KillAfterGateHook) {
+        *self.kill_after_gate_hook.lock().expect("kill test hook") = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn fire_kill_after_gate_hook(&self) {
+        let hook = self
+            .kill_after_gate_hook
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take());
+        if let Some(hook) = hook {
+            hook();
         }
     }
 
@@ -2724,6 +2755,12 @@ impl SessionRegistry {
             .filter_map(|entry| {
                 let live = entry.as_peer_visible()?;
                 let session = &live.metadata;
+                // The supervision verbs act on agents: a terminal this caller
+                // opened is not its child, so a terminal id answers here the
+                // way an id the caller never created answers.
+                if !session.kind.is_agent() {
+                    return None;
+                }
                 if !is_child_of(session.created_by.as_deref(), creator_session_id) {
                     return None;
                 }
@@ -3771,6 +3808,39 @@ pub(crate) fn insert_test_terminal_with_recording_writer(
         workspace_id,
         Box::new(tests::RecordingWriter(Arc::clone(&received))),
     );
+    received
+}
+
+/// Test-only live terminal this session opened, with a writer that records
+/// what reaches it: `created_by` is what the live-terminal cap counts and
+/// what a card's "opened by" reads, and the recorder is what proves a
+/// refused write typed nothing. A test can therefore put a creator at the
+/// cap — or name some other session as the opener — without spending a card
+/// to become one.
+#[cfg(test)]
+pub(crate) fn insert_test_terminal_created_by(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: Option<String>,
+    creator: &str,
+) -> Arc<Mutex<Vec<u8>>> {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    tests::insert_terminal_with_writer(
+        registry,
+        id,
+        owner,
+        workspace_id,
+        Box::new(tests::RecordingWriter(Arc::clone(&received))),
+    );
+    {
+        let mut map = registry.inner.lock().expect("registry");
+        let live = map
+            .get_mut(id)
+            .and_then(RegistryEntry::as_peer_visible_mut)
+            .expect("live terminal");
+        live.metadata.created_by = Some(creator.to_string());
+    }
     received
 }
 

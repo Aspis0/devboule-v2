@@ -555,7 +555,7 @@ impl ServerState {
         }
     }
 
-    pub(super) fn is_shutting_down(&self) -> bool {
+    pub(crate) fn is_shutting_down(&self) -> bool {
         self.lifecycle
             .lock()
             .unwrap_or_else(|err| err.into_inner())

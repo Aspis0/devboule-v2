@@ -2,14 +2,16 @@
 //! owner may reach inside one workspace, the visible screen of one of them,
 //! and the three writes — open a terminal, type into one, kill one.
 //!
-//! Every act judges its target with [`reachable_terminal`]: the registry's
-//! own ownership door ([`check_user_owner`], so a `Daemon` peer is scoped by
-//! origin, a `Client` peer by the user that paired it, and a local call by
-//! user alone), `kind == Terminal`, the caller's own workspace, and a process
-//! that is still there. One rule, so the scope one tool states is the scope
-//! all five take, and an id outside it answers "No session with that id."
-//! whichever of those rules it broke. The scope comes from session rows,
-//! never from a request field.
+//! The roster, the screen and the two writes that name a terminal all judge
+//! an entry with [`reachable_terminal`]: the registry's own ownership door
+//! ([`check_user_owner`], so a `Daemon` peer is scoped by origin, a `Client`
+//! peer by the user that paired it, and a local call by user alone),
+//! `kind == Terminal`, the caller's own workspace, and a process that is
+//! still there — one rule, so an id outside it answers "No session with that
+//! id." whichever of those it broke. The open names no terminal: it takes
+//! its workspace from the caller's own row ([`Self::terminal_scope`]) and
+//! counts what it may open against [`Self::reserve_terminal_slot`]. The
+//! scope comes from session rows, never from a request field.
 
 use super::*;
 
@@ -183,48 +185,65 @@ impl super::SessionRegistry {
             // agent session's id would end a provider session.
             reachable_terminal(entry, owner, conn_peer, workspace_id).ok_or_else(not_found)?;
         }
+        #[cfg(test)]
+        self.fire_kill_after_gate_hook();
         self.close(session_id, owner, conn_peer)
     }
 
-    /// The live-terminal cap for one creator: refused with one sentence when
-    /// `creator` already holds [`MAX_LIVE_TERMINALS_PER_CREATOR`] live
-    /// terminals of its own.
+    /// Take one slot of the live-terminal cap for `creator`, before anything
+    /// is spent asking a person for it.
+    ///
+    /// Live terminals and the slots other creates are already holding are
+    /// counted under one lock, taken *before* the registry lock and never
+    /// after it, so two creates racing at the cap cannot both read room and
+    /// both spawn. The slot is released by the reservation's own `Drop`, so
+    /// every exit from the create — a refusal, a denied card, a failed spawn,
+    /// the answer — gives it back exactly once without a release line per
+    /// path.
     ///
     /// Counted from the `created_by` link the create stamps, under the same
-    /// ownership door every terminal act takes — so a peer's cap counts that
-    /// peer's own origin's terminals and nothing else.
-    pub(crate) fn check_terminal_cap(
+    /// ownership door every terminal act takes: a `Daemon` peer counts the
+    /// terminals of its own origin, a `Client` peer those of the user who
+    /// paired it, a local call those of its user.
+    pub(crate) fn reserve_terminal_slot(
         &self,
         creator: &str,
         owner: &OwnerId,
         conn_peer: &Option<ConnPeer>,
-    ) -> Result<(), WireError> {
-        let map = self
-            .inner
-            .lock()
-            .map_err(|_| internal("Session state is unavailable."))?;
-        let mut open = 0;
-        for entry in map.values() {
-            let Some(session) = entry.as_peer_visible() else {
-                continue;
-            };
-            if session.metadata.kind != SessionKind::Terminal
-                || !is_child_of(session.metadata.created_by.as_deref(), creator)
-                || check_user_owner(entry, owner, conn_peer).is_err()
-            {
-                continue;
+    ) -> Result<TerminalSlotReservation<'_>, WireError> {
+        let unavailable = || internal("Session state is unavailable.");
+        let mut slots = self.terminal_slots.lock().map_err(|_| unavailable())?;
+        let held = slots.get(creator).copied().unwrap_or(0);
+        let open = {
+            let map = self.inner.lock().map_err(|_| unavailable())?;
+            let mut open = 0;
+            for entry in map.values() {
+                let Some(session) = entry.as_peer_visible() else {
+                    continue;
+                };
+                if session.metadata.kind != SessionKind::Terminal
+                    || !is_child_of(session.metadata.created_by.as_deref(), creator)
+                    || check_user_owner(entry, owner, conn_peer).is_err()
+                {
+                    continue;
+                }
+                if live_session_view(session).state.is_live() {
+                    open += 1;
+                }
             }
-            if live_session_view(session).state.is_live() {
-                open += 1;
-            }
-        }
-        if open >= MAX_LIVE_TERMINALS_PER_CREATOR {
+            open
+        };
+        if open + held >= MAX_LIVE_TERMINALS_PER_CREATOR {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 TERMINAL_CAP_REFUSAL,
             ));
         }
-        Ok(())
+        slots.insert(creator.to_string(), held + 1);
+        Ok(TerminalSlotReservation {
+            slots: &self.terminal_slots,
+            creator: creator.to_string(),
+        })
     }
 
     /// Open a terminal in `workspace_id` for the session that asked: the
@@ -263,14 +282,41 @@ impl super::SessionRegistry {
     }
 }
 
-/// The one refusal of [`SessionRegistry::check_terminal_cap`], in the shape
-/// the other caps refuse in and actionable for whoever hit it.
+/// The one refusal of [`SessionRegistry::reserve_terminal_slot`], in the
+/// shape the other caps refuse in and actionable for whoever hit it.
 const TERMINAL_CAP_REFUSAL: &str = "too many live terminals; close one first";
 
-/// One registry entry as all five terminal tools judge it: reachable only
-/// when [`check_user_owner`] opens it — the check every id-addressed session
-/// act goes through — when it is a live entry of `kind == Terminal` inside
-/// `workspace_id`, and when its process is still there.
+/// One terminal-open slot, held from before the consent card until the create
+/// has answered. Released by `Drop`, so every exit path gives it back — the
+/// card's denial, the shutdown guard, a spawn that failed, the reply.
+pub(crate) struct TerminalSlotReservation<'a> {
+    slots: &'a Mutex<HashMap<String, usize>>,
+    creator: String,
+}
+
+impl Drop for TerminalSlotReservation<'_> {
+    fn drop(&mut self) {
+        let Ok(mut slots) = self.slots.lock() else {
+            return;
+        };
+        match slots.get(&self.creator).copied() {
+            Some(held) if held <= 1 => {
+                slots.remove(&self.creator);
+            }
+            Some(held) => {
+                slots.insert(self.creator.clone(), held - 1);
+            }
+            None => {}
+        }
+    }
+}
+
+/// One registry entry as every tool that names a terminal judges it — the
+/// roster's entries, the screen, the keys write and the kill write, never
+/// the open, which names no target. Reachable only when [`check_user_owner`]
+/// opens it — the check every id-addressed session act goes through — when
+/// it is a live entry of `kind == Terminal` inside `workspace_id`, and when
+/// its process is still there.
 ///
 /// The second value is the entry's up-to-date view, state recomputed from the
 /// runtime rather than read from possibly stale metadata, so a body never

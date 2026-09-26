@@ -2,45 +2,38 @@
 //! into one, kill one.
 //!
 //! One responsibility: the arguments, the consent and the reply of those
-//! three writes. The gate a write cannot dodge lives in the registry
-//! (`reachable_terminal`, `session_terminals.rs`) — this file decides which
-//! terminal of the caller's own workspace the act names, asks the person the
-//! first time, and audits the outcome. Typed bytes never reach a log, a
-//! diagnostic, the card or the audit row: the card counts them and the audit
-//! records the act.
+//! three writes. Each act carries its own consent group, so a session
+//! allowed to open a shell is still carded to type into one or to kill one.
+//! The two writes that name a terminal judge it through the registry's gate
+//! (`reachable_terminal`, `session_terminals.rs`) before the card and again
+//! inside the write, because a card waits on a person; the open names no
+//! terminal and takes its workspace from the caller's own row instead.
+//! Typed bytes never reach a log, a diagnostic, the card or the audit row:
+//! the card counts them and the audit records the act.
 
 use std::sync::Arc;
 
-use serde_json::{json, Map, Value};
-
-use devboule_protocol::{validate_display_name, Session};
+use serde_json::{json, Value};
 
 use crate::mcp_broker::caller::{audit_mcp_tool, caller_conn, McpCaller};
 use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::peer_policy::ConnPeer;
 use crate::server::ServerState;
 
-use super::first_use::{ensure_write_allowed, TERMINALS_GROUP};
+use super::first_use::{TERMINAL_CREATE_GROUP, TERMINAL_KEYS_GROUP, TERMINAL_KILL_GROUP};
+use super::terminal_args::{parse_keys, parse_name, parse_terminal, KeysRequest};
+use super::terminal_cards::{create_card_facts, opener_label, target_facts, write_after_card};
 use super::terminal_common::{caller_workspace, terminal_reply, TerminalError};
+use super::terminal_keys::{keys_preview, resolve_keys};
 
-/// Paseo's key tokens: the names one key press is spelled with and the bytes
-/// each stands for (`paseo-tools.ts`, `resolveTerminalKeyToken`).
-const KEY_TOKENS: [(&str, &str); 11] = [
-    ("Enter", "\r"),
-    ("Tab", "\t"),
-    ("Escape", "\u{1b}"),
-    ("Space", " "),
-    ("BSpace", "\u{7f}"),
-    ("C-c", "\u{3}"),
-    ("C-d", "\u{4}"),
-    ("C-z", "\u{1a}"),
-    ("C-l", "\u{c}"),
-    ("C-a", "\u{1}"),
-    ("C-e", "\u{5}"),
-];
+/// The one sentence a write answers with while the daemon is going down —
+/// the guard the wire's create road takes, applied to all three acts: a
+/// teardown is not a moment to open a shell, to type into a dying pty or to
+/// race a kill against it.
+const SHUTTING_DOWN: &str = "daemon is shutting down";
 
 /// `devboule_create_terminal` (`{name?}`): a terminal in the caller's own
-/// workspace, behind the terminal-write card.
+/// workspace, behind that act's card.
 pub(in crate::mcp_broker) fn create(
     state: &Arc<ServerState>,
     broker: &McpBroker,
@@ -108,7 +101,7 @@ pub(in crate::mcp_broker) fn send_keys(
 }
 
 /// `devboule_kill_terminal` (`{terminalId}`): the process tree dies and the
-/// live session goes, behind the same card; the journal row and the
+/// live session goes, behind that act's card; the journal row and the
 /// transcript stay.
 pub(in crate::mcp_broker) fn kill(
     state: &Arc<ServerState>,
@@ -151,8 +144,9 @@ fn create_terminal(
 ) -> Result<Value, TerminalError> {
     let workspace = caller_workspace(state, registration, conn_peer)?;
     // The retry identity first, in the order the wire's create road takes
-    // it: a retry answers the terminal the first call opened and creates
-    // nothing, so neither the cap nor the card below has anything to judge.
+    // it: a retry answers the terminal the first call opened, and a retry
+    // whose payload changed is refused with the wire's own sentence —
+    // either way nothing below is judged, because nothing below would run.
     let retry_key = crate::server::creation_retry_key(&registration.session_id, id);
     let mut hold = match retry_key.as_deref() {
         Some(key) => match state.sessions.hold_creation_key(key) {
@@ -166,37 +160,49 @@ fn create_terminal(
         name.as_deref().unwrap_or("")
     );
     if let Some(key) = retry_key.as_deref() {
-        if let Some(existing) = crate::server::idempotent_creation_session(
-            state,
-            &registration.owner,
-            key,
-            &fingerprint,
-        ) {
-            if let Some(hold) = hold.as_mut() {
-                hold.commit();
+        match crate::server::stored_creation_session(state, &registration.owner, key, &fingerprint)
+        {
+            Ok(Some(existing)) => {
+                if let Some(hold) = hold.as_mut() {
+                    hold.commit();
+                }
+                return Ok(terminal_document(&existing));
             }
-            return Ok(terminal_document(&existing));
+            Err(conflict) => return Err(TerminalError::Refused(conflict.message)),
+            Ok(None) => {}
         }
     }
-    // The cap is judged before the card: a refusal must never spend the
-    // person's consent on a call the daemon had already decided to refuse.
-    state
+    // The directory the shell would open in, resolved the way the create
+    // resolves it: a workspace that cannot answer refuses the call here,
+    // before the card is spent on a directory nobody can name.
+    let cwd = state
         .sessions
-        .check_terminal_cap(&registration.session_id, &registration.owner, conn_peer)
+        .workspace_cwd(&workspace)
+        .map(|path| crate::workspace::plain_path(&path.to_string_lossy()))
         .map_err(|error| TerminalError::Refused(error.message))?;
-    // The shutdown guard the wire's create road takes: false means the
-    // daemon is going down, and this call has registered no live slot.
+    // The cap slot is taken before the card, so two creates racing at the
+    // cap cannot both read room during the seconds a person spends looking
+    // at the card; the reservation gives it back on every exit below.
+    let slot = state
+        .sessions
+        .reserve_terminal_slot(&registration.session_id, &registration.owner, conn_peer)
+        .map_err(|error| TerminalError::Refused(error.message))?;
     if !state.session_started() {
-        return Err(TerminalError::Refused(
-            "daemon is shutting down".to_string(),
-        ));
+        return Err(TerminalError::Refused(SHUTTING_DOWN.to_string()));
     }
-    // One release point for everything the slot above was taken for: the
-    // card may refuse, the spawn may fail, and either way the slot goes back
-    // with the terminal that never came to be.
+    // One release point for the live-session slot: the card may refuse, the
+    // workspace may go, the spawn may fail, and either way the slot goes
+    // back with the terminal that never came to be.
     let created = (|| {
-        let (subject, facts) = create_card_facts(state, &workspace, name.as_deref());
-        write_after_card(state, broker, registration, &subject, &facts)?;
+        let (subject, facts) = create_card_facts(&workspace, &cwd, name.as_deref());
+        write_after_card(
+            state,
+            broker,
+            registration,
+            TERMINAL_CREATE_GROUP,
+            &subject,
+            &facts,
+        )?;
         state
             .sessions
             .create_terminal_for(
@@ -213,8 +219,6 @@ fn create_terminal(
         Ok(session) => session,
         Err(error) => {
             state.session_finished();
-            // The hold releases itself on the way out, as every refusal
-            // between it and the answer does.
             return Err(error);
         }
     };
@@ -230,6 +234,7 @@ fn create_terminal(
     if let Some(hold) = hold.as_mut() {
         hold.commit();
     }
+    drop(slot);
     Ok(terminal_document(&session))
 }
 
@@ -240,9 +245,14 @@ fn send_keys_to_terminal(
     conn_peer: &Option<ConnPeer>,
     request: &KeysRequest,
 ) -> Result<Value, TerminalError> {
+    if state.is_shutting_down() {
+        return Err(TerminalError::Refused(SHUTTING_DOWN.to_string()));
+    }
     // The payload is capped before the card, so an oversized call never
-    // spends the person's consent: the wire's own refusal, on the bytes as
-    // they arrived (`MAX_WRITE_BYTES`, 64 KiB).
+    // spends the person's consent: the wire's own sentence, on the bytes as
+    // they arrived (`MAX_WRITE_BYTES`). The loopback door refuses an
+    // envelope this size before the tool runs; the check is the tool's own
+    // rule for whatever carries the call next.
     if request.keys.len() > devboule_protocol::MAX_WRITE_BYTES {
         return Err(TerminalError::Refused(
             "Session input is too large.".to_string(),
@@ -261,9 +271,17 @@ fn send_keys_to_terminal(
         )
         .map_err(|error| TerminalError::Refused(error.message))?;
     let subject = format!("sending keys to terminal '{}'", target.title);
-    let mut facts = target_facts(&target);
+    let opener = opener_label(target.created_by.as_deref(), &registration.session_id);
+    let mut facts = target_facts(&target, &workspace, opener);
     facts.push(("keys", keys_preview(&request.keys, request.literal)));
-    write_after_card(state, broker, registration, &subject, &facts)?;
+    write_after_card(
+        state,
+        broker,
+        registration,
+        TERMINAL_KEYS_GROUP,
+        &subject,
+        &facts,
+    )?;
     // The gate runs again inside the write itself: the card waited for a
     // person, and nothing that waited may vouch for what happens after.
     let bytes = resolve_keys(&request.keys, request.literal);
@@ -287,205 +305,48 @@ fn kill_one_terminal(
     conn_peer: &Option<ConnPeer>,
     terminal: &str,
 ) -> Result<Value, TerminalError> {
+    if state.is_shutting_down() {
+        return Err(TerminalError::Refused(SHUTTING_DOWN.to_string()));
+    }
     let workspace = caller_workspace(state, registration, conn_peer)?;
     let target = state
         .sessions
         .terminal_target(terminal, &registration.owner, conn_peer, &workspace)
         .map_err(|error| TerminalError::Refused(error.message))?;
     let subject = format!("killing terminal '{}'", target.title);
-    let facts = target_facts(&target);
-    write_after_card(state, broker, registration, &subject, &facts)?;
+    let opener = opener_label(target.created_by.as_deref(), &registration.session_id);
+    let facts = target_facts(&target, &workspace, opener);
+    write_after_card(
+        state,
+        broker,
+        registration,
+        TERMINAL_KILL_GROUP,
+        &subject,
+        &facts,
+    )?;
     let removed = state
         .sessions
         .kill_terminal(terminal, &registration.owner, conn_peer, &workspace)
         .map_err(|error| TerminalError::Refused(error.message))?;
-    if removed {
-        // Every terminal create took a live slot (`session_started`), so a
-        // close that removed one gives it back — the wire's `SessionClose`
-        // does the same.
-        state.session_finished();
+    if !removed {
+        // The gate held a moment ago and the close then removed nothing:
+        // something else ended the terminal in between, and a kill that
+        // killed nothing must not answer success.
+        return Err(TerminalError::Refused(
+            "No session with that id.".to_string(),
+        ));
     }
+    // Every terminal create took a live slot (`session_started`), so a
+    // close that removed one gives it back — the wire's `SessionClose`
+    // does the same.
+    state.session_finished();
     Ok(json!({"success": true}))
 }
 
-/// The consent step the three writes share: the first terminal write of a
-/// session raises one card on the caller's own session, a later one passes
-/// on the group's mark, and a refusal is the call's answer.
-fn write_after_card(
-    state: &ServerState,
-    broker: &McpBroker,
-    registration: &RegisteredSession,
-    subject: &str,
-    facts: &[(&'static str, String)],
-) -> Result<(), TerminalError> {
-    let fact_refs = facts
-        .iter()
-        .map(|(key, value)| (*key, value.as_str()))
-        .collect::<Vec<_>>();
-    ensure_write_allowed(
-        state,
-        broker,
-        &registration.session_id,
-        &registration.owner,
-        TERMINALS_GROUP,
-        subject,
-        &fact_refs,
-    )
-    .map_err(TerminalError::Refused)
-}
-
-/// The create card's subject and facts: the workspace the shell opens in
-/// and the directory that workspace resolves to, plus the name when one was
-/// given. The directory is the create's own preview — the create re-resolves
-/// it — so a lookup that fails reads as a plain fallback and never as a
-/// second refusal.
-fn create_card_facts(
-    state: &ServerState,
-    workspace: &str,
-    name: Option<&str>,
-) -> (String, Vec<(&'static str, String)>) {
-    let cwd = state
-        .sessions
-        .workspace_cwd(workspace)
-        .map(|path| crate::workspace::plain_path(&path.to_string_lossy()))
-        .unwrap_or_else(|_| "(the workspace directory)".to_string());
-    let mut facts = vec![("workspace", workspace.to_string()), ("cwd", cwd)];
-    if let Some(name) = name {
-        facts.push(("name", name.to_string()));
-    }
-    ("creating a terminal".to_string(), facts)
-}
-
-/// The facts both target cards carry: which terminal, by title and by the
-/// directory it runs in.
-fn target_facts(target: &Session) -> Vec<(&'static str, String)> {
-    let mut facts = vec![("terminal", target.title.clone())];
-    if let Some(cwd) = target.cwd.as_deref() {
-        facts.push(("cwd", cwd.to_string()));
-    }
-    facts
-}
-
-/// What the keys card says about `keys`: a named key by name, anything else
-/// by length alone. The characters themselves never leave the caller — they
-/// may be a password, and the card is rendered, journaled, and (for a peer's
-/// session) sent to that peer.
-fn keys_preview(keys: &str, literal: bool) -> String {
-    if !literal {
-        if let Some(token) = KEY_TOKENS.iter().find(|token| token.0 == keys) {
-            return format!("key {}", token.0);
-        }
-    }
-    format!("{} characters, not shown", keys.chars().count())
-}
-
-/// The bytes one `keys` payload stands for: literal text as typed, else the
-/// named key it names. An unknown name is the text it is — Paseo's resolver
-/// falls through its switch the same way — so "echo hi" types itself either
-/// way and only a real token is translated.
-fn resolve_keys(keys: &str, literal: bool) -> String {
-    if literal {
-        return keys.to_string();
-    }
-    KEY_TOKENS
-        .iter()
-        .find(|token| token.0 == keys)
-        .map(|token| token.1.to_string())
-        .unwrap_or_else(|| keys.to_string())
-}
-
-fn terminal_document(session: &Session) -> Value {
+fn terminal_document(session: &devboule_protocol::Session) -> Value {
     json!({
         "terminalId": session.id,
         "title": session.title,
         "cwd": session.cwd,
     })
-}
-
-/// The closed create shape: `name` optional, and nothing else — the
-/// workspace is the caller's own row, so no argument can name one. An empty
-/// name is Paseo's absent name (trimmed and dropped), a name the wire
-/// refuses is refused here with the wire's own sentence, and the value the
-/// daemon stores is the value this call judged.
-fn parse_name(arguments: &Value) -> Result<Option<String>, String> {
-    let object = argument_map(arguments)?;
-    for key in object.keys() {
-        if key != "name" {
-            return Err(format!("unknown parameter '{key}'"));
-        }
-    }
-    match object.get("name") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                return Ok(None);
-            }
-            validate_display_name(trimmed).map(Some)
-        }
-        Some(_) => Err("name must be a string".to_string()),
-    }
-}
-
-/// What one `send_terminal_keys` call carries: Paseo's three fields, closed.
-fn parse_keys(arguments: &Value) -> Result<KeysRequest, String> {
-    let object = argument_map(arguments)?;
-    for key in object.keys() {
-        if !matches!(key.as_str(), "terminalId" | "keys" | "literal") {
-            return Err(format!("unknown parameter '{key}'"));
-        }
-    }
-    let terminal = object
-        .get("terminalId")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "terminalId is required".to_string())?
-        .to_string();
-    let keys = object
-        .get("keys")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "keys is required".to_string())?
-        .to_string();
-    let literal = match object.get("literal") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        Some(_) => return Err("literal must be a boolean".to_string()),
-    };
-    Ok(KeysRequest {
-        terminal,
-        keys,
-        literal,
-    })
-}
-
-/// The closed kill shape: one terminal, named by the id the roster answered.
-fn parse_terminal(arguments: &Value) -> Result<String, String> {
-    let object = argument_map(arguments)?;
-    for key in object.keys() {
-        if key != "terminalId" {
-            return Err(format!("unknown parameter '{key}'"));
-        }
-    }
-    object
-        .get("terminalId")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "terminalId is required".to_string())
-}
-
-/// The argument object of a `tools/call`: an absent `arguments` is the empty
-/// document, anything that is not an object is a malformed request.
-fn argument_map(arguments: &Value) -> Result<Map<String, Value>, String> {
-    match arguments {
-        Value::Null => Ok(Map::new()),
-        Value::Object(object) => Ok(object.clone()),
-        _ => Err("arguments must be an object".to_string()),
-    }
-}
-
-struct KeysRequest {
-    terminal: String,
-    keys: String,
-    literal: bool,
 }

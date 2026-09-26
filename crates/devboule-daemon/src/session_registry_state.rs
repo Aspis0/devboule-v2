@@ -98,6 +98,11 @@ pub(super) type DepositAfterOwnershipHook = Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
 pub(super) type IdleCloseBeforeActHook = Box<dyn FnOnce(&SessionRegistry) + Send>;
 
+/// Runs between a terminal's kill gate and its close.
+/// Test-only: it is the only way to land a close inside that gap.
+#[cfg(test)]
+pub(super) type KillAfterGateHook = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Clone)]
 pub(super) struct ConnectionPresence {
     pub(super) user: String,

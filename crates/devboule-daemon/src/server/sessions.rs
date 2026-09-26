@@ -769,6 +769,36 @@ pub(crate) fn idempotent_creation_session(
     }
 }
 
+/// The creation one key already answered, or the wire's own refusal for a key
+/// reused with a different payload.
+///
+/// [`idempotent_creation_session`] folds a conflict into "no answer", which is
+/// right for a caller that then refuses — and wrong for one that would create
+/// on a miss: its second call would open a second session and overwrite the
+/// first call's answer. This form keeps the three outcomes apart, with the
+/// sentence and code `idempotent_hit` answers a conflicting retry with, so a
+/// caller that reaches the conflict refuses instead of creating.
+pub(crate) fn stored_creation_session(
+    state: &ServerState,
+    owner: &OwnerId,
+    key: &str,
+    fingerprint: &str,
+) -> Result<Option<devboule_protocol::Session>, WireError> {
+    let owner_key = format!("{}.{}", owner.user, owner.client);
+    let mut store = state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    match store.check(&owner_key, key, fingerprint, Instant::now()) {
+        IdempotencyOutcome::Hit(DaemonMessage::Session { session, .. }) => Ok(Some(session)),
+        IdempotencyOutcome::Conflict => Err(WireError::new(
+            ErrorCode::IdempotencyConflict,
+            "idempotency key reused with a different payload",
+        )),
+        IdempotencyOutcome::Hit(_) | IdempotencyOutcome::Miss => Ok(None),
+    }
+}
+
 /// Remember the session a creation answered with, under the same key the retry
 /// will arrive on.
 pub(crate) fn remember_creation_session(

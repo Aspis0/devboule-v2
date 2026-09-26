@@ -105,6 +105,7 @@ pub(crate) use sessions::unix_millis;
 use sessions::*;
 pub(crate) use sessions::{
     creation_retry_key, idempotent_creation_session, remember_creation_session,
+    stored_creation_session,
 };
 
 #[cfg(test)]

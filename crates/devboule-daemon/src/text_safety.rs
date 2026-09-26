@@ -21,6 +21,29 @@ pub(crate) fn is_invisible_format(character: char) -> bool {
     )
 }
 
+/// The first character of `name` that must never ride a display name — control,
+/// invisible formatting or a mandatory line break — named for a caller to put
+/// in its own sentence. `None` when every character is plain.
+///
+/// One rule for every surface that stores a name and later renders one (a
+/// device name, a session title), so a string one door accepts is not
+/// refused at another.
+#[cfg(any(feature = "server", test))]
+pub(crate) fn unsafe_character(name: &str) -> Option<&'static str> {
+    for character in name.chars() {
+        if character.is_control() {
+            return Some("a control character");
+        }
+        if is_invisible_format(character) {
+            return Some("an invisible formatting character");
+        }
+        if is_mandatory_line_break(character) {
+            return Some("a line break character");
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_invisible_format, is_mandatory_line_break};

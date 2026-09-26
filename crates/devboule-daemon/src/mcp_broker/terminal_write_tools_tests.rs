@@ -4,266 +4,30 @@
 //! row that records the act and never the bytes.
 //!
 //! Sections: the kind gate, owner and origin scope, create, consent, keys,
-//! kill, audit and privacy, the doors. Every test shares this file's two
-//! fixtures — a project workspace with a caller session in it, and a spawn
-//! override so a create does not open the person's shell.
+//! kill, audit and privacy, the doors. The fixtures, the loopback call and
+//! the card plumbing live in `terminal_write_harness`; the refusals that
+//! surround a write — one consent group per act, the cap's reservation, the
+//! shutdown guard, the conflicting retry — live in
+//! `terminal_write_guard_tests`.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use super::dispatch::{enabled_tool_list, tool_call_refusal};
+use super::terminal_write_harness::{
+    allow_group, allow_terminal_writes, answer, call, call_on_a_thread, caller_in, field,
+    join_without_a_card, keepalive_spawn, owner, pending_cards, project_workspace, refusal, serve,
+    serve_with_provider, stranger_owner, wait_for_card,
+};
 use super::tests::{http_request, peer_row, response_json};
 use super::*;
-use crate::mcp_broker::tools::first_use::{ensure_write_allowed, TERMINALS_GROUP};
+use crate::mcp_broker::tools::first_use::TERMINAL_KILL_GROUP;
 use crate::provider_catalog::{
     ToolOverlay, MCP_CREATE_TERMINAL_TOOL, MCP_KILL_TERMINAL_TOOL, MCP_LIST_TERMINALS_TOOL,
     MCP_ROSTER_TOOL, MCP_SEND_TERMINAL_KEYS_TOOL,
 };
-use devboule_protocol::{OwnerId, PermissionOutcome, SessionEvent, WorkspaceIsolation};
-
-/// The one owner every session in this file belongs to: each test builds its
-/// own `ServerState`, so a fixed owner is enough and the fixtures above it
-/// need no parameter for it.
-fn owner() -> OwnerId {
-    OwnerId::new("S-1-5-21-term-writes", "term-writes-client").expect("owner")
-}
-
-/// Somebody else's account, for the one test that needs a terminal this
-/// caller may not touch.
-fn stranger_owner() -> OwnerId {
-    OwnerId::new("S-1-5-21-term-writes-other", "term-writes-other-client").expect("stranger owner")
-}
-
-/// One project folder with a local workspace row, as production builds it:
-/// the workspace the caller's row will name, and the whole scope the three
-/// writes have. Returns the workspace id and the project folder it points at.
-fn project_workspace(state: &Arc<ServerState>, tag: &str) -> (String, std::path::PathBuf) {
-    let dir = crate::test_dirs::test_temp_dir(&format!("devboule-term-write-{tag}"));
-    let root = dir.join(format!("Project{tag}"));
-    std::fs::create_dir_all(&root).expect("project folder");
-    let project = state
-        .sessions
-        .project_add(root.to_str().expect("project path"))
-        .expect("project row");
-    let workspace = state
-        .sessions
-        .workspace_create(&project.id, WorkspaceIsolation::Local, None)
-        .expect("workspace row");
-    (workspace.id, root)
-}
-
-/// The caller session the bearer authenticates, living in `workspace_id`.
-fn caller_in(state: &Arc<ServerState>, id: &str, workspace_id: &str) {
-    crate::session::insert_test_live_agent_in_workspace(&state.sessions, id, owner(), workspace_id);
-}
-
-/// The bearer for one registered caller, with the registration forgotten on
-/// purpose: the guard outlives this frame, so the session stays registered
-/// for the whole test (the shape `mcp_workspaces_tests` uses).
-fn serve(state: &Arc<ServerState>, session: &str) -> String {
-    let guard = state
-        .mcp
-        .register(session, &owner(), &devboule_protocol::SessionKind::Acp)
-        .expect("registration")
-        .expect("MCP guard");
-    std::mem::forget(guard);
-    state.mcp.test_token(session).expect("token")
-}
-
-/// The bearer of a caller whose provider a stored policy can speak to.
-fn serve_with_provider(state: &Arc<ServerState>, session: &str, provider: &str) -> String {
-    let guard = state
-        .mcp
-        .register_with_provider(
-            session,
-            &owner(),
-            &devboule_protocol::SessionKind::Acp,
-            Some(provider),
-            AgentLineage::root(),
-        )
-        .expect("registration")
-        .expect("MCP guard");
-    std::mem::forget(guard);
-    state.mcp.test_token(session).expect("token")
-}
-
-/// One `tools/call` against the loopback broker, answered already parsed.
-fn call(url: &str, token: &str, id: u64, name: &str, arguments: &str) -> Value {
-    response_json(&http_request(
-        url,
-        Some(&format!("Bearer {token}")),
-        &format!(
-            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
-        ),
-    ))
-}
-
-/// The sentence every id outside the scope answers, and never a word about
-/// which refusal it was.
-fn refusal(body: &Value) -> &str {
-    assert_eq!(
-        body.pointer("/result/isError"),
-        Some(&json!(true)),
-        "a write refusal is a tool error: {body}"
-    );
-    body.pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .expect("the refusal sentence")
-}
-
-/// The spawn override the create road consumes in debug builds: a terminal
-/// that answers pings for a minute and then leaves on its own, so a create
-/// here starts something cheap and a test that forgets to kill its terminals
-/// does not leave a shell behind. Written before *each* create — the road
-/// consumes the file.
-fn keepalive_spawn(state: &Arc<ServerState>) {
-    let paths = crate::paths::RuntimePaths::from_dir(state.sessions.runtime_dir());
-    crate::session::write_test_pty_command(
-        &paths,
-        &crate::session::PtyCommand::new(
-            "cmd.exe",
-            vec![
-                "/c".to_string(),
-                "ping".to_string(),
-                "-n".to_string(),
-                "60".to_string(),
-                "127.0.0.1".to_string(),
-            ],
-            crate::test_dirs::test_temp_dir("devboule-term-write-pty"),
-            Vec::new(),
-        ),
-    )
-    .expect("spawn override written");
-}
-
-fn pending_cards(state: &Arc<ServerState>, session: &str) -> Vec<String> {
-    state
-        .sessions
-        .live_runtime(session, &owner())
-        .expect("live session")
-        .permission_broker()
-        .expect("test broker")
-        .test_pending_ids()
-}
-
-/// The terminal-write card, waited for: a write runs on another thread,
-/// because the gate blocks until a person answers.
-fn wait_for_card(state: &Arc<ServerState>, session: &str) -> String {
-    let start = Instant::now();
-    loop {
-        let mut ids = pending_cards(state, session);
-        if let Some(id) = ids.pop() {
-            return id;
-        }
-        assert!(
-            start.elapsed() < Duration::from_secs(10),
-            "the write raised no card"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn answer(
-    state: &Arc<ServerState>,
-    session: &str,
-    card: &str,
-    outcome: PermissionOutcome,
-    option: &str,
-) {
-    state
-        .sessions
-        .live_runtime(session, &owner())
-        .expect("live session")
-        .permission_broker()
-        .expect("test broker")
-        .test_answer(card, outcome, option)
-        .expect("answer the card");
-}
-
-/// Open the terminal-write gate the way a person does, so the tests about
-/// something else call the writes synchronously: raise it on a throwaway
-/// thread and answer "for this session".
-fn allow_terminal_writes(state: &Arc<ServerState>, session: &str) {
-    let thread_state = Arc::clone(state);
-    let thread_session = session.to_string();
-    let handle = std::thread::spawn(move || {
-        ensure_write_allowed(
-            &thread_state,
-            &thread_state.mcp,
-            &thread_session,
-            &owner(),
-            TERMINALS_GROUP,
-            "testing the gate",
-            &[("fact", "value")],
-        )
-    });
-    let card = wait_for_card(state, session);
-    answer(
-        state,
-        session,
-        &card,
-        PermissionOutcome::AllowOnce,
-        "session",
-    );
-    assert!(handle.join().expect("gate thread").is_ok());
-}
-
-/// A `tools/call` on its own thread, so a card can be answered while it
-/// waits.
-fn call_on_a_thread(
-    url: &str,
-    token: &str,
-    id: u64,
-    name: &str,
-    arguments: &str,
-) -> std::thread::JoinHandle<Value> {
-    let url = url.to_string();
-    let token = token.to_string();
-    let body = format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
-    );
-    std::thread::spawn(move || {
-        let authorization = format!("Bearer {token}");
-        response_json(&http_request(&url, Some(&authorization), &body))
-    })
-}
-
-/// Join a call that must have passed the gate *without* raising a card: a
-/// card that appears is answered (so the thread can finish) and then named
-/// as the failure, so a regressed gate reddens this test instead of hanging
-/// the run.
-fn join_without_a_card(
-    state: &Arc<ServerState>,
-    session: &str,
-    handle: std::thread::JoinHandle<Value>,
-) -> Value {
-    let start = Instant::now();
-    loop {
-        let mut cards = pending_cards(state, session);
-        if let Some(card) = cards.pop() {
-            answer(state, session, &card, PermissionOutcome::Deny, "deny");
-            let answer = handle.join().expect("call thread");
-            panic!("the write raised a card again: {answer}");
-        }
-        if handle.is_finished() {
-            return handle.join().expect("call thread");
-        }
-        assert!(
-            start.elapsed() < Duration::from_secs(10),
-            "the write answered neither a card nor a reply"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// One value a document must carry, or the test says which one is missing.
-fn field<'a>(document: &'a Value, name: &str) -> &'a Value {
-    document
-        .get(name)
-        .unwrap_or_else(|| panic!("the reply carries {name}: {document}"))
-}
+use devboule_protocol::{PermissionOutcome, SessionEvent};
 
 // --- The kind gate: the P1 -------------------------------------------------
 
@@ -923,6 +687,9 @@ fn allow_once_asks_again_and_allow_for_the_session_does_not() {
     );
     assert!(pending_cards(&state, "tw-choices-caller").is_empty());
 
+    // Killing is its own act: the create group opened above says nothing
+    // about it, so cleanup asks for it once here.
+    allow_group(&state, "tw-choices-caller", TERMINAL_KILL_GROUP);
     let listed = call(&state.mcp.url, &token, 4, MCP_LIST_TERMINALS_TOOL, "{}");
     let terminals = listed["result"]["structuredContent"]["terminals"]
         .as_array()
@@ -1010,8 +777,16 @@ fn the_keys_card_counts_the_keys_and_never_carries_them() {
         "the card counts the keys instead of showing them: {description}"
     );
     assert!(
-        description.contains("/tmp/devboule-terminal"),
-        "the card names the directory the terminal runs in: {description}"
+        description.contains(&workspace),
+        "the card says which workspace the terminal is in: {description}"
+    );
+    assert!(
+        description.contains("opened by: you"),
+        "the card says whose terminal it is: {description}"
+    );
+    assert!(
+        description.contains("started in: /tmp/devboule-terminal"),
+        "the card says where the terminal started, not where it may be now: {description}"
     );
     assert_eq!(answered.pointer("/result/isError"), Some(&json!(true)));
     assert!(

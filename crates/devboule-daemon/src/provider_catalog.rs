@@ -509,8 +509,9 @@ pub const MCP_CREATE_TERMINAL_TOOL: &str = "devboule_create_terminal";
 /// session's id exactly like an unknown id — "No session with that id." —
 /// before anything is looked up or asked. Scope is the caller's owner,
 /// origin and workspace from the rows; the payload is capped at
-/// [`devboule_protocol::MAX_WRITE_BYTES`]; the peer door judges the call as
-/// the wire's `SessionSend`. The typed bytes reach no log, no audit row and
+/// [`devboule_protocol::MAX_WRITE_BYTES`]; the peer door judges the call
+/// under the capability the wire's `SessionSend` names, since no wire frame
+/// types into a pty at all. The typed bytes reach no log, no audit row and
 /// no card.
 pub const MCP_SEND_TERMINAL_KEYS_TOOL: &str = "devboule_send_terminal_keys";
 /// The terminal write that ends a terminal: the process tree dies and the

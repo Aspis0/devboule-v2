@@ -810,9 +810,11 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             idempotency_key: None,
         }]))
     } else if tool == MCP_SEND_TERMINAL_KEYS_TOOL {
-        // Typing into a pty is the send act: the same `send` capability the
-        // send tool meets, and no weaker one — the bytes land in a process
-        // of this machine, which is what a send always does.
+        // Typing into a pty has no wire frame — `SessionSend` reaches an
+        // agent's runtime, never a terminal — so the door borrows that
+        // frame's capability instead of judging an equivalent act: a device
+        // may type into a terminal exactly when it may put text into a
+        // session of this machine, and never weaker.
         Some(McpToolWire::Judged(vec![ClientMessage::SessionSend {
             id: 0,
             session_id: String::new(),
