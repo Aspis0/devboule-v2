@@ -62,14 +62,9 @@ impl SessionRegistry {
             session.state,
             SessionState::Live { .. } | SessionState::Silent { .. }
         );
-        let minutes = self
-            .agent_profiles
-            .get()
-            .map(|store| store.idle_close_minutes(session.profile_id.as_deref()))
-            .unwrap_or(crate::agent_profiles::DEFAULT_IDLE_CLOSE_MINUTES);
+        let minutes = self.idle_close_minutes_now(session.profile_id.as_deref());
         // The switch is read at the same moment as the clock: "never" clears
-        // an armed spell, so a child can never be closed on minutes that were
-        // true before the edit landed.
+        // an armed spell before it can run.
         if minutes == 0 {
             self.set_idle_close_since(child, None);
             return false;
@@ -85,23 +80,53 @@ impl SessionRegistry {
         if now.saturating_duration_since(since) < Duration::from_secs(u64::from(minutes) * 60) {
             return false;
         }
-        // What can move between the read above and the act is re-read here,
-        // in the same order the conditions were weighed: a turn or a card
-        // that appeared in the meantime ends the spell, and the field itself
-        // is re-read last because focusing the child clears it
-        // (`set_presence`) without any of the four reads above knowing.
-        if runtime.is_running_turn() || runtime.permission_pending() {
+        #[cfg(test)]
+        self.fire_idle_close_before_act_hook();
+        // Everything the act's own words claim — no turn, no card, nothing
+        // in flight, nobody viewing — is re-read here, under the session map
+        // lock: the lock message admission holds while it finds the target
+        // and reserves its slot, so an admission is either visible in this
+        // read (the child is not closed) or it lands after the close took the
+        // target out and is refused with the closed-child sentence: never
+        // accepted and then torn down. The minutes come with them, so turning
+        // the timer off wins over a spell that has already run out.
+        let (minutes, blocked) = {
+            let Ok(_map) = self.inner.lock() else {
+                return false;
+            };
+            let minutes = self.idle_close_minutes_now(session.profile_id.as_deref());
+            let blocked = minutes == 0
+                || runtime.is_running_turn()
+                || runtime.permission_pending()
+                || self.message_in_flight_to(child)
+                || self.child_is_viewed(child, &owner.user, runtime);
+            (minutes, blocked)
+        };
+        if blocked {
             self.set_idle_close_since(child, None);
             return false;
         }
+        // Focusing the child clears the field (`set_presence`) without any of
+        // the reads above knowing, so the armed instant is re-read last.
         if self.idle_close_since(child) != Some(since) {
             return false;
         }
         self.close_idle_child(state, child, &view, &creator, minutes)
     }
 
+    /// The profile's minutes right now: read live at every use (D5), never
+    /// copied at a child's birth, defaulting when there is no store, no
+    /// profile id, or no such profile in the document.
+    fn idle_close_minutes_now(&self, profile_id: Option<&str>) -> u32 {
+        self.agent_profiles
+            .get()
+            .map(|store| store.idle_close_minutes(profile_id))
+            .unwrap_or(crate::agent_profiles::DEFAULT_IDLE_CLOSE_MINUTES)
+    }
+
     /// The close act, in the order it has to happen: the child's transcript
-    /// told while its row is still in the map, the creator told, then the
+    /// told while its row is still in the map (at most once per spell, no
+    /// matter how often the act is retried), the creator told, then the
     /// audited close with the slot release that belongs to it.
     fn close_idle_child(
         &self,
@@ -112,17 +137,27 @@ impl SessionRegistry {
         minutes: u32,
     ) -> bool {
         let (session, runtime, owner) = view;
-        let _ = runtime.publish_daemon_event(SessionEvent::SessionNotice {
-            text: format!("closed: idle after {minutes} minutes"),
-            severity: NoticeSeverity::Info,
-        });
-        let display_name = session
-            .display_name
-            .clone()
-            .unwrap_or_else(|| session.title.clone());
-        let envelope =
-            agent_idle_closed_envelope(&session.id, &display_name, minutes, &session.origin);
-        let _ = self.deliver_notice_to_creator(creator, owner, &envelope);
+        // Claimed before it is published: a close that refuses below must not
+        // publish this again on the next sweep — the child would carry two
+        // "closed: idle" lines while still running. The quiet sweep sets its
+        // latch *after* its delivery, because a lost notice there must stay
+        // owed; here the risk is the other one.
+        if self.claim_idle_close_notice(child) {
+            let _ = runtime.publish_daemon_event(SessionEvent::SessionNotice {
+                text: format!("closed: idle after {minutes} minutes"),
+                severity: NoticeSeverity::Info,
+            });
+            let display_name = session
+                .display_name
+                .clone()
+                .unwrap_or_else(|| session.title.clone());
+            let envelope =
+                agent_idle_closed_envelope(&session.id, &display_name, minutes, &session.origin);
+            // Zero wait on a creator whose broker has not come up: this runs
+            // on the shared sweep thread, which owes every other child its
+            // cadence, so `MCP_READY_TIMEOUT` (15 s) must never be spent here.
+            let _ = self.deliver_notice_to_creator(creator, owner, &envelope, Duration::ZERO);
+        }
         match self.close(child, owner, &None) {
             Ok(true) => {
                 self.record_idle_close(child);
@@ -131,6 +166,21 @@ impl SessionRegistry {
             }
             Ok(false) | Err(_) => false,
         }
+    }
+
+    /// Claim this link's one idle-close notice: `true` the first time,
+    /// `false` for every attempt after it — whether or not the delivery
+    /// above reached anyone, the notice itself is spent.
+    fn claim_idle_close_notice(&self, child: &str) -> bool {
+        let Ok(mut table) = self.creations.lock() else {
+            return false;
+        };
+        let Some(link) = table.children.get_mut(child) else {
+            return false;
+        };
+        let owed = !link.idle_close_notified;
+        link.idle_close_notified = true;
+        owed
     }
 
     /// Arm the timer while this child is idle and clear it when it is not,

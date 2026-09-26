@@ -2,7 +2,8 @@
  * The parser for the daemon's `<devboule-system>` notice envelopes other than
  * the permission request (which `agentPermissionRequest.ts` owns): the frames
  * that claim `role: daemon` and report what a created child is doing —
- * `agent_finished`, `agent_input_required`, `agent_quiet` — plus any kind a
+ * `agent_finished`, `agent_input_required`, `agent_quiet`,
+ * `agent_idle_closed` — plus any kind a
  * newer daemon adds that this build has never heard of.
  *
  *     <devboule-system>
@@ -23,7 +24,7 @@
  *   CALLER's peer record (`agent_message_send_in_namespace`), so an echo sent by a session a
  *   paired daemon created reads `role: daemon` while carrying another
  *   agent's words. The marker is a `kind:` line in the fixed header: all
- *   four notices carry one, the echo carries none. A frame missing either
+ *   notice the daemon builds carries one, the echo carries none. A frame missing either
  *   returns null and is rendered by author, with its text intact.
  * - A frame that carries both NEVER returns null — recognized kind, or
  *   `recognized: false` naming the kind it declared — not even when the
@@ -78,6 +79,15 @@ export type AgentDaemonNotice =
       truncated: boolean;
     }
   | {
+      recognized: true;
+      kind: "agent_idle_closed";
+      childSessionId: string;
+      childName: string | null;
+      /** Whole minutes the daemon waited before closing, as the frame states them. */
+      idleMinutes: number;
+      truncated: boolean;
+    }
+  | {
       recognized: false;
       /** The kind the fixed header declared. A frame without one is not a
           notice and never reaches this type. */
@@ -89,7 +99,12 @@ export type AgentDaemonNotice =
 const ENVELOPE_OPEN = "<devboule-system>";
 const ENVELOPE_CLOSE = "</devboule-system>";
 const DAEMON_ROLE = "daemon";
-const KNOWN_KINDS = ["agent_finished", "agent_input_required", "agent_quiet"] as const;
+const KNOWN_KINDS = [
+  "agent_finished",
+  "agent_input_required",
+  "agent_quiet",
+  "agent_idle_closed",
+] as const;
 const TIMESTAMP_PREFIX = "timestamp: ";
 /** The field lines the finish prose cannot be told apart from. */
 const FINISH_MARKERS = ["note: ", "artifacts: "];
@@ -266,6 +281,26 @@ export function parseAgentDaemonNotice(text: string): AgentDaemonNotice | null {
       kind,
       childSessionId,
       childName: headerLinesValue(lines, "displayName"),
+      truncated,
+    };
+  }
+
+  if (kind === "agent_idle_closed") {
+    // The minutes are a field, not prose: the frame states them the way
+    // `agent_quiet` states its idle time, so a missing or malformed count
+    // demotes the card instead of inventing one from the summary line.
+    const minutesValue = headerLinesValue(lines, "idleMinutes");
+    const idleMinutes =
+      minutesValue !== null && /^\d+$/.test(minutesValue) ? Number(minutesValue) : null;
+    if (idleMinutes === null || !Number.isSafeInteger(idleMinutes)) {
+      return unformatted();
+    }
+    return {
+      recognized: true,
+      kind,
+      childSessionId,
+      childName: headerLinesValue(lines, "displayName"),
+      idleMinutes,
       truncated,
     };
   }

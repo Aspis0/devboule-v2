@@ -90,6 +90,13 @@ pub(super) type AgentMessageAfterAdmissionHook = Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
 pub(super) type DepositAfterOwnershipHook = Arc<dyn Fn() + Send + Sync>;
 
+/// Runs between the idle sweep's first weigh of its four conditions and the
+/// re-read that precedes the act. Test-only: it is the only way to land an
+/// admission, or a settings edit, at the expiry instant. The registry is
+/// handed in because the tests drive one that is not behind an `Arc`.
+#[cfg(test)]
+pub(super) type IdleCloseBeforeActHook = Box<dyn FnOnce(&SessionRegistry) + Send>;
+
 #[derive(Clone)]
 pub(super) struct ConnectionPresence {
     pub(super) user: String,
@@ -433,6 +440,12 @@ pub(super) struct AgentChild {
     /// spell: a viewer focusing the child clears it, and the next sweep
     /// starts a fresh spell from that moment.
     pub(super) idle_close_since: Option<Instant>,
+    /// The idle-close notice is owed until it has gone out once for this
+    /// spell. A close that refuses after publishing must not publish again
+    /// on the next sweep — the child would carry two "closed: idle" lines
+    /// while still running. The link is exactly as long as the child it
+    /// describes, so the latch dies with it.
+    pub(super) idle_close_notified: bool,
 }
 
 /// One parked child end (audit-2 §2): what the end path still had in hand when

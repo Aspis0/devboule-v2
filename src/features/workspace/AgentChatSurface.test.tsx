@@ -3197,6 +3197,31 @@ describe("creator daemon notice cards", () => {
     expect(item?.textContent).not.toContain("<devboule-system>");
   });
 
+  it("renders the idle-close notice as the daemon's fact: the child, and closed: idle after N minutes", async () => {
+    await renderEnvelope(
+      [
+        "<devboule-system>",
+        "origin: local",
+        "role: daemon",
+        "from_agent: s.child.7",
+        "kind: agent_idle_closed",
+        "timestamp: 1760000000000",
+        "childSessionId: s.child.7",
+        "displayName: worker one",
+        "state: closed",
+        "idleMinutes: 30",
+        "summary: closed: idle after 30 minutes; no turn, no pending card, nothing in flight, nobody viewing.",
+        "</devboule-system>",
+      ].join("\n"),
+    );
+    const item = container.querySelector("[data-testid='agent-daemon-notice']");
+    const copy = item?.querySelector(".workspace-chat-copy")?.textContent ?? "";
+    expect(copy).toContain("worker one");
+    expect(copy).toContain("closed: idle after 30 minutes");
+    expect(item?.querySelector("blockquote")).toBeNull();
+    expect(item?.textContent).not.toContain("<devboule-system>");
+  });
+
   it("renders the input-required notice as the daemon's fact, without a quoted block", async () => {
     await renderEnvelope(
       [

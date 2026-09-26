@@ -39,6 +39,10 @@ function recognizedSentence(notice: Extract<DaemonNotice, { recognized: true }>)
   if (notice.kind === "agent_input_required") {
     return `Its child ${child} is waiting for a person to answer a permission card.`;
   }
+  if (notice.kind === "agent_idle_closed") {
+    const span = notice.idleMinutes === 1 ? "1 minute" : `${notice.idleMinutes} minutes`;
+    return `Its child ${child} was closed: idle after ${span}.`;
+  }
   const minutes = Math.floor(notice.idleMs / 60_000);
   // The daemon counts whole minutes the same way; a sub-minute quiet notice
   // states its zero rather than rounding it into a lie.

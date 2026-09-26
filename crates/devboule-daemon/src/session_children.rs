@@ -262,6 +262,7 @@ impl super::SessionRegistry {
                 report_owed: true,
                 quiet_notified: false,
                 idle_close_since: None,
+                idle_close_notified: false,
             },
         );
         let caps = table
@@ -319,6 +320,7 @@ impl super::SessionRegistry {
                 report_owed: true,
                 quiet_notified: false,
                 idle_close_since: None,
+                idle_close_notified: false,
             },
         );
     }
@@ -580,6 +582,7 @@ impl super::SessionRegistry {
                 report_owed: true,
                 quiet_notified: false,
                 idle_close_since: None,
+                idle_close_notified: false,
             },
         );
         (true, deferred)
@@ -1024,7 +1027,12 @@ impl super::SessionRegistry {
         let idle_ms: u64 = idle.as_millis().try_into().unwrap_or(u64::MAX);
         let envelope = agent_quiet_envelope(&session.id, &display_name, idle_ms, &session.origin);
         let delivered = self
-            .deliver_notice_to_creator(&creator, &owner, &envelope)
+            .deliver_notice_to_creator(
+                &creator,
+                &owner,
+                &envelope,
+                crate::mcp_broker::ready_timeout(),
+            )
             .is_ok();
         if delivered {
             if let Ok(mut table) = self.creations.lock() {
@@ -1205,11 +1213,23 @@ impl super::SessionRegistry {
         // of queueing behind it), and when it is refused the same envelope goes
         // out once as a plain prompt. Only if that fails too does the caller
         // see an Err.
-        let steer = self.send_to_creator(creator, owner, text, true);
+        let steer = self.send_to_creator(
+            creator,
+            owner,
+            text,
+            true,
+            crate::mcp_broker::ready_timeout(),
+        );
         if steer.is_ok() || !local {
             return steer;
         }
-        self.send_to_creator(creator, owner, text, false)
+        self.send_to_creator(
+            creator,
+            owner,
+            text,
+            false,
+            crate::mcp_broker::ready_timeout(),
+        )
     }
 
     /// One daemon notice a creator is owed without urgency: it queues behind
@@ -1217,13 +1237,19 @@ impl super::SessionRegistry {
     /// separate function rather than a flag, so the urgent steer-or-prompt
     /// path above keeps its shape and no routine notice can pass the wrong
     /// boolean and interrupt a turn it only meant to inform.
+    ///
+    /// `mcp_timeout` is the caller's own budget for a creator whose broker
+    /// has not come up yet: the idle sweep passes zero, because that thread
+    /// owes every other child its cadence and a creator that is not ready
+    /// *now* must not hold it (`session_idle_close.rs`).
     pub(super) fn deliver_notice_to_creator(
         &self,
         creator: &str,
         owner: &OwnerId,
         text: &str,
+        mcp_timeout: Duration,
     ) -> Result<Option<String>, WireError> {
-        self.send_to_creator(creator, owner, text, false)
+        self.send_to_creator(creator, owner, text, false, mcp_timeout)
     }
 
     fn send_to_creator(
@@ -1232,6 +1258,7 @@ impl super::SessionRegistry {
         owner: &OwnerId,
         text: &str,
         steer: bool,
+        mcp_timeout: Duration,
     ) -> Result<Option<String>, WireError> {
         let internal_conn = ConnHandle::with_peer(0, None);
         self.send_with_subscription_timeout(&SendRequest {
@@ -1244,7 +1271,7 @@ impl super::SessionRegistry {
             attachment_references: &[],
             owner,
             conn: &internal_conn,
-            mcp_timeout: crate::mcp_broker::ready_timeout(),
+            mcp_timeout,
             active_turn_behavior: steer.then_some(ActiveTurnBehavior::Steer),
             require_attachment: false,
             interrupt_on_steer_refusal: steer,

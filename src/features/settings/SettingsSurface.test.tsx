@@ -2616,6 +2616,41 @@ describe("Settings agents panel", () => {
     expect(idleField().value).toBe("30");
   });
 
+  it("never lets a typed 0 in the minutes field mean never", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const idleField = container.querySelector<HTMLInputElement>(
+      '.agent-inline-editor input[aria-label="Close idle children after minutes"]',
+    );
+    const offTick = container.querySelector<HTMLInputElement>(
+      '.agent-inline-editor input[aria-label="Never close idle children"]',
+    );
+    if (!idleField || !offTick) throw new Error("the idle-close controls did not render");
+
+    await typeText(idleField, "0");
+    // The field shows what will be saved: a whole minute. "Never" is the
+    // tick's meaning alone, so a typed 0 must not reach the daemon as
+    // `Some(0)` — the opposite of what the human asked for.
+    expect(idleField.value).toBe("1");
+    expect(offTick.checked).toBe(false);
+
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [{ ...makeProfile(), idleCloseMinutes: 1 }],
+        standingInstructions: "",
+      },
+    });
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenLastCalledWith({
+      profiles: [{ ...makeProfile(), idleCloseMinutes: 1 }],
+      standingInstructions: "",
+    });
+  });
+
   it("refuses a rename that would put two enabled profiles on one name, before sending", async () => {
     const scout = makeProfile({ id: "s1", name: "Scout", enabledForAgents: true });
     const reviewer = makeProfile({ id: "r1", name: "Reviewer", enabledForAgents: true });

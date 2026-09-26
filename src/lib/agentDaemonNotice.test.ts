@@ -236,6 +236,35 @@ describe("parseAgentDaemonNotice", () => {
     expect(notice).toEqual({ recognized: false, kind: "agent_quiet", childSessionId: "s.child.7" });
   });
 
+  it("parses an agent_idle_closed frame with the minutes the daemon states", () => {
+    const body = [
+      "childSessionId: s.child.7",
+      "displayName: worker one",
+      "state: closed",
+      "idleMinutes: 30",
+      "summary: closed: idle after 30 minutes; no turn, no pending card, nothing in flight, nobody viewing.",
+    ];
+    const notice = parseAgentDaemonNotice(daemonFrame("agent_idle_closed", body));
+    expect(notice).toEqual({
+      recognized: true,
+      kind: "agent_idle_closed",
+      childSessionId: "s.child.7",
+      childName: "worker one",
+      idleMinutes: 30,
+      truncated: false,
+    });
+  });
+
+  it("treats an agent_idle_closed frame without a numeric idleMinutes as unrecognized", () => {
+    const body = ["childSessionId: s.child.7", "displayName: worker one", "idleMinutes: soon"];
+    const notice = parseAgentDaemonNotice(daemonFrame("agent_idle_closed", body));
+    expect(notice).toEqual({
+      recognized: false,
+      kind: "agent_idle_closed",
+      childSessionId: "s.child.7",
+    });
+  });
+
   it("parses an agent_input_required frame; a missing displayName stays absent, not invented", () => {
     const notice = parseAgentDaemonNotice(
       daemonFrame("agent_input_required", [

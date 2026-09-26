@@ -56,11 +56,16 @@ const CLEARED_PROVIDER_FIELDS: ProviderSpecificFields = {
  * The minutes field's text as the draft holds it: blank is the profile
  * saying nothing (the default applies), and anything else is the number the
  * daemon's own cap will judge — `profileDraftRefusal` refuses what this
- * cannot be, rather than the form quietly rounding it.
+ * cannot be, rather than the form quietly rounding it. The one value this
+ * does correct is a typed **0**: the field's own `min` is 1, and "never" has
+ * a door of its own (the tick), so a 0 the human typed must not save as the
+ * daemon's `Some(0)` — the opposite of what they asked for.
  */
 function idleMinutesOf(text: string): number | null {
   const trimmed = rustTrim(text);
-  return trimmed === "" ? null : Number(trimmed);
+  if (trimmed === "") return null;
+  const minutes = Number(trimmed);
+  return minutes < 1 ? 1 : minutes;
 }
 
 /**
@@ -149,6 +154,7 @@ export function AgentProfileForm({
   const spawnCounterId = `${describedById}-spawn-count`;
   const noteCounterId = `${describedById}-note-count`;
   const thinkingHintId = `${describedById}-thinking-hint`;
+  const idleHintId = `${describedById}-idle-hint`;
   // The fields as they stand this render: the base every change reports up
   // from, so the panel's draft always holds the whole form, never a patch.
   function currentSeed(): ProfileFormSeed {
@@ -527,6 +533,7 @@ export function AgentProfileForm({
         Close idle children after — minutes
         <input
           aria-label="Close idle children after minutes"
+          aria-describedby={idleHintId}
           type="number"
           min={1}
           max={MAX_IDLE_CLOSE_MINUTES}
@@ -534,14 +541,17 @@ export function AgentProfileForm({
           value={idleMinutes}
           disabled={busy || idleOff}
           onChange={(event) => {
-            setIdleMinutes(event.target.value);
+            const minutes = idleMinutesOf(event.target.value);
+            // The corrected value is what the field shows, so a typed 0
+            // reads as the 1 it will be saved as — never as silence.
+            setIdleMinutes(minutes === null ? "" : String(minutes));
             onSeedChange?.({
               ...currentSeed(),
-              idleCloseMinutes: idleOff ? 0 : idleMinutesOf(event.target.value),
+              idleCloseMinutes: idleOff ? 0 : minutes,
             });
           }}
         />
-        <span className="device-field-hint">
+        <span className="device-field-hint" id={idleHintId}>
           {DEFAULT_IDLE_CLOSE_MINUTES} by default, up to {MAX_IDLE_CLOSE_MINUTES} (a week). A child
           created from this profile is closed after this long with no turn, no waiting permission
           card, nothing being sent to it, and nobody looking at it; a closed session cannot reopen.

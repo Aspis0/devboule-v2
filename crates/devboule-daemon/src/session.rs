@@ -210,6 +210,12 @@ mod session_terminals;
 /// answers a send with.
 #[path = "session_idle_close.rs"]
 mod session_idle_close;
+/// The act's own guards — the re-read just before the close and the notice
+/// that goes out once — in their own file: each case lands its event at the
+/// expiry instant through the registry's one-shot hook.
+#[cfg(test)]
+#[path = "session_idle_close_act_tests.rs"]
+mod session_idle_close_act_tests;
 /// The close's own outputs — the transcript notice, the creator's envelope and
 /// the send's refusal — in their own file: they are what the close *says*,
 /// where the sibling module is what it *decides*.
@@ -288,8 +294,8 @@ pub(crate) use session_registry_state::{
 };
 #[cfg(test)]
 use session_registry_state::{
-    AgentMessageAfterAdmissionHook, DepositAfterOwnershipHook, JournalRosterAfterListHook,
-    CREATION_WINDOW, DEFERRED_SLOT_EXPIRY, WORKSPACE_PATH_CACHE_CAP,
+    AgentMessageAfterAdmissionHook, DepositAfterOwnershipHook, IdleCloseBeforeActHook,
+    JournalRosterAfterListHook, CREATION_WINDOW, DEFERRED_SLOT_EXPIRY, WORKSPACE_PATH_CACHE_CAP,
 };
 /// The move road's named phases: `set_agent_child_profile` in the parent is
 /// the thin sequence, and this sibling holds the phases it composes. A
@@ -685,6 +691,8 @@ pub struct SessionRegistry {
     agent_message_after_admission_hook: Arc<Mutex<Option<AgentMessageAfterAdmissionHook>>>,
     #[cfg(test)]
     deposit_after_ownership_hook: Arc<Mutex<Option<DepositAfterOwnershipHook>>>,
+    #[cfg(test)]
+    idle_close_before_act_hook: Arc<Mutex<Option<IdleCloseBeforeActHook>>>,
     /// The agent-profile store, attached by `ServerState` once both exist
     /// (`create-from-profile`).
     ///
@@ -777,6 +785,8 @@ impl SessionRegistry {
             agent_message_after_admission_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             deposit_after_ownership_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            idle_close_before_act_hook: Arc::new(Mutex::new(None)),
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
             worktree_creation: Arc::new(Mutex::new(())),
@@ -943,6 +953,30 @@ impl SessionRegistry {
             .and_then(|mut hook| hook.take());
         if let Some(hook) = hook {
             hook();
+        }
+    }
+
+    /// Arm a one-shot callback that runs after the idle sweep has weighed its
+    /// four conditions and armed the timer, and before the re-read that
+    /// precedes the act — the only place a test can land an admission, or a
+    /// settings edit, at the expiry instant.
+    #[cfg(test)]
+    fn set_idle_close_before_act_hook(&self, hook: IdleCloseBeforeActHook) {
+        *self
+            .idle_close_before_act_hook
+            .lock()
+            .expect("idle close test hook") = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn fire_idle_close_before_act_hook(&self) {
+        let hook = self
+            .idle_close_before_act_hook
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take());
+        if let Some(hook) = hook {
+            hook(self);
         }
     }
 

@@ -9,9 +9,49 @@ use super::session_idle_close_tests::{
 use super::tests::test_owner;
 use super::*;
 
+/// The store's document as these tests write it: one profile, one field
+/// changed. Every idle-close test keeps a single-profile world, so this is
+/// the whole document each of them stores.
+fn profile_document(
+    profile_id: &str,
+    minutes: Option<u32>,
+) -> devboule_protocol::AgentProfilesDocument {
+    devboule_protocol::AgentProfilesDocument {
+        profiles: vec![devboule_protocol::AgentProfile {
+            id: profile_id.to_string(),
+            name: format!("Profile {profile_id}"),
+            icon: None,
+            note: String::new(),
+            spawn_prompt: String::new(),
+            provider: "claude".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            mode_id: "default".to_string(),
+            thinking_option_id: None,
+            features: serde_json::Map::new(),
+            tool_overlay: Vec::new(),
+            enabled_for_agents: true,
+            idle_close_minutes: minutes,
+        }],
+        standing_instructions: String::new(),
+    }
+}
+
+/// Replace the store's document with one profile's new minutes — what a save
+/// in settings does, which is how a test edits a timer under a running child.
+pub(super) fn set_profile_minutes(
+    state: &Arc<ServerState>,
+    profile_id: &str,
+    minutes: Option<u32>,
+) {
+    state
+        .agent_profiles
+        .set(profile_document(profile_id, minutes))
+        .expect("the store admits this document");
+}
+
 /// A linked child on a profile that names `minutes` (`None` is the profile
 /// saying nothing, which the sweep reads as the default).
-fn profile_child(
+pub(super) fn profile_child(
     state: &Arc<ServerState>,
     label: &str,
     owner: &OwnerId,
@@ -20,27 +60,7 @@ fn profile_child(
 ) -> String {
     let registry = &state.sessions;
     let profile_id = format!("p-{label}");
-    state
-        .agent_profiles
-        .set(devboule_protocol::AgentProfilesDocument {
-            profiles: vec![devboule_protocol::AgentProfile {
-                id: profile_id.clone(),
-                name: format!("Profile {label}"),
-                icon: None,
-                note: String::new(),
-                spawn_prompt: String::new(),
-                provider: "claude".to_string(),
-                model: "claude-opus-4-6".to_string(),
-                mode_id: "default".to_string(),
-                thinking_option_id: None,
-                features: serde_json::Map::new(),
-                tool_overlay: Vec::new(),
-                enabled_for_agents: true,
-                idle_close_minutes: minutes,
-            }],
-            standing_instructions: String::new(),
-        })
-        .expect("the store admits this document");
+    set_profile_minutes(state, &profile_id, minutes);
     let child = linked_child(registry, &format!("idle-{label}-child"), owner, creator);
     {
         let mut map = registry.inner.lock().expect("registry");
@@ -136,27 +156,7 @@ fn a_settings_edit_reaches_a_child_already_running() {
 
     // The human lowers the timer while the child is running: the sweep reads
     // the profile again rather than the minutes the child was born under.
-    state
-        .agent_profiles
-        .set(devboule_protocol::AgentProfilesDocument {
-            profiles: vec![devboule_protocol::AgentProfile {
-                id: "p-edit".to_string(),
-                name: "Profile edit".to_string(),
-                icon: None,
-                note: String::new(),
-                spawn_prompt: String::new(),
-                provider: "claude".to_string(),
-                model: "claude-opus-4-6".to_string(),
-                mode_id: "default".to_string(),
-                thinking_option_id: None,
-                features: serde_json::Map::new(),
-                tool_overlay: Vec::new(),
-                enabled_for_agents: true,
-                idle_close_minutes: Some(1),
-            }],
-            standing_instructions: String::new(),
-        })
-        .expect("the store admits this document");
+    set_profile_minutes(&state, "p-edit", Some(1));
 
     assert_eq!(
         registry.sweep_idle_close_children(&state, start + minutes(1)),
