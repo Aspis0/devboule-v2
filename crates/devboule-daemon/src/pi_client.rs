@@ -1415,14 +1415,19 @@ fn spawn_pi(
             // End the tree before waiting on the drain: a descendant can
             // hold stderr past the wrapper's death, and the join below is
             // bounded precisely because that kill can miss.
+            let mut error = error;
             if let Err(join_error) = process_job.terminate_and_wait(READER_JOIN_BUDGET) {
                 eprintln!("could not terminate the Pi job before the stderr join: {join_error}");
+                error
+                    .message
+                    .push_str(&format!(" (could not terminate the Pi job: {join_error})"));
             }
-            let stderr_chunks = stderr_capture.discard_and_join();
+            let (stderr_lines, drain_complete) = stderr_capture.discard_and_join();
             drop(process_job);
             return Err(handshake_error_with_stderr(
                 error,
-                &stderr_chunks,
+                &stderr_lines,
+                drain_complete,
                 mcp.as_ref(),
             ));
         }
@@ -3288,17 +3293,19 @@ impl Read for PiStdout {
 }
 
 /// Bytes of pre-runtime stderr kept for the handshake error: the tail of
-/// the child's startup output, never its total. Chunks, not lines, so one
-/// newline-free run cannot outgrow the budget either.
+/// the child's startup output, never its total.
 const MAX_PRE_RUNTIME_STDERR_BYTES: usize = 8192;
+
+/// One unfinished stderr line past this flushes whole: bounds a
+/// newline-free run while keeping every shorter line intact for the
+/// redactor.
+const MAX_STDERR_LINE_BYTES: usize = 32 * 1024;
 
 /// How much of the daemon's own headline survives the failure banner.
 const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 256;
 
-/// How much of the child's stderr half survives the failure banner.
-const MAX_HANDSHAKE_STDERR_BYTES: usize = 1024;
-
-/// The whole handshake failure banner, both halves together.
+/// The whole handshake failure banner: headline, marker and the last of
+/// the child's output together.
 const MAX_HANDSHAKE_ERROR_BYTES: usize = 1024;
 
 struct PiStderr {
@@ -3310,6 +3317,49 @@ struct PiStderrState {
     runtime: Option<Arc<SessionRuntime>>,
     pending: VecDeque<String>,
     pending_bytes: usize,
+}
+
+impl PiStderrState {
+    /// One reassembled line into the byte-capped ring, oldest evicted first.
+    fn push_line(&mut self, line: String) {
+        self.pending_bytes += line.len();
+        self.pending.push_back(line);
+        while self.pending_bytes > MAX_PRE_RUNTIME_STDERR_BYTES {
+            match self.pending.pop_front() {
+                Some(old) => self.pending_bytes -= old.len(),
+                None => {
+                    self.pending_bytes = 0;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Everything the ring holds, leaving it empty and consistent.
+    fn take_pending(&mut self) -> Vec<String> {
+        self.pending_bytes = 0;
+        std::mem::take(&mut self.pending).into_iter().collect()
+    }
+}
+
+/// One reassembled stderr line: to the transcript once the session has a
+/// runtime, into the pre-runtime ring before that. Whole lines only, so
+/// the redactor never sees a token split across two reads.
+fn emit_stderr_line(state: &Arc<Mutex<PiStderrState>>, line: String) -> bool {
+    let action = match state.lock() {
+        Ok(mut state) => match state.runtime.clone() {
+            Some(runtime) => Some((runtime, line)),
+            None => {
+                state.push_line(line);
+                None
+            }
+        },
+        Err(_) => return false,
+    };
+    if let Some((runtime, line)) = action {
+        publish_stderr_line(&runtime, line);
+    }
+    true
 }
 
 impl PiStderr {
@@ -3328,36 +3378,39 @@ impl PiStderr {
             .spawn(move || {
                 let mut stderr = stderr;
                 let mut buffer = [0u8; 4096];
+                // Lines are reassembled here so the redactor and the
+                // transcript see whole lines, never read fragments.
+                let mut carry = String::new();
                 loop {
                     match stderr.read(&mut buffer) {
-                        Ok(0) => return,
+                        Ok(0) => {
+                            // The failure line may have no trailing newline.
+                            if !carry.is_empty() {
+                                let line = std::mem::take(&mut carry);
+                                if !emit_stderr_line(&thread_state, line) {
+                                    return;
+                                }
+                            }
+                            return;
+                        }
                         Ok(length) => {
-                            let chunk = String::from_utf8_lossy(&buffer[..length]).into_owned();
-                            let runtime = match thread_state.lock() {
-                                Ok(mut state) => {
-                                    if let Some(runtime) = &state.runtime {
-                                        Some(Arc::clone(runtime))
-                                    } else {
-                                        state.pending_bytes += chunk.len();
-                                        state.pending.push_back(chunk.clone());
-                                        while state.pending_bytes > MAX_PRE_RUNTIME_STDERR_BYTES {
-                                            match state.pending.pop_front() {
-                                                Some(old) => {
-                                                    state.pending_bytes -= old.len();
-                                                }
-                                                None => {
-                                                    state.pending_bytes = 0;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        None
+                            carry.push_str(&String::from_utf8_lossy(&buffer[..length]));
+                            loop {
+                                if let Some(pos) = carry.find('\n') {
+                                    let line = carry[..pos].trim_end_matches('\r').to_string();
+                                    carry.drain(..=pos);
+                                    if !emit_stderr_line(&thread_state, line) {
+                                        return;
+                                    }
+                                    continue;
+                                }
+                                if carry.len() > MAX_STDERR_LINE_BYTES {
+                                    let line = std::mem::take(&mut carry);
+                                    if !emit_stderr_line(&thread_state, line) {
+                                        return;
                                     }
                                 }
-                                Err(_) => return,
-                            };
-                            if let Some(runtime) = runtime {
-                                publish_stderr_line(&runtime, chunk);
+                                break;
                             }
                         }
                         Err(error) => {
@@ -3387,10 +3440,12 @@ impl PiStderr {
     }
 
     /// The handshake failed: take what the drain kept, waiting at most the
-    /// reader budget. Past it the thread stays detached and ends on EOF;
-    /// the caller ends the job first, so a held pipe is a missed kill,
-    /// not a hang.
-    fn discard_and_join(&mut self) -> Vec<String> {
+    /// reader budget. The flag reports whether the drain had gone quiet:
+    /// past the budget the thread stays detached and ends on EOF, so a
+    /// false here means the banner may miss the child's last bytes. The
+    /// caller ends the job first, so a held pipe is a missed kill, not a hang.
+    fn discard_and_join(&mut self) -> (Vec<String>, bool) {
+        let mut complete = true;
         if let Some(handle) = self.handle.take() {
             let deadline = Instant::now() + READER_JOIN_BUDGET;
             while !handle.is_finished() && Instant::now() < deadline {
@@ -3398,12 +3453,15 @@ impl PiStderr {
             }
             if handle.is_finished() {
                 let _ = handle.join();
+            } else {
+                complete = false;
             }
         }
-        if let Ok(mut state) = self.state.lock() {
-            return state.pending.drain(..).collect();
-        }
-        Vec::new()
+        let lines = match self.state.lock() {
+            Ok(mut state) => state.take_pending(),
+            Err(_) => Vec::new(),
+        };
+        (lines, complete)
     }
 }
 
@@ -3415,7 +3473,7 @@ impl StderrSource for PiStderr {
                 .lock()
                 .map_err(|_| io::Error::other("Pi stderr lock poisoned"))?;
             state.runtime = Some(Arc::clone(&runtime));
-            std::mem::take(&mut state.pending)
+            state.take_pending()
         };
         for line in pending {
             publish_stderr_line(&runtime, line);
@@ -3426,36 +3484,62 @@ impl StderrSource for PiStderr {
     }
 }
 
-/// A failed handshake carries the daemon's headline and the child's
-/// output, each capped with its head kept: the diagnosis must survive a
-/// chatty child. Redacted whole through the broker redactor before it leaves.
+/// A failed handshake carries the daemon's headline, then the last of
+/// the child's output: the head names the failure, the tail carries the
+/// line that caused it. The ring is reassembled before the redactor sees
+/// it, so a token split across two reads still matches; the cut lands on
+/// the excerpt, never on a secret. Redacted whole through the broker
+/// redactor before it leaves.
 fn handshake_error_with_stderr(
     error: WireError,
-    stderr_chunks: &[String],
+    stderr_lines: &[String],
+    drain_complete: bool,
     mcp: Option<&crate::mcp_broker::McpLaunchConfig>,
 ) -> WireError {
-    let tail = stderr_chunks
+    let redact = |text: &str| {
+        mcp.map(|config| config.redact_text(text))
+            .unwrap_or_else(|| text.to_string())
+    };
+    let mut error = error;
+    let head = bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES);
+    let marker = " Agent stderr: ";
+    let tail_text = stderr_lines
         .iter()
         .flat_map(|chunk| chunk.lines())
         .collect::<Vec<_>>()
         .join(" | ");
-    let mut error = error;
-    if tail.is_empty() {
-        if let Some(mcp) = mcp {
-            error.message = mcp.redact_text(&error.message);
-        }
+    if tail_text.is_empty() {
+        let message = redact(&error.message);
+        error.message = message;
         return error;
     }
-    let message = format!(
-        "{} Agent stderr: {}",
-        bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES),
-        bounded_excerpt(&tail, MAX_HANDSHAKE_STDERR_BYTES)
-    );
-    let message = mcp
-        .map(|config| config.redact_text(&message))
-        .unwrap_or(message);
-    error.message = bounded_excerpt(&message, MAX_HANDSHAKE_ERROR_BYTES);
+    let tail_text = redact(&tail_text);
+    // The tail keeps its end within what is left of the banner budget,
+    // so the headline, the marker and the last words always fit together.
+    let room = MAX_HANDSHAKE_ERROR_BYTES.saturating_sub(head.len() + marker.len());
+    let mut message = format!("{head}{marker}{}", tail_excerpt(&tail_text, room));
+    if !drain_complete {
+        message.push_str(" [stderr may be incomplete]");
+    }
+    error.message = redact(&message);
     error
+}
+
+/// The last `limit` bytes of `text`, cut on a character boundary with the
+/// `…` marking the cut at the front: the end of the output names the failure.
+fn tail_excerpt(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    let mark = '…';
+    if limit < mark.len_utf8() {
+        return String::new();
+    }
+    let mut start = text.len() - (limit - mark.len_utf8());
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("{mark}{}", &text[start..])
 }
 
 /// At most `limit` bytes of `text`, head kept, the `…` inside the budget.

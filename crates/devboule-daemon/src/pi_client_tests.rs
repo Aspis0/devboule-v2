@@ -2240,7 +2240,7 @@ const grandchild = spawn(
   process.execPath,
   [
     "-e",
-    "require('fs').writeSync(2, 'pi grandchild alive, holding pipe\\n'); require('fs').writeFileSync(process.env.DEVBOULE_FAKE_PI_ALIVE_FILE, 'alive'); setTimeout(() => {}, 20000);",
+    "require('fs').writeSync(2, 'pi grandchild alive, holding pipe\\n'); require('fs').writeFileSync(process.env.DEVBOULE_FAKE_PI_ALIVE_FILE, String(process.pid)); setTimeout(() => {}, 20000);",
   ],
   { stdio: ["ignore", "ignore", "inherit"], detached: true }
 );
@@ -2279,16 +2279,24 @@ fs.writeSync(2, "pi TAIL-MARKER-stderr-tail: this line must be cut\n");
 setInterval(() => {}, 1000);
 "#;
 
-/// The bearer-echo fake: like the long one, but the first line carries the
-/// broker bearer the test passes in, so the banner must show `[redacted]`
-/// instead of it.
+/// The bearer-echo fake: two short lines, the first carrying the broker
+/// bearer from the carrier env the daemon really injects. Short on
+/// purpose: truncation is the long test's subject, so the bearer line
+/// always reaches the banner and only the redactor can remove it.
 const FAKE_PI_BEARER_ECHO: &str = r#"
 const fs = require("fs");
-fs.writeSync(2, "pi config: Bearer " + process.env.DEVBOULE_FAKE_PI_BEARER + "\n");
-for (let i = 0; i < 64; i++) {
-  fs.writeSync(2, "pi filler line " + i + " " + "x".repeat(48) + "\n");
-}
-fs.writeSync(2, "pi TAIL-MARKER-stderr-tail: this line must be cut\n");
+fs.writeSync(2, "pi config: Bearer " + process.env.DEVBOULE_MCP_TOKEN + "\n");
+fs.writeSync(2, "pi fake: waiting for the runtime\n");
+setInterval(() => {}, 1000);
+"#;
+
+/// The split-token fake: one bearer line longer than any single read,
+/// so every framing of the pipe cuts the token in two. Redacting reads
+/// instead of the reassembled line can never match it.
+const FAKE_PI_SPLIT_TOKEN: &str = r#"
+const fs = require("fs");
+fs.writeSync(2, "pi config line\n");
+fs.writeSync(2, "BEARER-TOKEN " + process.env.DEVBOULE_MCP_TOKEN + "\n");
 setInterval(() => {}, 1000);
 "#;
 
@@ -3196,14 +3204,57 @@ mod lifecycle_tests {
             started.elapsed() < Duration::from_secs(10),
             "the failed create returns on the reader budget while the pipe is still held"
         );
+        // The tree kill reaps the descendant: with the pipe held past the
+        // wrapper's death, a living pid here means the kill half regressed
+        // while the bounded join masked it.
+        #[cfg(windows)]
+        assert_grandchild_gone(&alive);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The rendezvous file carries the descendant's pid; the tree kill
+    /// must have reaped it once the create returns. Windows-only: ending
+    /// the tree elsewhere is a no-op, and there the bounded join is the
+    /// whole guard.
+    #[cfg(windows)]
+    fn assert_grandchild_gone(alive: &std::path::Path) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let pid: u32 = std::fs::read_to_string(alive)
+            .expect("the descendant reported its pid")
+            .trim()
+            .parse()
+            .expect("the pid parses");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let gone = unsafe {
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                if handle.is_null() {
+                    true
+                } else {
+                    CloseHandle(handle);
+                    false
+                }
+            };
+            if gone {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the tree kill must reap the descendant holding the pipe (pid {pid})"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// The banner keeps the daemon's headline and the `Agent stderr:`
-    /// marker against more than 1 KiB of child output: only the stderr
-    /// part is truncated, never the diagnosis.
+    /// marker against more than 1 KiB of child output, and the excerpt
+    /// keeps the last words: the child's first words and the middle are
+    /// cut, never the diagnosis and never the end.
     #[test]
-    fn a_long_stderr_tail_keeps_the_error_head_and_cuts_its_tail() {
+    fn a_long_stderr_banner_keeps_the_head_and_the_last_words() {
         if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
             eprintln!("{reason}");
             return;
@@ -3238,13 +3289,18 @@ mod lifecycle_tests {
                     error.message
                 );
                 assert!(
-                    error.message.contains("HEAD-MARKER-stderr-head"),
-                    "the stderr head survives: {}",
+                    !error.message.contains("HEAD-MARKER-stderr-head"),
+                    "the child's first words are cut with the middle: {}",
                     error.message
                 );
                 assert!(
-                    !error.message.contains("TAIL-MARKER-stderr-tail"),
-                    "the stderr tail is cut: {}",
+                    !error.message.contains("pi filler line 30 "),
+                    "the middle of a long tail is cut: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("TAIL-MARKER-stderr-tail"),
+                    "the last words survive: {}",
                     error.message
                 );
             }
@@ -3254,6 +3310,8 @@ mod lifecycle_tests {
 
     /// The banner redacts the broker bearer the way the ACP twin's does:
     /// the child's echo of its environment must not travel with the error.
+    /// The stub reads the bearer from the carrier env the daemon really
+    /// injects, not from a test-only key.
     #[test]
     fn a_stderr_tail_redacts_the_broker_bearer() {
         if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
@@ -3277,11 +3335,7 @@ mod lifecycle_tests {
         );
         match spawn_process(
             &state,
-            stderr_handshake_command(
-                &script,
-                &log,
-                &[("DEVBOULE_FAKE_PI_BEARER", super::FAKE_BEARER)],
-            ),
+            stderr_handshake_command(&script, &log, &[]),
             Some(mcp),
             delivery,
         ) {
@@ -3305,6 +3359,53 @@ mod lifecycle_tests {
                 assert!(
                     !error.message.contains(super::FAKE_BEARER),
                     "the bearer value never travels: {}",
+                    error.message
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A token longer than any single read is cut by every possible pipe
+    /// framing, so redacting reads can never match it: only the
+    /// reassembled line redacts whole. The stub reads the value from the
+    /// carrier env, like the bearer test above.
+    #[test]
+    fn a_token_split_across_reads_is_redacted_whole() {
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let _held = HANDSHAKE_TIMEOUT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _budget = HandshakeTimeoutGuard::set(5_000);
+        let log = log_path("splittoken");
+        let dir = log.parent().expect("log dir").to_path_buf();
+        let script = dir.join("fake-pi-split.js");
+        std::fs::write(&script, super::FAKE_PI_SPLIT_TOKEN).expect("write the fake pi entry");
+        let state = ServerState::new("pi-split-token".to_string());
+        let delivery =
+            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let bearer = format!("FAKE-STRADDLING-BEARER-{}", "z".repeat(8000));
+        let mcp =
+            crate::mcp_broker::McpLaunchConfig::for_test("http://127.0.0.1:4599/mcp", &bearer);
+        match spawn_process(
+            &state,
+            stderr_handshake_command(&script, &log, &[]),
+            Some(mcp),
+            delivery,
+        ) {
+            Ok(_) => panic!("a pi that never answers must fail the handshake"),
+            Err(error) => {
+                assert!(
+                    error.message.contains("[redacted]"),
+                    "the split token is redacted whole: {}",
+                    error.message
+                );
+                assert!(
+                    !error.message.contains("FAKE-STRADDLING-BEARER-"),
+                    "no half of the token travels: {}",
                     error.message
                 );
             }
