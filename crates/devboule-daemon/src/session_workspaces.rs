@@ -113,13 +113,15 @@ impl super::SessionRegistry {
         Ok((workspace_id, project_id))
     }
 
-    /// The project's folder, for surfaces that name where a create will
-    /// land before the create runs.
-    pub(crate) fn project_path(&self, project_id: &str) -> Result<PathBuf, WireError> {
+    /// The project's name and folder, for surfaces that name where a
+    /// create will land before the create runs.
+    pub(crate) fn project_name_and_path(
+        &self,
+        project_id: &str,
+    ) -> Result<(String, PathBuf), WireError> {
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
-        Ok(PathBuf::from(
-            self.require_project(journal, project_id)?.path,
-        ))
+        let project = self.require_project(journal, project_id)?;
+        Ok((project.name, PathBuf::from(project.path)))
     }
 
     /// The project's workspace rows with their branches, which the wire
@@ -161,6 +163,8 @@ impl super::SessionRegistry {
             .worktree_creation
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        #[cfg(test)]
+        let _probe = WorktreeCreationProbe::enter();
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let project = self.require_project(journal, project_id)?;
         let project_path = PathBuf::from(&project.path);
@@ -195,15 +199,18 @@ impl super::SessionRegistry {
         if let Err(error) =
             crate::worktree::run_worktree_add_command(&project_path, &checkout, &branch, "HEAD")
         {
-            let cleanup =
-                cleanup_failed_worktree_add_unless_live(&project_path, &checkout, &branch);
+            let checkout_path = crate::workspace::plain_path(&checkout.to_string_lossy());
             return Err(WireError::new(
                 ErrorCode::WorkspaceUnavailable,
-                match cleanup {
-                    Ok(()) => format!("Could not add git worktree for '{project_id}': {error}"),
-                    Err(cleanup_error) => format!(
-                        "Could not add git worktree for '{project_id}': {error}; leftover checkout at '{}' ({cleanup_error})",
-                        crate::workspace::plain_path(&checkout.to_string_lossy())
+                match loser_checkout_cleanup(&project_path, &checkout, &branch) {
+                    LoserCleanup::Removed => {
+                        format!("Could not add git worktree for '{project_id}': {error}")
+                    }
+                    LoserCleanup::KeptLive => format!(
+                        "Could not add git worktree for '{project_id}': {error}; the existing checkout at '{checkout_path}' was left alone",
+                    ),
+                    LoserCleanup::RemoveFailed(cleanup_error) => format!(
+                        "Could not add git worktree for '{project_id}': {error}; leftover checkout at '{checkout_path}' ({cleanup_error})",
                     ),
                 },
             ));
@@ -498,21 +505,79 @@ fn cleanup_failed_worktree_add(repo: &Path, checkout: &Path) -> Result<(), Strin
     crate::worktree::run_worktree_remove_command_with_recovery(&remove, repo, checkout, true)
 }
 
+/// What the loser's cleanup decided after a failed `git worktree add`.
+/// `KeptLive` is the fail-closed answer: on any doubt the path is left
+/// alone and the caller says so.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LoserCleanup {
+    Removed,
+    KeptLive,
+    RemoveFailed(String),
+}
+
 /// The loser's cleanup after a failed `git worktree add`: remove the
-/// leftover only when it is not somebody's live checkout. Under the
-/// creation serial above, a same-branch winner is fully finished by the
-/// time the loser asks, so a path git still lists on the expected branch
-/// is the winner's — never the loser's to remove.
-fn cleanup_failed_worktree_add_unless_live(
-    repo: &Path,
-    checkout: &Path,
-    branch: &str,
-) -> Result<(), String> {
-    let live = crate::worktree::list_existing_worktrees(repo).unwrap_or_default();
+/// leftover only when nothing live stands there. Under the creation serial
+/// above, a same-branch winner is fully finished by the time the loser
+/// asks, so a path git still lists is somebody's — never the loser's to
+/// remove, on whatever branch. A git listing that fails at all is doubt,
+/// not absence, so the path is kept and the caller reports it.
+pub(crate) fn loser_checkout_cleanup(repo: &Path, checkout: &Path, branch: &str) -> LoserCleanup {
+    let live = match crate::worktree::list_existing_worktrees(repo) {
+        Ok(live) => live,
+        Err(_) => return LoserCleanup::KeptLive,
+    };
     match crate::worktree::identify_worktree_at_path(&live, checkout, branch) {
-        crate::worktree::WorktreeIdentity::Match => Ok(()),
-        _ => cleanup_failed_worktree_add(repo, checkout),
+        crate::worktree::WorktreeIdentity::Missing => {
+            match cleanup_failed_worktree_add(repo, checkout) {
+                Ok(()) => LoserCleanup::Removed,
+                Err(error) => LoserCleanup::RemoveFailed(error),
+            }
+        }
+        crate::worktree::WorktreeIdentity::Match
+        | crate::worktree::WorktreeIdentity::Locked
+        | crate::worktree::WorktreeIdentity::BranchMismatch { .. } => LoserCleanup::KeptLive,
     }
+}
+
+/// The most worktree creates observed inside the creation serial at once,
+/// for the test that pins the serial itself. Test-only: production takes
+/// the lock and never looks back.
+#[cfg(test)]
+static WORKTREE_CREATION_IN_FLIGHT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static WORKTREE_CREATION_MAX_SEEN: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+struct WorktreeCreationProbe;
+
+#[cfg(test)]
+impl WorktreeCreationProbe {
+    fn enter() -> Self {
+        let in_flight =
+            WORKTREE_CREATION_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        WORKTREE_CREATION_MAX_SEEN.fetch_max(in_flight, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for WorktreeCreationProbe {
+    fn drop(&mut self) {
+        WORKTREE_CREATION_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_worktree_creation_probe() {
+    WORKTREE_CREATION_IN_FLIGHT.store(0, std::sync::atomic::Ordering::SeqCst);
+    WORKTREE_CREATION_MAX_SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn max_worktree_creations_seen() -> usize {
+    WORKTREE_CREATION_MAX_SEEN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 fn worktree_branch_seed() -> u64 {

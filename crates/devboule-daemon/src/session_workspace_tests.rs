@@ -558,3 +558,66 @@ fn local_workspace_delete_does_not_remove_the_project_folder() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The creation serial, pinned directly: eight barrier-aligned worktree
+/// creates on different branches never overlap inside the function, so a
+/// loser always sees a winner's finished state when it decides what to
+/// clean. Without the lock this observes more than one.
+#[test]
+fn concurrent_worktree_creates_never_overlap() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let root = dir.join("RaceProject");
+    std::fs::create_dir_all(&root).expect("project folder");
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    run(&["init"]);
+    std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
+    run(&["add", "seed.txt"]);
+    run(&["commit", "-m", "seed"]);
+    let project = registry
+        .project_add(root.to_str().expect("project path"))
+        .expect("project row");
+
+    super::session_workspaces::reset_worktree_creation_probe();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let handles: Vec<_> = (0..8)
+        .map(|index| {
+            let registry = registry.clone();
+            let project_id = project.id.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                registry.workspace_create(
+                    &project_id,
+                    WorkspaceIsolation::Worktree,
+                    Some(format!("race-branch-{index}")),
+                )
+            })
+        })
+        .collect();
+    let mut created = 0;
+    for handle in handles {
+        if handle.join().expect("create thread").is_ok() {
+            created += 1;
+        }
+    }
+    assert_eq!(created, 8, "the serial orders creates, it never fails them");
+    assert_eq!(
+        super::session_workspaces::max_worktree_creations_seen(),
+        1,
+        "no two creates share the function"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

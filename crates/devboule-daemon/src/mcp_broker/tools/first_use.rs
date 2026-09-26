@@ -18,7 +18,10 @@ pub(in crate::mcp_broker) const WORKSPACES_GROUP: &str = "workspaces";
 
 /// The card choice that approves only the call it was raised for.
 const CHOICE_ONCE: &str = "once";
-/// The card choice that approves the group for the calling session.
+/// The card choice that approves the group for the calling session. Its
+/// kind is the journal's session word, so the ledger tells it from a
+/// one-shot; the app renders that word as durable.
+const SESSION_KIND: &str = "allow_session";
 const CHOICE_SESSION: &str = "session";
 
 /// Whether a session may call a write group without asking again.
@@ -111,15 +114,25 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
         .lock()
         .map_err(|_| "MCP state is unavailable.".to_string())?;
     let key = (session_id.to_string(), group.to_string());
-    if allowed == Some(CHOICE_SESSION) {
-        marks.insert(key, GateMark::Open);
-        Ok(())
-    } else if allowed == Some(CHOICE_ONCE) {
-        marks.remove(&key);
-        Ok(())
-    } else {
-        marks.remove(&key);
-        Err("permission refused".to_string())
+    // Marks move only out of Pending: an answer to a card the gate already
+    // forgot (a re-registration cleared it) must neither open the group nor
+    // clear a newer grant.
+    let pending = marks.get(&key) == Some(&GateMark::Pending);
+    match allowed {
+        Some(CHOICE_SESSION) if pending => {
+            marks.insert(key, GateMark::Open);
+            Ok(())
+        }
+        Some(CHOICE_ONCE) if pending => {
+            marks.remove(&key);
+            Ok(())
+        }
+        _ => {
+            if pending {
+                marks.remove(&key);
+            }
+            Err("permission refused".to_string())
+        }
     }
 }
 
@@ -158,11 +171,10 @@ fn choice_as_static(choice: Option<String>) -> Option<&'static str> {
 /// payload. The broker stamps the caller's own origin on the way in, so the
 /// card carries the unknown placeholder here, as the creation card does.
 ///
-/// Two allow options of one kind make this a chooser by Paseo's rule (the
-/// same kind twice is a question): the app renders both choices by name,
-/// and no agent — delegated, peer or auto-answered — can pick one. The
-/// journal's grant kind is `allow_once` for both, as for every answered
-/// chooser; which choice was made rides the resolved event's option id.
+/// The card says it is a chooser so the app renders both choices by name;
+/// the delegation and auto-answer doors refuse first-use ids structurally,
+/// so the rendering flag carries no safety weight. The session choice journals
+/// under its own kind, which the app renders as durable.
 fn write_gate_card(
     session_id: &str,
     group: &str,
@@ -171,9 +183,10 @@ fn write_gate_card(
 ) -> SessionEvent {
     let listed = facts
         .iter()
-        .map(|(key, value)| format!("{key}: {value}"))
+        .map(|(key, value)| format!("{key}: {}", oneline(value)))
         .collect::<Vec<_>>()
         .join("\n");
+    let subject = oneline(subject);
     let description = if listed.is_empty() {
         format!(
             "An agent asked to {subject} for the first time. \
@@ -181,8 +194,9 @@ fn write_gate_card(
              \"Allow {group} for this session\" approves {group} writes from this session from now on."
         )
     } else {
+        let marked = mark_fact_lines(&listed).join("\n");
         format!(
-            "An agent asked to {subject} for the first time:\n{listed}\n\n\
+            "An agent asked to {subject} for the first time:\n{marked}\n\n\
              \"Allow this call\" approves only this call. \
              \"Allow {group} for this session\" approves {group} writes from this session from now on."
         )
@@ -204,7 +218,7 @@ fn write_gate_card(
             PermissionOption {
                 option_id: CHOICE_SESSION.to_string(),
                 name: format!("Allow {group} for this session"),
-                kind: "allow_once".to_string(),
+                kind: SESSION_KIND.to_string(),
             },
             PermissionOption {
                 option_id: "deny".to_string(),
@@ -212,10 +226,63 @@ fn write_gate_card(
                 kind: "reject_once".to_string(),
             },
         ],
-        is_chooser: None,
+        // Forced: the two allow options differ in kind (the journal tells
+        // them apart), so the stamp would not derive this on its own — and
+        // without it the app shows only its generic pair and the session
+        // choice is unclickable.
+        is_chooser: Some(true),
         origin: SessionOrigin::unknown(),
         create_agent: None,
     }
+}
+
+/// One line of card text with no surprises in it: every line break a
+/// renderer may honour becomes a space, so a fact stays one fact.
+fn oneline(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(char) = chars.next() {
+        let cr_lf = char == '\r' && chars.peek() == Some(&'\n');
+        if is_line_break(char) {
+            out.push(' ');
+            if cr_lf {
+                chars.next();
+            }
+        } else {
+            out.push(char);
+        }
+    }
+    out
+}
+
+/// Fact lines the daemon vouches for: every line the value breaks into is
+/// prefixed, so a forged terminator inside a fact is just another marked
+/// line and the card's own sentences stay recognisable. The same break set
+/// the creation card marks its prompt with.
+fn mark_fact_lines(listed: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut chars = listed.chars().peekable();
+    while let Some(char) = chars.next() {
+        let cr_lf = char == '\r' && chars.peek() == Some(&'\n');
+        if is_line_break(char) {
+            lines.push(format!("| {}", std::mem::take(&mut current)));
+            if cr_lf {
+                chars.next();
+            }
+        } else {
+            current.push(char);
+        }
+    }
+    lines.push(format!("| {current}"));
+    lines
+}
+
+fn is_line_break(char: char) -> bool {
+    matches!(
+        char,
+        '\n' | '\r' | '\u{2028}' | '\u{2029}' | '\u{0085}' | '\u{000B}' | '\u{000C}'
+    )
 }
 
 /// The card id of a gate card just built, for the watch the gate sets
@@ -236,7 +303,8 @@ fn write_gate_card_id(session_id: &str, group: &str) -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     format!(
-        "write:{group}:{session_id}:{:x}-{}",
+        "{}{group}:{session_id}:{:x}-{}",
+        crate::mcp_broker::FIRST_USE_CARD_PREFIX,
         nanos,
         COUNTER.fetch_add(1, Ordering::Relaxed)
     )

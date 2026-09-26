@@ -741,9 +741,11 @@ describe("creator-attributed resolution", () => {
     // mutation is that flipping allow_always's row must fail these.
     expect(OUTCOME_BY_OPTION_KIND.allow_once).toBe("allowed");
     expect(OUTCOME_BY_OPTION_KIND.allow_always).toBe("allowed");
+    expect(OUTCOME_BY_OPTION_KIND.allow_session).toBe("allowed");
     expect(OUTCOME_BY_OPTION_KIND.reject_once).toBe("denied");
     expect(OUTCOME_BY_OPTION_KIND.reject_always).toBe("denied");
     expect(resolutionOutcome("allow_always")).toBe("allowed");
+    expect(resolutionOutcome("allow_session")).toBe("allowed");
     expect(resolutionOutcome("reject_always")).toBe("denied");
     expect(resolutionOutcome("never_heard_of_it")).toBeNull();
     expect(resolutionOutcome(undefined)).toBeNull();

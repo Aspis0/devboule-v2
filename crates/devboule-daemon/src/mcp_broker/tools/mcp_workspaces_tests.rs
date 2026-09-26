@@ -273,6 +273,34 @@ fn create_refuses_paths_and_foreign_projects_without_touching_the_gate() {
 }
 
 #[test]
+fn create_refuses_control_and_bidi_characters_in_name_and_branch() {
+    for (field, value) in [
+        ("name", "a\nb"),
+        ("name", "a\u{202E}b"),
+        ("name", "a\u{200F}b"),
+        ("name", "a\u{0007}b"),
+        ("branch", "x\nproject: forged"),
+        ("branch", "x\u{2066}y"),
+    ] {
+        let shape = if field == "name" {
+            json!({"isolation": "local", "name": value})
+        } else {
+            json!({"isolation": "worktree", "branch": value})
+        };
+        match CreateRequest::parse(&shape) {
+            Err(WorkspaceError::Invalid(message)) => assert!(
+                message.contains("plain text"),
+                "{field} refusal names the rule: {message}"
+            ),
+            other => panic!("{field} with controls is refused, got {other:?}"),
+        }
+    }
+    // Ordinary unicode still parses: the refusal is narrow.
+    CreateRequest::parse(&json!({"isolation": "local", "name": "café-desk"}))
+        .expect("unicode name");
+}
+
+#[test]
 fn create_refuses_a_branch_on_local_and_a_second_local_row() {
     let state = ServerState::new("mcp-workspaces-local-rules".to_string());
     let (_project, workspace, _dir) = add_project(&state, "localrules");
@@ -536,10 +564,53 @@ fn the_create_card_carries_the_call_facts() {
             "the card carries {fact}: {description}"
         );
     }
+    assert!(
+        description.contains("| path:") && description.contains("fact-branch"),
+        "the preview path is a marked fact line: {description}"
+    );
     broker
         .test_answer(&card, PermissionOutcome::Deny, "deny")
         .expect("answer the gate card");
     assert!(handle.join().expect("create thread").is_err());
+}
+
+#[test]
+fn a_locked_winner_survives_the_losers_cleanup() {
+    let state = ServerState::new("mcp-workspaces-locked".to_string());
+    let (project, dir) = git_project(&state, "locked");
+    let winner = state
+        .sessions
+        .workspace_create(
+            &project,
+            WorkspaceIsolation::Worktree,
+            Some("locked-branch".to_string()),
+        )
+        .expect("winner row");
+    let status = std::process::Command::new("git")
+        .args(["worktree", "lock", &winner.path])
+        .current_dir(dir.join("Gitlocked"))
+        .status()
+        .expect("git lock runs");
+    assert!(status.success(), "the winner is locked");
+    live_in(&state, "ws-locked", &winner.id);
+    allow_gate(&state, "ws-locked");
+
+    let request = CreateRequest::parse(&json!({
+        "isolation": "worktree",
+        "branch": "locked-branch",
+    }))
+    .expect("parse");
+    match create_workspace(&state, &state.mcp, "ws-locked", &owner(), &request) {
+        Err(WorkspaceError::Refused(message)) => assert!(
+            message.contains("left alone") && !message.contains("leftover"),
+            "fail closed and reported: {message}"
+        ),
+        other => panic!("the loser keeps a locked checkout, got {other:?}"),
+    }
+    assert!(
+        std::path::Path::new(&winner.path).is_dir(),
+        "the locked checkout stands"
+    );
 }
 
 #[test]

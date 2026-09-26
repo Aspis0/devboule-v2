@@ -129,12 +129,16 @@ fn the_card_names_both_choices_and_the_facts() {
         kinds,
         vec![
             ("once", "allow_once"),
-            ("session", "allow_once"),
+            ("session", "allow_session"),
             ("deny", "reject_once")
         ],
-        "a chooser: one kind twice, so the app names both and no agent answers"
+        "the ledger tells the choices apart by kind"
     );
-    assert_eq!(is_chooser, Some(true), "stamped a chooser at registration");
+    assert_eq!(
+        is_chooser,
+        Some(true),
+        "forced chooser: distinct kinds would render the generic pair"
+    );
     answer(
         &state,
         "fu-card",
@@ -284,7 +288,7 @@ fn the_gate_is_per_session() {
 }
 
 #[test]
-fn a_delegated_answer_is_refused_like_every_question() {
+fn a_delegated_answer_is_refused_for_first_use_cards() {
     let state = ServerState::new("first-use-delegated".to_string());
     session(&state, "fu-creator");
     crate::session::insert_test_child_agent(&state.sessions, "fu-child", owner(), "fu-creator");
@@ -292,8 +296,8 @@ fn a_delegated_answer_is_refused_like_every_question() {
 
     let handle = spawn_gate(&state, "fu-child");
     let card = wait_for_card(&state, "fu-child");
-    // Even a peer holding answer_permissions cannot open the gate: the card
-    // is a chooser, and a chooser stays pending for a person.
+    // Even a peer holding answer_permissions cannot open the gate: the
+    // first-use marker refuses it before the switch, child and caps checks.
     let error = state
         .sessions
         .answer_child_permission("fu-creator", &card, PermissionOutcome::AllowOnce, &|_| {
@@ -301,8 +305,8 @@ fn a_delegated_answer_is_refused_like_every_question() {
         })
         .expect_err("a gate card is not delegatable");
     assert!(
-        error.contains("chooser"),
-        "the question rule refuses it: {error}"
+        error.contains("first-use"),
+        "the marker refuses it: {error}"
     );
     assert_eq!(pending_ids(&state, "fu-child").len(), 1);
     assert_eq!(
@@ -339,6 +343,27 @@ fn a_session_with_no_live_row_is_refused_without_a_card() {
         Err("permission refused".to_string())
     );
     assert_eq!(state.mcp.first_use_mark("fu-gone", WORKSPACES_GROUP), None);
+}
+
+#[test]
+fn fact_lines_are_marked_and_subjects_are_one_line() {
+    assert_eq!(
+        mark_fact_lines("project: P\nisolation: local"),
+        vec!["| project: P".to_string(), "| isolation: local".to_string()]
+    );
+    // A forged terminator inside a value becomes another marked line: the
+    // card's own sentences stay recognisable.
+    assert_eq!(
+        mark_fact_lines("branch: x\nproject: forged"),
+        vec!["| branch: x".to_string(), "| project: forged".to_string()]
+    );
+    // Every break the creation card marks on is marked here too.
+    assert_eq!(
+        mark_fact_lines("a\u{2028}b\u{2029}c"),
+        vec!["| a".to_string(), "| b".to_string(), "| c".to_string()]
+    );
+    assert_eq!(oneline("a\nb\u{202E}c"), "a b\u{202E}c".to_string());
+    assert_eq!(oneline("a\r\nb"), "a b".to_string());
 }
 
 #[test]

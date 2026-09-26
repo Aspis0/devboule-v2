@@ -544,12 +544,14 @@ impl PermissionBroker {
             match outcome {
                 // The journal records the kind that was really granted,
                 // never a one-shot constant (auto_answer's rule) — in the
-                // journal's own vocabulary, where the only durable allow
-                // word is `allow_always`. An open allow kind outside that
-                // vocabulary falls back to the posted outcome rather than a
-                // word `decision_from_outcome` would read as cancelled and
-                // deny a grant that happened.
+                // journal's own vocabulary, where the durable allow words
+                // are `allow_always` and the first-use gate's `allow_session`.
+                // An open allow kind outside that vocabulary falls back to
+                // the posted outcome rather than a word
+                // `decision_from_outcome` would read as cancelled and deny
+                // a grant that happened.
                 PermissionOutcome::AllowOnce if option.kind == "allow_always" => "allow_always",
+                PermissionOutcome::AllowOnce if option.kind == "allow_session" => "allow_session",
                 PermissionOutcome::AllowOnce => "allow_once",
                 PermissionOutcome::Deny => "deny",
             },
@@ -664,6 +666,15 @@ impl PermissionBroker {
         caps_check: &dyn Fn(&str) -> Result<(), String>,
         answered_by: &str,
     ) -> Result<(), String> {
+        // Check 0: a first-use write gate is never delegatable, whatever its
+        // options look like. The id is the daemon's own namespace, so no
+        // caller can mint or shed it; the shape checks below keep working
+        // for every other card unchanged.
+        if crate::mcp_broker::is_first_use_card(tool_call_id) {
+            return Err(format!(
+                "permission card {tool_call_id} approves a first-use write gate; only a person can answer it, so it stays pending"
+            ));
+        }
         // Check 1 (+ the found half of 3): the card's own options, read from
         // the pending entry before any `respond*` call. An outcome the card
         // does not support is a refusal that leaves the card pending — the
@@ -910,6 +921,11 @@ impl PermissionBroker {
         &self,
         tool_call_id: &str,
     ) -> Result<Option<AutoAnswer>, PermissionResponseError> {
+        // A first-use gate is never auto-answered, even one-shot: each call
+        // must reach the person, and an unattended mode is not the person.
+        if crate::mcp_broker::is_first_use_card(tool_call_id) {
+            return Ok(None);
+        }
         let mut table = self
             .pending
             .lock()
@@ -1299,7 +1315,10 @@ pub(super) fn stamp_chooser(mut request: SessionEvent) -> SessionEvent {
         ..
     } = &mut request
     {
-        *is_chooser = options_form_a_chooser(options).then_some(true);
+        // A card that already says it is a chooser keeps saying so: some
+        // cards need named choices without repeating a kind, and the stamp
+        // must not downgrade them to the generic pair.
+        *is_chooser = (*is_chooser).or(options_form_a_chooser(options).then_some(true));
     }
     request
 }
@@ -1452,7 +1471,7 @@ fn decision_from_outcome(journal_outcome: &str) -> HostDecision {
     // that is not mapped here is a deny (Cancelled) — the catch-all is
     // deliberate, not a leftover default.
     match journal_outcome {
-        "allow_once" | "allow_always" => HostDecision::Allow,
+        "allow_once" | "allow_always" | "allow_session" => HostDecision::Allow,
         "deny" => HostDecision::Deny,
         "timeout" => HostDecision::Timeout,
         _ => HostDecision::Cancelled,
@@ -1980,9 +1999,109 @@ mod tests {
         use super::{decision_from_outcome, HostDecision};
         assert_eq!(decision_from_outcome("allow_once"), HostDecision::Allow);
         assert_eq!(decision_from_outcome("allow_always"), HostDecision::Allow);
+        assert_eq!(decision_from_outcome("allow_session"), HostDecision::Allow);
         assert_eq!(decision_from_outcome("deny"), HostDecision::Deny);
         assert_eq!(decision_from_outcome("timeout"), HostDecision::Timeout);
         assert_eq!(decision_from_outcome("cancelled"), HostDecision::Cancelled);
+    }
+
+    /// The first-use gate's session word journals as itself: a session
+    /// licence and a one-shot must be distinguishable in history.
+    #[test]
+    fn a_session_choice_the_person_named_is_journaled_as_session() {
+        let path = permission_path("session-human");
+        let journal = Arc::new(Journal::open(&path).expect("journal"));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_for_sender = Arc::clone(&sent);
+        let sender: Arc<PermissionSender> = Arc::new(move |id, result| {
+            sent_for_sender
+                .lock()
+                .expect("sent lock")
+                .push((id, result));
+            Ok(())
+        });
+        let broker = PermissionBroker::with_sender(sender);
+        let runtime = SessionRuntime::for_acp(
+            "s.permission.session-human".to_string(),
+            Some(Arc::clone(&journal)),
+            Arc::clone(&broker),
+        );
+        broker
+            .register(
+                68,
+                permission_with_kinds(
+                    "session-human",
+                    &[("once", "allow_once"), ("session", "allow_session")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        broker
+            .respond_with_option(
+                "session-human",
+                PermissionOutcome::AllowOnce,
+                Some("session".to_string()),
+            )
+            .expect("the named session option is honored");
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["optionId"],
+            "session"
+        );
+        journal.flush().expect("journal flush");
+        let conn = Connection::open(&path).expect("inspect journal");
+        let outcome: String = conn
+            .query_row(
+                "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+                ["s.permission.session-human", "session-human"],
+                |row| row.get(0),
+            )
+            .expect("permission row");
+        assert_eq!(outcome, "allow_session");
+        drop(conn);
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A first-use gate is never auto-answered, not even one-shot: each
+    /// call must reach the person, and an unattended mode is not the person.
+    #[test]
+    fn auto_answer_refuses_first_use_cards() {
+        let path = permission_path("session-auto");
+        let journal = Arc::new(Journal::open(&path).expect("journal"));
+        let (broker, sent) = test_broker();
+        let runtime = SessionRuntime::for_acp(
+            "s.permission.session-auto".to_string(),
+            Some(Arc::clone(&journal)),
+            Arc::clone(&broker),
+        );
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("grok".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "auto_accept".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(
+                69,
+                permission_with_kinds(
+                    "write:workspaces:s:1-1",
+                    &[("once", "allow_once"), ("session", "allow_session")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        assert!(!broker
+            .auto_answer("write:workspaces:s:1-1", &runtime)
+            .expect("a gate card is not answerable"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

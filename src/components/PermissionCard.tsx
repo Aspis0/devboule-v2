@@ -12,13 +12,20 @@ import type {
 } from "../types/ipc";
 import "./PermissionCard.css";
 
-export type PermissionState = "waiting" | "submitting" | "allowed" | "allowed_always" | "denied";
+export type PermissionState =
+  | "waiting"
+  | "submitting"
+  | "allowed"
+  | "allowed_always"
+  | "allowed_session"
+  | "denied";
 
 export const PERMISSION_LABELS: Record<PermissionState, string> = {
   waiting: "Waiting on you",
   submitting: "Sending decision…",
   allowed: "Allowed once · running",
   allowed_always: "Allowed always · running",
+  allowed_session: "Allowed for this session · running",
   denied: "Denied — the turn continues without it",
 };
 
@@ -95,6 +102,8 @@ type ResolutionAttribution = "creator" | "other" | "unnamed";
 export const OUTCOME_BY_OPTION_KIND: Record<string, "allowed" | "denied"> = {
   allow_once: "allowed",
   allow_always: "allowed",
+  // The first-use gate's session word: an allow, durable for the session.
+  allow_session: "allowed",
   reject_once: "denied",
   reject_always: "denied",
 };
@@ -490,13 +499,16 @@ export function PermissionCard({
           : request.options.find((option) => option.optionId === optionId);
       // The granted kind is what the label claims: a durable grant the
       // person named reads as durable, never as a one-shot — the same rule
-      // the journal keeps (review A2a #2).
+      // the journal keeps (review A2a #2). `allow_session` is the
+      // first-use gate's session word: durable for the session, not forever.
       setPermission(
         outcome === "deny"
           ? "denied"
           : chosen?.kind === "allow_always"
             ? "allowed_always"
-            : "allowed",
+            : chosen?.kind === "allow_session"
+              ? "allowed_session"
+              : "allowed",
       );
       if (chosen !== undefined) {
         setLocalChoice(chosen.name);

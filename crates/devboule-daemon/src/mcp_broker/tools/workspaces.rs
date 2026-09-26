@@ -5,6 +5,7 @@
 //! project folder or a sibling worktree of it are the only checkouts the
 //! daemon mints, so no argument names a path.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -163,6 +164,7 @@ fn workspace_document(record: &WorkspaceRecord) -> Value {
 
 /// `devboule_create_workspace` takes Paseo's shape with our stricter rule:
 /// the project is the caller's own, and no path is accepted at all.
+#[derive(Debug)]
 struct CreateRequest {
     isolation: WorkspaceIsolation,
     name: Option<String>,
@@ -287,6 +289,13 @@ fn create_card_facts(
         WorkspaceIsolation::Local => "local",
         WorkspaceIsolation::Worktree => "worktree",
     };
+    let (project_name, project_path) = state
+        .sessions
+        .project_name_and_path(project_id)
+        .ok()
+        .unwrap_or_else(|| ("(unknown project)".to_string(), PathBuf::new()));
+    let name = request.name.as_deref().unwrap_or(&project_name);
+    let branch = request.branch.as_deref().unwrap_or("(new branch)");
     let subject = match (&request.name, &request.branch) {
         (Some(name), Some(branch)) => {
             format!("creating {isolation} workspace '{name}' on branch '{branch}'")
@@ -295,19 +304,13 @@ fn create_card_facts(
         (None, Some(branch)) => format!("creating {isolation} workspace on branch '{branch}'"),
         (None, None) => format!("creating {isolation} workspace"),
     };
-    let path = preview_checkout_path(state, project_id, request)
+    let path = preview_checkout_path(&project_path, request)
         .unwrap_or_else(|| "(decided at creation)".to_string());
     let facts = vec![
         ("project", project_id.to_string()),
         ("isolation", isolation.to_string()),
-        (
-            "branch",
-            request.branch.as_deref().unwrap_or("default").to_string(),
-        ),
-        (
-            "name",
-            request.name.as_deref().unwrap_or("default").to_string(),
-        ),
+        ("branch", branch.to_string()),
+        ("name", name.to_string()),
         ("path", path),
     ];
     (subject, facts)
@@ -316,25 +319,30 @@ fn create_card_facts(
 /// The checkout a create will make, when it is already determined: the
 /// project folder for local, the sibling checkout for a worktree with an
 /// explicit branch.
-fn preview_checkout_path(
-    state: &ServerState,
-    project_id: &str,
-    request: &CreateRequest,
-) -> Option<String> {
-    let project_path = state.sessions.project_path(project_id).ok()?;
+fn preview_checkout_path(project_path: &Path, request: &CreateRequest) -> Option<String> {
+    if project_path.as_os_str().is_empty() {
+        return None;
+    }
     match request.isolation {
         WorkspaceIsolation::Local => Some(crate::workspace::plain_path(
             &project_path.to_string_lossy(),
         )),
         WorkspaceIsolation::Worktree => request.branch.as_deref().and_then(|branch| {
-            crate::worktree::checkout_path_for_branch(&project_path, branch)
+            crate::worktree::checkout_path_for_branch(project_path, branch)
                 .map(|path| crate::workspace::plain_path(&path.to_string_lossy()))
         }),
     }
 }
 
 /// One optional trimmed string: absent and null are missing, anything else
-/// must be a non-empty string.
+/// must be a non-empty single line of plain text. Control characters and
+/// bidi overrides are refused outright: the value is shown on a consent
+/// card (where a forged line or a reordered one lies to the person) and
+/// reaches git as a branch name, so neither surface gets to interpret it.
+///
+/// The refused set is C0/C1 controls, DEL, the line/paragraph separators
+/// the card marks on, and the bidi controls (overrides, isolates,
+/// embeddings, marks and U+061C).
 fn optional_name(value: Option<&Value>, field: &str) -> Result<Option<String>, WorkspaceError> {
     match value {
         None | Some(Value::Null) => Ok(None),
@@ -342,6 +350,11 @@ fn optional_name(value: Option<&Value>, field: &str) -> Result<Option<String>, W
             let trimmed = value.trim();
             if trimmed.is_empty() || trimmed.len() > MAX_NAME_BYTES {
                 return Err(invalid(format!("{field} is required")));
+            }
+            if trimmed.chars().any(is_card_unsafe) {
+                return Err(invalid(format!(
+                    "{field} must be plain text: no line breaks, controls or bidi overrides"
+                )));
             }
             Ok(Some(trimmed.to_string()))
         }
@@ -361,6 +374,24 @@ fn optional_raw(value: Option<&Value>, field: &str) -> Result<Option<String>, Wo
 
 /// The longest name a tool accepts, in bytes.
 const MAX_NAME_BYTES: usize = 1024;
+
+/// A character that must never ride a name onto a card or into git:
+/// C0/C1 controls, DEL, the Unicode line/paragraph separators, and the
+/// bidi controls (marks, overrides, embeddings, isolates, U+061C).
+fn is_card_unsafe(char: char) -> bool {
+    matches!(
+        char,
+        '\u{0}'..='\u{1F}'
+            | '\u{7F}'..='\u{9F}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{061C}'
+    )
+}
 
 fn refused(message: impl Into<String>) -> WorkspaceError {
     WorkspaceError::Refused(message.into())

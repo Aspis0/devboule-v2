@@ -672,6 +672,17 @@ impl Drop for McpServerHandle {
 pub(crate) const MCP_TOKEN_ENV: &str = "DEVBOULE_MCP_TOKEN";
 pub(crate) const MCP_URL_ENV: &str = "DEVBOULE_MCP_URL";
 
+/// The card-id namespace of first-use write gates (`tools::first_use`).
+/// The delegation and auto-answer doors refuse these ids structurally, so
+/// a later change to the card's shape cannot open them: the check reads
+/// the id the daemon minted, never the options it carries.
+pub(crate) const FIRST_USE_CARD_PREFIX: &str = "write:";
+
+/// Whether this card id names a first-use write gate.
+pub(crate) fn is_first_use_card(tool_call_id: &str) -> bool {
+    tool_call_id.starts_with(FIRST_USE_CARD_PREFIX)
+}
+
 pub(crate) fn ready_timeout() -> Duration {
     std::env::var("DEVBOULE_MCP_READY_TIMEOUT_MS")
         .ok()

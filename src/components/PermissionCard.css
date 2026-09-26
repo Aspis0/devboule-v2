@@ -109,6 +109,11 @@
   background: var(--green);
 }
 
+/* A session grant wears it too; the label says for how long. */
+.permission-card-allowed_session {
+  background: var(--green);
+}
+
 /* An answered card whose outcome the daemon did not name: it is not a denial
    and must not wear one's colour, so the dot goes neutral. */
 .permission-card-unclaimed {
