@@ -140,6 +140,8 @@ pub(super) fn handle_rpc(
                 tools::terminals::list(state, registration, caller, id)
             } else if tool_name == Some(crate::provider_catalog::MCP_CAPTURE_TERMINAL_TOOL) {
                 tools::terminals::capture(state, registration, caller, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_ARCHIVE_WORKSPACE_TOOL) {
+                tools::archive::archive(state, broker, caller, registration, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -254,6 +256,13 @@ pub(super) fn enabled_tool_list(
                         "projectId": {"type": "string", "description": "Must be your own project, when given."},
                     },
                     "required": ["isolation"],
+                    "additionalProperties": false,
+                })
+            } else if *name == crate::provider_catalog::MCP_ARCHIVE_WORKSPACE_TOOL {
+                json!({
+                    "type": "object",
+                    "properties": {"workspaceId": {"type": "string"}},
+                    "required": ["workspaceId"],
                     "additionalProperties": false,
                 })
             } else if *name == crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL {

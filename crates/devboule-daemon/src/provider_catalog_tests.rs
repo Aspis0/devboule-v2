@@ -1346,6 +1346,7 @@ fn the_design_overlay_hides_send_create_and_all_supervision_verbs_and_keeps_the_
     assert!(!design.allows(super::MCP_CANCEL_AGENT_TOOL));
     assert!(!design.allows(super::MCP_STOP_AGENT_TOOL));
     assert!(!design.allows(super::MCP_CLOSE_AGENT_TOOL));
+    assert!(!design.allows(super::MCP_ARCHIVE_WORKSPACE_TOOL));
     assert!(design.allows(super::MCP_ROSTER_TOOL));
     assert!(design.allows(super::MCP_LIST_WORKSPACES_TOOL));
     assert_eq!(
@@ -1357,6 +1358,7 @@ fn the_design_overlay_hides_send_create_and_all_supervision_verbs_and_keeps_the_
             super::MCP_CANCEL_AGENT_TOOL,
             super::MCP_STOP_AGENT_TOOL,
             super::MCP_CLOSE_AGENT_TOOL,
+            super::MCP_ARCHIVE_WORKSPACE_TOOL,
         ]
     );
     let worker = super::ToolOverlay::NONE;

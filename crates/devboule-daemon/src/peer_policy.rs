@@ -562,8 +562,9 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CANCEL_AGENT_TOOL,
         MCP_CAPTURE_TERMINAL_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
         MCP_CREATE_WORKSPACE_TOOL, MCP_GET_AGENT_STATUS_TOOL, MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL,
-        MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL, MCP_LIST_PENDING_PERMISSIONS_TOOL,
-        MCP_LIST_PROFILES_TOOL, MCP_LIST_TERMINALS_TOOL, MCP_LIST_WORKSPACES_TOOL,
+        MCP_ARCHIVE_WORKSPACE_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
+        MCP_LIST_PENDING_PERMISSIONS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_LIST_TERMINALS_TOOL,
+        MCP_LIST_WORKSPACES_TOOL,
         MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
         MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
     };
@@ -747,6 +748,12 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             project_id: String::new(),
             isolation: devboule_protocol::WorkspaceIsolation::Local,
             branch: None,
+        }]))
+    } else if tool == MCP_ARCHIVE_WORKSPACE_TOOL {
+        Some(McpToolWire::Judged(vec![ClientMessage::WorkspaceDelete {
+            id: 0,
+            workspace_id: String::new(),
+            force: false,
         }]))
     } else if tool == MCP_ORACLE_SEARCH_TOOL {
         // The semantic search ships source text — snippets, paths, line

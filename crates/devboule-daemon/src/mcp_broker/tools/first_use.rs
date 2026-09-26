@@ -12,9 +12,11 @@ use devboule_protocol::{OwnerId, PermissionOption, SessionEvent, SessionOrigin};
 use crate::mcp_broker::McpBroker;
 use crate::server::ServerState;
 
-/// The write group C3a gates. C2b adds `"terminals"` here and C3b reuses
-/// this one; the group travels as a plain name so later slices only call.
+/// Creating a workspace has its own permission mark.
 pub(in crate::mcp_broker) const WORKSPACES_GROUP: &str = "workspaces";
+/// Removing a workspace has a separate mark because it closes sessions and
+/// removes an existing checkout.
+pub(in crate::mcp_broker) const ARCHIVE_WORKSPACES_GROUP: &str = "archive_workspaces";
 
 /// The card choice that approves only the call it was raised for.
 const CHOICE_ONCE: &str = "once";
@@ -65,7 +67,7 @@ impl McpBroker {
 /// Pass the write gate for `group`, raising the human card on the caller's
 /// own session the first time.
 ///
-/// `subject` says what this call is about ("creating workspace 'Desk'") and
+/// `subject` says what this call is about ("create workspace 'Desk'") and
 /// `facts` are the `key: value` lines the card shows under it. Both travel
 /// on the card because a licence without them asks the person to approve
 /// what they cannot see.
@@ -189,21 +191,21 @@ fn write_gate_card(
     let subject = oneline(subject);
     let description = if listed.is_empty() {
         format!(
-            "An agent asked to {subject} for the first time. \
+            "An agent requested permission to {subject} for the first time. \
              \"Allow this call\" approves only this call. \
              \"Allow {group} for this session\" approves {group} writes from this session from now on."
         )
     } else {
         let marked = mark_fact_lines(&listed).join("\n");
         format!(
-            "An agent asked to {subject} for the first time:\n{marked}\n\n\
+            "An agent requested permission to {subject} for the first time:\n{marked}\n\n\
              \"Allow this call\" approves only this call. \
              \"Allow {group} for this session\" approves {group} writes from this session from now on."
         )
     };
     SessionEvent::PermissionRequest {
         tool_call_id: write_gate_card_id(session_id, group),
-        title: format!("Allow {subject}"),
+        title: format!("Approve request to {subject}"),
         description: Some(description),
         command: None,
         args: None,

@@ -293,6 +293,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_CAPTURE_TERMINAL_TOOL,
         "Reads the visible screen of one terminal as plain text. Blank rows below the last row that carries a character are dropped first — a window that has not filled would otherwise answer blanks — so lines (an integer between 1 and 200, default 40) counts from the bottom of what the terminal actually showed; any other value is refused rather than rewritten, and truncated says that view was taller than the window you asked for. Escape sequences are stripped and the scrollback is never delivered - the visible grid only, since the journal is the durable transcript. Any terminal of the caller's own workspace may be read, the person's own included and with no confirmation, which is the owner's decision for these reads. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named.",
     ),
+    (
+        MCP_ARCHIVE_WORKSPACE_TOOL,
+        "Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time. workspaceId names the target. A dirty worktree is refused and cannot be forced. Sessions in the workspace are closed before its checkout and row are removed.",
+    ),
 ];
 
 /// The read-only roster tool, and the one name a tool policy can never
@@ -470,6 +474,9 @@ pub const MCP_LIST_TERMINALS_TOOL: &str = "devboule_list_terminals";
 /// included — the owner's decision, no card — so the scope is the workspace
 /// and not the creator.
 pub const MCP_CAPTURE_TERMINAL_TOOL: &str = "devboule_capture_terminal";
+/// The workspace write: removes one of the caller's project's worktrees,
+/// behind a separate first-use human card from workspace creation.
+pub const MCP_ARCHIVE_WORKSPACE_TOOL: &str = "devboule_archive_workspace";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
 ///
@@ -996,6 +1003,7 @@ impl ToolOverlay {
             MCP_CANCEL_AGENT_TOOL,
             MCP_STOP_AGENT_TOOL,
             MCP_CLOSE_AGENT_TOOL,
+            MCP_ARCHIVE_WORKSPACE_TOOL,
         ]),
     };
 

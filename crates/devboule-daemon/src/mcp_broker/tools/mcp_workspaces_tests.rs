@@ -6,7 +6,8 @@
 use super::*;
 use crate::mcp_broker::tools::first_use::{ensure_write_allowed, WORKSPACES_GROUP};
 use crate::provider_catalog::{
-    MCP_CREATE_WORKSPACE_TOOL, MCP_LIST_WORKSPACES_TOOL, MCP_ROSTER_TOOL,
+    MCP_ARCHIVE_WORKSPACE_TOOL, MCP_CREATE_WORKSPACE_TOOL, MCP_LIST_WORKSPACES_TOOL,
+    MCP_ROSTER_TOOL,
 };
 use crate::server::ServerState;
 use devboule_protocol::{OwnerId, PeerRole, PermissionOutcome, SessionKind, WorkspaceIsolation};
@@ -379,8 +380,12 @@ fn create_accepts_its_own_project_id() {
 }
 
 #[test]
-fn the_peer_door_judges_both_tools_as_their_wire_frames() {
-    for tool in [MCP_LIST_WORKSPACES_TOOL, MCP_CREATE_WORKSPACE_TOOL] {
+fn the_peer_door_judges_all_workspace_tools_as_their_wire_frames() {
+    for tool in [
+        MCP_LIST_WORKSPACES_TOOL,
+        MCP_CREATE_WORKSPACE_TOOL,
+        MCP_ARCHIVE_WORKSPACE_TOOL,
+    ] {
         match crate::peer_policy::mcp_tool_wire(tool) {
             Some(crate::peer_policy::McpToolWire::Judged(requests)) => {
                 assert!(!requests.is_empty(), "{tool} names its wire act")
@@ -407,18 +412,22 @@ fn the_peer_door_judges_both_tools_as_their_wire_frames() {
 }
 
 #[test]
-fn the_policy_removes_both_tools_and_design_keeps_only_the_read() {
+fn the_policy_removes_each_workspace_tool_and_design_keeps_only_the_read() {
     use crate::mcp_broker::dispatch::{enabled_tool_list, tool_call_refusal};
     use crate::provider_catalog::ToolOverlay;
     use devboule_protocol::ToolPolicyEntry;
 
-    // No policy: both served.
+    // No policy: all three tools are served.
     let listed = enabled_tool_list(
         crate::provider_catalog::MCP_BROKER_TOOLS,
         None,
         ToolOverlay::NONE,
     );
-    for tool in [MCP_LIST_WORKSPACES_TOOL, MCP_CREATE_WORKSPACE_TOOL] {
+    for tool in [
+        MCP_LIST_WORKSPACES_TOOL,
+        MCP_CREATE_WORKSPACE_TOOL,
+        MCP_ARCHIVE_WORKSPACE_TOOL,
+    ] {
         assert!(
             listed.iter().any(|entry| entry["name"] == tool),
             "{tool} is served with no policy"
@@ -427,7 +436,11 @@ fn the_policy_removes_both_tools_and_design_keeps_only_the_read() {
     }
 
     // A stored policy removes each by name.
-    for tool in [MCP_LIST_WORKSPACES_TOOL, MCP_CREATE_WORKSPACE_TOOL] {
+    for tool in [
+        MCP_LIST_WORKSPACES_TOOL,
+        MCP_CREATE_WORKSPACE_TOOL,
+        MCP_ARCHIVE_WORKSPACE_TOOL,
+    ] {
         let policy = ToolPolicyEntry {
             provider_id: "claude".to_string(),
             enabled: Some(true),
@@ -459,6 +472,9 @@ fn the_policy_removes_both_tools_and_design_keeps_only_the_read() {
         .all(|entry| entry["name"] != MCP_CREATE_WORKSPACE_TOOL));
     assert!(listed
         .iter()
+        .all(|entry| entry["name"] != MCP_ARCHIVE_WORKSPACE_TOOL));
+    assert!(listed
+        .iter()
         .any(|entry| entry["name"] == MCP_LIST_WORKSPACES_TOOL));
     assert_eq!(
         tool_call_refusal(None, &ToolOverlay::DESIGN, MCP_CREATE_WORKSPACE_TOOL),
@@ -467,6 +483,10 @@ fn the_policy_removes_both_tools_and_design_keeps_only_the_read() {
     assert_eq!(
         tool_call_refusal(None, &ToolOverlay::DESIGN, MCP_LIST_WORKSPACES_TOOL),
         None
+    );
+    assert_eq!(
+        tool_call_refusal(None, &ToolOverlay::DESIGN, MCP_ARCHIVE_WORKSPACE_TOOL),
+        Some("Tool disabled by policy")
     );
 }
 
@@ -482,6 +502,10 @@ fn the_listed_schemas_are_closed() {
     for (name, required) in [
         (MCP_LIST_WORKSPACES_TOOL, serde_json::json!(null)),
         (MCP_CREATE_WORKSPACE_TOOL, serde_json::json!(["isolation"])),
+        (
+            MCP_ARCHIVE_WORKSPACE_TOOL,
+            serde_json::json!(["workspaceId"]),
+        ),
     ] {
         let tool = listed
             .iter()
@@ -554,10 +578,14 @@ fn the_create_card_carries_the_call_facts() {
         panic!("the gate raises a permission request");
     };
     assert!(
-        title.contains("creating worktree workspace"),
+        title.contains("create worktree workspace"),
         "title: {title}"
     );
     let description = description.expect("description");
+    assert!(
+        description.contains("requested permission to create worktree workspace"),
+        "the shared card copy reads naturally for creation: {description}"
+    );
     for fact in [&project, "worktree", "fact-branch", "Fact desk"] {
         assert!(
             description.contains(fact),

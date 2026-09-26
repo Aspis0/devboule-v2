@@ -298,11 +298,11 @@ fn create_card_facts(
     let branch = request.branch.as_deref().unwrap_or("(new branch)");
     let subject = match (&request.name, &request.branch) {
         (Some(name), Some(branch)) => {
-            format!("creating {isolation} workspace '{name}' on branch '{branch}'")
+            format!("create {isolation} workspace '{name}' on branch '{branch}'")
         }
-        (Some(name), None) => format!("creating {isolation} workspace '{name}'"),
-        (None, Some(branch)) => format!("creating {isolation} workspace on branch '{branch}'"),
-        (None, None) => format!("creating {isolation} workspace"),
+        (Some(name), None) => format!("create {isolation} workspace '{name}'"),
+        (None, Some(branch)) => format!("create {isolation} workspace on branch '{branch}'"),
+        (None, None) => format!("create {isolation} workspace"),
     };
     let path = preview_checkout_path(&project_path, request)
         .unwrap_or_else(|| "(decided at creation)".to_string());

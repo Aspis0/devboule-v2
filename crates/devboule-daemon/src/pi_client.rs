@@ -239,6 +239,13 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_CAPTURE_TERMINAL_TOOL,
         requires_confirmation: false,
     },
+    // Archive workspace: the broker's first-use card and dirty refusal own
+    // the consent and safety checks for removing a checkout. Archiving has
+    // its own first-use group because it removes an existing checkout.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_ARCHIVE_WORKSPACE_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -289,7 +296,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (twenty-two today), closed schemas matching the
+/// twenty-three `pi.registerTool` entries, one per broker tool, closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -788,6 +795,21 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_capture_terminal", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_archive_workspace",
+    label: "Archive Devboule workspace",
+    description: `Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time. workspaceId names the target. A dirty worktree is refused and cannot be forced. Sessions in the workspace are closed before its checkout and row are removed.`,
+    parameters: Type.Object(
+      { workspaceId: Type.String({ description: "The worktree workspace id from devboule_list_workspaces." }) },
+      { required: ["workspaceId"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_archive_workspace", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });
