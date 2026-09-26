@@ -3297,9 +3297,13 @@ impl Read for PiStdout {
 const MAX_PRE_RUNTIME_STDERR_BYTES: usize = 8192;
 
 /// One unfinished stderr line past this flushes whole: bounds a
-/// newline-free run while keeping every shorter line intact for the
-/// redactor.
+/// newline-free run. A token spanning the flush point is redacted in
+/// pieces on both surfaces — bounded memory cannot reassemble it.
 const MAX_STDERR_LINE_BYTES: usize = 32 * 1024;
+
+/// One pipe read. Named so the split-token test can compute its margin
+/// from the ring instead of hard-coding it.
+const STDERR_READ_BYTES: usize = 4096;
 
 /// How much of the daemon's own headline survives the failure banner.
 const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 256;
@@ -3317,11 +3321,22 @@ struct PiStderrState {
     runtime: Option<Arc<SessionRuntime>>,
     pending: VecDeque<String>,
     pending_bytes: usize,
+    /// Whether the drain lost nothing: a read error or a lock failure
+    /// clears it, and the banner then says the stderr may be incomplete.
+    complete: bool,
 }
 
 impl PiStderrState {
-    /// One reassembled line into the byte-capped ring, oldest evicted first.
+    /// One reassembled line into the byte-capped ring, oldest evicted
+    /// first. A line larger than the whole ring keeps only its own tail:
+    /// popping it whole would evict every older line first and then
+    /// itself, leaving the ring empty.
     fn push_line(&mut self, line: String) {
+        let line = if line.len() > MAX_PRE_RUNTIME_STDERR_BYTES {
+            tail_excerpt(&line, MAX_PRE_RUNTIME_STDERR_BYTES)
+        } else {
+            line
+        };
         self.pending_bytes += line.len();
         self.pending.push_back(line);
         while self.pending_bytes > MAX_PRE_RUNTIME_STDERR_BYTES {
@@ -3371,13 +3386,14 @@ impl PiStderr {
             runtime: None,
             pending: VecDeque::new(),
             pending_bytes: 0,
+            complete: true,
         }));
         let thread_state = Arc::clone(&state);
         let handle = std::thread::Builder::new()
             .name("session-pi-stderr".to_string())
             .spawn(move || {
                 let mut stderr = stderr;
-                let mut buffer = [0u8; 4096];
+                let mut buffer = [0u8; STDERR_READ_BYTES];
                 // Lines are reassembled here so the redactor and the
                 // transcript see whole lines, never read fragments.
                 let mut carry = String::new();
@@ -3414,10 +3430,10 @@ impl PiStderr {
                             }
                         }
                         Err(error) => {
-                            let runtime = thread_state
-                                .lock()
-                                .ok()
-                                .and_then(|state| state.runtime.clone());
+                            let runtime = thread_state.lock().ok().and_then(|mut state| {
+                                state.complete = false;
+                                state.runtime.clone()
+                            });
                             if let Some(runtime) = runtime {
                                 let _ = runtime.publish_agent_event(
                                     SessionEvent::AgentError {
@@ -3444,6 +3460,11 @@ impl PiStderr {
     /// past the budget the thread stays detached and ends on EOF, so a
     /// false here means the banner may miss the child's last bytes. The
     /// caller ends the job first, so a held pipe is a missed kill, not a hang.
+    /// The handshake failed: take what the drain kept, waiting at most the
+    /// reader budget. The flag reports whether anything was lost: a read
+    /// error, a lock failure, or a budget expiry all report incomplete.
+    /// Past the budget the thread stays detached and ends on EOF; the
+    /// caller ends the job first, so a held pipe is a missed kill, not a hang.
     fn discard_and_join(&mut self) -> (Vec<String>, bool) {
         let mut complete = true;
         if let Some(handle) = self.handle.take() {
@@ -3457,11 +3478,13 @@ impl PiStderr {
                 complete = false;
             }
         }
-        let lines = match self.state.lock() {
-            Ok(mut state) => state.take_pending(),
-            Err(_) => Vec::new(),
-        };
-        (lines, complete)
+        match self.state.lock() {
+            Ok(mut state) => {
+                let lines = state.take_pending();
+                (lines, complete && state.complete)
+            }
+            Err(_) => (Vec::new(), false),
+        }
     }
 }
 
@@ -3483,6 +3506,9 @@ impl StderrSource for PiStderr {
             .ok_or_else(|| io::Error::other("Pi stderr drain was already consumed"))
     }
 }
+
+/// Said when the drain was cut short, inside the banner budget.
+const DRAIN_INCOMPLETE_NOTE: &str = " [stderr may be incomplete]";
 
 /// A failed handshake carries the daemon's headline, then the last of
 /// the child's output: the head names the failure, the tail carries the
@@ -3509,17 +3535,26 @@ fn handshake_error_with_stderr(
         .collect::<Vec<_>>()
         .join(" | ");
     if tail_text.is_empty() {
-        let message = redact(&error.message);
+        let mut message = redact(&error.message);
+        if !drain_complete {
+            let head = bounded_excerpt(
+                &message,
+                MAX_HANDSHAKE_ERROR_BYTES - DRAIN_INCOMPLETE_NOTE.len(),
+            );
+            message = format!("{head}{DRAIN_INCOMPLETE_NOTE}");
+        }
         error.message = message;
         return error;
     }
     let tail_text = redact(&tail_text);
     // The tail keeps its end within what is left of the banner budget,
-    // so the headline, the marker and the last words always fit together.
-    let room = MAX_HANDSHAKE_ERROR_BYTES.saturating_sub(head.len() + marker.len());
+    // note included, so the headline, the marker, the last words and a
+    // cut-short warning always fit together.
+    let room = MAX_HANDSHAKE_ERROR_BYTES
+        .saturating_sub(head.len() + marker.len() + DRAIN_INCOMPLETE_NOTE.len());
     let mut message = format!("{head}{marker}{}", tail_excerpt(&tail_text, room));
     if !drain_complete {
-        message.push_str(" [stderr may be incomplete]");
+        message.push_str(DRAIN_INCOMPLETE_NOTE);
     }
     error.message = redact(&message);
     error

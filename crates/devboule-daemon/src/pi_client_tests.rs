@@ -1,11 +1,12 @@
 //! Tests for the pi client: the rpc handshake, the tool perimeter and turn lifecycle.
 
 use super::{
-    bridge_extension, carried_pi_mime_types, is_bridge_notify, is_ready_notify, mcp_launch,
-    perform_handshake, permission_extension_path, permission_request_from_ui, pi_control_frame,
-    pi_delivery, pi_image_entry, pi_permission_sender, pi_prompt_frame, pi_steer_fields,
-    plan_pi_prompt, spawn_args, thinking_level_allowed, write_permission_extension, PiCatalog,
-    PiControl, PiReader, PiStaticPrompt, PiStdout, PiSteerer, PiSwitcher,
+    bridge_extension, carried_pi_mime_types, handshake_error_with_stderr, is_bridge_notify,
+    is_ready_notify, mcp_launch, perform_handshake, permission_extension_path,
+    permission_request_from_ui, pi_control_frame, pi_delivery, pi_image_entry,
+    pi_permission_sender, pi_prompt_frame, pi_steer_fields, plan_pi_prompt, spawn_args,
+    thinking_level_allowed, write_permission_extension, PiCatalog, PiControl, PiReader,
+    PiStaticPrompt, PiStderr, PiStdout, PiSteerer, PiSwitcher,
 };
 use crate::acp_view::PromptCapabilityState;
 use crate::attachment_store::AttachmentStore;
@@ -15,7 +16,7 @@ use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch, SessionRuntime, 
 // The shared admission helper (A2-03): one place, so the Pi and the Codex
 // steer tests exercise the same token `with_active_turn` hands out.
 use crate::test_support::steer_through_the_turn;
-use devboule_protocol::{PromptAttachment, SessionEvent};
+use devboule_protocol::{ErrorCode, PromptAttachment, SessionEvent, WireError};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
@@ -2300,6 +2301,20 @@ fs.writeSync(2, "BEARER-TOKEN " + process.env.DEVBOULE_MCP_TOKEN + "\n");
 setInterval(() => {}, 1000);
 "#;
 
+/// The huge-line fake: two short lines, then one ~20 KiB line whose end
+/// carries the marker. The ring cannot keep the whole line, so the banner
+/// must carry that line's tail, not an empty ring.
+const FAKE_PI_HUGE_LINE: &str = r#"
+const fs = require("fs");
+fs.writeSync(2, "pi short line one\n");
+fs.writeSync(2, "pi short line two\n");
+let line = "HUGE-LINE-START-" + "y".repeat(19900) + "-HUGE-LINE-END-MARKER\n";
+for (let at = 0; at < line.length; at += 4096) {
+  fs.writeSync(2, line.slice(at, at + 4096));
+}
+setInterval(() => {}, 1000);
+"#;
+
 /// An obviously fake bearer for the redaction test: real enough to travel
 /// the redactor, fake enough to never be a secret.
 const FAKE_BEARER: &str = "FAKE-BEARER-REDACTION-PROBE-7f3a";
@@ -3387,7 +3402,21 @@ mod lifecycle_tests {
         let state = ServerState::new("pi-split-token".to_string());
         let delivery =
             ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
-        let bearer = format!("FAKE-STRADDLING-BEARER-{}", "z".repeat(8000));
+        let bearer = {
+            // Longer than any single pipe read, with room for a stray
+            // node line: the margin is computed from the ring, never
+            // hard-coded, so one extra stderr line cannot evict the token.
+            const SPLIT_TOKEN_MARGIN: usize = 2048;
+            let body = super::super::MAX_PRE_RUNTIME_STDERR_BYTES - SPLIT_TOKEN_MARGIN;
+            assert!(
+                body > super::super::STDERR_READ_BYTES,
+                "the token must exceed one pipe read"
+            );
+            format!(
+                "FAKE-STRADDLING-BEARER-{}",
+                "z".repeat(body - "FAKE-STRADDLING-BEARER-".len())
+            )
+        };
         let mcp =
             crate::mcp_broker::McpLaunchConfig::for_test("http://127.0.0.1:4599/mcp", &bearer);
         match spawn_process(
@@ -3412,4 +3441,127 @@ mod lifecycle_tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// One line larger than the whole ring keeps its own tail: cutting it
+    /// before the push must never empty the ring of the shorter lines, and
+    /// the banner must carry that line's end.
+    #[test]
+    fn a_line_larger_than_the_ring_keeps_its_tail() {
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let _held = HANDSHAKE_TIMEOUT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _budget = HandshakeTimeoutGuard::set(5_000);
+        let log = log_path("hugeline");
+        let dir = log.parent().expect("log dir").to_path_buf();
+        let script = dir.join("fake-pi-huge.js");
+        std::fs::write(&script, super::FAKE_PI_HUGE_LINE).expect("write the fake pi entry");
+        let state = ServerState::new("pi-huge-line".to_string());
+        let delivery =
+            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        match spawn_process(
+            &state,
+            stderr_handshake_command(&script, &log, &[]),
+            None,
+            delivery,
+        ) {
+            Ok(_) => panic!("a pi that never answers must fail the handshake"),
+            Err(error) => {
+                assert!(
+                    error.message.contains("Could not start Pi session"),
+                    "the headline survives a huge line: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.contains("HUGE-LINE-END-MARKER"),
+                    "the huge line's tail survives: {}",
+                    error.message
+                );
+                assert!(
+                    !error.message.contains("HUGE-LINE-START-"),
+                    "the huge line's head is cut: {}",
+                    error.message
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A pipe held past the join budget reports an incomplete drain: the
+/// sleeper never writes and never exits, so the 150 ms budget expires
+/// with the thread still blocked in its read.
+#[test]
+fn a_held_pipe_reports_an_incomplete_drain() {
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let mut child = node_command()
+        .args(["-e", "setInterval(() => {}, 20000)"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("{}", node_unavailable("Pi drain test", &error)));
+    let stderr = child.stderr.take().expect("node stderr");
+    let mut capture = PiStderr::start(stderr).expect("the drain starts");
+    let (lines, complete) = capture.discard_and_join();
+    assert!(lines.is_empty(), "nothing arrived to keep");
+    assert!(
+        !complete,
+        "a pipe held past the join budget is incomplete, never complete"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn handshake_timeout_error() -> WireError {
+    WireError::new(
+        ErrorCode::Io,
+        "Could not start Pi session: could not read response: Pi permission channel handshake timed out",
+    )
+}
+
+/// The incomplete note is present exactly when the drain was cut short.
+#[test]
+fn an_incomplete_drain_marks_the_banner() {
+    let marked = handshake_error_with_stderr(
+        handshake_timeout_error(),
+        &["line".to_string()],
+        false,
+        None,
+    );
+    assert!(
+        marked.message.contains("[stderr may be incomplete]"),
+        "a cut-short drain says so: {}",
+        marked.message
+    );
+    let whole =
+        handshake_error_with_stderr(handshake_timeout_error(), &["line".to_string()], true, None);
+    assert!(
+        !whole.message.contains("[stderr may be incomplete]"),
+        "a quiet drain adds no note: {}",
+        whole.message
+    );
+}
+
+/// An empty tail with a cut-short drain still says so: no stderr is not
+/// proof of a complete drain.
+#[test]
+fn an_empty_incomplete_tail_still_says_so() {
+    let marked = handshake_error_with_stderr(handshake_timeout_error(), &[], false, None);
+    assert!(
+        marked.message.contains("Could not start Pi session"),
+        "the headline survives: {}",
+        marked.message
+    );
+    assert!(
+        marked.message.contains("[stderr may be incomplete]"),
+        "emptiness does not read as completeness: {}",
+        marked.message
+    );
 }
