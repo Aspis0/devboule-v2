@@ -38,6 +38,7 @@ vi.mock("../../lib/tauri", () => ({
         throw new Error("the session refused the prompt");
       }
       wire.sends.push({ sessionId, subscriptionId, text, key: idempotencyKey });
+      return false;
     },
   ),
   sessionInterrupt: vi.fn(async (_sessionId: string, subscriptionId: number) => {
@@ -67,7 +68,10 @@ beforeEach(() => {
 describe("the queue's sender", () => {
   it("carries the message on a subscription of its own and gives it back", async () => {
     const sender = createQueueSender("s.a.1");
-    expect(await sender.send("hello", [], "s.a.1.queued-1.nonce")).toBe(true);
+    expect(await sender.send("hello", [], "s.a.1.queued-1.nonce")).toEqual({
+      accepted: true,
+      turnActive: false,
+    });
     expect(wire.attaches).toEqual([{ sessionId: "s.a.1", fromCursor: Number.MAX_SAFE_INTEGER }]);
     expect(wire.sends).toHaveLength(1);
     expect(wire.sends[0]?.subscriptionId).toBe(501);
@@ -84,7 +88,7 @@ describe("the queue's sender", () => {
     // promises the daemon it will be shown nothing.
     const deps: QueueSendDeps = {
       attach: vi.fn(async () => 900),
-      send: vi.fn(async () => undefined),
+      send: vi.fn(async () => false),
       interrupt: vi.fn(async () => undefined),
       detach: vi.fn(async () => undefined),
     };
@@ -96,7 +100,7 @@ describe("the queue's sender", () => {
   it("answers false when the write is refused, and still lets go", async () => {
     wire.failSend = true;
     const sender = createQueueSender("s.a.3");
-    expect(await sender.send("nope", [], "k")).toBe(false);
+    expect(await sender.send("nope", [], "k")).toEqual({ accepted: false, turnActive: null });
     expect(wire.detaches).toHaveLength(1);
   });
 
@@ -105,7 +109,7 @@ describe("the queue's sender", () => {
     let detachCalls = 0;
     const deps: QueueSendDeps = {
       attach: vi.fn(async () => 903),
-      send: vi.fn(async () => undefined),
+      send: vi.fn(async () => false),
       interrupt: vi.fn(async () => undefined),
       detach: vi.fn(async (id: number) => {
         expect(id).toBe(903);
@@ -119,7 +123,7 @@ describe("the queue's sender", () => {
     const pending = sender.send("write", [], "key");
     await settle();
     expect(detachCalls).toBe(1);
-    await expect(pending).resolves.toBe(true);
+    await expect(pending).resolves.toEqual({ accepted: true, turnActive: false });
     releaseDetach?.();
     await settle();
 
@@ -132,7 +136,10 @@ describe("the queue's sender", () => {
   it("answers false when the attach itself is refused, and attaches nothing after", async () => {
     wire.failAttach = true;
     const sender = createQueueSender("s.a.4");
-    expect(await sender.send("never sent", [], "k")).toBe(false);
+    expect(await sender.send("never sent", [], "k")).toEqual({
+      accepted: false,
+      turnActive: null,
+    });
     expect(wire.sends).toEqual([]);
     // Nothing was opened, so there is nothing to give back: the counts stay even.
     expect(wire.detaches).toEqual([]);

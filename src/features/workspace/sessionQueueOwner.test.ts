@@ -81,7 +81,7 @@ describe("the queue owner and the roster's turn status", () => {
     const release = queue.attach({
       send: async (text) => {
         surfaceSends.push(text);
-        return true;
+        return { accepted: true, turnActive: false };
       },
       interrupt: async () => undefined,
     });

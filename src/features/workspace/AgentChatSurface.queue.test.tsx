@@ -73,6 +73,9 @@ async function renderSurface(): Promise<MessageQueue> {
 
 function pushActivity(activity: "working" | "blocked" | "idle" | "unknown"): void {
   act(() => queueOwner?.onRosterPush([sessionOf("agent-1", { activity })]));
+  if (activity === "idle") {
+    act(() => harness.emit?.({ type: "agent_finished", stopReason: "end_turn" }));
+  }
 }
 
 function updateSurfaceProps(next: Record<string, unknown>): void {
@@ -286,6 +289,9 @@ describe("AgentChatSurface queue keys", () => {
     expect(otherQueueAction()?.textContent).toBe("Queue message");
 
     await act(async () => acceptSend(true));
+    await flush();
+    expect(otherQueueAction()?.textContent).toBe("Queue message");
+    await act(async () => harness.emit?.({ type: "agent_finished", stopReason: "end_turn" }));
     await flush();
     expect(otherQueueAction()).toBeNull();
     await act(async () => otherRoot.unmount());

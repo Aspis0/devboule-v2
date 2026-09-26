@@ -50,6 +50,44 @@ describe("in-memory queue steer", () => {
 });
 
 describe("the predicate falling while our own send was in flight", () => {
+  it("holds queued work through the reply-before-roster window until agent_finished", async () => {
+    const harness = createQueueHarness();
+    harness.queue.submissionStarted();
+    harness.queue.add("follow-up", []);
+
+    harness.queue.submissionSettled(true);
+    harness.queue.notifyIdle(); // reply arrived, but the roster is still stale-idle
+    await flushQueueTurns();
+    expect(harness.actions).toEqual([]);
+
+    harness.queue.agentFinished();
+    await flushQueueTurns();
+    expect(harness.actions).toEqual(["send:follow-up"]);
+  });
+
+  it("lets an out-of-band send release the queue on its reply", async () => {
+    const harness = createQueueHarness();
+    harness.queue.submissionStarted();
+    harness.queue.add("follow-up", []);
+
+    harness.queue.submissionSettled(false);
+    await flushQueueTurns();
+    expect(harness.actions).toEqual(["send:follow-up"]);
+  });
+
+  it("releases after agent_finished even if the roster never showed working", async () => {
+    const harness = createQueueHarness();
+    harness.queue.submissionStarted();
+    harness.queue.add("follow-up", []);
+    harness.queue.submissionSettled(true);
+    await flushQueueTurns();
+    expect(harness.actions).toEqual([]);
+
+    harness.queue.agentFinished();
+    await flushQueueTurns();
+    expect(harness.actions).toEqual(["send:follow-up"]);
+  });
+
   it("sends an item queued behind our send once the daemon refuses that send", async () => {
     const harness = createQueueHarness();
     harness.queue.submissionStarted();

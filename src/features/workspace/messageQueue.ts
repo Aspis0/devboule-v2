@@ -49,7 +49,8 @@ export type MessageQueueListener = (queue: readonly QueuedMessage[]) => void;
  */
 export interface MessageQueueHost {
   /**
-   * Send as a fresh turn; answers false when the session refused it.
+   * Send as a fresh turn; returns whether it was accepted and whether the
+   * daemon says a turn is active now.
    * `idempotencyKey` is the item's `idempotencyKey`: the daemon answers a
    * re-sent key from its receipt instead of running the prompt a second time.
    */
@@ -57,7 +58,7 @@ export interface MessageQueueHost {
     text: string,
     attachments: readonly PromptAttachment[],
     idempotencyKey: string,
-  ): Promise<boolean>;
+  ): Promise<{ accepted: boolean; turnActive: boolean | null }>;
   /** Stop the running turn. Resolves even when nothing is running. */
   interrupt(): Promise<void>;
 }
@@ -102,13 +103,15 @@ export interface MessageQueue {
    * holds it; otherwise it waits for the predicate to fall.
    */
   notifyIdle(): void;
-  /** A turn is open on the roster, or a send of ours on this session is not
-   * answered yet. Every composer on the session and the drain read this. */
+  /** A turn is open on the roster, a send of ours is unanswered, or an active
+   * send reply is waiting for the turn to finish. */
   turnActive(): boolean;
   /** A surface's session_send began; its acknowledgement can lag the roster. */
   submissionStarted(): void;
   /** A session_send settled, accepted or refused; balances `submissionStarted`. */
-  submissionSettled(): void;
+  submissionSettled(turnActive?: boolean): void;
+  /** A session event confirms a reply-confirmed active turn has ended. */
+  agentFinished(): void;
   /** The sender binds itself; the returned function detaches it. Detaching keeps
    * the items — a surface standing down re-attaches the queue's own sender. */
   attach(host: MessageQueueHost): () => void;

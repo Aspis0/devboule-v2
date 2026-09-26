@@ -841,21 +841,40 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const turnActive = composerQueue.turnActive;
 
   const sendSession = useCallback(
-    async (
-      text: string,
-      attachments?: readonly PromptAttachment[],
-      idempotencyKey?: string,
-    ): Promise<boolean> => {
+    async (text: string, attachments?: readonly PromptAttachment[]): Promise<boolean> => {
       const session = sessionRef.current;
       if (session === null) return false;
       queue?.submissionStarted();
+      let replyTurnActive: boolean | undefined;
       try {
-        return await session.send(text, attachments, undefined, [], idempotencyKey);
+        return await session.send(text, attachments, undefined, [], undefined, (turnActive) => {
+          replyTurnActive = turnActive;
+        });
       } finally {
-        queue?.submissionSettled();
+        queue?.submissionSettled(replyTurnActive);
       }
     },
     [queue],
+  );
+
+  const sendQueuedSession = useCallback(
+    async (text: string, attachments: readonly PromptAttachment[], idempotencyKey: string) => {
+      const session = sessionRef.current;
+      if (session === null) return { accepted: false, turnActive: null };
+      let replyTurnActive: boolean | undefined;
+      const accepted = await session.send(
+        text,
+        attachments,
+        undefined,
+        [],
+        idempotencyKey,
+        (turnActive) => {
+          replyTurnActive = turnActive;
+        },
+      );
+      return { accepted, turnActive: replyTurnActive ?? null };
+    },
+    [],
   );
 
   // An attachment is valid for exactly one `(sessionId, generation)` pair.
@@ -867,6 +886,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       sessionId,
       invoke: invokeAgentCommand,
       createChannel: createSessionChannel,
+      onTurnFinished: () => queue?.agentFinished(),
       onPermissionRequest: onPermissionRequest
         ? (request, subscriptionId) => onPermissionRequest(sessionId, subscriptionId, request)
         : undefined,
@@ -887,7 +907,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       if (sessionRef.current === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [onPermissionRequest, onPermissionResolved, sessionId, observedState?.generation]);
+  }, [onPermissionRequest, onPermissionResolved, queue, sessionId, observedState?.generation]);
 
   // While this surface is on screen, the queue's sends and interrupts ride the
   // controller it owns, read at call time so a recreated controller (resume,
@@ -900,10 +920,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   useEffect(() => {
     if (queue === null) return;
     return queue.attach({
-      send: (text, attachments, idempotencyKey) => sendSession(text, attachments, idempotencyKey),
+      send: sendQueuedSession,
       interrupt: () => sessionRef.current?.interrupt() ?? Promise.resolve(),
     });
-  }, [queue, sendSession]);
+  }, [queue, sendQueuedSession]);
 
   // Zed's pattern: re-apply the remembered effort once, on the first manifest
   // of the session. The confirmation manifest is just another manifest here —

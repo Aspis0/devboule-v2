@@ -74,10 +74,11 @@ export function createInMemoryMessageQueue(
    * row's Send can start a twin, and the list is never briefly "done" while
    * the send still needs its bearer (review F5, fix-1 P1-1). */
   let sendInFlight = false;
-  /** Sends a surface made on this session and has not had answered. The one
-   * counter every surface and window on the session bumps, because they all
-   * hold this same queue (review fix-7 finding 4). */
+  /** Composer sends still awaiting a daemon reply. Every surface shares this
+   * counter through the session's one queue. */
   let submissionsInFlight = 0;
+  let activeReplies = 0;
+  let activeReplySawBusy = false;
   /** A row the user pressed while the wire was held, sent when it frees. */
   let wantedAfterSend: string | null = null;
   /** Retries the current head has already spent. */
@@ -157,11 +158,10 @@ export function createInMemoryMessageQueue(
     push();
   }
 
-  /** Paseo's `selectAgentTurnPresentation` (`stores/session-store.ts:328-338`):
-   * an open turn, or a send of ours still unanswered — the queue's own included.
-   * The composer's Queue offer and every drain read this and nothing else. */
+  /** The roster turn, unanswered sends, or a turn confirmed active by its
+   * reply. The composer's Queue offer and every drain share this predicate. */
   function turnActive(): boolean {
-    return isTurnActive(status, sendInFlight || submissionsInFlight > 0);
+    return isTurnActive(status, sendInFlight || submissionsInFlight > 0 || activeReplies > 0);
   }
 
   function mayDrain(): boolean {
@@ -175,9 +175,8 @@ export function createInMemoryMessageQueue(
     return headRefused && (retryTimer !== null || retriesUsed >= RETRY_DELAYS_MS.length);
   }
 
-  /** The rule: when `turnActive` falls to an idle roster — the turn ended, or our
-   * last send settled — the head goes. A turn ending is also what a refused
-   * head's ladder waits for, so the ladder yields to it. */
+  /** A reply can clear the last busy fact before the roster updates; a true
+   * predicate fall at idle releases the head and any waiting retry ladder. */
   function drainIfFell(wasActive: boolean): void {
     if (!wasActive || turnActive() || status !== "idle") return;
     stopRetry();
@@ -201,12 +200,19 @@ export function createInMemoryMessageQueue(
   /** Put one item already out of the list onto the wire as a fresh turn. */
   async function sendItem(item: QueuedMessage, current: MessageQueueHost): Promise<void> {
     let sent = false;
+    let turnActive: boolean | null = null;
     try {
-      sent = await current.send(item.text, item.attachments, item.idempotencyKey);
+      const result = await current.send(item.text, item.attachments, item.idempotencyKey);
+      sent = result.accepted;
+      turnActive = result.turnActive;
     } catch {
       sent = false;
     }
     sendInFlight = false;
+    if (sent && turnActive === true) {
+      activeReplies += 1;
+      activeReplySawBusy = status === "working" || status === "blocked";
+    }
     if (sent) {
       retriesUsed = 0;
       headRefused = false;
@@ -342,9 +348,22 @@ export function createInMemoryMessageQueue(
       push(); // the composer's Queue offer reads `turnActive` on delivery
     },
 
-    submissionSettled() {
+    submissionSettled(replyTurnActive?: boolean) {
       const wasActive = turnActive();
       submissionsInFlight = Math.max(0, submissionsInFlight - 1);
+      if (replyTurnActive === true) {
+        activeReplies += 1;
+        activeReplySawBusy = status === "working" || status === "blocked";
+      }
+      push();
+      drainIfFell(wasActive);
+    },
+
+    agentFinished() {
+      if (activeReplies === 0) return;
+      const wasActive = turnActive();
+      activeReplies = 0;
+      activeReplySawBusy = false;
       push();
       drainIfFell(wasActive);
     },
@@ -363,7 +382,12 @@ export function createInMemoryMessageQueue(
     setTurnStatus(next) {
       if (status === next) return;
       const wasActive = turnActive();
+      if (next === "working" || next === "blocked") activeReplySawBusy = true;
       status = next;
+      if (next === "idle" && activeReplies > 0 && activeReplySawBusy) {
+        activeReplies = 0;
+        activeReplySawBusy = false;
+      }
       push();
       drainIfFell(wasActive);
     },

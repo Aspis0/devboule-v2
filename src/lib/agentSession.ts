@@ -194,6 +194,7 @@ export interface AgentSessionDeps {
    * which is the half-a-wiring shape this signature exists to prevent.
    */
   onPermissionResolved?: (resolution: PermissionResolved) => void;
+  onTurnFinished?: () => void;
 }
 
 const INITIAL_STATE: AgentSessionState = {
@@ -431,6 +432,7 @@ export class AgentSession {
     activeTurnBehavior?: ActiveTurnBehavior,
     attachmentReferences: readonly AttachmentReference[] = [],
     idempotencyKey?: string,
+    onTurnActive?: (turnActive: boolean) => void,
   ): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || this.disposed || !this.started || !this.attached) return false;
@@ -470,6 +472,7 @@ export class AgentSession {
         // empty list.
         ...(attachmentReferences.length === 0 ? {} : { attachmentReferences }),
       });
+      onTurnActive?.(turnActive);
       this.sendDepth -= 1;
       if (turnActive === false && !joinsRunningTurn && this.sendDepth === 0) {
         // No turn is running for this send (out-of-band command, empty
@@ -856,6 +859,7 @@ export class AgentSession {
         return;
       case "agent_finished":
         this.turnOpen = false;
+        this.deps.onTurnFinished?.();
         this.closeActiveBlocks();
         this.setStatus("idle", {
           streaming: false,

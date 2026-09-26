@@ -75,10 +75,10 @@ export function createQueueHarness(idPrefix = "s.harness.1"): QueueHarness {
       if (holdSends) await new Promise<void>((release) => held.push(release));
       if (hangNextSend) {
         hangNextSend = false;
-        return new Promise<boolean>(() => undefined);
+        return new Promise<{ accepted: boolean; turnActive: boolean | null }>(() => undefined);
       }
-      if (fail || failingSends) return false;
-      return true;
+      if (fail || failingSends) return { accepted: false, turnActive: null };
+      return { accepted: true, turnActive: true };
     },
     async interrupt() {
       actions.push("interrupt");
@@ -98,6 +98,7 @@ export function createQueueHarness(idPrefix = "s.harness.1"): QueueHarness {
     set status(value: AgentActivityState | null) {
       status = value;
       queue.setTurnStatus(value);
+      if (value === "idle") queue.agentFinished();
     },
     get failNextSend() {
       return failNextSend;

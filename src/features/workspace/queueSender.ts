@@ -33,7 +33,7 @@ export interface QueueSendDeps {
     text: string,
     attachments: readonly PromptAttachment[],
     idempotencyKey: string,
-  ) => Promise<void>;
+  ) => Promise<boolean | void>;
   interrupt: (sessionId: string, subscriptionId: number) => Promise<void>;
   detach: (subscriptionId: number) => Promise<void>;
 }
@@ -45,11 +45,7 @@ const NOTHING_WANTED = Number.MAX_SAFE_INTEGER;
 const PRODUCTION_DEPS: QueueSendDeps = {
   attach: (sessionId, fromCursor) => sessionAttach(sessionId, fromCursor, createSessionChannel()),
   send: (sessionId, subscriptionId, text, attachments, idempotencyKey) =>
-    // Headless: no surface arms an optimistic turn here, so the reply's
-    // disposition has nobody to settle.
-    sessionSend(sessionId, subscriptionId, text, attachments, undefined, [], idempotencyKey).then(
-      () => undefined,
-    ),
+    sessionSend(sessionId, subscriptionId, text, attachments, undefined, [], idempotencyKey),
   interrupt: (sessionId, subscriptionId) => sessionInterrupt(sessionId, subscriptionId),
   detach: (subscriptionId) => sessionDetach(subscriptionId),
 };
@@ -94,13 +90,22 @@ export function createQueueSender(
       return roundTrip(
         async (subscriptionId) => {
           try {
-            await deps.send(sessionId, subscriptionId, text, attachments, idempotencyKey);
-            return true;
+            const turnActive = await deps.send(
+              sessionId,
+              subscriptionId,
+              text,
+              attachments,
+              idempotencyKey,
+            );
+            return {
+              accepted: true,
+              turnActive: typeof turnActive === "boolean" ? turnActive : null,
+            };
           } catch {
-            return false;
+            return { accepted: false, turnActive: null };
           }
         },
-        () => false,
+        () => ({ accepted: false, turnActive: null }),
       );
     },
     interrupt() {

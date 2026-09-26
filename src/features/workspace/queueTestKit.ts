@@ -66,7 +66,7 @@ function rows(queue: MessageQueue): readonly { text: string; error?: string }[] 
  * round trip is the part they do not need to look at. */
 export function idleSender(): MessageQueueHost {
   return {
-    send: async () => true,
+    send: async () => ({ accepted: true, turnActive: true }),
     interrupt: async () => undefined,
   };
 }
