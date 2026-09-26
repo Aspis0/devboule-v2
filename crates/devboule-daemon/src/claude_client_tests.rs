@@ -1076,6 +1076,7 @@ fn control_response_allow_and_deny_match_the_measured_wire() {
     let allow = control_response_frame(
         "e73c118e-6742-481e-b60a-e8486a9bde4e",
         &input,
+        false,
         &serde_json::json!({"outcome": {"outcome": "selected", "optionId": "allow"}}),
     );
     assert_eq!(allow["type"], "control_response");
@@ -1090,6 +1091,7 @@ fn control_response_allow_and_deny_match_the_measured_wire() {
     let deny = control_response_frame(
         "620d31b5-1123-4170-b3d6-7465dc7ceced",
         &input,
+        false,
         &serde_json::json!({"outcome": {"outcome": "selected", "optionId": "deny"}}),
     );
     assert_eq!(deny["response"]["response"]["behavior"], "deny");
@@ -1212,7 +1214,12 @@ fn permission_allow_and_deny_write_control_response_frames() {
             .expect("controls")
             .remove(&id)
             .expect("pending control");
-        let frame = control_response_frame(&pending.request_id, &pending.input, &result);
+        let frame = control_response_frame(
+            &pending.request_id,
+            &pending.input,
+            pending.is_question,
+            &result,
+        );
         captured_for_sender.lock().expect("captured").push(frame);
         Ok(())
     });
@@ -1289,7 +1296,12 @@ fn permission_allow_and_deny_write_control_response_frames() {
             .expect("controls")
             .remove(&id)
             .expect("pending control");
-        let frame = control_response_frame(&pending.request_id, &pending.input, &result);
+        let frame = control_response_frame(
+            &pending.request_id,
+            &pending.input,
+            pending.is_question,
+            &result,
+        );
         captured_for_sender.lock().expect("captured").push(frame);
         Ok(())
     });
@@ -2933,6 +2945,10 @@ mod question_tests {
     );
 
     fn harness() -> Harness {
+        harness_with(question_line("toolu_question"))
+    }
+
+    fn harness_with(line: serde_json::Value) -> Harness {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let controls = Arc::new(Mutex::new(HashMap::new()));
         let captured_for_sender = Arc::clone(&captured);
@@ -2943,7 +2959,12 @@ mod question_tests {
                 .expect("controls")
                 .remove(&id)
                 .expect("pending control");
-            let frame = super::control_response_frame(&pending.request_id, &pending.input, &result);
+            let frame = super::control_response_frame(
+                &pending.request_id,
+                &pending.input,
+                pending.is_question,
+                &result,
+            );
             captured_for_sender.lock().expect("captured").push(frame);
             Ok(())
         });
@@ -2952,14 +2973,72 @@ mod question_tests {
         let mut reader = test_reader(Arc::clone(&broker), reader_controls);
         let (runtime, conn) = attached(&broker);
         reader
-            .feed(
-                format!("{}\n", question_line("toolu_question")).as_bytes(),
-                &runtime,
-            )
+            .feed(format!("{line}\n").as_bytes(), &runtime)
             .expect("feed question");
         // The harness reader is dropped; answering goes through the broker.
         let _ = reader;
         (broker, captured, controls, runtime, conn)
+    }
+
+    fn multi_select_line(tool_use_id: &str) -> serde_json::Value {
+        let mut line = question_line(tool_use_id);
+        line["request"]["input"]["questions"][0]["multiSelect"] = serde_json::Value::Bool(true);
+        line
+    }
+
+    fn two_question_line(tool_use_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "control_request",
+            "request_id": "ask-2",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "AskUserQuestion",
+                "display_name": "AskUserQuestion",
+                "input": {
+                    "questions": [{
+                        "question": "Which colour should I paint the fence?",
+                        "header": "Fence colour",
+                        "multiSelect": false,
+                        "options": [
+                            {"label": "Forest green (Recommended)"},
+                            {"label": "Barn red"}
+                        ]
+                    }, {
+                        "question": "Which stain finish?",
+                        "header": "Finish",
+                        "multiSelect": false,
+                        "options": [
+                            {"label": "Matte"},
+                            {"label": "Satin"}
+                        ]
+                    }]
+                },
+                "tool_use_id": tool_use_id
+            }
+        })
+    }
+
+    fn tool_line_with_questions(tool_use_id: &str) -> serde_json::Value {
+        // An ordinary tool whose input merely looks like a question: the
+        // card is a tool card, and the reply must stay one too.
+        serde_json::json!({
+            "type": "control_request",
+            "request_id": "tool-q",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": {
+                    "command": "echo survey",
+                    "description": "Run the survey tool",
+                    "questions": [{
+                        "question": "Which colour?",
+                        "options": [{"label": "Green"}]
+                    }]
+                },
+                "tool_use_id": tool_use_id
+            }
+        })
     }
 
     fn asked(events: &[SessionEvent]) -> SessionEvent {
@@ -3067,8 +3146,20 @@ mod question_tests {
     fn ask_user_question_multi_select_answer_travels_verbatim() {
         // The card joins several picks the provider's own way (`", "`);
         // the daemon maps the joined text verbatim under the full-text key.
-        let (broker, captured, _, _, conn) = harness();
-        let _ = super::drain(&conn);
+        // The fixture really is multi-select: a `false` flag here would
+        // prove nothing about the multi path.
+        let (broker, captured, _, _, conn) = harness_with(multi_select_line("toolu_question"));
+        let events = super::drain(&conn);
+        match asked(&events) {
+            SessionEvent::PermissionRequest { questions, .. } => {
+                let questions = questions.expect("question items");
+                assert!(
+                    questions[0].multi_select,
+                    "the fixture must be multi-select"
+                );
+            }
+            _ => panic!("expected a permission request"),
+        }
         broker
             .respond_with_option(
                 "toolu_question",
@@ -3084,6 +3175,70 @@ mod question_tests {
             reply["updatedInput"]["answers"]["Which colour should I paint the fence?"],
             "Forest green (Recommended), Barn red"
         );
+    }
+
+    #[test]
+    fn ask_user_question_two_questions_answer_as_one_map() {
+        let (broker, captured, _, _, conn) = harness_with(two_question_line("toolu_question"));
+        let events = super::drain(&conn);
+        match asked(&events) {
+            SessionEvent::PermissionRequest {
+                questions, options, ..
+            } => {
+                assert_eq!(questions.expect("items").len(), 2);
+                assert_eq!(options.len(), 4);
+            }
+            _ => panic!("expected a permission request"),
+        }
+        let answer = serde_json::json!({
+            "Which colour should I paint the fence?": "Barn red",
+            "Which stain finish?": "Satin"
+        })
+        .to_string();
+        broker
+            .respond_with_option(
+                "toolu_question",
+                PermissionOutcome::AllowOnce,
+                None,
+                Some(answer),
+            )
+            .expect("two-question answer");
+        let frames = captured.lock().expect("captured");
+        let reply = &frames[0]["response"]["response"];
+        assert_eq!(reply["behavior"], "allow");
+        assert_eq!(
+            reply["updatedInput"]["answers"]["Which colour should I paint the fence?"],
+            "Barn red"
+        );
+        assert_eq!(
+            reply["updatedInput"]["answers"]["Which stain finish?"],
+            "Satin"
+        );
+    }
+
+    #[test]
+    fn tool_input_with_questions_stays_an_ordinary_tool() {
+        // The recorded kind decides the reply's shape, never the input's:
+        // an allowed tool whose input carries `questions` is echoed as a
+        // tool, not decoded as a pick (which would deny a granted Allow).
+        let (broker, captured, _, _, conn) =
+            harness_with(tool_line_with_questions("toolu_question"));
+        let events = super::drain(&conn);
+        match asked(&events) {
+            SessionEvent::PermissionRequest { kind, options, .. } => {
+                assert_eq!(kind, None);
+                assert_eq!(options.len(), 2);
+            }
+            _ => panic!("expected a permission request"),
+        }
+        broker
+            .respond("toolu_question", PermissionOutcome::AllowOnce)
+            .expect("allow the tool");
+        let frames = captured.lock().expect("captured");
+        let reply = &frames[0]["response"]["response"];
+        assert_eq!(reply["behavior"], "allow");
+        assert_eq!(reply["updatedInput"]["command"], "echo survey");
+        assert!(reply["updatedInput"].get("answers").is_none());
     }
 
     #[test]

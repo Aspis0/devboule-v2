@@ -597,10 +597,10 @@ describe("DesignSurface host capabilities", () => {
     let pending: PendingPermission | null = null;
     let permissionNotice: string | null = null;
     const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
-    const respondPermission = vi.fn(async (outcome: "allow_once" | "deny") => {
+    const respondPermission = vi.fn(async (response: { outcome: "allow_once" | "deny" }) => {
       pending = null;
       for (const listener of listeners) listener();
-      void outcome;
+      void response;
     });
     const host = createHost({
       generate,
@@ -662,8 +662,90 @@ describe("DesignSurface host capabilities", () => {
       "Permission request is no longer waiting; it was answered elsewhere or it expired.",
     );
 
-    expect(respondPermission).toHaveBeenNthCalledWith(1, "allow_once");
-    expect(respondPermission).toHaveBeenNthCalledWith(2, "deny");
+    expect(respondPermission).toHaveBeenNthCalledWith(1, { outcome: "allow_once" });
+    expect(respondPermission).toHaveBeenNthCalledWith(2, { outcome: "deny" });
+    await act(async () => root.unmount());
+  });
+
+  it("sends a question's Other answer to the host as one object", async () => {
+    providerMocks.daemonStatus.mockResolvedValue({
+      state: "connected",
+      pid: 42,
+      instanceId: "daemon-test",
+      protocolVersion: 1,
+      clients: 1,
+      capabilities: ["typed_permissions"],
+      message: null,
+    });
+    const listeners = new Set<() => void>();
+    let pending: PendingPermission | null = null;
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const respondPermission = vi.fn(async (_response: unknown) => undefined);
+    const host = createHost({
+      generate,
+      getPendingPermission: () => pending,
+      respondPermission,
+      subscribeAgentSession: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const { container, root } = await renderDesign(host);
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    pending = {
+      sessionId: "session-design",
+      subscriptionId: 41,
+      request: {
+        type: "permission_request",
+        toolCallId: "design-question",
+        title: "Which colour should I paint the fence?",
+        kind: "question",
+        options: [
+          { optionId: "q0o0", name: "Forest green", kind: "allow_once" },
+          { optionId: "q0o1", name: "Barn red", kind: "allow_once" },
+        ],
+        questions: [
+          {
+            question: "Which colour should I paint the fence?",
+            options: [{ label: "Forest green" }, { label: "Barn red" }],
+            multiSelect: false,
+          },
+        ],
+      },
+    };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    await vi.waitFor(() => expect(container.querySelector(".permission-card")).not.toBeNull());
+
+    // No testing-library on this repo: drive React's onChange through the
+    // native value setter plus a bubbling input event.
+    const other = container.querySelector<HTMLInputElement>(
+      '.permission-card-question-other input[type="text"]',
+    );
+    if (other === null) throw new Error("Design question Other field missing");
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      nativeSetter?.call(other, "Teal, obviously");
+      other.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const submit = container.querySelector<HTMLButtonElement>(".permission-card-primary-action");
+    if (submit === null) throw new Error("Design question Submit missing");
+    await act(async () => submit.click());
+
+    // The whole answer arrives as one object: the typed text rides beside
+    // no option id, and no layer had a positional argument to drop.
+    expect(respondPermission).toHaveBeenCalledWith({
+      outcome: "allow_once",
+      answer: "Teal, obviously",
+    });
     await act(async () => root.unmount());
   });
 
@@ -800,7 +882,7 @@ describe("DesignSurface host capabilities", () => {
     );
     expect(container.querySelector(".permission-card")).not.toBeNull();
     expect(allow.disabled).toBe(false);
-    expect(respondPermission).toHaveBeenCalledWith("allow_once");
+    expect(respondPermission).toHaveBeenCalledWith({ outcome: "allow_once" });
     await act(async () => root.unmount());
   });
 

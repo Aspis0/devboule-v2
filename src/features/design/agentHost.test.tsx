@@ -1914,16 +1914,60 @@ describe("ACP design host", () => {
       options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
     });
 
-    await host.respondPermission?.("allow_once");
+    await host.respondPermission?.({ outcome: "allow_once" });
 
     expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
       "session-1",
       41,
       "permission-1",
       "allow_once",
+      undefined,
+      undefined,
     );
     expect(host.getPendingPermission?.()).toBeNull();
     expect(mocks.sessionInterrupt).not.toHaveBeenCalled();
+
+    finishRun();
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
+
+    await disposeAgentHost(host);
+  });
+
+  it("forwards a question's Other answer whole to the daemon", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-question",
+      title: "Which colour should I paint the fence?",
+      kind: "question",
+      options: [
+        { optionId: "q0o0", name: "Forest green", kind: "allow_once" },
+        { optionId: "q0o1", name: "Barn red", kind: "allow_once" },
+      ],
+      questions: [
+        {
+          question: "Which colour should I paint the fence?",
+          options: [{ label: "Forest green" }, { label: "Barn red" }],
+          multiSelect: false,
+        },
+      ],
+    });
+
+    // The single object the card built arrives whole: the typed text rides
+    // beside no option id, and the daemon — not this layer — maps it.
+    await host.respondPermission?.({ outcome: "allow_once", answer: "Teal, obviously" });
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-question",
+      "allow_once",
+      undefined,
+      "Teal, obviously",
+    );
+    expect(host.getPendingPermission?.()).toBeNull();
 
     finishRun();
     await expect(run).resolves.toMatchObject(QUIET_RESULT);
@@ -1948,13 +1992,15 @@ describe("ACP design host", () => {
       title: "Write a file",
       options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
     });
-    await host.respondPermission?.("allow_once");
+    await host.respondPermission?.({ outcome: "allow_once" });
 
     expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
       "session-1",
       42,
       "permission-reattach",
       "allow_once",
+      undefined,
+      undefined,
     );
     finishRun();
     await run;
@@ -1981,7 +2027,7 @@ describe("ACP design host", () => {
     };
 
     channelHarness.active?.(permission);
-    const firstAnswer = host.respondPermission?.("allow_once");
+    const firstAnswer = host.respondPermission?.({ outcome: "allow_once" });
     await settle();
     expect(host.getPendingPermission?.()).toMatchObject({
       request: { toolCallId: "permission-superseded" },
@@ -2001,13 +2047,15 @@ describe("ACP design host", () => {
     });
 
     // The superseded answer must no longer block a fresh one.
-    const secondAnswer = host.respondPermission?.("allow_once");
+    const secondAnswer = host.respondPermission?.({ outcome: "allow_once" });
     expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(2);
     expect(mocks.sessionPermissionRespond).toHaveBeenLastCalledWith(
       "session-1",
       42,
       "permission-superseded",
       "allow_once",
+      undefined,
+      undefined,
     );
 
     // The abandoned first answer settling late must not remove the live entry.
@@ -2049,11 +2097,11 @@ describe("ACP design host", () => {
     expect(host.getPendingPermission?.()).toMatchObject({
       request: { toolCallId: "permission-a" },
     });
-    await host.respondPermission?.("allow_once");
+    await host.respondPermission?.({ outcome: "allow_once" });
     expect(host.getPendingPermission?.()).toMatchObject({
       request: { toolCallId: "permission-b" },
     });
-    await host.respondPermission?.("deny");
+    await host.respondPermission?.({ outcome: "deny" });
     expect(host.getPendingPermission?.()).toBeNull();
     expect(mocks.sessionPermissionRespond).toHaveBeenNthCalledWith(
       1,
@@ -2061,6 +2109,8 @@ describe("ACP design host", () => {
       41,
       "permission-a",
       "allow_once",
+      undefined,
+      undefined,
     );
     expect(mocks.sessionPermissionRespond).toHaveBeenNthCalledWith(
       2,
@@ -2068,6 +2118,8 @@ describe("ACP design host", () => {
       41,
       "permission-b",
       "deny",
+      undefined,
+      undefined,
     );
 
     finishRun();
@@ -2116,7 +2168,7 @@ describe("ACP design host", () => {
       title: "Write a file",
       options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
     });
-    const answer = host.respondPermission?.("allow_once");
+    const answer = host.respondPermission?.({ outcome: "allow_once" });
     await settle();
     expect(host.getPendingPermission?.()).toMatchObject({
       request: { toolCallId: "permission-reject" },
@@ -2128,7 +2180,7 @@ describe("ACP design host", () => {
       request: { toolCallId: "permission-reject" },
     });
 
-    const retry = host.respondPermission?.("allow_once");
+    const retry = host.respondPermission?.({ outcome: "allow_once" });
     await retry;
     expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(2);
     finishRun();
@@ -2156,7 +2208,7 @@ describe("ACP design host", () => {
       options: [{ optionId: "deny", name: "Deny", kind: "reject_once" }],
     });
 
-    const allow = host.respondPermission?.("allow_once");
+    const allow = host.respondPermission?.({ outcome: "allow_once" });
     await settle();
     controller.abort();
     await expect(run).rejects.toMatchObject({ name: "AbortError" });
@@ -2165,18 +2217,24 @@ describe("ACP design host", () => {
       41,
       "permission-stop-race",
       "allow_once",
+      undefined,
+      undefined,
     );
     expect(mocks.sessionPermissionRespond).not.toHaveBeenCalledWith(
       "session-1",
       41,
       "permission-stop-race",
       "deny",
+      undefined,
+      undefined,
     );
     expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
       "session-1",
       41,
       "permission-stop-race-2",
       "deny",
+      undefined,
+      undefined,
     );
     expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
 
@@ -2198,7 +2256,7 @@ describe("ACP design host", () => {
       options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
     });
 
-    const allow = host.respondPermission?.("allow_once");
+    const allow = host.respondPermission?.({ outcome: "allow_once" });
     await settle();
     await disposeAgentHost(host);
     expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
@@ -2206,12 +2264,16 @@ describe("ACP design host", () => {
       41,
       "permission-dispose-race",
       "allow_once",
+      undefined,
+      undefined,
     );
     expect(mocks.sessionPermissionRespond).not.toHaveBeenCalledWith(
       "session-1",
       41,
       "permission-dispose-race",
       "deny",
+      undefined,
+      undefined,
     );
     response.resolve(undefined);
     await allow;
@@ -2256,7 +2318,7 @@ describe("ACP design host", () => {
       title: "Write a file",
       options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
     });
-    const answer = host.respondPermission?.("allow_once");
+    const answer = host.respondPermission?.({ outcome: "allow_once" });
     await settle();
     channelHarness.active?.({
       type: "permission_resolved",
@@ -2321,7 +2383,7 @@ describe("ACP design host", () => {
     await settle();
     expect(settled).toBe(false);
 
-    await host.respondPermission?.("allow_once");
+    await host.respondPermission?.({ outcome: "allow_once" });
     await expect(run).resolves.toMatchObject(QUIET_RESULT);
     await disposeAgentHost(host);
   });
@@ -2346,6 +2408,8 @@ describe("ACP design host", () => {
       41,
       "permission-abort",
       "deny",
+      undefined,
+      undefined,
     );
     expect(host.getPendingPermission?.()).toBeNull();
     expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
@@ -2372,6 +2436,8 @@ describe("ACP design host", () => {
       41,
       "permission-dispose",
       "deny",
+      undefined,
+      undefined,
     );
     expect(host.getPendingPermission?.()).toBeNull();
   });

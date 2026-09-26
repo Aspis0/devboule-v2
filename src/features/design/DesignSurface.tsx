@@ -119,7 +119,7 @@ import { useProviderConsent } from "../workspace/useProviderConsent";
 import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
 import { journalLossCopy } from "../workspace/journalLoss";
 import { chatCapableProviders, requiresConsent } from "../workspace/workspaceSessions";
-import { PermissionCard } from "../../components/PermissionCard";
+import { PermissionCard, type PermissionAnswer } from "../../components/PermissionCard";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import {
   projectAdd,
@@ -453,7 +453,7 @@ interface AssistantProps extends DesignSkillViewProps {
   onProviderSelect: (provider: ProviderInfo) => void;
   onModelSelect: (modelId: string) => void;
   onEffortSelect: (effort: string) => void;
-  onPermissionRespond: (outcome: "allow_once" | "deny", optionId?: string) => Promise<void>;
+  onPermissionRespond: (response: PermissionAnswer) => Promise<void>;
   onEndSession: () => void;
   skillResultNotice: string | null;
   onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
@@ -4456,10 +4456,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     [agentSession],
   );
   const respondPermission = useCallback(
-    (outcome: "allow_once" | "deny", optionId?: string): Promise<void> =>
-      (optionId === undefined
-        ? host.respondPermission?.(outcome)
-        : host.respondPermission?.(outcome, optionId)) ?? Promise.resolve(),
+    // The card's answer object travels whole to the host: this layer names
+    // no fields, so a new answer carrier cannot be dropped here.
+    (response: PermissionAnswer): Promise<void> =>
+      host.respondPermission?.(response) ?? Promise.resolve(),
     [host],
   );
   const endSession = useCallback(() => {

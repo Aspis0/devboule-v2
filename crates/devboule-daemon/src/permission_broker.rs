@@ -157,6 +157,7 @@ pub(super) enum DelegatedPeek {
     Found {
         pending: Arc<PendingPermission>,
         options: Vec<PermissionOption>,
+        is_question: bool,
     },
     Absent,
 }
@@ -447,9 +448,11 @@ impl PermissionBroker {
                 #[cfg(test)]
                 self.run_after_take_hook();
                 // The text itself goes only to the provider's reply frame
-                // below: the journal records the request plus `allow_once`,
-                // and the resolved event names no option, so the person's
-                // own words are persisted nowhere.
+                // below: the `permissions` row records the request plus
+                // `allow_once`, and the resolved event carries the granted
+                // kind with no option — the person's own words stay out of
+                // this store, the logs, and the peer audit, the way a chat
+                // message's words would.
                 return self.complete(
                     &pending,
                     serde_json::json!({
@@ -554,13 +557,17 @@ impl PermissionBroker {
         };
         match table.entries.get(tool_call_id) {
             Some(pending) => {
-                let options = match &pending.request {
-                    SessionEvent::PermissionRequest { options, .. } => options.clone(),
-                    _ => Vec::new(),
+                let (options, is_question) = match &pending.request {
+                    SessionEvent::PermissionRequest { options, kind, .. } => (
+                        options.clone(),
+                        matches!(kind, Some(PermissionRequestKind::Question)),
+                    ),
+                    _ => (Vec::new(), false),
                 };
                 DelegatedPeek::Found {
                     pending: Arc::clone(pending),
                     options,
+                    is_question,
                 }
             }
             None => DelegatedPeek::Absent,
@@ -654,7 +661,20 @@ impl PermissionBroker {
             .map(|broker| broker.peek_delegated(tool_call_id))
             .unwrap_or(DelegatedPeek::Absent);
         let selected = match &peek {
-            DelegatedPeek::Found { options, .. } => {
+            DelegatedPeek::Found {
+                options,
+                is_question,
+                ..
+            } => {
+                // A question belongs to the person, never to a parent
+                // agent — even a single-option one no chooser rule marks.
+                // The MCP answer door names no option and carries no text,
+                // so anything sent here would answer what nobody chose.
+                if *is_question {
+                    return Err(format!(
+                        "permission card {tool_call_id} is a question; only a person answers it, so it stays pending"
+                    ));
+                }
                 // A chooser has no answer this door can give: the MCP tool
                 // carries no option id and the envelope the creator saw
                 // lists no options, so anything sent here would be the
@@ -943,8 +963,10 @@ impl PermissionBroker {
             );
             if let Some(runtime) = runtime {
                 runtime.remove_permission_request(&pending.tool_call_id);
+                // The card was cancelled, whatever was attempted: the
+                // observers must read a cancellation, never the grant.
                 let _ = runtime.publish_agent_event(
-                    permission_resolved_event(pending, None, answered_by),
+                    permission_resolved_event(pending, None, "cancelled", answered_by),
                     None,
                 );
             }
@@ -960,7 +982,7 @@ impl PermissionBroker {
         if let Some(runtime) = runtime {
             runtime.remove_permission_request(&pending.tool_call_id);
             let _ = runtime.publish_agent_event(
-                permission_resolved_event(pending, selected_option, answered_by),
+                permission_resolved_event(pending, selected_option, journal_outcome, answered_by),
                 None,
             );
             // The durable attribution record, on every resolution: the
@@ -1092,15 +1114,28 @@ impl PermissionBroker {
     }
 }
 
+/// The pending permission is no longer waiting, as the observers see it.
+///
+/// The decision kind is not the secret: a text answer names no option, but
+/// the grant it carries is still `allow_once`, and observers must read an
+/// allowed question as allowed — never as unclaimed. Only a grant falls
+/// back this way; a cancellation names nothing either way.
 fn permission_resolved_event(
     pending: &PendingPermission,
     selected_option: Option<&PermissionOption>,
+    journal_outcome: &str,
     answered_by: Option<&str>,
 ) -> SessionEvent {
+    let granted_kind = match journal_outcome {
+        "allow_once" | "allow_always" => Some(journal_outcome.to_string()),
+        _ => None,
+    };
     SessionEvent::PermissionResolved {
         tool_call_id: pending.tool_call_id.clone(),
         selected_option_id: selected_option.map(|option| option.option_id.clone()),
-        selected_option_kind: selected_option.map(|option| option.kind.clone()),
+        selected_option_kind: selected_option
+            .map(|option| option.kind.clone())
+            .or(granted_kind),
         selected_option_name: selected_option.map(|option| option.name.clone()),
         answered_by: answered_by.map(str::to_string),
     }
@@ -2828,6 +2863,40 @@ mod question_tests {
         assert_eq!(broker.pending_len(), 0);
     }
 
+    /// A parent agent never answers its child's question — even the
+    /// single-option shape no chooser rule marks. The delegation door has
+    /// no option id and no text to give, so anything sent here would answer
+    /// what nobody chose; the card stays pending for the person.
+    #[test]
+    fn delegation_refuses_a_question_card() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                216,
+                permission_question_single_option("question-delegated"),
+                &runtime,
+            )
+            .expect("register");
+        let error = broker
+            .answer_delegated(
+                "question-delegated",
+                PermissionOutcome::AllowOnce,
+                &|| true,
+                &|_| false,
+                &|_| Ok(()),
+                &|_| Ok(()),
+                "s.creator",
+            )
+            .expect_err("a question stays pending for the person");
+        assert!(error.contains("is a question"), "{error}");
+        assert_eq!(broker.pending_len(), 1, "the card stays pending");
+        assert!(
+            sent.lock().expect("sent lock").is_empty(),
+            "nothing went to the agent"
+        );
+    }
+
     #[test]
     fn tool_request_refuses_a_text_answer() {
         let (broker, sent) = test_broker();
@@ -2848,10 +2917,10 @@ mod question_tests {
         assert!(sent.lock().expect("sent lock").is_empty());
     }
 
-    /// The free-text answer reaches the provider's reply frame and nowhere
-    /// else: the journal row holds the request plus `allow_once`, and the
-    /// resolved event names no option — so the person's own words are
-    /// persisted nowhere.
+    /// The free-text answer reaches the provider's reply frame through a
+    /// store that holds none of its words: the `permissions` row keeps the
+    /// request plus `allow_once`, and the resolved event carries the
+    /// granted kind with no option id or name.
     #[test]
     fn question_free_text_answer_is_journaled_without_its_words() {
         let secret = "chartreuse, the fence nobody else has";
@@ -2888,9 +2957,11 @@ mod question_tests {
             sent.lock().expect("sent lock")[0].1["outcome"]["answer"],
             secret
         );
-        // The resolved event for a text answer names no option: there is no
-        // option field carrying the person's words to any subscriber.
-        let resolved = super::permission_resolved_event(&pending, None, None);
+        // The resolved event for a text answer names no option, but still
+        // carries the granted kind: observers read an allowed question as
+        // allowed, while no field carries the person's words to any
+        // subscriber.
+        let resolved = super::permission_resolved_event(&pending, None, "allow_once", None);
         match resolved {
             SessionEvent::PermissionResolved {
                 selected_option_id,
@@ -2899,7 +2970,7 @@ mod question_tests {
                 ..
             } => {
                 assert_eq!(selected_option_id, None);
-                assert_eq!(selected_option_kind, None);
+                assert_eq!(selected_option_kind.as_deref(), Some("allow_once"));
                 assert_eq!(selected_option_name, None);
             }
             _ => panic!("expected a permission resolution"),

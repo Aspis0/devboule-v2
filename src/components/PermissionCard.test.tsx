@@ -422,6 +422,8 @@ describe("PermissionCard", () => {
       41,
       "tool-a",
       "allow_once",
+      undefined,
+      undefined,
     );
     expect(allowButton().disabled).toBe(true);
     expect(label()).toBe("Sending decision…");
@@ -449,6 +451,8 @@ describe("PermissionCard", () => {
       42,
       "tool-a",
       "allow_once",
+      undefined,
+      undefined,
     );
 
     await act(async () => root.unmount());
@@ -506,6 +510,8 @@ describe("PermissionCard", () => {
       42,
       "tool-a",
       "allow_once",
+      undefined,
+      undefined,
     );
 
     await act(async () => root.unmount());

@@ -18,6 +18,7 @@ import {
   type SessionChannel,
 } from "../../lib/tauri";
 import { errorSentence } from "../../lib/errorSentence";
+import type { PermissionAnswer } from "../../components/PermissionCard";
 import type {
   OracleFolderIndexStatus,
   OracleResult,
@@ -975,8 +976,7 @@ export function createAgentHost(): DesignHost {
 
   const respondToPermissionEntry = (
     entry: PendingPermissionEntry,
-    outcome: "allow_once" | "deny",
-    optionId?: string,
+    answer: PermissionAnswer,
   ): Promise<void> => {
     if (entry.answered || entry.responsePromise !== null) return Promise.resolve();
     entry.answered = true;
@@ -992,23 +992,16 @@ export function createAgentHost(): DesignHost {
 
     let response: Promise<void>;
     try {
-      // A chooser answer carries its option's id; the ordinary pair keeps the
-      // plain four-argument call.
-      response =
-        optionId === undefined
-          ? sessionPermissionRespond(
-              entry.sessionId,
-              liveSubscriptionId,
-              entry.request.toolCallId,
-              outcome,
-            )
-          : sessionPermissionRespond(
-              entry.sessionId,
-              liveSubscriptionId,
-              entry.request.toolCallId,
-              outcome,
-              optionId,
-            );
+      // One object in, one call out: the answer the card built travels
+      // whole, with nothing positional left to drop on the way.
+      response = sessionPermissionRespond(
+        entry.sessionId,
+        liveSubscriptionId,
+        entry.request.toolCallId,
+        answer.outcome,
+        answer.optionId,
+        answer.answer,
+      );
     } catch (cause) {
       entry.answered = false;
       activeRunSettlementCheck?.();
@@ -1045,15 +1038,14 @@ export function createAgentHost(): DesignHost {
   };
 
   const respondToPendingPermission = (
-    outcome: "allow_once" | "deny",
-    optionId?: string,
+    response: PermissionAnswer,
     sessionId?: string,
   ): Promise<void> => {
     const pending = pendingPermissions[0];
     if (pending === undefined || (sessionId !== undefined && pending.sessionId !== sessionId)) {
       return Promise.resolve();
     }
-    return respondToPermissionEntry(pending, outcome, optionId);
+    return respondToPermissionEntry(pending, response);
   };
 
   const denyUnansweredPermissions = (sessionId?: string): Promise<void> => {
@@ -1064,7 +1056,7 @@ export function createAgentHost(): DesignHost {
           entry.responsePromise === null &&
           (sessionId === undefined || entry.sessionId === sessionId),
       )
-      .map((entry) => respondToPermissionEntry(entry, "deny").catch(() => undefined));
+      .map((entry) => respondToPermissionEntry(entry, { outcome: "deny" }).catch(() => undefined));
     return Promise.all(responses).then(() => undefined);
   };
 
@@ -1736,7 +1728,7 @@ export function createAgentHost(): DesignHost {
     getRunTranscriptStart: () => lastRunTranscriptStart,
     getPendingPermission: pendingPermissionSnapshot,
     getPermissionNotice: () => permissionNotice,
-    respondPermission: (outcome, optionId) => respondToPendingPermission(outcome, optionId),
+    respondPermission: (response) => respondToPendingPermission(response),
     getAgentSessionRecord: () => sessionHandle?.session ?? null,
     subscribeAgentSession: (listener) => {
       sessionListeners.add(listener);

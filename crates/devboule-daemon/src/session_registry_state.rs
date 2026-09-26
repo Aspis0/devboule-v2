@@ -19,7 +19,9 @@ pub(super) type JournalRosterCache = Arc<Mutex<Option<(u64, Vec<SessionRecord>)>
 ///
 /// `answer` carries the person's free-text answer to a `question` request
 /// and is absent otherwise. It is passed to the provider's reply frame and
-/// never to the journal or any log.
+/// kept out of the `permissions` table, logs, diagnostics, notifications
+/// and peer audit. Like a chat message it may still reach the journal and
+/// transcript through the provider's own `tool_result` echo.
 pub struct PermissionResponse<'a> {
     pub session_id: &'a str,
     pub request_id: &'a str,

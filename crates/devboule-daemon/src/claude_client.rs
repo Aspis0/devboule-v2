@@ -53,6 +53,11 @@ type ClaudeDeliverySettings = Arc<Mutex<HashMap<String, String>>>;
 struct ClaudePendingControl {
     request_id: String,
     input: Value,
+    /// The card's recorded kind, decided once at dispatch. The reply is
+    /// shaped from this fact — never re-derived from the input's shape, so
+    /// a tool whose input merely carries a `questions` array is still
+    /// answered as the ordinary tool it was asked as.
+    is_question: bool,
 }
 
 enum ClaudeModeGateState {
@@ -864,7 +869,12 @@ fn claude_permission_sender(
                     "Claude permission response had no matching control request",
                 ));
             };
-            control_response_frame(&pending.request_id, &pending.input, &result)
+            control_response_frame(
+                &pending.request_id,
+                &pending.input,
+                pending.is_question,
+                &result,
+            )
         };
         let mut bytes = serde_json::to_vec(&frame)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -880,7 +890,12 @@ fn claude_permission_sender(
     })
 }
 
-fn control_response_frame(request_id: &str, input: &Value, result: &Value) -> Value {
+fn control_response_frame(
+    request_id: &str,
+    input: &Value,
+    is_question: bool,
+    result: &Value,
+) -> Value {
     let outcome = result
         .pointer("/outcome/outcome")
         .and_then(Value::as_str)
@@ -893,7 +908,7 @@ fn control_response_frame(request_id: &str, input: &Value, result: &Value) -> Va
         .pointer("/outcome/answer")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let response = if outcome == "selected" && !parse_ask_user_questions(input).is_empty() {
+    let response = if outcome == "selected" && is_question {
         match question_answers(input, option_id, answer) {
             Some(answers) => serde_json::json!({
                 "behavior": "allow",
@@ -2546,6 +2561,9 @@ impl ClaudeReader {
         } else {
             Vec::new()
         };
+        // Decided here, from the same parse that built the card: the reply
+        // shapes itself from this fact, never from the input's shape again.
+        let is_question = !asked.is_empty();
         // Paseo never shows `decision_reason`: for every tool but
         // AskUserQuestion the permission summary is empty. `decision_reason`
         // is the permission engine's internal vocabulary, so it is not
@@ -2637,6 +2655,7 @@ impl ClaudeReader {
                 ClaudePendingControl {
                     request_id: request_id.to_string(),
                     input: input.clone(),
+                    is_question,
                 },
             );
         }

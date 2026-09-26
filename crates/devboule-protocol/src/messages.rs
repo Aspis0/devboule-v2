@@ -420,8 +420,12 @@ pub enum ClientMessage {
         /// The person's free-text answer to a `question` request (the
         /// "Other" field, or the joined labels of a multi-select). Absent
         /// for option picks, which travel as `option_id`, and for every
-        /// non-question request. Never journalled: it passes from this
-        /// frame to the provider's reply and nowhere else.
+        /// non-question request. It is passed to the provider's reply and
+        /// kept out of the `permissions` table, logs, diagnostics,
+        /// notifications and peer audit — but it is **not** kept out of the
+        /// journal and transcript outright: like a chat message, the answer
+        /// reaches the model, and the provider's own `tool_result` echo of
+        /// it is journalled verbatim with every other inbound frame.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answer: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

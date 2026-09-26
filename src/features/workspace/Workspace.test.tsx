@@ -1905,6 +1905,8 @@ describe("Workspace sessions", () => {
       41,
       "tool-test",
       "allow_once",
+      undefined,
+      undefined,
     );
   });
 
@@ -1943,7 +1945,14 @@ describe("Workspace sessions", () => {
     await act(async () => {
       buttons[1].click();
     });
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 41, "tool-a", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-2",
+      41,
+      "tool-a",
+      "allow_once",
+      undefined,
+      undefined,
+    );
   });
 
   it("sends the deny outcome without an option id when deny is clicked", async () => {
@@ -1972,7 +1981,14 @@ describe("Workspace sessions", () => {
     await act(async () => {
       reject.click();
     });
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 41, "tool-a", "deny");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-2",
+      41,
+      "tool-a",
+      "deny",
+      undefined,
+      undefined,
+    );
   });
 
   it("shows a fresh waiting card when a new request replaces one mid-flight", async () => {
@@ -2462,7 +2478,14 @@ describe("Workspace sessions", () => {
     if (next === null) throw new Error("second permission card did not render");
     expect(next.textContent).toContain("ping.exe");
     expect(next.textContent).toContain("C:\\beta");
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 41, "tool-a", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-2",
+      41,
+      "tool-a",
+      "allow_once",
+      undefined,
+      undefined,
+    );
   });
 
   it("adopts the fresh subscription id when the same request is re-emitted after a remount", async () => {
@@ -2495,7 +2518,14 @@ describe("Workspace sessions", () => {
     // The first emit queued subscription 41; the surface then remounted and
     // re-attached with subscription 42. The queued card must respond with 42.
     expect(sessionPermissionRespond).toHaveBeenCalledTimes(1);
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 42, "tool-a", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-2",
+      42,
+      "tool-a",
+      "allow_once",
+      undefined,
+      undefined,
+    );
   });
 
   it("quotes args that contain spaces so they are not split visually", async () => {
@@ -2732,6 +2762,8 @@ describe("Workspace sessions", () => {
       41,
       "shared-tool",
       "allow_once",
+      undefined,
+      undefined,
     );
 
     await act(async () => tabB.click());

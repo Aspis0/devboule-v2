@@ -1,4 +1,5 @@
 import type { AgentSessionState } from "../../lib/agentSession";
+import type { PermissionAnswer } from "../../components/PermissionCard";
 import type { PermissionRequest, ProviderInfo, Session, Workspace } from "../../types/ipc";
 
 /**
@@ -433,8 +434,10 @@ export interface DesignHost {
   getPendingPermission?(): PendingPermission | null;
   /** Short-lived notice for a permission resolved without a Design answer (for example timeout). */
   getPermissionNotice?(): string | null;
-  /** Answer the Design surface's currently displayed permission request. */
-  respondPermission?(outcome: "allow_once" | "deny", optionId?: string): Promise<void>;
+  /** Answer the Design surface's currently displayed permission request. One
+   * object, forwarded whole by every layer: there is no positional argument
+   * left that a forwarder could drop while still type-checking. */
+  respondPermission?(response: PermissionAnswer): Promise<void>;
   /** The daemon record for the live session, including its echoed working directory. */
   getAgentSessionRecord?(): Session | null;
   subscribeAgentSession?(listener: () => void): () => void;

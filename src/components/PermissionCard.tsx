@@ -354,8 +354,20 @@ export interface PermissionCardProps {
    * never earn the creator label, only the named-session one.
    */
   creatorId?: string | null;
-  onRespond?: (outcome: "allow_once" | "deny", optionId?: string, answer?: string) => Promise<void>;
+  onRespond?: (response: PermissionAnswer) => Promise<void>;
   onResolved?: (sessionId: string, toolCallId: string) => void;
+}
+
+/**
+ * One answer to a permission card, built once by the card and forwarded
+ * whole by every layer below it. A forwarder receives a single object, so
+ * there is no positional third argument left to drop silently — dropping
+ * the object drops the whole answer, loudly.
+ */
+export interface PermissionAnswer {
+  outcome: "allow_once" | "deny";
+  optionId?: string;
+  answer?: string;
 }
 
 /** A real ACP permission prompt; it is inert unless the handshake negotiated typed_permissions. */
@@ -450,8 +462,9 @@ export function PermissionCard({
     : PERMISSION_LABELS[permission];
   const cardTone = resolvedByCreator ? (resolution.outcome ?? "unclaimed") : permission;
 
-  const respond = async (outcome: "allow_once" | "deny", optionId?: string, answer?: string) => {
-    if (resolvedByCreator || submittingRef.current || permission !== "waiting") return;
+  const respond = async (response: PermissionAnswer): Promise<boolean> => {
+    if (resolvedByCreator || submittingRef.current || permission !== "waiting") return false;
+    const { outcome, optionId, answer } = response;
     const generation = generationRef.current;
     submittingRef.current = true;
     setPermission("submitting");
@@ -460,19 +473,17 @@ export function PermissionCard({
       // The ordinary pair posts no option id: its options are unambiguous,
       // so the daemon's own pick is the right one. A chooser answer names the
       // option it is answering with. A question's free text travels as the
-      // answer beside it.
-      await (onRespond?.(outcome, optionId, answer) ??
-        (optionId === undefined && answer === undefined
-          ? sessionPermissionRespond(sessionId, subscriptionId, request.toolCallId, outcome)
-          : sessionPermissionRespond(
-              sessionId,
-              subscriptionId,
-              request.toolCallId,
-              outcome,
-              optionId,
-              answer,
-            )));
-      if (!mountedRef.current || generationRef.current !== generation) return;
+      // answer beside it. Either door goes through the one object above.
+      await (onRespond?.(response) ??
+        sessionPermissionRespond(
+          sessionId,
+          subscriptionId,
+          request.toolCallId,
+          outcome,
+          optionId,
+          answer,
+        ));
+      if (!mountedRef.current || generationRef.current !== generation) return false;
       const chosen =
         optionId === undefined
           ? undefined
@@ -491,11 +502,13 @@ export function PermissionCard({
         setLocalChoice(chosen.name);
       }
       onResolved?.(sessionId, request.toolCallId);
+      return true;
     } catch (cause) {
-      if (!mountedRef.current || generationRef.current !== generation) return;
+      if (!mountedRef.current || generationRef.current !== generation) return false;
       submittingRef.current = false;
       setPermission("waiting");
       setError(errorSentence(cause));
+      return false;
     }
   };
 
@@ -576,7 +589,7 @@ export function PermissionCard({
       const optionId = only === undefined ? undefined : request.options[only]?.optionId;
       if (optionId !== undefined) {
         // The card's own resolved state names the option, as usual.
-        void respond("allow_once", optionId);
+        void respond({ outcome: "allow_once", optionId });
         return;
       }
     }
@@ -589,8 +602,10 @@ export function PermissionCard({
             ),
           );
     const choice = values.length === 1 ? values[0] : `${values.length} answers`;
-    void respond("allow_once", undefined, answer).then(() => {
-      if (mountedRef.current) setLocalChoice(choice);
+    // The name prints only once the answer is sent: `respond` reports
+    // success, so a rejection leaves the error without a "Chosen" line.
+    void respond({ outcome: "allow_once", answer }).then((sent) => {
+      if (sent && mountedRef.current) setLocalChoice(choice);
     });
   };
 
@@ -642,7 +657,10 @@ export function PermissionCard({
                   <label key={optionIndex} className="permission-card-question-option">
                     <input
                       type={question.multiSelect ? "checkbox" : "radio"}
-                      name={`permission-question-${request.toolCallId}-${questionIndex}`}
+                      // Scoped to this card's own session, subscription and
+                      // tool call: a provider-chosen id alone could repeat
+                      // across two visible cards and merge their groups.
+                      name={`permission-question-${sessionId}-${subscriptionId}-${request.toolCallId}-${questionIndex}`}
                       checked={checked}
                       onChange={() => toggleQuestionOption(questionIndex, optionIndex)}
                       disabled={permission !== "waiting" || !daemonReachable}
@@ -698,7 +716,7 @@ export function PermissionCard({
             <button
               type="button"
               className="permission-card-secondary-action permission-card-deny-action"
-              onClick={() => void respond("deny")}
+              onClick={() => void respond({ outcome: "deny" })}
               disabled={permission !== "waiting" || !daemonReachable}
             >
               Dismiss
@@ -721,7 +739,7 @@ export function PermissionCard({
                 // The agent offered no way to refuse, so the card keeps its
                 // own Deny: a question the person will not answer can still
                 // be refused.
-                onClick={() => void respond("deny")}
+                onClick={() => void respond({ outcome: "deny" })}
                 disabled={permission !== "waiting" || !daemonReachable}
               >
                 Deny
@@ -738,7 +756,7 @@ export function PermissionCard({
                       ? "permission-card-secondary-action permission-card-deny-action"
                       : "permission-card-primary-action"
                   }
-                  onClick={() => void respond(outcome, option.optionId)}
+                  onClick={() => void respond({ outcome, optionId: option.optionId })}
                   disabled={permission !== "waiting" || !daemonReachable}
                 >
                   {option.name}
@@ -751,7 +769,7 @@ export function PermissionCard({
             <button
               type="button"
               className="permission-card-secondary-action permission-card-deny-action"
-              onClick={() => void respond("deny")}
+              onClick={() => void respond({ outcome: "deny" })}
               disabled={permission !== "waiting" || !daemonReachable || !denySupported}
             >
               Deny
@@ -759,7 +777,7 @@ export function PermissionCard({
             <button
               type="button"
               className="permission-card-primary-action"
-              onClick={() => void respond("allow_once")}
+              onClick={() => void respond({ outcome: "allow_once" })}
               disabled={permission !== "waiting" || !daemonReachable || !allowSupported}
             >
               Allow once

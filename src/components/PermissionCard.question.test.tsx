@@ -120,6 +120,19 @@ describe("PermissionCard question answers", () => {
     await act(async () => root.unmount());
   });
 
+  it("scopes radio groups to the card so two cards never share one", async () => {
+    const { root, card } = await renderCard(singleRequest);
+
+    // Provider-chosen ids can repeat across sessions; the group name carries
+    // the session, subscription and tool call so a second card cannot clear
+    // this one's pick.
+    for (const radio of radios(card)) {
+      expect(radio.name).toBe("permission-question-session-1-41-tool-question-0");
+    }
+
+    await act(async () => root.unmount());
+  });
+
   it("Submit stays disabled until the question is answered", async () => {
     const { root, card } = await renderCard(singleRequest);
     const submit = findButton(card, "Submit");
@@ -212,6 +225,32 @@ describe("PermissionCard question answers", () => {
     await act(async () => root.unmount());
   });
 
+  it("a rejected Submit shows the error with no Chosen line", async () => {
+    const { root, card } = await renderCard(singleRequest);
+
+    // The answer door: a lone pick would travel as an option id and name
+    // itself inside `respond`, so only typed text reaches the fixed line.
+    const other = otherInput(card);
+    if (other === null) throw new Error("Other field did not render");
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      nativeSetter?.call(other, "Teal, obviously");
+      other.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    mocks.sessionPermissionRespond.mockRejectedValueOnce(new Error("daemon gone"));
+    const submit = findButton(card, "Submit");
+    if (submit === undefined) throw new Error("Submit did not render");
+    await act(async () => submit.click());
+
+    expect(card.querySelector("[role=alert]")).not.toBeNull();
+    expect(card.querySelector(".permission-card-choice")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
   it("Dismiss refuses without naming an option", async () => {
     const { root, card } = await renderCard(singleRequest);
     const dismiss = findButton(card, "Dismiss");
@@ -224,6 +263,8 @@ describe("PermissionCard question answers", () => {
       41,
       "tool-question",
       "deny",
+      undefined,
+      undefined,
     );
 
     await act(async () => root.unmount());
