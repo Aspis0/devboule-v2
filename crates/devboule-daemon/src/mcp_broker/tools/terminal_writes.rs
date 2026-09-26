@@ -172,6 +172,17 @@ fn create_terminal(
             Ok(None) => {}
         }
     }
+    // An archive in progress refuses here, before the cap slot and before
+    // the card: the create re-checks the same mark under the archiving
+    // guard's own lock, but a refusal the daemon already knows about must
+    // never spend the person's consent. The read side is dropped on this
+    // line — holding it across the card would block an archive for as long
+    // as the person takes to answer.
+    let archiving = state
+        .sessions
+        .workspace_creation_guard(Some(&workspace))
+        .map_err(|error| TerminalError::Refused(error.message))?;
+    drop(archiving);
     // The directory the shell would open in, resolved the way the create
     // resolves it: a workspace that cannot answer refuses the call here,
     // before the card is spent on a directory nobody can name.
