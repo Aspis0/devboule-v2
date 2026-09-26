@@ -6,9 +6,9 @@
 //! `params` carries `{sessionId, toolCallId, questions[], mode}`. Newer grok
 //! (1.0.40) sends the same fields directly under the method, without the
 //! `params` envelope. Both shapes are accepted. The reply follows grok's own
-//! response enum: `accepted` with answers keyed by full question text, and
-//! the `skip_interview` decline variant for anything else — including a
-//! free-text answer, which travels verbatim like the sibling Codex carrier.
+//! response enum, measured live: `accepted` with answers keyed by full
+//! question text — a free-text answer travels verbatim as its label — and
+//! the `skip_interview` decline variant for a dismiss, a close, or a refusal.
 
 use std::collections::BTreeMap;
 

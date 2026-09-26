@@ -8,16 +8,13 @@ use devboule_protocol::{PermissionOutcome, PermissionRequestKind, SessionEvent};
 
 use super::super::acp_questions::{grok_question_result, parse_grok_questions};
 use super::question_support::{
-    asked, echo_harness, enveloped, fence_params, has_notice, live_turn, node_gated, unenveloped,
+    asked, card_harness, echo_harness, enveloped, fence_params, has_notice, live_turn, unenveloped,
     FENCE, TOPPINGS,
 };
 
 #[test]
 fn grok_question_raises_a_card_with_the_agents_labels() {
-    if node_gated() {
-        return;
-    }
-    let echo = echo_harness();
+    let echo = card_harness();
     live_turn(&echo.reader);
     echo.dispatch(&enveloped(0));
     let events = echo.conn.pull_events();
@@ -75,10 +72,7 @@ fn grok_question_raises_a_card_with_the_agents_labels() {
 
 #[test]
 fn unenveloped_params_raise_the_same_card() {
-    if node_gated() {
-        return;
-    }
-    let echo = echo_harness();
+    let echo = card_harness();
     live_turn(&echo.reader);
     echo.dispatch(&unenveloped(5));
     let events = echo.conn.pull_events();
@@ -94,9 +88,6 @@ fn unenveloped_params_raise_the_same_card() {
 
 #[test]
 fn option_pick_answers_accepted_with_labels() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     echo.dispatch(&enveloped(0));
@@ -125,9 +116,6 @@ fn option_pick_answers_accepted_with_labels() {
 
 #[test]
 fn other_answer_travels_verbatim() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     echo.dispatch(&enveloped(0));
@@ -151,9 +139,6 @@ fn other_answer_travels_verbatim() {
 
 #[test]
 fn dismiss_answers_skip_interview() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     echo.dispatch(&enveloped(0));
@@ -170,9 +155,6 @@ fn dismiss_answers_skip_interview() {
 
 #[test]
 fn multi_question_answers_map_each_text() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     echo.dispatch(&serde_json::json!({

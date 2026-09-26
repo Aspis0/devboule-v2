@@ -3273,19 +3273,17 @@ impl AcpReader {
         )
     }
 
-    #[cfg(test)]
     /// Test road into a live-wired transport: the echo harness answers
     /// through the production sender, so the bytes it reads are the bytes
     /// a real agent would get.
     #[cfg(test)]
     pub(super) fn test_transport(
         stdin: std::process::ChildStdin,
-    ) -> (Arc<AcpTransport>, Arc<PermissionBroker>, AcpPending) {
+    ) -> (Arc<AcpTransport>, Arc<PermissionBroker>) {
         let dir = crate::test_dirs::test_temp_dir("devboule-acp-echo");
         let transport = Arc::new(AcpTransport::new(stdin, AcpHost::new(dir.clone(), dir)));
         let broker = Arc::clone(&transport.permission_broker);
-        let pending = transport.pending_responses();
-        (transport, broker, pending)
+        (transport, broker)
     }
 
     #[cfg(test)]
@@ -4176,6 +4174,19 @@ impl AcpReader {
             return;
         };
         let payload = grok_payload(value);
+        // The duplicate guard runs before every other gate: a wire id that
+        // is still waiting belongs to an open request, and anything done
+        // past this point would touch its record.
+        if self.is_duplicate(id) {
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: "Grok question reused an id that is still waiting and was dropped."
+                        .to_string(),
+                },
+            );
+            return;
+        }
         // The session check dispatch_permission applies: every shape grok
         // sends carries the session, so an absent one is refused like a
         // wrong one.
@@ -4188,15 +4199,6 @@ impl AcpReader {
                 runtime,
                 Some("Grok question targeted another session and was cancelled.".to_string()),
             );
-            return;
-        }
-        if self.refuse_duplicate(
-            id,
-            value,
-            runtime,
-            grok_skip_interview(),
-            "Grok question reused an id that is still waiting and was cancelled.",
-        ) {
             return;
         }
         let questions = parse_grok_questions(payload);
@@ -4268,6 +4270,22 @@ impl AcpReader {
             Ok(true) => return,
             Ok(false) => {}
             Err(error) => {
+                // The card never reached a decidable state. The id still
+                // gets exactly one answer only if our record is still
+                // parked: a concurrent close answers through the sender and
+                // takes it, so a missing record means the answer went out.
+                let unanswered = self
+                    .pending_responses
+                    .lock()
+                    .map(|mut pending| pending.remove(&id).is_some())
+                    .unwrap_or(false);
+                if unanswered {
+                    let wire = value
+                        .get("id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::from(id));
+                    self.send_acp_result(&wire, grok_skip_interview());
+                }
                 self.publish(
                     runtime,
                     SessionEvent::AgentError {
@@ -4309,41 +4327,20 @@ impl AcpReader {
     fn park(&self, id: u64, kind: AcpPendingKind, params: serde_json::Value) {
         if let Ok(mut pending) = self.pending_responses.lock() {
             pending.insert(id, AcpPendingResponse { kind, params });
+        } else {
+            eprintln!("ACP answer-record map lock poisoned; parking skipped");
         }
     }
 
-    /// A wire id that is still waiting belongs to another request: answer
-    /// this one straight at the transport, leaving the parked record alone
-    /// so the open card keeps its route to a correct reply. True when it
-    /// answered.
-    fn refuse_duplicate(
-        &self,
-        id: u64,
-        value: &serde_json::Value,
-        runtime: &Arc<SessionRuntime>,
-        result: serde_json::Value,
-        notice: &str,
-    ) -> bool {
-        let waiting = self
-            .pending_responses
+    /// True when the wire id is already parked for an open request. A
+    /// reused in-flight id is the peer's protocol error: the frame is
+    /// dropped with a notice and never answered, so the id keeps exactly
+    /// one response — the open card's.
+    fn is_duplicate(&self, id: u64) -> bool {
+        self.pending_responses
             .lock()
             .map(|pending| pending.contains_key(&id))
-            .unwrap_or(false);
-        if !waiting {
-            return false;
-        }
-        let wire = value
-            .get("id")
-            .cloned()
-            .unwrap_or(serde_json::Value::from(id));
-        self.send_acp_result(&wire, result);
-        self.publish(
-            runtime,
-            SessionEvent::AgentError {
-                message: notice.to_string(),
-            },
-        );
-        true
+            .unwrap_or(false)
     }
 
     /// One JSON-RPC result straight at the agent, past the broker: only for
@@ -4377,13 +4374,15 @@ impl AcpReader {
             );
             return;
         };
-        if self.refuse_duplicate(
-            id,
-            value,
-            runtime,
-            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
-            "ACP permission request reused an id that is still waiting and was cancelled.",
-        ) {
+        if self.is_duplicate(id) {
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message:
+                        "ACP permission request reused an id that is still waiting and was dropped."
+                            .to_string(),
+                },
+            );
             return;
         }
         // Parked before every send below, so each one shapes through this
@@ -4552,6 +4551,23 @@ impl AcpReader {
             Ok(true) => return,
             Ok(false) => {}
             Err(error) => {
+                // Same exactly-once rule as the grok arm above: only an
+                // answer this dispatch still owns goes out directly.
+                let unanswered = self
+                    .pending_responses
+                    .lock()
+                    .map(|mut pending| pending.remove(&id).is_some())
+                    .unwrap_or(false);
+                if unanswered {
+                    let wire = value
+                        .get("id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::from(id));
+                    self.send_acp_result(
+                        &wire,
+                        serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                    );
+                }
                 self.publish(
                     runtime,
                     SessionEvent::AgentError {

@@ -20,24 +20,17 @@ pub(super) const TOPPINGS: &str = "Which toppings?";
 
 static ECHO_SEQ: AtomicU64 = AtomicU64::new(1);
 
-pub(super) fn node_gated() -> bool {
-    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
-        eprintln!("{reason}");
-        return true;
-    }
-    false
-}
-
 /// A fake ACP child that echoes stdin to stdout, so a test reads the exact
 /// bytes the production sender wrote. The broker is the transport's own —
 /// require-journal and all — with a throwaway journal behind it, so answers
-/// take the recorded road exactly as in production.
+/// take the recorded road exactly as in production. Spawning `node` fails
+/// the test loudly when it is missing; nothing here passes silently.
 pub(super) struct EchoHarness {
     pub(super) broker: Arc<PermissionBroker>,
     pub(super) runtime: Arc<SessionRuntime>,
     pub(super) conn: Arc<ConnHandle>,
     pub(super) reader: AcpReader,
-    stdout: Option<std::io::BufReader<std::process::ChildStdout>>,
+    frames: std::sync::mpsc::Receiver<String>,
     child: Option<std::process::Child>,
     journal: Arc<Journal>,
 }
@@ -63,24 +56,23 @@ impl EchoHarness {
     /// One frame the child echoed. Blocks up to the timeout, so a dropped
     /// write fails the test instead of hanging it.
     pub(super) fn read_frame(&mut self) -> serde_json::Value {
-        use std::io::BufRead;
-        let mut stdout = self.stdout.take().expect("stdout taken");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut line = String::new();
-            let read = stdout.read_line(&mut line);
-            let _ = tx.send((read, line, stdout));
-        });
-        let (read, line, stdout) = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("answer frame written");
-        self.stdout = Some(stdout);
-        read.expect("frame read");
-        serde_json::from_str(&line).expect("frame json")
+        self.poll_frame(std::time::Duration::from_secs(10))
+            .expect("answer frame written")
+    }
+
+    /// A frame if one arrives within the wait, else nothing — for asserting
+    /// an id stays silent. The reader thread keeps its own handle, so a
+    /// timeout costs nothing and later reads still work.
+    pub(super) fn poll_frame(&mut self, wait: std::time::Duration) -> Option<serde_json::Value> {
+        self.frames
+            .recv_timeout(wait)
+            .ok()
+            .map(|line| serde_json::from_str(&line).expect("frame json"))
     }
 }
 
-/// Caller must have gated on node first (`node_gated`).
+/// Caller must have `node` runnable: the spawn fails the test loudly
+/// otherwise.
 pub(super) fn echo_harness() -> EchoHarness {
     let mut child = std::process::Command::new("node")
         .args([
@@ -93,7 +85,26 @@ pub(super) fn echo_harness() -> EchoHarness {
         .expect("node echo child");
     let stdin = child.stdin.take().expect("stdin");
     let stdout = std::io::BufReader::new(child.stdout.take().expect("stdout"));
-    let (transport, broker, _) = super::AcpReader::test_transport(stdin);
+    let (transport, broker) = super::AcpReader::test_transport(stdin);
+    let (frames_tx, frames_rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("acp-echo-drain".to_string())
+        .spawn(move || {
+            use std::io::BufRead;
+            let mut stdout = stdout;
+            loop {
+                let mut line = String::new();
+                match stdout.read_line(&mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {
+                        if frames_tx.send(line).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+        .expect("echo drain thread");
     let seq = ECHO_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let journal = Arc::new(
         Journal::open(&permission_path(&format!("acp-grok-echo-{seq}"))).expect("journal"),
@@ -163,9 +174,52 @@ pub(super) fn echo_harness() -> EchoHarness {
         runtime,
         conn,
         reader,
-        stdout: Some(stdout),
+        frames: frames_rx,
         child: Some(child),
         journal,
+    }
+}
+
+/// Cards without answers: no child, no node, no journal — dispatch and
+/// pulls only, so the card shape keeps coverage that needs no bytes.
+pub(super) struct CardHarness {
+    pub(super) broker: Arc<PermissionBroker>,
+    pub(super) runtime: Arc<SessionRuntime>,
+    pub(super) conn: Arc<ConnHandle>,
+    pub(super) reader: AcpReader,
+}
+
+impl CardHarness {
+    pub(super) fn dispatch(&self, frame: &serde_json::Value) {
+        self.reader.dispatch_value(frame, &self.runtime);
+    }
+}
+
+pub(super) fn card_harness() -> CardHarness {
+    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let runtime = SessionRuntime::for_acp(SESSION.to_string(), None, Arc::clone(&broker));
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        SESSION,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let reader = AcpReader::for_test(
+        Arc::new(Mutex::new(HashSet::new())),
+        SESSION.to_string(),
+        Arc::clone(&broker),
+    );
+    CardHarness {
+        broker,
+        runtime,
+        conn,
+        reader,
     }
 }
 

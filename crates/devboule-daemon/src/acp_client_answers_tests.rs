@@ -6,15 +6,10 @@
 
 use devboule_protocol::SessionEvent;
 
-use super::question_support::{
-    echo_harness, enveloped, has_notice, live_turn, node_gated, SESSION,
-};
+use super::question_support::{echo_harness, enveloped, has_notice, live_turn, SESSION};
 
 #[test]
 fn pending_question_answered_on_close() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     echo.dispatch(&enveloped(0));
@@ -31,9 +26,6 @@ fn pending_question_answered_on_close() {
 
 #[test]
 fn closed_broker_answers_at_once() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     echo.broker.close();
@@ -53,9 +45,6 @@ fn closed_broker_answers_at_once() {
 
 #[test]
 fn duplicate_tool_call_id_answers_at_once() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     echo.dispatch(&enveloped(0));
@@ -89,16 +78,17 @@ fn duplicate_tool_call_id_answers_at_once() {
 }
 
 #[test]
-fn reused_wire_id_leaves_the_parked_card_alone() {
-    if node_gated() {
-        return;
-    }
+fn reused_wire_id_is_dropped_and_answered_once() {
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     echo.dispatch(&enveloped(0));
-    let _ = echo.conn.pull_events();
+    let events = echo.conn.pull_events();
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })));
     // The same wire id, still waiting, for another question: the duplicate
-    // is answered at once without touching the parked record.
+    // is dropped with a notice — never answered — so the id keeps exactly
+    // one response.
     echo.dispatch(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 0,
@@ -111,13 +101,17 @@ fn reused_wire_id_leaves_the_parked_card_alone() {
         },
     }));
     assert_eq!(echo.broker.pending_len(), 1, "no second card");
-    assert_eq!(
-        echo.read_frame(),
-        serde_json::json!({
-            "jsonrpc": "2.0", "id": 0, "result": { "outcome": "skip_interview" },
-        })
+    let events = echo.conn.pull_events();
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })));
+    assert!(has_notice(&events));
+    assert!(
+        echo.poll_frame(std::time::Duration::from_millis(500))
+            .is_none(),
+        "the duplicate gets no response of its own"
     );
-    // And the first card still answers against its own questions.
+    // And the parked card still answers, once, against its own questions.
     echo.broker
         .respond_with_option(
             "call-fence-0",
@@ -127,19 +121,25 @@ fn reused_wire_id_leaves_the_parked_card_alone() {
         )
         .expect("option pick");
     assert_eq!(
-        echo.read_frame()["result"],
+        echo.read_frame(),
         serde_json::json!({
-            "outcome": "accepted",
-            "answers": { super::question_support::FENCE: ["Barn red"] },
+            "jsonrpc": "2.0",
+            "id": 0,
+            "result": {
+                "outcome": "accepted",
+                "answers": { super::question_support::FENCE: ["Barn red"] },
+            },
         })
+    );
+    assert!(
+        echo.poll_frame(std::time::Duration::from_millis(500))
+            .is_none(),
+        "exactly one response for the id"
     );
 }
 
 #[test]
 fn unparseable_frame_is_said_out_loud_and_answered() {
-    if node_gated() {
-        return;
-    }
     // Nothing the person could answer: the id is answered at once, and the
     // transcript says so instead of dropping the frame in silence.
     let mut echo = echo_harness();
@@ -169,9 +169,6 @@ fn unparseable_frame_is_said_out_loud_and_answered() {
 
 #[test]
 fn foreign_session_question_answers_at_once() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     live_turn(&echo.reader);
     let mut frame = enveloped(0);
@@ -187,9 +184,6 @@ fn foreign_session_question_answers_at_once() {
 
 #[test]
 fn missing_session_question_answers_at_once() {
-    if node_gated() {
-        return;
-    }
     // Every shape grok sends carries the session: an absent one is refused
     // like a wrong one.
     let mut echo = echo_harness();
@@ -210,9 +204,6 @@ fn missing_session_question_answers_at_once() {
 
 #[test]
 fn question_after_turn_end_answers_at_once() {
-    if node_gated() {
-        return;
-    }
     let mut echo = echo_harness();
     echo.dispatch(&enveloped(0));
     assert_eq!(echo.broker.pending_len(), 0);
@@ -225,9 +216,6 @@ fn question_after_turn_end_answers_at_once() {
 
 #[test]
 fn oversize_question_is_refused_and_answered() {
-    if node_gated() {
-        return;
-    }
     // Past the broker's field bound: no card, and the id still gets the
     // decline frame.
     let mut echo = echo_harness();

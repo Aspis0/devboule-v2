@@ -428,16 +428,32 @@ fn main() -> io::Result<()> {
                 .and_then(|(_, labels)| labels.as_array())
                 .and_then(|labels| labels.first())
                 .and_then(Value::as_str);
-            let cancelled =
-                request.pointer("/result/outcome").and_then(Value::as_str) != Some("accepted");
-            let text = match picked {
-                Some(label)
-                    if first.is_some_and(|(key, _)| key == "Which colour should the fence be?") =>
-                {
-                    format!("You picked {label}")
+            let outcome = request.pointer("/result/outcome").and_then(Value::as_str);
+            // A decline is `skip_interview`, never anything else: an
+            // unexpected spelling fails the test loudly instead of reading
+            // as a cancellation.
+            let (text, stop) = match outcome {
+                Some("accepted") => {
+                    let text = match picked {
+                        Some(label)
+                            if first.is_some_and(|(key, _)| {
+                                key == "Which colour should the fence be?"
+                            }) =>
+                        {
+                            format!("You picked {label}")
+                        }
+                        Some(label) => {
+                            format!("You picked {label} for a different question")
+                        }
+                        None => "You cancelled".to_string(),
+                    };
+                    (text, "end_turn")
                 }
-                Some(label) => format!("You picked {label} for a different question"),
-                None => "You cancelled".to_string(),
+                Some("skip_interview") => ("You cancelled".to_string(), "cancelled"),
+                other => (
+                    format!("Unexpected grok outcome: {}", other.unwrap_or("<missing>"),),
+                    "cancelled",
+                ),
             };
             emit(
                 &mut stdout,
@@ -456,7 +472,7 @@ fn main() -> io::Result<()> {
             respond(
                 &mut stdout,
                 last_prompt_id.map(Value::from),
-                json!({"stopReason": if cancelled { "cancelled" } else { "end_turn" }}),
+                json!({"stopReason": stop}),
             )?;
             continue;
         }
