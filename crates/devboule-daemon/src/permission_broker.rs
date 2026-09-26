@@ -1100,7 +1100,7 @@ impl PermissionBroker {
         outcome: PermissionOutcome,
         option_id: &str,
     ) -> Result<(), String> {
-        self.respond_with_option(tool_call_id, outcome, Some(option_id.to_string()))
+        self.respond_with_option(tool_call_id, outcome, Some(option_id.to_string()), None)
             .map_err(|error| error.to_string())
     }
 
@@ -2042,6 +2042,7 @@ mod tests {
                 "session-human",
                 PermissionOutcome::AllowOnce,
                 Some("session".to_string()),
+                None,
             )
             .expect("the named session option is honored");
         assert_eq!(

@@ -231,6 +231,8 @@ fn write_gate_card(
         // without it the app shows only its generic pair and the session
         // choice is unclickable.
         is_chooser: Some(true),
+        kind: None,
+        questions: None,
         origin: SessionOrigin::unknown(),
         create_agent: None,
     }

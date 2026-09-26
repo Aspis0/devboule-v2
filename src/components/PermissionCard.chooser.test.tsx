@@ -183,6 +183,7 @@ describe("PermissionCard chooser answers", () => {
       "write:workspaces:session-1:1-1",
       "allow_once",
       "session",
+      undefined,
     );
     expect(card.querySelector(".permission-card-label")?.textContent).toBe(
       "Allowed for this session \u00b7 running",
