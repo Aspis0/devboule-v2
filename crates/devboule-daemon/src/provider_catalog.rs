@@ -255,7 +255,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_LIST_PENDING_PERMISSIONS_TOOL,
-        "Lists the permission cards your own live children are parked on right now, whatever the human's delegation switch says: each card's agentId, cardId, title, kind and a short excerpt of what the child asked. Listing is a read of your own children only; answering a card still requires the human's delegation switch and goes through devboule_answer_permission. truncated: true means more cards are pending than were listed: answering some of the listed cards frees room, and a later call returns the rest. A child with no cards adds no entry, and an empty list means nothing is parked.",
+        "Lists the permission cards your own live children are parked on right now, whatever the human's delegation switch says: each card's agentId, cardId, title, kind and a short excerpt of what the child asked. Listing is a read of your own children only; answering a card still requires the human's delegation switch and goes through devboule_answer_permission. truncated: true means more cards are pending than were listed: devboule_get_agent_status counts them per child, and answering some of the listed cards frees room for later calls while the human's delegation switch is on. A child with no cards adds no entry, and an empty list means nothing is parked.",
     ),
     (
         MCP_GET_AGENT_STATUS_TOOL,

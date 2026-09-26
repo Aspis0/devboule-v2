@@ -134,30 +134,18 @@ impl super::SessionRegistry {
                 format!("none of your live children is called '{target}'"),
             ));
         };
-        // The turn's identity, captured before anything is sent: the reply is
-        // about *this* turn. The gate below is re-checked under the turn-hold
-        // at the send — a race before the send never sends — and a later
-        // turn's id can never answer for this one.
+        // The turn's identity, captured before anything is sent: the reply
+        // and the wait are both about *this* turn. A turn that ends between
+        // this check and the send gets a cancel into an idle turn or a new
+        // one — the same session-scoped fact the tool's description states.
         let turn_id = runtime.turn_counter();
         if !runtime.is_turn_active(turn_id) {
             return Ok(CancelOutcome::NotRunning);
         }
-        // Fetch first — the registry's map lock, the order the wire
-        // interrupt takes — then fire under the turn-hold: the steer
-        // admission's own critical section, so the turn cannot end (and its
-        // successor cannot begin) between the check and the send.
-        let mut killer = self.interrupter(&child_id, &owner)?;
-        if !runtime.interrupt_if_turn_active(turn_id, || killer.interrupt()) {
-            // The caught turn ended while the killer was fetched: it is gone
-            // and nothing is sent — a send now would land on whatever the
-            // provider runs next.
-            return Ok(CancelOutcome::Interrupted);
-        }
+        self.interrupt(&child_id, &owner)?;
         // One send, then the wait is for that id: `success: true` means the
         // caught turn is gone — the reply claims the turn's state, never the
-        // cause. What travels on the wire is session-scoped, so a turn the
-        // provider starts before it processes the cancel may be caught by
-        // it; the tool's description says so, and the wait sends nothing more.
+        // cause; the wait itself sends nothing more.
         let deadline = Instant::now() + timeout;
         loop {
             if !runtime.is_turn_active(turn_id) {

@@ -611,7 +611,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_list_pending_permissions",
     label: "List Devboule pending permissions",
-    description: `Lists the permission cards your own live children are parked on right now, whatever the human's delegation switch says: each card's agentId, cardId, title, kind and a short excerpt of what the child asked. Listing is a read of your own children only; answering a card still requires the human's delegation switch and goes through devboule_answer_permission. truncated: true means more cards are pending than were listed: answering some of the listed cards frees room, and a later call returns the rest. A child with no cards adds no entry, and an empty list means nothing is parked.`,
+    description: `Lists the permission cards your own live children are parked on right now, whatever the human's delegation switch says: each card's agentId, cardId, title, kind and a short excerpt of what the child asked. Listing is a read of your own children only; answering a card still requires the human's delegation switch and goes through devboule_answer_permission. truncated: true means more cards are pending than were listed: devboule_get_agent_status counts them per child, and answering some of the listed cards frees room for later calls while the human's delegation switch is on. A child with no cards adds no entry, and an empty list means nothing is parked.`,
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute(_toolCallId, _params, signal) {
       await brokerSession(signal);

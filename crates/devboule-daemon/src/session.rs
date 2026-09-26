@@ -2885,35 +2885,25 @@ impl SessionRegistry {
     /// twin of `stop_with_subscription`. The broker's cancel tool arrives with
     /// a bearer, not a subscription, and `check_attached` would refuse it.
     pub fn interrupt(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
-        let mut killer = self.interrupter(session_id, owner)?;
-        killer.interrupt();
-        Ok(())
-    }
-
-    /// The killer for `session_id`, fetched the way the wire interrupt fetches
-    /// it: under the registry's map lock, with the kind check beside it — so a
-    /// caller holding another lock (the turn-hold) can fire it without taking
-    /// the map under that lock.
-    fn interrupter(
-        &self,
-        session_id: &str,
-        owner: &OwnerId,
-    ) -> Result<Box<dyn SessionKiller>, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let mut map = self
-            .inner
-            .lock()
-            .map_err(|_| internal("Session state is unavailable."))?;
-        let entry = peer_entry_mut(&mut map, session_id, owner, &None)?;
-        let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
-        if !session.metadata.kind.is_agent() {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                "Only agent sessions support interrupting a turn.",
-            ));
-        }
-        Ok(session.killer.clone_killer())
+        let mut killer = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, &None)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
+            if !session.metadata.kind.is_agent() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Only agent sessions support interrupting a turn.",
+                ));
+            }
+            session.killer.clone_killer()
+        };
+        killer.interrupt();
+        Ok(())
     }
 
     pub fn set_model(
