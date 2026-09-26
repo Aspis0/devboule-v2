@@ -609,11 +609,7 @@ export function PermissionCard({
       const only = Array.from(pickedOptions.get(0) ?? [])[0];
       const optionId = only === undefined ? undefined : request.options[only]?.optionId;
       if (optionId !== undefined) {
-        // The card's own resolved state names the option, as usual — unless
-        // the card asks something secret, where no echo follows the send.
-        void respond({ outcome: "allow_once", optionId }).then(() => {
-          if (hasSecret && mountedRef.current) setLocalChoice(null);
-        });
+        void respond({ outcome: "allow_once", optionId });
         return;
       }
     }

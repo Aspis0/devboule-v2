@@ -278,7 +278,8 @@
   color: var(--ink-soft);
 }
 
-.permission-card-question-other input[type="text"] {
+.permission-card-question-other input[type="text"],
+.permission-card-question-other input[type="password"] {
   min-width: 0;
   flex: 1;
   padding: 3px 8px;

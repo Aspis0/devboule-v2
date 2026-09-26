@@ -1,10 +1,8 @@
-//! Codex input requests: the two provider-initiated asks — `requestUserInput`
-//! questions and `mcpServer/elicitation/request` MCP approvals — parsed into
-//! broker cards and shaped back into Codex replies.
-//!
-//! The client owns the transport and the approval cards; this module owns
-//! everything about the two input-request carriers: their params, the pending
-//! record that shapes each reply, and the dispatch that cards them.
+//! Codex input requests: the request records and reply frames for every
+//! broker-mediated Codex request — the pending record that shapes each
+//! reply, the sender that writes it, and the transport frames. The two
+//! carriers live next door: questions in `codex_questions`, elicitations
+//! in `codex_elicitations`.
 
 use std::collections::HashMap;
 use std::io;
@@ -26,8 +24,25 @@ pub(super) struct CodexInputDeps {
     pub(super) stdin: Arc<Mutex<Option<ChildStdin>>>,
     pub(super) response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
     pub(super) next_id: Arc<AtomicU64>,
-    pub(super) spawn_nonce: String,
     pub(super) permission_broker: Arc<PermissionBroker>,
+}
+
+/// A card id the provider did not choose, unique across spawns of one
+/// session: the journal's reused-id ledger is sticky per session, so the
+/// id carries the process, a timestamp and a process-wide counter — the
+/// same three facts the creation card's id carries.
+pub(super) fn generated_card_id(prefix: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "{prefix}:{:x}-{:x}-{}",
+        std::process::id(),
+        nanos,
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 pub(super) fn codex_permission_sender(
@@ -111,7 +126,7 @@ pub(super) fn send_result(
     write_child_stdin(stdin, &bytes, "Codex")
 }
 
-pub(super) fn response_frame(id: &Value, result: Value) -> Value {
+fn response_frame(id: &Value, result: Value) -> Value {
     serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
 

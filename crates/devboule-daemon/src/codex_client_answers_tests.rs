@@ -25,7 +25,7 @@ fn pending_question_answered_on_close() {
     }
     let mut echo = echo_harness("s.codex.close", None);
     dispatch_question(
-        &echo.deps("salt"),
+        &echo.deps(),
         &user_input_line("item/tool/requestUserInput", single_question_params()),
         &echo.runtime,
         None,
@@ -47,7 +47,7 @@ fn closed_broker_answers_a_question_at_once() {
     let mut echo = echo_harness("s.codex.closed-q", None);
     echo.broker.close();
     dispatch_question(
-        &echo.deps("salt"),
+        &echo.deps(),
         &user_input_line("item/tool/requestUserInput", single_question_params()),
         &echo.runtime,
         None,
@@ -72,7 +72,7 @@ fn closed_broker_answers_an_elicitation_at_once() {
     let mut echo = echo_harness("s.codex.closed-e", None);
     echo.broker.close();
     dispatch_elicitation(
-        &echo.deps("salt"),
+        &echo.deps(),
         &elicitation_line("Allow the tool?"),
         &echo.runtime,
         None,

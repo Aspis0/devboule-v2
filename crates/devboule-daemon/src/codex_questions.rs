@@ -11,7 +11,7 @@ use devboule_protocol::{
 use serde_json::Value;
 
 use super::codex_input_requests::{
-    send_result, CodexInputDeps, CodexPendingKind, CodexPendingResponse,
+    generated_card_id, send_result, CodexInputDeps, CodexPendingKind, CodexPendingResponse,
 };
 use super::permission_broker::PermissionResponseError;
 use super::SessionRuntime;
@@ -223,7 +223,7 @@ pub(super) fn dispatch_question(
         .get("itemId")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| format!("codex-question-{}-{broker_id}", deps.spawn_nonce));
+        .unwrap_or_else(|| generated_card_id("codex-question"));
     let labels: Vec<&str> = questions[0]
         .options
         .iter()

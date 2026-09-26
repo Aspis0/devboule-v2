@@ -643,9 +643,6 @@ fn spawn_codex(
         response_ids,
         stdin: Arc::clone(&stdin),
         next_id,
-        // Fresh per spawn: daemon-generated card ids carry it, so a resumed
-        // session's restarted counter cannot collide with the journal.
-        spawn_nonce: uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string(),
         requests,
         compactions: crate::codex_compaction::CodexCompactions::default(),
     };
@@ -1828,10 +1825,6 @@ struct CodexReader {
     response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
-    /// Disambiguates daemon-generated card ids across spawns of one session:
-    /// the journal's reused-id ledger is sticky per session while the request
-    /// counter restarts, so a bare counter would collide on resume.
-    spawn_nonce: String,
     requests: Arc<CodexRequests>,
     compactions: crate::codex_compaction::CodexCompactions,
 }
@@ -1963,7 +1956,6 @@ impl CodexReader {
             stdin: Arc::clone(&self.stdin),
             response_ids: Arc::clone(&self.response_ids),
             next_id: Arc::clone(&self.next_id),
-            spawn_nonce: self.spawn_nonce.clone(),
             permission_broker: Arc::clone(&self.permission_broker),
         }
     }

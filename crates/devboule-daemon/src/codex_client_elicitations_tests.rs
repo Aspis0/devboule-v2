@@ -1,6 +1,6 @@
 //! Tests for Codex `mcpServer/elicitation/request` approvals: the ordinary
-//! card, its three answers, the immediate declines, and the child-creation
-//! approval from RECON-A2b §3.
+//! card, its three answers, the immediate declines, the child-creation
+//! approval, and the cross-spawn card identity.
 
 use std::sync::Arc;
 
@@ -171,9 +171,10 @@ fn resumed_session_raises_a_new_card_for_its_first_elicitation() {
     let journal = Arc::new(Journal::open(&path).expect("journal"));
     let line = || elicitation_line("Allow the devboule MCP server to run a tool?");
 
-    // First spawn: card, answer, journal row.
+    // First spawn: card, answer, journal row. The generated id is
+    // production-made (process, time, counter): the test never chooses it.
     let mut first = echo_harness("s.codex.resume", Some(Arc::clone(&journal)));
-    dispatch_elicitation(&first.deps("aaaa"), &line(), &first.runtime, None);
+    dispatch_elicitation(&first.deps(), &line(), &first.runtime, None);
     let first_id = first
         .conn
         .pull_events()
@@ -183,7 +184,10 @@ fn resumed_session_raises_a_new_card_for_its_first_elicitation() {
             _ => None,
         })
         .expect("first card");
-    assert_eq!(first_id, "mcp-elicitation-aaaa-1");
+    assert!(
+        first_id.starts_with("mcp-elicitation"),
+        "first spawn raises its card: {first_id}"
+    );
     first
         .broker
         .respond_with_option(
@@ -199,10 +203,11 @@ fn resumed_session_raises_a_new_card_for_its_first_elicitation() {
     );
     journal.flush().expect("journal flush");
 
-    // Second spawn, same session and journal: the counter restarts, but the
-    // salt does not repeat, so the card is raised instead of refused.
+    // Second spawn, same session and journal: the per-spawn counter
+    // restarts, but the generated id does not repeat, so the card is raised
+    // instead of refused as a reused id.
     let second = echo_harness("s.codex.resume", Some(Arc::clone(&journal)));
-    dispatch_elicitation(&second.deps("bbbb"), &line(), &second.runtime, None);
+    dispatch_elicitation(&second.deps(), &line(), &second.runtime, None);
     let second_id = second
         .conn
         .pull_events()
@@ -212,7 +217,7 @@ fn resumed_session_raises_a_new_card_for_its_first_elicitation() {
             _ => None,
         })
         .expect("resumed session raises a new card");
-    assert_eq!(second_id, "mcp-elicitation-bbbb-1");
+    assert_ne!(second_id, first_id);
 
     journal.shutdown();
     let _ = std::fs::remove_file(path);

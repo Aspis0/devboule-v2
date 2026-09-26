@@ -8,7 +8,7 @@ use devboule_protocol::{NoticeSeverity, PermissionOption, SessionEvent};
 use serde_json::Value;
 
 use super::codex_input_requests::{
-    send_result, CodexInputDeps, CodexPendingKind, CodexPendingResponse,
+    generated_card_id, send_result, CodexInputDeps, CodexPendingKind, CodexPendingResponse,
 };
 use super::permission_broker::PermissionResponseError;
 use super::SessionRuntime;
@@ -69,7 +69,7 @@ pub(super) fn dispatch_elicitation(
         .get("elicitationId")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| format!("mcp-elicitation-{}-{broker_id}", deps.spawn_nonce));
+        .unwrap_or_else(|| generated_card_id("mcp-elicitation"));
     let event = SessionEvent::PermissionRequest {
         tool_call_id,
         title: format!("MCP approval: {server}"),

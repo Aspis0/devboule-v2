@@ -153,7 +153,11 @@ pub use session::{
 /// the card from their meaning, and a 7-speaking daemon would drop the text
 /// and answer the question wrongly — mixed dialects must fail the handshake
 /// instead of degrading silently.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// Bumped to 9 for the question's `allowOther` gate and `secret` mask: an
+/// 8-speaking app renders an Other door on every question and no mask on
+/// secrets, so it would let a typed label kill an MCP approval and show a
+/// secret in the clear. Same rule: refuse, not degrade.
+pub const PROTOCOL_VERSION: u32 = 9;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.

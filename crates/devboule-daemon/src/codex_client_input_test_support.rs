@@ -64,7 +64,6 @@ fn question_reader(
         response_ids,
         stdin: Arc::new(Mutex::new(None)),
         next_id: Arc::new(AtomicU64::new(1)),
-        spawn_nonce: "test-spawn".to_string(),
         requests: Arc::new(CodexRequests::new()),
         compactions: crate::codex_compaction::CodexCompactions::default(),
     }
@@ -198,8 +197,9 @@ pub(super) fn asked_elicitation(
 
 /// A fake Codex child that echoes stdin to stdout, so a test reads the exact
 /// bytes the client wrote — the same arrangement the steer tests use. The
-/// broker is wired to the REAL sender: the only double in the room is the
-/// child process itself.
+/// sender is the real one and the card ids come from the production
+/// generator; the doubles are the child process, the `for_test` broker
+/// (no journal half), and the harness-built deps.
 pub(super) struct EchoHarness {
     pub broker: Arc<PermissionBroker>,
     pub runtime: Arc<SessionRuntime>,
@@ -221,12 +221,11 @@ impl Drop for EchoHarness {
 }
 
 impl EchoHarness {
-    pub(super) fn deps(&self, salt: &str) -> super::super::codex_input_requests::CodexInputDeps {
+    pub(super) fn deps(&self) -> super::super::codex_input_requests::CodexInputDeps {
         super::super::codex_input_requests::CodexInputDeps {
             stdin: Arc::clone(&self.stdin),
             response_ids: Arc::clone(&self.response_ids),
             next_id: Arc::clone(&self.next_id),
-            spawn_nonce: salt.to_string(),
             permission_broker: Arc::clone(&self.broker),
         }
     }
