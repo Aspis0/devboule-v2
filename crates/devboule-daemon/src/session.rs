@@ -137,6 +137,12 @@ mod acp_host;
 mod claude_client;
 #[path = "codex_client.rs"]
 mod codex_client;
+#[path = "codex_elicitations.rs"]
+mod codex_elicitations;
+#[path = "codex_input_requests.rs"]
+mod codex_input_requests;
+#[path = "codex_questions.rs"]
+mod codex_questions;
 #[path = "event_pull.rs"]
 mod event_pull;
 #[path = "pi_client.rs"]
