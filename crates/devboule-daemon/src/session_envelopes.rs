@@ -166,6 +166,22 @@ pub(super) fn cap_excerpt_scalars(text: &str) -> String {
     normalised.chars().take(EXCERPT_MAX_SCALARS).collect()
 }
 
+/// One parked card's excerpt, selected the way the creator's envelope reads
+/// it: the child's description if it wrote one (blank is no description),
+/// else the command it asked to run, else the title. Selection only — the
+/// cap is [`cap_excerpt_scalars`], composed by whoever frames the text.
+pub(super) fn card_excerpt(
+    description: Option<&str>,
+    command: Option<&str>,
+    title: &str,
+) -> String {
+    description
+        .filter(|text| !text.trim().is_empty())
+        .or(command)
+        .unwrap_or(title)
+        .to_string()
+}
+
 const EXCERPT_MAX_SCALARS: usize = 512;
 
 /// The envelope's `origin:` line for a session's own stored origin. Never read

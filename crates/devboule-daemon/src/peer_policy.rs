@@ -526,6 +526,14 @@ pub enum McpToolWire {
 ///   kind never decides: that arm reads only the capability set.
 /// - Answer (`devboule_answer_permission`) answers a permission moment:
 ///   `SessionPermissionRespond`.
+/// - Cancel (`devboule_cancel_agent`) interrupts a child's turn without
+///   killing it: `SessionInterrupt`, the act `admin` names — the same gate
+///   the wire's interrupt already meets, because the act is the same act.
+/// - Pending list (`devboule_list_pending_permissions`) reads the cards of the
+///   caller's own children: `SessionPermissionRespond`, `answer_permissions` —
+///   never weaker than the answer tool that consumes its `cardId`.
+/// - Status (`devboule_get_agent_status`) reads one child: `SessionsList`,
+///   `view`, the same read the roster rides.
 /// - Move (`devboule_set_agent_profile`) applies a profile, which declares a
 ///   mode *and* a model: `SessionSetMode` plus `SessionSetModel`. Both, always —
 ///   the model-skip when the child already runs the profile's model is a
@@ -540,9 +548,10 @@ pub enum McpToolWire {
 ///   and not `admin`, whose switch names settings, projects and shutdown.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
-        MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
-        MCP_CREATE_WORKSPACE_TOOL, MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_LIST_DEVICES_TOOL,
-        MCP_LIST_PEER_AGENTS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_LIST_WORKSPACES_TOOL,
+        MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CANCEL_AGENT_TOOL, MCP_CLOSE_AGENT_TOOL,
+        MCP_CREATE_AGENT_TOOL, MCP_CREATE_WORKSPACE_TOOL, MCP_GET_AGENT_STATUS_TOOL,
+        MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
+        MCP_LIST_PENDING_PERMISSIONS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_LIST_WORKSPACES_TOOL,
         MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
         MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
     };
@@ -654,6 +663,36 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             id: 0,
             session_id: String::new(),
             idempotency_key: None,
+        }]))
+    } else if tool == MCP_CANCEL_AGENT_TOOL {
+        // The soft supervisor verb, judged as the wire's own
+        // `SessionInterrupt`: interrupting a child's turn is the act the
+        // administrative capability gates on the wire, so the tool door
+        // opens for exactly the devices that wire act opens for.
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionInterrupt {
+            id: 0,
+            session_id: String::new(),
+            subscription_id: 0,
+        }]))
+    } else if tool == MCP_LIST_PENDING_PERMISSIONS_TOOL {
+        // The read beside the answer: judged as `SessionPermissionRespond`,
+        // so listing is never weaker than answering — a device that may not
+        // respond to a card may not enumerate the cardIds either.
+        Some(McpToolWire::Judged(vec![
+            ClientMessage::SessionPermissionRespond {
+                id: 0,
+                session_id: String::new(),
+                subscription_id: 0,
+                request_id: String::new(),
+                outcome: devboule_protocol::PermissionOutcome::Deny,
+                option_id: None,
+                idempotency_key: None,
+            },
+        ]))
+    } else if tool == MCP_GET_AGENT_STATUS_TOOL {
+        // A read like the roster: the owner's live sessions, no transcript.
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
+            id: 0,
         }]))
     } else if tool == MCP_NEIGHBORHOOD_TOOL
         || tool == MCP_IMPORTS_TOOL
@@ -1725,6 +1764,57 @@ pub(crate) mod tests {
                 assert_eq!(mcp_tool_denial(role, &set, MCP_STOP_AGENT_TOOL), door);
                 assert_eq!(mcp_tool_denial(role, &set, MCP_CLOSE_AGENT_TOOL), door);
             }
+        }
+    }
+
+    /// The agent-command tools ride their wire capabilities, walked over the
+    /// closed table rather than sampled: one capability each, and nothing
+    /// else opens them. Cancel is the administrative act `SessionInterrupt`
+    /// names; the pending list is the answer act it must never be weaker
+    /// than; status is the roster's read. The negative control is the
+    /// operational set — every capability but `admin` — which still refuses
+    /// the cancel while both reads open.
+    #[test]
+    fn the_agent_command_tools_ride_their_wire_capabilities() {
+        use crate::provider_catalog::{
+            MCP_CANCEL_AGENT_TOOL, MCP_GET_AGENT_STATUS_TOOL, MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        };
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            for cap in devboule_protocol::PEER_CAPS {
+                let set = caps(&[cap]);
+                assert_eq!(
+                    mcp_tool_denial(role, &set, MCP_CANCEL_AGENT_TOOL),
+                    (cap != CAP_ADMIN).then_some(CAP_ADMIN),
+                    "{role:?} holding {cap} on the cancel tool"
+                );
+                assert_eq!(
+                    mcp_tool_denial(role, &set, MCP_GET_AGENT_STATUS_TOOL),
+                    (cap != CAP_VIEW).then_some(CAP_VIEW),
+                    "{role:?} holding {cap} on the status tool"
+                );
+                assert_eq!(
+                    mcp_tool_denial(role, &set, MCP_LIST_PENDING_PERMISSIONS_TOOL),
+                    (cap != CAP_ANSWER_PERMISSIONS).then_some(CAP_ANSWER_PERMISSIONS),
+                    "{role:?} holding {cap} on the pending-list tool"
+                );
+            }
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_CANCEL_AGENT_TOOL),
+                Some(CAP_ADMIN),
+                "{role:?}: every capability but admin still refuses the cancel"
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_GET_AGENT_STATUS_TOOL),
+                None
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_LIST_PENDING_PERMISSIONS_TOOL),
+                None
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &all_caps(), MCP_CANCEL_AGENT_TOOL),
+                None
+            );
         }
     }
 

@@ -5461,3 +5461,674 @@ fn the_card_prints_a_delivered_feature_as_delivered() {
 fn state_for_card() -> std::sync::Arc<ServerState> {
     ServerState::new("mcp-card-features".to_string())
 }
+
+// -----------------------------------------------------------------------
+// C1a: `devboule_cancel_agent`, `devboule_list_pending_permissions`,
+// `devboule_get_agent_status` — served with their schemas, scoped to the
+// caller's own children, removable by the stored policy and by a profile
+// overlay.
+// -----------------------------------------------------------------------
+
+/// The broker harness this section shares: a state with a live caller session
+/// registered on a started broker, and the bearer to call with. Dropping the
+/// harness drops the guard before the server, like every test here does by
+/// hand.
+// The guard and the server are held for their `Drop`, never read: the guard
+// unregisters the caller and the server stops the listener, in that field
+// order — the teardown every test here would otherwise hand-roll.
+#[allow(dead_code)]
+struct CommandHarness {
+    state: Arc<ServerState>,
+    owner: OwnerId,
+    guard: crate::mcp_broker::McpSessionGuard,
+    server: crate::mcp_broker::McpServerHandle,
+    token: String,
+}
+
+impl CommandHarness {
+    fn with_caller(instance: &str, caller: &str) -> Self {
+        let state = ServerState::new(instance.to_string());
+        let owner = owner(&format!("{instance}-user"), &format!("{instance}-client"));
+        crate::session::insert_test_live_agent(&state.sessions, caller, owner.clone());
+        let guard = state
+            .mcp
+            .register(caller, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("caller MCP guard");
+        let token = state.mcp.test_token(caller).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        Self {
+            state,
+            owner,
+            guard,
+            server,
+            token,
+        }
+    }
+
+    fn call(&self, name: &str, arguments: &str) -> Value {
+        response_json(&http_request(
+            &self.state.mcp.url,
+            Some(&format!("Bearer {}", self.token)),
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+            ),
+        ))
+    }
+
+    fn tools(&self) -> Vec<Value> {
+        let listed = http_request(
+            &self.state.mcp.url,
+            Some(&format!("Bearer {}", self.token)),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        response_json(&listed)["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .to_vec()
+    }
+
+    /// The refusal sentence a tool-level error carries (the stop/close shape:
+    /// `result.content[0].text` with `isError: true`).
+    fn sentence(&self, reply: &Value) -> String {
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .expect("the refusal sentence")
+            .to_string()
+    }
+}
+
+#[test]
+fn the_agent_command_tools_are_served_with_their_schemas() {
+    let harness = CommandHarness::with_caller("mcp-c1a-schema", "c1a-schema-caller");
+    let tools = harness.tools();
+    for name in [
+        crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+        crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == json!(name)),
+            "{name} is served"
+        );
+    }
+    for name in [
+        crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+        crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == json!(name))
+            .unwrap_or_else(|| panic!("{name} is served"));
+        assert_eq!(tool["inputSchema"]["required"], json!(["agentId"]));
+        assert_eq!(tool["inputSchema"]["additionalProperties"], json!(false));
+    }
+    let pending = tools
+        .iter()
+        .find(|tool| {
+            tool["name"] == json!(crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL)
+        })
+        .expect("the pending list is served");
+    assert_eq!(
+        pending["inputSchema"],
+        json!({"type": "object", "properties": {}, "additionalProperties": false}),
+        "a parameterless tool's schema is its own claim, spelled out"
+    );
+}
+
+#[test]
+fn cancel_agent_replies_success_keeps_the_child_and_resolves_its_card() {
+    let harness = CommandHarness::with_caller("mcp-c1a-cancel", "c1a-cancel-caller");
+    let child = "c1a-cancel-child";
+    let runtime = crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        child,
+        harness.owner.clone(),
+        "c1a-cancel-caller",
+    );
+    runtime.begin_turn();
+    harness.state.sessions.test_park_card(child, "card-c1a");
+    // The card is visible before the cancel — the list is the read half of
+    // this very test.
+    let before = harness.call(
+        crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        "{}",
+    );
+    let before_cards = before["result"]["structuredContent"]["permissions"]
+        .as_array()
+        .expect("the list answers");
+    assert_eq!(before_cards.len(), 1, "{before}");
+    assert_eq!(before_cards[0]["cardId"], json!("card-c1a"));
+
+    let reply = harness.call(
+        crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+        &format!(r#"{{"agentId":"{child}"}}"#),
+    );
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    assert_eq!(
+        reply["result"]["structuredContent"],
+        json!({"success": true})
+    );
+    assert_eq!(reply["result"]["content"][0]["text"], json!("interrupted"));
+    // The child is kept: cancel never kills.
+    let live = harness
+        .state
+        .sessions
+        .live_agent_entries(&harness.owner)
+        .expect("entries")
+        .into_iter()
+        .any(|entry| entry.session.id == child);
+    assert!(
+        live,
+        "the child is still alive after its turn was cancelled"
+    );
+    // And its parked card resolved as interrupted.
+    let after = harness.call(
+        crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        "{}",
+    );
+    assert_eq!(
+        after["result"]["structuredContent"]["permissions"],
+        json!([]),
+        "the cancelled child's card is gone: {after}"
+    );
+}
+
+#[test]
+fn cancel_agent_replies_false_when_no_turn_was_running() {
+    let harness = CommandHarness::with_caller("mcp-c1a-idle", "c1a-idle-caller");
+    let child = "c1a-idle-child";
+    crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        child,
+        harness.owner.clone(),
+        "c1a-idle-caller",
+    );
+    harness.state.sessions.test_park_card(child, "card-idle");
+
+    let reply = harness.call(
+        crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+        &format!(r#"{{"agentId":"{child}"}}"#),
+    );
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    assert_eq!(
+        reply["result"]["structuredContent"],
+        json!({"success": false})
+    );
+    assert_eq!(
+        reply["result"]["content"][0]["text"],
+        json!("no turn was running")
+    );
+    // Nothing was interrupted: the child's card is still parked.
+    let listed = harness.call(
+        crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        "{}",
+    );
+    assert_eq!(
+        listed["result"]["structuredContent"]["permissions"][0]["cardId"],
+        json!("card-idle"),
+        "an untouched child keeps its card: {listed}"
+    );
+}
+
+#[test]
+fn cancel_agent_refuses_sessions_that_are_not_yours() {
+    let harness = CommandHarness::with_caller("mcp-c1a-scope", "c1a-scope-caller");
+    let other_owner = owner("mcp-c1a-scope-other-user", "mcp-c1a-scope-other-client");
+    crate::session::insert_test_live_agent(
+        &harness.state.sessions,
+        "c1a-scope-parent",
+        harness.owner.clone(),
+    );
+    crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        "c1a-scope-stranger",
+        other_owner,
+        "c1a-scope-caller",
+    );
+
+    let cancel = |target: &str| {
+        harness.call(
+            crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+            &format!(r#"{{"agentId":"{target}"}}"#),
+        )
+    };
+    // A parent, a stranger's child and an invented id: one refusal shape for
+    // all three — the sentence names only what the caller itself said.
+    for target in [
+        "c1a-scope-parent",
+        "c1a-scope-stranger",
+        "c1a-scope-invented",
+    ] {
+        let reply = cancel(target);
+        assert_eq!(reply["result"]["isError"], json!(true), "{target}: {reply}");
+        assert!(
+            harness
+                .sentence(&reply)
+                .contains("none of your live children"),
+            "{target}: {reply}"
+        );
+    }
+    // The caller itself is refused as itself, before any scan.
+    let itself = cancel("c1a-scope-caller");
+    assert!(
+        harness.sentence(&itself).contains("not its own child"),
+        "{itself}"
+    );
+    // A missing argument is a protocol error before any scope runs.
+    let missing = cancel("");
+    assert_eq!(missing["error"]["code"], json!(-32602), "{missing}");
+}
+
+#[test]
+fn the_pending_list_reads_only_your_own_children_with_the_switch_off() {
+    let harness = CommandHarness::with_caller("mcp-c1a-list", "c1a-list-caller");
+    let store = Arc::clone(&harness.state.delegation);
+    store.set(false).expect("switch off");
+    crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        "c1a-list-mine",
+        harness.owner.clone(),
+        "c1a-list-caller",
+    );
+    // Two intrusions: a same-owner child of another creator, and a child of
+    // the caller's id on another owner's row.
+    crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        "c1a-list-sibling",
+        harness.owner.clone(),
+        "someone-else",
+    );
+    let other_owner = owner("mcp-c1a-list-other-user", "mcp-c1a-list-other-client");
+    crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        "c1a-list-stranger",
+        other_owner,
+        "c1a-list-caller",
+    );
+    harness
+        .state
+        .sessions
+        .test_park_card("c1a-list-mine", "card-mine");
+    harness
+        .state
+        .sessions
+        .test_park_card("c1a-list-sibling", "card-sibling");
+    harness
+        .state
+        .sessions
+        .test_park_card("c1a-list-stranger", "card-stranger");
+
+    let reply = harness.call(
+        crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        "{}",
+    );
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    let cards = reply["result"]["structuredContent"]["permissions"]
+        .as_array()
+        .expect("the list answers");
+    assert_eq!(cards.len(), 1, "only one's own children: {reply}");
+    assert_eq!(
+        cards[0],
+        json!({
+            "agentId": "c1a-list-mine",
+            "cardId": "card-mine",
+            "title": "Run command",
+            "kind": "tool",
+            "excerpt": "echo test",
+        }),
+        "the card shape the brief pins: {cards:?}"
+    );
+    assert!(
+        !store.get().0,
+        "the list answered while the human's delegation switch was off"
+    );
+}
+
+#[test]
+fn the_pending_list_is_empty_when_nothing_is_parked() {
+    let harness = CommandHarness::with_caller("mcp-c1a-empty", "c1a-empty-caller");
+    crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        "c1a-empty-child",
+        harness.owner.clone(),
+        "c1a-empty-caller",
+    );
+
+    let reply = harness.call(
+        crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        "{}",
+    );
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    assert_eq!(
+        reply["result"]["structuredContent"]["permissions"],
+        json!([])
+    );
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .expect("the document text");
+    let parsed: Value = serde_json::from_str(text).expect("the text is the document");
+    assert_eq!(parsed["permissions"], json!([]));
+}
+
+#[test]
+fn agent_status_reads_a_live_child() {
+    let harness = CommandHarness::with_caller("mcp-c1a-status", "c1a-status-caller");
+    let child = "c1a-status-child";
+    let runtime = crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        child,
+        harness.owner.clone(),
+        "c1a-status-caller",
+    );
+    let manifest = runtime.store_session_manifest(SessionEvent::SessionManifest {
+        provider_id: Some("test-agent".to_string()),
+        current_model_id: Some("model-x".to_string()),
+        models: Vec::new(),
+        modes: Some(devboule_protocol::SessionModeStateView {
+            current_mode_id: "plan".to_string(),
+            available_modes: vec![
+                devboule_protocol::SessionModeView {
+                    id: "plan".to_string(),
+                    name: "plan".to_string(),
+                    description: None,
+                },
+                devboule_protocol::SessionModeView {
+                    id: "build".to_string(),
+                    name: "build".to_string(),
+                    description: None,
+                },
+            ],
+        }),
+    });
+    runtime.publish_agent_event(manifest, None);
+    // The child's own registration carries its depth — the same fact the
+    // roster's `depth` field reads.
+    let _child_guard = harness
+        .state
+        .mcp
+        .register_with_provider(
+            child,
+            &harness.owner,
+            &SessionKind::Acp,
+            Some("test-agent"),
+            AgentLineage {
+                depth: 2,
+                overlay: ToolOverlay::NONE,
+            },
+        )
+        .expect("registration")
+        .expect("child MCP guard");
+    harness.state.sessions.test_park_card(child, "card-status");
+
+    let reply = harness.call(
+        crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+        &format!(r#"{{"agentId":"{child}"}}"#),
+    );
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    let snapshot = &reply["result"]["structuredContent"];
+    assert_eq!(snapshot["agentId"], json!(child));
+    // A parked card outranks working, exactly as the roster reads it.
+    assert_eq!(snapshot["state"], json!("input_required"));
+    assert_eq!(snapshot["provider"], json!("test-agent"));
+    assert_eq!(snapshot["model"], json!("model-x"));
+    assert_eq!(snapshot["mode"], json!("plan"));
+    assert!(snapshot["profileId"].is_null(), "{snapshot}");
+    assert_eq!(snapshot["createdBy"], json!("c1a-status-caller"));
+    assert_eq!(snapshot["depth"], json!(2));
+    assert!(
+        snapshot["idleMs"].is_u64(),
+        "idle age is a number: {snapshot}"
+    );
+    let pending = snapshot["pendingPermissions"]
+        .as_array()
+        .expect("the snapshot carries its cards");
+    assert_eq!(pending.len(), 1, "{snapshot}");
+    assert_eq!(pending[0]["cardId"], json!("card-status"));
+    assert_eq!(pending[0]["kind"], json!("tool"));
+    assert_eq!(pending[0]["excerpt"], json!("echo test"));
+
+    // The same child by display name: the resolution the other tools take.
+    let by_name = harness.call(
+        crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+        r#"{"agentId":"child"}"#,
+    );
+    assert_eq!(
+        by_name["result"]["structuredContent"]["agentId"],
+        json!(child),
+        "{by_name}"
+    );
+    // A missing argument is a protocol error before any scope runs.
+    let missing = harness.call(crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL, r#"{}"#);
+    assert_eq!(missing["error"]["code"], json!(-32602), "{missing}");
+}
+
+#[test]
+fn agent_status_falls_back_to_a_closed_childs_stored_row() {
+    let harness = CommandHarness::with_caller("mcp-c1a-closed", "c1a-closed-caller");
+    let child = "c1a-closed-child";
+    // The move-child fixture writes the birth row a creation would write, so
+    // a close leaves something for the stored fallback to answer from.
+    harness.state.sessions.insert_test_move_child(
+        child,
+        harness.owner.clone(),
+        "c1a-closed-caller",
+        "closed child",
+        &["plan"],
+        Some("model-x"),
+        false,
+    );
+    let closed = harness.call(
+        crate::provider_catalog::MCP_CLOSE_AGENT_TOOL,
+        &format!(r#"{{"session":"{child}"}}"#),
+    );
+    assert_eq!(closed["result"]["content"][0]["text"], json!("closed"));
+
+    let reply = harness.call(
+        crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+        &format!(r#"{{"agentId":"{child}"}}"#),
+    );
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    let snapshot = &reply["result"]["structuredContent"];
+    assert_eq!(snapshot["agentId"], json!(child));
+    // The row's own verdict: a close reaps the row and the process reported
+    // no exit code, and `Ended` without a code is `failed` — the same word
+    // the roster and the app give this row, one vocabulary and one source.
+    assert_eq!(snapshot["state"], json!("failed"));
+    assert!(snapshot["provider"].is_null(), "{snapshot}");
+    assert!(snapshot["model"].is_null(), "not persisted: {snapshot}");
+    assert!(snapshot["mode"].is_null(), "not persisted: {snapshot}");
+    assert_eq!(snapshot["createdBy"], json!("c1a-closed-caller"));
+    assert!(
+        snapshot["depth"].is_null(),
+        "birth depth of this row: {snapshot}"
+    );
+    assert!(snapshot["idleMs"].is_u64(), "{snapshot}");
+    assert_eq!(
+        snapshot["pendingPermissions"],
+        json!([]),
+        "a stored row carries no cards (D4): {snapshot}"
+    );
+}
+
+#[test]
+fn agent_status_reads_a_strangers_child_as_not_found() {
+    let harness = CommandHarness::with_caller("mcp-c1a-stranger", "c1a-stranger-caller");
+    let other_owner = owner(
+        "mcp-c1a-stranger-other-user",
+        "mcp-c1a-stranger-other-client",
+    );
+    crate::session::insert_test_live_agent(
+        &harness.state.sessions,
+        "c1a-stranger-parent",
+        harness.owner.clone(),
+    );
+    crate::session::insert_test_child_agent(
+        &harness.state.sessions,
+        "c1a-stranger-live",
+        other_owner,
+        "c1a-stranger-caller",
+    );
+    // A row that exists and is not the caller's: another creator's child on
+    // this caller's own owner — the stored scan must not hand it over.
+    harness.state.sessions.insert_test_move_child(
+        "c1a-stranger-row",
+        harness.owner.clone(),
+        "c1a-other-creator",
+        "stranger row",
+        &["plan"],
+        None,
+        false,
+    );
+
+    for target in [
+        "c1a-stranger-live",
+        "c1a-stranger-row",
+        "c1a-stranger-parent",
+        "c1a-stranger-invented",
+    ] {
+        let reply = harness.call(
+            crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+            &format!(r#"{{"agentId":"{target}"}}"#),
+        );
+        assert_eq!(reply["result"]["isError"], json!(true), "{target}: {reply}");
+        assert!(
+            harness.sentence(&reply).contains("none of your children"),
+            "{target}: {reply}"
+        );
+    }
+}
+
+#[test]
+fn a_stored_policy_can_take_the_agent_command_tools_away() {
+    let state = ServerState::new("mcp-c1a-policy".to_string());
+    let owner = owner("mcp-c1a-policy-user", "mcp-c1a-policy-client");
+    crate::session::insert_test_live_agent(&state.sessions, "c1a-policy-caller", owner.clone());
+    let guard = state
+        .mcp
+        .register_with_provider(
+            "c1a-policy-caller",
+            &owner,
+            &SessionKind::Acp,
+            Some("claude"),
+            AgentLineage::root(),
+        )
+        .expect("registration")
+        .expect("MCP guard");
+    state
+        .tool_policy
+        .set(
+            "claude",
+            Some(true),
+            vec![
+                crate::provider_catalog::MCP_CANCEL_AGENT_TOOL.to_string(),
+                crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL.to_string(),
+                crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL.to_string(),
+            ],
+        )
+        .expect("policy");
+    let token = state.mcp.test_token("c1a-policy-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+
+    let listed = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+    let listed_body = response_json(&listed);
+    let names: Vec<&str> = listed_body["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    for name in [
+        crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+        crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+    ] {
+        assert!(!names.contains(&name), "{name} is taken away by the policy");
+    }
+    assert!(
+        names.contains(&crate::provider_catalog::MCP_ROSTER_TOOL),
+        "the always-on roster survives the same policy"
+    );
+    // And the refusal arrives at the door, before any body runs.
+    for (name, arguments) in [
+        (
+            crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+            r#"{"agentId":"x"}"#,
+        ),
+        (
+            crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+            "{}",
+        ),
+        (
+            crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+            r#"{"agentId":"x"}"#,
+        ),
+    ] {
+        let refused = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+            ),
+        );
+        assert_eq!(
+            response_json(&refused).pointer("/error/code"),
+            Some(&json!(-32601)),
+            "{name}"
+        );
+    }
+    drop(guard);
+    drop(server);
+}
+
+#[test]
+fn a_profile_overlay_can_take_the_agent_command_tools_away() {
+    // The profile store's deny list picks the new names up with no further
+    // work: the catalog publishes them, so the store accepts them, and the
+    // two gates the broker calls refuse them — the same walk the restored-
+    // overlay test does for the peer tools.
+    let overlay = ToolOverlay::from_profile_names(&[
+        crate::provider_catalog::MCP_CANCEL_AGENT_TOOL.to_string(),
+    ]);
+    let listed = enabled_tool_list(
+        crate::provider_catalog::MCP_BROKER_TOOLS,
+        None,
+        overlay.clone(),
+    )
+    .into_iter()
+    .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+    .collect::<Vec<_>>();
+    assert!(!listed
+        .iter()
+        .any(|name| name == crate::provider_catalog::MCP_CANCEL_AGENT_TOOL));
+    assert!(listed.iter().any(|name| name == MCP_ROSTER_TOOL));
+    assert_eq!(
+        tool_call_refusal(
+            None,
+            &overlay,
+            crate::provider_catalog::MCP_CANCEL_AGENT_TOOL
+        ),
+        Some("Tool disabled by policy")
+    );
+    // And with no overlay and no policy the three are served — the default
+    // every provider starts from.
+    let served = enabled_tool_list(
+        crate::provider_catalog::MCP_BROKER_TOOLS,
+        None,
+        ToolOverlay::NONE,
+    )
+    .into_iter()
+    .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+    .collect::<Vec<_>>();
+    for name in [
+        crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+        crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+    ] {
+        assert!(served.iter().any(|served| served == name), "{name}");
+    }
+}

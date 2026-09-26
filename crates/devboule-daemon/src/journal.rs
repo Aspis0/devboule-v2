@@ -42,7 +42,9 @@ mod journal_retention;
 mod journal_schema;
 
 pub(crate) use journal_replay::AgentReplayPage;
-use journal_replay::{list_sessions, replay_agent_page, replay_session};
+use journal_replay::{
+    list_sessions, list_sessions_including_closed, replay_agent_page, replay_session,
+};
 use journal_retention::{
     delete_session_user, effective_limits, journal_retention, journal_usage, retain,
     set_journal_retention, RetentionState,
@@ -777,6 +779,9 @@ enum JournalCmd {
     List {
         reply: mpsc::Sender<Result<Vec<SessionRecord>, JournalError>>,
     },
+    ListAll {
+        reply: mpsc::Sender<Result<Vec<SessionRecord>, JournalError>>,
+    },
     ProjectsList {
         reply: mpsc::Sender<Result<Vec<ProjectRecord>, JournalError>>,
     },
@@ -1233,6 +1238,13 @@ impl Journal {
 
     pub fn list(&self) -> Result<Vec<SessionRecord>, JournalError> {
         self.rpc(|reply| JournalCmd::List { reply })
+    }
+
+    /// Every session row, the closed ones included — the status fallback's
+    /// read when a child is no longer live (`devboule_get_agent_status`).
+    /// [`Self::list`] is the roster's read and stops at the open rows.
+    pub fn list_all(&self) -> Result<Vec<SessionRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::ListAll { reply })
     }
 
     pub fn projects_list(&self) -> Result<Vec<ProjectRecord>, JournalError> {
@@ -1985,6 +1997,9 @@ fn journal_loop(
             }
             JournalCmd::List { reply } => {
                 let _ = reply.send(list_sessions(&conn));
+            }
+            JournalCmd::ListAll { reply } => {
+                let _ = reply.send(list_sessions_including_closed(&conn));
             }
             JournalCmd::ProjectsList { reply } => {
                 let _ = reply.send(list_projects(&conn));

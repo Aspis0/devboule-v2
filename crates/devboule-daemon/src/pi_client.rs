@@ -159,6 +159,26 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_CLOSE_AGENT_TOOL,
         requires_confirmation: false,
     },
+    // Cancel: interrupts one of the caller's own children's turns and keeps
+    // the child; the origin door judges it as `SessionInterrupt` — the
+    // administrative capability — before anything is touched, so the generic
+    // confirm would only re-ask a fact the door already decided.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_CANCEL_AGENT_TOOL,
+        requires_confirmation: false,
+    },
+    // Pending list: the caller's own children's parked cards — a read beside
+    // the roster, and answering still runs the answer tool's own checks.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        requires_confirmation: false,
+    },
+    // Status: one caller's own child's snapshot — a read like the roster,
+    // and its closed-child fallback reads only rows `created_by` the caller.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
+        requires_confirmation: false,
+    },
     // Project graph: read-only queries of the graph the indexer wrote for the
     // caller's own workspace. They add nothing a local agent cannot already
     // read (the files are in its cwd), so no generic confirm would have
@@ -248,7 +268,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (seventeen today), closed schemas matching the
+/// `pi.registerTool` per broker tool (twenty today), closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -567,6 +587,52 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_close_agent", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_cancel_agent",
+    label: "Cancel Devboule agent turn",
+    description: `Interrupts the current turn of one of your own live child sessions and keeps the child: the child stops what it is doing now, any permission card it had parked is resolved as interrupted, and it stays alive for your next message. This is the soft verb between doing nothing and devboule_stop_agent, which kills the process. Name the child by id or display name; you can only cancel a session you created yourself. Replies success: true when a turn was interrupted, success: false when the child had no turn running - nothing was interrupted, and that is not an error.`,
+    parameters: Type.Object(
+      {
+        agentId: Type.String({ description: "The id or display name of one of your own live child sessions." }),
+      },
+      { required: ["agentId"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_cancel_agent", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_list_pending_permissions",
+    label: "List Devboule pending permissions",
+    description: `Lists the permission cards your own live children are parked on right now, whatever the human's delegation switch says: each card's agentId, cardId, title, kind and a short excerpt of what the child asked. Listing is a read of your own children only; answering a card still requires the human's delegation switch and goes through devboule_answer_permission. A child with no cards adds no entry, and an empty list means nothing is parked.`,
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_toolCallId, _params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_list_pending_permissions", arguments: {} }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_get_agent_status",
+    label: "Read Devboule agent status",
+    description: `Reads one of your own children as a snapshot: its state (a parked card shows as input_required), provider, model, mode, profile, who created it, its depth, how long since it last published, and the permission cards it is parked on. Name the child by id or display name; you can only read a session you created yourself. A child that has been closed answers from its stored row with no pending permissions, and anything else - a sibling, a stranger's session, an invented id - reads as not found.`,
+    parameters: Type.Object(
+      {
+        agentId: Type.String({ description: "The id or display name of one of your own live child sessions." }),
+      },
+      { required: ["agentId"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_get_agent_status", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });

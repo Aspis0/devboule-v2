@@ -113,6 +113,13 @@ pub(super) fn handle_rpc(
                 || tool_name == Some(crate::provider_catalog::MCP_CLOSE_AGENT_TOOL)
             {
                 tools::agents::stop_or_close(state, registration, caller, id, message, tool_name)
+            } else if tool_name == Some(crate::provider_catalog::MCP_CANCEL_AGENT_TOOL) {
+                tools::commands::cancel(state, registration, caller, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL)
+            {
+                tools::commands::list_pending(state, registration, id)
+            } else if tool_name == Some(crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL) {
+                tools::commands::status(state, registration, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_LIST_DEVICES_TOOL) {
                 tools::peers::list_devices(state, registration, id)
             } else if tool_name == Some(crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL) {
@@ -258,7 +265,15 @@ pub(super) fn enabled_tool_list(
                     "required": ["query"],
                     "additionalProperties": false,
                 })
-            } else if *name == crate::provider_catalog::MCP_LIST_DEVICES_TOOL {
+            } else if *name == crate::provider_catalog::MCP_CANCEL_AGENT_TOOL
+                || *name == crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL
+            {
+                // One closed document for both readers of one child: they
+                // differ in what they answer, not in what they accept.
+                crate::provider_catalog::agent_id_input_schema()
+            } else if *name == crate::provider_catalog::MCP_LIST_DEVICES_TOOL
+                || *name == crate::provider_catalog::MCP_LIST_PENDING_PERMISSIONS_TOOL
+            {
                 // Spelled in its own arm rather than left to the default arm
                 // at the bottom: a parameterless tool's schema is a claim
                 // about the tool, and nothing walks this table to keep a

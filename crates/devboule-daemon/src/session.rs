@@ -337,6 +337,15 @@ mod session_attention_tests;
 #[cfg(test)]
 #[path = "session_attribution_tests.rs"]
 mod session_attribution_tests;
+/// The agent-command roads — cancel, the pending-permission list and the
+/// status snapshot — as `impl SessionRegistry` methods the broker's thin
+/// tool handlers call. Scope, resolution and the documents; the handler keeps
+/// the wire shape.
+#[path = "session_child_commands.rs"]
+mod session_child_commands;
+#[cfg(test)]
+#[path = "session_child_commands_tests.rs"]
+mod session_child_commands_tests;
 #[cfg(test)]
 #[path = "session_child_permission_phase_tests.rs"]
 mod session_child_permission_phase_tests;
@@ -1302,11 +1311,8 @@ impl SessionRegistry {
             .unwrap_or_else(|| session.title.clone());
         // The child's own words on the card: the description it wrote, or the
         // command it asked to run. Capped and neutralised inside the builder.
-        let excerpt = description
-            .clone()
-            .filter(|text| !text.trim().is_empty())
-            .or_else(|| command.clone())
-            .unwrap_or_else(|| title.clone());
+        let excerpt =
+            session_envelopes::card_excerpt(description.as_deref(), command.as_deref(), title);
         let envelope = agent_permission_request_envelope(
             &session.id,
             &session.origin,
@@ -2868,6 +2874,33 @@ impl SessionRegistry {
             (session.killer.clone_killer(), Arc::clone(&session.runtime))
         };
         check_attached(&runtime, conn, subscription_id)?;
+        killer.interrupt();
+        Ok(())
+    }
+
+    /// Interrupt the current turn of a live agent session without killing it,
+    /// on the internal road: the twin of [`Self::interrupt_with_subscription`]
+    /// with no wire subscription to hold, the same way [`Self::stop`] is the
+    /// twin of `stop_with_subscription`. The broker's cancel tool arrives with
+    /// a bearer, not a subscription, and `check_attached` would refuse it.
+    pub fn interrupt(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let mut killer = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, &None)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
+            if !session.metadata.kind.is_agent() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Only agent sessions support interrupting a turn.",
+                ));
+            }
+            session.killer.clone_killer()
+        };
         killer.interrupt();
         Ok(())
     }

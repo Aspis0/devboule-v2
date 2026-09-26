@@ -250,6 +250,18 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Ends one of your own live child sessions: the live session goes away and its transcript stays in history. Use this to finish with a child you created and no longer need. Name the child by id or display name; you can only close a session you created yourself.",
     ),
     (
+        MCP_CANCEL_AGENT_TOOL,
+        "Interrupts the current turn of one of your own live child sessions and keeps the child: the child stops what it is doing now, any permission card it had parked is resolved as interrupted, and it stays alive for your next message. This is the soft verb between doing nothing and devboule_stop_agent, which kills the process. Name the child by id or display name; you can only cancel a session you created yourself. Replies success: true when a turn was interrupted, success: false when the child had no turn running - nothing was interrupted, and that is not an error.",
+    ),
+    (
+        MCP_LIST_PENDING_PERMISSIONS_TOOL,
+        "Lists the permission cards your own live children are parked on right now, whatever the human's delegation switch says: each card's agentId, cardId, title, kind and a short excerpt of what the child asked. Listing is a read of your own children only; answering a card still requires the human's delegation switch and goes through devboule_answer_permission. A child with no cards adds no entry, and an empty list means nothing is parked.",
+    ),
+    (
+        MCP_GET_AGENT_STATUS_TOOL,
+        "Reads one of your own children as a snapshot: its state (a parked card shows as input_required), provider, model, mode, profile, who created it, its depth, how long since it last published, and the permission cards it is parked on. Name the child by id or display name; you can only read a session you created yourself. A child that has been closed answers from its stored row with no pending permissions, and anything else - a sibling, a stranger's session, an invented id - reads as not found.",
+    ),
+    (
         MCP_NEIGHBORHOOD_TOOL,
         "Walks the project's code-knowledge graph from one node and answers the nodes reachable within a number of edges, each with its shortest distance from the node you named. The graph belongs to the calling session's own workspace: the indexer builds it from that folder's files, and a node id is a repository-relative path (a file) or that path with a '#start-end-index' suffix (a symbol inside it). depth is 1 to 4 edges (default 1); kind filters on the graph's two edge kinds, IMPORT and CONTAIN. Topology only: no source text, no symbol bodies, no semantic search. A node the graph does not contain answers with an empty list, exactly like a node with no edges. Fails when the session has no workspace, and when that workspace has no graph yet - never by reading another project's graph.",
     ),
@@ -340,6 +352,40 @@ pub const MCP_STOP_AGENT_TOOL: &str = "devboule_stop_agent";
 /// and same construction as [`MCP_STOP_AGENT_TOOL`], judged as
 /// the wire's `SessionClose`: the administrative capability is what opens it.
 pub const MCP_CLOSE_AGENT_TOOL: &str = "devboule_close_agent";
+/// The cancel tool: a creator interrupts the current turn of one of its own
+/// live children and keeps the child — the soft verb between doing nothing
+/// and [`MCP_STOP_AGENT_TOOL`].
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_send_message`: a stored policy may take supervision away,
+/// and taking it away is the safe direction. The child's parked permission
+/// cards resolve as interrupted, and the child stays alive for the next
+/// message. The peer door judges it as the wire's `SessionInterrupt`, which
+/// rides the administrative capability — the same gate the wire's interrupt,
+/// stop and close already meet.
+pub const MCP_CANCEL_AGENT_TOOL: &str = "devboule_cancel_agent";
+/// The pending-permission list: the cards the caller's own live children are
+/// parked on right now — a pull beside the push envelope, so a coordinator
+/// can recover a `cardId` it was never surfaced.
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_send_message`. A read of one's own children: it lists while
+/// the human's delegation switch is off, because the switch gates answering,
+/// never seeing — and answering still runs its full checks through
+/// [`MCP_ANSWER_PERMISSION_TOOL`]. The peer door judges it as the wire's
+/// `SessionPermissionRespond`, never weaker than the answer tool that
+/// consumes its `cardId`.
+pub const MCP_LIST_PENDING_PERMISSIONS_TOOL: &str = "devboule_list_pending_permissions";
+/// The status tool: one of the caller's own children as a snapshot — state,
+/// provider, model, mode, profile, creator, depth, idle age and the cards it
+/// is parked on. A closed child answers from its stored row with no pending
+/// permissions; anything that is not the caller's own child reads as not
+/// found.
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_send_message`. A read like the roster — the peer door
+/// judges it as the wire's `SessionsList`, the act `view` names.
+pub const MCP_GET_AGENT_STATUS_TOOL: &str = "devboule_get_agent_status";
 /// The read-only profile-list tool (`create-from-profile`).
 ///
 /// Served to every MCP-capable provider, and **always on**, like the roster
@@ -523,6 +569,29 @@ pub(crate) fn agent_end_input_schema() -> serde_json::Value {
             }
         },
         "required": ["session"],
+        "additionalProperties": false
+    })
+}
+
+/// The `tools/list` input schema shared by [`MCP_CANCEL_AGENT_TOOL`] and
+/// [`MCP_GET_AGENT_STATUS_TOOL`].
+///
+/// One schema, not two: both name one of the caller's own children, and
+/// sharing keeps that fact load-bearing. Closed on purpose, like the create
+/// schema; there is deliberately no caller or creator parameter — identity is
+/// imposed by the broker from the bearer's registration. The value resolves
+/// by id or display name, the same two doors the other child tools take.
+#[cfg(feature = "server")]
+pub(crate) fn agent_id_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "agentId": {
+                "type": "string",
+                "description": "The id or display name of one of your own live child sessions."
+            }
+        },
+        "required": ["agentId"],
         "additionalProperties": false
     })
 }
@@ -855,15 +924,16 @@ impl ToolOverlay {
     pub(crate) const NONE: Self = Self {
         disabled: OverlayNames::Preset(&[]),
     };
-    /// A design child: no `devboule_send_message`, no `devboule_create_agent`
-    /// and no `devboule_create_workspace`. It keeps the roster, which is its
-    /// own bearer's read-only view. Depth alone would not stop it (a depth-1
-    /// child may create), so the deny list is the rule.
+    /// A design child: no `devboule_send_message`, no `devboule_create_agent`,
+    /// no `devboule_create_workspace` and no `devboule_cancel_agent`. It keeps
+    /// the roster, which is its own bearer's read-only view. Depth alone would
+    /// not stop it (a depth-1 child may create), so the deny list is the rule.
     pub(crate) const DESIGN: Self = Self {
         disabled: OverlayNames::Preset(&[
             MCP_SEND_MESSAGE_TOOL,
             MCP_CREATE_AGENT_TOOL,
             MCP_CREATE_WORKSPACE_TOOL,
+            MCP_CANCEL_AGENT_TOOL,
         ]),
     };
 

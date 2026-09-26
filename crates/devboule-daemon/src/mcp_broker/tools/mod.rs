@@ -1,4 +1,5 @@
 pub(super) mod agents;
+pub(super) mod commands;
 pub(super) mod creation;
 pub(super) mod first_use;
 pub(super) mod graph;

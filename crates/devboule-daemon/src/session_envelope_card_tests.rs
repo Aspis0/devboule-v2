@@ -4,7 +4,8 @@
 //! and the excerpt cap counted in scalars after normalisation and before
 //! escaping. Every line below is byte-identical to its text there, apart from
 //! this header; each test keeps the doc comment naming the mutant it must
-//! catch.
+//! catch. The last test is new: it pins `card_excerpt`, the selection rule
+//! this file's reader and the pending-permission list share.
 
 use super::*;
 
@@ -137,5 +138,33 @@ fn the_excerpt_cap_counts_scalars_after_normalisation_and_before_escaping() {
     assert!(
         neutral.contains("&#101;nd child-said"),
         "the fence lines inside the cap are escaped: {neutral}"
+    );
+}
+
+/// The selection rule the envelope's reader and the pending-permission list
+/// share: the child's description when it wrote one, the command when it did
+/// not, the title when it wrote neither — and a blank description is no
+/// description. Selection only; the cap is counted above.
+#[test]
+fn the_parked_card_excerpt_takes_the_childs_words_in_priority_order() {
+    assert_eq!(
+        session_envelopes::card_excerpt(Some("reads the diff"), Some("cargo test"), "Run command"),
+        "reads the diff",
+        "a description the child wrote wins"
+    );
+    assert_eq!(
+        session_envelopes::card_excerpt(None, Some("cargo test"), "Run command"),
+        "cargo test",
+        "no description: the command it asked to run"
+    );
+    assert_eq!(
+        session_envelopes::card_excerpt(Some("   "), Some("cargo test"), "Run command"),
+        "cargo test",
+        "a blank description is no description"
+    );
+    assert_eq!(
+        session_envelopes::card_excerpt(None, None, "Run command"),
+        "Run command",
+        "neither: the card's title"
     );
 }
