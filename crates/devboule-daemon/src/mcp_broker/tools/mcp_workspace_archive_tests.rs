@@ -113,6 +113,18 @@ fn run_with_answer(
         "{description}"
     );
     assert!(description.contains("| path:"), "{description}");
+    assert!(
+        description.contains("Allow workspace archiving for this session"),
+        "{description}"
+    );
+    assert!(
+        description.contains("| sessions to close:"),
+        "{description}"
+    );
+    if !description.contains("0 session(s)") {
+        assert!(description.contains("session(s):"), "{description}");
+        assert!(description.contains("\"Agent\""), "{description}");
+    }
     broker
         .test_answer(&card_id, outcome, choice)
         .expect("answer archive card");
@@ -238,10 +250,17 @@ fn archive_session_approval_covers_next_workspace_and_deny_keeps_target() {
     let (denied_state, denied_project, _denied_own, _denied_dir) = setup("deny");
     let (denied_target, denied_path) =
         add_worktree(&denied_state, &denied_project, "archive-denied");
-    assert!(matches!(
-        run_with_answer(&denied_state, "deny", &denied_target, PermissionOutcome::Deny, "deny"),
-        Err(WorkspaceError::Refused(message)) if message == "permission refused"
-    ));
+    let denied = run_with_answer(
+        &denied_state,
+        "deny",
+        &denied_target,
+        PermissionOutcome::Deny,
+        "deny",
+    );
+    assert!(
+        matches!(denied, Err(WorkspaceError::Refused(ref message)) if message == "permission refused"),
+        "unexpected denial result: {denied:?}"
+    );
     assert!(denied_path.is_dir());
     assert!(denied_state
         .sessions
@@ -250,6 +269,9 @@ fn archive_session_approval_covers_next_workspace_and_deny_keeps_target() {
         .iter()
         .any(|w| w.id == denied_target));
 }
+
+#[path = "mcp_workspace_archive_fix_tests.rs"]
+mod fix_tests;
 
 #[test]
 fn archive_tool_is_hidden_from_design_and_peer_door_requires_admin() {
@@ -280,4 +302,49 @@ fn archive_tool_is_hidden_from_design_and_peer_door_requires_admin() {
         frames.as_slice(),
         [devboule_protocol::ClientMessage::WorkspaceDelete { force: false, .. }]
     ));
+}
+
+#[test]
+fn archive_parser_rejects_blank_ids_without_normalising_nonblank_ids() {
+    assert!(matches!(
+        ArchiveRequest::parse(&json!({"workspaceId": "  "})),
+        Err(WorkspaceError::Invalid(message)) if message == "workspaceId is required"
+    ));
+    let parsed = ArchiveRequest::parse(&json!({"workspaceId": " id "})).unwrap();
+    assert_eq!(parsed.workspace_id, " id ");
+}
+
+#[test]
+fn archive_card_truncates_session_names_and_escapes_workspace_titles() {
+    let sessions = (0..5)
+        .map(|index| {
+            (
+                format!("session-{index}"),
+                owner(),
+                format!("Terminal {index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let description = describe_sessions(&sessions);
+    assert!(description.contains("\"Terminal 0\", \"Terminal 1\", \"Terminal 2\", and 2 more"));
+    assert!(!description.contains("Terminal 3"));
+    let title = quote_title("unsafe ' \"\r\n title");
+    assert!(!title.contains('\n'));
+    assert!(!title.contains('\r'));
+    assert!(!title.contains('\''));
+    assert!(!title.contains("\"\""));
+}
+
+#[test]
+fn archive_audit_distinguishes_human_deny_from_card_delivery_failure() {
+    assert_eq!(
+        archive_audit_outcome(&WorkspaceError::Refused("permission refused".to_string())),
+        "human_denied"
+    );
+    assert_eq!(
+        archive_audit_outcome(&WorkspaceError::Refused(
+            "permission card could not be delivered".to_string()
+        )),
+        "delivery_failed"
+    );
 }

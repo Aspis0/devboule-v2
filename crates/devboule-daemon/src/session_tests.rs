@@ -1450,14 +1450,33 @@ pub(super) fn insert_terminal(
     live.metadata.provider = None;
     live.metadata.cwd = Some("/tmp/devboule-terminal".to_string());
     drop(map);
-    // The insert road above is the agent one, whose runtime drops the screen
-    // (ACP speaks structured messages rather than a terminal grid). A
-    // terminal's runtime keeps the emulator its spawn road builds.
     {
         let mut stream = runtime.stream.lock().expect("stream");
         stream.screen = Some(Screen::new(INITIAL_COLS, INITIAL_ROWS));
     }
     runtime
+}
+
+pub(super) fn insert_live_session_in_workspace(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    kind: SessionKind,
+    workspace_id: &str,
+) -> Arc<SessionRuntime> {
+    insert_live_agent_full(
+        registry,
+        id,
+        owner,
+        kind,
+        Box::new(FailingWriter) as Box<dyn Write + Send>,
+        None,
+        None,
+        None,
+        Box::new(NoopKiller),
+        Box::new(UnsupportedSteerer),
+        Some(workspace_id.to_string()),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

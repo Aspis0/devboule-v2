@@ -79,6 +79,15 @@ pub(super) fn handle_rpc(
                 if let Some(reason) =
                     tool_call_refusal(policy.as_ref(), &registration.overlay, tool_name)
                 {
+                    if tool_name == crate::provider_catalog::MCP_ARCHIVE_WORKSPACE_TOOL {
+                        audit_mcp_tool(
+                            state,
+                            &caller,
+                            tool_name,
+                            &registration.session_id,
+                            "denied",
+                        );
+                    }
                     return Ok(Some(rpc_error(id, -32601, reason)));
                 }
                 // The overlay is folded into the same refusal, above: one

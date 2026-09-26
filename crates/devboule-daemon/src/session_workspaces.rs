@@ -278,6 +278,9 @@ impl super::SessionRegistry {
     }
 
     pub fn workspace_delete(&self, workspace_id: &str, force: bool) -> Result<(), WireError> {
+        #[cfg(test)]
+        self.workspace_delete_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let workspace = journal
             .workspace_get(workspace_id)

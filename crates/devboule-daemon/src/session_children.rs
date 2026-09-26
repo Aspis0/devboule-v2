@@ -835,13 +835,23 @@ impl super::SessionRegistry {
         owner: &OwnerId,
         card: SessionEvent,
     ) -> bool {
-        let Some(runtime) = self.live_runtime(creator, owner) else {
-            return false;
-        };
-        let Some(broker) = runtime.permission_broker() else {
-            return false;
-        };
-        broker.request_host_permission(card, &runtime) == permission_broker::HostDecision::Allow
+        self.ask_creation_card_decision(creator, owner, card) == Some(HostCardDecision::Allow)
+    }
+
+    pub(crate) fn ask_creation_card_decision(
+        &self,
+        creator: &str,
+        owner: &OwnerId,
+        card: SessionEvent,
+    ) -> Option<HostCardDecision> {
+        let runtime = self.live_runtime(creator, owner)?;
+        let broker = runtime.permission_broker()?;
+        Some(match broker.request_host_permission(card, &runtime) {
+            permission_broker::HostDecision::Allow => HostCardDecision::Allow,
+            permission_broker::HostDecision::Deny => HostCardDecision::Deny,
+            permission_broker::HostDecision::Timeout => HostCardDecision::Timeout,
+            permission_broker::HostDecision::Cancelled => HostCardDecision::Cancelled,
+        })
     }
 
     /// A child's row and runtime, for the finish report.

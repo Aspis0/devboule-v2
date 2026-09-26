@@ -340,7 +340,7 @@ fn a_session_with_no_live_row_is_refused_without_a_card() {
             "testing the gate",
             &[("fact", "value")],
         ),
-        Err("permission refused".to_string())
+        Err("permission card could not be delivered".to_string())
     );
     assert_eq!(state.mcp.first_use_mark("fu-gone", WORKSPACES_GROUP), None);
 }

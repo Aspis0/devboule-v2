@@ -16,7 +16,7 @@ use crate::server::ServerState;
 pub(in crate::mcp_broker) const WORKSPACES_GROUP: &str = "workspaces";
 /// Removing a workspace has a separate mark because it closes sessions and
 /// removes an existing checkout.
-pub(in crate::mcp_broker) const ARCHIVE_WORKSPACES_GROUP: &str = "archive_workspaces";
+pub(in crate::mcp_broker) const WORKSPACE_ARCHIVE_GROUP: &str = "workspace_archiving";
 
 /// The card choice that approves only the call it was raised for.
 const CHOICE_ONCE: &str = "once";
@@ -109,7 +109,7 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     }
     let card = write_gate_card(session_id, group, subject, facts);
     let card_id = gate_card_id(&card).to_string();
-    let allowed = request_write_card(state, session_id, owner, &card_id, card);
+    let outcome = request_write_card(state, session_id, owner, &card_id, card);
     let mut marks = broker
         .write_gates
         .marks
@@ -120,43 +120,71 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     // forgot (a re-registration cleared it) must neither open the group nor
     // clear a newer grant.
     let pending = marks.get(&key) == Some(&GateMark::Pending);
-    match allowed {
-        Some(CHOICE_SESSION) if pending => {
+    match outcome {
+        WriteCardOutcome::Choice(CHOICE_SESSION) if pending => {
             marks.insert(key, GateMark::Open);
             Ok(())
         }
-        Some(CHOICE_ONCE) if pending => {
+        WriteCardOutcome::Choice(CHOICE_ONCE) if pending => {
             marks.remove(&key);
             Ok(())
         }
-        _ => {
+        WriteCardOutcome::Choice("deny") => {
             if pending {
                 marks.remove(&key);
             }
             Err("permission refused".to_string())
         }
+        WriteCardOutcome::Undelivered => {
+            if pending {
+                marks.remove(&key);
+            }
+            Err("permission card could not be delivered".to_string())
+        }
+        _ => {
+            if pending {
+                marks.remove(&key);
+            }
+            Err("permission request was not answered".to_string())
+        }
     }
 }
 
 /// Raise the approval card through the same road the creation card uses and
-/// wait for the person's answer. Answers the option id the person chose, or
-/// `None` when the card was never raised or the answer was not an allow.
+/// wait for the person's answer. It distinguishes a delivery failure from a
+/// card that completed without an allow choice.
+enum WriteCardOutcome {
+    Choice(&'static str),
+    Undelivered,
+    Unanswered,
+}
+
 fn request_write_card(
     state: &ServerState,
     session_id: &str,
     owner: &OwnerId,
     card_id: &str,
     card: SessionEvent,
-) -> Option<&'static str> {
-    let runtime = state.sessions.live_runtime(session_id, owner)?;
-    let card_broker = runtime.permission_broker()?;
+) -> WriteCardOutcome {
+    let Some(runtime) = state.sessions.live_runtime(session_id, owner) else {
+        return WriteCardOutcome::Undelivered;
+    };
+    let Some(card_broker) = runtime.permission_broker() else {
+        return WriteCardOutcome::Undelivered;
+    };
     card_broker.watch_card_choice(card_id);
-    let raised = state.sessions.ask_creation_card(session_id, owner, card);
+    let decision = state
+        .sessions
+        .ask_creation_card_decision(session_id, owner, card);
     let choice = card_broker.take_card_choice(card_id).flatten();
-    if !raised {
-        return None;
+    match decision {
+        None | Some(crate::session::HostCardDecision::Cancelled) => WriteCardOutcome::Undelivered,
+        Some(crate::session::HostCardDecision::Deny) => WriteCardOutcome::Choice("deny"),
+        Some(crate::session::HostCardDecision::Timeout) => WriteCardOutcome::Unanswered,
+        Some(crate::session::HostCardDecision::Allow) => choice
+            .and_then(|option| choice_as_static(Some(option)))
+            .map_or(WriteCardOutcome::Unanswered, WriteCardOutcome::Choice),
     }
-    choice_as_static(choice)
 }
 
 /// The watched answer as the gate reads it. Kept beside the take so the
@@ -165,6 +193,7 @@ fn choice_as_static(choice: Option<String>) -> Option<&'static str> {
     match choice.as_deref() {
         Some(CHOICE_ONCE) => Some(CHOICE_ONCE),
         Some(CHOICE_SESSION) => Some(CHOICE_SESSION),
+        Some("deny") => Some("deny"),
         _ => None,
     }
 }
@@ -189,18 +218,20 @@ fn write_gate_card(
         .collect::<Vec<_>>()
         .join("\n");
     let subject = oneline(subject);
+    let session_label = session_permission_label(group);
+    let session_scope = session_scope_label(group);
     let description = if listed.is_empty() {
         format!(
             "An agent requested permission to {subject} for the first time. \
              \"Allow this call\" approves only this call. \
-             \"Allow {group} for this session\" approves {group} writes from this session from now on."
+             \"{session_label}\" approves {session_scope} from this session from now on."
         )
     } else {
         let marked = mark_fact_lines(&listed).join("\n");
         format!(
             "An agent requested permission to {subject} for the first time:\n{marked}\n\n\
              \"Allow this call\" approves only this call. \
-             \"Allow {group} for this session\" approves {group} writes from this session from now on."
+             \"{session_label}\" approves {session_scope} from this session from now on."
         )
     };
     SessionEvent::PermissionRequest {
@@ -219,7 +250,7 @@ fn write_gate_card(
             },
             PermissionOption {
                 option_id: CHOICE_SESSION.to_string(),
-                name: format!("Allow {group} for this session"),
+                name: session_label.to_string(),
                 kind: SESSION_KIND.to_string(),
             },
             PermissionOption {
@@ -237,6 +268,24 @@ fn write_gate_card(
         questions: None,
         origin: SessionOrigin::unknown(),
         create_agent: None,
+    }
+}
+
+fn session_permission_label(group: &str) -> String {
+    if group == WORKSPACE_ARCHIVE_GROUP {
+        "Allow workspace archiving for this session".to_string()
+    } else {
+        format!("Allow {group} for this session")
+    }
+}
+
+fn session_scope_label(group: &str) -> String {
+    if group == WORKSPACE_ARCHIVE_GROUP {
+        "workspace archiving".to_string()
+    } else if group == WORKSPACES_GROUP {
+        "workspace writes".to_string()
+    } else {
+        format!("{group} writes")
     }
 }
 

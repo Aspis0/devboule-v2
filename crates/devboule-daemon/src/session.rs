@@ -653,6 +653,14 @@ fn count_session_families(kinds: impl Iterator<Item = SessionKind>) -> (u32, u32
     (agents, terminals)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostCardDecision {
+    Allow,
+    Deny,
+    Timeout,
+    Cancelled,
+}
+
 #[derive(Clone)]
 pub struct SessionRegistry {
     inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
@@ -683,6 +691,8 @@ pub struct SessionRegistry {
     creations: Arc<Mutex<AgentCreationTable>>,
     #[cfg(test)]
     journal_list_calls: Arc<AtomicU64>,
+    #[cfg(test)]
+    workspace_delete_calls: Arc<AtomicU64>,
     #[cfg(test)]
     full_roster_builds: Arc<AtomicU64>,
     #[cfg(test)]
@@ -777,6 +787,8 @@ impl SessionRegistry {
             creations: Arc::new(Mutex::new(AgentCreationTable::default())),
             #[cfg(test)]
             journal_list_calls: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            workspace_delete_calls: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
             full_roster_builds: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
@@ -1146,6 +1158,61 @@ impl SessionRegistry {
         if let Ok(mut cache) = self.state_roster_cache.lock() {
             cache.clear();
         }
+    }
+
+    pub(crate) fn live_sessions_in_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<(String, OwnerId, String)>, WireError> {
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        Ok(map
+            .values()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    RegistryEntry::Live(_) | RegistryEntry::Configuring(_)
+                )
+            })
+            .filter(|entry| entry.metadata().workspace_id.as_deref() == Some(workspace_id))
+            .map(|entry| {
+                (
+                    entry.metadata().id.clone(),
+                    entry.owner().clone(),
+                    entry.metadata().title.clone(),
+                )
+            })
+            .collect())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn workspace_delete_call_count(&self) -> u64 {
+        self.workspace_delete_calls.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_journal_has_record(&self, session_id: &str) -> bool {
+        rusqlite::Connection::open(self.paths.journal_file())
+            .and_then(|connection| {
+                connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+                    [session_id],
+                    |row| row.get::<_, bool>(0),
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_live_workspace_for_test(&self, session_id: &str, workspace_id: &str) {
+        let mut entries = self.inner.lock().expect("session registry");
+        let session = entries
+            .get_mut(session_id)
+            .and_then(RegistryEntry::as_peer_visible_mut)
+            .expect("live session");
+        session.metadata.workspace_id = Some(workspace_id.to_string());
     }
 
     /// Live sessions by family, for the status body: agents
@@ -3622,6 +3689,30 @@ pub(crate) fn insert_test_live_agent_in_workspace(
     workspace_id: &str,
 ) -> Arc<SessionRuntime> {
     tests::insert_live_agent_in_workspace(registry, id, owner, workspace_id)
+}
+
+#[cfg(test)]
+pub(crate) fn insert_test_live_session_in_workspace(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    kind: SessionKind,
+    workspace_id: &str,
+) -> Arc<SessionRuntime> {
+    if validate_session_id(id).is_ok() {
+        if let Some(journal) = registry.journal.as_ref() {
+            journal
+                .create_session(crate::journal::new_session_record(
+                    id.to_string(),
+                    owner.user.clone(),
+                    Some(workspace_id.to_string()),
+                    kind.clone(),
+                    "Agent",
+                ))
+                .expect("session row");
+        }
+    }
+    tests::insert_live_session_in_workspace(registry, id, owner, kind, workspace_id)
 }
 
 /// Test-only live agent that is somebody's child: `created_by` is the fact
