@@ -26,8 +26,9 @@ const MAX_LISTED_PENDING_CARDS: usize = 64;
 /// both read off this (`D1`) — only `Interrupted` is `success: true`.
 #[derive(Debug)]
 pub(crate) enum CancelOutcome {
-    /// A turn was running, the road fired, and the turn was seen ended within
-    /// the bound.
+    /// The turn the call caught was running and is gone within the bound —
+    /// the send ended it or it ended before the send fired; the reply claims
+    /// the turn's state, never the cause.
     Interrupted,
     /// No turn was running: nothing was sent and nothing was touched.
     NotRunning,
@@ -134,19 +135,29 @@ impl super::SessionRegistry {
             ));
         };
         // The turn's identity, captured before anything is sent: the reply is
-        // about *this* turn. `is_turn_active` re-checks id and flag together,
-        // so a race before the send never sends, and a later turn's id can
-        // never answer for this one.
+        // about *this* turn. The gate below is re-checked under the turn-hold
+        // at the send — a race before the send never sends — and a later
+        // turn's id can never answer for this one.
         let turn_id = runtime.turn_counter();
         if !runtime.is_turn_active(turn_id) {
             return Ok(CancelOutcome::NotRunning);
         }
-        self.interrupt(&child_id, &owner)?;
+        // Fetch first — the registry's map lock, the order the wire
+        // interrupt takes — then fire under the turn-hold: the steer
+        // admission's own critical section, so the turn cannot end (and its
+        // successor cannot begin) between the check and the send.
+        let mut killer = self.interrupter(&child_id, &owner)?;
+        if !runtime.interrupt_if_turn_active(turn_id, || killer.interrupt()) {
+            // The caught turn ended while the killer was fetched: it is gone
+            // and nothing is sent — a send now would land on whatever the
+            // provider runs next.
+            return Ok(CancelOutcome::Interrupted);
+        }
         // One send, then the wait is for that id: `success: true` means the
-        // caught turn is gone — this interrupt ended it, it ended on its own,
-        // or a kill ended it; the reply claims the turn's state, never the
-        // cause. A turn that starts during the wait carries a new id and is
-        // never sent an interrupt: the road sends once.
+        // caught turn is gone — the reply claims the turn's state, never the
+        // cause. What travels on the wire is session-scoped, so a turn the
+        // provider starts before it processes the cancel may be caught by
+        // it; the tool's description says so, and the wait sends nothing more.
         let deadline = Instant::now() + timeout;
         loop {
             if !runtime.is_turn_active(turn_id) {

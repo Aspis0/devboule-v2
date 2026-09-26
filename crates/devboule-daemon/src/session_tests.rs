@@ -87,15 +87,20 @@ impl SessionKiller for InterruptAckingKiller {
             broker.cancel_pending();
         }
         // The provider's half of the acknowledgement: its abort reaches the
-        // daemon as the finish that ends the turn.
-        let _ = runtime.publish_agent_event(
-            SessionEvent::AgentFinished {
-                stop_reason: "interrupt".to_string(),
-                model_id: None,
-                usage: None,
-            },
-            None,
-        );
+        // daemon as the finish that ends the turn — on the reader's thread,
+        // never this one: `finish_turn` takes the turn-hold this killer may
+        // be firing under, and a same-thread publish would deadlock on it.
+        let runtime = Arc::clone(runtime);
+        std::thread::spawn(move || {
+            let _ = runtime.publish_agent_event(
+                SessionEvent::AgentFinished {
+                    stop_reason: "interrupt".to_string(),
+                    model_id: None,
+                    usage: None,
+                },
+                None,
+            );
+        });
     }
 
     fn clone_killer(&self) -> Box<dyn SessionKiller> {

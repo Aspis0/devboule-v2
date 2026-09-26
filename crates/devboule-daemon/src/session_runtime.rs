@@ -1480,6 +1480,29 @@ impl SessionRuntime {
         Some(deliver(&mut token))
     }
 
+    /// Fire `interrupt` only while this runtime's turn is the one
+    /// `expected_turn_id` names, holding the same `turn_hold` the steer
+    /// admission, `finish_turn` and `begin_turn` take: the check and the send
+    /// become one critical section — the turn cannot end, and its successor
+    /// cannot begin, between them. Returns whether the send ran.
+    ///
+    /// The closure must not publish this turn's finish on this thread:
+    /// `finish_turn` takes this hold, and a same-thread publish deadlocks on
+    /// it. Real killers only signal the provider; the reader thread publishes
+    /// the finish after the hold is released.
+    pub(crate) fn interrupt_if_turn_active(
+        &self,
+        expected_turn_id: u64,
+        interrupt: impl FnOnce(),
+    ) -> bool {
+        let _hold = self.lock_turn_hold();
+        if !self.is_turn_active(expected_turn_id) {
+            return false;
+        }
+        interrupt();
+        true
+    }
+
     /// End the turn if one is running, advancing the turn counter. The
     /// transition takes the turn-hold, so a steer admitted for this turn has
     /// already issued its write by the time the counter moves (S4-02). The

@@ -65,6 +65,36 @@ fn insert_child_with_killer(
     runtime
 }
 
+/// `count` cards parked on one child of `creator`, ids `{prefix}-{index}`:
+/// the fixture the cap tests share.
+fn park_full_child_cards(
+    registry: &SessionRegistry,
+    owner: &OwnerId,
+    creator: &str,
+    interrupted: &Arc<AtomicBool>,
+    id: &str,
+    count: usize,
+    prefix: &str,
+) {
+    let runtime = insert_child_with_killer(
+        registry,
+        id,
+        owner.clone(),
+        creator,
+        Box::new(InterruptRecorder(Arc::clone(interrupted))),
+    );
+    let broker = runtime.permission_broker().expect("broker");
+    for index in 0..count {
+        broker
+            .register(
+                1,
+                permission_broker::permission(&format!("{prefix}-{index}")),
+                &runtime,
+            )
+            .expect("the card parks");
+    }
+}
+
 /// A killer whose acknowledgement arrives late: the send returns now and the
 /// turn ends `delay` later on its own thread — the shape every real provider
 /// has (send now, finish on the reader thread). With `restart` it begins the
@@ -537,30 +567,27 @@ fn the_pending_list_caps_the_cards_one_call_returns() {
     let owner = test_owner("c1a-cap-user", "c1a-cap-client");
     insert_live_agent(&registry, "c1a-cap-caller", owner.clone());
     let interrupted = Arc::new(AtomicBool::new(false));
-    let park_full_child = |id: &str, count: usize, prefix: &str| {
-        let runtime = insert_child_with_killer(
-            &registry,
-            id,
-            owner.clone(),
-            "c1a-cap-caller",
-            Box::new(InterruptRecorder(Arc::clone(&interrupted))),
-        );
-        let broker = runtime.permission_broker().expect("broker");
-        for index in 0..count {
-            broker
-                .register(
-                    1,
-                    permission_broker::permission(&format!("{prefix}-{index}")),
-                    &runtime,
-                )
-                .expect("the card parks");
-        }
-    };
     // The geometry that makes the bound bite: 63 already served, and a child
     // holding two cards where one slot is left — the cut lands inside that
     // child, and the ledger may clone only the card it keeps.
-    park_full_child("c1a-cap-a", 31, "cap-a");
-    park_full_child("c1a-cap-b", 32, "cap-b");
+    park_full_child_cards(
+        &registry,
+        &owner,
+        "c1a-cap-caller",
+        &interrupted,
+        "c1a-cap-a",
+        31,
+        "cap-a",
+    );
+    park_full_child_cards(
+        &registry,
+        &owner,
+        "c1a-cap-caller",
+        &interrupted,
+        "c1a-cap-b",
+        32,
+        "cap-b",
+    );
     let third = insert_child_with_killer(
         &registry,
         "c1a-cap-c",
@@ -593,6 +620,73 @@ fn the_pending_list_caps_the_cards_one_call_returns() {
         third_child_cards,
         vec!["cap-c-0"],
         "the one slot left takes the first of the two cards — the cut lands mid-child"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_truncated_flag_pins_the_cut_boundary() {
+    let (dir, registry) = registry();
+    let owner = test_owner("c1a-edge-user", "c1a-edge-client");
+    insert_live_agent(&registry, "c1a-edge-caller", owner.clone());
+    let interrupted = Arc::new(AtomicBool::new(false));
+    park_full_child_cards(
+        &registry,
+        &owner,
+        "c1a-edge-caller",
+        &interrupted,
+        "c1a-edge-a",
+        32,
+        "edge-a",
+    );
+    park_full_child_cards(
+        &registry,
+        &owner,
+        "c1a-edge-caller",
+        &interrupted,
+        "c1a-edge-b",
+        32,
+        "edge-b",
+    );
+
+    // An exact fill is not a cut: both children fit the 64 slots exactly,
+    // so a `>=` at the boundary would claim a truncation that never happened.
+    let (cards, truncated) = registry
+        .list_child_permission_cards("c1a-edge-caller")
+        .expect("the list answers");
+    assert_eq!(cards.len(), 64, "the bound fills exactly");
+    assert!(
+        !truncated,
+        "nothing was withheld — an exact fit is not a cut"
+    );
+
+    // A third child arrives with the bound full: its card cannot fit, and the
+    // mark comes from the remaining == 0 path — a geometry the mid-child cut
+    // test never reaches.
+    let late = insert_child_with_killer(
+        &registry,
+        "c1a-edge-c",
+        owner.clone(),
+        "c1a-edge-caller",
+        Box::new(InterruptRecorder(Arc::clone(&interrupted))),
+    );
+    late.permission_broker()
+        .expect("broker")
+        .register(1, permission_broker::permission("edge-c-0"), &late)
+        .expect("the card parks");
+    let (cards, truncated) = registry
+        .list_child_permission_cards("c1a-edge-caller")
+        .expect("the list answers");
+    assert_eq!(cards.len(), 64, "the bound does not grow");
+    assert!(
+        truncated,
+        "the third child's card is withheld and the reply says so"
+    );
+    assert!(
+        !cards
+            .iter()
+            .any(|card| card["cardId"].as_str() == Some("edge-c-0")),
+        "the hidden card is not served"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
