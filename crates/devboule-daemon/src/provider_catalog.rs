@@ -990,7 +990,7 @@ impl ToolOverlay {
         disabled: OverlayNames::Preset(&[]),
     };
     /// A design child: no `devboule_send_message`, no `devboule_create_agent`,
-    /// no `devboule_create_workspace`, and none of the supervision verbs —
+    /// no workspace create or archive, and none of the supervision verbs —
     /// `devboule_cancel_agent`, `devboule_stop_agent`, `devboule_close_agent`.
     /// It keeps the roster, which is its own bearer's read-only view. Depth
     /// alone would not stop it (a depth-1 child may create), so the deny list

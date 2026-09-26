@@ -1334,9 +1334,8 @@ fn every_catalog_provider_has_a_cell_and_only_design_has_an_overlay() {
     }
 }
 
-/// The `design` overlay removes exactly six tools — send, create, the
-/// workspace write, and the three supervision verbs (the soft one and the two
-/// destructive ones) — and both presets keep the roster.
+/// The `design` overlay removes exactly seven tools — send, create, both
+/// workspace writes, and the three supervision verbs — and keeps the roster.
 #[test]
 fn the_design_overlay_hides_send_create_and_all_supervision_verbs_and_keeps_the_roster() {
     let design = super::ToolOverlay::DESIGN;
