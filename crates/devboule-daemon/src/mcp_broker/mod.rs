@@ -1,7 +1,7 @@
 //! The daemon-owned MCP channel for live agent sessions.
 //!
 //! The broker is deliberately small: one loopback HTTP listener, one bearer
-//! token per session, and the six broker tools served to every agent family —
+//! token per session, and the broker tools served to every agent family —
 //! ACP and Claude natively, pi through its bridge extension (S5), Codex
 //! through `-c` overrides on its launch line (S6), both verified post-spawn
 //! (S7/S8).

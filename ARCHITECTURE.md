@@ -82,7 +82,7 @@ runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); there is no bundling s
   (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 14
   (`crates/devboule-daemon/src/journal.rs:54`).
 - **The MCP broker.** A loopback HTTP listener with one bearer token per session
-  (`crates/devboule-daemon/src/mcp_broker.rs:1-7`, `MCP_PATH`, `McpLaunchConfig`).
+  (`crates/devboule-daemon/src/mcp_broker/mod.rs`, `MCP_PATH`, `McpLaunchConfig`).
 - **The peer listener.** A TCP listener on the tailnet, everything inside Noise
   (`crates/devboule-daemon/src/peer_transport.rs:1-6`), started best-effort at boot
   (`crates/devboule-daemon/src/server/lifecycle.rs`, `try_start_remote_listener`).
@@ -472,7 +472,7 @@ nonce-bearing name rather than deleted (`crates/devboule-daemon/src/tool_policy.
 **The read cadence is the point:** the broker
 reads the store on every `tools/list` and on every `tools/call`, so a toggle takes effect on the
 provider's next call rather than at the next session (`tool_policy.rs:3-7`; the enforcement sites are
-`mcp_broker.rs`, `enabled_tool_list` and `tool_call_refusal`). A policy is per device and is not
+`mcp_broker/dispatch.rs`, `enabled_tool_list` and `tool_call_refusal`). A policy is per device and is not
 propagated to paired peers, because what
 this machine hands to an agent is a local decision (`tool_policy.rs:15-17`). One name cannot be
 disabled: the roster tool, since an agent that cannot list its siblings cannot be steered at all
@@ -662,15 +662,15 @@ this one may talk to as a machine" (`ROLE_OPTIONS`).
 
 **The channel is the MCP broker.** Each live session that is allowed one gets a bearer token and a
 loopback HTTP MCP endpoint (`/mcp`), served by the daemon
-(`crates/devboule-daemon/src/mcp_broker.rs:1-7`, `MCP_PATH`, `McpLaunchConfig`); the config is written
+(`crates/devboule-daemon/src/mcp_broker/mod.rs`, `MCP_PATH`, `McpLaunchConfig`); the config is written
 for the
 provider, never read from the client (the `mcp_launch` doc on `McpLaunchConfig`). Registration is the
 provider's own answer, one answer for every site that asks: `Provider::hosts_mcp`
 (`crates/devboule-daemon/src/provider.rs:217`) is `true` for **four** of the five families —
 `AcpProvider`, `ClaudeProvider`, `CodexProvider` and `PiProvider` — and `false` for `Terminal`, and
-`hosts_mcp(kind)` (`crates/devboule-daemon/src/mcp_broker.rs:139`) is the single shim the gates read,
+`hosts_mcp(kind)` (`crates/devboule-daemon/src/mcp_broker/mod.rs`) is the single shim the gates read,
 so a pi or codex agent does host the daemon's MCP tools today. What stays narrower on purpose is the
-*first prompt*: `mcp_gates_first_prompt` (`mcp_broker.rs:154`) is ACP and Claude only, because a
+*first prompt*: `mcp_gates_first_prompt` (`mcp_broker/mod.rs`) is ACP and Claude only, because a
 carrier that is best-effort and slow (Codex measured ~7.4 s against a dead broker) must not make an
 outage of the broker an outage of a healthy child. The catalog keeps the cells anyway, "so adding a
 non-ACP transport does not silently change a decision" (the comment above the preset cells in
@@ -694,7 +694,7 @@ consequences follow, and they are the operational price of resumable Codex threa
 And the older rows do not come back. A Codex row created while the retired per-session home existed
 is still **re-readable** — the journal holds its transcript — but **not resumable**: its rollout sits
 in a `devboule-codex-home-<…>` tree, and the daemon's own startup sweep deletes every one of those on
-the next start (`crates/devboule-daemon/src/mcp_broker.rs`, `cleanup_stale_configs`). There is no
+the next start (`crates/devboule-daemon/src/mcp_broker/config_files.rs`, `cleanup_stale_configs`). There is no
 migration, so for those rows the history shows and the resume button cannot honestly be offered.
 
 **Eleven tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
@@ -715,14 +715,14 @@ and the wire cannot disagree (`crates/devboule-daemon/src/provider_catalog.rs`, 
 | `devboule_close_agent` | end one own child's session; history keeps the transcript | Yes |
 
 **The creation call.** The caller is the session whose bearer authenticated the connection — "there is
-no `from_session` parameter to lie about" (the doc on `create_agent`, `crates/devboule-daemon/src/mcp_broker.rs`).
+no `from_session` parameter to lie about" (the doc on `create_agent`, `crates/devboule-daemon/src/mcp_broker/tools/creation/run.rs`).
 The order is fixed and stated
 in the code: resolve the **profile** the caller named from the profiles the human ticked, read now
 (the provider, the model, the mode, the features and the tool overlay come from there and never from
 the caller), reserve the budget, raise the creation card once per creator session, create
 through the ordinary `SessionCreate` path with the creator's own origin and owner, and answer
 `{sessionId, taskId, contextId, displayName, state: "submitted"}`
-(`crates/devboule-daemon/src/mcp_broker.rs`, `create_agent`, `resolve_profile`, `created_result`).
+(`crates/devboule-daemon/src/mcp_broker/tools/creation/`, `create_agent`, `resolve_profile`, `created_result`).
 Details that matter:
 
 - **Depth comes from the registration, not the request**: a session at depth 2 may not create
@@ -738,7 +738,7 @@ Details that matter:
   `creation_retry_key`, `hold_creation_key`).
 - **The input schema is closed on purpose** (`additionalProperties: false`), and there is deliberately
   no `mode` parameter: the profile chooses the mode (`agent_create_input_schema`, and the
-  `additionalProperties: false` schema block in `mcp_broker.rs`).
+  `additionalProperties: false` schema block in `mcp_broker/dispatch.rs`).
 
 **Profiles are the table a creation names; presets are the retired one.** `AGENT_PRESETS`
 (`crates/devboule-daemon/src/provider_catalog.rs`) still holds exactly `worker` and `design`, and an
@@ -780,7 +780,7 @@ depth
 **The creation card is an ordinary permission card.** It is a `SessionEvent::PermissionRequest` with
 the `create_agent` payload filled in — the same pending entry, the same allow/deny frame, the same
 origin stamp and the same per-device budget as any other card — because a second variant would have to
-re-implement all of that (`crates/devboule-daemon/src/mcp_broker.rs`, `creation_card`; the payload type
+re-implement all of that (`crates/devboule-daemon/src/mcp_broker/tools/creation/card.rs`, `creation_card`; the payload type
 is `CreateAgentCard` in
 `crates/devboule-protocol/src/session.rs:598`). The daemon composes the title
 `Create an agent: <title> (<profile>)`, a description sentence that states the provider, model, mode,
@@ -1115,7 +1115,7 @@ Six further questions that no code here answers. They are recorded as questions 
 
 One more gap, found while reading and not from a report: the typed `createAgent` payload has no
 consumer in the UI (§7), and the MCP broker — and therefore every agent-to-agent feature — reaches
-every agent family except `Terminal` (`crates/devboule-daemon/src/mcp_broker.rs`, `hosts_mcp`; the
+every agent family except `Terminal` (`crates/devboule-daemon/src/mcp_broker/mod.rs`, `hosts_mcp`; the
 distinction between hosting tools and gating the first prompt on them is §7's).
 
 ---

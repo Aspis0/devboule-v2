@@ -259,6 +259,7 @@ pub(super) fn enabled_tool_list(
         .collect()
 }
 
+/// A refusal an agent reads: the sentence, and never a session id.
 pub(super) fn tool_error(id: &Value, message: &str) -> Value {
     json!({
         "jsonrpc": "2.0",

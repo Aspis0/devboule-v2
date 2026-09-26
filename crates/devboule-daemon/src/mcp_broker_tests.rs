@@ -200,49 +200,35 @@ fn registration_is_a_fact_the_surfaces_read() {
 fn mcp_predicates_are_provider_facts_not_kind_lists() {
     let two = ["SessionKind::Acp ", "| SessionKind::Claude"].concat();
     let four_tail = ["| SessionKind::Pi ", "| SessionKind::Codex"].concat();
-    let sources = [
-        // The broker module is a directory: its sources are listed file by file.
-        include_str!("mcp_broker/mod.rs"),
-        include_str!("mcp_broker/transport.rs"),
-        include_str!("mcp_broker/http.rs"),
-        include_str!("mcp_broker/config_files.rs"),
-        include_str!("mcp_broker/caller.rs"),
-        include_str!("mcp_broker/dispatch.rs"),
-        include_str!("mcp_broker/redact.rs"),
-        include_str!("mcp_broker/tools/mod.rs"),
-        include_str!("mcp_broker/tools/agents.rs"),
-        include_str!("mcp_broker/tools/graph.rs"),
-        include_str!("mcp_broker/tools/messaging.rs"),
-        include_str!("mcp_broker/tools/permissions.rs"),
-        include_str!("mcp_broker/tools/peers.rs"),
-        include_str!("mcp_broker/tools/creation/mod.rs"),
-        include_str!("mcp_broker/tools/creation/request.rs"),
-        include_str!("mcp_broker/tools/creation/labels.rs"),
-        include_str!("mcp_broker/tools/creation/profile.rs"),
-        include_str!("mcp_broker/tools/creation/run.rs"),
-        include_str!("mcp_broker/tools/creation/result.rs"),
-        include_str!("mcp_broker/tools/creation/card.rs"),
-        include_str!("session.rs"),
-        include_str!("provider.rs"),
-        // The session runtime's siblings: the walk has to follow the code out of
-        // session.rs, or a gate site that moves file stops being covered.
-        include_str!("session_children.rs"),
-        include_str!("session_envelopes.rs"),
-        include_str!("session_spawn.rs"),
-        include_str!("session_workspaces.rs"),
-        include_str!("session_messaging.rs"),
-        include_str!("session_items.rs"),
-        // The two halves carved out of `session_items.rs` by its seam split:
-        // same walk rule as the siblings above. The registry-state half
-        // carries the `SessionKind` placeholder that
-        // `AgentCreator::may_create_sessions` builds its probe from, so it is
-        // exactly the kind of site this walk exists to follow.
-        include_str!("session_prompt_planning.rs"),
-        include_str!("session_registry_state.rs"),
-        // The resume road's phases, carved out of `session.rs` by the C4
-        // slice: same walk rule as the siblings above.
-        include_str!("session_resume.rs"),
-    ];
+    // The broker half is read from disk, so a file the module gains later is
+    // covered without a list to maintain; the array below is the walk's known
+    // sites outside the module.
+    let mut sources = crate::test_support::mcp_broker_sources();
+    sources.extend(
+        [
+            include_str!("session.rs"),
+            include_str!("provider.rs"),
+            // The session runtime's siblings: the walk has to follow the code out of
+            // session.rs, or a gate site that moves file stops being covered.
+            include_str!("session_children.rs"),
+            include_str!("session_envelopes.rs"),
+            include_str!("session_spawn.rs"),
+            include_str!("session_workspaces.rs"),
+            include_str!("session_messaging.rs"),
+            include_str!("session_items.rs"),
+            // The two halves carved out of `session_items.rs` by its seam split:
+            // same walk rule as the siblings above. The registry-state half
+            // carries the `SessionKind` placeholder that
+            // `AgentCreator::may_create_sessions` builds its probe from, so it is
+            // exactly the kind of site this walk exists to follow.
+            include_str!("session_prompt_planning.rs"),
+            include_str!("session_registry_state.rs"),
+            // The resume road's phases, carved out of `session.rs` by the C4
+            // slice: same walk rule as the siblings above.
+            include_str!("session_resume.rs"),
+        ]
+        .map(str::to_string),
+    );
     let mut narrow = 0;
     let mut wide = 0;
     for source in sources {

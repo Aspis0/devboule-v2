@@ -97,6 +97,44 @@ pub(crate) fn spawn_canned_noise_responder(
     address
 }
 
+/// Every `.rs` file under `src/mcp_broker/`, read from disk at test time.
+///
+/// The broker's guard tests scan the module's own sources for needles that
+/// must appear exactly zero or one times. They read the tree instead of
+/// naming files with `include_str!` so a file the module gains later — the
+/// next tool group, a rename — is covered the moment it exists instead of
+/// never: a hand-written path list is a guard that quietly stops guarding.
+pub(crate) fn mcp_broker_sources() -> Vec<String> {
+    fn collect(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("the mcp_broker module directory exists") {
+            let path = entry.expect("one readable directory entry").path();
+            if path.is_dir() {
+                collect(&path, files);
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension.to_str() == Some("rs"))
+            {
+                files.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    collect(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("mcp_broker"),
+        &mut files,
+    );
+    files.sort();
+    files
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("read the broker source {path:?}: {error}"))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,7 +14,7 @@ the premise instead of trusting the sentence.
 `devboule-protocol/src/session.rs` spells five values — `Terminal`, `Acp`, `Claude`, `Pi`,
 `Codex` — and every branch site asks the same question: which binary does this session
 speak to. The provider registry binds one implementation per value (`provider.rs`),
-`peer_policy.rs` keeps one mode vocabulary per value, `mcp_broker.rs` picks a config path
+`peer_policy.rs` keeps one mode vocabulary per value, `mcp_broker/mod.rs` picks a config path
 for Claude, `event_pull.rs` corrects per-protocol projection quirks,
 `journal_retention.rs` groups the agent transports against `Terminal`.
 

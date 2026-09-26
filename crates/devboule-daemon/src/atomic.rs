@@ -191,31 +191,11 @@ mod tests {
     #[test]
     fn the_protected_write_order_lives_in_exactly_one_place() {
         let needle = ["apply_current_user_dacl", "(&"].concat();
-        let sources = [
-            include_str!("atomic.rs"),
-            // The broker module is a directory: its sources are listed file by file.
-            include_str!("mcp_broker/mod.rs"),
-            include_str!("mcp_broker/transport.rs"),
-            include_str!("mcp_broker/http.rs"),
-            include_str!("mcp_broker/config_files.rs"),
-            include_str!("mcp_broker/caller.rs"),
-            include_str!("mcp_broker/dispatch.rs"),
-            include_str!("mcp_broker/redact.rs"),
-            include_str!("mcp_broker/tools/mod.rs"),
-            include_str!("mcp_broker/tools/agents.rs"),
-            include_str!("mcp_broker/tools/graph.rs"),
-            include_str!("mcp_broker/tools/messaging.rs"),
-            include_str!("mcp_broker/tools/permissions.rs"),
-            include_str!("mcp_broker/tools/peers.rs"),
-            include_str!("mcp_broker/tools/creation/mod.rs"),
-            include_str!("mcp_broker/tools/creation/request.rs"),
-            include_str!("mcp_broker/tools/creation/labels.rs"),
-            include_str!("mcp_broker/tools/creation/profile.rs"),
-            include_str!("mcp_broker/tools/creation/run.rs"),
-            include_str!("mcp_broker/tools/creation/result.rs"),
-            include_str!("mcp_broker/tools/creation/card.rs"),
-            include_str!("tool_policy.rs"),
+        let mut sources = vec![
+            include_str!("atomic.rs").to_string(),
+            include_str!("tool_policy.rs").to_string(),
         ];
+        sources.extend(crate::test_support::mcp_broker_sources());
         let calls: usize = sources
             .iter()
             .map(|source| source.matches(needle.as_str()).count())

@@ -1,6 +1,6 @@
 //! The hand-parsed HTTP codec the endpoint speaks: header cap, chunked
 //! refusal, body cap, and the response writer. Copied from the broker
-//! (`mcp_broker.rs`) so the app gains no server dependency; split out of the
+//! (`mcp_broker/http.rs`) so the app gains no server dependency; split out of the
 //! listener only to keep every file within its line budget.
 
 use std::collections::HashMap;

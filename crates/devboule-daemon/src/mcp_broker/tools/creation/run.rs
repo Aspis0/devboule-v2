@@ -287,7 +287,6 @@ pub(in crate::mcp_broker) fn create_agent(
     }
 }
 
-/// A refusal an agent reads: the sentence, and never a session id.
 /// Can this daemon launch `provider`? Two sources, because there are two ways
 /// a provider can exist: a catalogue row must be found on PATH, while a
 /// user-declared row carries its own argv and is launchable without being on

@@ -2,7 +2,7 @@
 //!
 //! The listener owns the socket, the bearer gate and the record; the codec is
 //! [`super::endpoint_http`] and the query route is [`super::endpoint_query`].
-//! HTTP is parsed by hand in the broker's shape (`mcp_broker.rs`) — the app
+//! HTTP is parsed by hand in the broker's shape (`mcp_broker/http.rs`) — the app
 //! gains no server dependency.
 //!
 //! Timeouts per connection: 2 s on every `read()`, a 5 s deadline for the
