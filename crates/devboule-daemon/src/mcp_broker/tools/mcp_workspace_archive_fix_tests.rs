@@ -3,7 +3,7 @@ use super::*;
 use crate::mcp_broker::tools::first_use::{
     ensure_write_allowed, WORKSPACES_GROUP, WORKSPACE_ARCHIVE_GROUP,
 };
-use devboule_protocol::{PermissionOutcome, SessionEvent, SessionKind};
+use devboule_protocol::{OwnerId, PermissionOutcome, SessionEvent, SessionKind};
 use std::time::{Duration, Instant};
 
 fn archive_with_card_action(
@@ -108,6 +108,13 @@ fn failed_session_close_keeps_the_checkout() {
     let (target, path) = add_worktree(&state, &project, "archive-close-fail");
     crate::session::insert_test_live_session_in_workspace(
         &state.sessions,
+        "archive-partial-a",
+        owner(),
+        SessionKind::Acp,
+        &target,
+    );
+    crate::session::insert_test_live_session_in_workspace(
+        &state.sessions,
         "invalid session id",
         owner(),
         SessionKind::Acp,
@@ -121,10 +128,19 @@ fn failed_session_close_keeps_the_checkout() {
         "once",
     );
     assert!(
-        matches!(result, Err(WorkspaceError::Refused(message)) if message.contains("Could not close session"))
+        matches!(result, Err(WorkspaceError::Refused(message)) if message.contains("Could not close session") && message.contains("archive-partial-a"))
     );
     assert!(path.is_dir());
 }
+
+#[path = "mcp_workspace_archive_privacy_tests.rs"]
+mod privacy_tests;
+
+#[path = "mcp_workspace_archive_creation_tests.rs"]
+mod creation_tests;
+
+#[path = "mcp_workspace_archive_audit_tests.rs"]
+mod audit_tests;
 
 #[test]
 fn archive_card_names_sessions_and_returns_the_closed_ids() {

@@ -325,7 +325,7 @@ fn archive_card_truncates_session_names_and_escapes_workspace_titles() {
             )
         })
         .collect::<Vec<_>>();
-    let description = describe_sessions(&sessions);
+    let description = describe_sessions(&sessions, &owner());
     assert!(description.contains("\"Terminal 0\", \"Terminal 1\", \"Terminal 2\", and 2 more"));
     assert!(!description.contains("Terminal 3"));
     let title = quote_title("unsafe ' \"\r\n title");

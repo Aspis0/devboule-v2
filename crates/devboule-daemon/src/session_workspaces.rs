@@ -8,6 +8,30 @@
 
 use super::*;
 
+pub(crate) struct WorkspaceCreationGuard<'a> {
+    _gate: std::sync::RwLockReadGuard<'a, ()>,
+}
+
+pub(crate) struct WorkspaceArchivingGuard<'a> {
+    registry: &'a super::SessionRegistry,
+    workspace_id: String,
+}
+
+impl Drop for WorkspaceArchivingGuard<'_> {
+    fn drop(&mut self) {
+        let _gate = self
+            .registry
+            .workspace_creation_gate
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        self.registry
+            .archiving_workspaces
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.workspace_id);
+    }
+}
+
 /// The stored path in the spelling a child process receives: see
 /// `plain_path` for what stays verbatim.
 pub(super) fn plain_cwd(path: &Path) -> PathBuf {
@@ -15,6 +39,55 @@ pub(super) fn plain_cwd(path: &Path) -> PathBuf {
 }
 
 impl super::SessionRegistry {
+    pub(crate) fn workspace_creation_guard(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<Option<WorkspaceCreationGuard<'_>>, WireError> {
+        let Some(workspace_id) = workspace_id else {
+            return Ok(None);
+        };
+        let gate = self
+            .workspace_creation_gate
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        if self
+            .archiving_workspaces
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(workspace_id)
+        {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Workspace is being archived.",
+            ));
+        }
+        Ok(Some(WorkspaceCreationGuard { _gate: gate }))
+    }
+
+    pub(crate) fn mark_workspace_archiving(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceArchivingGuard<'_>, WireError> {
+        let _gate = self
+            .workspace_creation_gate
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut archiving = self
+            .archiving_workspaces
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !archiving.insert(workspace_id.to_string()) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Workspace is already being archived.",
+            ));
+        }
+        Ok(WorkspaceArchivingGuard {
+            registry: self,
+            workspace_id: workspace_id.to_string(),
+        })
+    }
+
     pub fn projects_list(&self) -> Result<Vec<Project>, WireError> {
         self.journal
             .as_ref()

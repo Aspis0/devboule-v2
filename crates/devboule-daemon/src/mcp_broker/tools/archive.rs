@@ -11,6 +11,7 @@ use crate::mcp_broker::tools::first_use::{ensure_write_allowed, WORKSPACE_ARCHIV
 use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::server::ServerState;
 
+use super::archive_sessions::{close_sessions, describe_sessions, quote_title};
 use super::workspaces::{WorkspaceError, WorkspaceError::Refused};
 
 pub(in crate::mcp_broker) fn archive(
@@ -167,11 +168,51 @@ fn archive_workspace_audited(
     owner: &OwnerId,
     workspace_id: &str,
 ) -> Result<Value, WorkspaceError> {
+    archive_workspace_audited_with_hook(
+        state,
+        broker,
+        caller,
+        session_id,
+        owner,
+        workspace_id,
+        || {},
+    )
+}
+
+#[cfg(test)]
+fn archive_workspace_with_close_hook(
+    state: &Arc<ServerState>,
+    broker: &McpBroker,
+    session_id: &str,
+    owner: &OwnerId,
+    workspace_id: &str,
+    after_close: impl FnMut(),
+) -> Result<Value, WorkspaceError> {
+    archive_workspace_audited_with_hook(
+        state,
+        broker,
+        None,
+        session_id,
+        owner,
+        workspace_id,
+        after_close,
+    )
+}
+
+fn archive_workspace_audited_with_hook(
+    state: &Arc<ServerState>,
+    broker: &McpBroker,
+    caller: Option<&McpCaller>,
+    session_id: &str,
+    owner: &OwnerId,
+    workspace_id: &str,
+    mut after_close: impl FnMut(),
+) -> Result<Value, WorkspaceError> {
     let target = validate_archive_scope(state, session_id, owner, workspace_id, false)?;
     let sessions = live_sessions(state, workspace_id)?;
     let subject = format!("archive workspace {}", quote_title(&target.title));
     let path = crate::workspace::plain_path(&target.path);
-    let session_facts = describe_sessions(&sessions);
+    let session_facts = describe_sessions(&sessions, owner);
     let facts = [
         ("workspace", target.id.as_str()),
         ("path", path.as_str()),
@@ -189,23 +230,56 @@ fn archive_workspace_audited(
     .map_err(Refused)?;
 
     validate_archive_scope(state, session_id, owner, workspace_id, true)?;
+    let _archiving = state
+        .sessions
+        .mark_workspace_archiving(workspace_id)
+        .map_err(|error| Refused(error.message))?;
     let current_sessions = live_sessions(state, workspace_id)?;
     if session_ids(&sessions) != session_ids(&current_sessions) {
         return Err(Refused(
             "Live sessions changed while archive approval was pending; retry.".to_string(),
         ));
     }
-    let closed_session_ids = close_sessions(state, caller, current_sessions)?;
+    let close_result =
+        close_sessions(state, current_sessions, &mut after_close).map_err(|failure| {
+            let closed = if failure.closed_session_ids.is_empty() {
+                "none".to_string()
+            } else {
+                failure.closed_session_ids.join(", ")
+            };
+            Refused(format!(
+                "{} Sessions already closed: {closed}.",
+                failure.message
+            ))
+        })?;
+
+    let remaining_sessions = live_sessions(state, workspace_id)?;
+    if !remaining_sessions.is_empty() {
+        return Err(Refused(
+            "Live sessions remain in the workspace; retry the archive.".to_string(),
+        ));
+    }
 
     validate_archive_scope(state, session_id, owner, workspace_id, true)?;
     state
         .sessions
         .workspace_delete(workspace_id, false)
         .map_err(|error| Refused(error.message))?;
+    if let Some(caller) = caller {
+        for session_id in close_result.audited_session_ids {
+            audit_mcp_tool(
+                state,
+                caller,
+                "SessionClose",
+                &session_id,
+                "workspace_archive",
+            );
+        }
+    }
     Ok(json!({
         "workspaceId": workspace_id,
         "removed": true,
-        "closedSessionIds": closed_session_ids,
+        "closedSessionIds": close_result.closed_session_ids,
     }))
 }
 
@@ -266,70 +340,8 @@ fn live_sessions(
     Ok(sessions)
 }
 
-fn close_sessions(
-    state: &Arc<ServerState>,
-    caller: Option<&McpCaller>,
-    sessions: Vec<(String, OwnerId, String)>,
-) -> Result<Vec<String>, WorkspaceError> {
-    let mut closed_session_ids = Vec::new();
-    for (session_id, owner, _) in sessions {
-        match state.sessions.close(&session_id, &owner, &None) {
-            Ok(true) => {
-                state.session_finished();
-                closed_session_ids.push(session_id.clone());
-                if let Some(caller) = caller {
-                    audit_mcp_tool(
-                        state,
-                        caller,
-                        "SessionClose",
-                        &session_id,
-                        "workspace_archive",
-                    );
-                }
-            }
-            Ok(false) => {}
-            Err(error) => {
-                return Err(Refused(format!(
-                    "Could not close session {session_id}: {}",
-                    error.message
-                )));
-            }
-        }
-    }
-    Ok(closed_session_ids)
-}
-
 fn session_ids(sessions: &[(String, OwnerId, String)]) -> Vec<String> {
     sessions.iter().map(|(id, _, _)| id.clone()).collect()
-}
-
-fn describe_sessions(sessions: &[(String, OwnerId, String)]) -> String {
-    let names = sessions
-        .iter()
-        .take(3)
-        .map(|(_, _, title)| quote_title(title))
-        .collect::<Vec<_>>();
-    let remaining = sessions.len().saturating_sub(names.len());
-    let mut description = format!("{} session(s): {}", sessions.len(), names.join(", "));
-    if remaining > 0 {
-        description.push_str(&format!(", and {remaining} more"));
-    }
-    description
-}
-
-fn quote_title(title: &str) -> String {
-    let title = title
-        .chars()
-        .take(120)
-        .map(|char| {
-            if char.is_control() || matches!(char, '\\' | '"' | '\'') {
-                '_'
-            } else {
-                char
-            }
-        })
-        .collect::<String>();
-    format!("\"{title}\"")
 }
 
 #[cfg(test)]

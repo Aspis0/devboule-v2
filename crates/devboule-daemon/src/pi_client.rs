@@ -802,7 +802,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_archive_workspace",
     label: "Archive Devboule workspace",
-    description: `Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time. workspaceId names the target. The approval card names each live agent and terminal session that will be closed; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.`,
+    description: `Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time. workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.`,
     parameters: Type.Object(
       { workspaceId: Type.String({ description: "The worktree workspace id from devboule_list_workspaces." }) },
       { required: ["workspaceId"], additionalProperties: false },

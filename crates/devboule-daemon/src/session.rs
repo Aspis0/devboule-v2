@@ -63,12 +63,12 @@
 //! wrong (it stalls ConPTY's render pipeline), so back-pressure is expressed
 //! as state: the slow viewer is resynchronised, the process is never stalled.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -724,6 +724,9 @@ pub struct SessionRegistry {
     /// add` and the journal row, so a loser always sees the winner's
     /// finished state when it decides what to clean.
     worktree_creation: Arc<Mutex<()>>,
+    /// Archive marking drains in-flight creation before refusing later spawns.
+    workspace_creation_gate: Arc<RwLock<()>>,
+    archiving_workspaces: Arc<Mutex<HashSet<String>>>,
     /// The checkout path the serial holder is currently adding, if any.
     /// A killed `git worktree add` leaves debris git still lists, which no
     /// listing can tell from a winner — so the kill arm repairs exactly
@@ -802,6 +805,8 @@ impl SessionRegistry {
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
             worktree_creation: Arc::new(Mutex::new(())),
+            workspace_creation_gate: Arc::new(RwLock::new(())),
+            archiving_workspaces: Arc::new(Mutex::new(HashSet::new())),
             worktree_add_in_flight: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             worktree_probe: Arc::new(session_workspaces::WorktreeCreationProbe::default()),
@@ -1817,6 +1822,7 @@ impl SessionRegistry {
         env_provider: Option<&str>,
         meta: &SessionCreateMeta,
     ) -> Result<Session, WireError> {
+        let _workspace_creation = self.workspace_creation_guard(workspace_id.as_deref())?;
         // The create road is the boundary that answers "which providers
         // exist": the file is read here (and at resume) so an edit takes
         // effect on the next creation rather than at the next restart — the
@@ -2058,6 +2064,7 @@ impl SessionRegistry {
         conn: &ConnHandle,
     ) -> Result<Session, WireError> {
         let (journal, record) = self.resume_locate_record(session_id)?;
+        let _workspace_creation = self.workspace_creation_guard(record.workspace_id.as_deref())?;
         let (provider, peer_session_id) = resume_handle(&record, owner)?;
         let (command, generation) = match self.resume_stage_command(&record, &provider) {
             Ok(staged) => staged,
@@ -3713,6 +3720,11 @@ pub(crate) fn insert_test_live_session_in_workspace(
         }
     }
     tests::insert_live_session_in_workspace(registry, id, owner, kind, workspace_id)
+}
+
+#[cfg(test)]
+pub(crate) fn insert_test_transcript(registry: &SessionRegistry, id: &str, owner: OwnerId) {
+    tests::insert_transcript(registry, id, owner);
 }
 
 /// Test-only live agent that is somebody's child: `created_by` is the fact

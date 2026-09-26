@@ -295,7 +295,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_ARCHIVE_WORKSPACE_TOOL,
-        "Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time. workspaceId names the target. The approval card names each live agent and terminal session that will be closed; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.",
+        "Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time. workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.",
     ),
 ];
 
