@@ -1373,7 +1373,9 @@ impl SessionRuntime {
                     .unwrap_or(0),
                 Ordering::Relaxed,
             );
-            notify_observers(&stream);
+            // No wake here: the event must not become observable before the
+            // attention and the roster push below exist (see the notify at
+            // the end of this function).
             (event, generation, seq, was_silent)
         };
         if let Some(journal) = &self.journal {
@@ -1402,6 +1404,13 @@ impl SessionRuntime {
         // report path itself is gated on the child actually being one.
         if matches!(&event, SessionEvent::AgentFinished { .. }) {
             self.notify_finished();
+        }
+        // The wake comes after the attention and the roster push above, so
+        // no observer can see the event while the snapshot still lacks the
+        // attention it carries. The enqueue already happened under the
+        // stream lock; this only wakes the writer to drain it.
+        if let Ok(stream) = self.lock_stream() {
+            notify_observers(&stream);
         }
         Some(event)
     }
@@ -1688,7 +1697,9 @@ impl SessionRuntime {
                     .unwrap_or(0),
                 Ordering::Relaxed,
             );
-            notify_observers(&stream);
+            // No wake here: the event must not become observable before the
+            // attention and the roster push below exist (see the notify at
+            // the end of this function).
         }
         if let (Some(journal), Some((generation, seq, text))) = (&self.journal, journal_output) {
             let accepted = journal.try_append(output_record(
@@ -1716,6 +1727,13 @@ impl SessionRuntime {
             // A turn that ended is reported here rather than through
             // attention: see [`Self::finish_notify`].
             self.notify_finished();
+        }
+        // The wake comes after the attention and the roster push above, so
+        // no observer can see the event while the snapshot still lacks the
+        // attention it carries. The enqueue already happened under the
+        // stream lock; this only wakes the writer to drain it.
+        if let Ok(stream) = self.lock_stream() {
+            notify_observers(&stream);
         }
         was_silent
     }
