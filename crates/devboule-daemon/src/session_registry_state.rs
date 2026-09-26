@@ -427,6 +427,12 @@ pub(super) struct AgentChild {
     /// The quiet notice is owed until it has been sent once per quiet spell.
     /// Cleared when the child publishes again, so one spell is one notice.
     pub(super) quiet_notified: bool,
+    /// When this child has been idle long enough to close, or `None` while it
+    /// is not in an idle spell. One setter arms and clears it
+    /// (`session_idle_close.rs`), so the field is the whole memory of the
+    /// spell: a viewer focusing the child clears it, and the next sweep
+    /// starts a fresh spell from that moment.
+    pub(super) idle_close_since: Option<Instant>,
 }
 
 /// One parked child end (audit-2 §2): what the end path still had in hand when
@@ -445,6 +451,12 @@ pub(super) type DeferredChildEnd = (
 pub(crate) struct AgentCreationTable {
     pub(super) creators: HashMap<String, AgentCreatorCaps>,
     pub(super) children: HashMap<String, AgentChild>,
+    /// Children closed because they went idle, in close order, bounded by
+    /// `IDLE_CLOSED_KEPT`: the only place the *reason* survives the link
+    /// (`session_idle_close.rs`), because a closed child is out of
+    /// `children` the moment its close runs. In memory only — a restart ends
+    /// every session anyway, so nothing reads it across one.
+    pub(super) idle_closed: VecDeque<String>,
     /// Children an agent's creation has spawned but not committed yet
     /// (audit-2 §2): their end waits instead of running against a link that
     /// does not exist yet.

@@ -1537,6 +1537,14 @@ export interface AgentProfile {
   features?: Record<string, unknown>;
   toolOverlay?: string[];
   enabledForAgents: boolean;
+  /**
+   * After how many idle minutes a child created from this profile is closed.
+   * Absent means the default (30), `0` means never, `n` means n minutes — the
+   * same three shapes the daemon's serde writes, and it skips the key for the
+   * default, which is why this is optional. Only children an agent created are
+   * ever closed this way; a session the human started is never a candidate.
+   */
+  idleCloseMinutes?: number;
 }
 
 /**

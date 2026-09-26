@@ -40,7 +40,19 @@ pub(in crate::mcp_broker) fn send(
         .into_iter()
         .find(|entry| entry.session.id == to_agent || entry.session.title == to_agent);
     let Some(target) = target else {
-        return Ok(Some(rpc_error(id, -32602, "target agent not found")));
+        // A miss that is one of the caller's own children, closed, says so
+        // with its reason; the sentence promises no reopen, and this road
+        // holds none — nothing here writes a row or starts a session.
+        let refusal = state.sessions.closed_child_refusal(
+            &registration.owner,
+            &registration.session_id,
+            to_agent,
+        );
+        return Ok(Some(rpc_error(
+            id,
+            -32602,
+            &refusal.unwrap_or_else(|| "target agent not found".to_string()),
+        )));
     };
     let internal_conn = caller_conn(state, &caller);
     match state.sessions.agent_message_send(

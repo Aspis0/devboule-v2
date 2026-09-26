@@ -387,9 +387,11 @@ impl ServerState {
                     state.broadcast_session_state(&owner, snapshots);
                 }
             }));
-        // The quiet sweep: one notice per quiet spell, never an action. A
-        // minute cadence divides the 20-minute threshold twenty times; the
-        // thread dies with the state (a failed upgrade ends the loop).
+        // The sweep thread: one notice per quiet spell, and the idle-close
+        // timer that shares its minute cadence — the quiet sweep never acts,
+        // the idle sweep closes children whose profile's minutes ran out. A
+        // minute cadence divides the 20-minute quiet threshold twenty times;
+        // the thread dies with the state (a failed upgrade ends the loop).
         let state_for_quiet = Arc::downgrade(&state);
         if let Err(error) = std::thread::Builder::new()
             .name("session-quiet-sweep".to_string())
@@ -398,7 +400,9 @@ impl ServerState {
                 let Some(state) = state_for_quiet.upgrade() else {
                     return;
                 };
-                state.sessions.sweep_quiet_children(Instant::now());
+                let now = Instant::now();
+                state.sessions.sweep_quiet_children(now);
+                state.sessions.sweep_idle_close_children(&state, now);
             })
         {
             eprintln!("could not start quiet sweeper: {error}");

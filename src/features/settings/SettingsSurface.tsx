@@ -27,6 +27,7 @@ import { AgentProfileForm } from "./AgentProfileForm";
 import {
   EMPTY_PROFILE_FORM_SEED,
   type ProfileFormSeed,
+  applyIdleClose,
   enabledNameClash,
   profileDraftRefusal,
   profileFeaturesFromDraft,
@@ -1151,6 +1152,9 @@ function AgentProfilesPanel() {
     // saved before, minus what the human removed, plus the peer pair the
     // tick added.
     row.toolOverlay = [...draft.overlay];
+    // The idle-close timer, on the same rule the form's other optional
+    // fields follow: the default is saved as the default's own shape.
+    applyIdleClose(row, draft);
     // Untouched, on purpose: `id` is the identity, and the position is the
     // order the agents read.
     // Close on CONFIRMATION, never on submission — the new-profile form's
@@ -1227,6 +1231,7 @@ function AgentProfilesPanel() {
     if (spawn !== "") {
       profile.spawnPrompt = spawn;
     }
+    applyIdleClose(profile, draft);
     const updated = cloneDocument(current);
     // Append at the end: the human's order is the order agents read, and the
     // rows already there keep the positions the human gave them.

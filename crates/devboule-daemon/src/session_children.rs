@@ -261,6 +261,7 @@ impl super::SessionRegistry {
                 notice_owed: true,
                 report_owed: true,
                 quiet_notified: false,
+                idle_close_since: None,
             },
         );
         let caps = table
@@ -317,6 +318,7 @@ impl super::SessionRegistry {
                 notice_owed: true,
                 report_owed: true,
                 quiet_notified: false,
+                idle_close_since: None,
             },
         );
     }
@@ -577,6 +579,7 @@ impl super::SessionRegistry {
                 notice_owed: true,
                 report_owed: true,
                 quiet_notified: false,
+                idle_close_since: None,
             },
         );
         (true, deferred)
@@ -1214,7 +1217,7 @@ impl super::SessionRegistry {
     /// separate function rather than a flag, so the urgent steer-or-prompt
     /// path above keeps its shape and no routine notice can pass the wrong
     /// boolean and interrupt a turn it only meant to inform.
-    fn deliver_notice_to_creator(
+    pub(super) fn deliver_notice_to_creator(
         &self,
         creator: &str,
         owner: &OwnerId,

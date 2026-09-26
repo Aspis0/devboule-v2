@@ -90,6 +90,26 @@ pub(super) fn agent_quiet_envelope(
     )
 }
 
+/// The idle-close envelope: what a creator is told when the daemon closed one
+/// of its children for idleness ("closed: idle"). The reason and the minutes
+/// are the daemon's own facts — no child text travels here, so nothing the
+/// child wrote can wear this frame.
+pub(super) fn agent_idle_closed_envelope(
+    child_session_id: &str,
+    display_name: &str,
+    idle_minutes: u32,
+    child_origin: &SessionOrigin,
+) -> String {
+    format!(
+        "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_idle_closed\ntimestamp: {}\nchildSessionId: {}\ndisplayName: {}\nstate: closed\nsummary: closed: idle after {idle_minutes} minutes; no turn, no pending card, nothing in flight, nobody viewing. Closed sessions do not reopen — create a new one.\n</devboule-system>",
+        origin_line(child_origin),
+        neutralise_envelope_text(&single_line_header(child_session_id)),
+        unix_millis(),
+        neutralise_envelope_text(&single_line_header(child_session_id)),
+        neutralise_envelope_text(&single_line_header(display_name)),
+    )
+}
+
 /// One header line per child-chosen value: a line break in it would impersonate
 /// frame structure, so every mandatory break (CR, LF, VT, FF, NEL, U+2028, U+2029)
 /// becomes a space before anything else runs. The cap

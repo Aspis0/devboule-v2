@@ -2942,6 +2942,88 @@ fn a_peer_send_is_the_send_act() {
     drop(server);
 }
 
+/// The send's miss has two answers: a name that is nobody's closed child
+/// keeps the plain sentence, and a caller's own closed child is told what it
+/// is — with the reason only when a close recorded one, which this close did
+/// not — and that nothing reopens. The tool's reply, not just the registry's.
+#[test]
+fn a_send_whose_target_is_the_callers_closed_child_says_so() {
+    use super::tools::messaging::send;
+    let state = ServerState::new("mcp-idle-close".to_string());
+    let owner = owner("mcp-idle-close-user", "mcp-idle-close-client");
+    let creator = "s.idle.closed".to_string();
+    let child = "s.idle.child".to_string();
+    crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+    crate::session::insert_test_live_agent(&state.sessions, &child, owner.clone());
+    let journal = state.sessions.test_journal().expect("journal");
+    let mut record = crate::journal::new_session_record(
+        &child,
+        "mcp-idle-close-user",
+        None,
+        SessionKind::Acp,
+        "Agent",
+    );
+    record.created_by = Some(creator.clone());
+    record.display_name = Some("Idle child".to_string());
+    journal.create_session(record).expect("birth row");
+    state
+        .sessions
+        .close(&child, &owner, &None)
+        .expect("the child closes");
+
+    let registration = RegisteredSession {
+        session_id: creator,
+        owner: owner.clone(),
+        provider_id: None,
+        depth: 0,
+        overlay: ToolOverlay::NONE,
+        bearer: "the bearer".to_string(),
+        claude_config_path: None,
+        runtime: None,
+        broker_ready: Arc::new(AtomicBool::new(false)),
+    };
+    let closed = send(
+        &state,
+        &registration,
+        McpCaller::Local,
+        json!(1),
+        &json!({"params": {"arguments": {"to_agent": "s.idle.child", "text": "one more question"}}}),
+    )
+    .expect("the handler does not fail")
+    .expect("the handler answers");
+    assert_eq!(
+        closed.pointer("/error/message"),
+        Some(&json!(
+            "your child 'Idle child' is closed; closed sessions do not reopen — create a new one"
+        )),
+        "{closed}"
+    );
+    let roster = state
+        .sessions
+        .live_agent_entries(&owner)
+        .expect("the roster still answers");
+    assert!(
+        !roster.iter().any(|entry| entry.session.id == child),
+        "the refusal reopened nothing"
+    );
+
+    let unknown = send(
+        &state,
+        &registration,
+        McpCaller::Local,
+        json!(2),
+        &json!({"params": {"arguments": {"to_agent": "nobody", "text": "hello"}}}),
+    )
+    .expect("the handler does not fail")
+    .expect("the handler answers");
+    assert_eq!(
+        unknown.pointer("/error/message"),
+        Some(&json!("target agent not found")),
+        "a name that is no closed child of the caller says nothing about what exists: {unknown}"
+    );
+    journal.shutdown();
+}
+
 /// F4 (MAX RECALL, authority): the tool's act is performed AS the caller.
 /// The send used to act through an unmarked connection, so a peer's
 /// delivery read `local` to the receiving agent (S4-05) and carried the

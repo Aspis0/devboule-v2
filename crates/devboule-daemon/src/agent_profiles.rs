@@ -117,6 +117,16 @@ pub(crate) const MAX_TOOL_OVERLAY_NAMES: usize = 256;
 /// The longest tool name a profile's overlay may name, in bytes.
 pub(crate) const MAX_TOOL_OVERLAY_NAME_BYTES: usize = 128;
 
+/// What a profile that says nothing about idle closing asks for, in minutes:
+/// the owner's default for a child that goes idle with no turn, no pending
+/// card, nothing in flight and nobody watching it.
+pub(crate) const DEFAULT_IDLE_CLOSE_MINUTES: u32 = 30;
+
+/// The most minutes a profile may name before a child is closed for idleness.
+/// A week: long enough for any deliberate "keep it until I come back", far
+/// below a value that would read as "never" while claiming to be a timer.
+pub(crate) const MAX_IDLE_CLOSE_MINUTES: u32 = 7 * 24 * 60;
+
 /// Why a profile document was refused.
 #[derive(Debug)]
 pub(crate) enum ProfilesError {
@@ -214,6 +224,24 @@ impl AgentProfilesStore {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
+    }
+
+    /// The idle-close minutes in force for `profile_id` **now**: the profile's
+    /// own field when the document still holds that profile, otherwise the
+    /// default. Read at every sweep rather than copied at a child's birth, so
+    /// a settings edit reaches children already running (D5); a child whose
+    /// profile no longer exists takes the default rather than a rule no
+    /// settings screen can show or change any more.
+    pub(crate) fn idle_close_minutes(&self, profile_id: Option<&str>) -> u32 {
+        let Some(profile_id) = profile_id else {
+            return DEFAULT_IDLE_CLOSE_MINUTES;
+        };
+        self.document()
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| profile.idle_close_minutes)
+            .unwrap_or(DEFAULT_IDLE_CLOSE_MINUTES)
     }
 
     /// Replace the whole document and persist it before the in-memory copy
@@ -578,6 +606,17 @@ fn check_profile(
         *slot = tool.to_string();
     }
 
+    // The idle-close timer is the one field whose absence has a meaning
+    // rather than a zero: absent is the default (30), `Some(0)` is the
+    // deliberate "never", so only the upper bound needs a refusal.
+    if let Some(minutes) = profile.idle_close_minutes {
+        if minutes > MAX_IDLE_CLOSE_MINUTES {
+            return Err(format!(
+                "profile {position} asks to close idle children after {minutes} minutes, over the {MAX_IDLE_CLOSE_MINUTES}-minute cap"
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -750,6 +789,7 @@ mod tests {
             features: serde_json::Map::new(),
             tool_overlay: Vec::new(),
             enabled_for_agents: false,
+            idle_close_minutes: None,
         }
     }
 
@@ -1617,6 +1657,76 @@ mod tests {
         );
         crate::provider_feature_probe::remove_answer_for_test(
             &crate::provider_feature_probe::ProbeKey::new("grok"),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The field's range and what each shape of it means: absent is the
+    /// default, zero is the timer off, a week is the cap, and a day over it
+    /// is one refusal sentence naming the row by position and the number it
+    /// asked for.
+    #[test]
+    fn idle_close_minutes_are_bounded_and_mean_what_the_field_says() {
+        let registry = crate::session::catalog_registry();
+        let mut ids = std::collections::HashSet::new();
+
+        let mut absent = profile("p-idle-1", "Absent");
+        check_profile(&mut absent, 1, &mut ids, &registry).expect("an absent field is admitted");
+        assert_eq!(absent.idle_close_minutes, None);
+
+        let mut off = profile("p-idle-2", "Off");
+        off.idle_close_minutes = Some(0);
+        check_profile(&mut off, 2, &mut ids, &registry)
+            .expect("zero is the timer off, not a value out of range");
+
+        let mut week = profile("p-idle-3", "A week");
+        week.idle_close_minutes = Some(MAX_IDLE_CLOSE_MINUTES);
+        check_profile(&mut week, 3, &mut ids, &registry).expect("a week is the cap");
+
+        let mut over = profile("p-idle-4", "Over");
+        over.idle_close_minutes = Some(MAX_IDLE_CLOSE_MINUTES + 1);
+        let refusal = check_profile(&mut over, 4, &mut ids, &registry)
+            .expect_err("a minute over the cap is refused");
+        assert_eq!(
+            refusal,
+            format!(
+                "profile 4 asks to close idle children after {} minutes, over the {MAX_IDLE_CLOSE_MINUTES}-minute cap",
+                MAX_IDLE_CLOSE_MINUTES + 1
+            )
+        );
+    }
+
+    /// The sweep's own read: live, per profile, defaulting when the profile
+    /// is not in the document — which is what a child whose profile was
+    /// deleted falls back to.
+    #[test]
+    fn the_store_answers_idle_close_minutes_live_and_defaults_when_the_profile_is_gone() {
+        let dir = temp_dir();
+        let store = AgentProfilesStore::load(&dir);
+        assert_eq!(store.idle_close_minutes(None), DEFAULT_IDLE_CLOSE_MINUTES);
+        assert_eq!(
+            store.idle_close_minutes(Some("p-unknown")),
+            DEFAULT_IDLE_CLOSE_MINUTES,
+            "no profile in the document is no rule: the default stands"
+        );
+
+        let mut timed = profile("p-timed", "Timed");
+        timed.idle_close_minutes = Some(5);
+        store
+            .set(document(vec![timed]))
+            .expect("the store admits the document");
+        assert_eq!(store.idle_close_minutes(Some("p-timed")), 5);
+
+        let mut off = profile("p-off", "Off");
+        off.idle_close_minutes = Some(0);
+        store
+            .set(document(vec![off]))
+            .expect("the store admits the document");
+        assert_eq!(store.idle_close_minutes(Some("p-off")), 0);
+        assert_eq!(
+            store.idle_close_minutes(Some("p-timed")),
+            DEFAULT_IDLE_CLOSE_MINUTES,
+            "a profile the document no longer holds reads as the default, not as its last value"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

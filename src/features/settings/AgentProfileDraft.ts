@@ -16,6 +16,11 @@ const MAX_PROFILE_ICON_BYTES = 64;
 export const MAX_PROFILE_SPAWN_PROMPT_BYTES = 8 * 1024;
 /** `MAX_PROFILE_FIELD_BYTES` in `agent_profiles.rs`: ids like the thinking option. */
 const MAX_PROFILE_FIELD_BYTES = 128;
+/** `MAX_IDLE_CLOSE_MINUTES` in `agent_profiles.rs`: the idle-close timer's cap. */
+export const MAX_IDLE_CLOSE_MINUTES = 7 * 24 * 60;
+/** What a profile that says nothing about idle closing asks for — the number
+ *  the form shows, and the value whose *absence* is what the daemon reads. */
+export const DEFAULT_IDLE_CLOSE_MINUTES = 30;
 /** `AUTO_ACCEPT_FEATURE` in `provider_catalog.rs`: the tick every agent family
  *  reads, and the only feature key whose meaning the daemon wrote itself. */
 export const AUTO_ACCEPT_FEATURE = "autoAccept";
@@ -145,6 +150,14 @@ export interface ProfileFormSeed {
   overlay: string[];
   enabledForAgents: boolean;
   /**
+   * The idle-close timer: `null` is the profile saying nothing (the daemon
+   * applies the default, which is what the form shows), `0` is the timer off,
+   * and the minutes otherwise. The wire shape a save writes is
+   * [`applyIdleClose`]'s, so a field nobody changed leaves the row's key
+   * alone.
+   */
+  idleCloseMinutes: number | null;
+  /**
    * The features the provider offered for this draft's model, as the vocabulary
    * reply answered them — the list the form drew its controls from. It rides on
    * the draft rather than being re-read at save because the answer lives in the
@@ -174,6 +187,7 @@ export const EMPTY_PROFILE_FORM_SEED: ProfileFormSeed = {
   features: {},
   overlay: [],
   enabledForAgents: false,
+  idleCloseMinutes: null,
   offeredFeatures: null,
 };
 
@@ -213,6 +227,7 @@ export function seedFromProfile(profile: AgentProfile): ProfileFormSeed {
     features: seeded,
     overlay: [...overlay],
     enabledForAgents: profile.enabledForAgents,
+    idleCloseMinutes: profile.idleCloseMinutes ?? null,
     // The stored map travels; the offered list is what the form's fetch
     // answers, and an edit that never opens one keeps the profile's own keys.
     offeredFeatures: null,
@@ -258,7 +273,35 @@ export function profileDraftRefusal(draft: ProfileFormSeed): string | null {
   if (iconBytes > MAX_PROFILE_ICON_BYTES) {
     return `The icon is ${iconBytes} bytes, over the ${MAX_PROFILE_ICON_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
   }
+  // 0 is not a number out of range here: it is the timer off, which the
+  // toggle writes and the daemon reads as "never".
+  const idle = draft.idleCloseMinutes;
+  if (idle !== null && idle !== 0) {
+    if (!Number.isInteger(idle) || idle < 1 || idle > MAX_IDLE_CLOSE_MINUTES) {
+      return `Closing idle children must be a whole number of minutes from 1 to ${MAX_IDLE_CLOSE_MINUTES}, or off. Nothing was saved.`;
+    }
+  }
   return null;
+}
+
+/**
+ * The stored `idleCloseMinutes` a draft saves: `0` for off, the minutes
+ * otherwise — and the default written as **absent**, because absent is what
+ * means 30 to the daemon. A field nobody changed therefore leaves the row's
+ * key exactly as it was, the rule `spawnPrompt`'s empty form already follows:
+ * what the daemon reads as the default is saved as the default's own shape,
+ * never as a placeholder number.
+ */
+export function applyIdleClose(profile: AgentProfile, draft: ProfileFormSeed): void {
+  if (draft.idleCloseMinutes === 0) {
+    profile.idleCloseMinutes = 0;
+    return;
+  }
+  if (draft.idleCloseMinutes === null || draft.idleCloseMinutes === DEFAULT_IDLE_CLOSE_MINUTES) {
+    delete profile.idleCloseMinutes;
+    return;
+  }
+  profile.idleCloseMinutes = draft.idleCloseMinutes;
 }
 
 /**

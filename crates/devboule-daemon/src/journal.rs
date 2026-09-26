@@ -42,7 +42,9 @@ mod journal_retention;
 mod journal_schema;
 
 pub(crate) use journal_replay::AgentReplayPage;
-use journal_replay::{list_sessions, owned_child_record, replay_agent_page, replay_session};
+use journal_replay::{
+    closed_child_record, list_sessions, owned_child_record, replay_agent_page, replay_session,
+};
 use journal_retention::{
     delete_session_user, effective_limits, journal_retention, journal_usage, retain,
     set_journal_retention, RetentionState,
@@ -783,6 +785,12 @@ enum JournalCmd {
         created_by: String,
         reply: mpsc::Sender<Result<Option<SessionRecord>, JournalError>>,
     },
+    ClosedChildRecord {
+        target: String,
+        owner: String,
+        created_by: String,
+        reply: mpsc::Sender<Result<Option<SessionRecord>, JournalError>>,
+    },
     ProjectsList {
         reply: mpsc::Sender<Result<Vec<ProjectRecord>, JournalError>>,
     },
@@ -1253,6 +1261,25 @@ impl Journal {
     ) -> Result<Option<SessionRecord>, JournalError> {
         self.rpc(|reply| JournalCmd::OwnedChildRecord {
             session_id: session_id.to_string(),
+            owner: owner.to_string(),
+            created_by: created_by.to_string(),
+            reply,
+        })
+    }
+
+    /// One **closed** row a sender may have named among `created_by`'s
+    /// children — by id, or by a title exactly one of them carries. The
+    /// roster's [`list`](Self::list) stops at `closed = 0`, so nothing else
+    /// here can answer for a closed child; the send's miss reads this to say
+    /// "closed" instead of "not found" (`session_idle_close.rs`).
+    pub fn closed_child_record(
+        &self,
+        target: &str,
+        owner: &str,
+        created_by: &str,
+    ) -> Result<Option<SessionRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::ClosedChildRecord {
+            target: target.to_string(),
             owner: owner.to_string(),
             created_by: created_by.to_string(),
             reply,
@@ -2017,6 +2044,14 @@ fn journal_loop(
                 reply,
             } => {
                 let _ = reply.send(owned_child_record(&conn, &session_id, &owner, &created_by));
+            }
+            JournalCmd::ClosedChildRecord {
+                target,
+                owner,
+                created_by,
+                reply,
+            } => {
+                let _ = reply.send(closed_child_record(&conn, &target, &owner, &created_by));
             }
             JournalCmd::ProjectsList { reply } => {
                 let _ = reply.send(list_projects(&conn));

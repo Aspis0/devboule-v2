@@ -63,7 +63,7 @@
 //! wrong (it stalls ConPTY's render pipeline), so back-pressure is expressed
 //! as state: the slow viewer is resynchronised, the process is never stalled.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -180,9 +180,9 @@ mod session_envelopes;
 #[cfg(test)]
 pub(crate) use session_envelopes::TITLE_LINE_MAX_CHARS;
 use session_envelopes::{
-    agent_finished_envelope, agent_input_required_envelope, agent_message_envelope,
-    agent_permission_request_envelope, agent_quiet_envelope, bound_finish_envelope,
-    child_finish_state, summary_of,
+    agent_finished_envelope, agent_idle_closed_envelope, agent_input_required_envelope,
+    agent_message_envelope, agent_permission_request_envelope, agent_quiet_envelope,
+    bound_finish_envelope, child_finish_state, summary_of,
 };
 #[cfg(test)]
 use session_envelopes::{
@@ -205,6 +205,25 @@ mod session_children;
 /// terminal's screen.
 #[path = "session_terminals.rs"]
 mod session_terminals;
+/// The idle-close timer for coordinator-created children: the sweep that arms
+/// and acts, the four conditions it weighs, and the sentence a closed child
+/// answers a send with.
+#[path = "session_idle_close.rs"]
+mod session_idle_close;
+/// The close's own outputs — the transcript notice, the creator's envelope and
+/// the send's refusal — in their own file: they are what the close *says*,
+/// where the sibling module is what it *decides*.
+#[cfg(test)]
+#[path = "session_idle_close_delivery_tests.rs"]
+mod session_idle_close_delivery_tests;
+/// The profile's own half of the timer (D5), in its own file: the switch,
+/// the custom value and the edit that reaches a running child.
+#[cfg(test)]
+#[path = "session_idle_close_profile_tests.rs"]
+mod session_idle_close_profile_tests;
+#[cfg(test)]
+#[path = "session_idle_close_tests.rs"]
+mod session_idle_close_tests;
 use session_messaging::forget_message_brake_target;
 #[cfg(test)]
 use session_messaging::{
@@ -1368,6 +1387,11 @@ impl SessionRegistry {
         // attention: raises use the global attention -> presence order.
         if app_visible {
             if let Some(session_id) = focused_session_id {
+                // Focusing a child starts its idle spell over: a view the
+                // sweep never saw must not be a spell it closes on. Only a
+                // link child has the field, so any other session id is a
+                // lookup that finds nothing.
+                self.set_idle_close_since(&session_id, None);
                 let runtime = self.inner.lock().ok().and_then(|map| {
                     map.get(&session_id).and_then(|entry| {
                         (entry.owner().user == owner.user).then(|| entry.runtime())
@@ -3635,6 +3659,12 @@ impl SessionRegistry {
             .and_then(RegistryEntry::as_peer_visible_mut)
             .expect("live entry");
         live.metadata.origin = origin;
+    }
+
+    /// Test-only: the registry's own journal, for an out-of-module test whose
+    /// subject reads a birth row that only the journal can hold.
+    pub(crate) fn test_journal(&self) -> Option<Arc<Journal>> {
+        self.journal.clone()
     }
 
     /// Test-only: park one permission card on a live session's broker, so an

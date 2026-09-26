@@ -22,6 +22,8 @@ import {
   vocabularyAxisView,
 } from "./AgentProfileVocabulary";
 import {
+  DEFAULT_IDLE_CLOSE_MINUTES,
+  MAX_IDLE_CLOSE_MINUTES,
   MAX_PROFILE_SPAWN_PROMPT_BYTES,
   type ProfileFormSeed,
   offeredFeatures,
@@ -49,6 +51,17 @@ const CLEARED_PROVIDER_FIELDS: ProviderSpecificFields = {
   modeId: "",
   thinkingOptionId: "",
 };
+
+/**
+ * The minutes field's text as the draft holds it: blank is the profile
+ * saying nothing (the default applies), and anything else is the number the
+ * daemon's own cap will judge — `profileDraftRefusal` refuses what this
+ * cannot be, rather than the form quietly rounding it.
+ */
+function idleMinutesOf(text: string): number | null {
+  const trimmed = rustTrim(text);
+  return trimmed === "" ? null : Number(trimmed);
+}
 
 /**
  * The profile form, inline in the Agents panel — the panel's own shape (the
@@ -116,6 +129,18 @@ export function AgentProfileForm({
   const [features, setFeatures] = useState<Record<string, boolean | string>>(seed.features);
   const [overlay, setOverlay] = useState(seed.overlay);
   const [enabledForAgents, setEnabledForAgents] = useState(seed.enabledForAgents);
+  // The idle-close timer as the two controls hold it: the off tick decides
+  // between `0` and the minutes field, and the field shows the default when
+  // the profile says nothing (or is off) — 30 is what a saved row without the
+  // key means, so it is what an untouched field shows.
+  const [idleOff, setIdleOff] = useState(seed.idleCloseMinutes === 0);
+  const [idleMinutes, setIdleMinutes] = useState(
+    String(
+      seed.idleCloseMinutes === null || seed.idleCloseMinutes === 0
+        ? DEFAULT_IDLE_CLOSE_MINUTES
+        : seed.idleCloseMinutes,
+    ),
+  );
   // Field-associated text for assistive technology: the ids the described-by
   // wiring points at. One useId per mount, so a create form and an edit form
   // open side by side cannot collide.
@@ -140,6 +165,7 @@ export function AgentProfileForm({
       offeredFeatures: offeredForSeed,
       overlay,
       enabledForAgents,
+      idleCloseMinutes: idleOff ? 0 : idleMinutesOf(idleMinutes),
     };
   }
   // Provider-specific fields, cached by provider while the form is open:
@@ -494,6 +520,53 @@ export function AgentProfileForm({
           <span className="agent-profile-tick-note">
             Lets an agent start this kind of agent. If this profile answers its own permission
             cards, its children run unattended.
+          </span>
+        </span>
+      </label>
+      <label className="device-field">
+        Close idle children after — minutes
+        <input
+          aria-label="Close idle children after minutes"
+          type="number"
+          min={1}
+          max={MAX_IDLE_CLOSE_MINUTES}
+          step={1}
+          value={idleMinutes}
+          disabled={busy || idleOff}
+          onChange={(event) => {
+            setIdleMinutes(event.target.value);
+            onSeedChange?.({
+              ...currentSeed(),
+              idleCloseMinutes: idleOff ? 0 : idleMinutesOf(event.target.value),
+            });
+          }}
+        />
+        <span className="device-field-hint">
+          {DEFAULT_IDLE_CLOSE_MINUTES} by default, up to {MAX_IDLE_CLOSE_MINUTES} (a week). A child
+          created from this profile is closed after this long with no turn, no waiting permission
+          card, nothing being sent to it, and nobody looking at it; a closed session cannot reopen.
+          Only children an agent created are ever closed this way.
+        </span>
+      </label>
+      <label className="agent-profile-tick">
+        <input
+          type="checkbox"
+          aria-label="Never close idle children"
+          checked={idleOff}
+          disabled={busy}
+          onChange={(event) => {
+            const off = event.target.checked;
+            setIdleOff(off);
+            onSeedChange?.({
+              ...currentSeed(),
+              idleCloseMinutes: off ? 0 : idleMinutesOf(idleMinutes),
+            });
+          }}
+        />
+        <span>
+          <span>Never close idle children</span>
+          <span className="agent-profile-tick-note">
+            Keep them running until you close them yourself; the minutes above stop applying.
           </span>
         </span>
       </label>

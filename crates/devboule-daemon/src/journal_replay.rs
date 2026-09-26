@@ -173,6 +173,61 @@ pub(super) fn owned_child_record(
     .map_err(JournalError::from)
 }
 
+/// One **closed** row a sender may have named among `created_by`'s children:
+/// the exact id first, then a title that exactly one of those closed rows
+/// carries — the two forms the live target lookup accepts
+/// (`mcp_broker/tools/messaging.rs`).
+///
+/// The roster's [`list_sessions`] stops at `closed = 0`, so this is the one
+/// read that sees a closed row: the send's miss needs it to answer "closed"
+/// rather than "not found" (`session_idle_close.rs`). Scoped by owner and
+/// creator the way [`owned_child_record`] is, and a title two closed children
+/// share answers nothing — without a live name to tell them apart the
+/// sentence could name the wrong child.
+pub(super) fn closed_child_record(
+    conn: &Connection,
+    target: &str,
+    owner: &str,
+    created_by: &str,
+) -> Result<Option<SessionRecord>, JournalError> {
+    let by_id = conn
+        .query_row(
+            "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                    generation, status, exit_code, closed, last_seq, degraded,
+                    dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
+                    peer_session_id, provider, origin_kind, origin_device, origin_role,
+                    display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
+                    overlay, depth, disowned_peer_session_id, cwd
+             FROM sessions WHERE id = ?1 AND owner = ?2 AND created_by = ?3 AND closed = 1",
+            params![target, owner, created_by],
+            row_to_session,
+        )
+        .optional()
+        .map_err(JournalError::from)?;
+    if by_id.is_some() {
+        return Ok(by_id);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                generation, status, exit_code, closed, last_seq, degraded,
+                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
+                peer_session_id, provider, origin_kind, origin_device, origin_role,
+                display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
+                overlay, depth, disowned_peer_session_id, cwd
+         FROM sessions WHERE owner = ?1 AND created_by = ?2 AND title = ?3 AND closed = 1
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![owner, created_by, target], row_to_session)?;
+    let mut matches = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(JournalError::from)?;
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
+        _ => Ok(None),
+    }
+}
+
 fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
     Ok(SessionRecord {
         id: row.get(0)?,

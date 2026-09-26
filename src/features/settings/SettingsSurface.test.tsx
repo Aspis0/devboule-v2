@@ -2539,6 +2539,83 @@ describe("Settings agents panel", () => {
     });
   });
 
+  it("round-trips the idle-close timer: the default 30, a custom value, and off", async () => {
+    const explorer = makeProfile();
+    await renderAgentsPanel({ profiles: [explorer], standingInstructions: "" });
+    const idleField = (): HTMLInputElement => {
+      const field = container.querySelector<HTMLInputElement>(
+        '.agent-inline-editor input[aria-label="Close idle children after minutes"]',
+      );
+      if (!field) throw new Error("the idle-close minutes field did not render");
+      return field;
+    };
+    const offTick = (): HTMLInputElement => {
+      const tick = container.querySelector<HTMLInputElement>(
+        '.agent-inline-editor input[aria-label="Never close idle children"]',
+      );
+      if (!tick) throw new Error("the idle-close off toggle did not render");
+      return tick;
+    };
+
+    // 1. The default: a profile that says nothing opens showing 30, and a
+    // save that never touched the field keeps the key out — absent is what
+    // means 30 to the daemon, so an untouched field leaves the row alone.
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    expect(idleField().value).toBe("30");
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [explorer], standingInstructions: "" },
+    });
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const first = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    expect("idleCloseMinutes" in first.profiles[0]).toBe(false);
+
+    // 2. A custom value: typed, stored under the key, and shown again on the
+    // next open — the round trip the field exists for.
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    await typeText(idleField(), "45");
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [{ ...explorer, idleCloseMinutes: 45 }],
+        standingInstructions: "",
+      },
+    });
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenLastCalledWith({
+      profiles: [{ ...explorer, idleCloseMinutes: 45 }],
+      standingInstructions: "",
+    });
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    expect(idleField().value).toBe("45");
+    expect(offTick().checked).toBe(false);
+
+    // 3. Off: the tick saves the daemon's `Some(0)`, and reopening it shows
+    // the tick still on, the field at the default and out of the way.
+    await act(async () => offTick().click());
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [{ ...explorer, idleCloseMinutes: 0 }],
+        standingInstructions: "",
+      },
+    });
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenLastCalledWith({
+      profiles: [{ ...explorer, idleCloseMinutes: 0 }],
+      standingInstructions: "",
+    });
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    expect(offTick().checked).toBe(true);
+    expect(idleField().disabled).toBe(true);
+    expect(idleField().value).toBe("30");
+  });
+
   it("refuses a rename that would put two enabled profiles on one name, before sending", async () => {
     const scout = makeProfile({ id: "s1", name: "Scout", enabledForAgents: true });
     const reviewer = makeProfile({ id: "r1", name: "Reviewer", enabledForAgents: true });
@@ -5091,7 +5168,7 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Forty-two: the delegation section's one sentence on this panel (an
+    // Forty-seven: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
@@ -5105,15 +5182,16 @@ describe("Settings agents panel — new profile form", () => {
     // role=status ask that the in-flight ask below already collects),
     // the overlay add
     // control's own sentence, the three cap refusals, the model/mode
-    // refusals, the two profile-cap sentences, the two catalog sentences, the
-    // heading description, the intro copy, the tick notes (including the
+    // refusals, the two profile-cap sentences, the two catalog sentences,
+    // the idle-close field's own hint and the off toggle's note, the heading
+    // description, the intro copy, the tick notes (including the
     // open-editor clause on the row tick), and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry), and the standing box's keep-it-short
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(45);
+    expect(sentences).toHaveLength(47);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

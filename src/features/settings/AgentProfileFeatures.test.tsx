@@ -111,6 +111,7 @@ const EMPTY_SEED: ProfileFormSeed = {
   features: {},
   overlay: [],
   enabledForAgents: false,
+  idleCloseMinutes: null,
   offeredFeatures: null,
 };
 

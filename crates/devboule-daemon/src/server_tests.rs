@@ -899,6 +899,7 @@ fn agent_profiles_set_then_get_round_trips_through_dispatch() {
         features: serde_json::Map::new(),
         tool_overlay: vec!["devboule_create_agent".to_string()],
         enabled_for_agents: true,
+        idle_close_minutes: None,
     };
     reviewer
         .features
@@ -986,6 +987,7 @@ fn a_refused_agent_profiles_set_is_an_invalid_request_not_an_io_failure() {
             features: serde_json::Map::new(),
             tool_overlay: Vec::new(),
             enabled_for_agents: true,
+            idle_close_minutes: None,
         }],
         standing_instructions: String::new(),
     };

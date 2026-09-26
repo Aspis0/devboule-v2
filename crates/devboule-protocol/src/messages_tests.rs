@@ -1917,6 +1917,7 @@ fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
             features,
             tool_overlay: vec!["devboule_create_agent".to_string()],
             enabled_for_agents: true,
+            idle_close_minutes: None,
         }],
         standing_instructions: "Report in your final message.".to_string(),
     };
@@ -1990,6 +1991,7 @@ fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
                     features: serde_json::Map::new(),
                     tool_overlay: Vec::new(),
                     enabled_for_agents: false,
+                    idle_close_minutes: None,
                 }],
                 standing_instructions: String::new(),
             },
@@ -2099,6 +2101,7 @@ fn a_profile_spawn_prompt_round_trips_and_its_absence_is_none() {
         features: serde_json::Map::new(),
         tool_overlay: Vec::new(),
         enabled_for_agents: true,
+        idle_close_minutes: None,
     };
     let set = ClientMessage::AgentProfilesSet {
         id: 48,
@@ -2154,6 +2157,74 @@ fn a_profile_spawn_prompt_round_trips_and_its_absence_is_none() {
         panic!("the wrong variant decoded");
     };
     assert_eq!(document.profiles[0].spawn_prompt, "");
+}
+
+/// The idle-close timer's wire shape, for the reason the spawn prompt's is
+/// pinned above: `Some(0)` is the timer **off**, so it has to survive the
+/// `skip_serializing_if` that drops the default — an app's "never close this"
+/// silently becoming "close after 30 minutes" is the bug this catches — and
+/// the default itself is the key's absence, which decodes as none.
+#[test]
+fn an_idle_close_round_trip_keeps_zero_and_omits_the_default() {
+    let base = AgentProfile {
+        id: "p-i".to_string(),
+        name: "Idle".to_string(),
+        icon: None,
+        note: String::new(),
+        spawn_prompt: String::new(),
+        provider: "claude".to_string(),
+        model: "opus".to_string(),
+        mode_id: "default".to_string(),
+        thinking_option_id: None,
+        features: serde_json::Map::new(),
+        tool_overlay: Vec::new(),
+        enabled_for_agents: true,
+        idle_close_minutes: None,
+    };
+    let wire = |id: u64, minutes: Option<u32>| -> serde_json::Value {
+        serde_json::to_value(ClientMessage::AgentProfilesSet {
+            id,
+            document: AgentProfilesDocument {
+                profiles: vec![AgentProfile {
+                    idle_close_minutes: minutes,
+                    ..base.clone()
+                }],
+                standing_instructions: String::new(),
+            },
+        })
+        .expect("json")
+    };
+    let decode = |json: serde_json::Value| -> AgentProfile {
+        let ClientMessage::AgentProfilesSet { document, .. } =
+            serde_json::from_value(json).expect("back")
+        else {
+            panic!("the wrong variant decoded");
+        };
+        document.profiles[0].clone()
+    };
+
+    // The default is the key's absence — an older document parses unchanged.
+    let silent = wire(51, None);
+    assert!(
+        silent["document"]["profiles"][0]
+            .get("idleCloseMinutes")
+            .is_none(),
+        "a profile that says nothing carries no key: {silent}"
+    );
+    assert_eq!(decode(silent).idle_close_minutes, None);
+
+    // Zero is a value, not an absence: the off switch must reach the daemon.
+    let off = wire(52, Some(0));
+    assert_eq!(
+        off["document"]["profiles"][0]["idleCloseMinutes"], 0,
+        "{off}"
+    );
+    assert_eq!(decode(off).idle_close_minutes, Some(0));
+
+    // And a number is its own number, all the way round.
+    let custom = wire(53, Some(45));
+    assert_eq!(custom["document"]["profiles"][0]["idleCloseMinutes"], 45);
+    assert_eq!(decode(custom).idle_close_minutes, Some(45));
 }
 
 /// The wire's split, which the app's reader is written against: five fields

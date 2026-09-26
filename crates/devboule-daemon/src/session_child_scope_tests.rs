@@ -142,6 +142,7 @@ fn a_resumed_child_keeps_its_birth_overlay_after_the_profile_changes() {
                 features: serde_json::Map::new(),
                 tool_overlay: vec![crate::provider_catalog::MCP_SEND_MESSAGE_TOOL.to_string()],
                 enabled_for_agents: true,
+                idle_close_minutes: None,
             }],
             standing_instructions: String::new(),
         })

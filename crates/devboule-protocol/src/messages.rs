@@ -2606,6 +2606,14 @@ pub struct AgentProfile {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_overlay: Vec<String>,
     pub enabled_for_agents: bool,
+    /// After how many idle minutes a child **created from this profile** is
+    /// closed, in minutes: absent means the default (30), `Some(0)` means
+    /// never, `Some(n)` means n minutes. Read live at every sweep, so an edit
+    /// reaches children already running. Only coordinator-created children are
+    /// candidates at all — a session a human started is never closed by this
+    /// field. The cap lives in `agent_profiles.rs` (`check_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_close_minutes: Option<u32>,
 }
 
 /// The whole stored document: the **ordered** profile list, in the human's
