@@ -248,6 +248,48 @@ where
     );
 }
 
+/// One loop, one deadline for both halves of an attention transition: the
+/// session event that triggers it and the roster snapshot carrying the
+/// raise, in either order. Two sequential waits gave the second fact a
+/// fresh clock starting only after the first arrived, so a loaded machine
+/// could spend the event's budget and then starve the roster push of its
+/// own; here both share one budget with the same total wall time the two
+/// clocks had combined.
+fn wait_for_event_and_attention(
+    events: &Mutex<Vec<SessionEvent>>,
+    snapshots: &Mutex<Vec<Vec<SessionStateSnapshot>>>,
+    session_id: &str,
+    reason: AttentionReason,
+    event_arrived: impl Fn(&[SessionEvent]) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let event_seen = event_arrived(&events.lock().expect("events lock"));
+        let attention_seen =
+            snapshots
+                .lock()
+                .expect("state snapshots lock")
+                .iter()
+                .any(|snapshot| {
+                    snapshot.iter().any(|session| {
+                        session.id == session_id
+                            && session
+                                .attention
+                                .is_some_and(|attention| attention.reason == reason)
+                    })
+                });
+        if event_seen && attention_seen {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "timed out waiting for event and {reason:?} attention: events {:?}, snapshots {:?}",
+        events.lock().expect("events lock"),
+        snapshots.lock().expect("state snapshots lock")
+    );
+}
+
 fn collect_state_handler(
     received: Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
 ) -> SessionStateHandler {
@@ -257,36 +299,6 @@ fn collect_state_handler(
             .expect("state snapshots lock")
             .push(snapshots);
     })
-}
-
-fn wait_for_attention(
-    snapshots: &Mutex<Vec<Vec<SessionStateSnapshot>>>,
-    session_id: &str,
-    reason: AttentionReason,
-) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if snapshots
-            .lock()
-            .expect("state snapshots lock")
-            .iter()
-            .any(|snapshot| {
-                snapshot.iter().any(|session| {
-                    session.id == session_id
-                        && session
-                            .attention
-                            .is_some_and(|attention| attention.reason == reason)
-                })
-            })
-        {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
-        "timed out waiting for {reason:?} attention: {:?}",
-        snapshots.lock().expect("state snapshots lock")
-    );
 }
 
 fn wait_for_cleared_attention(
@@ -3412,22 +3424,32 @@ fn acp_attention_raises_for_finish_and_permission_transitions() {
     test.client
         .session_send(&session.id, "normal attention turn")
         .expect("normal prompt");
-    wait_for(&events, Duration::from_secs(5), |events| {
-        events
-            .iter()
-            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
-    });
-    wait_for_attention(&snapshots, &session.id, AttentionReason::Finished);
+    wait_for_event_and_attention(
+        &events,
+        &snapshots,
+        &session.id,
+        AttentionReason::Finished,
+        |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+        },
+    );
 
     test.client
         .session_send(&session.id, "permission attention turn")
         .expect("permission prompt");
-    wait_for(&events, Duration::from_secs(5), |events| {
-        events
-            .iter()
-            .any(|event| matches!(event, SessionEvent::PermissionRequest { .. }))
-    });
-    wait_for_attention(&snapshots, &session.id, AttentionReason::Permission);
+    wait_for_event_and_attention(
+        &events,
+        &snapshots,
+        &session.id,
+        AttentionReason::Permission,
+        |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, SessionEvent::PermissionRequest { .. }))
+        },
+    );
     test.client
         .session_close(&session.id)
         .expect("close ACP session");
@@ -3445,12 +3467,17 @@ fn acp_attention_raises_error_for_a_real_agent_error_transition() {
     test.client
         .session_send(&session.id, "malformed error attention turn")
         .expect("error prompt");
-    wait_for(&events, Duration::from_secs(5), |events| {
-        events
-            .iter()
-            .any(|event| matches!(event, SessionEvent::AgentError { .. }))
-    });
-    wait_for_attention(&snapshots, &session.id, AttentionReason::Error);
+    wait_for_event_and_attention(
+        &events,
+        &snapshots,
+        &session.id,
+        AttentionReason::Error,
+        |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, SessionEvent::AgentError { .. }))
+        },
+    );
     test.client
         .session_close(&session.id)
         .expect("close ACP session");
@@ -3509,12 +3536,17 @@ fn acp_attention_clears_on_focus_and_is_raised_when_app_is_not_visible() {
     test.client
         .session_send(&session.id, "background attention turn")
         .expect("prompt");
-    wait_for(&events, Duration::from_secs(5), |events| {
-        events
-            .iter()
-            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
-    });
-    wait_for_attention(&snapshots, &session.id, AttentionReason::Finished);
+    wait_for_event_and_attention(
+        &events,
+        &snapshots,
+        &session.id,
+        AttentionReason::Finished,
+        |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+        },
+    );
     let before_clear = snapshots.lock().expect("state snapshots lock").len();
     test.client
         .session_presence(Some(&session.id), true)
