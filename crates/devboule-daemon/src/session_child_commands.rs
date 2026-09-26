@@ -36,15 +36,21 @@ pub(crate) enum CancelOutcome {
     TurnStillRunning,
 }
 
-/// The card's `kind`: `tool` for every card the table holds today. A2b-1
-/// parks question cards carrying their own `kind` on the event — this match
-/// is the one place that field will be read, with `tool` staying the default
-/// for a permission card that carries none. Anything else that reaches the
-/// table is named by its event kind.
-fn card_kind(request: &SessionEvent) -> &'static str {
+/// The card's `kind` in the reply's own spelling: the frame's words, read
+/// from the type (`serde(rename_all = "lowercase")`) so the reply and the
+/// wire can never spell it differently — `tool` for an ordinary permission
+/// and for every request that carries no field, `question` for a model's
+/// question. Anything else that reaches the table is named by its event kind.
+fn card_kind(request: &SessionEvent) -> String {
     match request {
-        SessionEvent::PermissionRequest { .. } => "tool",
-        other => crate::agent_activity::event_kind(other),
+        SessionEvent::PermissionRequest { kind, .. } => {
+            let kind = kind.unwrap_or_default();
+            serde_json::to_value(kind)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_else(|| "tool".to_string())
+        }
+        other => crate::agent_activity::event_kind(other).to_string(),
     }
 }
 

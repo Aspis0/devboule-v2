@@ -406,6 +406,8 @@ fn the_pending_list_frames_titles_and_excerpts_like_the_push_envelope() {
             kind: "allow_once".to_string(),
         }],
         is_chooser: None,
+        kind: None,
+        questions: None,
         origin: SessionOrigin::local(),
         create_agent: None,
     };
@@ -456,6 +458,76 @@ fn the_pending_list_frames_titles_and_excerpts_like_the_push_envelope() {
         !excerpt.lines().any(|line| line == "end child-said"),
         "a fence line inside the child's words cannot close the frame: {excerpt:?}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pending_question_card_is_listed_with_kind_question() {
+    let (dir, registry) = registry();
+    let owner = test_owner("c1a-question-user", "c1a-question-client");
+    insert_live_agent(&registry, "c1a-question-caller", owner.clone());
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let child = insert_child_with_killer(
+        &registry,
+        "c1a-question-child",
+        owner.clone(),
+        "c1a-question-caller",
+        Box::new(InterruptRecorder(Arc::clone(&interrupted))),
+    );
+    let broker = child.permission_broker().expect("broker");
+    broker
+        .register(1, permission_broker::permission_question("q-card"), &child)
+        .expect("the question with a description parks");
+    broker
+        .register(
+            1,
+            permission_broker::permission_question_single_option("q-bare"),
+            &child,
+        )
+        .expect("the bare question parks");
+    broker
+        .register(1, permission_broker::permission("q-tool"), &child)
+        .expect("the tool card parks");
+
+    let (cards, truncated) = registry
+        .list_child_permission_cards("c1a-question-caller")
+        .expect("the list answers");
+    assert!(!truncated, "three cards are under the list bound");
+    let card = |card_id: &str| {
+        cards
+            .iter()
+            .find(|card| card["cardId"].as_str() == Some(card_id))
+            .unwrap_or_else(|| panic!("{card_id} is listed"))
+            .clone()
+    };
+
+    // The wire spelling, and only it: `question` for the model's questions.
+    let asked = card("q-card");
+    assert_eq!(asked["kind"].as_str(), Some("question"), "{asked}");
+    // The title says what is asked; the excerpt leads with the options the
+    // card offers — both useful to whoever reads the list.
+    assert_eq!(
+        asked["title"].as_str(),
+        Some("Which colour should I paint the fence?")
+    );
+    assert_eq!(
+        asked["excerpt"].as_str(),
+        Some("Forest green (Recommended) / Barn red")
+    );
+
+    // With no description the excerpt falls back to the question itself —
+    // the title, through the same cap and neutraliser as everything else.
+    let bare = card("q-bare");
+    assert_eq!(bare["kind"].as_str(), Some("question"), "{bare}");
+    assert_eq!(
+        bare["excerpt"].as_str(),
+        Some("Shall I paint the fence green?"),
+        "a question with nothing else to show still says what is asked"
+    );
+
+    // And an ordinary permission keeps the default.
+    let tool = card("q-tool");
+    assert_eq!(tool["kind"].as_str(), Some("tool"), "{tool}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

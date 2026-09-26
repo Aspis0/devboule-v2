@@ -686,6 +686,7 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
                 request_id: String::new(),
                 outcome: devboule_protocol::PermissionOutcome::Deny,
                 option_id: None,
+                answer: None,
                 idempotency_key: None,
             },
         ]))
