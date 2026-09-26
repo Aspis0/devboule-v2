@@ -534,7 +534,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_create_agent",
     label: "Create Devboule agent",
-    description: `Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.`,
+    description: `Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.`,
     parameters: Type.Object(
       {
         profile: Type.String({ description: "Name of a profile the human enabled for agents; see devboule_list_profiles." }),
@@ -786,7 +786,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_create_workspace",
     label: "Create Devboule workspace",
-    description: `Creates a workspace inside the calling session's own project, as the project folder itself or a new git worktree beside it, and answers the new workspace record. The human is asked to approve workspace writes from this session the first time. branch names the worktree branch and is worktree-only; name sets the workspace title. No path is accepted: the checkout is the project folder or a sibling worktree of it, never an agent-named directory.`,
+    description: `Creates a workspace inside the calling session's own project, as the project folder itself or a new git worktree beside it, and answers the new workspace record. The human is asked to approve workspace writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). branch names the worktree branch and is worktree-only; name sets the workspace title. No path is accepted: the checkout is the project folder or a sibling worktree of it, never an agent-named directory.`,
     parameters: Type.Object(
       {
         isolation: Type.Union([Type.Literal("local"), Type.Literal("worktree")], { description: "The workspace shape: the project folder itself, or a new git worktree beside it." }),
@@ -825,7 +825,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_archive_workspace",
     label: "Archive Devboule workspace",
-    description: `Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time. workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.`,
+    description: `Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.`,
     parameters: Type.Object(
       { workspaceId: Type.String({ description: "The worktree workspace id from devboule_list_workspaces." }) },
       { required: ["workspaceId"], additionalProperties: false },
@@ -840,7 +840,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_create_terminal",
     label: "Open Devboule terminal",
-    description: `Opens a new terminal in the calling session's own workspace and answers its id, title and working directory. The workspace comes from the calling session's row, never from an argument, so no argument can choose where the shell opens; name is optional and titles the terminal (trimmed, an empty name means untitled, at most 60 characters). The human is asked to approve terminal writes from this session the first time, and a creator already holding its full share of live terminals is refused with a sentence that says how to make room. A retry carrying the same request id answers the terminal the first call opened rather than opening a second one, a daemon that is shutting down refuses the call, and this tool never creates an agent session.`,
+    description: `Opens a new terminal in the calling session's own workspace and answers its id, title and working directory. The workspace comes from the calling session's row, never from an argument, so no argument can choose where the shell opens; name is optional and titles the terminal (trimmed, an empty name means untitled, at most 60 characters). The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses), and a creator already holding its full share of live terminals is refused with a sentence that says how to make room. A retry carrying the same request id answers the terminal the first call opened rather than opening a second one, a daemon that is shutting down refuses the call, and this tool never creates an agent session.`,
     parameters: Type.Object(
       {
         name: Type.Optional(Type.String({ description: "The terminal's display name, at most 60 characters. Empty means untitled." })),
@@ -857,7 +857,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_send_terminal_keys",
     label: "Type into Devboule terminal",
-    description: `Types into one running terminal of the calling session's own workspace. keys is either literal text or one named key - Enter, Tab, Escape, Space, BSpace, C-c, C-d, C-z, C-l, C-a, C-e - resolved to the bytes that key stands for; literal true writes keys exactly as typed, and a name the list does not hold is the text it is, so ordinary text types itself either way. The payload is capped at 64 KiB and a larger one is refused rather than cut. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named: this tool types into a terminal's pty and never into a provider's stdin. The human is asked to approve terminal writes from this session the first time. The typed keys reach no log, no audit row and no card beyond a count of characters.`,
+    description: `Types into one running terminal of the calling session's own workspace. keys is either literal text or one named key - Enter, Tab, Escape, Space, BSpace, C-c, C-d, C-z, C-l, C-a, C-e - resolved to the bytes that key stands for; literal true writes keys exactly as typed, and a name the list does not hold is the text it is, so ordinary text types itself either way. The payload is capped at 64 KiB and a larger one is refused rather than cut. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named: this tool types into a terminal's pty and never into a provider's stdin. The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). The typed keys reach no log, no audit row and no card beyond a count of characters.`,
     parameters: Type.Object(
       {
         terminalId: Type.String({ description: "The id of one terminal from devboule_list_terminals." }),
@@ -876,7 +876,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_kill_terminal",
     label: "Kill Devboule terminal",
-    description: `Kills one running terminal of the calling session's own workspace: its process tree dies and the live session ends, while the journal row and the transcript stay in history. The scope and the refusal are devboule_send_terminal_keys' own - the caller's own user, origin and workspace, a terminal that is running - so any other id answers 'No session with that id.' and an agent session is never killable through this tool. The human is asked to approve terminal writes from this session the first time.`,
+    description: `Kills one running terminal of the calling session's own workspace: its process tree dies and the live session ends, while the journal row and the transcript stay in history. The scope and the refusal are devboule_send_terminal_keys' own - the caller's own user, origin and workspace, a terminal that is running - so any other id answers 'No session with that id.' and an agent session is never killable through this tool. The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses).`,
     parameters: Type.Object(
       {
         terminalId: Type.String({ description: "The id of one terminal from devboule_list_terminals." }),

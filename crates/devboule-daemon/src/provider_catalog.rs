@@ -227,7 +227,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CREATE_AGENT_TOOL,
-        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.",
+        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.",
     ),
     (
         MCP_SET_AGENT_PROFILE_TOOL,
@@ -283,7 +283,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CREATE_WORKSPACE_TOOL,
-        "Creates a workspace inside the calling session's own project, as the project folder itself or a new git worktree beside it, and answers the new workspace record. The human is asked to approve workspace writes from this session the first time. branch names the worktree branch and is worktree-only; name sets the workspace title. No path is accepted: the checkout is the project folder or a sibling worktree of it, never an agent-named directory.",
+        "Creates a workspace inside the calling session's own project, as the project folder itself or a new git worktree beside it, and answers the new workspace record. The human is asked to approve workspace writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). branch names the worktree branch and is worktree-only; name sets the workspace title. No path is accepted: the checkout is the project folder or a sibling worktree of it, never an agent-named directory.",
     ),
     (
         MCP_LIST_TERMINALS_TOOL,
@@ -295,19 +295,19 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_ARCHIVE_WORKSPACE_TOOL,
-        "Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time. workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.",
+        "Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.",
     ),
     (
         MCP_CREATE_TERMINAL_TOOL,
-        "Opens a new terminal in the calling session's own workspace and answers its id, title and working directory. The workspace comes from the calling session's row, never from an argument, so no argument can choose where the shell opens; name is optional and titles the terminal (trimmed, an empty name means untitled, at most 60 characters). The human is asked to approve terminal writes from this session the first time, and a creator already holding its full share of live terminals is refused with a sentence that says how to make room. A retry carrying the same request id answers the terminal the first call opened rather than opening a second one, a daemon that is shutting down refuses the call, and this tool never creates an agent session.",
+        "Opens a new terminal in the calling session's own workspace and answers its id, title and working directory. The workspace comes from the calling session's row, never from an argument, so no argument can choose where the shell opens; name is optional and titles the terminal (trimmed, an empty name means untitled, at most 60 characters). The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses), and a creator already holding its full share of live terminals is refused with a sentence that says how to make room. A retry carrying the same request id answers the terminal the first call opened rather than opening a second one, a daemon that is shutting down refuses the call, and this tool never creates an agent session.",
     ),
     (
         MCP_SEND_TERMINAL_KEYS_TOOL,
-        "Types into one running terminal of the calling session's own workspace. keys is either literal text or one named key - Enter, Tab, Escape, Space, BSpace, C-c, C-d, C-z, C-l, C-a, C-e - resolved to the bytes that key stands for; literal true writes keys exactly as typed, and a name the list does not hold is the text it is, so ordinary text types itself either way. The payload is capped at 64 KiB and a larger one is refused rather than cut. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named: this tool types into a terminal's pty and never into a provider's stdin. The human is asked to approve terminal writes from this session the first time. The typed keys reach no log, no audit row and no card beyond a count of characters.",
+        "Types into one running terminal of the calling session's own workspace. keys is either literal text or one named key - Enter, Tab, Escape, Space, BSpace, C-c, C-d, C-z, C-l, C-a, C-e - resolved to the bytes that key stands for; literal true writes keys exactly as typed, and a name the list does not hold is the text it is, so ordinary text types itself either way. The payload is capped at 64 KiB and a larger one is refused rather than cut. The terminal must be running and inside the caller's own user, origin and workspace; any other id - an agent session, another owner's terminal, another workspace's terminal, or one that has exited - answers 'No session with that id.', which never says which of them the id named: this tool types into a terminal's pty and never into a provider's stdin. The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). The typed keys reach no log, no audit row and no card beyond a count of characters.",
     ),
     (
         MCP_KILL_TERMINAL_TOOL,
-        "Kills one running terminal of the calling session's own workspace: its process tree dies and the live session ends, while the journal row and the transcript stay in history. The scope and the refusal are devboule_send_terminal_keys' own - the caller's own user, origin and workspace, a terminal that is running - so any other id answers 'No session with that id.' and an agent session is never killable through this tool. The human is asked to approve terminal writes from this session the first time.",
+        "Kills one running terminal of the calling session's own workspace: its process tree dies and the live session ends, while the journal row and the transcript stay in history. The scope and the refusal are devboule_send_terminal_keys' own - the caller's own user, origin and workspace, a terminal that is running - so any other id answers 'No session with that id.' and an agent session is never killable through this tool. The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses).",
     ),
 ];
 
@@ -801,7 +801,7 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 /// two named providers document as unattended, spelled as they spell them. It
 /// serves the preset table's property tests and nothing else — it is **not**
 /// what decides a permission prompt at run time (that is
-/// `PermissionBroker::auto_answer`, which honours exactly the three
+/// `PermissionBroker::auto_answer`, which honours exactly the four
 /// provider-agnostic ids [`mode_is_auto_answered`] lists), and **nothing new
 /// may be derived from it** (rev 11: the provider axis is open, so no new
 /// table, `match` or constant may grow from a list of provider or mode names —
@@ -814,7 +814,7 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 ///
 /// Three sources, all named:
 ///
-/// - the three provider-agnostic ids the daemon itself answers a permission
+/// - the four provider-agnostic ids the daemon itself answers a permission
 ///   request in ([`mode_is_auto_answered`]);
 /// - Codex's own unattended pair: `full-access` is `approvalPolicy: never`, and
 ///   `auto-review` hands approvals to a model reviewer;
@@ -843,16 +843,39 @@ pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
 /// The mode ids the daemon itself answers a permission request in, and the
 /// one list of them.
 ///
-/// Two callers, one list, so the two cannot drift: `PermissionBroker::
+/// Three callers, one list, so the three cannot drift: `PermissionBroker::
 /// auto_answer` grants from this predicate at run time — a session in one of
-/// these modes never asks a human — and `peer_policy::unattended_mode` checks
+/// these modes never asks a human — `peer_policy::unattended_mode` checks
 /// it first at a child's birth, so the marker a child carries names exactly a
-/// mode the broker would have honoured. The list is provider-agnostic by
-/// construction: these are the ids the daemon speaks itself, and no provider
-/// name is reachable from here.
+/// mode the broker would have honoured, and the first-use gates
+/// (`ensure_write_allowed`) and the creation card proceed in them with no
+/// card at all. The list is provider-agnostic by construction: these are the
+/// ids the daemon speaks itself, and no provider name is reachable from here.
+/// `full-access` rides it because Codex's own `approvalPolicy` there is
+/// `never` — Codex never asks anybody, so following the provider means
+/// answering there too.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) fn auto_answered_modes() -> &'static [&'static str] {
-    &["bypass", "auto_accept", "bypassPermissions"]
+    &["bypass", "auto_accept", "bypassPermissions", "full-access"]
+}
+
+/// The modes whose sessions never approve a write, so a write tool is
+/// refused before the card, naming the mode.
+///
+/// Claude `plan` analyses without executing tools or edits, Codex
+/// `read-only` cannot edit files or reach the network, and qwen's measured
+/// `session/new` advertises `plan`: carding one of these sessions would ask
+/// a person for an act the session's own mode forbids.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn mode_refuses_writes(mode_id: &str) -> bool {
+    matches!(mode_id, "plan" | "read-only")
+}
+
+/// The one-sentence refusal a write tool answers in a mode from
+/// [`mode_refuses_writes`]: it names the session's own mode and the way out.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn mode_refusal_sentence(mode_id: &str) -> String {
+    format!("This session is in {mode_id} mode; switch mode to let the agent proceed.")
 }
 
 /// The client-only build answers no permission requests, so this has no
@@ -894,8 +917,8 @@ pub(crate) enum AutoAcceptTick {
     /// The mode id is not the daemon's, so whether the tick contradicts is
     /// not the daemon's fact to state: the family that owns the knob judges
     /// at spawn time, where the delivered mode is the fact. Codex's rule is
-    /// its own (`codex_client::mode_answers_own_prompts` extends the daemon's
-    /// table with `full-access`), an ACP agent's modes are authored at
+    /// its own row-read (`full-access` is `approvalPolicy: never`), which now
+    /// agrees with the daemon's table — either route answers it — an ACP agent's modes are authored at
     /// runtime and judged post-handshake, and a user-defined provider —
     /// which resolves to the ACP family — fails safe the same way: it is
     /// judged by the client that will speak for it, never refused by a
@@ -933,8 +956,8 @@ pub(crate) fn judge_auto_accept_tick(
         // Every arm spelled, no wildcard: a family added to the closed
         // `SessionKind` must be decided here, not inherit the benign
         // verdict. The three below all answer "not ours to judge" — Codex
-        // owns its knob (`codex_client::mode_answers_own_prompts` extends
-        // the daemon's table with `full-access`), an ACP agent's modes are
+        // owns its knob (its row-read agrees with the daemon's table on
+        // `full-access`), an ACP agent's modes are
         // authored at runtime and judged post-handshake, and a terminal has
         // no permission mechanism for a tick to contradict at all.
         // `session_kind_for` maps every name that is not one of the three

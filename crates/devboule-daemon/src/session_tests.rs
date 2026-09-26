@@ -968,6 +968,65 @@ fn a_delegated_answer_journals_its_attribution_and_the_humans_stays_none() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An auto-answered card names the session's mode on the audit row: a reader
+/// tells the mode's Allow (the mode) from a person's (nobody) and a
+/// delegate's (a session).
+#[test]
+fn an_auto_answered_card_names_the_mode_on_the_audit_row() {
+    let (dir, registry, _journal) = tmp_delete_registry();
+    let owner = test_owner("s5b-auto-attr", "proc-1");
+    let agent = compose_session_id(&owner.session_token(), "ag1").expect("id");
+    let runtime = insert_live_agent(&registry, &agent, owner.clone());
+    let conn = ConnHandle::new(1);
+    attach_tracked(&runtime, &conn);
+    runtime.store_session_manifest(SessionEvent::SessionManifest {
+        provider_id: Some("pi".to_string()),
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(devboule_protocol::SessionModeStateView {
+            current_mode_id: "bypass".to_string(),
+            available_modes: Vec::new(),
+        }),
+    });
+    park_card(&registry, &runtime, "card-auto-mode");
+    assert!(
+        runtime
+            .permission_broker()
+            .expect("broker")
+            .auto_answer("card-auto-mode", &runtime)
+            .expect("bypass answers"),
+        "an automatic mode answers its own provider card"
+    );
+    let events = drain(&conn);
+    let answered = events.iter().find_map(|event| match event {
+        SessionEvent::PermissionAnswered {
+            card_id,
+            answered_by,
+            outcome,
+        } => Some((card_id.clone(), answered_by.clone(), outcome.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        answered,
+        Some((
+            "card-auto-mode".to_string(),
+            Some("bypass".to_string()),
+            "allow_once".to_string()
+        )),
+        "the live record names the mode: {events:?}"
+    );
+    let resolved = events.iter().find_map(|event| match event {
+        SessionEvent::PermissionResolved { answered_by, .. } => answered_by.clone(),
+        _ => None,
+    });
+    assert_eq!(
+        resolved,
+        Some("bypass".to_string()),
+        "the resolved event carries the same attribution"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// C11: the snapshot's delegation facts. Absent for a session that is
 /// not an agent-created child; `off`/`active` follow the switch as it is
 /// **now**; `unattended` is the birth fact and survives the switch going

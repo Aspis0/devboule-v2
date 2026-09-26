@@ -87,12 +87,17 @@ impl McpBroker {
 }
 
 /// Pass the write gate for `group`, raising the human card on the caller's
-/// own session the first time.
+/// own session the first time the session's mode asks.
 ///
 /// `subject` says what this call is about ("create workspace 'Desk'") and
 /// `facts` are the `key: value` lines the card shows under it. Both travel
 /// on the card because a licence without them asks the person to approve
 /// what they cannot see.
+///
+/// The calling session's current mode is read at call time — it can change
+/// mid-session, so it is never cached. An automatic mode proceeds with no
+/// card and sets no mark, so switching back to an asking mode asks again; a
+/// plan or read-only mode is refused before the card, naming the mode.
 ///
 /// The card is a chooser — two allow options of one kind — so the app shows
 /// both choices by name and the delegation door refuses it the way it
@@ -110,6 +115,22 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     subject: &str,
     facts: &[(&str, &str)],
 ) -> Result<(), String> {
+    // The calling session's current mode, read now: it can change
+    // mid-session, so it is never cached and never stored as a mark. An
+    // automatic mode proceeds with no card; a plan or read-only mode is
+    // refused before the card, naming the mode; anything else cards.
+    let mode_id = state
+        .sessions
+        .live_runtime(session_id, owner)
+        .and_then(|runtime| runtime.current_mode_id());
+    if let Some(mode) = mode_id.as_deref() {
+        if crate::provider_catalog::mode_is_auto_answered(mode) {
+            return Ok(());
+        }
+        if crate::provider_catalog::mode_refuses_writes(mode) {
+            return Err(crate::provider_catalog::mode_refusal_sentence(mode));
+        }
+    }
     {
         let mut marks = broker
             .write_gates
@@ -225,8 +246,8 @@ fn choice_as_static(choice: Option<String>) -> Option<&'static str> {
 /// card carries the unknown placeholder here, as the creation card does.
 ///
 /// The card says it is a chooser so the app renders both choices by name;
-/// the delegation and auto-answer doors refuse first-use ids structurally,
-/// so the rendering flag carries no safety weight. The session choice journals
+/// the delegation door refuses first-use ids structurally, so the rendering
+/// flag carries no safety weight. The session choice journals
 /// under its own kind, which the app renders as durable.
 fn write_gate_card(
     session_id: &str,

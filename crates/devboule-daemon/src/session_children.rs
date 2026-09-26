@@ -170,6 +170,21 @@ impl super::SessionRegistry {
         }
     }
 
+    /// An automatic mode proceeds with no card and no mark: the gate this
+    /// reservation just set to Pending goes back to Closed, so asking again
+    /// later still asks instead of finding a licence nobody granted.
+    pub(crate) fn reset_agent_creation_gate(&self, creator: &str) {
+        let mut table = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(caps) = table.creators.get_mut(creator) {
+            if caps.gate == CreationGate::Pending {
+                caps.gate = CreationGate::Closed;
+            }
+        }
+    }
+
     /// Release one reservation by identity, for a caller that holds the id
     /// rather than the ticket (the tests, and the rollback paths that need to
     /// know whether anything was still outstanding).

@@ -789,7 +789,8 @@ impl PermissionBroker {
 
     /// Auto-answer the modes `provider_catalog::mode_is_auto_answered` lists —
     /// the one list, shared with the `unattended` marker a child's birth
-    /// writes — and only when the agent offers one allow choice; chooser
+    /// writes and with the first-use gates, which answer from it before any
+    /// card — and only when the agent offers one allow choice; chooser
     /// requests stay with the client, and so does every question: a model's
     /// question is never auto-answered, in any mode. Paseo's chooser rule:
     /// the same kind twice — allow or reject — is a question, the standard
@@ -814,9 +815,15 @@ impl PermissionBroker {
         let result = serde_json::json!({
             "outcome": { "outcome": "selected", "optionId": option.option_id }
         });
-        // The daemon answered in the child's own unattended mode: nobody to
-        // attribute it to.
-        self.complete(&pending, result, Some(&option), &option.kind, None)?;
+        // The session's own mode answered, not a person: the audit row names
+        // it, so a reader tells the mode's Allow from a person's.
+        self.complete(
+            &pending,
+            result,
+            Some(&option),
+            &option.kind,
+            Some(mode_id.as_str()),
+        )?;
         Ok(true)
     }
 
@@ -916,16 +923,15 @@ impl PermissionBroker {
 
     /// Decide the auto-answer and remove the entry in the same lock. The
     /// entry is removed only once an allow option has been selected, so a
-    /// chooser or an allow-less request stays pending for the client.
+    /// chooser or an allow-less request stays pending for the client. A
+    /// first-use id answers here like any other: the gate's own road never
+    /// parks one in an automatic mode, but the list reads no id prefix.
     fn take_auto_answerable(
         &self,
         tool_call_id: &str,
     ) -> Result<Option<AutoAnswer>, PermissionResponseError> {
-        // A first-use gate is never auto-answered, even one-shot: each call
-        // must reach the person, and an unattended mode is not the person.
-        if crate::mcp_broker::is_first_use_card(tool_call_id) {
-            return Ok(None);
-        }
+        // No id-prefix rule: a first-use gate answers from the one list
+        // like any other card.
         let mut table = self
             .pending
             .lock()
@@ -1250,9 +1256,10 @@ fn permission_resolved_event(
 }
 
 /// The durable attribution record for one resolution. Every resolution
-/// carries it — a cancellation and an auto-answer answer `None` exactly as a
-/// person's answer does — so the replayed count and the live ledger count the
-/// same events.
+/// carries it — a cancellation answers `None` exactly as a person's answer
+/// does, while an auto-answer names the session's mode — so the replayed
+/// count and the live ledger count the same events, and a reader tells the
+/// mode's Allow from a person's.
 fn permission_answered_event(
     pending: &PendingPermission,
     answered_by: Option<&str>,
@@ -2085,10 +2092,12 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// A first-use gate is never auto-answered, not even one-shot: each
-    /// call must reach the person, and an unattended mode is not the person.
+    /// A first-use gate answers from the one list, like any other card: in
+    /// an automatic mode the broker grants the one-shot, and the gate's own
+    /// road never parks one there — an automatic mode returns before the
+    /// card. Reverses the old rule that refused first-use ids structurally.
     #[test]
-    fn auto_answer_refuses_first_use_cards() {
+    fn auto_answer_answers_first_use_cards_in_automatic_modes() {
         let path = permission_path("session-auto");
         let journal = Arc::new(Journal::open(&path).expect("journal"));
         let (broker, sent) = test_broker();
@@ -2117,13 +2126,102 @@ mod tests {
             )
             .expect("register");
 
-        assert!(!broker
+        assert!(broker
             .auto_answer("write:workspaces:s:1-1", &runtime)
-            .expect("a gate card is not answerable"));
-        assert_eq!(broker.pending_len(), 1);
-        assert!(sent.lock().expect("sent lock").is_empty());
+            .expect("an automatic mode answers the gate card"));
+        assert_eq!(broker.pending_len(), 0);
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["optionId"],
+            "once"
+        );
+        journal.flush().expect("journal flush");
+        let conn = Connection::open(&path).expect("inspect journal");
+        let outcome: String = conn
+            .query_row(
+                "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+                ["s.permission.session-auto", "write:workspaces:s:1-1"],
+                |row| row.get(0),
+            )
+            .expect("permission row");
+        assert_eq!(outcome, "allow_once");
+        drop(conn);
         journal.shutdown();
         let _ = std::fs::remove_file(path);
+    }
+
+    /// `full-access` is `approvalPolicy: never`: Codex never asks there, so
+    /// the one list answers it like bypass.
+    #[test]
+    fn full_access_auto_answers_a_provider_card() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("codex".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "full-access".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(70, permission("codex-full-access"), &runtime)
+            .expect("register");
+
+        assert!(broker
+            .auto_answer("codex-full-access", &runtime)
+            .expect("full-access answers"));
+        assert_eq!(broker.pending_len(), 0);
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["optionId"],
+            "allow"
+        );
+    }
+
+    /// Every other mode still parks the gate card for the person.
+    #[test]
+    fn auto_answer_leaves_first_use_cards_for_asking_modes() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "ask".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(
+                71,
+                permission_with_kinds(
+                    "write:workspaces:s:1-2",
+                    &[("once", "allow_once"), ("session", "allow_session")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        assert!(!broker
+            .auto_answer("write:workspaces:s:1-2", &runtime)
+            .expect("an asking mode parks the gate card"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    /// Codex approvals reach the person through the client's own road (it
+    /// registers and publishes, never auto-answers), so adding `full-access`
+    /// to the one list changes nothing there. Pinned structurally: this fails
+    /// the moment that road learns an auto-answer call, which would answer
+    /// Codex's own cards from the daemon's list.
+    #[test]
+    fn codex_approval_road_never_auto_answers() {
+        let source = include_str!("codex_client.rs");
+        assert!(
+            !source.contains(".auto_answer("),
+            "the Codex approval road must keep parking its cards for the person"
+        );
     }
 
     #[test]
@@ -2972,6 +3070,7 @@ mod question_tests {
             "bypass",
             "auto_accept",
             "bypassPermissions",
+            "full-access",
             "default",
             "acceptEdits",
         ]

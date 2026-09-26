@@ -77,19 +77,73 @@ fn answer(
 }
 
 fn spawn_gate(state: &Arc<ServerState>, id: &str) -> std::thread::JoinHandle<Result<(), String>> {
+    spawn_gate_in(state, id, WORKSPACES_GROUP)
+}
+
+fn spawn_gate_in(
+    state: &Arc<ServerState>,
+    id: &str,
+    group: &str,
+) -> std::thread::JoinHandle<Result<(), String>> {
     let thread_state = Arc::clone(state);
-    let id = id.to_string();
+    let (id, group) = (id.to_string(), group.to_string());
     std::thread::spawn(move || {
         ensure_write_allowed(
             &thread_state,
             &thread_state.mcp,
             &id,
             &owner(),
-            WORKSPACES_GROUP,
+            &group,
             "testing the gate",
             &[("fact", "value")],
         )
     })
+}
+
+/// The calling session's current mode, read at call time like the gate
+/// reads it: set after the insert, never at it.
+fn set_mode(state: &Arc<ServerState>, id: &str, mode: &str) {
+    state
+        .sessions
+        .live_runtime(id, &owner())
+        .expect("live session")
+        .store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: mode.to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+}
+
+/// Run the gate on a thread and require it to answer without a card. On the
+/// old rule a card appears instead: it is answered away so no thread is left
+/// blocked, then the test fails loudly.
+fn join_without_card(
+    handle: std::thread::JoinHandle<Result<(), String>>,
+    state: &Arc<ServerState>,
+    id: &str,
+) -> Result<(), String> {
+    let start = Instant::now();
+    loop {
+        if handle.is_finished() {
+            break;
+        }
+        if !pending_ids(state, id).is_empty() {
+            let card = pending_ids(state, id).pop().expect("card");
+            answer(state, id, &card, PermissionOutcome::Deny, "deny");
+            let _ = handle.join();
+            panic!("an automatic mode raised a card instead of proceeding");
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the gate neither answered nor carded"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    handle.join().expect("gate thread")
 }
 
 #[test]
@@ -364,6 +418,152 @@ fn fact_lines_are_marked_and_subjects_are_one_line() {
     );
     assert_eq!(oneline("a\nb\u{202E}c"), "a b\u{202E}c".to_string());
     assert_eq!(oneline("a\r\nb"), "a b".to_string());
+}
+
+/// The owner's rule: in an automatic mode the call proceeds with no card
+/// and no mark, in every act family. The mode is read at call time, so a
+/// later asking mode asks again.
+#[test]
+fn automatic_modes_proceed_with_no_card_and_no_mark() {
+    let groups = [
+        WORKSPACES_GROUP,
+        WORKSPACE_ARCHIVE_GROUP,
+        TERMINAL_CREATE_GROUP,
+        TERMINAL_KEYS_GROUP,
+        TERMINAL_KILL_GROUP,
+    ];
+    for mode in ["bypass", "auto_accept", "bypassPermissions", "full-access"] {
+        for group in groups {
+            let tag = format!("first-use-auto-{mode}-{group}");
+            let state = ServerState::new(tag);
+            let id = format!("fu-auto-{group}");
+            session(&state, &id);
+            set_mode(&state, &id, mode);
+            let handle = spawn_gate_in(&state, &id, group);
+            assert!(
+                join_without_card(handle, &state, &id).is_ok(),
+                "{mode} {group}: proceeds"
+            );
+            assert!(
+                pending_ids(&state, &id).is_empty(),
+                "{mode} {group}: no card"
+            );
+            assert_eq!(
+                state.mcp.first_use_mark(&id, group),
+                None,
+                "{mode} {group}: no mark"
+            );
+        }
+    }
+}
+
+/// A plan or read-only mode never approves a write: refused before the
+/// card, in one sentence naming the mode, leaving no card and no mark.
+#[test]
+fn plan_and_read_only_refuse_before_the_card() {
+    let groups = [
+        WORKSPACES_GROUP,
+        WORKSPACE_ARCHIVE_GROUP,
+        TERMINAL_CREATE_GROUP,
+        TERMINAL_KEYS_GROUP,
+        TERMINAL_KILL_GROUP,
+    ];
+    for mode in ["plan", "read-only"] {
+        for group in groups {
+            let tag = format!("first-use-refuse-{mode}-{group}");
+            let state = ServerState::new(tag);
+            let id = format!("fu-refuse-{group}");
+            session(&state, &id);
+            set_mode(&state, &id, mode);
+            let handle = spawn_gate_in(&state, &id, group);
+            let start = Instant::now();
+            let card = loop {
+                let mut ids = pending_ids(&state, &id);
+                if let Some(id) = ids.pop() {
+                    break Some(id);
+                }
+                if handle.is_finished() {
+                    break None;
+                }
+                assert!(
+                    start.elapsed() < Duration::from_secs(5),
+                    "the gate neither answered nor carded"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            match card {
+                None => assert_eq!(
+                    handle.join().expect("gate thread"),
+                    Err(format!(
+                        "This session is in {mode} mode; switch mode to let the agent proceed."
+                    )),
+                    "{mode} {group}: refuses naming the mode"
+                ),
+                Some(card) => {
+                    answer(&state, &id, &card, PermissionOutcome::Deny, "deny");
+                    let _ = handle.join();
+                    panic!("{mode} {group}: raised a card instead of refusing");
+                }
+            }
+            assert!(
+                pending_ids(&state, &id).is_empty(),
+                "{mode} {group}: no card left"
+            );
+            assert_eq!(
+                state.mcp.first_use_mark(&id, group),
+                None,
+                "{mode} {group}: no mark"
+            );
+        }
+    }
+}
+
+/// Every other mode raises the card, as before.
+#[test]
+fn asking_modes_raise_the_card() {
+    for mode in ["ask", "default", "auto", "acceptEdits"] {
+        let state = ServerState::new(format!("first-use-ask-{mode}"));
+        let id = format!("fu-ask-{mode}");
+        session(&state, &id);
+        set_mode(&state, &id, mode);
+        let handle = spawn_gate(&state, &id);
+        let card = wait_for_card(&state, &id);
+        answer(&state, &id, &card, PermissionOutcome::Deny, "deny");
+        assert_eq!(
+            handle.join().expect("gate thread"),
+            Err("permission refused".to_string()),
+            "{mode}: the card decides"
+        );
+    }
+}
+
+/// The mode can change mid-session: an automatic call sets no mark, so the
+/// next call in an asking mode cards again.
+#[test]
+fn switching_from_automatic_to_ask_cards_again() {
+    let state = ServerState::new("first-use-switch".to_string());
+    session(&state, "fu-switch");
+    set_mode(&state, "fu-switch", "bypass");
+    let handle = spawn_gate(&state, "fu-switch");
+    assert!(
+        join_without_card(handle, &state, "fu-switch").is_ok(),
+        "automatic proceeds"
+    );
+    assert_eq!(
+        state.mcp.first_use_mark("fu-switch", WORKSPACES_GROUP),
+        None
+    );
+    set_mode(&state, "fu-switch", "ask");
+    let handle = spawn_gate(&state, "fu-switch");
+    let card = wait_for_card(&state, "fu-switch");
+    answer(
+        &state,
+        "fu-switch",
+        &card,
+        PermissionOutcome::AllowOnce,
+        "once",
+    );
+    assert!(handle.join().expect("gate thread").is_ok());
 }
 
 #[test]

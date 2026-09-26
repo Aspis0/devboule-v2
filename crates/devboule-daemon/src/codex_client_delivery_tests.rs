@@ -53,18 +53,19 @@ fn delivery(mode: &str, auto_accept: bool) -> ProfileDelivery {
     delivery
 }
 
-/// The daemon's broker answers the provider-agnostic ids it owns;
+/// The daemon's broker answers the provider-agnostic ids it owns, and
 /// `full-access` is this client's own knob, whose approval policy is
 /// `never` — the provider never asks anybody. Both admit an
 /// `autoAccept` tick; everything else asks the human.
 ///
 /// The broker half is **walked, not hand-listed** (the R2a audit's F9):
-/// the test iterates the table itself, so a fourth id added to
+/// the test iterates the table itself, so a fifth id added to
 /// `auto_answered_modes` is asserted to answer here the moment it
 /// exists, and a codex-side predicate change is caught against whatever
-/// the table holds.
+/// the table holds. `full-access` now rides both routes — the daemon's
+/// list and this client's row-read — and the assertions hold either way.
 #[test]
-fn codex_auto_answer_modes_are_the_broker_list_plus_full_access() {
+fn codex_auto_answer_modes_are_the_broker_list() {
     assert!(
         mode_answers_own_prompts("full-access"),
         "approvalPolicy never"

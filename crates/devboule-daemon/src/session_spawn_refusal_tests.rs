@@ -223,8 +223,8 @@ fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
         }
     }
     // The conviction itself, spelled: `full-access` + tick is accepted
-    // by Codex's own rule and is `NotOursToJudge` pre-card — never
-    // refused by a table that did not author it.
+    // by Codex's own rule, and pre-card it now rides the daemon's own
+    // table — `Consistent`, never refused.
     let delivery = crate::profile_delivery::ProfileDelivery::for_child(
         "full-access",
         "some-model",
@@ -234,7 +234,7 @@ fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
     assert!(!super::codex_client::tick_contradicts(&delivery));
     assert_eq!(
         judge_auto_accept_tick("codex", "full-access", &features),
-        AutoAcceptTick::NotOursToJudge
+        AutoAcceptTick::Consistent
     );
 }
 

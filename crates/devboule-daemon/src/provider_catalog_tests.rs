@@ -1499,17 +1499,19 @@ fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
     let prediction = |provider: &str, mode: &str| {
         crate::peer_policy::unattended_mode(super::session_kind_for(provider), Some(mode))
     };
-    // Route A: the three ids the daemon itself auto-answers a permission
+    // Route A: the four ids the daemon itself auto-answers a permission
     // request in, whatever the family — including a provider the catalog
     // has never heard of (the mechanical test: a user-defined provider's
     // child is answered without any code path noticing the name).
+    // `full-access` rides route A because it never asks, whatever family
+    // delivers it.
     for provider in [
         "grok",
         "codex",
         "claude",
         "a-provider-that-does-not-exist-yet",
     ] {
-        for mode in ["bypass", "auto_accept", "bypassPermissions"] {
+        for mode in ["bypass", "auto_accept", "bypassPermissions", "full-access"] {
             assert_eq!(
                 prediction(provider, mode),
                 UnattendedState::Yes,
@@ -1575,22 +1577,49 @@ fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
 }
 
 /// The one list the broker grants from and the birth marker reads: exactly
-/// the three provider-agnostic ids, and no provider's own spelling.
+/// the four provider-agnostic ids, and no provider's own spelling beyond
+/// the never-asking one the daemon answers like bypass.
 #[test]
-fn the_auto_answer_list_is_exactly_the_three_provider_agnostic_ids() {
-    for mode in ["bypass", "auto_accept", "bypassPermissions"] {
+fn the_auto_answer_list_is_exactly_the_four_provider_agnostic_ids() {
+    for mode in ["bypass", "auto_accept", "bypassPermissions", "full-access"] {
         assert!(super::mode_is_auto_answered(mode), "{mode}");
     }
+    for mode in ["ask", "default", "auto-review", "acceptEdits", "auto", ""] {
+        assert!(!super::mode_is_auto_answered(mode), "{mode}");
+    }
+}
+
+/// The modes whose sessions never approve a write: plan and read-only
+/// refuse before the card, and nothing else does.
+#[test]
+fn plan_and_read_only_refuse_writes_and_nothing_else_does() {
+    for mode in ["plan", "read-only"] {
+        assert!(super::mode_refuses_writes(mode), "{mode}");
+    }
     for mode in [
+        "bypass",
+        "auto_accept",
+        "bypassPermissions",
+        "full-access",
         "ask",
         "default",
-        "full-access",
-        "auto-review",
-        "acceptEdits",
         "auto",
+        "acceptEdits",
+        "auto-review",
         "",
     ] {
-        assert!(!super::mode_is_auto_answered(mode), "{mode}");
+        assert!(!super::mode_refuses_writes(mode), "{mode}");
+    }
+}
+
+/// The write refusal names the session's own mode and the way out, in one
+/// sentence.
+#[test]
+fn the_write_refusal_names_the_mode_and_the_way_out() {
+    for mode in ["plan", "read-only"] {
+        let sentence = super::mode_refusal_sentence(mode);
+        assert!(sentence.contains(mode), "{sentence}");
+        assert!(sentence.contains("switch mode"), "{sentence}");
     }
 }
 
@@ -1604,8 +1633,9 @@ fn ticked() -> serde_json::Map<String, serde_json::Value> {
 /// The pre-card tick judgement (the re-audit's P1): a verdict that
 /// refuses exists only where the daemon owns the rule — Claude and Pi —
 /// and the daemon's own table always concludes *satisfied*, never
-/// refused. Codex's `full-access` is the conviction: provider-authored
-/// vocabulary, and the answer is `NotOursToJudge`, not a refusal.
+/// refused. `full-access` now rides that table (Codex never asks there),
+/// so a tick over it is Consistent for every family; every other non-table
+/// id stays `NotOursToJudge`.
 #[test]
 fn the_pre_card_tick_judgement_refuses_only_where_the_daemon_owns_the_rule() {
     let features = ticked();
@@ -1647,19 +1677,14 @@ fn the_pre_card_tick_judgement_refuses_only_where_the_daemon_owns_the_rule() {
         }
     }
     // The families that own their knob: no pre-card conclusion at all —
-    // including `full-access`, the case the old gate refused in error.
+    // for every id the daemon's own table does not carry. (`full-access`
+    // used to be the conviction here; it now rides the table above.)
     for provider in [
         "codex",
         "devboule-acp-stub",
         "a-provider-from-a-config-file",
     ] {
-        for mode in [
-            "default",
-            "ask",
-            "full-access",
-            "auto-review",
-            "acceptEdits",
-        ] {
+        for mode in ["default", "ask", "auto-review", "acceptEdits"] {
             assert_eq!(
                 super::judge_auto_accept_tick(provider, mode, &features),
                 NotOursToJudge,
