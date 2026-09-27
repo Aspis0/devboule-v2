@@ -7,6 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toolPolicyGet, toolPolicySet } from "../../../lib/tauri";
+import type { ToolPolicyReply } from "../../../types/ipc";
 import { useToolPolicies } from "./useToolPolicies";
 
 vi.mock("../../../lib/tauri", async (importOriginal) => {
@@ -31,11 +32,14 @@ function Harness({ supported = true, active = true }: { supported?: boolean; act
         </button>
       ) : null}
       {store.loadError ? <span role="alert">{store.loadError.sentence}</span> : null}
-      {store.writeError ? (
-        <span role="alert" data-testid="write-error">
-          {store.writeError.providerId}:{store.writeError.error.sentence}
+      {Object.entries(store.writeErrors).map(([providerId, failure]) => (
+        <span role="alert" data-testid={`write-error-${providerId}`} key={providerId}>
+          {providerId}:{failure.sentence}
+          <button type="button" onClick={() => store.dismissWriteError(providerId)}>
+            dismiss-{providerId}
+          </button>
         </span>
-      ) : null}
+      ))}
       <button type="button" onClick={() => store.setEnabled("grok", false)}>
         off
       </button>
@@ -126,7 +130,9 @@ describe("useToolPolicies", () => {
     await act(async () => buttonNamed("off").click());
     await act(async () => undefined);
     expect(container.querySelector('[data-testid="policies"]')?.textContent).toBe("[]");
-    expect(container.querySelector('[data-testid="write-error"]')?.textContent).toContain("grok:");
+    expect(container.querySelector('[data-testid="write-error-grok"]')?.textContent).toContain(
+      "grok:",
+    );
   });
 
   it("keeps the second write when two rapid toggles race and the first is rejected", async () => {
@@ -157,7 +163,7 @@ describe("useToolPolicies", () => {
     expect(container.querySelector('[data-testid="policies"]')?.textContent).toContain(
       '"enabled":null',
     );
-    expect(container.querySelector('[data-testid="write-error"]')).toBeNull();
+    expect(container.querySelector('[data-testid="write-error-grok"]')).toBeNull();
   });
 
   it("ends a failed load in Retry and recovers on success", async () => {
@@ -174,6 +180,79 @@ describe("useToolPolicies", () => {
     await act(async () => undefined);
     expect(toolPolicyGet).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[data-testid="policies"]')?.textContent).toContain("grok");
+  });
+
+  it("keeps one provider's failure while another provider writes", async () => {
+    function TwoProviderHarness() {
+      const store = useToolPolicies(true, true);
+      return (
+        <div>
+          <button type="button" onClick={() => store.setEnabled("grok", false)}>
+            grok-off
+          </button>
+          <button type="button" onClick={() => store.setEnabled("claude", false)}>
+            claude-off
+          </button>
+          {Object.entries(store.writeErrors).map(([providerId, failure]) => (
+            <span role="alert" data-testid={`write-error-${providerId}`} key={providerId}>
+              {providerId}:{failure.sentence}
+              <button type="button" onClick={() => store.dismissWriteError(providerId)}>
+                dismiss-{providerId}
+              </button>
+            </span>
+          ))}
+        </div>
+      );
+    }
+    await act(async () => root.render(<TwoProviderHarness />));
+    await act(async () => undefined);
+    vi.mocked(toolPolicySet).mockRejectedValueOnce({ code: "io", message: "grok unwritable" });
+    await act(async () => buttonNamed("grok-off").click());
+    await act(async () => undefined);
+    expect(container.querySelector('[data-testid="write-error-grok"]')).not.toBeNull();
+
+    await act(async () => buttonNamed("claude-off").click());
+    await act(async () => undefined);
+    // grok's unacknowledged report stands; only its own dismiss clears it.
+    expect(container.querySelector('[data-testid="write-error-grok"]')).not.toBeNull();
+    await act(async () => buttonNamed("dismiss-grok").click());
+    expect(container.querySelector('[data-testid="write-error-grok"]')).toBeNull();
+  });
+
+  it("merges a refetch around an in-flight write instead of dropping it", async () => {
+    // The reconnect self-heal: a fetch that overlaps a write adopts the
+    // daemon's rows for idle providers and keeps the optimistic row for
+    // the pinned one — the reply is never thrown away wholesale.
+    let resolveWrite!: () => void;
+    vi.mocked(toolPolicySet).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveWrite = resolve;
+        }),
+    );
+    let resolveFetch!: (reply: ToolPolicyReply) => void;
+    vi.mocked(toolPolicyGet).mockImplementationOnce(
+      () =>
+        new Promise<ToolPolicyReply>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    await renderHarness();
+    await act(async () => buttonNamed("off").click());
+    await act(async () => undefined);
+    expect(toolPolicySet).toHaveBeenCalledTimes(1);
+
+    resolveFetch({ policies: [{ providerId: "claude", enabled: null, disabledTools: [] }] });
+    await act(async () => undefined);
+    await act(async () => undefined);
+    const merged = container.querySelector('[data-testid="policies"]')?.textContent ?? "";
+    // claude adopted from the daemon, grok's optimistic row kept.
+    expect(merged).toContain("claude");
+    expect(merged).toContain('"enabled":false');
+
+    await act(async () => resolveWrite());
+    await act(async () => undefined);
     expect(container.querySelector('[data-testid="policies"]')?.textContent).toContain("grok");
   });
 });

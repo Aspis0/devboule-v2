@@ -56,6 +56,8 @@ describe("ProviderToolsSwitch", () => {
     expect(button.getAttribute("aria-label")).toMatch(/devboule tools/i);
     expect(button.getAttribute("aria-label")).toContain("grok");
     expect(container.textContent).toContain("Devboule tools");
+    // The roster tool survives the switch: say so where the switch lives.
+    expect(button.getAttribute("title")).toContain("agent roster");
   });
 
   it("reads off when the stored row disables every tool", async () => {
@@ -83,6 +85,8 @@ describe("ProviderToolsSwitch", () => {
     const onTurnAllOn = vi.fn();
     await renderSwitch({ enabled: true, hasLegacyDenials: true, onTurnAllOn });
     expect(switchButton().getAttribute("aria-checked")).toBe("true");
+    const notice = container.querySelector(".prov-legacy");
+    expect(notice?.getAttribute("role")).toBe("status");
     expect(container.textContent).toMatch(/older setting/i);
     const action = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.textContent === "Turn all on",

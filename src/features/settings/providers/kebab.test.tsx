@@ -137,4 +137,44 @@ describe("ProviderKebab", () => {
     });
     expect(document.activeElement).toBe(items[0]);
   });
+
+  it("closes on Tab so focus can move on without an orphan menu", async () => {
+    await renderKebab({ onUpdate: () => {} });
+    await openMenu();
+    const first = menuItems()[0];
+    if (!first) throw new Error("menu items did not render");
+    await act(async () => {
+      first.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    });
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it("closes on outside pointer down", async () => {
+    await renderKebab();
+    await openMenu();
+    expect(container.querySelector('[role="menu"]')).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    });
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it("keeps only one menu open across rows", async () => {
+    await act(async () =>
+      root.render(
+        <>
+          <ProviderKebab providerId="aaa" path="x" onRefresh={() => {}} />
+          <ProviderKebab providerId="bbb" path="x" onRefresh={() => {}} />
+        </>,
+      ),
+    );
+    const buttons = container.querySelectorAll<HTMLButtonElement>(".prov-kebab");
+    expect(buttons).toHaveLength(2);
+    await act(async () => buttons[0]?.click());
+    expect(container.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    await act(async () => buttons[1]?.click());
+    const menus = container.querySelectorAll('[role="menu"]');
+    expect(menus).toHaveLength(1);
+    expect(menus[0]?.getAttribute("aria-label")).toContain("bbb");
+  });
 });

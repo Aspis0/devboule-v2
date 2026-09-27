@@ -33,6 +33,11 @@ export function ProviderKebab({
 
   useEffect(() => {
     if (!open) return;
+    // One menu at a time: every kebab closes itself when another opens.
+    // The opener dispatches BEFORE setting its own state, so its own
+    // listener fires while still closed (a no-op) and only the others shut.
+    const closeOthers = () => setOpen(false);
+    window.addEventListener("prov-kebab-open", closeOthers);
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (
@@ -44,12 +49,24 @@ export function ProviderKebab({
       }
     };
     document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("prov-kebab-open", closeOthers);
+    };
   }, [open]);
 
   function close(returnFocus: boolean) {
     setOpen(false);
     if (returnFocus) buttonRef.current?.focus();
+  }
+
+  function toggle() {
+    if (open) {
+      close(false);
+      return;
+    }
+    window.dispatchEvent(new Event("prov-kebab-open"));
+    setOpen(true);
   }
 
   function onMenuKeyDown(event: React.KeyboardEvent) {
@@ -73,6 +90,10 @@ export function ProviderKebab({
     } else if (event.key === "End") {
       event.preventDefault();
       items[items.length - 1]?.focus();
+    } else if (event.key === "Tab") {
+      // Leave the menu as focus moves on: an orphan menu with focus
+      // elsewhere is the keyboard trap the arrows exist to prevent.
+      close(false);
     }
   }
 
@@ -100,7 +121,7 @@ export function ProviderKebab({
         aria-label={`Actions for ${providerId}`}
         aria-expanded={open}
         aria-haspopup="menu"
-        onClick={() => (open ? close(false) : setOpen(true))}
+        onClick={toggle}
       >
         <span aria-hidden="true">⋮</span>
       </button>

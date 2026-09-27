@@ -4,18 +4,18 @@
    Geometry-critical declarations stay on bare classes: the row-geometry
    test reads them through cssProof, which models bare selectors only. */
 
-.prov-section-label {
-  margin: 22px 0 8px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
-}
-
 .prov-card {
   max-width: 720px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel-card);
+}
+
+/* Same vertical rhythm as the shell's `.settings-main-inner > section`:
+   our sections sit inside #settings-panel-providers, so the shell rule
+   cannot reach them and the 18 px reference is restated here. */
+#settings-panel-providers > section {
+  margin-bottom: 18px;
 }
 
 .prov-row-wrap + .prov-row-wrap,
@@ -67,6 +67,18 @@
 
 .prov-chev > span {
   display: inline-block;
+}
+
+/* Our own glyph box: StripKindMark draws the mark, but its `.strip-kind`
+   rule ships with the workspace stylesheet, which this page must not assume
+   is loaded. Same 14 px box, muted ink. */
+.prov-glyph {
+  display: grid;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  color: var(--muted);
 }
 
 .prov-name {
@@ -272,6 +284,13 @@
   align-items: center;
   gap: 10px;
   padding: 12px;
+}
+
+/* Consent and error blocks take their own line under the available row's
+   main line. Without this the Install button keeps the consent card on the
+   same flex line and the name column is crushed to zero width. */
+.prov-available-row > .provider-card-block {
+  flex-basis: 100%;
 }
 
 .prov-available-main {

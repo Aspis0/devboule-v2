@@ -153,7 +153,10 @@ describe("providers sections and search", () => {
     expect(container.textContent).not.toContain("authentication unknown");
   });
 
-  it("invents no description line for available rows: the data carries none", async () => {
+  it("renders no invented prose on available rows: every word is data", async () => {
+    // ProviderInfo carries no description field, so an available row may
+    // only show its id, its package, its version line, and Install. Strip
+    // those known strings: whatever text remains is invented.
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [
         {
@@ -163,6 +166,7 @@ describe("providers sections and search", () => {
           authentication: "unknown",
           installed: false,
           npmPackage: "@agentclientprotocol/codex-acp",
+          latestVersion: "1.2.0",
         },
       ],
       unreadableDirs: 0,
@@ -171,6 +175,10 @@ describe("providers sections and search", () => {
 
     const row = container.querySelector(".prov-available-row");
     if (!row) throw new Error("available row did not render");
+    const known = ["codex-acp", "@agentclientprotocol/codex-acp", "v1.2.0 available", "Install"];
+    let rest = row.textContent ?? "";
+    for (const word of known) rest = rest.replace(word, "");
+    expect(rest.trim()).toBe("");
     expect(row.querySelector(".prov-description")).toBeNull();
   });
 
@@ -296,7 +304,7 @@ describe("provider rows and status", () => {
     );
   }
 
-  it("draws one h44 row per provider with glyph, sans name, and status", async () => {
+  it("draws one row per provider with chevron, glyph, name, status, and kebab", async () => {
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [
         installedProvider({ id: "claude", authentication: "ok", tools: [] }),
@@ -308,12 +316,18 @@ describe("provider rows and status", () => {
 
     const rows = container.querySelectorAll(".prov-row");
     expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.querySelector(".prov-chev")).not.toBeNull();
+      expect(row.querySelector(".prov-glyph svg")).not.toBeNull();
+      expect(row.querySelector(".prov-name")).not.toBeNull();
+      expect(row.querySelector(".prov-status-word")).not.toBeNull();
+      expect(row.querySelector(".prov-kebab")).not.toBeNull();
+    }
     expect(container.textContent).toContain("claude");
-    expect(container.textContent).toContain("Ready");
+    expect(container.textContent).toContain("Started");
     expect(container.textContent).toContain("Start failed");
     expect(container.querySelector(".prov-dot-live")).not.toBeNull();
     expect(container.querySelector(".prov-dot-failed")).not.toBeNull();
-    expect(container.querySelector(".prov-status-word")?.textContent).not.toMatch(/mono/);
   });
 
   it("never reads unknown authentication as ready", async () => {
@@ -324,7 +338,7 @@ describe("provider rows and status", () => {
     await renderPanel();
 
     expect(container.querySelector(".prov-dot-idle")).not.toBeNull();
-    expect(container.textContent).toContain("Unknown");
+    expect(container.textContent).toContain("Not started yet");
     expect(container.textContent).not.toMatch(/ready/i);
   });
 
@@ -397,11 +411,11 @@ describe("provider rows and status", () => {
     await act(async () => firstChevron().click());
     await act(async () => undefined);
 
-    expect(container.textContent).toContain("Ready");
+    expect(container.textContent).toContain("Started");
     expect(container.textContent).not.toMatch(/\d+ models?/);
   });
 
-  it("revalidates the cached count on Refresh", async () => {
+  it("re-reads the mounted count on Refresh without collapsing the row", async () => {
     withVocabulary();
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [installedProvider({ authentication: "ok", tools: [] })],
@@ -417,6 +431,7 @@ describe("provider rows and status", () => {
     await act(async () => firstChevron().click());
     await act(async () => undefined);
     expect(providerVocabularyGet).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("1 model");
 
     vi.mocked(providersRefresh).mockResolvedValueOnce({
       providers: [installedProvider({ authentication: "ok", tools: [] })],
@@ -427,10 +442,10 @@ describe("provider rows and status", () => {
     await act(async () => refresh.click());
     await act(async () => undefined);
 
-    await act(async () => firstChevron().click());
-    await act(async () => firstChevron().click());
-    await act(async () => undefined);
+    // The row stayed expanded throughout: the count remounted and re-read.
+    expect(container.querySelector(".prov-details")).not.toBeNull();
     expect(providerVocabularyGet).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("1 model");
   });
 });
 
@@ -927,6 +942,137 @@ describe("tools switch wiring", () => {
     await act(async () => retry.click());
     await act(async () => undefined);
     expect(toolPolicyGet).toHaveBeenCalledTimes(2);
+    expect(toolSwitch()?.disabled).toBe(false);
+  });
+
+  it("labels sections with the shell's shared subheading, not a page rule", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        installedProvider(),
+        {
+          id: "codex-acp",
+          executable: "",
+          acpAvailable: false,
+          authentication: "unknown",
+          installed: false,
+          npmPackage: "@agentclientprotocol/codex-acp",
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    const labels = container.querySelectorAll("h3.settings-subheading");
+    expect(labels).toHaveLength(2);
+    expect(container.querySelector(".prov-section-label")).toBeNull();
+  });
+
+  it("brings the legacy notice back when its normalising write is rejected", async () => {
+    vi.mocked(toolPolicyGet).mockResolvedValueOnce({
+      policies: [{ providerId: "grok", enabled: null, disabledTools: ["old_tool"] }],
+    });
+    vi.mocked(toolPolicySet).mockRejectedValueOnce({
+      code: "io",
+      message: "policy file unwritable",
+    });
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [installedProvider({ tools: [{ name: "some_tool", description: "Something." }] })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    expect(container.textContent).toMatch(/older setting/i);
+
+    const master = toolSwitch();
+    if (!master) throw new Error("switch did not render");
+    await act(async () => master.click());
+    await act(async () => undefined);
+
+    // The write is rejected, so the stored denials are restored exactly —
+    // and the notice returns with them instead of going silent.
+    expect(master.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toMatch(/older setting/i);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
+
+  it("adopts a reconnect refetch over a stale optimistic row", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(toolPolicyGet).mockResolvedValueOnce({
+        policies: [{ providerId: "grok", enabled: null, disabledTools: ["old_tool"] }],
+      });
+      vi.mocked(providersList).mockResolvedValueOnce({
+        providers: [
+          installedProvider({ tools: [{ name: "some_tool", description: "Something." }] }),
+        ],
+        unreadableDirs: 0,
+      });
+      await renderPanel();
+      expect(container.textContent).toMatch(/older setting/i);
+
+      // The daemon restarts without tool_policy, then comes back with a
+      // clean stored row: the refetch wins and the stale denial is gone.
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith(["ping", "status", "sessions", "journal", "devices"]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+      expect(toolSwitch()).toBeNull();
+
+      vi.mocked(toolPolicyGet).mockResolvedValueOnce({
+        policies: [{ providerId: "grok", enabled: true, disabledTools: [] }],
+      });
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith(["ping", "status", "sessions", "journal", "devices", "tool_policy"]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+
+      expect(toolPolicyGet).toHaveBeenCalledTimes(2);
+      expect(toolSwitch()?.getAttribute("aria-checked")).toBe("true");
+      expect(container.textContent).not.toMatch(/older setting/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a refetch failure beside working switches instead of hiding it", async () => {
+    vi.mocked(toolPolicyGet).mockResolvedValueOnce({ policies: [] });
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [installedProvider({ tools: [{ name: "some_tool", description: "Something." }] })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    expect(toolSwitch()?.disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    // A refresh drops every tool-bearing provider, then brings them back
+    // while the refetch fails: last-known rows stay usable, and the error
+    // is shown with a Retry instead of sitting invisibly in the store.
+    vi.mocked(providersRefresh).mockResolvedValueOnce({
+      providers: [installedProvider({ tools: [] })],
+      unreadableDirs: 0,
+    });
+    const refresh = container.querySelector<HTMLButtonElement>(".provider-refresh");
+    if (!refresh) throw new Error("Refresh button did not render");
+    await act(async () => refresh.click());
+    await act(async () => undefined);
+    expect(toolSwitch()).toBeNull();
+
+    vi.mocked(toolPolicyGet).mockRejectedValueOnce({ code: "io", message: "pipe is gone" });
+    vi.mocked(providersRefresh).mockResolvedValueOnce({
+      providers: [installedProvider({ tools: [{ name: "some_tool", description: "Something." }] })],
+      unreadableDirs: 0,
+    });
+    await act(async () => refresh.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "A system or file operation failed on this machine.",
+    );
     expect(toolSwitch()?.disabled).toBe(false);
   });
 });

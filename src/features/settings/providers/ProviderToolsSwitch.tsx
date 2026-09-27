@@ -1,3 +1,5 @@
+import { ALWAYS_ON_REASON } from "../providerStatus";
+
 /**
  * The row's only switch: Devboule tools for this provider, on or off. The
  * label names the tools so the switch never reads as provider on/off (that
@@ -32,6 +34,7 @@ export function ProviderToolsSwitch({
         role="switch"
         aria-checked={enabled}
         aria-label={`Devboule tools for ${providerId}`}
+        title={ALWAYS_ON_REASON}
         className={`prov-switch${enabled ? " prov-switch-on" : ""}`}
         disabled={disabled}
         onClick={() => onToggle(!enabled)}
@@ -39,7 +42,7 @@ export function ProviderToolsSwitch({
         <i aria-hidden="true" />
       </button>
       {showLegacy ? (
-        <span className="prov-legacy">
+        <span className="prov-legacy" role="status">
           Some Devboule tools are off from an older setting.
           <button type="button" className="prov-legacy-action" onClick={onTurnAllOn}>
             Turn all on

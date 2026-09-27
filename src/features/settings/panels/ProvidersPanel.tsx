@@ -60,8 +60,16 @@ export function ProvidersPanel() {
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
   // Panel-owned model-count cache, cleared on Refresh so counts revalidate
   // with the catalog. State-lazy, never reassigned: the identity is stable
-  // across renders, so rows can safely depend on it.
+  // across renders, so rows can safely depend on it. The epoch remounts a
+  // mounted count on invalidation, so an open row re-reads without the
+  // human collapsing it first.
   const [modelCache] = useState<ModelCountCache>(() => new Map());
+  const [modelEpoch, setModelEpoch] = useState(0);
+
+  function invalidateModelCounts() {
+    modelCache.clear();
+    setModelEpoch((epoch) => epoch + 1);
+  }
 
   useEffect(() => {
     consentInFlightRef.current = false;
@@ -124,7 +132,7 @@ export function ProvidersPanel() {
     setRefreshing(true);
     setError(null);
     // Counts belong to the old catalog: drop them so the next expand re-reads.
-    modelCache.clear();
+    invalidateModelCounts();
     const seq = ++fetchSeqRef.current;
     void providersRefresh()
       .then((fresh) => {
@@ -169,6 +177,8 @@ export function ProvidersPanel() {
           setNpmFailure({ providerId: provider.id, text: logTail(outcome.log), detail: null });
           return;
         }
+        // A version bump can change the model list: counts re-read on expand.
+        invalidateModelCounts();
         // The refetch is the proof: the fresh catalog carries the new version.
         void providersList()
           .then((fresh) => {
@@ -225,7 +235,7 @@ export function ProvidersPanel() {
         </div>
       ) : (
         <>
-          {toolStore.loadFailed && toolStore.loadError ? (
+          {toolStore.loadError ? (
             <div role="alert" className="prov-tools-error">
               <ErrorText
                 sentence={toolStore.loadError.sentence}
@@ -239,7 +249,7 @@ export function ProvidersPanel() {
           ) : null}
           {installed.length > 0 ? (
             <section aria-label="Installed">
-              <h3 className="prov-section-label">Installed</h3>
+              <h3 className="settings-subheading">Installed</h3>
               <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
                 {installed.map((provider) => {
                   const withTools = toolPolicySupported && (provider.tools ?? []).length > 0;
@@ -256,13 +266,11 @@ export function ProvidersPanel() {
                       npmCommand={consent?.provider.id === provider.id ? npmCommand : null}
                       npmVerb={consent?.provider.id === provider.id ? consent.verb : null}
                       npmFailure={npmFailure?.providerId === provider.id ? npmFailure : null}
-                      writeError={
-                        toolStore.writeError?.providerId === provider.id
-                          ? toolStore.writeError.error
-                          : null
-                      }
+                      writeError={toolStore.writeErrors[provider.id] ?? null}
+                      onDismissWriteError={() => toolStore.dismissWriteError(provider.id)}
                       busyVerb={runHere && npmRun ? npmRun.verb : null}
                       actionsDisabled={npmRun !== null}
+                      modelEpoch={modelEpoch}
                       onToggleTools={(next) => toolStore.setEnabled(provider.id, next)}
                       onTurnAllOn={() => toolStore.turnAllOn(provider.id)}
                       onOpenUpdate={(trigger) => openConsent(provider, "update", trigger)}
@@ -278,7 +286,7 @@ export function ProvidersPanel() {
           ) : null}
           {available.length > 0 ? (
             <section aria-label="Available to install">
-              <h3 className="prov-section-label">Available to install</h3>
+              <h3 className="settings-subheading">Available to install</h3>
               <input
                 type="search"
                 className="prov-search"
@@ -300,9 +308,11 @@ export function ProvidersPanel() {
                       <div className="prov-available-row" key={provider.id}>
                         <span className="prov-available-main">
                           <span className="prov-name">{provider.id}</span>
-                          <span className="prov-available-sub">
-                            {provider.npmPackage ?? provider.executable}
-                          </span>
+                          {(provider.npmPackage ?? provider.executable) ? (
+                            <span className="prov-available-sub">
+                              {provider.npmPackage ?? provider.executable}
+                            </span>
+                          ) : null}
                           <ProviderVersionLine provider={provider} />
                         </span>
                         {runHere && npmRun ? (

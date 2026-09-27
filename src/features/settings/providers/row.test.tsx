@@ -56,12 +56,14 @@ describe("ProviderRow", () => {
       writeError: null,
       busyVerb: null,
       actionsDisabled: false,
+      modelEpoch: 0,
       onToggleTools: () => {},
       onTurnAllOn: () => {},
       onOpenUpdate: () => {},
       onConfirmConsent: () => {},
       onCancelConsent: () => {},
       onDismissFailure: () => {},
+      onDismissWriteError: () => {},
       onRefresh: () => {},
     };
     vi.mocked(providerVocabularyGet).mockResolvedValue({
@@ -89,31 +91,35 @@ describe("ProviderRow", () => {
     return button;
   }
 
-  it("mounts collapsed with the name, a live Ready status, and no probe", async () => {
+  it("mounts collapsed with the name, a past-tense Started status, and no probe", async () => {
     await renderRow();
     expect(container.textContent).toContain("grok");
     expect(chevron().getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelector(".prov-details")).toBeNull();
-    const status = container.querySelector(".prov-dot-live");
-    expect(status).not.toBeNull();
-    expect(container.textContent).toContain("Ready");
+    expect(container.querySelector(".prov-dot-live")).not.toBeNull();
+    expect(container.textContent).toContain("Started");
+    expect(container.textContent).not.toMatch(/ready/i);
     expect(providerVocabularyGet).not.toHaveBeenCalled();
   });
 
-  it("reads unknown authentication as idle Unknown, never ready", async () => {
+  it("reads unknown authentication as idle Not started yet, never ready", async () => {
     await renderRow({ provider: providerWith({ authentication: "unknown" }) });
     expect(container.querySelector(".prov-dot-idle")).not.toBeNull();
     expect(container.querySelector(".prov-dot-live")).toBeNull();
-    expect(container.textContent).toContain("Unknown");
+    expect(container.textContent).toContain("Not started yet");
     expect(container.textContent).not.toMatch(/ready/i);
   });
 
-  it("reads a failed start with the failed dot and the reason in the accessible name", async () => {
+  it("reads a failed start with the failed dot and the reason in screen-reader text", async () => {
     await renderRow({ provider: providerWith({ authentication: "failed: OAuth expired" }) });
     expect(container.querySelector(".prov-dot-failed")).not.toBeNull();
     expect(container.textContent).toContain("Start failed");
-    const status = container.querySelector(".prov-status");
-    expect(status?.getAttribute("aria-label")).toBe("Start failed: OAuth expired");
+    // No aria-label on the role-less span (AT would drop it): the reason
+    // travels as real text in .sr-only, which the tree exposes.
+    expect(container.querySelector(".prov-status")?.getAttribute("aria-label")).toBeNull();
+    expect(container.querySelector(".prov-status .sr-only")?.textContent).toContain(
+      "OAuth expired",
+    );
   });
 
   it("expands the measured row's details and probes its models once", async () => {
@@ -139,12 +145,14 @@ describe("ProviderRow", () => {
     expect(container.textContent).toContain("1 model");
   });
 
-  it("never probes an expanded row whose last start failed", async () => {
+  it("probes an expanded row whatever its last start said, and shows no number for absent", async () => {
     await renderRow({ provider: providerWith({ authentication: "failed: gone" }) });
     await act(async () => chevron().click());
     await act(async () => undefined);
     expect(container.querySelector(".prov-details")).not.toBeNull();
-    expect(providerVocabularyGet).not.toHaveBeenCalled();
+    expect(providerVocabularyGet).toHaveBeenCalledTimes(1);
+    expect(providerVocabularyGet).toHaveBeenCalledWith("grok", "", false);
+    expect(container.textContent).not.toMatch(/\d+ models?/);
   });
 
   it("hides the switch when there is no tool policy to show", async () => {
@@ -200,6 +208,68 @@ describe("ProviderRow", () => {
     expect(names).not.toContain("Update");
   });
 
+  it("shows no Version label when no version data exists", async () => {
+    await renderRow({ provider: providerWith({ installedVersion: null }) });
+    await act(async () => chevron().click());
+    expect(container.querySelector(".prov-details")?.textContent).not.toContain("Version");
+  });
+
+  it("names npx provenance even when the protocol is unknown", async () => {
+    await renderRow({
+      provider: providerWith({ protocol: null, origin: "npx-wrapper" }),
+    });
+    await act(async () => chevron().click());
+    expect(container.querySelector(".prov-details")?.textContent).toContain("via npx");
+  });
+
+  it("sanitises a user-declarable provider id before it becomes a DOM id", async () => {
+    await renderRow({ provider: providerWith({ id: "my provider" }) });
+    await act(async () => chevron().click());
+    expect(chevron().getAttribute("aria-controls")).toBe("prov-details-my-provider");
+    expect(container.querySelector("#prov-details-my-provider")).not.toBeNull();
+  });
+
+  it("returns focus to the kebab when its consent is cancelled", async () => {
+    const onCancelConsent = vi.fn();
+    await renderRow({
+      provider: providerWith({
+        installChannel: "npm",
+        latestVersion: "0.3.0",
+        npmPackage: "@vibe/grok-cli",
+      }),
+      onCancelConsent,
+    });
+    const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
+    if (!kebab) throw new Error("kebab did not render");
+    await act(async () => kebab.click());
+    const update = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Update");
+    if (!update) throw new Error("Update item did not render");
+    await act(async () => update.click());
+    await act(async () =>
+      root.render(
+        <ProviderRow
+          {...props}
+          provider={providerWith({
+            installChannel: "npm",
+            latestVersion: "0.3.0",
+            npmPackage: "@vibe/grok-cli",
+          })}
+          onCancelConsent={onCancelConsent}
+          consentOpen
+          npmCommand="npm install -g @vibe/grok-cli@latest"
+          npmVerb="update"
+        />,
+      ),
+    );
+    const cancel = container.querySelector<HTMLButtonElement>(".provider-consent-cancel");
+    if (!cancel) throw new Error("Cancel did not render");
+    await act(async () => cancel.click());
+    expect(onCancelConsent).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(kebab);
+  });
+
   it("opens Update through the kebab and renders the consent card", async () => {
     const onOpenUpdate = vi.fn();
     const onConfirmConsent = vi.fn();
@@ -232,15 +302,20 @@ describe("ProviderRow", () => {
     expect(onConfirmConsent).toHaveBeenCalledTimes(1);
   });
 
-  it("shows a rejected switch write inside the row", async () => {
+  it("shows a rejected switch write inside the row, with Dismiss", async () => {
     const sentence: ErrorSentence = {
       sentence: "A system or file operation failed on this machine.",
       detail: null,
     };
-    await renderRow({ writeError: sentence });
+    const onDismissWriteError = vi.fn();
+    await renderRow({ writeError: sentence, onDismissWriteError });
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "A system or file operation failed on this machine.",
     );
+    const dismiss = container.querySelector<HTMLButtonElement>(".provider-update-error-dismiss");
+    if (!dismiss) throw new Error("write-error Dismiss did not render");
+    await act(async () => dismiss.click());
+    expect(onDismissWriteError).toHaveBeenCalledTimes(1);
   });
 
   it("shows the npm failure with a working Dismiss", async () => {

@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
-// The Providers row geometry against the real stylesheets: the assembled
-// sheets in bundle order (tokens, global, settings, providers last as the
-// lazy chunk), so a row that is not h44 or a switch that is not 34x20 fails
-// here, not live. Written after the stylesheet (the exception to the
-// red-first rule on this slice); values cross-checked against
-// `mockups/skeleton-settings.css`, which wins on values.
+// The Providers row geometry against the real stylesheets in bundle order.
+// Scope, stated plainly: cssProof models bare single-class selectors in the
+// light theme only (see its header) — this suite proves the rules exist with
+// the spec's values, not the rendered cascade. Anything it cannot see
+// (flex line-breaking, the dark theme, descendant conflicts) belongs to a
+// live check and is listed in the slice report.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -24,19 +24,35 @@ function box(className: string): HTMLElement {
   return el;
 }
 
+/** Every selector in the sheet whose rule sets a monospace family. */
+function monoSelectors(css: string): string[] {
+  const found: string[] = [];
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const block of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = block[1] ?? "";
+    const body = block[2] ?? "";
+    if (/JetBrains Mono|monospace/i.test(body)) {
+      for (const part of selector.split(",")) found.push(part.trim().replace(/\s+/g, " "));
+    }
+  }
+  return found;
+}
+
 afterEach(() => {
   removeCssProof();
   document.body.innerHTML = "";
 });
 
 describe("providers row geometry (real stylesheets, no app launch)", () => {
-  // Sheet order matches the bundle: tokens, global (main.tsx, static),
-  // settings (lazy chunk), providers (this slice's lazy chunk, last).
+  // Sheet order matches the bundle: tokens, global (main.tsx, static), then
+  // providers.css BEFORE settings.css — SettingsSurface.tsx imports the
+  // ProvidersPanel (line 11) ahead of "./settings.css" (line 23), and module
+  // evaluation follows declaration order.
   const proof = assembleCssProof([
     read("src/styles/tokens.css"),
     read("src/styles/global.css"),
-    read("src/features/settings/settings.css"),
     read("src/features/settings/providers.css"),
+    read("src/features/settings/settings.css"),
   ]);
 
   it("holds installed rows at h44", () => {
@@ -44,11 +60,9 @@ describe("providers row geometry (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(box("prov-row")).height).toBe("44px");
   });
 
-  it("sets provider names at 14 sans", () => {
+  it("sets provider names at 14px", () => {
     proof.inject([".prov-name"]);
-    const name = box("prov-name");
-    expect(getComputedStyle(name).fontSize).toBe("14px");
-    expect(proof.rulesFor(".prov-name")).not.toMatch(/mono/i);
+    expect(getComputedStyle(box("prov-name")).fontSize).toBe("14px");
   });
 
   it("sizes the Devboule-tools switch at 34x20 with accent on", () => {
@@ -66,8 +80,43 @@ describe("providers row geometry (real stylesheets, no app launch)", () => {
     expect(proof.rulesFor(".prov-dot-live")).toContain(proof.token("--tone-live"));
   });
 
-  it("holds the row card at max-width 720 like the content column", () => {
-    proof.inject([".prov-card"]);
-    expect(getComputedStyle(box("prov-card")).maxWidth).toBe("720px");
+  it("holds the row card to the same width as the content column", () => {
+    proof.inject([".prov-card", ".settings-main-inner"]);
+    const card = getComputedStyle(box("prov-card")).maxWidth;
+    const column = getComputedStyle(box("settings-main-inner")).maxWidth;
+    expect(card).toBe("720px");
+    expect(card).toBe(column);
+  });
+
+  it("gives the glyph its own 14px box, not the workspace sheet's", () => {
+    proof.inject([".prov-glyph"]);
+    const glyph = box("prov-glyph");
+    expect(getComputedStyle(glyph).width).toBe("14px");
+    expect(getComputedStyle(glyph).height).toBe("14px");
+  });
+
+  it("wraps the available row's consent and error blocks onto their own line", () => {
+    // The install-path P1: without this rule the consent card shares the
+    // flex line with the Install button and the name column crushes to zero.
+    expect(proof.rulesFor(".prov-available-row > .provider-card-block")).toContain(
+      "flex-basis: 100%",
+    );
+  });
+
+  it("declares no page-level section label: the shell owns .settings-subheading", () => {
+    expect(read("src/features/settings/providers.css")).not.toContain(".prov-section-label");
+  });
+
+  it("keeps mono type to code, never UI words", () => {
+    const css = read("src/features/settings/providers.css");
+    const allowed = new Set([
+      ".prov-detail-code",
+      ".provider-consent-command",
+      ".provider-version",
+      ".provider-update-error pre",
+    ]);
+    const seen = monoSelectors(css);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.filter((selector) => !allowed.has(selector))).toEqual([]);
   });
 });

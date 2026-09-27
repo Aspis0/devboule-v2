@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProviderInfo } from "../../../types/ipc";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import { providerCanUpdate, providerRowStatus, providerVersionSegments } from "../providerStatus";
@@ -51,10 +51,13 @@ export interface ProviderRowProps {
   npmVerb: "update" | "install" | null;
   npmFailure: { text: string; detail: string | null } | null;
   writeError: ErrorSentence | null;
+  onDismissWriteError: () => void;
   /** This row's npm run, while the daemon executes it. */
   busyVerb: "update" | "install" | null;
   /** Another row's npm run holds the daemon: no Update anywhere. */
   actionsDisabled: boolean;
+  /** Bumped by Refresh: remounts the lazy count so an open row re-reads. */
+  modelEpoch: number;
   onToggleTools: (next: boolean) => void;
   onTurnAllOn: () => void;
   onOpenUpdate: (trigger: HTMLButtonElement | null) => void;
@@ -81,8 +84,10 @@ export function ProviderRow({
   npmVerb,
   npmFailure,
   writeError,
+  onDismissWriteError,
   busyVerb,
   actionsDisabled,
+  modelEpoch,
   onToggleTools,
   onTurnAllOn,
   onOpenUpdate,
@@ -92,6 +97,11 @@ export function ProviderRow({
   onRefresh,
 }: ProviderRowProps) {
   const [expanded, setExpanded] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  // Kebab Update passes no trigger (the menu item unmounts), so the row
+  // remembers where consent came from and returns focus to the kebab on
+  // Cancel itself — the panel's restore effect only covers live triggers.
+  const [consentFromKebab, setConsentFromKebab] = useState(false);
   // Consent, failure, write errors, and a running npm live inside the
   // details: arriving any of them opens the row, so a kebab Update on a
   // collapsed row still reveals its consent card instead of opening it
@@ -103,29 +113,56 @@ export function ProviderRow({
   }, [consentOpen, npmFailure, writeError, busyVerb]);
   const status = providerRowStatus(provider);
   const canUpdate = providerCanUpdate(provider) && !actionsDisabled;
-  const detailsId = `prov-details-${provider.id}`;
-  const statusLabel = status.detail === null ? status.word : `${status.word}: ${status.detail}`;
+  // Provider ids are user-declarable (`user_providers` rows), so the id is
+  // sanitised before it becomes a DOM id.
+  const detailsId = `prov-details-${provider.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const hasVersion = providerVersionSegments(provider).length > 0;
+  const protocolParts = [
+    provider.protocol ? protocolLabel(provider.protocol) : null,
+    provider.origin === "npx-wrapper" ? "via npx" : null,
+  ].filter((part): part is string => part !== null);
+
+  function openUpdateFromKebab() {
+    setConsentFromKebab(true);
+    onOpenUpdate(null);
+  }
+
+  function openUpdateFromDetails(trigger: HTMLButtonElement) {
+    setConsentFromKebab(false);
+    onOpenUpdate(trigger);
+  }
+
+  function cancelConsent() {
+    onCancelConsent();
+    if (consentFromKebab) {
+      rowRef.current?.querySelector<HTMLButtonElement>(".prov-kebab")?.focus();
+    }
+  }
 
   return (
-    <div className="prov-row-wrap">
+    <div className="prov-row-wrap" ref={rowRef}>
       <div className="prov-row">
         <button
           type="button"
           className={`prov-chev${expanded ? " prov-chev-open" : ""}`}
           aria-expanded={expanded}
-          aria-controls={detailsId}
+          {...(expanded ? { "aria-controls": detailsId } : {})}
           aria-label={`Details for ${provider.id}`}
           onClick={() => setExpanded((open) => !open)}
         >
           <span aria-hidden="true">›</span>
         </button>
-        <ProviderGlyph providerId={provider.id} />
+        <span className="prov-glyph">
+          <ProviderGlyph providerId={provider.id} />
+        </span>
         <span className="prov-name">{provider.id}</span>
-        <span className="prov-status" aria-label={statusLabel} title={status.detail ?? undefined}>
+        <span className="prov-status" title={status.detail ?? undefined}>
           <span className={`prov-dot prov-dot-${status.tone}`} aria-hidden="true" />
           <span className="prov-status-word">{status.word}</span>
-          {expanded && status.tone === "live" ? (
+          {status.detail !== null ? <span className="sr-only">{status.detail}</span> : null}
+          {expanded ? (
             <ProviderModelCount
+              key={modelEpoch}
               providerId={provider.id}
               supported={vocabularySupported}
               cache={modelCache}
@@ -146,7 +183,7 @@ export function ProviderRow({
         <ProviderKebab
           providerId={provider.id}
           path={provider.executable}
-          onUpdate={canUpdate ? () => onOpenUpdate(null) : undefined}
+          onUpdate={canUpdate ? openUpdateFromKebab : undefined}
           onRefresh={onRefresh}
         />
       </div>
@@ -156,17 +193,16 @@ export function ProviderRow({
             <span className="prov-detail-label">Path</span>
             <code className="prov-detail-code">{provider.executable}</code>
           </div>
-          <div className="prov-detail-line">
-            <span className="prov-detail-label">Version</span>
-            <ProviderVersionLine provider={provider} />
-          </div>
-          {provider.protocol ? (
+          {hasVersion ? (
+            <div className="prov-detail-line">
+              <span className="prov-detail-label">Version</span>
+              <ProviderVersionLine provider={provider} />
+            </div>
+          ) : null}
+          {protocolParts.length > 0 ? (
             <div className="prov-detail-line">
               <span className="prov-detail-label">Protocol</span>
-              <span className="prov-detail-value">
-                {protocolLabel(provider.protocol)}
-                {provider.origin === "npx-wrapper" ? " · via npx" : ""}
-              </span>
+              <span className="prov-detail-value">{protocolParts.join(" · ")}</span>
             </div>
           ) : null}
           {busyVerb !== null ? (
@@ -181,7 +217,7 @@ export function ProviderRow({
               <button
                 type="button"
                 className="provider-refresh provider-update"
-                onClick={(event) => onOpenUpdate(event.currentTarget)}
+                onClick={(event) => openUpdateFromDetails(event.currentTarget)}
               >
                 Update
               </button>
@@ -193,7 +229,7 @@ export function ProviderRow({
               verb={npmVerb}
               command={npmCommand}
               onConfirm={onConfirmConsent}
-              onCancel={onCancelConsent}
+              onCancel={cancelConsent}
             />
           ) : null}
           {npmFailure !== null ? (
@@ -204,7 +240,11 @@ export function ProviderRow({
             />
           ) : null}
           {writeError === null ? null : (
-            <ProviderWriteError error={writeError} providerId={provider.id} />
+            <ProviderWriteError
+              error={writeError}
+              providerId={provider.id}
+              onDismiss={onDismissWriteError}
+            />
           )}
         </div>
       ) : null}

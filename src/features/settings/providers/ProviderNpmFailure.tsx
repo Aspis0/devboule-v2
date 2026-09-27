@@ -35,21 +35,30 @@ export function ProviderNpmFailure({
   );
 }
 
-/** A rejected single-switch write, shown inside its own row. */
+/** A rejected single-switch write, shown inside its own row, dismissible. */
 export function ProviderWriteError({
   error,
   providerId,
+  onDismiss,
 }: {
   error: ErrorSentence;
   providerId: string;
+  onDismiss: () => void;
 }) {
   return (
-    <p role="alert" className="device-error">
+    <div role="alert" className="device-error">
       <ErrorText
         sentence={error.sentence}
         detail={error.detail}
         id={`settings-tool-policy-error-${providerId}`}
       />
-    </p>
+      <button
+        type="button"
+        className="provider-refresh provider-update-error-dismiss"
+        onClick={onDismiss}
+      >
+        Dismiss
+      </button>
+    </div>
   );
 }

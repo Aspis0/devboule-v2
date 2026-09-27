@@ -4,12 +4,6 @@ import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import type { ToolPolicyEntry } from "../../../types/ipc";
 import { toolPolicyFor } from "../providerStatus";
 
-/** A rejected single-switch write, shown inside its own row. */
-export interface ToolWriteError {
-  providerId: string;
-  error: ErrorSentence;
-}
-
 export interface ToolPolicies {
   /** The stored rows; null until the first load lands. */
   policies: readonly ToolPolicyEntry[] | null;
@@ -19,7 +13,9 @@ export interface ToolPolicies {
   retry: () => void;
   setEnabled: (providerId: string, next: boolean) => void;
   turnAllOn: (providerId: string) => void;
-  writeError: ToolWriteError | null;
+  /** Rejected writes by provider: one row's failure never erases another's. */
+  writeErrors: Readonly<Record<string, ErrorSentence>>;
+  dismissWriteError: (providerId: string) => void;
 }
 
 /**
@@ -27,37 +23,39 @@ export interface ToolPolicies {
  * card fetched per provider); every write carries one boolean and an always
  * empty deny list, which is also what normalises a legacy row the first time
  * its switch is touched. Overlap keeps the old card's contract: writes go
- * out in click order, only the newest sequence owns the UI when it settles,
- * and a superseded rejection reverts and reports nothing.
+ * out in click order and only the newest sequence owns the UI when it
+ * settles, while a fetch reply merges around in-flight writes instead of
+ * dropping them — so a reconnect refetch heals stale rows without clobbering
+ * an optimistic one.
  */
 export function useToolPolicies(supported: boolean, active: boolean): ToolPolicies {
   const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
   const [loadError, setLoadError] = useState<ErrorSentence | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [writeError, setWriteError] = useState<ToolWriteError | null>(null);
+  const [writeErrors, setWriteErrors] = useState<Readonly<Record<string, ErrorSentence>>>({});
   const [loadNonce, setLoadNonce] = useState(0);
   // Synchronous mirror of `policies`: what a second rapid write reads and
   // the base its revert applies to — never the render closure.
   const policiesRef = useRef<readonly ToolPolicyEntry[] | null>(null);
   // Monotonic write sequence: only the newest write owns the UI on settle.
   const seqRef = useRef(0);
-  // Writes between sent and settled. The load effect reads this to tell a
-  // write that overlapped the fetch (whose reply adopts nothing) apart from
-  // one that settled before it started.
-  const writesInFlightRef = useRef(0);
+  // Providers with a write between sent and settled. A fetch reply adopts
+  // the daemon's rows for everyone else and keeps these rows' optimistic
+  // state; each write's own settle confirms or reverts it.
+  const pinnedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!supported || !active) return;
     let cancelled = false;
-    const seqAtFetch = seqRef.current;
-    const writeWasInFlight = writesInFlightRef.current > 0;
     void toolPolicyGet()
       .then((reply) => {
         if (cancelled) return;
-        if (seqRef.current !== seqAtFetch) return;
-        if (writeWasInFlight) return;
-        policiesRef.current = reply.policies;
-        setPolicies(reply.policies);
+        const pinned = pinnedRef.current;
+        const kept = (policiesRef.current ?? []).filter((entry) => pinned.has(entry.providerId));
+        const fetched = reply.policies.filter((entry) => !pinned.has(entry.providerId));
+        const merged = [...fetched, ...kept];
+        policiesRef.current = merged;
+        setPolicies(merged);
         setLoadError(null);
         setLoadFailed(false);
       })
@@ -76,9 +74,16 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
     const before = policiesRef.current ?? [];
     const hadRow = before.some((entry) => entry.providerId === providerId);
     const previous = toolPolicyFor(providerId, policiesRef.current);
+    pinnedRef.current.add(providerId);
     const seq = ++seqRef.current;
-    writesInFlightRef.current += 1;
-    setWriteError(null);
+    // A new write to this provider retires its own unacknowledged failure;
+    // other providers' reports stand until theirs is touched or dismissed.
+    setWriteErrors((errors) => {
+      if (!(providerId in errors)) return errors;
+      const next = { ...errors };
+      delete next[providerId];
+      return next;
+    });
     const optimistic: readonly ToolPolicyEntry[] = [
       ...(policiesRef.current ?? []).filter((entry) => entry.providerId !== providerId),
       { providerId, enabled: nextEnabled ? null : false, disabledTools: [] },
@@ -91,9 +96,7 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
     } catch (cause) {
       if (seq !== seqRef.current) return;
       // Put back exactly what this write replaced: the prior row when one
-      // existed, nothing at all when the provider never had a row — an
-      // (enabled, []) row means the same as absent, but the store should
-      // not gain rows a rejection invented.
+      // existed, nothing at all when the provider never had a row.
       const without = (policiesRef.current ?? []).filter(
         (entry) => entry.providerId !== providerId,
       );
@@ -109,9 +112,10 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
         : without;
       policiesRef.current = reverted;
       setPolicies(reverted);
-      setWriteError({ providerId, error: errorSentence(cause) });
+      const failure = errorSentence(cause);
+      setWriteErrors((errors) => ({ ...errors, [providerId]: failure }));
     } finally {
-      writesInFlightRef.current -= 1;
+      pinnedRef.current.delete(providerId);
     }
   }
 
@@ -123,11 +127,29 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
     void persist(providerId, true);
   }
 
+  function dismissWriteError(providerId: string) {
+    setWriteErrors((errors) => {
+      if (!(providerId in errors)) return errors;
+      const next = { ...errors };
+      delete next[providerId];
+      return next;
+    });
+  }
+
   function retry() {
     setLoadError(null);
     setLoadFailed(false);
     setLoadNonce((nonce) => nonce + 1);
   }
 
-  return { policies, loadFailed, loadError, retry, setEnabled, turnAllOn, writeError };
+  return {
+    policies,
+    loadFailed,
+    loadError,
+    retry,
+    setEnabled,
+    turnAllOn,
+    writeErrors,
+    dismissWriteError,
+  };
 }
