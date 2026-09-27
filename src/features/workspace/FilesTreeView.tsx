@@ -166,7 +166,8 @@ const DirRow = memo(function DirRow({
   depth,
   expanded,
   groupId,
-  renaming,
+  isRenaming,
+  renameValue,
   acting,
   menuOpen,
   onToggle,
@@ -182,7 +183,8 @@ const DirRow = memo(function DirRow({
   depth: number;
   expanded: boolean;
   groupId: string;
-  renaming: FilesRenaming | null;
+  isRenaming: boolean;
+  renameValue: string;
   acting: boolean;
   menuOpen: boolean;
   onToggle: (path: string) => void;
@@ -194,13 +196,13 @@ const DirRow = memo(function DirRow({
   onDuplicate: (entry: WorkspaceFileEntry) => void;
   onDelete: (entry: WorkspaceFileEntry) => void;
 }) {
-  const beingRenamed = renaming !== null && renaming.path === entry.path;
+  const beingRenamed = isRenaming;
   return (
     <div className="workspace-tree-row">
-      {beingRenamed && renaming !== null ? (
+      {beingRenamed ? (
         <RenameInput
           entry={entry}
-          value={renaming.value}
+          value={renameValue}
           acting={acting}
           onRenameChange={onRenameChange}
           onCancelRename={onCancelRename}
@@ -254,7 +256,8 @@ const FileRow = memo(function FileRow({
   entry,
   depth,
   selected,
-  renaming,
+  isRenaming,
+  renameValue,
   acting,
   menuOpen,
   onSelect,
@@ -271,7 +274,8 @@ const FileRow = memo(function FileRow({
   entry: WorkspaceFileEntry;
   depth: number;
   selected: boolean;
-  renaming: FilesRenaming | null;
+  isRenaming: boolean;
+  renameValue: string;
   acting: boolean;
   menuOpen: boolean;
   onSelect: (path: string) => void;
@@ -285,13 +289,13 @@ const FileRow = memo(function FileRow({
   onOpenFile?: (workspaceId: string, path: string) => void;
   workspaceId: string;
 }) {
-  const beingRenamed = renaming !== null && renaming.path === entry.path;
+  const beingRenamed = isRenaming;
   return (
     <div className="workspace-tree-row">
-      {beingRenamed && renaming !== null ? (
+      {beingRenamed ? (
         <RenameInput
           entry={entry}
-          value={renaming.value}
+          value={renameValue}
           acting={acting}
           onRenameChange={onRenameChange}
           onCancelRename={onCancelRename}
@@ -464,7 +468,10 @@ function FolderGroup({
                   depth={depth}
                   expanded={isExpanded}
                   groupId={groupId}
-                  renaming={renaming}
+                  isRenaming={renaming !== null && renaming.path === entry.path}
+                  renameValue={
+                    renaming !== null && renaming.path === entry.path ? renaming.value : ""
+                  }
                   acting={acting}
                   menuOpen={menuPath === entry.path}
                   onToggle={onToggle}
@@ -509,7 +516,10 @@ function FolderGroup({
                 entry={entry}
                 depth={depth}
                 selected={selection === entry.path}
-                renaming={renaming}
+                isRenaming={renaming !== null && renaming.path === entry.path}
+                renameValue={
+                  renaming !== null && renaming.path === entry.path ? renaming.value : ""
+                }
                 acting={acting}
                 menuOpen={menuPath === entry.path}
                 onSelect={onSelect}

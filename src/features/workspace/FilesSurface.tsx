@@ -34,7 +34,10 @@ interface FilesSurfaceProps {
 function FilesToolbar({ onRefresh }: { onRefresh: () => void }) {
   return (
     <div className="workspace-files-toolbar">
-      <span className="workspace-files-sort-label" title="Sorted by name, folders first">
+      <span
+        className="workspace-files-sort-label"
+        title="Sorted by name, folders first — the only order the wire can carry, so there is nothing to open here."
+      >
         <span>Name</span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path

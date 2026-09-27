@@ -33,6 +33,23 @@ vi.mock("./filesSort", async (importOriginal) => {
   };
 });
 
+/** How many file rows rendered a size: one call per rendered file row
+ * that carries one. Reset per test; the wrapper calls through, so the
+ * sizes on screen stay the stat's own numbers while this counts rebuilt
+ * rows. */
+let sizeCalls = 0;
+
+vi.mock("./FilesPreview", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./FilesPreview")>();
+  return {
+    ...actual,
+    formatSize: (bytes: number) => {
+      sizeCalls += 1;
+      return actual.formatSize(bytes);
+    },
+  };
+});
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const rootDir = resolve(import.meta.dirname, "../../..");
@@ -85,6 +102,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
 
   beforeEach(() => {
     sortCalls = 0;
+    sizeCalls = 0;
   });
 
   afterEach(async () => {
@@ -238,6 +256,45 @@ describe("FilesSurface R7c sort and toolbar", () => {
     expect(sortCalls).toBe(settled);
   });
 
+  // A rename keystroke rebuilds one row, not the tree (N-01): the
+  // renaming state reaches only the row being renamed as a value pair,
+  // so every other memo'd row keeps identical props. Kills the object
+  // prop that defeated the memo for 39 of 40 rows per character typed.
+  it("rebuilds only the renaming row on a rename keystroke", async () => {
+    const files = Array.from({ length: 40 }, (_, index) => `f${index}.txt`);
+    vi.mocked(workspaceFilesList).mockResolvedValue(
+      listing(files.map((path) => entry(path, "file", 6))),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    expect(sizeCalls).toBe(40);
+
+    const trigger = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-tree-menu-trigger"),
+    ).find((button) => button.getAttribute("aria-label") === "f0.txt actions");
+    if (trigger === undefined) throw new Error("row menu trigger did not render");
+    await act(async () => {
+      trigger.click();
+    });
+    const rename = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Rename");
+    if (rename === undefined) throw new Error("Rename item did not render");
+    await act(async () => {
+      rename.click();
+    });
+    const input = container.querySelector<HTMLInputElement>(".workspace-tree-rename");
+    if (input === null) throw new Error("rename input did not render");
+    const settled = sizeCalls;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    if (setter === undefined) throw new Error("no value setter");
+    await act(async () => {
+      setter.call(input, "f0-renamed.txt");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(input.value).toBe("f0-renamed.txt");
+    expect(sizeCalls).toBe(settled);
+  });
+
   // One criterion means no menu (F-03): the toolbar names the order with
   // a static label — the mockup's own `.ftoolbar` shape — instead of a
   // control that cannot do anything. Clicking it opens nothing.
@@ -366,10 +423,10 @@ describe("FilesSurface R7c sort and toolbar", () => {
   // with `vite build`: index.css — tokens, global, errorBoundaries,
   // PermissionCard, PickerChip — then artifactPreview, then Workspace.css
   // in the SidebarFooter chunk, then the Workspace chunk as changes →
-  // files → QueueTrack → strip → sidebar (which carries the history
-  // rules; no history.css source exists) → panel.css; the
-  // settings/design/marketplace/polis/oracle chunks load after and name
-  // none of these selectors, verified by grep). The toolbar (sort label
+  // files → QueueTrack → strip → history → sidebar → panel.css; the
+  // settings/design/marketplace/polis/oracle chunks load after. Every
+  // other sheet in the repo names none of these selectors, verified by
+  // grep — the omissions below that line are inert, not unexamined). The toolbar (sort label
   // left, quiet refresh right), h24 sans rows with the 14px indent step,
   // the trigger fitting its row, the name beside its icon, mockup radii
   // and sizes, the selected file as a fill-tool row, and the preview
@@ -387,6 +444,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
       read("src/features/workspace/panel/files.css"),
       read("src/features/workspace/QueueTrack.css"),
       read("src/features/workspace/strip/strip.css"),
+      read("src/features/history/history.css"),
       read("src/features/workspace/sidebar/sidebar.css"),
       read("src/features/workspace/panel/panel.css"),
     ]);
