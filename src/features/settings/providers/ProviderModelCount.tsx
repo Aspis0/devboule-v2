@@ -76,12 +76,13 @@ export function ProviderModelCount({
     );
     cache.set(providerId, { epoch, value: pending });
     void pending.then((value) => {
-      if (cancelled) return;
-      // Never clobber a newer entry: a refresh or a second read may have
-      // replaced this promise while it was open.
+      // The cache is not view state: it is written even when the creating
+      // instance unmounted mid-read, so a later remount subscribes instead
+      // of seeing a blank frame.
       if (cache.get(providerId)?.value === pending) {
         cache.set(providerId, { epoch, value });
       }
+      if (cancelled) return;
       setCount(value);
     });
     return () => {

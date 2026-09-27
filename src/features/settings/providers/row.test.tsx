@@ -58,7 +58,6 @@ describe("ProviderRow", () => {
       actionsDisabled: false,
       modelEpoch: 0,
       viaNpx: false,
-      rowRef: () => {},
       onToggleTools: () => {},
       onTurnAllOn: () => {},
       onOpenUpdate: () => {},
@@ -223,12 +222,15 @@ describe("ProviderRow", () => {
     expect(container.querySelector(".prov-details")?.textContent).not.toContain("Version");
   });
 
-  it("names npx provenance even when the protocol is unknown", async () => {
+  it("shows the protocol only when known; npx provenance lives on the row", async () => {
     await renderRow({
       provider: providerWith({ protocol: null, origin: "npx-wrapper" }),
+      viaNpx: true,
     });
     await act(async () => chevron().click());
-    expect(container.querySelector(".prov-details")?.textContent).toContain("via npx");
+    // No labelled line whose value is not a protocol; the row word carries it.
+    expect(container.querySelector(".prov-details")?.textContent).not.toContain("Protocol");
+    expect(container.textContent).toContain("via npx");
   });
 
   it("sanitises a user-declarable provider id before it becomes a DOM id", async () => {

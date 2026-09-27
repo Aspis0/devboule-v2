@@ -288,6 +288,12 @@ describe("providers sections and search", () => {
     expect(npx.textContent).toMatch(/nothing is installed/i);
     // Install flow untouched: the not-installed row stays available.
     expect(container.textContent).toContain("Available to install");
+    // Order: Installed, then Available with its search, then the long npx
+    // card last — the search must not sit under 20 rows.
+    const order = Array.from(container.querySelectorAll("#settings-panel-providers > section")).map(
+      (section) => section.getAttribute("aria-label"),
+    );
+    expect(order).toEqual(["Installed", "Available to install", "Run on demand (npx)"]);
   });
 
   it("says when no agent CLI is on PATH", async () => {

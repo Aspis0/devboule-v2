@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProviderInfo } from "../../../types/ipc";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import { providerCanUpdate, providerRowStatus, providerVersionSegments } from "../providerStatus";
@@ -60,8 +60,6 @@ export interface ProviderRowProps {
   modelEpoch: number;
   /** Registry row that starts through npx: said plainly on the row. */
   viaNpx: boolean;
-  /** Panel-owned node registry for returning focus after Confirm. */
-  rowRef: (node: HTMLDivElement | null) => void;
   onToggleTools: (next: boolean) => void;
   onTurnAllOn: () => void;
   onOpenUpdate: (trigger: HTMLButtonElement | null) => void;
@@ -93,7 +91,6 @@ export function ProviderRow({
   actionsDisabled,
   modelEpoch,
   viaNpx,
-  rowRef,
   onToggleTools,
   onTurnAllOn,
   onOpenUpdate,
@@ -104,13 +101,6 @@ export function ProviderRow({
 }: ProviderRowProps) {
   const [expanded, setExpanded] = useState(false);
   const rowScopeRef = useRef<HTMLDivElement>(null);
-  const setWrapNode = useCallback(
-    (node: HTMLDivElement | null) => {
-      rowScopeRef.current = node;
-      rowRef(node);
-    },
-    [rowRef],
-  );
   // Kebab Update passes no trigger (the menu item unmounts), so the row
   // remembers where consent came from and returns focus to the kebab on
   // Cancel itself — the panel's restore effect only covers live triggers.
@@ -130,10 +120,10 @@ export function ProviderRow({
   // sanitised before it becomes a DOM id.
   const detailsId = `prov-details-${provider.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const hasVersion = providerVersionSegments(provider).length > 0;
-  const protocolParts = [
-    provider.protocol ? protocolLabel(provider.protocol) : null,
-    provider.origin === "npx-wrapper" ? "via npx" : null,
-  ].filter((part): part is string => part !== null);
+  // The protocol line names a protocol or renders nothing: on daemons that
+  // report no protocol for a wrapper, "via npx" alone is not a protocol
+  // and the group note plus the row word already carry provenance.
+  const protocolName = provider.protocol ? protocolLabel(provider.protocol) : null;
 
   function openUpdateFromKebab() {
     setConsentFromKebab(true);
@@ -153,7 +143,7 @@ export function ProviderRow({
   }
 
   return (
-    <div className="prov-row-wrap" ref={setWrapNode} tabIndex={-1} data-provider-row={provider.id}>
+    <div className="prov-row-wrap" ref={rowScopeRef} tabIndex={-1} data-provider-row={provider.id}>
       <div className="prov-row">
         <button
           type="button"
@@ -214,10 +204,10 @@ export function ProviderRow({
               <ProviderVersionLine provider={provider} />
             </div>
           ) : null}
-          {protocolParts.length > 0 ? (
+          {protocolName !== null ? (
             <div className="prov-detail-line">
               <span className="prov-detail-label">Protocol</span>
-              <span className="prov-detail-value">{protocolParts.join(" · ")}</span>
+              <span className="prov-detail-value">{protocolName}</span>
             </div>
           ) : null}
           {busyVerb !== null ? (

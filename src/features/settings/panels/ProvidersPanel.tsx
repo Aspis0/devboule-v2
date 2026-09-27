@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { providerUpdate, providersList, providersRefresh } from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
@@ -71,32 +71,22 @@ export function ProvidersPanel() {
     setModelEpoch((epoch) => epoch + 1);
   }
 
-  // Row nodes by provider id, for returning focus after Confirm on the
-  // kebab path (the menu item is unmounted, so the trigger restore has
-  // nothing to focus). Callbacks are cached per id: a fresh closure every
-  // render would detach and re-attach every ref on every 2 s poll.
-  const rowNodesRef = useRef(new Map<string, HTMLDivElement>());
-  const rowRefCallbacks = useRef(new Map<string, (node: HTMLDivElement | null) => void>());
-  const registerRowNode = useCallback((providerId: string) => {
-    let callback = rowRefCallbacks.current.get(providerId);
-    if (!callback) {
-      callback = (node: HTMLDivElement | null) => {
-        if (node === null) rowNodesRef.current.delete(providerId);
-        else rowNodesRef.current.set(providerId, node);
-      };
-      rowRefCallbacks.current.set(providerId, callback);
-    }
-    return callback;
-  }, []);
-  // Set on Confirm when the trigger is already gone (kebab path): the
-  // effect below moves focus onto the row showing the npm run.
+  // Set on Confirm: the effect below moves focus onto the row showing the
+  // npm run. Found by attribute at focus time — no node registry, no
+  // render-phase ref access.
   const pendingFocusRowRef = useRef<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (npmRun === null) return;
+    if (npmRun === null) {
+      pendingFocusRowRef.current = null;
+      return;
+    }
     const providerId = pendingFocusRowRef.current;
     if (providerId === null) return;
-    const node = rowNodesRef.current.get(providerId);
+    const node = [...(panelRef.current?.querySelectorAll("[data-provider-row]") ?? [])].find(
+      (element) => element.getAttribute("data-provider-row") === providerId,
+    ) as HTMLElement | undefined;
     node?.focus();
     if (node) pendingFocusRowRef.current = null;
   }, [npmRun, catalog]);
@@ -273,7 +263,6 @@ export function ProvidersPanel() {
         actionsDisabled={npmRun !== null}
         modelEpoch={modelEpoch}
         viaNpx={viaNpx}
-        rowRef={registerRowNode(provider.id)}
         onToggleTools={(next) => toolStore.setEnabled(provider.id, next)}
         onTurnAllOn={() => toolStore.turnAllOn(provider.id)}
         onOpenUpdate={(trigger) => openConsent(provider, "update", trigger)}
@@ -285,7 +274,7 @@ export function ProvidersPanel() {
     );
   }
   return (
-    <div id="settings-panel-providers">
+    <div id="settings-panel-providers" ref={panelRef}>
       <button className="provider-refresh" type="button" disabled={refreshing} onClick={refresh}>
         {refreshing ? "Refreshing…" : "Refresh"}
       </button>
@@ -334,18 +323,6 @@ export function ProvidersPanel() {
               </div>
             </section>
           ) : null}
-          {npxProviders.length > 0 ? (
-            <section aria-label="Run on demand (npx)">
-              <h3 className="settings-subheading">Run on demand (npx)</h3>
-              <p className="prov-group-note">
-                These providers start on demand through npx — nothing is installed for them on this
-                machine.
-              </p>
-              <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
-                {npxProviders.map((provider) => renderInstalledRow(provider, true))}
-              </div>
-            </section>
-          ) : null}
           {available.length > 0 ? (
             <section aria-label="Available to install">
               <h3 className="settings-subheading">Available to install</h3>
@@ -370,7 +347,6 @@ export function ProvidersPanel() {
                       <div
                         className="prov-available-row"
                         key={provider.id}
-                        ref={registerRowNode(provider.id)}
                         tabIndex={-1}
                         data-provider-row={provider.id}
                       >
@@ -420,6 +396,18 @@ export function ProvidersPanel() {
                   })}
                 </div>
               )}
+            </section>
+          ) : null}
+          {npxProviders.length > 0 ? (
+            <section aria-label="Run on demand (npx)">
+              <h3 className="settings-subheading">Run on demand (npx)</h3>
+              <p className="prov-group-note">
+                These providers start on demand through npx — nothing is installed for them on this
+                machine.
+              </p>
+              <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
+                {npxProviders.map((provider) => renderInstalledRow(provider, true))}
+              </div>
             </section>
           ) : null}
           {unreadableDirs > 0 ? (
