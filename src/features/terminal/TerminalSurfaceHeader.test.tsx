@@ -9,7 +9,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TerminalSurface } from "../../terminal/TerminalSurface";
+import { TerminalSurface } from "./TerminalSurface";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -41,7 +41,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-vi.mock("../../terminal/createTerminalView", () => ({
+vi.mock("./createTerminalView", () => ({
   createTerminalView: async () => ({
     write: (_data: string, callback?: () => void) => callback?.(),
     applySnapshot: (_snapshot: unknown, callback: () => void) => callback(),

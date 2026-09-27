@@ -1,6 +1,4 @@
 .workspace-terminal-toolbar {
-  position: relative; /* The kebab menu anchors here, as on the agent row. */
-  z-index: 1;
   display: flex;
   flex: none;
   align-items: center;
@@ -27,6 +25,7 @@
 }
 
 .workspace-terminal-toolbar .workspace-terminal-status {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
@@ -131,12 +130,36 @@
 }
 
 .pane-header-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 8px;
-  z-index: 2;
-  min-width: 190px;
-  max-width: 280px;
+  width: 240px;
+  padding: 4px;
+  background: var(--panel-menu);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-pop);
+}
+
+.pane-header-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 9px;
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.pane-header-menu-item:not(:disabled):hover,
+.pane-header-menu-item:not(:disabled):focus-visible {
+  background: var(--fill-hover);
+  color: var(--ink);
 }
 
 .pane-header-path {
@@ -144,8 +167,7 @@
   overflow: hidden;
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
-  text-overflow: ellipsis;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -155,7 +177,6 @@
   place-items: center;
   width: 28px;
   height: 28px;
-  margin-left: auto;
   padding: 0;
   color: var(--muted);
   background: transparent;

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "../strip/menuNav";
 import type { TabMenuEntry } from "../strip/tabCloseMenu";
 import { middleTruncate, type PaneHeaderMenu } from "./paneHeaderMenu";
@@ -10,13 +11,15 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
       if (copyTimer.current !== null) clearTimeout(copyTimer.current);
-    },
-    [],
-  );
+    };
+  }, []);
 
   // Focus the first entry that can act, as the strip's tab menu does: a
   // disabled row takes no focus.
@@ -68,8 +71,8 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
       return;
     }
     if (event.key === "Tab") {
-      // The menu floats over the transcript: continuing from here would walk
-      // into the conversation. Hand focus back to the kebab instead.
+      // A body portal: continuing from here would resume at the end of
+      // document.body. Hand focus back to the kebab instead.
       event.preventDefault();
       closeToKebab();
       return;
@@ -83,18 +86,21 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
     // non-secure context leaves it undefined, and awaiting undefined would
     // succeed and claim a copy that never happened.
     const clipboard: Clipboard | undefined = navigator.clipboard;
-    if (clipboard === undefined) {
-      setCopyState("failed");
-      return;
+    let copied = false;
+    if (clipboard !== undefined) {
+      try {
+        await clipboard.writeText(menu.copyPath);
+        copied = true;
+      } catch {
+        copied = false;
+      }
     }
-    try {
-      await clipboard.writeText(menu.copyPath);
-      setCopyState("copied");
-    } catch {
-      setCopyState("failed");
-    }
+    if (!mountedRef.current) return;
+    setCopyState(copied ? "copied" : "failed");
     if (copyTimer.current !== null) clearTimeout(copyTimer.current);
-    copyTimer.current = setTimeout(() => setCopyState("idle"), 1500);
+    copyTimer.current = setTimeout(() => {
+      if (mountedRef.current) setCopyState("idle");
+    }, 1500);
   }
 
   function activateClose(key: TabMenuEntry["key"]) {
@@ -123,7 +129,12 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
         ⋮
       </button>
       {open ? (
-        <div ref={rootRef} className="pane-header-menu workspace-surface-menu">
+        <AnchoredPopover
+          anchorRef={kebabRef}
+          containerRef={rootRef}
+          onDismiss={() => setOpen(false)}
+          className="pane-header-menu"
+        >
           {menu.copyPath !== null ? (
             <div className="pane-header-path" title={menu.copyPath}>
               {middleTruncate(menu.copyPath)}
@@ -134,7 +145,7 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
               <button
                 type="button"
                 role="menuitem"
-                className="workspace-surface-option"
+                className="pane-header-menu-item"
                 onClick={() => void copyPath()}
               >
                 {copyState === "copied"
@@ -152,7 +163,7 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
                 key={entry.key}
                 type="button"
                 role="menuitem"
-                className="workspace-surface-option"
+                className="pane-header-menu-item"
                 disabled={entry.disabled || menu.onCloseEntry === null}
                 onClick={() => activateClose(entry.key)}
               >
@@ -160,7 +171,10 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
               </button>
             ))}
           </div>
-        </div>
+          <span className="sr-only" role="status">
+            {copyState === "copied" ? "Path copied" : copyState === "failed" ? "Copy failed" : ""}
+          </span>
+        </AnchoredPopover>
       ) : null}
     </>
   );
