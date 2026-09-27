@@ -1,11 +1,14 @@
 //! Shared character tables for untrusted text: line breaks and invisible formatting.
 //!
-//! One table per fact, used by the envelope headers, the roster boundary and
-//! the pairing-name check, so the three paths agree by construction.
+//! One table per fact, used by every door that stores a name and later renders
+//! one (device names, session titles, envelope headers, the roster boundary),
+//! so a string one door accepts is not refused at another. The tables live in
+//! the protocol crate because the session-name rule (`messages.rs`) is
+//! validated here; the daemon calls the same functions rather than keeping a
+//! second copy.
 
 /// Mandatory line breaks: render as a new line even where `\n` is absent, so headers flatten them.
-#[cfg(any(feature = "server", test))]
-pub(crate) fn is_mandatory_line_break(character: char) -> bool {
+pub fn is_mandatory_line_break(character: char) -> bool {
     matches!(
         character,
         '\r' | '\n' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}'
@@ -13,7 +16,7 @@ pub(crate) fn is_mandatory_line_break(character: char) -> bool {
 }
 
 /// Zero-width and bidi formatting that makes a name render as something other than what it holds.
-pub(crate) fn is_invisible_format(character: char) -> bool {
+pub fn is_invisible_format(character: char) -> bool {
     matches!(
         character,
         '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}'
@@ -28,8 +31,7 @@ pub(crate) fn is_invisible_format(character: char) -> bool {
 /// One rule for every surface that stores a name and later renders one (a
 /// device name, a session title), so a string one door accepts is not
 /// refused at another.
-#[cfg(any(feature = "server", test))]
-pub(crate) fn unsafe_character(name: &str) -> Option<&'static str> {
+pub fn unsafe_character(name: &str) -> Option<&'static str> {
     for character in name.chars() {
         if character.is_control() {
             return Some("a control character");

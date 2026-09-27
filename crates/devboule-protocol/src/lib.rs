@@ -85,6 +85,7 @@ mod project;
 mod session;
 #[cfg(test)]
 mod session_event_guard;
+mod text_safety;
 
 pub use attachments::{
     attachment_name_too_long_message, attachment_reference_session_mismatch_message,
@@ -100,13 +101,13 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    derive_session_title, validate_display_name, AgentMessageState, AgentProfile,
-    AgentProfilesDocument, AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody,
-    DelegationSource, JournalLimits, JournalRetention, JournalSessionUsage, JournalStats,
-    JournalUsage, PairingSecret, PeerAgent, PeerRole, PeerRosterScope, PeerRow, PendingPairing,
-    PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch,
-    RetentionSource, SelfInfo, SessionEventEnvelope, StoredAttachment, ToolDescriptor,
-    ToolPolicyEntry, Unreclaimable, VocabularyFeature, VocabularyFeatureControl,
+    clamp_display_name, derive_session_title, validate_display_name, AgentMessageState,
+    AgentProfile, AgentProfilesDocument, AttachmentReference, ClientMessage, DaemonMessage,
+    DaemonStatusBody, DelegationSource, JournalLimits, JournalRetention, JournalSessionUsage,
+    JournalStats, JournalUsage, PairingSecret, PeerAgent, PeerRole, PeerRosterScope, PeerRow,
+    PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit,
+    RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope, StoredAttachment,
+    ToolDescriptor, ToolPolicyEntry, Unreclaimable, VocabularyFeature, VocabularyFeatureControl,
     VocabularyFeatureOption, VocabularyFeatures, VocabularyModels, VocabularyModes,
     VocabularyOrigin, VocabularySource, VocabularyState, WorkspaceDirectory, WorkspaceFileContent,
     WorkspaceFileContentKind, WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind,
@@ -128,6 +129,7 @@ pub use session::{
     SessionStateSnapshot, SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
     UnattendedState, UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
 };
+pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_character};
 
 /// Current protocol dialect spoken by this crate.
 ///

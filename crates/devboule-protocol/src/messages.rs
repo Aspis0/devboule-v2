@@ -926,6 +926,16 @@ pub enum ClientMessage {
 /// caller sent with nothing bounding its length, and repeating it would move a
 /// flood out of the frame and into an error the app renders.
 ///
+/// The character rule is [`crate::text_safety::unsafe_character`], shared with
+/// device names: bidi overrides, zero-width and invisible formatting, and
+/// Unicode line separators are refused here exactly as they are there, so a
+/// string one door accepts is not refused at another.
+///
+/// Sixty characters for an explicit rename is a deliberate divergence from
+/// Paseo, which allows 200 there and clamps only the derived title: a tab
+/// strip is not a profile page, and the surfaces that render this name are
+/// sized for the derived cap.
+///
 /// Refusing an empty name instead of treating it as absent is deliberate:
 /// `None` is how a caller says "no name", and a caller that sent `""` (or only
 /// whitespace) meant to name the session something it did not manage to say.
@@ -934,8 +944,10 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("A session display name is required; it was empty.".to_string());
     }
-    if trimmed.chars().any(|point| point.is_control()) {
-        return Err("A session display name must not contain control characters.".to_string());
+    if let Some(category) = crate::text_safety::unsafe_character(trimmed) {
+        return Err(format!(
+            "A session display name must not contain {category}."
+        ));
     }
     let length = trimmed.chars().count();
     if length > crate::MAX_DISPLAY_NAME_CHARS {
@@ -953,31 +965,60 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 /// whitespace-collapsed, clamped to [`crate::MAX_DISPLAY_NAME_CHARS`]
 /// characters. Sixty, because the title renders where a display name renders
 /// — the tab strip, the pane header, History rows, attention toasts — and
-/// shares its cap. Counted in `char`s, never split mid-scalar, and stripped
-/// of control characters, so the result always passes
-/// [`validate_display_name`].
+/// shares its cap.
 ///
-/// `None` when the text holds no line worth naming: empty, whitespace-only,
-/// or nothing but control characters. Callers hand this function the
-/// person's — or the creator agent's — own text, never the daemon-composed
-/// first prompt (standing instructions, spawn prompt, preamble), which is
-/// why the send path derives from the raw text beside the composed one.
+/// `None` when the text holds no line worth naming, or when the collapsed
+/// line carries a character no name may hold: declining is the rule here
+/// rather than the validation's refusal, but stripping the character and
+/// keeping a mutated word is never an option — the tab must show what the
+/// person typed. Separator characters never reach that check: the collapse
+/// turns them into spaces first, the same neutralisation Paseo's `\s` does.
+/// Callers hand this function the person's — or the creator agent's — own
+/// text, never the daemon-composed first prompt (standing instructions,
+/// spawn prompt, preamble), which is why the send path derives from the raw
+/// text beside the composed one.
+///
+/// Two deliberate divergences from Paseo, both recorded so neither looks
+/// like parity: the clamp counts by grapheme clusters rather than UTF-16
+/// code units (sixty emoji stay sixty rather than thirty), and Rust's
+/// whitespace set is not JS `\s` (U+FEFF splits words there and not here;
+/// U+0085 the reverse) — cosmetic, and invisible-formatting names are
+/// refused either way.
 ///
 /// The clamp keeps the head, not the tail: a prompt's first words say what
 /// it is about, and Paseo clamps the same end.
 pub fn derive_session_title(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
     let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    let clean: String = collapsed
-        .chars()
-        .filter(|point| !point.is_control())
-        .collect();
-    let clean = clean.trim();
-    if clean.is_empty() {
+    if crate::text_safety::unsafe_character(&collapsed).is_some() {
         return None;
     }
-    let title: String = clean.chars().take(crate::MAX_DISPLAY_NAME_CHARS).collect();
-    Some(title.trim_end().to_string())
+    Some(clamp_display_name(&collapsed))
+}
+
+/// Clamp a trusted name to [`crate::MAX_DISPLAY_NAME_CHARS`] characters
+/// without splitting a grapheme cluster: a combining mark or a ZWJ sequence
+/// cut mid-cluster renders as a stray accent or a half-drawn emoji in the
+/// strip. Counts characters like the validation cap, so a clamped name still
+/// passes it; drops a trailing space the cut may leave behind.
+///
+/// Length only: callers pass text whose characters already satisfy the rule
+/// (derived titles decline the unsafe ones above; internal composers build
+/// from validated names plus ASCII suffixes), which is why this clamps
+/// rather than validates.
+pub fn clamp_display_name(name: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut taken = 0;
+    let mut end = 0;
+    for cluster in name.graphemes(true) {
+        let width = cluster.chars().count();
+        if taken + width > crate::MAX_DISPLAY_NAME_CHARS {
+            break;
+        }
+        taken += width;
+        end += cluster.len();
+    }
+    name[..end].trim_end().to_string()
 }
 
 impl ClientMessage {

@@ -1565,6 +1565,27 @@ pub enum UserMessageKind {
     Creation,
 }
 
+impl UserMessageKind {
+    /// Whether a send of this kind may title its session from its raw text:
+    /// the person's composer message and the creator agent's task. Both are
+    /// someone's own words; a2a envelopes and daemon notices never qualify,
+    /// and neither does anything the send path composed around the text
+    /// (standing instructions, spawn prompt, preamble), which is why the
+    /// hook reads the raw text beside the composed one.
+    pub fn titles_from_raw_text(self) -> bool {
+        matches!(self, Self::Composer | Self::Creation)
+    }
+
+    /// Whether a journalled message of this kind may title its session:
+    /// only the person's composer message. The journalled creation echo is
+    /// the composed prompt, so `Creation` qualifies at the send site and
+    /// never here; legacy `Unknown` rows stay untitled until the next
+    /// prompt rather than risk a notice's words.
+    pub fn titles_from_record(self) -> bool {
+        matches!(self, Self::Composer)
+    }
+}
+
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;

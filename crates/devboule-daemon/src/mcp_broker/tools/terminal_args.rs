@@ -27,10 +27,7 @@ pub(super) fn parse_name(arguments: &Value) -> Result<Option<String>, String> {
                 return Ok(None);
             }
             let name = validate_display_name(trimmed)?;
-            match crate::text_safety::unsafe_character(&name) {
-                Some(category) => Err(format!("name must be plain text: it contains {category}")),
-                None => Ok(Some(name)),
-            }
+            Ok(Some(name))
         }
         Some(_) => Err("name must be a string".to_string()),
     }

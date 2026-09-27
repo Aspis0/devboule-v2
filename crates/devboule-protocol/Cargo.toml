@@ -14,3 +14,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 # Direct because plugin invoke payloads are JSON objects on the same frames
 # as ping/status. Already in the workspace (daemon, src-tauri).
 serde_json = "=1.0.151"
+# Direct because display-name clamping counts grapheme clusters, not scalars.
+# Already in the workspace (locked 1.13.3 through the Tauri dependency tree);
+# this does not add a new package.
+unicode-segmentation = "=1.13.3"

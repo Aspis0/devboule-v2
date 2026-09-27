@@ -1138,14 +1138,18 @@ impl super::SessionRegistry {
             }
         }
         drop(writer);
-        // The auto-title: the first person-authored prompt names an untitled
-        // agent session, so peers see it too and every provider gets it. The
-        // title is derived from the raw text beside the composed one — the
-        // standing instructions, spawn prompt and preamble the daemon added
-        // must never become the name — and only a `Human` or `Agent` prompt
-        // qualifies: the creation's own first send is `Creation`-authored, and
-        // a child that arrived with a title keeps it.
-        if is_agent && matches!(author, UserMessageAuthor::Human | UserMessageAuthor::Agent) {
+        // The auto-title: a qualifying prompt names an untitled agent
+        // session, so peers see it too and every provider gets it. The kind
+        // decides, never the author: an `Agent`-authored envelope or notice
+        // is daemon framing, not anyone's words, while the creator's task
+        // (`Creation`) is. The title is derived from the raw text beside
+        // the composed one — standing instructions, spawn prompt and
+        // preamble must never become the name. A steer that fell through
+        // to a plain send is `Composer`-kind and may title: its text was
+        // delivered as a new prompt, and the next composed prompt would
+        // title the session anyway. Out-of-band commands return before
+        // this point and never reach it.
+        if is_agent && message_kind.titles_from_raw_text() {
             if let Some(title) = devboule_protocol::derive_session_title(raw_text) {
                 self.title_if_unset(session_id, owner, &title, &conn.conn_peer);
             }

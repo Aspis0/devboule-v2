@@ -120,7 +120,7 @@ pub(crate) fn single_line_header(text: &str) -> String {
     let mut single = String::with_capacity(text.len());
     let mut rest = text.chars().peekable();
     while let Some(next) = rest.next() {
-        if crate::text_safety::is_mandatory_line_break(next) {
+        if devboule_protocol::is_mandatory_line_break(next) {
             if next == '\r' && rest.peek() == Some(&'\n') {
                 rest.next();
             }

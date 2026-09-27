@@ -706,7 +706,9 @@ export function createWorkspaceSessionController(
         createdBy: snapshot.createdBy ?? previous?.createdBy,
         // The name is identity, like the creator: a rename arrives as a
         // roster push carrying the new name, and a push that omits it lets
-        // the row's known value stand.
+        // the row's known value stand. No push ever clears a name — the
+        // daemon has no unset for one — so a missing field is always
+        // "nothing said", never "removed".
         displayName: snapshot.displayName ?? previous?.displayName,
         // Origin is session identity, not roster state: a push that stops
         // carrying it (or never did) must not erase what the list already

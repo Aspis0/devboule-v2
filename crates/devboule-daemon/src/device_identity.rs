@@ -252,8 +252,8 @@ pub const FALLBACK_DISPLAY_NAME: &str = "unknown";
 ///   like two different devices);
 /// - no control characters;
 /// - no zero-width or bidirectional-format characters
-///   ([`crate::text_safety::is_invisible_format`]);
-/// - no line-break characters ([`crate::text_safety::is_mandatory_line_break`]),
+///   ([`devboule_protocol::is_invisible_format`]);
+/// - no line-break characters ([`devboule_protocol::is_mandatory_line_break`]),
 ///   which would put the card's decision text on a second line.
 ///
 /// The fingerprint remains the check that actually matters; this only stops the
@@ -274,7 +274,7 @@ pub fn validate_display_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("the device name is empty".to_string());
     }
-    if let Some(category) = crate::text_safety::unsafe_character(name) {
+    if let Some(category) = devboule_protocol::unsafe_character(name) {
         return Err(format!("the device name contains {category}"));
     }
     Ok(())

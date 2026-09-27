@@ -709,6 +709,11 @@ pub struct SessionRegistry {
     /// lock and never after it, so a count and the reservation it answers
     /// with cannot be split by another create.
     terminal_slots: Arc<Mutex<HashMap<String, usize>>>,
+    /// Write identities for display-name updates, one counter per session.
+    /// A rollback restores only its own epoch (see `rollback_display_name`);
+    /// the table is taken after `inner`, never before it, and never across
+    /// the journal write.
+    display_name_epochs: Arc<Mutex<HashMap<String, u64>>>,
     #[cfg(test)]
     journal_list_calls: Arc<AtomicU64>,
     #[cfg(test)]
@@ -811,6 +816,7 @@ impl SessionRegistry {
             message_brakes: Arc::new(Mutex::new(MessageBrakeTable::default())),
             creations: Arc::new(Mutex::new(AgentCreationTable::default())),
             terminal_slots: Arc::new(Mutex::new(HashMap::new())),
+            display_name_epochs: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             journal_list_calls: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
@@ -2228,12 +2234,17 @@ impl SessionRegistry {
                     );
                 }
                 // A resumed session that never earned a name takes one from
-                // its own journal now: the first user message it holds. A
-                // session that already has one keeps it, and a failure here
-                // is cosmetic — the resume stands either way.
-                if record.display_name.is_none() {
-                    self.title_untitled_from_journal(session_id, owner, &journal, &conn.conn_peer);
-                }
+                // its own journal now — agents only, decided inside
+                // `title_untitled_from_journal` before any event decodes.
+                // A session that already has one keeps it, and a failure
+                // here is cosmetic — the resume stands either way.
+                self.title_untitled_from_journal(
+                    session_id,
+                    owner,
+                    &record,
+                    &journal,
+                    &conn.conn_peer,
+                );
             }
             Err(mut error) => {
                 state.session_finished();
@@ -3332,41 +3343,46 @@ impl SessionRegistry {
             .unwrap_or(false)
     }
 
-    /// Title an untitled session from its journal: the first user message the
-    /// journal holds names it. The daemon-composed echo (standing
-    /// instructions, spawn prompt, preamble) is skipped the same way the
-    /// send path skips it — Paseo's imported-title rule reads the timeline's
-    /// first user message, and the composed text is not the person's words.
+    /// Title an untitled session from its journal: the first composer
+    /// message it holds names it. Terminals never reach the read — no row
+    /// they hold could name them, and the scan is skipped before a single
+    /// event decodes — and neither does a session that already has a name.
+    /// The journalled creation echo is composed text, so only `Composer`
+    /// rows qualify here (the send site admits the creator's task from its
+    /// raw text, which the journal no longer holds).
     pub(crate) fn title_untitled_from_journal(
         &self,
         session_id: &str,
         owner: &OwnerId,
+        record: &SessionRecord,
         journal: &Journal,
         conn_peer: &Option<ConnPeer>,
     ) -> bool {
-        let Ok(replay) = journal.replay(session_id) else {
+        if record.display_name.is_some() || !record.kind.is_agent() {
             return false;
-        };
-        for event in &replay.events {
-            let SessionEvent::AgentUserMessage { text, author, .. } = event else {
-                continue;
-            };
-            if !matches!(author, UserMessageAuthor::Human | UserMessageAuthor::Agent) {
-                continue;
-            }
-            if let Some(name) = devboule_protocol::derive_session_title(text) {
-                return self.title_if_unset(session_id, owner, &name, conn_peer);
-            }
         }
-        false
+        match journal.first_composer_title(session_id) {
+            Ok(Some(name)) => self.title_if_unset(session_id, owner, &name, conn_peer),
+            _ => false,
+        }
     }
 
     /// The one road the rename and both auto-titles share: the live record
     /// moves first and the journal row second, and a row that refuses takes
-    /// the record back with it — but only when the record still holds what
-    /// this call wrote, so a concurrent rename is never clobbered by a
-    /// rollback. `only_if_unset` is the auto-title's half: an agent session
-    /// with no name yet. The rename overwrites.
+    /// the record back with it — but only when the record still holds this
+    /// call's own write (see `rollback_display_name`), so a concurrent
+    /// rename is never clobbered by a rollback. `only_if_unset` is the
+    /// auto-title's half: an agent session with no name yet. The rename
+    /// overwrites.
+    ///
+    /// The `bool` is whether anything changed: a rename to the name the
+    /// record already holds converges the row but skips the roster push —
+    /// a no-op must not rebuild and broadcast the owner's whole roster.
+    ///
+    /// The check-and-set is atomic with respect to every other call here:
+    /// both sides hold `inner` across the read and the write, so a rename
+    /// that lands before a first prompt wins over the auto-title, whichever
+    /// thread runs first.
     fn store_display_name(
         &self,
         session_id: &str,
@@ -3375,7 +3391,7 @@ impl SessionRegistry {
         conn_peer: &Option<ConnPeer>,
         only_if_unset: bool,
     ) -> Result<bool, WireError> {
-        let previous = {
+        let (previous, writer_epoch) = {
             let mut map = self
                 .inner
                 .lock()
@@ -3387,26 +3403,68 @@ impl SessionRegistry {
             {
                 return Ok(false);
             }
-            session.metadata.display_name.replace(name.to_string())
+            let previous = session.metadata.display_name.replace(name.to_string());
+            let writer_epoch = self.next_display_name_epoch_locked(session_id);
+            (previous, writer_epoch)
         };
+        let changed = previous.as_deref() != Some(name);
         if let Some(journal) = &self.journal {
             if let Err(error) = journal.set_display_name(session_id, name) {
-                let mut map = self
-                    .inner
-                    .lock()
-                    .map_err(|_| internal("Session state is unavailable."))?;
-                if let Ok(entry) = peer_entry_mut(&mut map, session_id, owner, conn_peer) {
-                    if let Some(session) = entry.as_peer_visible_mut() {
-                        if session.metadata.display_name.as_deref() == Some(name) {
-                            session.metadata.display_name = previous;
-                        }
-                    }
-                }
+                self.rollback_display_name(session_id, owner, conn_peer, previous, writer_epoch);
                 return Err(error.into());
             }
         }
-        self.notify_session_transition(owner, session_id);
-        Ok(true)
+        if changed {
+            self.notify_session_transition(owner, session_id);
+        }
+        Ok(changed)
+    }
+
+    /// The next display-name write identity for `session_id`. Called with
+    /// `inner` held: the epoch and the record move under one lock, so no
+    /// two writers share an identity and a rollback can tell its own write
+    /// from a newer one.
+    fn next_display_name_epoch_locked(&self, session_id: &str) -> u64 {
+        let mut epochs = self
+            .display_name_epochs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let epoch = epochs.entry(session_id.to_string()).or_insert(0);
+        *epoch += 1;
+        *epoch
+    }
+
+    /// Restore the record after a refused journal write — but only this
+    /// writer's own write. A newer epoch means a concurrent rename landed
+    /// after this one and owns the record now: restoring over it would wipe
+    /// a landed rename with a value the journal does not hold, and the next
+    /// restart would resurrect the wiped name from the row.
+    fn rollback_display_name(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+        previous: Option<String>,
+        writer_epoch: u64,
+    ) {
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
+        let Ok(entry) = peer_entry_mut(&mut map, session_id, owner, conn_peer) else {
+            return;
+        };
+        let Some(session) = entry.as_peer_visible_mut() else {
+            return;
+        };
+        let current_epoch = self
+            .display_name_epochs
+            .lock()
+            .map(|epochs| epochs.get(session_id).copied().unwrap_or(0))
+            .unwrap_or(0);
+        if current_epoch != writer_epoch {
+            return;
+        }
+        session.metadata.display_name = previous;
     }
 
     fn validate_claude_effort(

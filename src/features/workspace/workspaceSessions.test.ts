@@ -1021,6 +1021,43 @@ describe("session creator carry", () => {
     expect(sessionTitle(renamed!)).toBe("worker one");
     release();
   });
+
+  it("lands a rename on a push-only row no list has described", async () => {
+    // A child created while the app is open arrives as a push-only row: no
+    // list described it, so there is no previous value to carry — the
+    // carried name is the push's, and the fallback never fires for it.
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => []),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+
+    watched.listener?.([
+      {
+        id: "s.4242.11",
+        workspaceId: null,
+        kind: "acp",
+        title: "Agent",
+        displayName: "worker one",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 5,
+      },
+    ]);
+
+    const arrived = controller.getState().sessions[0];
+    expect(arrived?.displayName).toBe("worker one");
+    expect(sessionTitle(arrived!)).toBe("worker one");
+    release();
+  });
 });
 
 describe("session delegation badges", () => {

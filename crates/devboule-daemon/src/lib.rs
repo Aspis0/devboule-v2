@@ -112,7 +112,6 @@ mod temp_dir_guard_tests;
 mod test_dirs;
 #[cfg(all(test, feature = "server"))]
 mod test_support;
-mod text_safety;
 #[cfg(feature = "server")]
 mod tool_paths;
 #[cfg(feature = "server")]

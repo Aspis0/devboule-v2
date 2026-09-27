@@ -2834,25 +2834,41 @@ fn a_display_name_is_trimmed_then_capped_at_sixty_characters() {
     assert_eq!(validate_display_name(&accented), Ok(accented));
 }
 
-/// Control characters are refused: a name renders in the tab strip, the pane
-/// header, History rows and attention toasts, and a newline, bell or escape
-/// in it would break the layout or smuggle terminal escapes into a surface.
-/// The refusal names the rule, never the name.
+/// One class per case: Cc controls, bidi overrides and isolates, zero-width
+/// and invisible formatting, and the Unicode line separators — the same rule
+/// device names are held to, so a string one door accepts is not refused at
+/// another. The refusal names the category, never the name.
 #[test]
 fn a_display_name_refuses_control_characters() {
-    for name in [
-        "work\u{0}er",
-        "work\u{7}er",
-        "line one\nline two",
-        "a\u{1b}[2Jb",
+    for (name, category) in [
+        ("work\u{0}er", "control"),
+        ("work\u{7}er", "control"),
+        ("line one\nline two", "control"),
+        ("a\u{1b}[2Jb", "control"),
+        ("\u{202e}worker", "invisible"),
+        ("plain \u{2066}direction\u{2069}", "invisible"),
+        ("zero\u{200b}width", "invisible"),
+        ("bom\u{feff}head", "invisible"),
+        ("para\u{2029}break", "line break"),
+        ("sep\u{2028}here", "line break"),
+        // NEL is Cc as well as a line break: the control arm names it first.
+        ("next\u{85}line", "control"),
     ] {
-        let error = validate_display_name(name).expect_err("control characters");
+        let error = validate_display_name(name).expect_err("unsafe characters");
         assert!(
-            error.contains("control"),
-            "the sentence names the rule: {error}"
+            error.contains(category),
+            "the sentence names the category ({category}): {error}"
         );
+        // Distinctive words of each name, never the category's own words:
+        // "line break character" legitimately contains "line".
         assert!(
-            !error.contains("work") && !error.contains("line"),
+            !error.contains("work")
+                && !error.contains("plain")
+                && !error.contains("zero")
+                && !error.contains("bom")
+                && !error.contains("para")
+                && !error.contains("sep")
+                && !error.contains("next"),
             "the refusal must not echo the name back: {error}"
         );
     }
@@ -2896,6 +2912,54 @@ fn a_derived_title_is_the_first_non_empty_line_collapsed_and_clamped() {
     let accented = format!("{} tail", "è".repeat(70));
     let derived = derive_session_title(&accented).expect("a title");
     assert_eq!(derived.chars().count(), crate::MAX_DISPLAY_NAME_CHARS);
+}
+
+/// Declining, not stripping: a line carrying a character no name may hold
+/// yields no title rather than a mutated word — the tab must show what the
+/// person typed, and the next prompt retries.
+#[test]
+fn a_derived_title_declines_unsafe_characters_instead_of_stripping_them() {
+    assert_eq!(derive_session_title("fix\u{7}the bug"), None);
+    assert_eq!(derive_session_title("\u{202e}worker"), None);
+    assert_eq!(derive_session_title("zero\u{200b}width"), None);
+    // Separators are the exception: the collapse turns them into spaces
+    // before the check runs — the same neutralisation Paseo's `\s` does —
+    // so no layout break survives into the title. The stored-name door
+    // still refuses the raw character.
+    assert_eq!(
+        derive_session_title("line\u{2028}break"),
+        Some("line break".to_string())
+    );
+    assert_eq!(
+        derive_session_title("fix the bug"),
+        Some("fix the bug".to_string()),
+        "plain text still titles"
+    );
+}
+
+/// The clamp counts grapheme clusters, never splitting one: a combining mark
+/// stays with its base, and a ZWJ sequence is kept whole or not at all.
+#[test]
+fn a_derived_title_never_splits_a_grapheme_cluster() {
+    // e + combining acute, 70 of them: 70 characters but 70 clusters.
+    let combining = format!("{} tail", "e\u{301}".repeat(70));
+    let derived = derive_session_title(&combining).expect("a title");
+    assert_eq!(derived.chars().count(), crate::MAX_DISPLAY_NAME_CHARS);
+    assert!(
+        derived.ends_with("e\u{301}"),
+        "the cut lands on a cluster boundary, never between base and mark: {derived:?}"
+    );
+    assert!(
+        validate_display_name(&derived).is_ok(),
+        "a clamped title always passes validation: {derived:?}"
+    );
+    // A flag is one cluster of two scalars: with 59 characters taken and
+    // two needed, it is skipped whole rather than split into a lone
+    // regional indicator.
+    let flag = "\u{1f1eb}\u{1f1f7}";
+    let prompt = format!("{} {flag} tail", "w".repeat(59));
+    let derived = derive_session_title(&prompt).expect("a title");
+    assert_eq!(derived, "w".repeat(59));
 }
 
 /// The workspace git-status frame and its reply, pinned to the exact words

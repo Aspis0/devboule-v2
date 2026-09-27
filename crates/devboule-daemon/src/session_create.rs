@@ -167,7 +167,7 @@ pub(super) fn birth_stamps(
         .clone()
         .unwrap_or_else(|| session_origin_for(conn_peer));
     let title = match meta.display_name.clone() {
-        Some(name) => name,
+        Some(name) => devboule_protocol::clamp_display_name(&name),
         None => {
             if kind.is_agent() {
                 "Agent".to_string()
@@ -214,7 +214,20 @@ pub(super) fn build_birth_record(
     // attaches to this daemon after a restart lists its sessions from the
     // journal, and a child that came back without its name and its parent
     // would be a different session than the one that was created.
-    record.display_name = meta.display_name.clone();
+    //
+    // The cap is a property of the data, not of the doors: every birth road
+    // passes through here, so an internally composed name longer than the
+    // wire doors accept — the recovery road's "{name} (recovered)" on a
+    // 60-character name — is clamped rather than stored past the cap. A
+    // max-length name loses its "(recovered)" tail but still recovers,
+    // which is what matters; refusing a recovery over a label would be the
+    // wrong trade. Length is the only dimension clamped: characters are
+    // safe by construction (the wire and broker doors validate; internal
+    // composers build from validated names plus ASCII suffixes).
+    record.display_name = meta
+        .display_name
+        .clone()
+        .map(|name| devboule_protocol::clamp_display_name(&name));
     record.created_by = meta.created_by.clone();
     // The creation-from-profile facts, written once, here, and never
     // re-derived from the store afterwards (v11). A create that resolved no
@@ -270,7 +283,9 @@ pub(super) fn build_birth_record(
         elapsed_ms: Some(0),
         created_at_ms: record.created_at_ms,
         origin,
-        display_name: meta.display_name.clone(),
+        // The row's clamped name, not the meta's raw one: the journal row
+        // and the metadata carry the same facts, including the cap.
+        display_name: record.display_name.clone(),
         created_by: meta.created_by.clone(),
         profile_id: meta.profile_id.clone(),
         context_id: Some(context_id),

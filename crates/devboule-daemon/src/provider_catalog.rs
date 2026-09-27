@@ -47,7 +47,7 @@ pub(crate) fn strip_control_and_bidi(value: &str) -> String {
     value
         .chars()
         .filter(|character| {
-            !character.is_control() && !crate::text_safety::is_invisible_format(*character)
+            !character.is_control() && !devboule_protocol::is_invisible_format(*character)
         })
         .collect()
 }
