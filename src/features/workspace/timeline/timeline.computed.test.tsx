@@ -21,10 +21,13 @@ const timelineCss = assembleCssProof([
 afterEach(removeCssProof);
 
 describe("timeline computed styles", () => {
-  it("centers a 760 px rail with the specified padding and gap", () => {
-    workspaceCss.inject([".workspace-conversation"]);
+  it("centers a 760 px rail with the specified padding and gaps the card from the transcript", () => {
+    workspaceCss.inject([".workspace-conversation", ".workspace-conversation-content"]);
     const rail = document.createElement("div");
     rail.className = "workspace-conversation";
+    const content = document.createElement("div");
+    content.className = "workspace-conversation-content";
+    rail.append(content);
     document.body.appendChild(rail);
 
     const style = getComputedStyle(rail);
@@ -34,7 +37,26 @@ describe("timeline computed styles", () => {
     expect(style.paddingTop).toBe("4px");
     expect(style.paddingRight).toBe("24px");
     expect(style.paddingBottom).toBe("0px");
+    // The container's gap now only separates the transcript from the permission
+    // card; the entry rhythm lives on the wrapper.
     expect(style.gap).toBe("10px");
+    expect(getComputedStyle(content).gap).toBe("10px");
+    rail.remove();
+  });
+
+  it("keeps the transcript wrapper unsquashed beside a tall permission card", () => {
+    workspaceCss.inject([".workspace-conversation", ".workspace-conversation-content"]);
+    const rail = document.createElement("div");
+    rail.className = "workspace-conversation";
+    const content = document.createElement("div");
+    content.className = "workspace-conversation-content";
+    rail.append(content);
+    document.body.appendChild(rail);
+
+    // Every content child the wrapper replaced carries `flex: none`
+    // (`.workspace-chat-entry`); the wrapper is the one flex item in the column
+    // that must not shrink, or a tall card compresses the transcript under it.
+    expect(getComputedStyle(content).flexShrink).toBe("0");
     rail.remove();
   });
 

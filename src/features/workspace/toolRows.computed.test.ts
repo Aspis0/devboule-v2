@@ -308,26 +308,49 @@ describe("tool row computed styles", () => {
     row.remove();
   });
 
-  it("keeps a running group's dot at the trailing edge", () => {
+  it("keeps a non-running row's chevron on the trailing edge", () => {
     const css = assembleCssProof(sheets);
-    css.inject([".workspace-chat-tool-running", ".workspace-chat-tool-group"]);
-    const group = document.createElement("details");
-    group.className =
-      "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group is-running";
+    css.inject([
+      ".workspace-chat-tool summary::after",
+      ".workspace-chat-tool:not(.is-running) summary::after",
+    ]);
+    const row = document.createElement("details");
+    row.className = "workspace-chat-entry workspace-chat-tool";
     const summary = document.createElement("summary");
-    const dot = document.createElement("span");
-    dot.className = "workspace-chat-tool-running";
-    summary.append(dot);
-    group.append(summary);
-    document.body.append(group);
+    row.append(summary);
+    document.body.append(row);
 
-    expect(getComputedStyle(dot).marginLeft).toBe("auto");
-    expect(summary.lastElementChild).toBe(dot);
-    expect(
-      contrastRatio(getComputedStyle(dot).backgroundColor, css.token("--fill-tool")!),
-    ).toBeGreaterThanOrEqual(3);
-    group.remove();
+    // Happy DOM resolves no computed margin on a generated pseudo-element
+    // (probed: `getComputedStyle(summary, "::after").marginLeft` is `""`),
+    // so the declaration is asserted through the rule source.
+    expect(css.rulesFor(".workspace-chat-tool:not(.is-running) summary::after")).toContain(
+      "margin-left: auto",
+    );
+    row.remove();
   });
+
+  it.each(["light", "dark"] as const)(
+    "keeps a running group's dot at the trailing edge in the %s theme",
+    (theme: CssTheme) => {
+      const css = assembleCssProof(sheets, theme);
+      css.inject([".workspace-chat-tool-running", ".workspace-chat-tool-group"]);
+      const group = document.createElement("details");
+      group.className =
+        "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group is-running";
+      const summary = document.createElement("summary");
+      const dot = document.createElement("span");
+      dot.className = "workspace-chat-tool-running";
+      summary.append(dot);
+      group.append(summary);
+      document.body.append(group);
+
+      expect(getComputedStyle(dot).marginLeft).toBe("auto");
+      expect(
+        contrastRatio(getComputedStyle(dot).backgroundColor, css.token("--fill-tool")!),
+      ).toBeGreaterThanOrEqual(3);
+      group.remove();
+    },
+  );
 
   it.each(["light", "dark"] as const)(
     "keeps expanded groups transparent with separate tool rows and 2 px gaps in the %s theme",

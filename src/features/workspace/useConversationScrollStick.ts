@@ -38,41 +38,43 @@ export function useConversationScrollStick(
   const pinnedToBottomRef = useRef(true);
   const tailRef = useRef<AgentChatItem | null>(null);
   const auxiliaryRef = useRef<ReactNode>(undefined);
+  // The container observer's initial delivery fires before the reader has
+  // been placed; only later deliveries reflect a real resize.
+  const initialContainerDeliveryRef = useRef(true);
 
-  const stickToBottom = (): void => {
+  const stickToBottom = useCallback((): void => {
     const conversation = conversationRef.current;
     if (conversation === null) return;
     conversation.scrollTop = conversation.scrollHeight;
-  };
+  }, []);
 
   // A user item that newly tails the transcript is the reader's own words — a
   // plain send, a steer, or a queue drain — and always re-pins.
   useEffect(() => {
-    const conversation = conversationRef.current;
-    if (conversation === null) return;
     const tail = items.length > 0 ? items.at(-1)! : null;
     const previousTail = tailRef.current;
     tailRef.current = tail;
+    const conversation = conversationRef.current;
+    if (conversation === null) return;
     if (tail !== null && tail.role === "user" && previousTail?.id !== tail.id) {
       pinnedToBottomRef.current = true;
     }
     if (pinnedToBottomRef.current) {
       stickToBottom();
     }
-  }, [items]);
+  }, [items, stickToBottom]);
 
   // An arriving permission card is always brought into view, re-pinning: the
   // turn is blocked on a decision the reader must see.
   useEffect(() => {
-    const conversation = conversationRef.current;
-    if (conversation === null) return;
     const arrived =
       auxiliary != null && auxiliaryKey(auxiliary) !== auxiliaryKey(auxiliaryRef.current);
     auxiliaryRef.current = auxiliary;
-    if (!arrived) return;
+    const conversation = conversationRef.current;
+    if (conversation === null || !arrived) return;
     pinnedToBottomRef.current = true;
     stickToBottom();
-  }, [auxiliary]);
+  }, [auxiliary, stickToBottom]);
 
   // A scroll container's own box does not grow with its content, so the
   // transcript's content is wrapped and observed directly; the container is
@@ -86,6 +88,10 @@ export function useConversationScrollStick(
     });
     contentObserver.observe(content);
     const containerObserver = new ResizeObserver(() => {
+      if (initialContainerDeliveryRef.current) {
+        initialContainerDeliveryRef.current = false;
+        return;
+      }
       pinnedToBottomRef.current = isNearBottom(conversation);
       if (pinnedToBottomRef.current) stickToBottom();
     });
@@ -94,7 +100,7 @@ export function useConversationScrollStick(
       contentObserver.disconnect();
       containerObserver.disconnect();
     };
-  }, []);
+  }, [stickToBottom]);
 
   const onScroll = useCallback(() => {
     const conversation = conversationRef.current;

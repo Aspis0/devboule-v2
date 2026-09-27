@@ -418,6 +418,7 @@
 
 .workspace-conversation-content {
   display: flex;
+  flex: none;
   flex-direction: column;
   gap: 10px;
 }
