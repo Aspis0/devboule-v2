@@ -153,7 +153,7 @@ fn workspace_document(record: &WorkspaceRecord) -> Value {
         "id": record.id,
         "projectId": record.project_id,
         "name": record.title,
-        "path": crate::workspace::plain_path(&record.path),
+        "path": crate::verbatim_path::plain_path(&record.path),
         "kind": match record.isolation {
             WorkspaceIsolation::Local => "checkout",
             WorkspaceIsolation::Worktree => "worktree",
@@ -324,12 +324,12 @@ fn preview_checkout_path(project_path: &Path, request: &CreateRequest) -> Option
         return None;
     }
     match request.isolation {
-        WorkspaceIsolation::Local => Some(crate::workspace::plain_path(
+        WorkspaceIsolation::Local => Some(crate::verbatim_path::plain_path(
             &project_path.to_string_lossy(),
         )),
         WorkspaceIsolation::Worktree => request.branch.as_deref().and_then(|branch| {
             crate::worktree::checkout_path_for_branch(project_path, branch)
-                .map(|path| crate::workspace::plain_path(&path.to_string_lossy()))
+                .map(|path| crate::verbatim_path::plain_path(&path.to_string_lossy()))
         }),
     }
 }

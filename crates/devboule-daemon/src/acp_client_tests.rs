@@ -1471,9 +1471,11 @@ fn the_default_acp_route_carries_the_spawn_path_of_the_picked_agent() {
     }
 
     let installed = grok_install_directory();
+    let short =
+        crate::windows_path_env::short_path_name(&installed).unwrap_or_else(|| installed.clone());
     let source = StalePathSource {
         process: OsString::from("devboule-no-such-inherited-path"),
-        user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
+        user: Mutex::new(Some(short.to_string_lossy().into_owned())),
     };
 
     let agent = discover_with_path_source(&source)
@@ -1485,19 +1487,20 @@ fn the_default_acp_route_carries_the_spawn_path_of_the_picked_agent() {
     let command = super::catalog_acp_command(agent, PathBuf::from(r"C:\workdir"));
 
     assert_eq!(command.provider_id.as_deref(), Some("grok"));
+    let expected_path = format!(
+        "devboule-no-such-inherited-path;{}",
+        crate::windows_path_env::long_path_name(&installed)
+            .expect("long form of a real directory")
+            .to_string_lossy()
+    );
     assert_eq!(
         command.env,
-        vec![(
-            "PATH".to_string(),
-            format!(
-                "devboule-no-such-inherited-path;{}",
-                crate::provider_catalog::normalize_windows_path(
-                    std::fs::canonicalize(&installed).expect("canonical install directory")
-                )
-                .to_string_lossy()
-            )
-        )],
+        vec![("PATH".to_string(), expected_path.clone())],
         "the default ACP launch carries the registry folders on the child PATH"
+    );
+    assert!(
+        !expected_path.contains(r"\\?\"),
+        "the child PATH carries no verbatim prefix"
     );
 
     fs::remove_dir_all(installed).expect("temporary directory cleanup");

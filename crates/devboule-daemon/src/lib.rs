@@ -118,6 +118,7 @@ mod tool_policy;
 mod transport;
 #[cfg(feature = "server")]
 mod user_providers;
+mod verbatim_path;
 #[cfg(windows)]
 mod windows_path_env;
 #[cfg(windows)]

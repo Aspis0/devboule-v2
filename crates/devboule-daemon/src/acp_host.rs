@@ -761,7 +761,7 @@ impl std::fmt::Display for FsAccess {
 
 fn canonicalize_existing_or_lexical(path: &Path) -> PathBuf {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| lexical_normalize(path));
-    crate::workspace::plain_path(&canonical.to_string_lossy()).into()
+    crate::verbatim_path::plain_path(&canonical.to_string_lossy()).into()
 }
 
 fn lexical_normalize(path: &Path) -> PathBuf {
@@ -800,7 +800,7 @@ fn resolve_path(path: &Path) -> Result<PathBuf, RpcError> {
             let canonical =
                 std::fs::canonicalize(&current).map_err(|error| fs_error(&current, error))?;
             let mut resolved: PathBuf =
-                crate::workspace::plain_path(&canonical.to_string_lossy()).into();
+                crate::verbatim_path::plain_path(&canonical.to_string_lossy()).into();
             for part in missing.iter().rev() {
                 resolved.push(part);
             }
@@ -822,8 +822,8 @@ fn resolve_path(path: &Path) -> Result<PathBuf, RpcError> {
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {
-    let path: PathBuf = crate::workspace::plain_path(&path.to_string_lossy()).into();
-    let root: PathBuf = crate::workspace::plain_path(&root.to_string_lossy()).into();
+    let path: PathBuf = crate::verbatim_path::plain_path(&path.to_string_lossy()).into();
+    let root: PathBuf = crate::verbatim_path::plain_path(&root.to_string_lossy()).into();
     let path_parts: Vec<Component<'_>> = path.components().collect();
     let root_parts: Vec<Component<'_>> = root.components().collect();
     if path_parts.len() < root_parts.len() {

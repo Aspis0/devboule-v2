@@ -255,7 +255,7 @@ fn create_opens_a_terminal_in_the_callers_workspace_and_answers_its_own_row() {
     let terminal_id = field(document, "terminalId").as_str().expect("terminalId");
     assert_eq!(field(document, "title"), &json!("Build"));
     // The directory is the workspace's own, not anything an argument named.
-    let expected_cwd = crate::workspace::plain_path(
+    let expected_cwd = crate::verbatim_path::plain_path(
         &state
             .sessions
             .workspace_cwd(&workspace)
@@ -561,7 +561,7 @@ fn the_create_card_states_the_workspace_and_a_denied_create_writes_nothing() {
         description.contains(&workspace),
         "the card names the workspace: {description}"
     );
-    let expected_cwd = crate::workspace::plain_path(
+    let expected_cwd = crate::verbatim_path::plain_path(
         &state
             .sessions
             .workspace_cwd(&workspace)

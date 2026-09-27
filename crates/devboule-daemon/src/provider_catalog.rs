@@ -1583,8 +1583,8 @@ struct ResolvedLaunch {
     program: PathBuf,
     prefix_args: Vec<String>,
     /// The PATH directory the launch was resolved from: the shim's directory
-    /// when a cmd-shim was unwrapped to `node`, the search directory
-    /// otherwise. The spawned program's own parent is not enough — after an
+    /// when a cmd-shim was unwrapped to `node`, the canonical search
+    /// directory otherwise. The spawned program's own parent is not enough — after an
     /// unwrap the parent is node's, and the provider's folder is the one the
     /// child still needs on its PATH.
     source_directory: PathBuf,
@@ -2524,7 +2524,7 @@ fn absolute_path(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-pub(crate) fn normalize_windows_path(path: PathBuf) -> PathBuf {
+fn normalize_windows_path(path: PathBuf) -> PathBuf {
     use std::ffi::{OsStr, OsString};
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
 

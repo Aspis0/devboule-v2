@@ -18,7 +18,7 @@ pub(super) fn session_folder_gone(path: &str) -> WireError {
         ErrorCode::WorkspaceUnavailable,
         format!(
             "the folder this session worked in no longer exists: {}",
-            crate::workspace::plain_path(path)
+            crate::verbatim_path::plain_path(path)
         ),
     )
 }
@@ -186,7 +186,7 @@ impl SessionRegistry {
                     // The row keeps its stored spelling; the child takes the
                     // plain one here, at the hand-off — a legacy `\\?\` row
                     // would otherwise send cmd.exe back to `C:\Windows`.
-                    let cwd = crate::workspace::plain_path(cwd);
+                    let cwd = crate::verbatim_path::plain_path(cwd);
                     let path = PathBuf::from(&cwd);
                     if !path.is_dir() {
                         return Err(session_folder_gone(&cwd));

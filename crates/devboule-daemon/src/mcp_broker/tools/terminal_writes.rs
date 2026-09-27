@@ -199,7 +199,7 @@ fn create_terminal(
     let cwd = state
         .sessions
         .workspace_cwd(&workspace)
-        .map(|path| crate::workspace::plain_path(&path.to_string_lossy()))
+        .map(|path| crate::verbatim_path::plain_path(&path.to_string_lossy()))
         .map_err(|error| TerminalError::Refused(error.message))?;
     // The cap slot is taken before the card, so two creates racing at the
     // cap cannot both read room during the seconds a person spends looking

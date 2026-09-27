@@ -35,7 +35,7 @@ impl Drop for WorkspaceArchivingGuard<'_> {
 /// The stored path in the spelling a child process receives: see
 /// `plain_path` for what stays verbatim.
 pub(super) fn plain_cwd(path: &Path) -> PathBuf {
-    crate::workspace::plain_path(&path.to_string_lossy()).into()
+    crate::verbatim_path::plain_path(&path.to_string_lossy()).into()
 }
 
 impl super::SessionRegistry {
@@ -265,7 +265,7 @@ impl super::SessionRegistry {
                 ErrorCode::Io,
                 format!(
                     "Worktree directory '{}' is not writable: {error}",
-                    crate::workspace::plain_path(&root.to_string_lossy())
+                    crate::verbatim_path::plain_path(&root.to_string_lossy())
                 ),
             )
         })?;
@@ -273,7 +273,7 @@ impl super::SessionRegistry {
         if let Err(error) =
             crate::worktree::run_worktree_add_command(&project_path, &checkout, &branch, "HEAD")
         {
-            let checkout_path = crate::workspace::plain_path(&checkout.to_string_lossy());
+            let checkout_path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
             // A killed add is repaired, not judged: git may have registered
             // the path before dying, which no listing can tell from a
             // winner — but the recorded path is always this call's own, so
@@ -316,7 +316,7 @@ impl super::SessionRegistry {
                         ErrorCode::Journal,
                         format!(
                             "{error}; leftover checkout at '{}' ({cleanup_error})",
-                            crate::workspace::plain_path(&checkout.to_string_lossy())
+                            crate::verbatim_path::plain_path(&checkout.to_string_lossy())
                         ),
                     ));
                 }
@@ -396,8 +396,8 @@ impl super::SessionRegistry {
             ));
         };
         if !crate::worktree::path_is_within(&checkout, &root) {
-            let path = crate::workspace::plain_path(&checkout.to_string_lossy());
-            let root = crate::workspace::plain_path(&root.to_string_lossy());
+            let path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
+            let root = crate::verbatim_path::plain_path(&root.to_string_lossy());
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 format!("Checkout '{path}' is not inside worktree root '{root}'."),
@@ -413,7 +413,7 @@ impl super::SessionRegistry {
                     expected_branch,
                 ) {
                     crate::worktree::WorktreeIdentity::Locked => {
-                        let path = crate::workspace::plain_path(&checkout.to_string_lossy());
+                        let path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
                         return Err(WireError::new(
                             ErrorCode::InvalidRequest,
                             format!(
@@ -423,7 +423,7 @@ impl super::SessionRegistry {
                         .with_details(ErrorDetails::WorktreeLocked { path }));
                     }
                     crate::worktree::WorktreeIdentity::BranchMismatch { observed } => {
-                        let path = crate::workspace::plain_path(&checkout.to_string_lossy());
+                        let path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
                         return Err(WireError::new(
                             ErrorCode::InvalidRequest,
                             format!(
@@ -456,7 +456,7 @@ impl super::SessionRegistry {
                     crate::worktree::worktree_dirty_remove_message(&checkout),
                 )
                 .with_details(ErrorDetails::WorktreeDirty {
-                    path: crate::workspace::plain_path(&checkout.to_string_lossy()),
+                    path: crate::verbatim_path::plain_path(&checkout.to_string_lossy()),
                     force_required: true,
                 }));
             }
@@ -471,7 +471,7 @@ impl super::SessionRegistry {
                     crate::worktree::worktree_dirty_remove_message(&checkout),
                 )
                 .with_details(ErrorDetails::WorktreeDirty {
-                    path: crate::workspace::plain_path(&checkout.to_string_lossy()),
+                    path: crate::verbatim_path::plain_path(&checkout.to_string_lossy()),
                     force_required: true,
                 }));
             }
@@ -496,7 +496,7 @@ impl super::SessionRegistry {
     ) -> Result<(), WireError> {
         let leftover = checkout
             .exists()
-            .then(|| crate::workspace::plain_path(&checkout.to_string_lossy()));
+            .then(|| crate::verbatim_path::plain_path(&checkout.to_string_lossy()));
         journal
             .workspace_delete(workspace_id)
             .map_err(WireError::from)?;
@@ -624,7 +624,7 @@ impl super::SessionRegistry {
 /// it. The path is this call's own (taken from the in-flight record), so
 /// no winner's checkout is reachable here.
 pub(crate) fn repair_killed_worktree_add(project_id: &str, repo: &Path, checkout: &Path) -> String {
-    let checkout_path = crate::workspace::plain_path(&checkout.to_string_lossy());
+    let checkout_path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
     let base = format!("Could not add git worktree for '{project_id}': git timed out");
     match cleanup_failed_worktree_add(repo, checkout) {
         Err(error) => format!("{base}; leftover checkout at '{checkout_path}' ({error})"),
@@ -784,7 +784,7 @@ fn workspace_directory_error(
     }
     // The path is intentionally included only in the user-facing error. Do
     // not put this personal location in daemon logs or diagnostics.
-    let plain_path = crate::workspace::plain_path(path.to_string_lossy().as_ref());
+    let plain_path = crate::verbatim_path::plain_path(path.to_string_lossy().as_ref());
     eprintln!("workspace working directory became unavailable during spawn (OS error {code})");
     Some(WireError::new(
         ErrorCode::WorkspaceUnavailable,

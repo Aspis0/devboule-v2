@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::git::{run_git_args, GitOutput, GitRunError};
-use crate::workspace::plain_path;
+use crate::verbatim_path::plain_path;
 
 const DEFAULT_WORKTREE_PREFIX: &str = "worktree";
 

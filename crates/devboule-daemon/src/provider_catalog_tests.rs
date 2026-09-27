@@ -1881,13 +1881,30 @@ mod registry_path {
     use crate::provider_catalog::{
         discover_catalog_in_paths, discover_with_path_source, find_available_with_path_source,
     };
-    use crate::windows_path_env::{attach_spawn_path_env, PathSnapshot, WindowsPathSource};
+    use crate::windows_path_env::{
+        attach_spawn_path_env, long_path_name, short_path_name, PathSnapshot, WindowsPathSource,
+    };
     use crate::windows_registry_path::{RegistryPathError, RegistryPathRead};
     use std::ffi::OsString;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    /// The long form via the handle-free query: a different syscall than
+    /// the product's canonicalize, so the expectation is independent of it.
+    fn long(dir: &Path) -> String {
+        long_path_name(dir)
+            .expect("long form of a real directory")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// The 8.3 short alias when the volume holds one, else the path
+    /// itself: feeds the runner's spelling in on any machine.
+    fn short(dir: &Path) -> PathBuf {
+        short_path_name(dir).unwrap_or_else(|| dir.to_path_buf())
+    }
 
     fn absent() -> RegistryPathRead {
         RegistryPathRead::Failed(RegistryPathError::Win32(2))
@@ -2017,9 +2034,9 @@ mod registry_path {
         let inherited = temporary_directory("registry-path-spawn-base");
         fs::create_dir_all(&inherited).expect("inherited directory");
         let source = StalePathSource {
-            process: OsString::from(inherited.as_os_str()),
+            process: OsString::from(short(&inherited).as_os_str()),
             machine: absent(),
-            user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
+            user: Mutex::new(Some(short(&installed).to_string_lossy().into_owned())),
         };
 
         let discovery = discover_with_path_source(&source);
@@ -2029,16 +2046,14 @@ mod registry_path {
             .iter()
             .find(|agent| agent.id == "grok")
             .expect("grok discovered through the registry PATH");
+        let expected_path = format!("{};{}", long(&inherited), long(&installed));
         assert_eq!(
             grok.spawn_path_env,
-            Some((
-                "PATH".to_string(),
-                format!(
-                    "{};{}",
-                    canonical(&inherited).to_string_lossy(),
-                    canonical(&installed).to_string_lossy()
-                )
-            ))
+            Some(("PATH".to_string(), expected_path.clone()))
+        );
+        assert!(
+            !expected_path.contains(r"\\?\"),
+            "the child PATH carries no verbatim prefix"
         );
 
         fs::remove_dir_all(installed).expect("temporary directory cleanup");
@@ -2157,9 +2172,9 @@ mod registry_path {
         fs::write(node_dir.join("node.exe"), b"stub").expect("node stub");
 
         let source = StalePathSource {
-            process: OsString::from(node_dir.as_os_str()),
+            process: OsString::from(short(&node_dir).as_os_str()),
             machine: absent(),
-            user: Mutex::new(Some(shim_dir.to_string_lossy().into_owned())),
+            user: Mutex::new(Some(short(&shim_dir).to_string_lossy().into_owned())),
         };
 
         let discovery = discover_with_path_source(&source);
@@ -2174,17 +2189,15 @@ mod registry_path {
             canonical(&node_dir.join("node.exe")),
             "the shim unwraps to node"
         );
+        let expected_path = format!("{};{}", long(&node_dir), long(&shim_dir));
         assert_eq!(
             codex.spawn_path_env,
-            Some((
-                "PATH".to_string(),
-                format!(
-                    "{};{}",
-                    canonical(&node_dir).to_string_lossy(),
-                    canonical(&shim_dir).to_string_lossy()
-                )
-            )),
+            Some(("PATH".to_string(), expected_path.clone())),
             "the child PATH carries the shim's directory, not only node's"
+        );
+        assert!(
+            !expected_path.contains(r"\\?\"),
+            "the child PATH carries no verbatim prefix"
         );
 
         fs::remove_dir_all(shim_dir).expect("temporary directory cleanup");
@@ -2221,9 +2234,9 @@ mod registry_path {
         }
 
         let source = StalePathSource {
-            process: OsString::from(node_dir.as_os_str()),
+            process: OsString::from(short(&node_dir).as_os_str()),
             machine: absent(),
-            user: Mutex::new(Some(npx_dir.to_string_lossy().into_owned())),
+            user: Mutex::new(Some(short(&npx_dir).to_string_lossy().into_owned())),
         };
         let cache_dir = temporary_directory("registry-path-npx-cache");
         let snapshot = PathSnapshot::capture(&source);
@@ -2240,17 +2253,15 @@ mod registry_path {
             row.acp_command.is_some(),
             "npx resolves through the launcher shim"
         );
+        let expected_path = format!("{};{}", long(&node_dir), long(&npx_dir));
         assert_eq!(
             row.spawn_path_env,
-            Some((
-                "PATH".to_string(),
-                format!(
-                    "{};{}",
-                    canonical(&node_dir).to_string_lossy(),
-                    canonical(&npx_dir).to_string_lossy()
-                )
-            )),
+            Some(("PATH".to_string(), expected_path.clone())),
             "the launched ACP process carries the npx directory"
+        );
+        assert!(
+            !expected_path.contains(r"\\?\"),
+            "the child PATH carries no verbatim prefix"
         );
 
         fs::remove_dir_all(npx_dir).expect("temporary directory cleanup");

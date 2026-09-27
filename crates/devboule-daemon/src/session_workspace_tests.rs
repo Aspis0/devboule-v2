@@ -49,7 +49,7 @@ fn a_real_local_workspace_supplies_the_session_command_cwd() {
     // storage keeps the verbatim form.
     assert_eq!(
         command.cwd,
-        crate::workspace::plain_path(
+        crate::verbatim_path::plain_path(
             &project_path
                 .canonicalize()
                 .expect("canonical cwd")
@@ -104,7 +104,7 @@ fn workspace_cwd_cache_avoids_a_journal_rpc_after_first_lookup() {
         .expect("cached workspace lookup");
     assert_eq!(
         cached.cwd,
-        crate::workspace::plain_path(
+        crate::verbatim_path::plain_path(
             &project_path
                 .canonicalize()
                 .expect("canonical path")
@@ -137,8 +137,10 @@ fn a_session_against_a_real_local_workspace_echoes_cwd_in_display_form() {
     // The spawn sites echo this exact value onto Session.cwd. A real
     // process is not required to observe the echo: command.cwd is final
     // once apply_workspace_cwd has run.
-    let cwd = Some(crate::workspace::plain_path(&command.cwd.to_string_lossy()));
-    let expected = crate::workspace::plain_path(
+    let cwd = Some(crate::verbatim_path::plain_path(
+        &command.cwd.to_string_lossy(),
+    ));
+    let expected = crate::verbatim_path::plain_path(
         project_path
             .canonicalize()
             .expect("canonical cwd")

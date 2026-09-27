@@ -211,7 +211,7 @@ fn archive_workspace_audited_with_hook(
     let target = validate_archive_scope(state, session_id, owner, workspace_id, false)?;
     let sessions = live_sessions(state, workspace_id)?;
     let subject = format!("archive workspace {}", quote_title(&target.title));
-    let path = crate::workspace::plain_path(&target.path);
+    let path = crate::verbatim_path::plain_path(&target.path);
     let session_facts = describe_sessions(&sessions, owner);
     let facts = [
         ("workspace", target.id.as_str()),
