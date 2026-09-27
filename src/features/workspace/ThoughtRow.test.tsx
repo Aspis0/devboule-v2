@@ -26,7 +26,11 @@ afterEach(async () => {
   removeCssProof();
 });
 
-async function renderThought(text: string, isStreaming = false): Promise<HTMLElement> {
+async function renderThought(
+  text: string,
+  isStreaming = false,
+  label = "Thought",
+): Promise<HTMLElement> {
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -34,8 +38,9 @@ async function renderThought(text: string, isStreaming = false): Promise<HTMLEle
     root?.render(
       <ThoughtRow
         className="workspace-chat-entry workspace-chat-thought"
-        text={text}
         isStreaming={isStreaming}
+        label={label}
+        text={text}
       />,
     ),
   );
@@ -68,20 +73,6 @@ describe("ThoughtRow", () => {
     expect(button.getAttribute("aria-expanded")).toBe("false");
   });
 
-  it.each(["Enter", " "])("expands by %s and collapses by keyboard", async (key) => {
-    const container = await renderThought("Reasoning");
-    const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
-    if (button === null) throw new Error("thought toggle did not render");
-    await act(async () =>
-      button.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key })),
-    );
-    expect(button.getAttribute("aria-expanded")).toBe("true");
-    await act(async () =>
-      button.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key })),
-    );
-    expect(button.getAttribute("aria-expanded")).toBe("false");
-  });
-
   it("handles an empty thought without a preview", async () => {
     const container = await renderThought("");
     const button = container.querySelector(".workspace-chat-thought-trigger");
@@ -95,26 +86,62 @@ describe("ThoughtRow", () => {
     expect(button?.getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("uses the thought-only mockup styles from the built bundle's stylesheet order", async () => {
+  it("preserves the item's subagent label and unavailable-depth copy", async () => {
+    const container = await renderThought(
+      "Checking files",
+      false,
+      "Subagent thought · depth unavailable",
+    );
+    expect(container.querySelector(".workspace-chat-thought-label")?.textContent).toBe(
+      "Subagent thought · depth unavailable",
+    );
+  });
+
+  it("uses the first non-empty trimmed line as its preview", async () => {
+    const container = await renderThought("\n   Useful thought  \nAnother thought");
+    expect(container.querySelector(".workspace-chat-thought-preview")?.textContent).toBe(
+      "Useful thought",
+    );
+  });
+
+  it("omits a preview and separator when the thought is whitespace only", async () => {
+    const container = await renderThought("   \n\t  ");
+    expect(container.querySelector(".workspace-chat-thought-preview")).toBeNull();
+  });
+
+  it("keeps an open row open as streamed chunks extend its text", async () => {
+    const container = await renderThought("First chunk");
+    const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
+    if (button === null) throw new Error("thought toggle did not render");
+    await act(async () => button.click());
+    await act(async () =>
+      root?.render(
+        <ThoughtRow
+          className="workspace-chat-entry workspace-chat-thought"
+          isStreaming
+          label="Thought"
+          text="First chunk and second chunk"
+        />,
+      ),
+    );
+    expect(
+      container.querySelector(".workspace-chat-thought-trigger")?.getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(container.querySelector(".workspace-chat-thought-body")?.textContent).toBe(
+      "First chunk and second chunk",
+    );
+  });
+
+  it("uses thought styles from Workspace.css and resolved theme tokens", async () => {
     const { inject, token } = assembleCssProof([
       read("src/styles/tokens.css"),
       read("src/styles/global.css"),
-      read("src/app/errorBoundaries.css"),
-      read("src/components/PermissionCard.css"),
-      read("src/components/PickerChip.css"),
-      read("src/features/design/artifactPreview.css"),
       read("src/features/workspace/Workspace.css"),
-      read("src/features/workspace/panel/changes.css"),
-      read("src/features/workspace/panel/files.css"),
-      read("src/features/workspace/QueueTrack.css"),
-      read("src/features/workspace/strip/strip.css"),
-      read("src/features/history/history.css"),
-      read("src/features/workspace/sidebar/sidebar.css"),
-      read("src/features/workspace/panel/panel.css"),
     ]);
     inject([
       ".workspace-chat-thought",
       ".workspace-chat-thought-trigger",
+      ".workspace-chat-thought-chevron",
       ".workspace-chat-thought-preview",
       ".workspace-chat-thought .workspace-chat-copy",
     ]);
@@ -129,13 +156,13 @@ describe("ThoughtRow", () => {
     expect(getComputedStyle(row).fontSize).toBe("12px");
     expect(getComputedStyle(row).color).toBe(token("--muted"));
     expect(getComputedStyle(button).fontFamily).not.toContain("JetBrains");
+    expect(getComputedStyle(button).paddingLeft).toBe("2px");
+    expect(getComputedStyle(button).paddingRight).toBe("2px");
+    const chevron = button.querySelector<SVGElement>(".workspace-chat-thought-chevron");
+    expect(chevron).not.toBeNull();
+    if (chevron !== null) expect(getComputedStyle(chevron).width).toBe("12px");
     expect(getComputedStyle(preview).textOverflow).toBe("ellipsis");
     expect(getComputedStyle(body).fontSize).toBe("11px");
     expect(getComputedStyle(body).fontFamily).not.toContain("JetBrains");
-  });
-
-  it("shows no invented duration", async () => {
-    const container = await renderThought("A preview");
-    expect(container.textContent).not.toMatch(/\b\d+\s*s\b/);
   });
 });

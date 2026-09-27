@@ -44,6 +44,7 @@ export type AgentChatItem =
       role: "user" | "assistant" | "thought";
       text: string;
       messageId: string | null;
+      isStreamingThought?: boolean;
       parentToolUseId?: string;
       spawnDepth?: number;
     }

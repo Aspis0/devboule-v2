@@ -476,7 +476,7 @@ describe("AgentChatSurface", () => {
     expect(onPermissionRequest).toHaveBeenCalledWith("permission-agent", 41, request);
   });
 
-  it("keeps a live thought collapsed until opened and labels its stream", async () => {
+  it("labels only the current thought stream and keeps an open row through new chunks", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -501,20 +501,65 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_thought",
-        messageId: "thought-1",
-        text: "Checking the configuration",
+        messageId: "thought-a",
+        text: "Checking the config loader",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "between-thoughts",
+        title: "Read config",
+        status: "completed",
+      });
+      channelHarness.active?.({
+        type: "agent_thought",
+        messageId: "thought-b",
+        text: "Checking the tests",
+        parentToolUseId: "subagent-tool",
       });
     });
 
-    const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
-    if (button === null) throw new Error("thought row did not render");
-    expect(button.textContent).toContain("Thinking…");
+    const thoughtRows = container.querySelectorAll<HTMLElement>(".workspace-chat-thought");
+    expect(thoughtRows).toHaveLength(2);
+    const [completedRow, streamingRow] = thoughtRows;
+    if (completedRow === undefined || streamingRow === undefined) {
+      throw new Error("both thought rows did not render");
+    }
+    expect(completedRow.querySelector(".workspace-chat-thought-label")?.textContent).toBe(
+      "Thought",
+    );
+    expect(completedRow.querySelector(".workspace-chat-thought-preview")?.textContent).toBe(
+      "Checking the config loader",
+    );
+    expect(streamingRow.querySelector(".workspace-chat-thought-status")?.textContent).toBe(
+      "Thinking…",
+    );
+    expect(streamingRow.querySelector(".workspace-chat-thought-label")?.textContent).toBe(
+      "Subagent thought · depth unavailable",
+    );
+    const button = streamingRow.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
+    if (button === null) throw new Error("streaming thought toggle did not render");
     expect(button.getAttribute("aria-expanded")).toBe("false");
 
     await act(async () => button.click());
     expect(button.getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector(".workspace-chat-thought-body")?.textContent).toBe(
-      "Checking the configuration",
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_thought",
+        messageId: "thought-b",
+        text: " and one more detail",
+        parentToolUseId: "subagent-tool",
+      });
+    });
+    const updatedRows = container.querySelectorAll<HTMLElement>(".workspace-chat-thought");
+    const updatedStreamingRow = updatedRows[1];
+    if (updatedStreamingRow === undefined) throw new Error("updated streaming row did not render");
+    expect(
+      updatedStreamingRow
+        .querySelector(".workspace-chat-thought-trigger")
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(updatedStreamingRow.querySelector(".workspace-chat-thought-body")?.textContent).toBe(
+      "Checking the tests and one more detail",
     );
   });
 

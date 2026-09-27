@@ -608,18 +608,12 @@ function renderEntry(
   entry: AgentChatItem | ToolCallGroup,
   a2aNames: A2aNameSource,
   transcriptEnded: boolean,
-  isStreamingThought: boolean,
 ) {
   if (isToolCallGroup(entry)) return renderGroupEntry(entry, a2aNames, transcriptEnded);
-  return renderItem(entry, a2aNames, transcriptEnded, isStreamingThought);
+  return renderItem(entry, a2aNames, transcriptEnded);
 }
 
-function renderItem(
-  item: AgentChatItem,
-  a2aNames: A2aNameSource,
-  transcriptEnded: boolean,
-  isStreamingThought = false,
-) {
+function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnded: boolean) {
   const isSubagent = hasParentToolUseId(item);
   const measuredDepth =
     "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
@@ -643,10 +637,11 @@ function renderItem(
     return (
       <ThoughtRow
         key={item.id}
+        label={itemLabel(item)}
         className={className}
         style={style}
         text={item.text}
-        isStreaming={isStreamingThought}
+        isStreaming={item.isStreamingThought ?? false}
       />
     );
   }
@@ -1001,19 +996,23 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // `AgentSession` replaces the items array on every update (copy-on-write),
   // so this memo recomputes whenever the transcript changes and can never
   // go stale; it only skips work on re-renders with identical items.
-  const entries = useMemo(
-    () =>
-      groupToolCalls(
-        recoveredAttach
-          ? state.items.filter(
-              (item) => item.role !== "error" || item.text !== RECOVERED_SESSION_UNAVAILABLE,
-            )
-          : state.items,
-      ),
-    [state.items, recoveredAttach],
-  );
-  const isStreamingThought =
-    state.streaming && !osGone && state.items[state.items.length - 1]?.role === "thought";
+  const lastItem = state.items[state.items.length - 1];
+  const streamingThoughtId =
+    state.streaming && !osGone && lastItem?.role === "thought" ? lastItem.id : null;
+  const entries = useMemo(() => {
+    const items = state.items.map((item) =>
+      item.role === "thought"
+        ? { ...item, isStreamingThought: item.id === streamingThoughtId }
+        : item,
+    );
+    return groupToolCalls(
+      recoveredAttach
+        ? items.filter(
+            (item) => item.role !== "error" || item.text !== RECOVERED_SESSION_UNAVAILABLE,
+          )
+        : items,
+    );
+  }, [state.items, recoveredAttach, streamingThoughtId]);
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const composerDisabled = disabledReason !== null;
   // Memoized so a streamed token re-renders the transcript, never the rows:
@@ -1069,7 +1068,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         {state.items.length === 0 && state.status === "idle" && !osGone ? (
           <div className="workspace-chat-empty">Start a conversation with the agent.</div>
         ) : null}
-        {entries.map((entry) => renderEntry(entry, a2aNames, osGone, isStreamingThought))}
+        {entries.map((entry) => renderEntry(entry, a2aNames, osGone))}
         {state.streaming && !osGone ? (
           <div className="workspace-chat-typing" role="status">
             Agent is working

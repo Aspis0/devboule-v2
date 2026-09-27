@@ -618,7 +618,7 @@
   min-width: 0;
   align-items: center;
   gap: 6px;
-  padding: 0;
+  padding: 0 2px;
   border: 0;
   background: transparent;
   color: var(--muted);
@@ -627,13 +627,14 @@
   text-align: left;
 }
 
-.workspace-chat-thought-trigger::before {
-  content: "›";
+.workspace-chat-thought-chevron {
+  width: 12px;
+  height: 12px;
   flex: none;
   transition: transform 120ms ease;
 }
 
-.workspace-chat-thought-trigger[aria-expanded="true"]::before {
+.workspace-chat-thought-trigger[aria-expanded="true"] .workspace-chat-thought-chevron {
   transform: rotate(90deg);
 }
 
