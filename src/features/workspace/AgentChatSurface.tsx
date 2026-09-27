@@ -74,6 +74,7 @@ import { MarkdownText } from "../../components/MarkdownText";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
 import { setHeldAssistantText } from "./attentionNotice";
+import { ThoughtRow } from "./ThoughtRow";
 import { QueueTrack } from "./QueueTrack";
 import type { MessageQueue } from "./messageQueue";
 import { useMessageQueue } from "./useMessageQueue";
@@ -607,12 +608,18 @@ function renderEntry(
   entry: AgentChatItem | ToolCallGroup,
   a2aNames: A2aNameSource,
   transcriptEnded: boolean,
+  isStreamingThought: boolean,
 ) {
   if (isToolCallGroup(entry)) return renderGroupEntry(entry, a2aNames, transcriptEnded);
-  return renderItem(entry, a2aNames, transcriptEnded);
+  return renderItem(entry, a2aNames, transcriptEnded, isStreamingThought);
 }
 
-function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnded: boolean) {
+function renderItem(
+  item: AgentChatItem,
+  a2aNames: A2aNameSource,
+  transcriptEnded: boolean,
+  isStreamingThought = false,
+) {
   const isSubagent = hasParentToolUseId(item);
   const measuredDepth =
     "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
@@ -634,10 +641,13 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
 
   if (item.role === "thought") {
     return (
-      <details className={className} key={item.id} open style={style}>
-        <summary>{itemLabel(item)}</summary>
-        <div className="workspace-chat-copy">{item.text}</div>
-      </details>
+      <ThoughtRow
+        key={item.id}
+        className={className}
+        style={style}
+        text={item.text}
+        isStreaming={isStreamingThought}
+      />
     );
   }
 
@@ -1002,6 +1012,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       ),
     [state.items, recoveredAttach],
   );
+  const isStreamingThought =
+    state.streaming && !osGone && state.items[state.items.length - 1]?.role === "thought";
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const composerDisabled = disabledReason !== null;
   // Memoized so a streamed token re-renders the transcript, never the rows:
@@ -1057,7 +1069,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         {state.items.length === 0 && state.status === "idle" && !osGone ? (
           <div className="workspace-chat-empty">Start a conversation with the agent.</div>
         ) : null}
-        {entries.map((entry) => renderEntry(entry, a2aNames, osGone))}
+        {entries.map((entry) => renderEntry(entry, a2aNames, osGone, isStreamingThought))}
         {state.streaming && !osGone ? (
           <div className="workspace-chat-typing" role="status">
             Agent is working

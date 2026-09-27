@@ -607,29 +607,62 @@
 
 .workspace-chat-thought {
   max-width: 80%;
-  color: var(--silence);
-  font-size: 11px;
-  line-height: 1.55;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
-.workspace-chat-thought summary {
-  width: fit-content;
-  color: var(--silence);
+.workspace-chat-thought-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font: inherit;
+  text-align: left;
 }
 
-.workspace-chat-thought summary:focus-visible {
+.workspace-chat-thought-trigger::before {
+  content: "›";
+  flex: none;
+  transition: transform 120ms ease;
+}
+
+.workspace-chat-thought-trigger[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.workspace-chat-thought-trigger:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 3px;
 }
 
+.workspace-chat-thought-label {
+  flex: none;
+}
+
+.workspace-chat-thought-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-chat-thought-preview::before {
+  content: "·";
+  margin-inline-end: 6px;
+}
+
 .workspace-chat-thought .workspace-chat-copy {
   margin-top: 4px;
+  color: var(--silence);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .workspace-chat-system {

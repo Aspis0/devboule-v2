@@ -7,6 +7,8 @@ import type { PermissionRequest, Session, SessionEvent, SessionState } from "../
 import type { AgentStatus } from "../../lib/agentSession";
 import { heldAssistantTextFor } from "./attentionNotice";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 const channelHarness = vi.hoisted(() => ({
   emit: null as ((event: SessionEvent) => void) | null,
   active: null as ((event: SessionEvent) => void) | null,
@@ -472,6 +474,48 @@ describe("AgentChatSurface", () => {
     await act(async () => channelHarness.active?.(request));
 
     expect(onPermissionRequest).toHaveBeenCalledWith("permission-agent", 41, request);
+  });
+
+  it("keeps a live thought collapsed until opened and labels its stream", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="thought-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    await act(async () => {
+      setValue.call(textarea, "Think through configuration");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => send.click());
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_thought",
+        messageId: "thought-1",
+        text: "Checking the configuration",
+      });
+    });
+
+    const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
+    if (button === null) throw new Error("thought row did not render");
+    expect(button.textContent).toContain("Thinking…");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => button.click());
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector(".workspace-chat-thought-body")?.textContent).toBe(
+      "Checking the configuration",
+    );
   });
 
   it("renders a complete live ACP turn delivered through the attached channel", async () => {
