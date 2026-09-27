@@ -413,6 +413,13 @@
   gap: 10px;
   padding: 4px 24px 0;
   overflow-y: auto;
+  overflow-anchor: none;
+}
+
+.workspace-conversation-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .workspace-agent-shell {
@@ -758,10 +765,15 @@
 .workspace-chat-tool summary::after,
 .workspace-chat-tool-group summary::after {
   flex: none;
-  margin-left: auto;
   color: var(--muted);
   font-size: 11px;
   content: "▾";
+}
+
+/* A running status owns the trailing space and the chevron follows it. */
+.workspace-chat-tool:not(.is-running) summary::after,
+.workspace-chat-tool-group:not(.is-running) summary::after {
+  margin-left: auto;
 }
 
 .workspace-chat-tool[open] summary::after,
@@ -789,20 +801,11 @@
 
 .workspace-chat-tool-running {
   flex: none;
-  margin-left: 0;
+  margin-left: auto;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--tone-live);
-}
-
-.workspace-chat-tool.is-running summary::after,
-.workspace-chat-tool.is-failed summary::after {
-  margin-left: auto;
-}
-
-.workspace-chat-tool.is-failed .workspace-chat-tool-failed {
-  color: var(--danger);
 }
 
 .workspace-chat-tool.is-cancelled {
@@ -921,7 +924,6 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 0;
 }
 
 .workspace-chat-error {

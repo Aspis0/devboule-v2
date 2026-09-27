@@ -202,6 +202,30 @@ describe("AgentChatSurface", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
+  class ResizeObserverStub {
+    static instances: ResizeObserverStub[] = [];
+    readonly observed: Element[] = [];
+    private readonly callback: ResizeObserverCallback;
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+      ResizeObserverStub.instances.push(this);
+    }
+    observe(target: Element): void {
+      this.observed.push(target);
+    }
+    unobserve(): void {}
+    disconnect(): void {
+      this.observed.length = 0;
+    }
+    fire(): void {
+      this.callback([], this);
+    }
+  }
+
+  function observerFor(target: Element): ResizeObserverStub | undefined {
+    return ResizeObserverStub.instances.find((instance) => instance.observed.includes(target));
+  }
+
   async function pickFromChip(prefix: string, optionId: string) {
     const chip = container.querySelector<HTMLButtonElement>(`[data-testid="${prefix}-chip"]`);
     if (chip === null) throw new Error(`${prefix} chip did not render`);
@@ -226,6 +250,8 @@ describe("AgentChatSurface", () => {
     channelHarness.deferNextAttach = false;
     channelHarness.releaseNextAttach = null;
     localStorage.removeItem("devboule.modelEffortPrefs");
+    ResizeObserverStub.instances = [];
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub as unknown as typeof ResizeObserver);
   });
 
   it("renders plan tool rows with Markdown and an explicit outcome", async () => {
@@ -306,6 +332,7 @@ describe("AgentChatSurface", () => {
     channelHarness.active = null;
     channelHarness.deferNextAttach = false;
     channelHarness.releaseNextAttach = null;
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
 
@@ -2595,7 +2622,7 @@ describe("AgentChatSurface", () => {
     expect(conversation.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
-  it("keeps the reader's position when auxiliary arrives away from the bottom", async () => {
+  it("scrolls an arriving permission card into view even away from the bottom", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -2622,7 +2649,7 @@ describe("AgentChatSurface", () => {
       );
     });
 
-    expect(conversation.scrollTop).toBe(80);
+    expect(conversation.scrollTop).toBe(420);
   });
 
   it("follows auxiliary updates when the reader is already at the bottom", async () => {
@@ -2653,6 +2680,191 @@ describe("AgentChatSurface", () => {
     });
 
     expect(conversation.scrollTop).toBe(420);
+  });
+
+  it("scrolls to the bottom when the reader sends while away from the bottom", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    Object.defineProperty(conversation, "scrollHeight", { value: 420, configurable: true });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 80;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "user-1",
+        text: "Follow-up while reading history",
+      });
+    });
+
+    expect(conversation.scrollTop).toBe(420);
+  });
+
+  it("keeps following the transcript after the reader's own send re-pins", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    let scrollHeight = 420;
+    Object.defineProperty(conversation, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true,
+    });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 80;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "user-1",
+        text: "Follow-up while reading history",
+      });
+    });
+    expect(conversation.scrollTop).toBe(420);
+
+    scrollHeight = 500;
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "answer-1",
+        text: "The next chunk",
+      });
+    });
+    expect(conversation.scrollTop).toBe(500);
+  });
+
+  it("keeps the view at the bottom when content grows while pinned", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    const content = conversation.querySelector(".workspace-conversation-content");
+    if (content === null) throw new Error("conversation content did not render");
+    let scrollHeight = 420;
+    Object.defineProperty(conversation, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true,
+    });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 220;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    scrollHeight = 500;
+    observerFor(content)?.fire();
+
+    expect(conversation.scrollTop).toBe(500);
+  });
+
+  it("leaves the reader alone when content grows while away from the bottom", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    const content = conversation.querySelector(".workspace-conversation-content");
+    if (content === null) throw new Error("conversation content did not render");
+    let scrollHeight = 420;
+    Object.defineProperty(conversation, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true,
+    });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 80;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    scrollHeight = 500;
+    observerFor(content)?.fire();
+
+    expect(conversation.scrollTop).toBe(80);
+  });
+
+  it("stops following when a container resize pushes the reader off the bottom", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    Object.defineProperty(conversation, "scrollHeight", { value: 600, configurable: true });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 400;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    Object.defineProperty(conversation, "clientHeight", { value: 100, configurable: true });
+    observerFor(conversation)?.fire();
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "answer-1",
+        text: "The next chunk",
+      });
+    });
+
+    expect(conversation.scrollTop).toBe(400);
+  });
+
+  it("keeps following when a container resize leaves the reader near the bottom", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    Object.defineProperty(conversation, "scrollHeight", { value: 600, configurable: true });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 400;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    Object.defineProperty(conversation, "clientHeight", { value: 160, configurable: true });
+    observerFor(conversation)?.fire();
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "answer-1",
+        text: "The next chunk",
+      });
+    });
+
+    expect(conversation.scrollTop).toBe(600);
   });
 
   it("does not infer Ready from attach alone without observed OS state", async () => {
@@ -2690,6 +2902,56 @@ describe("AgentChatSurface", () => {
     const summary = row.querySelector("summary")?.textContent ?? "";
     expect(summary).toContain("Shell");
     expect(summary).toContain("cargo test");
+  });
+
+  it("renders a running status dot as the trailing child of single rows and groups", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="tool-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-single",
+        title: "first",
+        status: "running",
+        kind: "execute",
+      });
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "working",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-second",
+        title: "second",
+        status: "running",
+        kind: "execute",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-third",
+        title: "third",
+        status: "running",
+        kind: "execute",
+      });
+    });
+
+    const single = container.querySelector(
+      "details.workspace-chat-tool:not(.workspace-chat-tool-group)",
+    );
+    const group = container.querySelector("details.workspace-chat-tool-group");
+    if (single === null || group === null) throw new Error("tool rows did not render");
+    const singleDot = single.querySelector(".workspace-chat-tool-running");
+    const groupDot = group.querySelector(".workspace-chat-tool-running");
+    if (singleDot === null || groupDot === null) throw new Error("running dots did not render");
+    expect(single.querySelector("summary")?.lastElementChild).toBe(singleDot);
+    expect(group.querySelector("summary")?.lastElementChild).toBe(groupDot);
   });
 
   it("renders a websearch tool row with the query and keeps output in the body", async () => {
@@ -2949,7 +3211,7 @@ describe("AgentChatSurface", () => {
     expect((group as HTMLElement).style.marginInlineStart).toBe("16px");
     expect(group.querySelectorAll("details.workspace-chat-tool")).toHaveLength(2);
     const plain = container.querySelectorAll(
-      ".workspace-conversation > details.workspace-chat-tool:not(.workspace-chat-tool-group)",
+      ".workspace-conversation-content > details.workspace-chat-tool:not(.workspace-chat-tool-group)",
     );
     expect(plain).toHaveLength(1);
   });

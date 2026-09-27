@@ -29,7 +29,14 @@ function luminance(color: string): number {
   return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722;
 }
 
+function opacityOf(color: string): number {
+  const parts = color.match(/[\d.]+/g);
+  return parts !== null && parts.length === 4 ? Number(parts[3]) : 1;
+}
+
 function contrastRatio(foreground: string, background: string): number {
+  // A fully transparent foreground shows whatever is beneath it: no contrast.
+  if (opacityOf(foreground) === 0 || opacityOf(background) === 0) return 1;
   const [lighter, darker] =
     luminance(foreground) > luminance(background)
       ? [foreground, background]
@@ -63,12 +70,10 @@ describe("tool row computed styles", () => {
         ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted",
         ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary::after",
         ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary > svg",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group).is-interrupted .workspace-chat-tool-label",
         ".workspace-chat-tool-label",
         ".workspace-chat-tool-failed",
         ".workspace-chat-tool-location",
         ".workspace-chat-tool-interrupted",
-        ".workspace-chat-tool.is-failed .workspace-chat-tool-failed",
         ".workspace-chat-tool.is-running .workspace-chat-tool-running",
         ".workspace-chat-tool-running",
         ".workspace-chat-tool summary > svg",
@@ -93,9 +98,6 @@ describe("tool row computed styles", () => {
         ".workspace-chat-tool-failed",
         ".workspace-chat-tool-group summary > svg",
         ".workspace-chat-tool-group.is-running .workspace-chat-tool-running",
-        ".workspace-chat-tool-group.is-running summary::after",
-        ".workspace-chat-tool.is-running summary::after",
-        ".workspace-chat-tool.is-failed summary::after",
         ".workspace-chat-tool-interrupted",
         ".workspace-chat-tool-location",
       ]);
@@ -191,7 +193,6 @@ describe("tool row computed styles", () => {
         ".workspace-chat-tool-group summary > svg",
         ".workspace-chat-tool-running",
         ".workspace-chat-tool-group.is-running .workspace-chat-tool-running",
-        ".workspace-chat-tool-group.is-running summary::after",
       ]);
       const group = document.createElement("details");
       group.className =
@@ -237,7 +238,6 @@ describe("tool row computed styles", () => {
         contrastRatio(getComputedStyle(summary, "::after").color, fillTool!),
       ).toBeGreaterThanOrEqual(4.5);
       expect(getComputedStyle(body).gap).toBe("2px");
-      expect(getComputedStyle(body).marginTop).toBe("0px");
       expect(getComputedStyle(row).backgroundColor).toBe(fillTool);
       expect(getComputedStyle(row).borderRadius).toBe("6px");
       group.remove();
@@ -245,18 +245,33 @@ describe("tool row computed styles", () => {
   );
 
   it.each([
-    { state: "running", classes: "workspace-chat-entry workspace-chat-tool is-running" },
-    { state: "failed", classes: "workspace-chat-entry workspace-chat-tool is-failed" },
-  ])("styles a single $state tool row from its real status class", ({ state, classes }) => {
-    const css = assembleCssProof(sheets);
+    {
+      theme: "light" as CssTheme,
+      state: "running",
+      classes: "workspace-chat-entry workspace-chat-tool is-running",
+    },
+    {
+      theme: "dark" as CssTheme,
+      state: "running",
+      classes: "workspace-chat-entry workspace-chat-tool is-running",
+    },
+    {
+      theme: "light" as CssTheme,
+      state: "failed",
+      classes: "workspace-chat-entry workspace-chat-tool is-failed",
+    },
+    {
+      theme: "dark" as CssTheme,
+      state: "failed",
+      classes: "workspace-chat-entry workspace-chat-tool is-failed",
+    },
+  ])("styles a single $state tool row in the $theme theme", ({ theme, state, classes }) => {
+    const css = assembleCssProof(sheets, theme);
     css.inject([
       ".workspace-chat-tool",
       ".workspace-chat-tool-running",
       ".workspace-chat-tool.is-running .workspace-chat-tool-running",
       ".workspace-chat-tool-failed",
-      ".workspace-chat-tool.is-failed .workspace-chat-tool-failed",
-      ".workspace-chat-tool.is-running summary::after",
-      ".workspace-chat-tool.is-failed summary::after",
     ]);
     const row = document.createElement("details");
     row.className = classes;
@@ -277,12 +292,13 @@ describe("tool row computed styles", () => {
     document.body.append(row);
 
     if (state === "running") {
-      expect(getComputedStyle(marker).backgroundColor).toBe(css.token("--tone-live"));
+      // The mockup's `.tool-status { margin-left: auto }`: the dot owns the
+      // trailing space and the chevron follows it.
+      expect(getComputedStyle(marker).marginLeft).toBe("auto");
       expect(getComputedStyle(marker).width).toBe("6px");
-      expect(getComputedStyle(marker).marginLeft).toBe("0px");
-      expect(css.rulesFor(".workspace-chat-tool.is-running summary::after")).toContain(
-        "margin-left: auto",
-      );
+      expect(
+        contrastRatio(getComputedStyle(marker).backgroundColor, css.token("--fill-tool")!),
+      ).toBeGreaterThanOrEqual(3);
     } else {
       expect(getComputedStyle(marker).color).toBe(css.token("--danger"));
       expect(
@@ -292,9 +308,9 @@ describe("tool row computed styles", () => {
     row.remove();
   });
 
-  it("keeps a running group's dot before a chevron pinned at the trailing edge", () => {
+  it("keeps a running group's dot at the trailing edge", () => {
     const css = assembleCssProof(sheets);
-    css.inject([".workspace-chat-tool-running", ".workspace-chat-tool.is-running summary::after"]);
+    css.inject([".workspace-chat-tool-running", ".workspace-chat-tool-group"]);
     const group = document.createElement("details");
     group.className =
       "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group is-running";
@@ -305,11 +321,11 @@ describe("tool row computed styles", () => {
     group.append(summary);
     document.body.append(group);
 
-    expect(getComputedStyle(dot).backgroundColor).toBe(css.token("--tone-live"));
-    expect(getComputedStyle(dot).marginLeft).toBe("0px");
-    expect(css.rulesFor(".workspace-chat-tool.is-running summary::after")).toContain(
-      "margin-left: auto",
-    );
+    expect(getComputedStyle(dot).marginLeft).toBe("auto");
+    expect(summary.lastElementChild).toBe(dot);
+    expect(
+      contrastRatio(getComputedStyle(dot).backgroundColor, css.token("--fill-tool")!),
+    ).toBeGreaterThanOrEqual(3);
     group.remove();
   });
 
@@ -345,7 +361,6 @@ describe("tool row computed styles", () => {
       expect(getComputedStyle(group).gap).toBe("2px");
       expect(getComputedStyle(summary).backgroundColor).toBe(css.token("--fill-tool"));
       expect(getComputedStyle(body).gap).toBe("2px");
-      expect(getComputedStyle(body).marginTop).toBe("0px");
       expect(getComputedStyle(row).backgroundColor).toBe(css.token("--fill-tool"));
       expect(getComputedStyle(row).borderRadius).toBe("6px");
       group.remove();

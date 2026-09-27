@@ -54,6 +54,7 @@ import {
 } from "../../lib/toolCallGroups";
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
+import { useConversationScrollStick } from "./useConversationScrollStick";
 import { PaneHeader } from "./paneHeader/PaneHeader";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
@@ -530,9 +531,6 @@ function renderToolItem(
       <summary className="workspace-chat-tool-summary">
         <ToolIcon name={model.icon} />
         <span className="workspace-chat-tool-label">{model.displayName}</span>
-        {running ? (
-          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
-        ) : null}
         {model.summary !== undefined ? (
           <span className="workspace-chat-tool-summary-text">{model.summary}</span>
         ) : null}
@@ -546,6 +544,9 @@ function renderToolItem(
           <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
             ×
           </span>
+        ) : null}
+        {running ? (
+          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
         ) : null}
       </summary>
       <div className="workspace-chat-tool-body">
@@ -604,9 +605,6 @@ function ToolCallGroupEntry({ group, a2aNames, transcriptEnded }: ToolCallGroupE
         <ToolIcon name="wrench" />
         <span className="workspace-chat-tool-group-count">{callCount}</span>
         <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
-        {running ? (
-          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
-        ) : null}
         {interrupted ? (
           <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
         ) : null}
@@ -614,6 +612,9 @@ function ToolCallGroupEntry({ group, a2aNames, transcriptEnded }: ToolCallGroupE
           <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
             ×
           </span>
+        ) : null}
+        {running ? (
+          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
         ) : null}
       </summary>
       <div className="workspace-chat-tool-group-body">
@@ -831,8 +832,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     pendingModeId: null,
     journalLoss: null,
   });
-  const conversationRef = useRef<HTMLDivElement>(null);
-  const conversationPinnedToBottomRef = useRef(true);
+  const { conversationRef, contentRef, onScroll } = useConversationScrollStick(
+    state.items,
+    auxiliary,
+  );
   // The name source the a2a card resolves against, rebuilt only when a roster
   // the workspace handed down changes: resolution happens at render, so a
   // rename or a re-pairing is visible the next time the card paints.
@@ -997,12 +1000,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     void sessionRef.current?.setModel(currentModelId, stored);
   }, [state.manifest]);
 
-  useEffect(() => {
-    const conversation = conversationRef.current;
-    if (conversation === null || !conversationPinnedToBottomRef.current) return;
-    conversation.scrollTop = conversation.scrollHeight;
-  }, [state.items, state.streaming, auxiliary]);
-
   // The toast is worded from what the app already holds, and this surface is
   // the only place a transcript exists: publish the last assistant message
   // while it is on screen, and take the entry back on unmount. A session
@@ -1115,23 +1112,21 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       <div
         ref={conversationRef}
         className="workspace-conversation workspace-scroll"
-        onScroll={(event) => {
-          const conversation = event.currentTarget;
-          conversationPinnedToBottomRef.current =
-            conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight <= 48;
-        }}
+        onScroll={onScroll}
       >
-        {state.items.length === 0 && state.status === "idle" && !osGone ? (
-          <div className="workspace-chat-empty">Start a conversation with the agent.</div>
-        ) : null}
-        {entries.map((entry) => renderEntry(entry, a2aNames, osGone))}
-        {state.streaming && !osGone ? (
-          <div className="workspace-chat-typing" role="status">
-            Agent is working
-            <span className="workspace-stream-caret" aria-hidden="true" />
-          </div>
-        ) : null}
-        {finishCopy !== null ? <div className="workspace-chat-finish">{finishCopy}</div> : null}
+        <div ref={contentRef} className="workspace-conversation-content">
+          {state.items.length === 0 && state.status === "idle" && !osGone ? (
+            <div className="workspace-chat-empty">Start a conversation with the agent.</div>
+          ) : null}
+          {entries.map((entry) => renderEntry(entry, a2aNames, osGone))}
+          {state.streaming && !osGone ? (
+            <div className="workspace-chat-typing" role="status">
+              Agent is working
+              <span className="workspace-stream-caret" aria-hidden="true" />
+            </div>
+          ) : null}
+          {finishCopy !== null ? <div className="workspace-chat-finish">{finishCopy}</div> : null}
+        </div>
         {auxiliary}
       </div>
       {state.journalLoss !== null ? (

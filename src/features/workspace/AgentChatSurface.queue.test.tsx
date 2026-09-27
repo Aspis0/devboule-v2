@@ -529,6 +529,49 @@ describe("AgentChatSurface queue keys", () => {
     expect(queuedTexts(queue)).toEqual([]);
   });
 
+  it("scrolls a drained queue message into view when the reader is away", async () => {
+    const queue = await renderSurface();
+    type("running now");
+    await clickSend();
+    pushActivity("working");
+    await act(async () => {
+      harness.emit?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "user-1",
+        messageKind: "composer",
+        text: "running now",
+      });
+      harness.emit?.({ type: "agent_message", messageId: "answer-1", text: "the first answer" });
+    });
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    Object.defineProperty(conversation, "scrollHeight", { value: 420, configurable: true });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 80;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    type("queued follow-up");
+    await act(async () => pressEnter());
+    await flush();
+    pushActivity("idle");
+    await flush();
+    expect(queuedTexts(queue)).toEqual([]);
+
+    await act(async () => {
+      harness.emit?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "user-2",
+        messageKind: "composer",
+        text: "queued follow-up",
+      });
+    });
+
+    expect(conversation.scrollTop).toBe(420);
+  });
+
   it("labels the composer action Queue message while the default queues", async () => {
     await renderSurface();
     type("running now");
