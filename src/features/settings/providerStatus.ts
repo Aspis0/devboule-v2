@@ -28,25 +28,27 @@ function providerStatusDetail(provider: ProviderInfo, authReason: string | null)
  */
 export function providerRowStatus(provider: ProviderInfo): ProviderRowStatus {
   const authCheckReason = provider.authStatus === "unknown" ? (provider.authReason ?? null) : null;
+  // A check-driven word shows the check's own reason only: the last-start
+  // failure is a different measurement and must not be grafted onto it.
   if (provider.authStatus === "logged_in") {
     return {
       tone: "live",
       word: "Logged in",
-      detail: providerStatusDetail(provider, provider.authReason ?? null),
+      detail: provider.authReason ?? null,
     };
   }
   if (provider.authStatus === "logged_out") {
     return {
       tone: "failed",
       word: "Not logged in",
-      detail: providerStatusDetail(provider, provider.authReason ?? null),
+      detail: provider.authReason ?? null,
     };
   }
   if (provider.authStatus === "credentials_found") {
     return {
       tone: "idle",
       word: "Credentials found",
-      detail: providerStatusDetail(provider, provider.authReason ?? null),
+      detail: provider.authReason ?? null,
     };
   }
   if (provider.authentication === "ok")

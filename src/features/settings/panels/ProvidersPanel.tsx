@@ -125,7 +125,7 @@ export function ProvidersPanel() {
   // Bumped by every fetch (mount and refresh); a response only applies when its
   // sequence is still the latest, so a slow mount list cannot revert a refresh.
   const fetchSeqRef = useRef(0);
-  const authCheckSeqRef = useRef(-1);
+  const authCheckDoneEpochRef = useRef(-1);
   // Set synchronously on click so a second click before the re-render is a no-op.
   const refreshInFlightRef = useRef(false);
   // The one npm run the daemon is executing on this client's behalf.
@@ -296,15 +296,23 @@ export function ProvidersPanel() {
     };
   }, [beginFetch, reconcile]);
 
+  // The check runs on open and on explicit Refresh only. A mount (or a
+  // capability change) bumps this epoch; an install or update never does,
+  // so a completed install cannot spawn a silent extra round.
+  const authCheckEpochRef = useRef(0);
+  useEffect(() => {
+    if (providerAuthCheckSupported) authCheckEpochRef.current += 1;
+  }, [providerAuthCheckSupported]);
+
   useEffect(() => {
     if (!providerAuthCheckSupported || catalog === null) return;
-    const seq = fetchSeqRef.current;
-    if (authCheckSeqRef.current === seq) return;
-    authCheckSeqRef.current = seq;
+    const epoch = authCheckEpochRef.current;
+    if (authCheckDoneEpochRef.current === epoch) return;
+    authCheckDoneEpochRef.current = epoch;
     let cancelled = false;
     void providersAuthCheck()
       .then((checked) => {
-        if (!cancelled && seq === fetchSeqRef.current) {
+        if (!cancelled && authCheckEpochRef.current === epoch) {
           setCatalog((current) => (current === null ? current : mergeAuthChecks(current, checked)));
         }
       })
@@ -337,7 +345,6 @@ export function ProvidersPanel() {
           // Keep the fresh catalog and its last-start fallback.
         }
         if (seq === fetchSeqRef.current) {
-          authCheckSeqRef.current = seq;
           reconcile(checkedCatalog.providers, switchFetch);
           setCatalog(checkedCatalog);
         }

@@ -114,6 +114,11 @@ pub struct ServerState {
     provider_auth_checks: Mutex<HashMap<String, crate::provider_auth::AuthCheck>>,
     provider_auth_inflight:
         Mutex<HashMap<String, Arc<std::sync::OnceLock<Option<crate::provider_auth::AuthCheck>>>>>,
+    /// Test-only: a per-state replacement for the provider checker, so a
+    /// test can drive `check_provider_auth`'s coalescing and panic paths
+    /// without a process. `None` falls back to the crate's no-op checker.
+    #[cfg(test)]
+    pub(super) auth_probe: Mutex<Option<AuthProbe>>,
     /// Version declared by the provider's most recent successful ACP
     /// initialize handshake, keyed by provider id.
     provider_versions: Mutex<HashMap<String, String>>,
@@ -257,6 +262,40 @@ pub(super) fn session_state_event(
     }
 }
 
+/// The test-only provider-check seam: one shared callable per state.
+#[cfg(test)]
+type AuthProbe = std::sync::Arc<
+    dyn Fn(&crate::provider_catalog::InstalledAgent) -> Option<crate::provider_auth::AuthCheck>
+        + Send
+        + Sync,
+>;
+
+/// Removes this provider's in-flight auth check on every exit path,
+/// panic included: a panicked check must not orphan the entry, or the
+/// next caller inherits a flight it can never remove and the result
+/// freezes for the daemon's lifetime.
+struct AuthFlightGuard<'a> {
+    state: &'a ServerState,
+    provider_id: String,
+    flight: Arc<std::sync::OnceLock<Option<crate::provider_auth::AuthCheck>>>,
+}
+
+impl Drop for AuthFlightGuard<'_> {
+    fn drop(&mut self) {
+        let mut in_flight = self
+            .state
+            .provider_auth_inflight
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if in_flight
+            .get(&self.provider_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.flight))
+        {
+            in_flight.remove(&self.provider_id);
+        }
+    }
+}
+
 impl ServerState {
     #[cfg(test)]
     pub fn new(instance_id: String) -> Arc<Self> {
@@ -363,6 +402,8 @@ impl ServerState {
             provider_health: Mutex::new(HashMap::new()),
             provider_auth_checks: Mutex::new(HashMap::new()),
             provider_auth_inflight: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            auth_probe: Mutex::new(None),
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
             claude_version_probes: Mutex::new(HashSet::new()),
@@ -812,45 +853,68 @@ impl ServerState {
             .cloned()
     }
 
+    /// A finished check is reused for a short window: two panel opens a
+    /// few seconds apart must not spawn the CLI twice. The window is short
+    /// on purpose — a Refresh after it measures again.
+    const AUTH_CHECK_REUSE_MS: i64 = 10_000;
+
+    fn fresh_auth_check(&self, provider_id: &str) -> Option<crate::provider_auth::AuthCheck> {
+        let cached = self.provider_auth_check(provider_id)?;
+        let age = i64::try_from(unix_millis())
+            .unwrap_or(i64::MAX)
+            .saturating_sub(cached.checked_at);
+        (age < Self::AUTH_CHECK_REUSE_MS).then_some(cached)
+    }
+
     pub(crate) fn check_provider_auth(
         &self,
         agent: &crate::provider_catalog::InstalledAgent,
     ) -> Option<crate::provider_auth::AuthCheck> {
-        let (flight, created) = {
+        if let Some(cached) = self.fresh_auth_check(&agent.id) {
+            return Some(cached);
+        }
+        let (flight, guard) = {
             let mut in_flight = self
                 .provider_auth_inflight
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             match in_flight.get(&agent.id) {
-                Some(flight) => (Arc::clone(flight), false),
+                Some(flight) => (Arc::clone(flight), None),
                 None => {
                     let flight = Arc::new(std::sync::OnceLock::new());
                     in_flight.insert(agent.id.clone(), Arc::clone(&flight));
-                    (flight, true)
+                    (
+                        Arc::clone(&flight),
+                        Some(AuthFlightGuard {
+                            state: self,
+                            provider_id: agent.id.clone(),
+                            flight: Arc::clone(&flight),
+                        }),
+                    )
                 }
             }
+        };
+        #[cfg(test)]
+        let probe = {
+            let guard = self.auth_probe.lock().unwrap_or_else(|e| e.into_inner());
+            guard.clone()
         };
         let result = flight
             .get_or_init(|| {
                 crate::provider_auth::check_if_enabled(
                     self.provider_switches.is_enabled(&agent.id),
-                    || crate::provider_auth::check(agent),
+                    || {
+                        #[cfg(test)]
+                        if let Some(probe) = probe.as_ref() {
+                            return probe(agent);
+                        }
+                        crate::provider_auth::check(agent)
+                    },
                 )
                 .map(|check| self.record_provider_auth_check(&agent.id, check))
             })
             .clone();
-        if created {
-            let mut in_flight = self
-                .provider_auth_inflight
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if in_flight
-                .get(&agent.id)
-                .is_some_and(|current| Arc::ptr_eq(current, &flight))
-            {
-                in_flight.remove(&agent.id);
-            }
-        }
+        drop(guard);
         result
     }
 

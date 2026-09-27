@@ -12,6 +12,46 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_STATUS_OUTPUT: usize = 64 * 1024;
 
+/// A child that exited has closed its end of the pipe; the reader only has
+/// to drain what is left. Bounding this wait by the *remaining* deadline
+/// reported a check that finished at 4.99 s of a 5 s budget as timed out —
+/// a false negative with a successful exit code in hand.
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
+
+/// Test-only: the buffer the reader thread captured on the last
+/// `run_check_with_timeout` call, so a test can assert what the real reader
+/// saw — the capture bound included — instead of calling the pure helper.
+#[cfg(test)]
+static LAST_CAPTURED_OUTPUT: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+
+/// Test-only: the PID of the child the last `run_check_with_timeout`
+/// spawned, so a test can check the kill by PID instead of a marker file
+/// the fixture would have to write.
+#[cfg(test)]
+static LAST_CHILD_PID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Test-only: serialises the runner tests, which share the two seams
+/// above; without it, parallel tests overwrite each other's observations.
+#[cfg(test)]
+pub(crate) fn runner_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) fn last_captured_output() -> Option<Vec<u8>> {
+    LAST_CAPTURED_OUTPUT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+#[cfg(test)]
+pub(crate) fn last_child_pid() -> Option<u32> {
+    let pid = LAST_CHILD_PID.load(std::sync::atomic::Ordering::SeqCst);
+    (pid != 0).then_some(pid as u32)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AuthCheck {
     pub status: &'static str,
@@ -173,6 +213,8 @@ fn run_check_with_timeout(
         Ok(child) => child,
         Err(_) => return classify_failure(ProbeFailure::SpawnFailed),
     };
+    #[cfg(test)]
+    LAST_CHILD_PID.store(child.id() as u64, std::sync::atomic::Ordering::SeqCst);
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -220,10 +262,16 @@ fn run_check_with_timeout(
     };
     #[cfg(windows)]
     let _ = _job.terminate();
-    let stdout = match output_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+    let stdout = match output_rx.recv_timeout(DRAIN_GRACE) {
         Ok(output) => output,
         Err(_) => return classify_failure(ProbeFailure::TimedOut),
     };
+    #[cfg(test)]
+    {
+        *LAST_CAPTURED_OUTPUT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(stdout.clone());
+    }
 
     classify_result(
         &agent.id,
@@ -268,6 +316,13 @@ fn classify_result(
         {
             Some("ready") => ("logged_in", "CLI confirmed an active login."),
             Some("not_ready" | "invalid") => ("logged_out", "CLI reported no active login."),
+            // The reader keeps the first 64 KiB; a pi build that logs more
+            // than that before its status field is truncated by the cap, and
+            // blaming the CLI for an unrecognised result would be false.
+            _ if output.len() >= MAX_STATUS_OUTPUT => (
+                "unknown",
+                "The provider status output was too large to read.",
+            ),
             _ => ("unknown", "CLI returned an unrecognized status result."),
         },
         _ => (

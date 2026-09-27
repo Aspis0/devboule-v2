@@ -135,6 +135,10 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         rpc_args: Some(&["--mode", "rpc"]),
         app_server_args: None,
         npm_package: None,
+        // The status command is `auth check`, but the argv actually run is
+        // derived per person from their configured default provider and
+        // model (`--provider <v> --model <v> --no-refresh --json`); this row
+        // names the command, not the full argument vector.
         auth_check_args: Some(&["auth", "check"]),
     },
     KnownAgent {

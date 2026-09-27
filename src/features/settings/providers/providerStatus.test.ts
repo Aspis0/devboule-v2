@@ -37,6 +37,22 @@ describe("providerRowStatus", () => {
     expect(status.detail).toBe("CLI status check completed.");
   });
 
+  it.each([
+    ["logged_in", "Logged in"],
+    ["logged_out", "Not logged in"],
+    ["credentials_found", "Credentials found"],
+  ] as const)("keeps a failed start out of the %s row", (authStatus, word) => {
+    const status = providerRowStatus(
+      providerWith({
+        authStatus,
+        authReason: "CLI confirmed an active login.",
+        authentication: "failed: model manifest empty",
+      }),
+    );
+    expect(status.word).toBe(word);
+    expect(status.detail).toBe("CLI confirmed an active login.");
+  });
+
   it("keeps last-start wording when the auth check is unknown or absent", () => {
     expect(
       providerRowStatus(providerWith({ authStatus: "unknown", authentication: "ok" })).word,

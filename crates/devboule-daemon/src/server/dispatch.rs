@@ -60,7 +60,19 @@ pub(super) fn dispatch(
         let spawn = std::thread::Builder::new()
             .name("daemon-provider-auth-check".to_string())
             .spawn(move || {
-                outbound.enqueue_reply(providers_reply(&worker_state, id, false, true));
+                // A panic in discovery or a check must still answer the
+                // caller, the way the SessionCreate worker does: an
+                // unanswered frame leaves the client on the full RPC
+                // timeout while the panel's catch swallows the symptom.
+                let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    providers_reply(&worker_state, id, false, true)
+                }))
+                .unwrap_or_else(|_| {
+                    DaemonMessage::Error(
+                        WireError::new(ErrorCode::Io, "provider status check failed").with_id(id),
+                    )
+                });
+                outbound.enqueue_reply(reply);
             });
         if spawn.is_err() {
             failure_outbound.enqueue_reply(DaemonMessage::Error(
@@ -319,9 +331,13 @@ pub(super) fn dispatch_immediate(
             dispatch_session(state, owner, request, conn, typed_permissions_ok, passed)
         }
         ClientMessage::ProvidersList { id } => providers_reply(state, id, false, false),
-        ClientMessage::ProvidersAuthCheck { .. } => {
-            unreachable!("ProvidersAuthCheck is dispatched by the async wrapper")
-        }
+        ClientMessage::ProvidersAuthCheck { id } => DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::Unimplemented,
+                "ProvidersAuthCheck is dispatched by the async wrapper",
+            )
+            .with_id(id),
+        ),
         ClientMessage::ToolPolicyGet { id } => tool_policy_get(state, id, passed),
         ClientMessage::ToolPolicySet {
             id,
@@ -365,12 +381,20 @@ pub(super) fn dispatch_immediate(
             }
             dispatch_devices(state, conn, request, passed)
         }
-        ClientMessage::ProvidersRefresh { .. } => {
-            unreachable!("ProvidersRefresh is dispatched by the async wrapper")
-        }
-        ClientMessage::ProviderUpdate { .. } => {
-            unreachable!("ProviderUpdate is dispatched by the async wrapper")
-        }
+        ClientMessage::ProvidersRefresh { id } => DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::Unimplemented,
+                "ProvidersRefresh is dispatched by the async wrapper",
+            )
+            .with_id(id),
+        ),
+        ClientMessage::ProviderUpdate { id, .. } => DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::Unimplemented,
+                "ProviderUpdate is dispatched by the async wrapper",
+            )
+            .with_id(id),
+        ),
         ClientMessage::Invoke { id, method, .. } => DaemonMessage::Error(
             WireError::new(
                 ErrorCode::Unimplemented,

@@ -31,3 +31,9 @@ export function takeTerminalInput(sessionId: string): string[] | null {
 export function hasTerminalInput(sessionId: string): boolean {
   return pending.has(sessionId);
 }
+
+/** Test seam: drops every pending handoff, so a test that requested lines
+ * the tab never took cannot poison the next test's take. */
+export function clearTerminalInputForTests(): void {
+  pending.clear();
+}

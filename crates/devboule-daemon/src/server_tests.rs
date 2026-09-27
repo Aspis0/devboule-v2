@@ -828,6 +828,135 @@ fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
     );
 }
 
+fn installed_agent(id: &str) -> crate::provider_catalog::InstalledAgent {
+    crate::provider_catalog::InstalledAgent {
+        id: id.to_string(),
+        aliases: &[],
+        installed: true,
+        executable: std::path::PathBuf::from("C:\\does-not-exist\\fake.cmd"),
+        prefix_args: Vec::new(),
+        acp_command: None,
+        stream_json_command: None,
+        rpc_command: None,
+        app_server_command: None,
+        authentication: crate::provider_catalog::AuthenticationStatus::Unknown,
+        origin: crate::provider_catalog::ProviderOrigin::UserBinary,
+        launch_args: None,
+        pickable: None,
+        installed_version: None,
+        latest_version: None,
+        install_channel: crate::provider_catalog::InstallChannel::Native,
+        npm_package: None,
+        tools: Vec::new(),
+        spawn_path_env: None,
+        launch_directory: None,
+    }
+}
+
+fn canned_auth_check(checked_at: i64) -> crate::provider_auth::AuthCheck {
+    crate::provider_auth::AuthCheck {
+        status: "logged_in",
+        reason: "CLI confirmed an active login.",
+        checked_at,
+    }
+}
+
+#[test]
+fn concurrent_auth_check_callers_share_one_run() {
+    let (path, state) = temp_state("auth-coalesce");
+    let agent = installed_agent("claude");
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let probe_calls = std::sync::Arc::clone(&calls);
+    let probe_entered = entered_tx;
+    let probe_release = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(
+        move |_agent: &crate::provider_catalog::InstalledAgent| {
+            probe_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = probe_entered.send(());
+            let release = probe_release
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let _ = release.recv_timeout(Duration::from_secs(10));
+            Some(canned_auth_check(42))
+        },
+    ));
+    const CALLERS: usize = 4;
+    let mut waiters = Vec::new();
+    for _ in 0..CALLERS {
+        let state = Arc::clone(&state);
+        let agent = agent.clone();
+        waiters.push(std::thread::spawn(move || {
+            state.check_provider_auth(&agent)
+        }));
+    }
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("one caller entered the shared check");
+    // Let the other callers reach the shared flight before releasing.
+    std::thread::sleep(Duration::from_millis(50));
+    release_tx.send(()).expect("release the shared check");
+    for waiter in waiters {
+        assert_eq!(
+            waiter.join().expect("caller"),
+            Some(canned_auth_check(42)),
+            "every caller receives the coalesced result"
+        );
+    }
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "N concurrent callers must coalesce into one run"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn a_panicked_auth_check_removes_its_flight_and_reruns() {
+    let (path, state) = temp_state("auth-panic");
+    let agent = installed_agent("claude");
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) =
+        Some(std::sync::Arc::new(|_| panic!("probe panic")));
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.check_provider_auth(&agent)
+    }));
+    assert!(
+        panicked.is_err(),
+        "the panic reaches the worker's catch_unwind"
+    );
+    // A counting probe with a stale checked_at, so the reuse window never
+    // hides a re-run: each post-panic call must run the check again
+    // instead of inheriting a frozen result.
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let probe_calls = std::sync::Arc::clone(&calls);
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(
+        move |_agent: &crate::provider_catalog::InstalledAgent| {
+            probe_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(canned_auth_check(0))
+        },
+    ));
+    assert!(state.check_provider_auth(&agent).is_some());
+    assert!(state.check_provider_auth(&agent).is_some());
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "each post-panic call runs the check again"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
 #[test]
 fn tool_policy_set_then_get_round_trips_through_dispatch() {
     let path = crate::test_dirs::test_temp_dir("devboule-tool-policy-dispatch");

@@ -613,6 +613,76 @@ fn a_tool_policy_only_daemon_is_never_sent_a_provider_switch_frame() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The same door for the auth check: a daemon from before the capability
+/// existed must never receive the frame. The client refuses it locally, so
+/// the connection survives the first Providers-page open instead of
+/// deserializing to death.
+#[cfg(windows)]
+#[test]
+fn a_daemon_without_the_auth_check_capability_is_never_sent_the_frame() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-client-provider-auth-cap");
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let _ = framed.recv::<ClientMessage>().expect("client hello");
+        // The plugin-backend set: the capabilities of a daemon from before
+        // the auth check existed.
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                "provider-auth-cap-test",
+                std::process::id(),
+            )))
+            .expect("hello reply");
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        let next = framed.recv_timeout::<ClientMessage>(Duration::from_millis(500));
+        assert!(next.is_err(), "no auth-check frame may be sent: {next:?}");
+    });
+
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match crate::transport::connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = super::handshake(
+        connection,
+        devboule_protocol::ClientHello::m3a(
+            super::test_owner("provider-auth-cap-test").expect("owner"),
+            "provider-auth-cap-test",
+        ),
+    )
+    .expect("handshake");
+    assert!(!client
+        .hello()
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == devboule_protocol::caps::PROVIDER_AUTH_CHECK));
+    let error = client
+        .providers_auth_check()
+        .expect_err("an older daemon does not know the frame");
+    let DaemonError::Handshake(wire) = error else {
+        panic!("capability mismatch must be a handshake error: {error:?}");
+    };
+    assert_eq!(wire.code, ErrorCode::CapabilityNotSupported);
+    assert_eq!(
+        wire.message,
+        "capability 'provider.auth-check' was not negotiated"
+    );
+
+    let _ = release_tx.send(());
+    drop(client);
+    server.join().expect("server joins");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The same door as the tool policy's, for the profile store: a client
 /// refuses both RPCs when the handshake did not negotiate
 /// `agent_profiles`, so a daemon that predates them is never sent a frame

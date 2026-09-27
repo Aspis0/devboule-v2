@@ -4,29 +4,33 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const hoisted = vi.hoisted(() => ({
+  defaultDaemonStatus: (): DaemonStatus => ({
+    state: "connected",
+    pid: 1,
+    instanceId: "settings-test",
+    protocolVersion: 4,
+    clients: 1,
+    capabilities: [
+      "ping",
+      "status",
+      "sessions",
+      "journal",
+      "typed_permissions",
+      "devices",
+      "tool_policy",
+      "provider.switches",
+      "provider.auth-check",
+    ],
+    message: null,
+  }),
+}));
+
 vi.mock("../../../lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/tauri")>();
   return {
     ...actual,
-    daemonStatus: vi.fn(async () => ({
-      state: "connected",
-      pid: 1,
-      instanceId: "settings-test",
-      protocolVersion: 4,
-      clients: 1,
-      capabilities: [
-        "ping",
-        "status",
-        "sessions",
-        "journal",
-        "typed_permissions",
-        "devices",
-        "tool_policy",
-        "provider.switches",
-        "provider.auth-check",
-      ],
-      message: null,
-    })),
+    daemonStatus: vi.fn(async () => hoisted.defaultDaemonStatus()),
     providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providersRefresh: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providersAuthCheck: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
@@ -73,7 +77,11 @@ vi.mock("../../workspace/workspaceSessions", async (importOriginal) => {
   };
 });
 
-import { requestTerminalInput, takeTerminalInput } from "../../terminal/pendingTerminalInput";
+import {
+  clearTerminalInputForTests,
+  requestTerminalInput,
+  takeTerminalInput,
+} from "../../terminal/pendingTerminalInput";
 import {
   clearTerminalRuns,
   recordTerminalRun,
@@ -91,6 +99,15 @@ import type {
 import { ProvidersPanel } from "./ProvidersPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+beforeEach(() => {
+  // Every test starts from the module factory's daemon status, which
+  // advertises every capability this page gates on. Without this reset a
+  // sticky mock installed by an earlier test leaks into a later one, and
+  // the file's green becomes an artifact of declaration order.
+  vi.mocked(daemonStatus).mockReset();
+  vi.mocked(daemonStatus).mockImplementation(async () => hoisted.defaultDaemonStatus());
+});
 
 function daemonStatusWith(capabilities: string[]): DaemonStatus {
   return {
@@ -549,11 +566,38 @@ describe("providers refresh", () => {
   });
 
   it("checks login on open and explicit Refresh only", async () => {
+    const available = {
+      id: "codex",
+      executable: "",
+      acpAvailable: false,
+      authentication: "unknown",
+      installed: false,
+      npmPackage: "@openai/codex",
+      latestVersion: "0.5.0",
+    };
+    vi.mocked(providersList).mockResolvedValueOnce({ providers: [available], unreadableDirs: 0 });
+    vi.mocked(providersRefresh).mockResolvedValueOnce({
+      providers: [available],
+      unreadableDirs: 0,
+    });
     await renderPanel();
     expect(providersAuthCheck).toHaveBeenCalledTimes(1);
     const button = container.querySelector<HTMLButtonElement>(".provider-refresh");
     if (!button) throw new Error("Refresh button did not render");
     await act(async () => button.click());
+    expect(providersAuthCheck).toHaveBeenCalledTimes(2);
+
+    // An install is not a trigger: the mandate is open and explicit Refresh.
+    setLastSelectedWorkspaceId(null);
+    const install = container.querySelector<HTMLButtonElement>(".provider-install");
+    if (!install) throw new Error("Install did not render");
+    await act(async () => install.click());
+    await act(async () => undefined);
+    const confirm = container.querySelector<HTMLButtonElement>(".provider-consent-confirm");
+    if (!confirm) throw new Error("consent Confirm did not render");
+    await act(async () => confirm.click());
+    await act(async () => undefined);
+    expect(providerUpdate).toHaveBeenCalledWith("codex");
     expect(providersAuthCheck).toHaveBeenCalledTimes(2);
   });
 
@@ -1410,6 +1454,7 @@ describe("terminal install and login", () => {
     container.remove();
     vi.clearAllMocks();
     clearTerminalRuns();
+    clearTerminalInputForTests();
     resetTerminalShellForTests();
     setLastSelectedWorkspaceId(null);
     useAppStore.getState().selectSurface("workspace");
