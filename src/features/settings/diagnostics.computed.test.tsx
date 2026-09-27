@@ -183,28 +183,76 @@ describe("diagnostics cards (real stylesheets, no app launch)", () => {
     expect(proof.rulesFor(".diagnostics-error")).toContain(proof.token("--line"));
   });
 
-  it("lifts the in-card retry pill off the error card's ground", () => {
-    // The devices sheet documents this exact fill-on-fill failure and its
-    // fix (scoped --panel-side fill, --line-strong edge); the same shape
-    // here, with the same floors: the fill must move at all, the edge
-    // must carry the resting boundary.
-    const css = read("src/features/settings/diagnostics.css");
-    const override = css.match(/#settings-panel-diagnostics \.diagnostics-retry\s*\{([^}]*)\}/);
-    if (override === null) throw new Error("scoped retry override not found");
-    const tokenName = (prop: string): string => {
-      const found = override[1]!.match(new RegExp(`${prop}:\\s*var\\((--[a-z-]+)\\)`));
-      if (found === null) throw new Error(`${prop} token not found in override`);
-      return found[1]!;
+  it("separates retention inputs from their card in both themes", () => {
+    // Resolve the resting declarations against the full page cascade, so a
+    // later or more specific rule cannot hide behind a passing scoped rule.
+    const css = [
+      "src/styles/tokens.css",
+      "src/styles/global.css",
+      "src/features/settings/diagnostics.css",
+      "src/features/settings/devices.css",
+      "src/features/oracle/oracle.css",
+      "src/features/settings/general.css",
+      "src/features/settings/providers.css",
+      "src/features/settings/profiles.css",
+      "src/features/settings/projects.css",
+      "src/features/settings/settings.css",
+    ]
+      .map(read)
+      .join("\n");
+    const winningToken = (selectorClass: string, property: string): string => {
+      const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+      const matches = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap((match) =>
+        match[1]!
+          .split(",")
+          .map((selector) => selector.trim())
+          .filter(
+            (selector) =>
+              selector.includes(selectorClass) && !/:(hover|focus|active)/.test(selector),
+          )
+          .map((selector) => ({ selector, body: match[2]! })),
+      );
+      const ranked = matches
+        .map(({ selector, body }, order) => {
+          const declaration = body.split(";").find((entry) => {
+            const name = entry.slice(0, entry.indexOf(":")).trim();
+            return property === "border-color"
+              ? name === "border-color" || name === "border"
+              : name === property;
+          });
+          return {
+            order,
+            specificity: [
+              (selector.match(/#[\w-]+/g) ?? []).length,
+              (selector.match(/\.[\w-]+/g) ?? []).length,
+              (selector.match(/(?:^|[\s>+~])(?:[a-z][\w-]*)/gi) ?? []).length,
+            ],
+            value: declaration?.match(/var\((--[a-z-]+)\)/)?.[1],
+          };
+        })
+        .filter((rule) => rule.value !== undefined);
+      ranked.sort(
+        (a, b) =>
+          a.specificity[0]! - b.specificity[0]! ||
+          a.specificity[1]! - b.specificity[1]! ||
+          a.specificity[2]! - b.specificity[2]! ||
+          a.order - b.order,
+      );
+      const winner = ranked.at(-1)?.value;
+      if (winner === undefined)
+        throw new Error(`no winning ${property} token for ${selectorClass}`);
+      return winner;
     };
-    const fillToken = tokenName("background");
-    const borderToken = tokenName("border-color");
-    expect(fillToken).not.toBe("--surface");
     const tokens = read("src/styles/tokens.css");
     const root = tokenDeclarations(tokens, ":root");
     const dark = tokenDeclarations(tokens, '[data-theme="dark"]');
+    const fillToken = winningToken(".retention-limit-input", "background");
+    const borderToken = winningToken(".retention-limit-input", "border-color");
     for (const isDark of [false, true]) {
       const card = resolveToken(root, dark, "--panel-card", isDark);
-      expect(contrastRatio(resolveToken(root, dark, fillToken, isDark), card)).toBeGreaterThan(1);
+      expect(
+        contrastRatio(resolveToken(root, dark, fillToken, isDark), card),
+      ).toBeGreaterThanOrEqual(1.05);
       expect(
         contrastRatio(resolveToken(root, dark, borderToken, isDark), card),
       ).toBeGreaterThanOrEqual(1.3);
@@ -258,19 +306,16 @@ describe("journal retention cards (real stylesheets, no app launch)", () => {
   });
 
   it("insets every card child — rows and prose alike — at 14px", () => {
-    // The heading, the two help sentences and the blocked-copy line are
-    // direct children beside the rows; inset scoped per child kind (the
-    // panel tsx belongs to another slice, so element hooks back the
-    // class hooks below).
+    // Structural selectors keep the inset independent of the child classes.
     for (const selector of [
       ".retention-summary > .settings-card",
       ".retention-limits > .retention-limit-row",
-      ".retention-limits > .settings-subheading",
-      ".retention-limits > .retention-help",
+      ".retention-limits > *",
       ".retention-summary > .retention-blocked-copy",
     ]) {
       expect(proof.rulesFor(selector)).toContain("padding-left: 14px");
     }
+    expect(proof.rulesFor(".retention-limits > :first-child")).toContain("margin: 0 0 8px");
   });
 
   it("divides retention rows on the house line", () => {
@@ -284,8 +329,10 @@ describe("journal retention cards (real stylesheets, no app launch)", () => {
 
   it("keeps the prose gaps inside the limits card", () => {
     proof.inject([
-      ".retention-limits > .settings-subheading",
+      ".retention-limits > *",
+      ".retention-limits > :first-child",
       ".retention-limits > .retention-help",
+      ".settings-subheading",
     ]);
     const card = box("retention-limits");
     const heading = document.createElement("div");
@@ -293,6 +340,7 @@ describe("journal retention cards (real stylesheets, no app launch)", () => {
     const help = document.createElement("p");
     help.className = "retention-help";
     card.append(heading, help);
+    expect(getComputedStyle(heading).marginTop).toBe("0px");
     expect(getComputedStyle(heading).marginBottom).toBe("8px");
     expect(getComputedStyle(help).marginBottom).toBe("8px");
   });

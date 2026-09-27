@@ -7,13 +7,14 @@
 .oracle-ready-intro p,
 .oracle-index-progress p {
   color: var(--ink-soft);
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.6;
 }
 
 .oracle-eyebrow {
-  color: var(--silence);
-  font-size: 9.5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -93,16 +94,15 @@
   padding: 30px 32px 32px;
 }
 
-/* Flow headings at the house section label (12/500/--muted), the same
-   label every other settings page hangs on its card. */
+/* Flow headings use the card-title scale, above the eyebrow and body copy. */
 .oracle-stage-content h3,
 .oracle-ready-intro h3,
-.oracle-admin-block h4,
+.oracle-admin-block[aria-labelledby] h4,
 .oracle-files-heading h4 {
   margin: 5px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .oracle-stage-description {
@@ -1050,7 +1050,9 @@
 }
 
 .oracle-files-heading h4 {
-  font-size: 13px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .oracle-files-note {

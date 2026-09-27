@@ -225,16 +225,14 @@
   border-top: 1px solid var(--line);
 }
 
-/* The heading, help sentences and blocked-copy line sit beside the rows
-   as direct children; they share the 14px inset and the 8px rhythm. */
-.retention-limits > .settings-subheading,
-.retention-limits > .retention-help,
+/* Direct children share the inset; the first child is the card heading. */
+.retention-limits > *,
 .retention-summary > .retention-blocked-copy {
   padding-right: 14px;
   padding-left: 14px;
 }
 
-.retention-limits > .settings-subheading {
+.retention-limits > :first-child {
   margin: 0 0 8px;
 }
 
@@ -268,6 +266,11 @@
   border-radius: 7px;
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
+}
+
+#settings-panel-diagnostics .retention-limit-input {
+  background: var(--panel-side);
+  border-color: var(--line-strong);
 }
 
 .settings-retention-alert {

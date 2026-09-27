@@ -70,20 +70,63 @@ describe("oracle cards (real stylesheets, no app launch)", () => {
     expect(proof.rulesFor(".oracle-query-surface")).not.toContain("box-shadow");
   });
 
-  it("sets every flow heading at the house section label", () => {
-    // The brief aligns Oracle's cards AND headings: 12px/500/--muted, the
-    // same label every other settings page hangs on its card. All four
-    // grouped selectors, not just the first.
-    for (const selector of [
+  it("keeps Oracle titles, eyebrows, and body copy in the card hierarchy", () => {
+    const selectors = [
       ".oracle-stage-content h3",
       ".oracle-ready-intro h3",
+      ".oracle-admin-block[aria-labelledby] h4",
       ".oracle-admin-block h4",
       ".oracle-files-heading h4",
-    ]) {
-      const rules = proof.rulesFor(selector);
-      expect(rules).toContain("font-size: 12px");
-      expect(rules).toContain("font-weight: 500");
-      expect(rules).toContain(proof.token("--muted"));
+      ".oracle-eyebrow",
+      ".oracle-stage-description",
+      ".oracle-ready-intro p",
+    ];
+    proof.inject(selectors);
+
+    const stage = document.createElement("div");
+    stage.className = "oracle-stage-content";
+    const eyebrow = document.createElement("div");
+    eyebrow.className = "oracle-eyebrow";
+    const title = document.createElement("h3");
+    const body = document.createElement("p");
+    body.className = "oracle-stage-description";
+    stage.append(eyebrow, title, body);
+    document.body.appendChild(stage);
+
+    const ready = document.createElement("div");
+    ready.className = "oracle-ready-intro";
+    const readyTitle = document.createElement("h3");
+    const readyBody = document.createElement("p");
+    ready.append(readyTitle, readyBody);
+    document.body.appendChild(ready);
+
+    const admin = document.createElement("section");
+    admin.className = "oracle-admin-block";
+    admin.setAttribute("aria-labelledby", "admin-title");
+    const adminTitle = document.createElement("h4");
+    admin.appendChild(adminTitle);
+    document.body.appendChild(admin);
+
+    const filesHeading = document.createElement("div");
+    filesHeading.className = "oracle-files-heading";
+    const filesTitle = document.createElement("h4");
+    filesHeading.appendChild(filesTitle);
+    document.body.appendChild(filesHeading);
+
+    for (const heading of [title, readyTitle, adminTitle, filesTitle]) {
+      const style = getComputedStyle(heading);
+      expect(style.fontSize).toBe("14px");
+      expect(style.fontWeight).toBe("600");
+      expect(style.color).toBe(proof.token("--ink"));
+    }
+    const eyebrowStyle = getComputedStyle(eyebrow);
+    expect(eyebrowStyle.fontSize).toBe("12px");
+    expect(eyebrowStyle.fontWeight).toBe("500");
+    expect(eyebrowStyle.color).toBe(proof.token("--muted"));
+    for (const paragraph of [body, readyBody]) {
+      const bodyStyle = getComputedStyle(paragraph);
+      expect(bodyStyle.fontSize).toBe("13px");
+      expect(bodyStyle.color).toBe(proof.token("--ink-soft"));
     }
   });
 
