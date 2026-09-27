@@ -1495,11 +1495,11 @@ fn the_default_acp_route_carries_the_spawn_path_of_the_picked_agent() {
     );
     assert_eq!(
         command.env,
-        vec![("PATH".to_string(), expected_path.clone())],
+        vec![("PATH".to_string(), expected_path)],
         "the default ACP launch carries the registry folders on the child PATH"
     );
     assert!(
-        !expected_path.contains(r"\\?\"),
+        !command.env.first().expect("PATH pair").1.contains(r"\\?\"),
         "the child PATH carries no verbatim prefix"
     );
 

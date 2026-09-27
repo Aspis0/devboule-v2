@@ -118,6 +118,9 @@ mod tool_policy;
 mod transport;
 #[cfg(feature = "server")]
 mod user_providers;
+// Only the server and the Windows PATH snapshot call plain_path: everywhere
+// else (the client-only macOS/Linux build) the module would warn as dead.
+#[cfg_attr(not(any(windows, feature = "server")), allow(dead_code))]
 mod verbatim_path;
 #[cfg(windows)]
 mod windows_path_env;

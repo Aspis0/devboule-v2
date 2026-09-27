@@ -2049,10 +2049,15 @@ mod registry_path {
         let expected_path = format!("{};{}", long(&inherited), long(&installed));
         assert_eq!(
             grok.spawn_path_env,
-            Some(("PATH".to_string(), expected_path.clone()))
+            Some(("PATH".to_string(), expected_path))
         );
         assert!(
-            !expected_path.contains(r"\\?\"),
+            !grok
+                .spawn_path_env
+                .as_ref()
+                .expect("spawn PATH pair")
+                .1
+                .contains(r"\\?\"),
             "the child PATH carries no verbatim prefix"
         );
 
@@ -2192,11 +2197,16 @@ mod registry_path {
         let expected_path = format!("{};{}", long(&node_dir), long(&shim_dir));
         assert_eq!(
             codex.spawn_path_env,
-            Some(("PATH".to_string(), expected_path.clone())),
+            Some(("PATH".to_string(), expected_path)),
             "the child PATH carries the shim's directory, not only node's"
         );
         assert!(
-            !expected_path.contains(r"\\?\"),
+            !codex
+                .spawn_path_env
+                .as_ref()
+                .expect("spawn PATH pair")
+                .1
+                .contains(r"\\?\"),
             "the child PATH carries no verbatim prefix"
         );
 
@@ -2256,11 +2266,15 @@ mod registry_path {
         let expected_path = format!("{};{}", long(&node_dir), long(&npx_dir));
         assert_eq!(
             row.spawn_path_env,
-            Some(("PATH".to_string(), expected_path.clone())),
+            Some(("PATH".to_string(), expected_path)),
             "the launched ACP process carries the npx directory"
         );
         assert!(
-            !expected_path.contains(r"\\?\"),
+            !row.spawn_path_env
+                .as_ref()
+                .expect("spawn PATH pair")
+                .1
+                .contains(r"\\?\"),
             "the child PATH carries no verbatim prefix"
         );
 

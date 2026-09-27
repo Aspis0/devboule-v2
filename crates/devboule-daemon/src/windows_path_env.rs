@@ -42,47 +42,49 @@ impl WindowsPathSource for RegistryPathSource {
     }
 }
 
-/// One PATH entry as the snapshot compares it: the as-written spelling
-/// plus the resolved spelling. `resolved` is the canonical long form when
-/// a resolver could open the entry, else the plain spelling of the raw
-/// entry; `canonicalised` is false exactly then, and those entries are
-/// counted in `PathSnapshot::canonicalize_failures` instead of silently
-/// behaving like the pre-fix bug.
+/// One PATH entry as the snapshot compares it. `resolved` is the
+/// canonical long form when a resolver could open the entry, else the
+/// plain spelling of the as-written entry; `canonicalised` is false
+/// exactly then, and those entries are counted in
+/// `PathSnapshot::canonicalize_failures` instead of silently behaving
+/// like the pre-fix bug.
 #[derive(Clone, Debug)]
 struct DirEntry {
-    raw: PathBuf,
     resolved: PathBuf,
     canonicalised: bool,
 }
 
-/// A PATH entry in its comparison form. Resolution runs once per entry per
-/// snapshot capture (see `PathSnapshot::capture`); every later comparison
-/// reuses the stored forms and performs no I/O, so a dead mapped drive on
-/// PATH costs one probe per capture, never one per agent.
+/// A PATH entry in its comparison form. Resolution runs once per distinct
+/// spelling per snapshot capture (see `PathSnapshot::capture`); every
+/// later comparison reuses the stored forms and performs no I/O, so a
+/// dead mapped drive on PATH costs one probe per spelling per capture,
+/// never one per agent.
 fn resolve_entry(raw: PathBuf) -> DirEntry {
     note_resolve_call();
     let canonical = match stage1_canonicalize(&raw) {
         Ok(canonical) => Some(canonical),
-        // A denied open says the volume answered: the name may still be
-        // queryable without a handle. Any other error — a dead mapped
-        // drive included — costs exactly this one probe and falls back.
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => long_path_name(&raw),
+        // A denied open suggests the volume answered, so the name may
+        // still be queryable without a handle — an inference about Win32
+        // error selection, not a guarantee: the query still traverses the
+        // redirector. Any other error (a dead mapped drive included)
+        // costs exactly this one probe and falls back.
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let second = long_path_name(&raw);
+            // Count the second syscall too: the bound is attempts, all of them.
+            note_resolve_call();
+            second
+        }
         Err(_) => None,
     };
     match canonical {
         Some(canonical) => DirEntry {
             resolved: PathBuf::from(plain_path(&canonical.to_string_lossy())),
-            raw,
             canonicalised: true,
         },
-        None => {
-            let resolved = PathBuf::from(plain_path(&raw.to_string_lossy()));
-            DirEntry {
-                resolved,
-                raw,
-                canonicalised: false,
-            }
-        }
+        None => DirEntry {
+            resolved: PathBuf::from(plain_path(&raw.to_string_lossy())),
+            canonicalised: false,
+        },
     }
 }
 
@@ -106,16 +108,24 @@ fn wide_path_name(
         .collect();
     // With an empty buffer the query returns the required size including NUL.
     let required = unsafe { query(wide.as_ptr(), std::ptr::null_mut(), 0) };
-    if required == 0 {
-        return None;
-    }
-    let mut buffer = vec![0u16; required as usize];
+    let capacity = wide_buffer_len(required)?;
+    let mut buffer = vec![0u16; capacity];
     let written = unsafe { query(wide.as_ptr(), buffer.as_mut_ptr(), required) };
     if written == 0 || written >= required {
         return None;
     }
     buffer.truncate(written as usize);
     Some(PathBuf::from(std::ffi::OsString::from_wide(&buffer)))
+}
+
+fn wide_buffer_len(required: u32) -> Option<usize> {
+    // The API contract caps the answer at 32 767 UTF-16 units; a bogus
+    // return must not size an allocation.
+    const MAX_WIDE_PATH: u32 = 32_767;
+    if required == 0 || required > MAX_WIDE_PATH {
+        return None;
+    }
+    Some(required as usize)
 }
 
 /// The long form of a path via GetLongPathNameW: no handle is opened, so
@@ -164,7 +174,8 @@ fn mocked_stage1_failure(raw: &Path) -> Option<std::io::Error> {
 }
 
 /// Resolve calls on this thread since the last reset: the P1-1 bound
-/// test's counter. Counts entries presented for resolution, not I/O hits.
+/// test's counter. Counts resolution attempts — stage-1 presentations
+/// plus stage-2 queries — not just I/O hits.
 #[cfg(test)]
 pub(crate) fn resolve_call_count() -> usize {
     RESOLVE_CALLS.with(|calls| calls.get())
@@ -208,27 +219,47 @@ pub(crate) struct PathSnapshot {
 }
 
 impl PathSnapshot {
-    /// Read the process PATH and the two registry values.
+    /// Read the process PATH and the two registry values. One capture is
+    /// a consistent instant; two captures in one refresh are two instants
+    /// (server/providers.rs captures per stage today).
     pub(crate) fn capture(source: &dyn WindowsPathSource) -> Self {
         let process = source.process_path();
         let machine = source.machine_path();
         let user = source.user_path();
-        // Each entry is resolved at most once per capture and the stored
-        // forms serve every later comparison on this snapshot.
-        let process_entries: Vec<DirEntry> = process
-            .as_ref()
-            .map(|paths| std::env::split_paths(paths).map(resolve_entry).collect())
-            .unwrap_or_default();
+        // Resolve each distinct spelling once: a folder named twice under
+        // one spelling is probed once, and the stored forms serve every
+        // later comparison on this snapshot. Spellings that differ (short
+        // vs long) still resolve separately and collapse below.
+        let mut seen_raw: Vec<String> = Vec::new();
+        let mut process_entries = Vec::new();
+        if let Some(paths) = process.as_ref() {
+            for raw in std::env::split_paths(paths) {
+                let key = dir_key(&raw);
+                if seen_raw.contains(&key) {
+                    continue;
+                }
+                seen_raw.push(key);
+                process_entries.push(resolve_entry(raw));
+            }
+        }
         let mut merged_entries = process_entries.clone();
         for read in [&machine, &user] {
             let Some(value) = read.value() else {
                 continue;
             };
-            for entry in std::env::split_paths(value).map(resolve_entry) {
-                if entry.raw.as_os_str().is_empty()
-                    || merged_entries
-                        .iter()
-                        .any(|existing| entries_match(existing, &entry))
+            for raw in std::env::split_paths(value) {
+                if raw.as_os_str().is_empty() {
+                    continue;
+                }
+                let key = dir_key(&raw);
+                if seen_raw.contains(&key) {
+                    continue;
+                }
+                seen_raw.push(key);
+                let entry = resolve_entry(raw);
+                if merged_entries
+                    .iter()
+                    .any(|existing| entries_match(existing, &entry))
                 {
                     continue;
                 }
@@ -321,12 +352,12 @@ impl PathSnapshot {
     }
 }
 
-/// The diagnostics lines for the two registry PATH sources, in machine-then-
-/// user order, including the reason a value was not read — a failed read
-/// must never look like an empty registry PATH.
+/// The diagnostics lines for one capture: the two registry sources plus,
+/// when nonzero, the entries compared as written. Takes the snapshot so a
+/// caller that already holds one does not capture (and resolve) again;
+/// the diagnostics report holds none, so it captures through the wrapper.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub(crate) fn path_registry_outcome_lines(source: &dyn WindowsPathSource) -> Vec<String> {
-    let snapshot = PathSnapshot::capture(source);
+pub(crate) fn outcome_lines_for_snapshot(snapshot: &PathSnapshot) -> Vec<String> {
     let mut lines: Vec<String> = snapshot
         .source_outcomes()
         .map(|(label, read)| read.describe(label))
@@ -343,6 +374,14 @@ pub(crate) fn path_registry_outcome_lines(source: &dyn WindowsPathSource) -> Vec
         });
     }
     lines
+}
+
+/// The diagnostics lines for the two registry PATH sources, in machine-then-
+/// user order, including the reason a value was not read — a failed read
+/// must never look like an empty registry PATH.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn path_registry_outcome_lines(source: &dyn WindowsPathSource) -> Vec<String> {
+    outcome_lines_for_snapshot(&PathSnapshot::capture(source))
 }
 
 /// The same lines from the real registry, for the diagnostics report.
@@ -376,31 +415,32 @@ pub(crate) fn attach_spawn_path_env(
     }
 }
 
-/// Whether two directory spellings name one folder. The key is literal
-/// text — case-insensitive, trailing separators ignored, verbatim prefix
-/// folded per `plain_path` — never a filesystem probe: both sides arrive
-/// resolved where the snapshot could open them, as written where it could
-/// not. Callers try the resolved pair first, then the as-written pair, so
-/// an entry that failed resolution still matches its own spelling.
+/// Whether two directory spellings name one folder: the literal-text key
+/// (case-insensitive, trailing separators ignored, verbatim prefix folded
+/// per `plain_path`), never a filesystem probe. Entries the snapshot
+/// could not resolve compare by their plain as-written form and are
+/// counted in `PathSnapshot::canonicalize_failures`.
 fn same_directory(left: &Path, right: &Path) -> bool {
-    fn key(path: &Path) -> String {
-        plain_path(&path.to_string_lossy())
-            .trim_end_matches(['\\', '/'])
-            .to_lowercase()
-    }
-    key(left) == key(right)
+    dir_key(left) == dir_key(right)
 }
 
-/// A snapshot entry names `directory`: the resolved forms match, or — the
-/// fallback for an entry no resolver could open — the as-written forms do.
+fn dir_key(path: &Path) -> String {
+    plain_path(&path.to_string_lossy())
+        .trim_end_matches(['\\', '/'])
+        .to_lowercase()
+}
+
+/// A snapshot entry names `directory` when the resolved forms match. An
+/// entry no resolver could open compares by its plain as-written form
+/// (`resolved` is `plain_path(raw)` then) and is counted in
+/// `canonicalize_failures`: the failure is recorded, not silent.
 fn entry_matches_launch(entry: &DirEntry, directory: &Path) -> bool {
-    same_directory(&entry.resolved, directory) || same_directory(&entry.raw, directory)
+    same_directory(&entry.resolved, directory)
 }
 
-/// Two snapshot entries name one folder: resolved against resolved, else
-/// as-written against as-written.
+/// Two snapshot entries name one folder when their resolved forms match.
 fn entries_match(left: &DirEntry, right: &DirEntry) -> bool {
-    same_directory(&left.resolved, &right.resolved) || same_directory(&left.raw, &right.raw)
+    same_directory(&left.resolved, &right.resolved)
 }
 
 #[cfg(test)]
@@ -596,6 +636,32 @@ mod tests {
         short_path_name(dir).unwrap_or_else(|| dir.to_path_buf())
     }
 
+    /// A verbatim UNC entry the resolvers cannot open still resolves to the
+    /// plain UNC form: no `\\?\` reaches discovery or the child's PATH.
+    #[test]
+    fn a_verbatim_unc_entry_resolves_to_the_plain_unc_form() {
+        let raw = PathBuf::from(r"\\?\UNC\fake-server\fake-share\tools");
+        let plain = PathBuf::from(r"\\fake-server\fake-share\tools");
+        let _guard = Stage1MockGuard::arm("fake-server", std::io::ErrorKind::NotFound);
+
+        let snapshot = PathSnapshot::capture(&StubSource {
+            process: None,
+            machine: failed(),
+            user: read(&raw.to_string_lossy()),
+        });
+        assert_eq!(snapshot.canonicalize_failures(), 1);
+        assert_eq!(snapshot.directories(), vec![plain.clone()]);
+        let pair = snapshot.spawn_path_for(&plain);
+        assert_eq!(
+            pair,
+            Some(("PATH".to_string(), plain.to_string_lossy().into_owned()))
+        );
+        assert!(
+            !pair.expect("spawn pair").1.contains(r"\\?\"),
+            "the child PATH carries no verbatim prefix"
+        );
+    }
+
     /// P1-1: one capture resolves each presented entry once, and every
     /// later comparison reuses the stored forms — no per-agent repetition.
     #[test]
@@ -618,8 +684,8 @@ mod tests {
         let snapshot = PathSnapshot::capture(&source);
         assert_eq!(
             resolve_call_count(),
-            5,
-            "each presented entry resolved once at capture"
+            4,
+            "each distinct spelling resolved once at capture: 5 presentations, 4 spellings"
         );
         assert_eq!(
             snapshot.directories(),
@@ -640,7 +706,7 @@ mod tests {
         }
         assert_eq!(
             resolve_call_count(),
-            5,
+            4,
             "comparisons reuse the capture: no per-agent work"
         );
 
@@ -750,11 +816,17 @@ mod tests {
         let short = short_form(&folder);
         let _guard = Stage1MockGuard::arm_all(std::io::ErrorKind::PermissionDenied);
 
+        reset_resolve_calls();
         let snapshot = PathSnapshot::capture(&StubSource {
             process: None,
             machine: failed(),
             user: read(&short.to_string_lossy()),
         });
+        assert_eq!(
+            resolve_call_count(),
+            2,
+            "stage 1 attempt plus the handle-free query"
+        );
         assert_eq!(snapshot.canonicalize_failures(), 0);
         assert_eq!(snapshot.directories(), vec![long_form(&folder)]);
 
@@ -779,5 +851,14 @@ mod tests {
         }
 
         std::fs::remove_dir_all(folder).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn wide_buffer_len_rejects_zero_and_answers_past_the_api_cap() {
+        assert_eq!(wide_buffer_len(0), None);
+        assert_eq!(wide_buffer_len(5), Some(5));
+        assert_eq!(wide_buffer_len(32_767), Some(32_767));
+        assert_eq!(wide_buffer_len(32_768), None);
+        assert_eq!(wide_buffer_len(u32::MAX), None);
     }
 }

@@ -5,21 +5,37 @@
 
 /// The one place a stored path is turned back into its plain spelling: for
 /// the wire, for a person, and for every child process cwd. Stored paths
-/// are canonical (`\\?\C:\…`), and the prefix is a real feature — it is the
-/// only spelling that can address a path longer than MAX_PATH — so it is
-/// removed only when the plain form names the same path a plain caller
-/// would reach:
+/// are canonical (`\\?\C:\…` or `\\?\UNC\…`), and the prefix is a real
+/// feature — it is the only spelling that can address a path longer than
+/// MAX_PATH — so it is removed only when the plain form names the same
+/// path a plain caller would reach:
 /// - a plain form over `MAX_PATH` keeps the prefix (it is what makes the
 ///   path usable at all);
 /// - a component that is a reserved device name, or that ends with a dot
 ///   or a space, resolves differently without the prefix (Win32 strips
 ///   trailing dots and spaces and claims reserved names only in the plain
-///   namespace), so stripping would change the meaning;
-/// - a `\\?\UNC\` workspace keeps its prefix: a cmd-side child cannot use
-///   a UNC cwd either way.
+///   namespace), so stripping would change the meaning.
+///
+/// A `\\?\UNC\server\share\…` path becomes the plain UNC form
+/// `\\server\share\…` (the spelling discovery searches and a child
+/// carries), subject to the same guards: over-`MAX_PATH` or verbatim-only
+/// components keep the prefix.
 pub(crate) fn plain_path(path: &str) -> String {
     const MAX_PATH: usize = 260;
     const VERBATIM_PREFIX: &str = r"\\?\";
+    const UNC_PREFIX: &str = r"\\?\UNC\";
+    if let Some(rest) = path
+        .get(..UNC_PREFIX.len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case(UNC_PREFIX))
+        .and_then(|_| path.get(UNC_PREFIX.len()..))
+        .filter(|rest| !rest.is_empty())
+    {
+        let plain = format!(r"\\{rest}");
+        if plain.encode_utf16().count() < MAX_PATH && !has_verbatim_only_component(&plain) {
+            return plain;
+        }
+        return path.to_string();
+    }
     if path
         .get(..VERBATIM_PREFIX.len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(VERBATIM_PREFIX))
@@ -151,5 +167,33 @@ mod tests {
             r"C:\Users\alice\Project"
         );
         assert_eq!(plain_path(r"relative\path"), r"relative\path");
+    }
+
+    #[test]
+    fn plain_path_strips_a_verbatim_unc_path_to_its_plain_form() {
+        assert_eq!(
+            plain_path(r"\\?\UNC\server\share\tools"),
+            r"\\server\share\tools"
+        );
+        // The prefix match is case-insensitive; the remainder keeps its case.
+        assert_eq!(
+            plain_path(r"\\?\unc\Server\Share\Tools"),
+            r"\\Server\Share\Tools"
+        );
+        // The same guards as drive paths: over MAX_PATH keeps the prefix.
+        let deep = r"\\?\UNC\server\share\";
+        let long = format!("{deep}{}", "word\\".repeat(60));
+        assert_eq!(plain_path(&long), long);
+        // A reserved component, or a trailing dot, keeps the prefix.
+        assert_eq!(
+            plain_path(r"\\?\UNC\server\share\CON"),
+            r"\\?\UNC\server\share\CON"
+        );
+        assert_eq!(
+            plain_path(r"\\?\UNC\server\share\name."),
+            r"\\?\UNC\server\share\name."
+        );
+        // Degenerate: nothing after the prefix stays untouched.
+        assert_eq!(plain_path(r"\\?\UNC\"), r"\\?\UNC\");
     }
 }
