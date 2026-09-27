@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { WorkspaceGitFileDiff, WorkspaceGitStatus } from "../../types/ipc";
-import { changesBadge, changesBadgeLabel } from "./changesBadge";
 
 /**
  * Refresh on open, poll while open, manual button (DECISIONS §3). No watcher
@@ -81,7 +80,6 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
     try {
       const reply = await workspaceGitStatus(workspaceId);
       if (generation !== statusGeneration.current) return;
-      changesBadge.report(workspaceId, changesBadgeLabel(reply));
       setStatusCell({ workspaceId, reply, failure: null });
     } catch (cause: unknown) {
       if (generation !== statusGeneration.current) return;

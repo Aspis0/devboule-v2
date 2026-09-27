@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { AppSurface, DesignPanel, PullRequestSurface } from "./sidePanels";
 import { ChangesSurface } from "./ChangesSurface";
 import { FilesSurface } from "./FilesSurface";
-import { changesBadge } from "./changesBadge";
 import type { PanelIconName } from "./panel/PanelIcon";
 
 /** Where the tab row offers a panel: a visible tab, or the kebab menu. The
@@ -17,23 +16,11 @@ export interface SidePanelContext {
   workspaceId: string | null;
 }
 
-/**
- * A panel whose own reads produce the badge, instead of a value written into
- * the registry. The snapshot is keyed by workspace so one checkout's numbers
- * can never appear under another's name, and `null` means this panel has never
- * read — the tab then shows the unread mark.
- */
-export interface SidePanelLiveMeta {
-  subscribe: (listener: () => void) => () => void;
-  snapshot: (workspaceId: string | null) => string | null;
-}
-
 export interface SidePanelEntry {
   id: string;
   name: string;
   placement: PanelPlacement;
   icon: PanelIconName;
-  liveMeta?: SidePanelLiveMeta;
   render: (context: SidePanelContext) => ReactNode;
 }
 
@@ -52,9 +39,8 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     name: "Changes",
     placement: "tab",
     icon: "changes",
-    // The open panel's poll supplies the label R7b's branch row reads; the
-    // tab row itself carries no badge (no room at 300 px).
-    liveMeta: changesBadge,
+    // The counts live in R7b's branch row, read off the panel's own poll via
+    // changesBadgeLabel — never on the tab (no room at 300 px).
     render: ({ workspaceId }) => <ChangesSurface workspaceId={workspaceId} />,
   },
   {

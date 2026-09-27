@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { WorkspaceGitStatus } from "../../types/ipc";
-import { CHANGES_BADGE_UNREAD, changesBadge, changesBadgeLabel } from "./changesBadge";
+import { changesBadgeLabel } from "./changesBadge";
 
 function status(overrides: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
   return {
@@ -80,41 +80,5 @@ describe("changesBadgeLabel", () => {
     expect(
       changesBadgeLabel(status({ error: "this workspace folder is inside a git repository" })),
     ).toBe("unavailable");
-  });
-});
-
-describe("changesBadge store", () => {
-  it("reports nothing for a workspace that was never read", () => {
-    expect(changesBadge.snapshot("badge-never-read")).toBeNull();
-    expect(changesBadge.snapshot(null)).toBeNull();
-    expect(CHANGES_BADGE_UNREAD).toBe("—");
-  });
-
-  it("keeps the last label per workspace, so one checkout cannot show another's numbers", () => {
-    changesBadge.report("badge-workspace-a", "+12 −3");
-    changesBadge.report("badge-workspace-b", "clean");
-
-    expect(changesBadge.snapshot("badge-workspace-a")).toBe("+12 −3");
-    expect(changesBadge.snapshot("badge-workspace-b")).toBe("clean");
-  });
-
-  it("notifies on a new label and stays silent when the poll found nothing new", () => {
-    const listener = vi.fn();
-    const unsubscribe = changesBadge.subscribe(listener);
-    try {
-      changesBadge.report("badge-workspace-c", "+1 −1");
-      expect(listener).toHaveBeenCalledTimes(1);
-      // A 5 s poll that read the same label again must not re-render the
-      // workspace for a value that did not change.
-      changesBadge.report("badge-workspace-c", "+1 −1");
-      expect(listener).toHaveBeenCalledTimes(1);
-      changesBadge.report("badge-workspace-c", "clean");
-      expect(listener).toHaveBeenCalledTimes(2);
-    } finally {
-      unsubscribe();
-    }
-
-    changesBadge.report("badge-workspace-c", "unavailable");
-    expect(listener).toHaveBeenCalledTimes(2);
   });
 });

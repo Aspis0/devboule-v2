@@ -35,14 +35,16 @@
   align-items: center;
   gap: 2px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .workspace-panel-tab {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
   align-items: center;
   gap: 6px;
   height: 35px;
+  min-width: 0;
   padding: 0 8px;
   color: var(--muted);
   background: transparent;
@@ -69,8 +71,10 @@
 }
 
 .workspace-panel-tab-label {
+  overflow: hidden;
   font-size: var(--type-small);
   font-weight: 500;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

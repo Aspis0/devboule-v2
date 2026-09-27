@@ -13,7 +13,6 @@ vi.mock("../../lib/tauri", () => ({
 
 import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
 import { ChangesSurface } from "./ChangesSurface";
-import { changesBadge } from "./changesBadge";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -517,9 +516,9 @@ describe("ChangesSurface", () => {
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
   });
 
-  // Fix round R6 (DECISIONS §10): a refused read is not a reading — the badge
-  // keeps the last label actually read, while the panel shows the refusal.
-  it("keeps the badge at the last value read when a later read is refused", async () => {
+  // Fix round R6 (DECISIONS §10): a refused read is not a reading — the panel
+  // keeps showing the last reply actually read, beside the refusal.
+  it("keeps the last reply on screen when a later read is refused", async () => {
     const id = "workspace-badge-refused";
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({
@@ -529,7 +528,7 @@ describe("ChangesSurface", () => {
       }),
     );
     await render(<ChangesSurface workspaceId={id} />);
-    expect(changesBadge.snapshot(id)).toBe("+14 −3");
+    expect(container.textContent).toContain("src/real.ts");
 
     vi.mocked(workspaceGitStatus).mockRejectedValue(new Error("the daemon refused this read"));
     const refresh = Array.from(container.querySelectorAll("button")).find(
@@ -543,7 +542,7 @@ describe("ChangesSurface", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
       "the daemon refused this read",
     );
-    expect(changesBadge.snapshot(id)).toBe("+14 −3");
+    expect(container.textContent).toContain("src/real.ts");
   });
 
   it("asks nothing while no workspace is selected and says so", async () => {

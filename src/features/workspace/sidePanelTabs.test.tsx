@@ -264,7 +264,11 @@ describe("the right panel's tabs", () => {
   }
 
   function tabpanel(): HTMLElement {
-    const panel = container.querySelector<HTMLElement>('.workspace-right-panel [role="tabpanel"]');
+    // Tab bodies are tabpanels; kebab bodies are named regions (never a
+    // tabpanel without a tab).
+    const panel = container.querySelector<HTMLElement>(
+      '.workspace-right-panel [role="tabpanel"], .workspace-right-panel [role="region"]',
+    );
     if (panel === null) throw new Error("side panel tabpanel did not render");
     return panel;
   }
@@ -411,7 +415,8 @@ describe("the right panel's tabs", () => {
 
     const panel = tabpanel();
     expect(panel.id).toBe("workspace-side-panel");
-    expect(panel.tabIndex).toBe(0);
+    // Tab panels own focusable controls, so the panel itself is not a stop.
+    expect(panel.tabIndex).toBe(-1);
     for (const tab of tabs()) {
       expect(tab.getAttribute("aria-controls")).toBe("workspace-side-panel");
     }
@@ -421,7 +426,7 @@ describe("the right panel's tabs", () => {
     expect(tabpanel().getAttribute("aria-labelledby")).toBe("panel-tab-design");
   });
 
-  it("sizes tabs to content: no flex growth, no ellipsis, a spacer before the kebab", async () => {
+  it("shrinks gracefully at narrow widths: the tablist clips, tabs shrink, labels ellipsize", async () => {
     const { rulesFor } = assembleCssProof([
       read("src/styles/tokens.css"),
       read("src/styles/global.css"),
@@ -429,15 +434,23 @@ describe("the right panel's tabs", () => {
       read("src/features/workspace/Workspace.css"),
       read("src/features/workspace/panel/panel.css"),
     ]);
-    // The F1 root cause was flex growth splitting the row into equal thirds.
-    expect(rulesFor(".workspace-panel-tab")).not.toContain("flex: 1");
-    expect(rulesFor(".workspace-panel-tab")).toContain("flex: none");
-    expect(rulesFor(".workspace-panel-tab-label")).not.toContain("text-overflow");
+    // 240 px (MIN_RIGHT_WIDTH) holds 200 px of tablist against 239.25 px of
+    // tabs (real font metrics): the list clips instead of painting under the
+    // kebab, each tab shrinks, each label ellipsizes. Every tab stays clickable.
+    expect(rulesFor(".workspace-panel-tablist")).toContain("overflow: hidden");
+    expect(rulesFor(".workspace-panel-tablist")).toContain("min-width: 0");
+    const tabRule = rulesFor(".workspace-panel-tab");
+    expect(tabRule).not.toContain("flex: 1 1 0");
+    expect(tabRule).toContain("flex: 0 1 auto");
+    expect(tabRule).toContain("min-width: 0");
+    const labelRule = rulesFor(".workspace-panel-tab-label");
+    expect(labelRule).toContain("overflow: hidden");
+    expect(labelRule).toContain("text-overflow: ellipsis");
     await renderWorkspace();
     // The mockup's spacer: content tabs first, the kebab pushed right.
     const spacer = container.querySelector(".workspace-panel-tabs > .workspace-panel-spacer");
     if (spacer === null) throw new Error("tab row spacer did not render");
-    // In a layout engine each label fits its tab; happy-dom reports zeros.
+    // In a layout engine each label fits its tab at 300 px; happy-dom reports zeros.
     for (const tab of tabs()) {
       const label = tab.querySelector<HTMLElement>(".workspace-panel-tab-label");
       if (label === null) throw new Error("tab label did not render");
@@ -472,13 +485,19 @@ describe("the right panel's tabs", () => {
     await act(async () => app.click());
 
     const panel = tabpanel();
+    // A kebab body is menu-opened, not tab-associated: a named region, never
+    // a tabpanel, so the tablist keeps exactly one selected tab (APG tabs)
+    // and the name comes from a live aria-label (no dead labelledby).
+    expect(panel.getAttribute("role")).toBe("region");
     expect(panel.getAttribute("aria-label")).toBe("Interactive app");
+    expect(panel.hasAttribute("aria-labelledby")).toBe(false);
+    expect(panel.tabIndex).toBe(0);
     expect(panel.textContent).toContain("Interactive app");
     expect(panel.textContent).toContain("not available yet");
     expect(panel.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
-    // The tablist keeps a valid state: no tab claims the kebab's panel, the
-    // stop stays on the last tab, and the kebab names what is showing.
-    expect(tabByName("Changes").getAttribute("aria-selected")).toBe("false");
+    // The last real tab stays selected; the stop stays with it, and the
+    // kebab names what is showing.
+    expect(tabByName("Changes").getAttribute("aria-selected")).toBe("true");
     expect(tabByName("Changes").tabIndex).toBe(0);
     expect(kebab().getAttribute("aria-label")).toBe("More panels, Interactive app open");
     expect(kebab().className).toContain("workspace-panel-kebab-active");
@@ -493,12 +512,14 @@ describe("the right panel's tabs", () => {
     await act(async () => pr.click());
 
     const panel = tabpanel();
+    expect(panel.getAttribute("role")).toBe("region");
     expect(panel.getAttribute("aria-label")).toBe("Pull request");
-    expect(panel.getAttribute("aria-labelledby")).toBe(kebab().id);
+    expect(panel.hasAttribute("aria-labelledby")).toBe(false);
+    expect(panel.tabIndex).toBe(0);
     expect(panel.textContent).toContain("Pull request");
     expect(panel.textContent).toContain("not available yet");
     expect(panel.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
-    expect(tabByName("Changes").getAttribute("aria-selected")).toBe("false");
+    expect(tabByName("Changes").getAttribute("aria-selected")).toBe("true");
     expect(tabByName("Changes").tabIndex).toBe(0);
     expect(kebab().getAttribute("aria-label")).toBe("More panels, Pull request open");
     await act(async () => kebab().click());
@@ -506,7 +527,7 @@ describe("the right panel's tabs", () => {
     expect(checked?.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("closes the kebab on Tab and on an outside pointerdown", async () => {
+  it("closes the kebab on Tab and on an outside pointerdown without stealing focus", async () => {
     await renderWorkspace();
 
     await act(async () => kebab().click());
@@ -523,6 +544,8 @@ describe("the right panel's tabs", () => {
       document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     });
     expect(container.querySelector(".workspace-panel-menu")).toBeNull();
+    // A dismissal leaves focus where the user put it: never the kebab.
+    expect(document.activeElement).not.toBe(kebab());
   });
 
   it("collapses the rail from the kebab and restores the same tab", async () => {
@@ -535,6 +558,8 @@ describe("the right panel's tabs", () => {
     await act(async () => collapse.click());
     const show = container.querySelector<HTMLButtonElement>('button[aria-label="Show side panel"]');
     if (show === null) throw new Error("collapsed rail did not render");
+    // Collapse lands focus on the control that re-opens the panel, not <body>.
+    expect(document.activeElement).toBe(show);
     await act(async () => show.click());
     expect(tabByName("Files").getAttribute("aria-selected")).toBe("true");
   });
@@ -561,13 +586,6 @@ describe("the right panel's tabs", () => {
       .mocked(workspaceGitStatus)
       .mock.calls.filter((call) => call[0] === "workspace-tabs-unread").length;
     expect(freshReads).toBeGreaterThanOrEqual(2);
-  });
-
-  it("shows no badge on any tab once another tab is selected", async () => {
-    await renderWorkspace();
-
-    await act(async () => tabByName("Files").click());
-    expect(container.querySelector(".workspace-panel-tab-badge")).toBeNull();
   });
 
   it("resets the panel scroll offset on a workspace switch", async () => {

@@ -14,8 +14,6 @@ import { moveMenuFocus } from "../strip/menuNav";
 
 /** The panel body's id, shared with the tabs' aria-controls. */
 export const SIDE_PANEL_BODY_ID = "workspace-side-panel";
-/** The kebab button's id: what labels the body while a kebab panel shows. */
-export const SIDE_PANEL_KEBAB_ID = "workspace-panel-kebab";
 /** A tab's id for the body's aria-labelledby. */
 export function sidePanelTabId(id: string): string {
   return `panel-tab-${id}`;
@@ -29,9 +27,10 @@ interface SidePanelTabsProps {
 }
 
 /** The right panel's tab row: the spec tabs in a tablist, a spacer, then the
- * kebab holding the menu-placed panels and the collapse entry. While a kebab
- * panel shows, no tab claims it; the stop stays on the last tab and the
- * kebab names what is showing. */
+ * kebab holding the menu-placed panels and the collapse entry. A kebab body is
+ * menu-opened, not tab-associated, so it renders as a named region — never a
+ * tabpanel — while the last real tab stays selected: APG tabs keeps exactly
+ * one selected tab, and a tabpanel must be labelled by its own tab. */
 export function SidePanelTabs({
   registry,
   activeId,
@@ -47,6 +46,9 @@ export function SidePanelTabs({
   const [lastTabId, setLastTabId] = useState<string | null>(null);
   if (activeIsTab && lastTabId !== activeId) setLastTabId(activeId);
   const stopId = activeIsTab ? activeId : (lastTabId ?? tabs[0]?.id ?? null);
+  // The selection follows the stop, so the tablist always names exactly one
+  // selected tab — even while a kebab region is showing instead of a panel.
+  const selectedId = activeIsTab ? activeId : lastTabId;
 
   const listRef = useRef<HTMLDivElement>(null);
   const { tabIndexFor, onTabKeyDown } = usePanelTabsKeyboard({
@@ -83,7 +85,9 @@ export function SidePanelTabs({
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Node)) return;
       if (wrapRef.current?.contains(event.target)) return;
-      closeMenu();
+      // A dismissal leaves focus where the user put it (house shape): only
+      // an explicit choice or Escape returns to the kebab.
+      setMenuOpen(false);
     };
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
@@ -121,7 +125,7 @@ export function SidePanelTabs({
     <div className="workspace-panel-tabs">
       <div className="workspace-panel-tablist" role="tablist" aria-label="Side panel" ref={listRef}>
         {tabs.map((entry) => {
-          const selected = entry.id === activeId;
+          const selected = entry.id === selectedId;
           return (
             <button
               key={entry.id}
@@ -146,7 +150,6 @@ export function SidePanelTabs({
       <div className="workspace-panel-kebab" ref={wrapRef}>
         <button
           ref={kebabRef}
-          id={SIDE_PANEL_KEBAB_ID}
           type="button"
           className={`workspace-icon-button${
             activeMenuEntry === null ? "" : " workspace-panel-kebab-active"
@@ -193,7 +196,6 @@ export function SidePanelTabs({
                 className="workspace-surface-option"
                 onClick={() => {
                   onCollapse();
-                  kebabRef.current?.focus({ preventScroll: true });
                   setMenuOpen(false);
                 }}
               >

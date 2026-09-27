@@ -14,12 +14,7 @@ import { ErrorText } from "../../components/ErrorText";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
-import {
-  SIDE_PANEL_BODY_ID,
-  SIDE_PANEL_KEBAB_ID,
-  SidePanelTabs,
-  sidePanelTabId,
-} from "./panel/SidePanelTabs";
+import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
@@ -1352,6 +1347,7 @@ export function Workspace({
           <button
             type="button"
             className="workspace-collapsed-panel"
+            autoFocus
             onClick={() => setRightCollapsed(false)}
             title="Show side panel"
             aria-label="Show side panel"
@@ -1372,14 +1368,16 @@ export function Workspace({
               key={`${selectedSurface.id}:${selectedWorkspace ?? ""}`}
               id={SIDE_PANEL_BODY_ID}
               className="workspace-scroll workspace-side-scroll"
-              role="tabpanel"
+              // A kebab body is menu-opened, not tab-associated: a named
+              // region keeps the tablist's one-selected-tab invariant (APG).
+              role={selectedSurface.placement === "tab" ? "tabpanel" : "region"}
               aria-label={selectedSurface.name}
               aria-labelledby={
-                selectedSurface.placement === "tab"
-                  ? sidePanelTabId(selectedSurface.id)
-                  : SIDE_PANEL_KEBAB_ID
+                selectedSurface.placement === "tab" ? sidePanelTabId(selectedSurface.id) : undefined
               }
-              tabIndex={0}
+              // APG tabs: the panel joins the tab sequence only when it has
+              // no focusable content of its own (the honest empty panels).
+              tabIndex={selectedSurface.placement === "tab" ? -1 : 0}
             >
               {/* A body throw replaces the body only; the tab row above stays
                     mounted so the user can leave the panel. The scrollport
