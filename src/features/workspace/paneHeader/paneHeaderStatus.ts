@@ -52,15 +52,31 @@ export function headerDisplay(
       tooltip: `${base.line}\n${word}`,
     };
   }
-  // A failed turn outranks a quiet wire: the roster goes silent when output
-  // stops, whatever the controller knows, so checking error second would
-  // bury the one state that needs the user. Same for a closed controller
-  // whose roster row has not ended yet.
-  if (agentStatus === "error") {
-    return { word: "Failed", detail: null, tone: "terracotta", pulse: false, tooltip: "Failed" };
-  }
-  if (agentStatus === "closed") {
-    return { word: "Stopped", detail: null, tone: "terracotta", pulse: false, tooltip: "Stopped" };
+  // A failed or closed turn outranks a quiet wire, but only while the roster
+  // still claims a live process: the roster goes silent when output stops,
+  // whatever the controller knows, so checking error second would bury the
+  // one state that needs the user. Once the roster says the process is gone
+  // (ended, recovered), its verdict wins unconditionally — a controller
+  // error there is expected (no process to attach to) and must not override
+  // the row both surfaces already agree on.
+  const processUp =
+    observed === null ||
+    observed === undefined ||
+    observed.type === "live" ||
+    observed.type === "silent";
+  if (processUp) {
+    if (agentStatus === "error") {
+      return { word: "Failed", detail: null, tone: "terracotta", pulse: false, tooltip: "Failed" };
+    }
+    if (agentStatus === "closed") {
+      return {
+        word: "Stopped",
+        detail: null,
+        tone: "terracotta",
+        pulse: false,
+        tooltip: "Stopped",
+      };
+    }
   }
   if (observed === null || observed === undefined) {
     return {

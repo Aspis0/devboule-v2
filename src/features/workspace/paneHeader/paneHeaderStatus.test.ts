@@ -192,6 +192,51 @@ describe("the strip and the header agree on roster states and approval", () => {
     expect(header.tooltip).toContain("Needs your approval");
   });
 
+  it("reads Recovered when the controller failed against a gone process", () => {
+    // Live check: a recovered session whose controller errored on attach
+    // (no process to attach to) read Failed in the header while the chip
+    // read Recovered. The roster verdict wins once the process is gone.
+    const chip = chipDisplay(cleanRow(RECOVERED, null));
+    const header = headerDisplay(RECOVERED, null, "error", undefined, undefined);
+    expect(chip.dot).toBe("recovered");
+    expect(header.word).toBe("Recovered");
+    expect(header.tone).toBe("recovered");
+    expect(header.pulse).toBe(chip.pulse);
+    expect(header.tooltip).toBe(chip.tooltip);
+  });
+
+  it("keeps the unverifiable tail in both tooltips", () => {
+    const unverifiable: SessionState = {
+      type: "recovered",
+      generation: 2,
+      integrity: { kind: "unverifiable", droppedFrames: 1, droppedBytes: 2, trimmedBytes: 3 },
+    };
+    const chip = chipDisplay(cleanRow(unverifiable, null));
+    const header = headerDisplay(unverifiable, null, "idle", undefined, undefined);
+    expect(header.word).toBe("Recovered");
+    expect(header.tooltip).toBe(chip.tooltip);
+    expect(header.tooltip).toContain("could not be checked");
+  });
+
+  it("reads Stopped for an ended row even when the controller errored", () => {
+    const chip = chipDisplay(cleanRow(ENDED, 4600));
+    const header = headerDisplay(ENDED, 4600, "error", undefined, undefined);
+    expect(header.word).toBe("Stopped");
+    expect(header.tone).toBe("terracotta");
+    expect(header.pulse).toBe(chip.pulse);
+  });
+
+  it("agrees with the chip on a roster error row", () => {
+    const errorAttention: Attention = { reason: "error", atMs: 1 };
+    const chip = chipDisplay(cleanRow(LIVE, 0, "working", errorAttention));
+    const header = headerDisplay(LIVE, 0, "idle", "working", errorAttention);
+    expect(chip.dot).toBe("attention");
+    expect(chip.detailLines).toContain("Failed");
+    expect(header.word).toBe("Failed");
+    expect(header.tone).toBe("attention");
+    expect(header.pulse).toBe(chip.pulse);
+  });
+
   it("pins the vocabulary both surfaces speak", () => {
     expect(headerDisplay(LIVE, 0, "idle", "working", undefined).word).toBe("Running");
     expect(headerDisplay(SILENT, 0, "idle", "working", undefined).word).toBe("Quiet");
