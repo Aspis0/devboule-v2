@@ -1,16 +1,16 @@
 // Loading the real stylesheets for computed-style proof without launching
-// the app: comments stripped, tokens resolved to their light values, and the
-// rules a test names injected into the document in sheet order, so the
-// cascade under test is the bundle's own.
+// the app: comments stripped, theme tokens resolved, and named rules injected
+// in sheet order, so the cascade under test is the bundle's own.
 //
-// Scope, stated plainly: this models bare single-class selectors, in the
-// light theme, in source order. It adjudicates neither specificity (a
+// Scope, stated plainly: this models selected rules, in source order. It
+// adjudicates neither specificity (a
 // higher-specificity rule in a later sheet beats the injected one
 // invisibly) nor pseudo-classes, descendant selectors, attribute
-// selectors, the dark theme, or anything inside @-blocks (skipped
-// whole). Enough for "which sheet's bare rule wins"; not a cascade
-// proof. Tests that need the assembled sheets' joint contents should read
-// them through `rulesFor`, not assume this file sees what it drops.
+// selectors that tests do not select, or anything inside @-blocks (skipped
+// whole). Enough for the explicitly selected styles, not a full browser
+// cascade proof. Tests that need assembled contents should use `rulesFor`.
+
+export type CssTheme = "light" | "dark";
 
 interface CssRule {
   selector: string;
@@ -53,11 +53,13 @@ function selectorMatches(ruleSelector: string, target: string): boolean {
 
 /** The assembled sheets, in bundle order: token resolution, rule lookup,
  * and injection all read this one joined source. */
-export function assembleCssProof(sheets: readonly string[]): {
+export function assembleCssProof(
+  sheets: readonly string[],
+  theme: CssTheme = "light",
+): {
   rulesFor: (target: string) => string;
   inject: (targets: readonly string[]) => void;
-  /** The light-theme value of one token, read from the sheets themselves
-   * so tests track `tokens.css` instead of duplicating its hexes. */
+  /** The selected theme's token value, read from the sheets themselves. */
   token: (name: string) => string | undefined;
 } {
   const stripped = sheets.map((sheet) => sheet.replace(/\/\*[\s\S]*?\*\//g, ""));
@@ -66,6 +68,15 @@ export function assembleCssProof(sheets: readonly string[]): {
     for (const block of sheet.matchAll(/:root\s*\{([^}]*)\}/g)) {
       for (const m of block[1]!.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
         tokens.set(`--${m[1]!.trim()}`, m[2]!.trim());
+      }
+    }
+  }
+  if (theme === "dark") {
+    for (const sheet of stripped) {
+      for (const block of sheet.matchAll(/\[data-theme=["']dark["']\]\s*\{([^}]*)\}/g)) {
+        for (const m of block[1]!.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
+          tokens.set(`--${m[1]!.trim()}`, m[2]!.trim());
+        }
       }
     }
   }

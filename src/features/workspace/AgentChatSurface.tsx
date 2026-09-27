@@ -540,7 +540,7 @@ function renderToolItem(
           <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
         ) : null}
         {failed ? (
-          <span className="workspace-chat-tool-failed" aria-hidden="true">
+          <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
             ×
           </span>
         ) : null}
@@ -565,13 +565,20 @@ function renderToolItem(
   );
 }
 
+interface ToolCallGroupEntryProps {
+  group: ToolCallGroup;
+  a2aNames: A2aNameSource;
+  transcriptEnded: boolean;
+}
+
 /** One collapsed row for a run of consecutive tool calls (see `toolCallGroups`).
  * The wrapper carries the first item's frame, plus `is-running` when any
  * item is still running (Paseo's `isLoading`: any call running/executing)
  * and `is-failed` with the failed mark when any item failed. A run replayed
  * into a transcript with no process left carries `is-interrupted` instead of
  * `is-running`: nothing will ever complete it. */
-function renderGroupEntry(group: ToolCallGroup, a2aNames: A2aNameSource, transcriptEnded: boolean) {
+function ToolCallGroupEntry({ group, a2aNames, transcriptEnded }: ToolCallGroupEntryProps) {
+  const [open, setOpen] = useState(false);
   const first = group.items[0];
   if (first === undefined) return null;
   const frame = entryFrame(first);
@@ -584,22 +591,19 @@ function renderGroupEntry(group: ToolCallGroup, a2aNames: A2aNameSource, transcr
   return (
     <details
       className={className}
-      key={group.id}
+      open={open}
       style={frame.style}
       onToggle={(event) => {
-        event.currentTarget
-          .querySelector("summary")
-          ?.setAttribute("aria-expanded", String(event.currentTarget.open));
+        setOpen(event.currentTarget.open);
       }}
     >
       <summary
         className="workspace-chat-tool-group-summary"
-        aria-expanded="false"
+        aria-expanded={open}
         onKeyDown={(event) => {
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault();
-          const details = event.currentTarget.parentElement;
-          if (details instanceof HTMLDetailsElement) details.open = !details.open;
+          setOpen((previous) => !previous);
         }}
       >
         <ToolIcon name="wrench" />
@@ -629,7 +633,16 @@ function renderEntry(
   a2aNames: A2aNameSource,
   transcriptEnded: boolean,
 ) {
-  if (isToolCallGroup(entry)) return renderGroupEntry(entry, a2aNames, transcriptEnded);
+  if (isToolCallGroup(entry)) {
+    return (
+      <ToolCallGroupEntry
+        key={entry.id}
+        group={entry}
+        a2aNames={a2aNames}
+        transcriptEnded={transcriptEnded}
+      />
+    );
+  }
   return renderItem(entry, a2aNames, transcriptEnded);
 }
 

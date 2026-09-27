@@ -2732,7 +2732,10 @@ describe("AgentChatSurface", () => {
     );
     expect(rows).toHaveLength(2);
     expect(rows[0].classList.contains("is-failed")).toBe(true);
-    expect(rows[0].querySelector(".workspace-chat-tool-failed")?.textContent).toBe("×");
+    const singleFailure = rows[0].querySelector(".workspace-chat-tool-failed");
+    expect(singleFailure?.textContent).toBe("×");
+    expect(singleFailure?.getAttribute("role")).toBe("img");
+    expect(singleFailure?.getAttribute("aria-label")).toBe("Failed");
     expect(rows[1].classList.contains("is-running")).toBe(true);
     expect(rows[1].querySelector(".workspace-chat-tool-location")?.textContent).toBe(
       "src/lib.rs:12",
@@ -2820,6 +2823,9 @@ describe("AgentChatSurface", () => {
     expect(group.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
       "3 tool calls",
     );
+    expect(
+      group.querySelector(".workspace-chat-tool-group-summary > svg")?.getAttribute("width"),
+    ).toBe("14");
     expect(group.querySelector(".workspace-chat-tool-group-summary-text")?.textContent).toBe(
       "Edited 1 file, ran 1 command, and read 1 file",
     );
@@ -2966,6 +2972,64 @@ describe("AgentChatSurface", () => {
     expect(running?.classList.contains("is-running")).toBe(false);
     expect(running?.classList.contains("is-failed")).toBe(true);
     expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("×");
+    expect(running?.querySelector(".workspace-chat-tool-failed")?.getAttribute("role")).toBe("img");
+    expect(running?.querySelector(".workspace-chat-tool-failed")?.getAttribute("aria-label")).toBe(
+      "Failed",
+    );
+  });
+
+  it("keeps an expanded group open and updates its count as tools stream in", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="tool-group-stream" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-first",
+        title: "first",
+        status: "completed",
+        kind: "read",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-second",
+        title: "second",
+        status: "completed",
+        kind: "read",
+      });
+    });
+
+    const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
+    if (group === null) throw new Error("tool group did not render");
+    const summary = group.querySelector("summary");
+    if (summary === null) throw new Error("tool group summary did not render");
+    await act(async () => summary.click());
+    expect(group.open).toBe(true);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-third",
+        title: "third",
+        status: "completed",
+        kind: "read",
+      });
+    });
+
+    const updatedGroup = container.querySelector<HTMLDetailsElement>(
+      "details.workspace-chat-tool-group",
+    );
+    expect(updatedGroup).toBe(group);
+    expect(updatedGroup?.open).toBe(true);
+    expect(updatedGroup?.querySelector("summary")?.getAttribute("aria-expanded")).toBe("true");
+    expect(updatedGroup?.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
+      "3 tool calls",
+    );
   });
 });
 
