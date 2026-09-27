@@ -1,14 +1,43 @@
 import type { ProviderInfo, ToolPolicyEntry } from "../../types/ipc";
 
-/** Status label for one provider, derived from the daemon's measured authentication. */
-export function providerStatusText(provider: ProviderInfo): string {
-  const viaNpx = provider.origin === "npx-wrapper" ? "available via npx" : "installed";
-  if (provider.authentication === "ok") return `${viaNpx} · last start ok`;
+/** The dot tone of one provider row: live only after a measured start. */
+export type ProviderRowTone = "live" | "idle" | "failed";
+
+/** One plain status word per measured state, with the reason kept as detail. */
+export interface ProviderRowStatus {
+  tone: ProviderRowTone;
+  word: string;
+  /** Failure reason or the unknown-state explanation; null when the word says it all. */
+  detail: string | null;
+}
+
+/**
+ * Row status from the daemon's measured authentication. Unknown is idle and
+ * reads as "Unknown" — never as ready, which only a completed start earns.
+ * A failure keeps its reason in `detail` (tooltip and accessible name), so
+ * the visible word stays one plain word.
+ */
+export function providerRowStatus(provider: ProviderInfo): ProviderRowStatus {
+  if (provider.authentication === "ok") return { tone: "live", word: "Ready", detail: null };
   if (provider.authentication.startsWith("failed:")) {
     const reason = provider.authentication.slice("failed:".length).trim();
-    return reason.length > 0 ? `start failed — ${reason}` : "start failed";
+    return { tone: "failed", word: "Start failed", detail: reason.length > 0 ? reason : null };
   }
-  return `${viaNpx} · authentication unknown`;
+  return {
+    tone: "idle",
+    word: "Unknown",
+    detail: "The daemon has not measured a start yet.",
+  };
+}
+
+/**
+ * The "N models" suffix for a Ready row. Zero or less means the probe said
+ * nothing countable (`absent`, `none`, or an empty list), so there is no
+ * suffix at all — never "0 models".
+ */
+export function modelCountText(count: number): string | null {
+  if (count < 1) return null;
+  return count === 1 ? "1 model" : `${count} models`;
 }
 
 /**

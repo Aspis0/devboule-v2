@@ -1,311 +1,44 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  providerUpdate,
-  providersList,
-  providersRefresh,
-  toolPolicyGet,
-  toolPolicySet,
-} from "../../../lib/tauri";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { providerUpdate, providersList, providersRefresh } from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { useSettingsDaemon } from "../settingsDaemon";
+import { TOOL_POLICY_CAPABILITY, logTail, toolPolicyFor } from "../providerStatus";
+import type { ProviderCatalog, ProviderInfo } from "../../../types/ipc";
 import {
-  ALWAYS_ON_REASON,
-  ALWAYS_ON_TOOL,
-  TOOL_POLICY_CAPABILITY,
-  logTail,
-  providerCanUpdate,
-  providerStatusText,
-  providerVersionSegments,
-  toolPolicyFor,
-} from "../providerStatus";
-import type { ProviderCatalog, ProviderInfo, ToolPolicyEntry } from "../../../types/ipc";
+  PROVIDER_VOCABULARY_CAPABILITY,
+  type ModelCountCache,
+} from "../providers/ProviderModelCount";
+import { ProviderConsentBlock } from "../providers/ProviderConsentBlock";
+import { ProviderNpmFailure } from "../providers/ProviderNpmFailure";
+import { ProviderRow, ProviderVersionLine } from "../providers/ProviderRow";
+import { useToolPolicies } from "../providers/useToolPolicies";
 import "../providers.css";
-/** Muted version line under the executable path; renders nothing without data. */
-export function ProviderVersionLine({ provider }: { provider: ProviderInfo }) {
-  const segments = providerVersionSegments(provider);
-  if (segments.length === 0) return null;
-  return (
-    <span className="provider-version">
-      {segments.map((segment, index) => (
-        <span key={segment.text} title={segment.title}>
-          {index > 0 ? " · " : ""}
-          {segment.text}
-        </span>
-      ))}
-    </span>
-  );
-}
 
-/** A pending npm run on one provider card: what the daemon is doing right now. */
-export interface ProviderNpmRun {
+/** A pending npm run on one provider row: what the daemon is doing right now. */
+interface ProviderNpmRun {
   providerId: string;
   verb: "update" | "install";
 }
 
-/** A provider held open in the consent panel, waiting for the user's Confirm. */
-export interface ProviderConsent {
+/** A provider held open in the consent card, waiting for the user's Confirm. */
+interface ProviderConsent {
   provider: ProviderInfo;
   verb: "update" | "install";
 }
 
 /**
- * Per-provider tool toggles, under one provider card. Renders nothing when
- * `provider.tools` is empty: the daemon sends the `tools` key only for
- * providers whose sessions can host the broker (ACP families plus pi and
- * Codex since the broker switch-on), and an empty list means there is
- * nothing to toggle. It renders nothing either when the handshake did not
- * negotiate [`TOOL_POLICY_CAPABILITY`], so a daemon that cannot answer
- * `tool_policy_get` is never asked — the section is absent, not broken.
- *
- * The always-on tool stays checked and disabled with its one-line reason.
- * Every other change applies optimistically and reverts on rejection; the
- * daemon's own sentence is shown verbatim inside the card.
+ * The Providers page: an Installed card of h44 rows (chevron details, glyph,
+ * status, one Devboule-tools switch, kebab) and an Available to install card
+ * with catalogue search and accent Install buttons. Install and Update share
+ * one consent card and one npm-failure block; the model count behind each
+ * Ready status is lazy (see `ProviderModelCount`).
  */
-function ProviderToolSettings({
-  provider,
-  toolPolicySupported,
-}: {
-  provider: ProviderInfo;
-  /** True only when the handshake advertised `tool_policy`. */
-  toolPolicySupported: boolean;
-}) {
-  const tools = provider.tools ?? [];
-  const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
-  const [error, setError] = useState<ErrorSentence | null>(null);
-  // Synchronous mirror of `policies`. It — never the render closure — is
-  // what a second rapid write reads and the base its revert applies to
-  // (audit findings 1, 8).
-  const policiesRef = useRef<readonly ToolPolicyEntry[] | null>(null);
-  // Monotonic write sequence: only the newest write owns the UI when it
-  // settles, so an older rejection can never clobber a newer row.
-  const seqRef = useRef(0);
-  // How many writes are currently between "sent" and "settled". This card
-  // deliberately lets writes overlap (see `persist`), so it is a counter,
-  // and the load effect below reads it to tell "a write was in flight when
-  // this fetch started" — the question the sequence number alone cannot
-  // answer — apart from "a write has settled at some point".
-  const writesInFlightRef = useRef(0);
-  // A failed load is terminal, not a loading state: nothing will ever arrive
-  // on its own, so the card shows the daemon's sentence and a Retry instead
-  // of the loading lock. `loadNonce` re-runs the load effect.
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [loadNonce, setLoadNonce] = useState(0);
-  useEffect(() => {
-    // No fetch when there is nothing to toggle: the daemon omits `tools`
-    // for wrappers and non-MCP providers, and the section stays hidden.
-    // Same rule for the handshake: a daemon that never advertised
-    // `tool_policy` would refuse this request, so it is never sent.
-    if (!toolPolicySupported || tools.length === 0) return;
-    let cancelled = false;
-    // Where the write sequence stood when this fetch started. A write issued
-    // while the fetch is in flight is newer and owns the UI; a write that
-    // settled before the fetch started does not poison it. Comparing against
-    // the sequence at fetch start — never against zero — is what lets a
-    // refetch (a reconnect's capability flip, a changed tool list) still
-    // apply after a write.
-    const seqAtFetch = seqRef.current;
-    const writeWasInFlight = writesInFlightRef.current > 0;
-    void toolPolicyGet()
-      .then((reply) => {
-        if (cancelled) return;
-        // A write issued while this fetch was in flight is newer: keep it.
-        if (seqRef.current !== seqAtFetch) return;
-        // A write that was ALREADY in flight when the fetch started raced
-        // it: whether the reply predates or postdates that write is
-        // unknowable, so the reply adopts nothing — the write's own settle
-        // (its optimistic row or its revert) is the state of record. The
-        // guard answers "did a write overlap this fetch?", not just "is
-        // there a newer write?".
-        if (writeWasInFlight) return;
-        policiesRef.current = reply.policies;
-        setPolicies(reply.policies);
-        // The store has spoken: a stale load error and its terminal state go.
-        setError(null);
-        setLoadFailed(false);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) {
-          // Without stored rows there is nothing to show and nothing to
-          // edit: that is a terminal state — the daemon's sentence plus a
-          // Retry — not a loading state to sit under forever.
-          if (policiesRef.current === null) setLoadFailed(true);
-          setError(errorSentence(cause));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [provider.id, tools.length, toolPolicySupported, loadNonce]);
-  if (!toolPolicySupported || tools.length === 0) return null;
-  const { enabled, disabledTools } = toolPolicyFor(provider.id, policies);
-  const disabledSet = new Set(disabledTools);
-  // The stored rows are still in flight: until they land, `toolPolicyFor`
-  // reads the missing row as "everything on", which is a guess, so nothing
-  // in the card may be edited yet (finding 6 — the master switch was
-  // already locked here while the tool rows below stayed live).
-  const loading = policies === null;
-
-  /**
-   * The daemon never gates this tool, so it is never sent in a deny list
-   * and a stored row that names it (stale daemon data) is stripped here.
-   */
-  function stripAlwaysOn(names: readonly string[]): string[] {
-    return names.filter((name) => name !== ALWAYS_ON_TOOL);
-  }
-
-  async function persist(nextEnabled: boolean, nextDisabled: readonly string[]) {
-    const cleanDisabled = stripAlwaysOn(nextDisabled);
-    // This write's own revert base: the provider row as it stands right
-    // now, read through the ref and not through the render closure, so an
-    // earlier write's optimistic row is part of the base (findings 1, 8).
-    const previous = toolPolicyFor(provider.id, policiesRef.current);
-    // Sequence guard (findings 1, 8) — the card's real safety, stated here
-    // and honoured by the controls: every write is sent immediately, in
-    // click order; a second toggle must still reach the daemon, so the
-    // controls stay reachable while a write is in flight and the only lock
-    // is the load lock (`loading`) below. Overlap is resolved when a write
-    // settles: only the newest sequence owns the UI, so a rejection a newer
-    // write has superseded reverts nothing and reports nothing and the
-    // newer optimistic row stands. (The agents panel — the twin that writes
-    // a whole document whose row ids the daemon mints — serialises its
-    // writes under one busy span instead, on purpose: an overlapping
-    // whole-document write would re-send an id the daemon had already
-    // replaced. Row-level toggles like these carry no minted identity, so
-    // overlap is safe here and losing the click is not.)
-    const seq = ++seqRef.current;
-    writesInFlightRef.current += 1;
-    setError(null);
-    // Optimistic row, appended to the ref mirror: it always holds the
-    // newest rows, including an earlier write's optimistic row when two
-    // writes overlap.
-    const row: ToolPolicyEntry = {
-      providerId: provider.id,
-      enabled: nextEnabled ? null : false,
-      disabledTools: cleanDisabled,
-    };
-    const optimistic: readonly ToolPolicyEntry[] = [
-      ...(policiesRef.current ?? []).filter((entry) => entry.providerId !== provider.id),
-      row,
-    ];
-    policiesRef.current = optimistic;
-    setPolicies(optimistic);
-    try {
-      await toolPolicySet(provider.id, nextEnabled ? null : false, cleanDisabled);
-      // Confirmed. An older write settling here owns nothing: the newest
-      // sequence keeps the UI, and there is no lock to release — the
-      // controls were never locked against writes.
-      return;
-    } catch (cause) {
-      // A newer write superseded this one: its optimistic row stands, this
-      // rejection reports nothing.
-      if (seq !== seqRef.current) return;
-      // No newer write exists, so the row in the ref is the one this write
-      // wrote: put back the row this write itself replaced, applied to the
-      // current rows (never a stale render snapshot).
-      const reverted: readonly ToolPolicyEntry[] = [
-        ...(policiesRef.current ?? []).filter((entry) => entry.providerId !== provider.id),
-        {
-          providerId: provider.id,
-          enabled: previous.enabled ? null : false,
-          disabledTools: [...previous.disabledTools],
-        },
-      ];
-      policiesRef.current = reverted;
-      setPolicies(reverted);
-      setError(errorSentence(cause));
-    } finally {
-      writesInFlightRef.current -= 1;
-    }
-  }
-
-  function toggleProvider(next: boolean) {
-    void persist(next, toolPolicyFor(provider.id, policiesRef.current).disabledTools);
-  }
-
-  function toggleTool(name: string, next: boolean) {
-    if (name === ALWAYS_ON_TOOL) return;
-    // Live state, not this render's: two toggles in one tick must each flip
-    // the row the other just wrote rather than re-send a duplicate write.
-    const current = toolPolicyFor(provider.id, policiesRef.current);
-    const nextDisabled = next
-      ? current.disabledTools.filter((tool) => tool !== name)
-      : [...current.disabledTools, name];
-    void persist(current.enabled, nextDisabled);
-  }
-
-  function retryLoad() {
-    setError(null);
-    setLoadFailed(false);
-    setLoadNonce((nonce) => nonce + 1);
-  }
-
-  return (
-    <div className="provider-card-block provider-tools">
-      <details>
-        <summary>Tool settings</summary>
-        <label className="provider-tool-row">
-          <input
-            type="checkbox"
-            role="switch"
-            aria-label={`Enable tools for ${provider.id}`}
-            checked={enabled}
-            // Locked for the load only: a write in flight must not make the
-            // controls unreachable — the sequence guard owns overlap (see
-            // `persist`), and a control disabled on `busy` would drop the
-            // user's second click, the one thing the policy says never
-            // happens.
-            disabled={loading}
-            onChange={(event) => toggleProvider(event.target.checked)}
-          />
-          <span>Enable tools</span>
-        </label>
-        <div className="provider-tool-list">
-          {tools.map((tool) => {
-            const alwaysOn = tool.name === ALWAYS_ON_TOOL;
-            const checked = alwaysOn ? true : enabled && !disabledSet.has(tool.name);
-            const inputId = `tool-${provider.id}-${tool.name}`;
-            return (
-              <div className="provider-tool-row" key={tool.name}>
-                <input
-                  id={inputId}
-                  type="checkbox"
-                  checked={checked}
-                  disabled={alwaysOn || !enabled || loading}
-                  onChange={(event) => toggleTool(tool.name, event.target.checked)}
-                />
-                <label htmlFor={inputId}>
-                  <span className="provider-tool-name">{tool.name}</span>
-                  <span className="provider-tool-description"> {tool.description}</span>
-                </label>
-                {alwaysOn ? <span className="provider-tool-note">{ALWAYS_ON_REASON}</span> : null}
-              </div>
-            );
-          })}
-        </div>
-        {error === null ? null : (
-          <p role="alert" className="device-error">
-            <ErrorText
-              sentence={error.sentence}
-              detail={error.detail}
-              id="settings-tool-policy-error"
-            />
-          </p>
-        )}
-        {loadFailed ? (
-          <button type="button" className="settings-device-action" onClick={retryLoad}>
-            Retry
-          </button>
-        ) : null}
-      </details>
-    </div>
-  );
-}
-
 export function ProvidersPanel() {
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [error, setError] = useState<ErrorSentence | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [query, setQuery] = useState("");
   // Bumped by every fetch (mount and refresh); a response only applies when its
   // sequence is still the latest, so a slow mount list cannot revert a refresh.
   const fetchSeqRef = useRef(0);
@@ -313,45 +46,59 @@ export function ProvidersPanel() {
   const refreshInFlightRef = useRef(false);
   // The one npm run the daemon is executing on this client's behalf.
   const [npmRun, setNpmRun] = useState<ProviderNpmRun | null>(null);
-  // Per-card, dismissible failure from the last npm run.
+  // Per-row, dismissible failure from the last npm run.
   const [npmFailure, setNpmFailure] = useState<{
     providerId: string;
     text: string;
     detail: string | null;
   } | null>(null);
   const [consent, setConsent] = useState<ProviderConsent | null>(null);
-  // Cleared in the consent effect (not at the end of confirm): a second
+  // Cleared after the close commits (not at the end of confirm): a second
   // synchronous click still sees the stale non-null consent, so the ref must
   // stay armed until that re-render.
   const consentInFlightRef = useRef(false);
-  const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
-
-  // The handshake's own capability list, through the same channel every other
-  // surface reads it (Workspace, Design): the supervisor's `daemon_status`.
-  // A daemon that never advertised `tool_policy` leaves the toggles off the
-  // screen, so no card asks it for a policy it cannot answer.
-  const daemon = useSettingsDaemon();
-  const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
+  // Panel-owned model-count cache, cleared on Refresh so counts revalidate
+  // with the catalog. State-lazy, never reassigned: the identity is stable
+  // across renders, so rows can safely depend on it.
+  const [modelCache] = useState<ModelCountCache>(() => new Map());
 
   useEffect(() => {
     consentInFlightRef.current = false;
-    if (consent !== null) {
-      consentConfirmRef.current?.focus();
-    } else {
+    if (consent === null) {
       consentRestoreRef.current?.focus();
       consentRestoreRef.current = null;
     }
   }, [consent]);
 
-  useEffect(() => {
-    if (consent === null) return;
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setConsent(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [consent]);
+  // The handshake's own capability list, through the same channel every other
+  // surface reads it: the supervisor's `daemon_status`.
+  const daemon = useSettingsDaemon();
+  const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
+  const vocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
+
+  const providers = useMemo(() => catalog?.providers ?? null, [catalog]);
+  const installed = useMemo(
+    () => (providers ?? []).filter((provider) => provider.installed !== false),
+    [providers],
+  );
+  const available = useMemo(
+    () => (providers ?? []).filter((provider) => provider.installed === false),
+    [providers],
+  );
+  const trimmedQuery = query.trim().toLowerCase();
+  const visibleAvailable = useMemo(
+    () =>
+      trimmedQuery === ""
+        ? available
+        : available.filter((provider) => provider.id.toLowerCase().includes(trimmedQuery)),
+    [available, trimmedQuery],
+  );
+  const toolProviderCount = useMemo(
+    () => installed.filter((provider) => (provider.tools ?? []).length > 0).length,
+    [installed],
+  );
+  const toolStore = useToolPolicies(toolPolicySupported, toolProviderCount > 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -376,6 +123,8 @@ export function ProvidersPanel() {
     refreshInFlightRef.current = true;
     setRefreshing(true);
     setError(null);
+    // Counts belong to the old catalog: drop them so the next expand re-reads.
+    modelCache.clear();
     const seq = ++fetchSeqRef.current;
     void providersRefresh()
       .then((fresh) => {
@@ -389,8 +138,7 @@ export function ProvidersPanel() {
       .finally(() => {
         // Unconditional on purpose: React 18+ treats setState on an unmounted
         // component as a safe no-op, so the button can never get stuck on
-        // "Refreshing…". Do not re-add an unmount guard here — StrictMode's
-        // double mount kept a stale one true and wedged the button for real.
+        // "Refreshing…". Do not re-add an unmount guard here.
         refreshInFlightRef.current = false;
         setRefreshing(false);
       });
@@ -399,8 +147,9 @@ export function ProvidersPanel() {
   function openConsent(
     provider: ProviderInfo,
     verb: "update" | "install",
-    trigger: HTMLButtonElement,
+    trigger: HTMLButtonElement | null,
   ) {
+    if (npmRun !== null) return;
     consentRestoreRef.current = trigger;
     setConsent({ provider, verb });
   }
@@ -408,10 +157,10 @@ export function ProvidersPanel() {
   function confirmConsent() {
     if (consent === null || consentInFlightRef.current) return;
     consentInFlightRef.current = true;
-    const { provider, verb } = consent;
+    const { provider } = consent;
     setConsent(null);
     setNpmFailure(null);
-    setNpmRun({ providerId: provider.id, verb });
+    setNpmRun({ providerId: provider.id, verb: consent.verb });
     // Sequence for the post-success refetch; a concurrent refresh supersedes it.
     const seq = ++fetchSeqRef.current;
     void providerUpdate(provider.id)
@@ -441,8 +190,11 @@ export function ProvidersPanel() {
       });
   }
 
-  const providers = catalog?.providers ?? null;
   const unreadableDirs = catalog?.unreadableDirs ?? 0;
+  const npmCommand =
+    consent !== null && consent.provider.npmPackage
+      ? `npm install -g ${consent.provider.npmPackage}@latest`
+      : null;
   return (
     <div id="settings-panel-providers">
       <button className="provider-refresh" type="button" disabled={refreshing} onClick={refresh}>
@@ -473,85 +225,91 @@ export function ProvidersPanel() {
         </div>
       ) : (
         <>
-          <div className="provider-list" aria-busy={refreshing || npmRun !== null}>
-            {providers.map((provider) => {
-              const isNotInstalled = provider.installed === false;
-              const runHere = npmRun?.providerId === provider.id;
-              const consentHere = consent?.provider.id === provider.id;
-              const failureHere = npmFailure?.providerId === provider.id;
-              const detail = isNotInstalled
-                ? (provider.npmPackage ?? provider.executable)
-                : provider.executable;
-              const npmCommand =
-                consent !== null && consent.provider.npmPackage
-                  ? `npm install -g ${consent.provider.npmPackage}@latest`
-                  : null;
-              return (
-                <div
-                  className="provider-card"
-                  key={provider.id}
-                  aria-busy={runHere ? "true" : undefined}
-                >
-                  <span className="provider-copy">
-                    <span className="provider-name">{provider.id}</span>
-                    {detail ? <span className="provider-detail">{detail}</span> : null}
-                    <ProviderVersionLine provider={provider} />
-                  </span>
-                  <span className="provider-controls">
-                    {isNotInstalled ? (
-                      <span className="provider-status provider-status-idle">not installed</span>
-                    ) : (
-                      <>
-                        {provider.origin === "npx-wrapper" ? (
-                          <span className="provider-status provider-status-ready">npx</span>
-                        ) : null}
-                        {provider.protocol === "acp" ? (
-                          <span className="provider-status provider-status-ready">ACP</span>
-                        ) : provider.protocol === "stream-json" ? (
-                          <span className="provider-status provider-status-ready">stream-json</span>
-                        ) : provider.protocol === "pi-rpc" ? (
-                          <span className="provider-status provider-status-ready">pi-rpc</span>
-                        ) : provider.protocol === "codex-app-server" ? (
-                          <span className="provider-status provider-status-ready">app-server</span>
-                        ) : null}
-                        <span
-                          className={`provider-status ${
-                            provider.authentication === "ok"
-                              ? "provider-status-ready"
-                              : provider.authentication.startsWith("failed:")
-                                ? "provider-status-missing"
-                                : "provider-status-idle"
-                          }`}
-                        >
-                          {providerStatusText(provider)}
+          {toolStore.loadFailed && toolStore.loadError ? (
+            <div role="alert" className="prov-tools-error">
+              <ErrorText
+                sentence={toolStore.loadError.sentence}
+                detail={toolStore.loadError.detail}
+                id="settings-tool-policy-error"
+              />
+              <button type="button" className="settings-device-action" onClick={toolStore.retry}>
+                Retry
+              </button>
+            </div>
+          ) : null}
+          {installed.length > 0 ? (
+            <section aria-label="Installed">
+              <h3 className="prov-section-label">Installed</h3>
+              <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
+                {installed.map((provider) => {
+                  const withTools = toolPolicySupported && (provider.tools ?? []).length > 0;
+                  const runHere = npmRun?.providerId === provider.id;
+                  return (
+                    <ProviderRow
+                      key={provider.id}
+                      provider={provider}
+                      toolPolicy={withTools ? toolPolicyFor(provider.id, toolStore.policies) : null}
+                      toolsDisabled={toolStore.policies === null}
+                      vocabularySupported={vocabularySupported}
+                      modelCache={modelCache}
+                      consentOpen={consent?.provider.id === provider.id}
+                      npmCommand={consent?.provider.id === provider.id ? npmCommand : null}
+                      npmVerb={consent?.provider.id === provider.id ? consent.verb : null}
+                      npmFailure={npmFailure?.providerId === provider.id ? npmFailure : null}
+                      writeError={
+                        toolStore.writeError?.providerId === provider.id
+                          ? toolStore.writeError.error
+                          : null
+                      }
+                      busyVerb={runHere && npmRun ? npmRun.verb : null}
+                      actionsDisabled={npmRun !== null}
+                      onToggleTools={(next) => toolStore.setEnabled(provider.id, next)}
+                      onTurnAllOn={() => toolStore.turnAllOn(provider.id)}
+                      onOpenUpdate={(trigger) => openConsent(provider, "update", trigger)}
+                      onConfirmConsent={confirmConsent}
+                      onCancelConsent={() => setConsent(null)}
+                      onDismissFailure={() => setNpmFailure(null)}
+                      onRefresh={refresh}
+                    />
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+          {available.length > 0 ? (
+            <section aria-label="Available to install">
+              <h3 className="prov-section-label">Available to install</h3>
+              <input
+                type="search"
+                className="prov-search"
+                placeholder="Search the catalogue"
+                aria-label="Search available providers"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              {visibleAvailable.length === 0 ? (
+                <p className="prov-no-match" role="status">
+                  No providers match this search.
+                </p>
+              ) : (
+                <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
+                  {visibleAvailable.map((provider) => {
+                    const runHere = npmRun?.providerId === provider.id;
+                    const consentHere = consent?.provider.id === provider.id;
+                    return (
+                      <div className="prov-available-row" key={provider.id}>
+                        <span className="prov-available-main">
+                          <span className="prov-name">{provider.id}</span>
+                          <span className="prov-available-sub">
+                            {provider.npmPackage ?? provider.executable}
+                          </span>
+                          <ProviderVersionLine provider={provider} />
                         </span>
-                      </>
-                    )}
-                    {runHere ? (
-                      <button
-                        className={`provider-refresh ${
-                          npmRun.verb === "install" ? "provider-install" : "provider-update"
-                        }`}
-                        type="button"
-                        disabled
-                      >
-                        {npmRun.verb === "install" ? "Installing…" : "Updating…"}
-                      </button>
-                    ) : (
-                      <>
-                        {!isNotInstalled && providerCanUpdate(provider) ? (
-                          <button
-                            className="provider-refresh provider-update"
-                            type="button"
-                            disabled={npmRun !== null}
-                            onClick={(event) =>
-                              openConsent(provider, "update", event.currentTarget)
-                            }
-                          >
-                            Update
-                          </button>
-                        ) : null}
-                        {isNotInstalled && provider.npmPackage ? (
+                        {runHere && npmRun ? (
+                          <span className="prov-busy" role="status">
+                            {npmRun.verb === "install" ? "Installing…" : "Updating…"}
+                          </span>
+                        ) : provider.npmPackage ? (
                           <button
                             className="provider-refresh provider-install"
                             type="button"
@@ -563,72 +321,29 @@ export function ProvidersPanel() {
                             Install
                           </button>
                         ) : null}
-                      </>
-                    )}
-                  </span>
-                  {consentHere ? (
-                    <div
-                      className="provider-card-block provider-consent"
-                      role="group"
-                      aria-label={`Confirm ${consent.verb} for ${provider.id}`}
-                    >
-                      <div className="provider-consent-command">{npmCommand}</div>
-                      <p className="provider-consent-notice">
-                        This changes your global npm installation; running sessions keep the old
-                        version until they are restarted.
-                      </p>
-                      <div className="provider-consent-actions">
-                        <button
-                          type="button"
-                          className="provider-refresh provider-consent-cancel"
-                          onClick={() => setConsent(null)}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          ref={consentConfirmRef}
-                          type="button"
-                          className="provider-refresh provider-consent-confirm"
-                          onClick={confirmConsent}
-                        >
-                          Confirm
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                  {failureHere ? (
-                    <div className="provider-card-block provider-update-error">
-                      <pre
-                        title={npmFailure.detail ?? undefined}
-                        aria-describedby={
-                          npmFailure.detail ? "settings-npm-failure-detail" : undefined
-                        }
-                      >
-                        {npmFailure.text}
-                        {npmFailure.detail ? (
-                          <span id="settings-npm-failure-detail" className="error-detail-sr-only">
-                            {npmFailure.detail}
-                          </span>
+                        {consentHere && npmCommand !== null && consent !== null ? (
+                          <ProviderConsentBlock
+                            providerId={provider.id}
+                            verb={consent.verb}
+                            command={npmCommand}
+                            onConfirm={confirmConsent}
+                            onCancel={() => setConsent(null)}
+                          />
                         ) : null}
-                      </pre>
-                      <button
-                        type="button"
-                        className="provider-refresh provider-update-error-dismiss"
-                        onClick={() => setNpmFailure(null)}
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  ) : null}
-                  <ProviderToolSettings
-                    key={provider.id}
-                    provider={provider}
-                    toolPolicySupported={toolPolicySupported}
-                  />
+                        {npmFailure?.providerId === provider.id ? (
+                          <ProviderNpmFailure
+                            text={npmFailure.text}
+                            detail={npmFailure.detail}
+                            onDismiss={() => setNpmFailure(null)}
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </section>
+          ) : null}
           {unreadableDirs > 0 ? (
             <p className="provider-empty" role="status">
               {unreadableDirs} PATH directories could not be read
