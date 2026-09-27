@@ -33,12 +33,14 @@ afterEach(async () => {
 describe("sidebar computed styles (real stylesheets, no app launch)", () => {
   // Sheet order matches the bundle: tokens, global, strip (pulled in by
   // SessionStrip, which Workspace imports before its own CSS), workspace,
-  // sidebar.
+  // the Changes body (pulled in by ChangesSurface, straight after the
+  // panel chrome in bundle order), sidebar.
   const { rulesFor, inject } = assembleCssProof([
     read("src/styles/tokens.css"),
     read("src/styles/global.css"),
     read("src/features/workspace/strip/strip.css"),
     read("src/features/workspace/Workspace.css"),
+    read("src/features/workspace/panel/changes.css"),
     read("src/features/workspace/sidebar/sidebar.css"),
   ]);
 

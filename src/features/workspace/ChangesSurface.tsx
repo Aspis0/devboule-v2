@@ -9,6 +9,7 @@ import { useWorkspaceChanges, type ChangesReply } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import { useWorkspaceGitActions } from "./useWorkspaceGitActions";
 import { ErrorText } from "../../components/ErrorText";
+import "./panel/changes.css";
 
 interface ChangesSurfaceProps {
   /**
