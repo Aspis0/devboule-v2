@@ -52,8 +52,9 @@ pub(super) fn dispatch(
         }
         return Some(DaemonMessage::Error(error));
     }
-    if let ClientMessage::ProvidersAuthCheck { id } = &request {
+    if let ClientMessage::ProvidersAuthCheck { id, force } = &request {
         let id = *id;
+        let force = *force;
         let worker_state = Arc::clone(state);
         let outbound = Arc::clone(&conn.outbound);
         let failure_outbound = Arc::clone(&outbound);
@@ -65,7 +66,7 @@ pub(super) fn dispatch(
                 // unanswered frame leaves the client on the full RPC
                 // timeout while the panel's catch swallows the symptom.
                 let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    providers_reply(&worker_state, id, false, true)
+                    providers_reply(&worker_state, id, false, true, force)
                 }))
                 .unwrap_or_else(|_| {
                     DaemonMessage::Error(
@@ -88,7 +89,7 @@ pub(super) fn dispatch(
         let spawn = std::thread::Builder::new()
             .name("daemon-providers-refresh".to_string())
             .spawn(move || {
-                let reply = providers_reply(&worker_state, id, true, false);
+                let reply = providers_reply(&worker_state, id, true, false, false);
                 outbound.enqueue_reply(reply);
             });
         if spawn.is_err() {
@@ -330,8 +331,8 @@ pub(super) fn dispatch_immediate(
             }
             dispatch_session(state, owner, request, conn, typed_permissions_ok, passed)
         }
-        ClientMessage::ProvidersList { id } => providers_reply(state, id, false, false),
-        ClientMessage::ProvidersAuthCheck { id } => DaemonMessage::Error(
+        ClientMessage::ProvidersList { id } => providers_reply(state, id, false, false, false),
+        ClientMessage::ProvidersAuthCheck { id, .. } => DaemonMessage::Error(
             WireError::new(
                 ErrorCode::Unimplemented,
                 "ProvidersAuthCheck is dispatched by the async wrapper",

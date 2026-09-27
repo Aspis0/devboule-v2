@@ -1492,7 +1492,10 @@ pub(crate) mod tests {
             },
             ClientMessage::WorkspaceFilePreviewUnstage { id: 1 },
             ClientMessage::ProvidersList { id: 1 },
-            ClientMessage::ProvidersAuthCheck { id: 1 },
+            ClientMessage::ProvidersAuthCheck {
+                id: 1,
+                force: false,
+            },
             ClientMessage::Status { id: 1 },
             ClientMessage::DaemonDiagnostics { id: 1 },
         ];
@@ -2820,7 +2823,10 @@ pub(crate) mod tests {
                 force: false,
             },
             ClientMessage::ProvidersList { id: 1 },
-            ClientMessage::ProvidersAuthCheck { id: 1 },
+            ClientMessage::ProvidersAuthCheck {
+                id: 1,
+                force: false,
+            },
             ClientMessage::ProvidersRefresh { id: 1 },
             ClientMessage::ProviderUpdate {
                 id: 1,

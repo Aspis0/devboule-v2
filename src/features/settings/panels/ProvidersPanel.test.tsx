@@ -24,6 +24,13 @@ const hoisted = vi.hoisted(() => ({
     ],
     message: null,
   }),
+  defaultProviders: (): ProviderCatalog => ({ providers: [], unreadableDirs: 0 }),
+  defaultProviderUpdate: (): ProviderUpdateOutcome => ({ ok: true, exitCode: 0, log: "" }),
+  defaultDaemonDiagnostics: (): DaemonDiagnostics =>
+    ({
+      environment: { osVersion: "Windows 10.0.26200 (x86_64)" },
+    }) as DaemonDiagnostics,
+  defaultToolPolicies: () => ({ policies: [] }),
 }));
 
 vi.mock("../../../lib/tauri", async (importOriginal) => {
@@ -31,15 +38,13 @@ vi.mock("../../../lib/tauri", async (importOriginal) => {
   return {
     ...actual,
     daemonStatus: vi.fn(async () => hoisted.defaultDaemonStatus()),
-    providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
-    providersRefresh: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
-    providersAuthCheck: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
-    providerUpdate: vi.fn(async () => ({ ok: true, exitCode: 0, log: "" })),
+    providersList: vi.fn(async () => hoisted.defaultProviders()),
+    providersRefresh: vi.fn(async () => hoisted.defaultProviders()),
+    providersAuthCheck: vi.fn(async () => hoisted.defaultProviders()),
+    providerUpdate: vi.fn(async () => hoisted.defaultProviderUpdate()),
     providerSetEnabled: vi.fn(async () => undefined),
-    daemonDiagnostics: vi.fn(async () => ({
-      environment: { osVersion: "Windows 10.0.26200 (x86_64)" },
-    })),
-    toolPolicyGet: vi.fn(async () => ({ policies: [] })),
+    daemonDiagnostics: vi.fn(async () => hoisted.defaultDaemonDiagnostics()),
+    toolPolicyGet: vi.fn(async () => hoisted.defaultToolPolicies()),
     toolPolicySet: vi.fn(async () => undefined),
     // No default answer: a vocabulary query only ever leaves the app for an
     // expanded row when the handshake advertised `provider_vocabulary`.
@@ -90,6 +95,7 @@ import {
 import { setLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
 import { useAppStore } from "../../../store/appStore";
 import type {
+  DaemonDiagnostics,
   DaemonStatus,
   ProviderCatalog,
   ProviderInfo,
@@ -101,12 +107,24 @@ import { ProvidersPanel } from "./ProvidersPanel";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeEach(() => {
-  // Every test starts from the module factory's daemon status, which
-  // advertises every capability this page gates on. Without this reset a
-  // sticky mock installed by an earlier test leaks into a later one, and
-  // the file's green becomes an artifact of declaration order.
-  vi.mocked(daemonStatus).mockReset();
+  // Every test starts from the module factory's own answers, for every
+  // mock — not just daemonStatus. `vi.clearAllMocks()` in an afterEach
+  // clears calls but not implementations, so a sticky mock installed by
+  // an earlier test leaks into a later one and the file's green becomes
+  // an artifact of declaration order. `vi.resetAllMocks()` alone is not
+  // enough either: it resets implementations, and the re-install below
+  // keeps the defaults in one place.
+  vi.resetAllMocks();
   vi.mocked(daemonStatus).mockImplementation(async () => hoisted.defaultDaemonStatus());
+  vi.mocked(providersList).mockImplementation(async () => hoisted.defaultProviders());
+  vi.mocked(providersRefresh).mockImplementation(async () => hoisted.defaultProviders());
+  vi.mocked(providersAuthCheck).mockImplementation(async () => hoisted.defaultProviders());
+  vi.mocked(providerUpdate).mockImplementation(async () => hoisted.defaultProviderUpdate());
+  vi.mocked(providerSetEnabled).mockImplementation(async () => undefined);
+  vi.mocked(daemonDiagnostics).mockImplementation(async () => hoisted.defaultDaemonDiagnostics());
+  vi.mocked(toolPolicyGet).mockImplementation(async () => hoisted.defaultToolPolicies());
+  vi.mocked(toolPolicySet).mockImplementation(async () => undefined);
+  // providerVocabularyGet deliberately keeps no default answer.
 });
 
 function daemonStatusWith(capabilities: string[]): DaemonStatus {
@@ -599,6 +617,60 @@ describe("providers refresh", () => {
     await act(async () => undefined);
     expect(providerUpdate).toHaveBeenCalledWith("codex");
     expect(providersAuthCheck).toHaveBeenCalledTimes(2);
+  });
+
+  it("never lets a stale auth check overwrite a newer catalog", async () => {
+    let resolveCheck: ((catalog: ProviderCatalog) => void) | undefined;
+    vi.mocked(providersAuthCheck).mockReturnValueOnce(
+      new Promise<ProviderCatalog>((resolve) => {
+        resolveCheck = resolve;
+      }),
+    );
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [installedProvider({ id: "grok" })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    // The mount check is in flight; the catalog is the mount list.
+    expect(providersAuthCheck).toHaveBeenCalledTimes(1);
+
+    // A refresh lands while the mount check is still in flight: the
+    // refresh's own check answers, and the refresh's catalog wins.
+    vi.mocked(providersRefresh).mockResolvedValueOnce({
+      providers: [installedProvider({ id: "grok" })],
+      unreadableDirs: 0,
+    });
+    vi.mocked(providersAuthCheck).mockResolvedValueOnce({
+      providers: [
+        installedProvider({
+          id: "grok",
+          authStatus: "logged_out",
+          authReason: "CLI reported no active login.",
+        }),
+      ],
+      unreadableDirs: 0,
+    });
+    const refresh = container.querySelector<HTMLButtonElement>(".provider-refresh");
+    if (!refresh) throw new Error("Refresh button did not render");
+    await act(async () => refresh.click());
+    await act(async () => undefined);
+    expect(container.textContent).toContain("Not logged in");
+
+    // The mount's stale check resolves with the opposite answer: the
+    // out-of-order guard must reject it.
+    resolveCheck?.({
+      providers: [
+        installedProvider({
+          id: "grok",
+          authStatus: "logged_in",
+          authReason: "CLI confirmed an active login.",
+        }),
+      ],
+      unreadableDirs: 0,
+    });
+    await act(async () => undefined);
+    expect(container.textContent).toContain("Not logged in");
+    expect(container.textContent).not.toContain("Logged in");
   });
 
   let container: HTMLDivElement;

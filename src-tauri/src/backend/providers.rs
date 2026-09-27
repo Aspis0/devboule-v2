@@ -52,10 +52,11 @@ pub async fn providers_refresh(
 #[tauri::command]
 pub async fn providers_auth_check(
     bridge: State<'_, DaemonBridge>,
+    force: bool,
 ) -> Result<ProviderCatalog, CommandError> {
     let client = require_client(&bridge)?;
     let (providers, unreadable_dirs) =
-        off_main_thread(move || client.providers_auth_check()).await?;
+        off_main_thread(move || client.providers_auth_check(force)).await?;
     Ok(ProviderCatalog {
         providers,
         unreadable_dirs,

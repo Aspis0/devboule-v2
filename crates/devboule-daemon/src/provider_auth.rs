@@ -15,7 +15,9 @@ const MAX_STATUS_OUTPUT: usize = 64 * 1024;
 /// A child that exited has closed its end of the pipe; the reader only has
 /// to drain what is left. Bounding this wait by the *remaining* deadline
 /// reported a check that finished at 4.99 s of a 5 s budget as timed out —
-/// a false negative with a successful exit code in hand.
+/// a false negative with a successful exit code in hand. The worst case per
+/// provider is now the poll plus this grace (6 s), so three sequential
+/// providers cost up to 18 s plus discovery, inside the 30 s RPC budget.
 const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 /// Test-only: the buffer the reader thread captured on the last
@@ -24,11 +26,10 @@ const DRAIN_GRACE: Duration = Duration::from_secs(1);
 #[cfg(test)]
 static LAST_CAPTURED_OUTPUT: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
 
-/// Test-only: the PID of the child the last `run_check_with_timeout`
-/// spawned, so a test can check the kill by PID instead of a marker file
-/// the fixture would have to write.
+/// Test-only: the PIDs the job held just before the last terminate, so a
+/// test can check the whole tree against the processes it actually spawned.
 #[cfg(test)]
-static LAST_CHILD_PID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LAST_JOB_PIDS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
 /// Test-only: serialises the runner tests, which share the two seams
 /// above; without it, parallel tests overwrite each other's observations.
@@ -47,9 +48,22 @@ pub(crate) fn last_captured_output() -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-pub(crate) fn last_child_pid() -> Option<u32> {
-    let pid = LAST_CHILD_PID.load(std::sync::atomic::Ordering::SeqCst);
-    (pid != 0).then_some(pid as u32)
+pub(crate) fn last_job_pids() -> Vec<u32> {
+    LAST_JOB_PIDS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+/// Test-only: records the job's member PIDs before a terminate, so the
+/// caller can assert the kill against exactly those processes.
+#[cfg(test)]
+fn record_job_pids(job: &crate::process_tree::JobObject) {
+    if let Ok(pids) = job.pids() {
+        *LAST_JOB_PIDS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = pids;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,6 +139,9 @@ fn pi_default_args() -> Option<Vec<String>> {
     pi_status_args(Some(provider), model)
 }
 
+// The enabled gate now lives above the reuse window in
+// `check_provider_auth`; this helper is exercised by its own test.
+#[cfg(test)]
 pub(crate) fn check_if_enabled<T>(enabled: bool, probe: impl FnOnce() -> Option<T>) -> Option<T> {
     if enabled {
         probe()
@@ -213,8 +230,6 @@ fn run_check_with_timeout(
         Ok(child) => child,
         Err(_) => return classify_failure(ProbeFailure::SpawnFailed),
     };
-    #[cfg(test)]
-    LAST_CHILD_PID.store(child.id() as u64, std::sync::atomic::Ordering::SeqCst);
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -245,6 +260,12 @@ fn run_check_with_timeout(
         let _ = output_tx.send(output);
     });
     let deadline = Instant::now() + timeout;
+    #[cfg(test)]
+    {
+        *LAST_CAPTURED_OUTPUT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+    }
     let exit_status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -252,6 +273,8 @@ fn run_check_with_timeout(
                 std::thread::sleep(Duration::from_millis(20));
             }
             _ => {
+                #[cfg(test)]
+                record_job_pids(&_job);
                 #[cfg(windows)]
                 let _ = _job.terminate_and_wait(Duration::from_millis(250));
                 let _ = child.kill();
@@ -260,14 +283,26 @@ fn run_check_with_timeout(
             }
         }
     };
+    #[cfg(test)]
+    record_job_pids(&_job);
     #[cfg(windows)]
     let _ = _job.terminate();
-    let stdout = match output_rx.recv_timeout(DRAIN_GRACE) {
-        Ok(output) => output,
-        Err(_) => return classify_failure(ProbeFailure::TimedOut),
+    // claude and codex classify by exit code alone; waiting for the pipe on
+    // their path would let a descendant that outlives the direct child turn
+    // a successful exit into a false timeout. pi parses stdout, so it drains
+    // with the grace extended by whatever budget is left.
+    let stdout = if agent.id == "pi" {
+        match output_rx
+            .recv_timeout(DRAIN_GRACE.max(deadline.saturating_duration_since(Instant::now())))
+        {
+            Ok(output) => output,
+            Err(_) => return classify_failure(ProbeFailure::TimedOut),
+        }
+    } else {
+        Vec::new()
     };
     #[cfg(test)]
-    {
+    if agent.id == "pi" {
         *LAST_CAPTURED_OUTPUT
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(stdout.clone());

@@ -85,30 +85,6 @@ fn timeout_and_spawn_failure_are_unknown_without_echoing_cli_text() {
 }
 
 #[test]
-fn run_check_redacts_stdout_and_bounds_captured_output() {
-    let _lock = runner_test_lock();
-    #[cfg(windows)]
-    {
-        let agent = fake_agent(vec![
-            "/C".into(),
-            "for /L %i in (1,1,10000) do @echo private-token".into(),
-        ]);
-        let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
-        assert_eq!(result.0, "logged_in");
-        let captured = last_captured_output().expect("the reader captured the output");
-        assert!(
-            String::from_utf8_lossy(&captured).contains("private-token"),
-            "the fixture really printed the token into the pipe"
-        );
-        assert_eq!(
-            captured.len(),
-            MAX_STATUS_OUTPUT,
-            "the real reader keeps the first 64 KiB"
-        );
-    }
-}
-
-#[test]
 fn run_check_timeout_returns_static_unknown_reason() {
     let _lock = runner_test_lock();
     #[cfg(windows)]
@@ -123,15 +99,16 @@ fn run_check_timeout_returns_static_unknown_reason() {
         let agent = fake_agent_at(executable, vec!["/C".into(), "ping -n 31 127.0.0.1".into()]);
         let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
         assert_eq!(result, ("unknown", "The provider status check timed out."));
-        let child_pid = last_child_pid().expect("the runner recorded the child PID");
+        // The kill is checked against the PIDs the job actually held, never
+        // a machine-wide image name a co-tenant process could fail.
+        let job_pids = last_job_pids();
         assert!(
-            !tasklist_has_pid(child_pid),
-            "the killed child {child_pid} is gone"
+            !job_pids.is_empty(),
+            "the runner recorded the job's member PIDs"
         );
-        assert!(
-            !tasklist_has_image("ping.exe"),
-            "the grandchild died with the job, not just the direct child"
-        );
+        for pid in job_pids {
+            assert!(!tasklist_has_pid(pid), "the killed process {pid} is gone");
+        }
     }
 }
 
@@ -152,10 +129,38 @@ fn run_check_reaps_the_whole_tree_after_a_successful_child_exits() {
         );
         let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
         assert_eq!(result.0, "logged_in");
+        let job_pids = last_job_pids();
         assert!(
-            !tasklist_has_image("ping.exe"),
-            "the grandchild holding the pipe died with the job"
+            !job_pids.is_empty(),
+            "the runner recorded the job's member PIDs"
         );
+        for pid in job_pids {
+            assert!(
+                !tasklist_has_pid(pid),
+                "the grandchild {pid} died with the job"
+            );
+        }
+    }
+}
+
+#[test]
+fn run_check_does_not_wait_for_the_pipe_when_the_exit_code_decides() {
+    let _lock = runner_test_lock();
+    #[cfg(windows)]
+    {
+        // cmd.exe exits 0 at once; ping keeps the inherited pipe open as a
+        // grandchild. claude and codex classify by exit code alone, so a
+        // descendant holding the pipe must not turn a successful exit into
+        // a false timeout.
+        let executable = std::env::var_os("COMSPEC")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"));
+        let agent = fake_agent_at(
+            executable,
+            vec!["/C".into(), "start /b ping -n 31 127.0.0.1 & exit".into()],
+        );
+        let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
+        assert_eq!(result, ("logged_in", "CLI confirmed an active login."));
     }
 }
 
@@ -180,6 +185,13 @@ fn run_check_reports_truncation_instead_of_a_bad_cli_result() {
                 "The provider status output was too large to read."
             )
         );
+        // The bound itself, on the buffer the real reader captured.
+        let captured = last_captured_output().expect("the reader captured the output");
+        assert_eq!(
+            captured.len(),
+            MAX_STATUS_OUTPUT,
+            "the real reader keeps the first 64 KiB"
+        );
     }
 }
 
@@ -189,8 +201,9 @@ fn run_check_classifies_a_pi_status_document_through_the_real_runner() {
     #[cfg(windows)]
     {
         // cmd's echo backslash-escapes quotes, so the fixture is a file the
-        // child types verbatim. Unquoted: a quoted path does not survive
-        // the spawn quoting, and the temp dir has no spaces to require it.
+        // child types verbatim. `cd /d` takes the rest of the line as the
+        // path, so a temp dir with spaces in it works; a quoted path does
+        // not survive the spawn quoting.
         let directory = crate::test_dirs::test_temp_dir("devboule-auth-pi-json");
         let status_file = directory.join("status.json");
         std::fs::write(
@@ -198,12 +211,10 @@ fn run_check_classifies_a_pi_status_document_through_the_real_runner() {
             r#"{"status":"ready","email":"secret@example.test"}"#,
         )
         .expect("write the status fixture");
-        let path = status_file.display().to_string();
-        assert!(
-            !path.contains(' '),
-            "the fixture path must not contain spaces"
-        );
-        let mut agent = fake_agent(vec!["/C".into(), format!("type {path}")]);
+        let mut agent = fake_agent(vec![
+            "/C".into(),
+            format!("cd /d {} & type status.json", directory.display()),
+        ]);
         agent.id = "pi".to_string();
         let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
         assert_eq!(result.0, "logged_in");
@@ -228,20 +239,6 @@ fn tasklist_has_pid(pid: u32) -> bool {
     tasklist_data_rows(&stdout).into_iter().any(|row| {
         row.get(1)
             .is_some_and(|column| column.parse::<u32>() == Ok(pid))
-    })
-}
-
-/// Whether tasklist still reports any process with this image name.
-#[cfg(windows)]
-fn tasklist_has_image(image: &str) -> bool {
-    let listing = std::process::Command::new("tasklist")
-        .args(["/FI", &format!("IMAGENAME eq {image}")])
-        .output()
-        .expect("tasklist is available on Windows");
-    let stdout = String::from_utf8_lossy(&listing.stdout).into_owned();
-    tasklist_data_rows(&stdout).into_iter().any(|row| {
-        row.first()
-            .is_some_and(|name| name.eq_ignore_ascii_case(image))
     })
 }
 

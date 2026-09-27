@@ -80,7 +80,7 @@ pub(super) fn diagnostics_report(
     // by existing RPCs: registry fetches and journal worker calls have finite
     // deadlines. Diagnostics never waits on a child process or an unbounded
     // database operation.
-    let providers = match providers_reply(state, 0, false, false) {
+    let providers = match providers_reply(state, 0, false, false, false) {
         DaemonMessage::Providers { providers, .. } => providers,
         _ => Vec::new(),
     };

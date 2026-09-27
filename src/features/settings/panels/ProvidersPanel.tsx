@@ -298,7 +298,13 @@ export function ProvidersPanel() {
 
   // The check runs on open and on explicit Refresh only. A mount (or a
   // capability change) bumps this epoch; an install or update never does,
-  // so a completed install cannot spawn a silent extra round.
+  // so a completed install cannot spawn a silent extra round. The epoch is
+  // a boolean dep, not the capabilities array: the 2 s status poll mints a
+  // new array identity every tick, and deping on it would spawn a round
+  // every two seconds.
+  // This effect must run before the check effect below: React runs
+  // effects in declaration order, and a check effect that reads the
+  // pre-bump epoch fires a second round when the bump re-runs it.
   const authCheckEpochRef = useRef(0);
   useEffect(() => {
     if (providerAuthCheckSupported) authCheckEpochRef.current += 1;
@@ -308,11 +314,18 @@ export function ProvidersPanel() {
     if (!providerAuthCheckSupported || catalog === null) return;
     const epoch = authCheckEpochRef.current;
     if (authCheckDoneEpochRef.current === epoch) return;
+    // Set eagerly: a check that rejects is never retried for this mount —
+    // the row keeps last-start wording until a Refresh or a remount.
     authCheckDoneEpochRef.current = epoch;
+    // The fetch sequence at fire time: a result for an older request never
+    // overwrites a newer catalog. The daemon's coalescing and reuse window
+    // make its observations monotonic per provider, but the client keeps
+    // its own guard rather than rely on that.
+    const seq = fetchSeqRef.current;
     let cancelled = false;
-    void providersAuthCheck()
+    void providersAuthCheck(false)
       .then((checked) => {
-        if (!cancelled && authCheckEpochRef.current === epoch) {
+        if (!cancelled && authCheckEpochRef.current === epoch && seq === fetchSeqRef.current) {
           setCatalog((current) => (current === null ? current : mergeAuthChecks(current, checked)));
         }
       })
@@ -339,7 +352,9 @@ export function ProvidersPanel() {
         let checkedCatalog = fresh;
         try {
           if (providerAuthCheckSupported) {
-            checkedCatalog = mergeAuthChecks(fresh, await providersAuthCheck());
+            // A deliberate Refresh measures again: it must never be served
+            // the reuse window's possibly-stale observation.
+            checkedCatalog = mergeAuthChecks(fresh, await providersAuthCheck(true));
           }
         } catch {
           // Keep the fresh catalog and its last-start fallback.

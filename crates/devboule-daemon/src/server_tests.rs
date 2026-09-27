@@ -124,7 +124,7 @@ fn providers_list_answers_a_live_user_row() {
         "vocabulary answers the live row absent: {vocab:?}"
     );
     // The list does not — red.
-    let reply = super::providers::providers_reply(&state, 1, false, false);
+    let reply = super::providers::providers_reply(&state, 1, false, false, false);
     let providers = match reply {
         DaemonMessage::Providers { providers, .. } => providers,
         other => panic!("ProvidersList must answer Providers, got {other:?}"),
@@ -778,10 +778,13 @@ fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
         crate::provider_auth::AuthCheck {
             status: "logged_in",
             reason: "CLI confirmed an active login.",
-            checked_at: 1,
+            // A current timestamp: a 1970 seed would miss the reuse window
+            // and fall through to the OFF gate, silently converting the
+            // assertion below into a tautology.
+            checked_at: unix_millis() as i64,
         },
     );
-    let cached = super::providers::providers_reply(&state, 70, false, false);
+    let cached = super::providers::providers_reply(&state, 70, false, false, false);
     let DaemonMessage::Providers { providers, .. } = cached else {
         panic!("cached providers reply expected");
     };
@@ -807,7 +810,7 @@ fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
         .set("claude", false)
         .expect("disable the catalog provider");
     assert!(!state.provider_switches.is_enabled("claude"));
-    let reply = super::providers::providers_reply(&state, 71, false, true);
+    let reply = super::providers::providers_reply(&state, 71, false, true, false);
     let DaemonMessage::Providers { providers, .. } = reply else {
         panic!("providers reply expected, got {reply:?}");
     };
@@ -861,12 +864,26 @@ fn canned_auth_check(checked_at: i64) -> crate::provider_auth::AuthCheck {
     }
 }
 
+/// A probe that counts its invocations and answers with a stale timestamp,
+/// so the reuse window never hides a re-run.
+fn counting_auth_probe(calls: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> AuthProbe {
+    let calls = std::sync::Arc::clone(calls);
+    std::sync::Arc::new(move |_agent: &crate::provider_catalog::InstalledAgent| {
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(canned_auth_check(0))
+    })
+}
+
 #[test]
 fn concurrent_auth_check_callers_share_one_run() {
     let (path, state) = temp_state("auth-coalesce");
     let agent = installed_agent("claude");
     let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    // Each caller signals before entering, so the main thread can hold the
+    // probe until every caller is at the shared flight — no wall-clock
+    // guess about when the slowest thread gets there.
+    let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let probe_calls = std::sync::Arc::clone(&calls);
     let probe_entered = entered_tx;
@@ -890,15 +907,20 @@ fn concurrent_auth_check_callers_share_one_run() {
     for _ in 0..CALLERS {
         let state = Arc::clone(&state);
         let agent = agent.clone();
+        let arrived = arrived_tx.clone();
         waiters.push(std::thread::spawn(move || {
-            state.check_provider_auth(&agent)
+            let _ = arrived.send(());
+            state.check_provider_auth(&agent, false)
         }));
+    }
+    for _ in 0..CALLERS {
+        arrived_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("every caller reached the shared check");
     }
     entered_rx
         .recv_timeout(Duration::from_secs(10))
         .expect("one caller entered the shared check");
-    // Let the other callers reach the shared flight before releasing.
-    std::thread::sleep(Duration::from_millis(50));
     release_tx.send(()).expect("release the shared check");
     for waiter in waiters {
         assert_eq!(
@@ -917,6 +939,155 @@ fn concurrent_auth_check_callers_share_one_run() {
 }
 
 #[test]
+fn a_panicked_auth_check_answers_every_waiter_and_removes_its_flight() {
+    let (path, state) = temp_state("auth-panic-waiter");
+    let agent = installed_agent("claude");
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
+    // The first invocation panics; every later one answers, so a waiter that
+    // wakes poisoned re-runs instead of hanging or orphaning.
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let probe_calls = std::sync::Arc::clone(&calls);
+    let probe_entered = entered_tx;
+    let probe_release = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(
+        move |_agent: &crate::provider_catalog::InstalledAgent| {
+            let invocation = probe_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if invocation == 1 {
+                let _ = probe_entered.send(());
+                let release = probe_release
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let _ = release.recv_timeout(Duration::from_secs(10));
+                panic!("probe panic");
+            }
+            Some(canned_auth_check(0))
+        },
+    ));
+    let mut waiters = Vec::new();
+    for _ in 0..2 {
+        let state = Arc::clone(&state);
+        let agent = agent.clone();
+        let arrived = arrived_tx.clone();
+        waiters.push(std::thread::spawn(move || {
+            let _ = arrived.send(());
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                state.check_provider_auth(&agent, false)
+            }))
+        }));
+    }
+    for _ in 0..2 {
+        arrived_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("both callers reached the check");
+    }
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("one caller entered the panicking check");
+    release_tx.send(()).expect("release the panicking check");
+    let mut panicked = 0;
+    let mut answered = 0;
+    for waiter in waiters {
+        match waiter.join().expect("caller") {
+            Err(_) => panicked += 1,
+            Ok(check) => {
+                assert_eq!(check, Some(canned_auth_check(0)));
+                answered += 1;
+            }
+        }
+    }
+    assert_eq!(panicked, 1, "the creator's panic reaches its own caller");
+    assert_eq!(answered, 1, "the waiter is answered, never left hanging");
+    // The flight was removed: a third call runs again instead of inheriting
+    // a frozen result.
+    assert!(state.check_provider_auth(&agent, false).is_some());
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "the panicking run, the waiter's re-run, and the third call"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn a_fresh_auth_check_is_reused_within_the_window() {
+    let (path, state) = temp_state("auth-ttl-hit");
+    let agent = installed_agent("claude");
+    let seeded = canned_auth_check(unix_millis() as i64);
+    state.record_provider_auth_check("claude", seeded.clone());
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(counting_auth_probe(&calls));
+    let result = state.check_provider_auth(&agent, false);
+    assert_eq!(result, Some(seeded), "a fresh cached check is reused");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the reuse window spawns no process"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn a_stale_auth_check_reruns_after_the_window() {
+    let (path, state) = temp_state("auth-ttl-expiry");
+    let agent = installed_agent("claude");
+    // One second older than the reuse window.
+    state.record_provider_auth_check("claude", canned_auth_check(unix_millis() as i64 - 11_000));
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(counting_auth_probe(&calls));
+    let result = state.check_provider_auth(&agent, false);
+    assert_eq!(
+        result,
+        Some(canned_auth_check(0)),
+        "the stale entry is replaced by a fresh run"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the check re-runs"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn a_forced_auth_check_bypasses_the_window() {
+    let (path, state) = temp_state("auth-ttl-force");
+    let agent = installed_agent("claude");
+    state.record_provider_auth_check("claude", canned_auth_check(unix_millis() as i64));
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(counting_auth_probe(&calls));
+    let result = state.check_provider_auth(&agent, true);
+    assert_eq!(
+        result,
+        Some(canned_auth_check(0)),
+        "a forced check measures again"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the reuse window is bypassed"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
 fn a_panicked_auth_check_removes_its_flight_and_reruns() {
     let (path, state) = temp_state("auth-panic");
     let agent = installed_agent("claude");
@@ -926,7 +1097,7 @@ fn a_panicked_auth_check_removes_its_flight_and_reruns() {
         .unwrap_or_else(|error| error.into_inner()) =
         Some(std::sync::Arc::new(|_| panic!("probe panic")));
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state.check_provider_auth(&agent)
+        state.check_provider_auth(&agent, false)
     }));
     assert!(
         panicked.is_err(),
@@ -946,8 +1117,8 @@ fn a_panicked_auth_check_removes_its_flight_and_reruns() {
             Some(canned_auth_check(0))
         },
     ));
-    assert!(state.check_provider_auth(&agent).is_some());
-    assert!(state.check_provider_auth(&agent).is_some());
+    assert!(state.check_provider_auth(&agent, false).is_some());
+    assert!(state.check_provider_auth(&agent, false).is_some());
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::SeqCst),
         2,

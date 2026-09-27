@@ -666,7 +666,7 @@ fn a_daemon_without_the_auth_check_capability_is_never_sent_the_frame() {
         .iter()
         .any(|capability| capability.as_str() == devboule_protocol::caps::PROVIDER_AUTH_CHECK));
     let error = client
-        .providers_auth_check()
+        .providers_auth_check(false)
         .expect_err("an older daemon does not know the frame");
     let DaemonError::Handshake(wire) = error else {
         panic!("capability mismatch must be a handshake error: {error:?}");

@@ -1529,10 +1529,15 @@ impl DaemonClient {
         }
     }
 
-    pub fn providers_auth_check(&self) -> Result<(Vec<ProviderInfo>, u32), DaemonError> {
+    /// `force` asks the daemon to measure again instead of reusing a fresh
+    /// observation: a panel open may reuse, a deliberate Refresh must not.
+    pub fn providers_auth_check(
+        &self,
+        force: bool,
+    ) -> Result<(Vec<ProviderInfo>, u32), DaemonError> {
         self.require_agreed(devboule_protocol::caps::PROVIDER_AUTH_CHECK)?;
         let id = self.alloc_id();
-        match self.roundtrip(ClientMessage::ProvidersAuthCheck { id })? {
+        match self.roundtrip(ClientMessage::ProvidersAuthCheck { id, force })? {
             DaemonMessage::Providers {
                 providers,
                 unreadable_dirs,

@@ -8,6 +8,7 @@ pub(super) fn providers_reply(
     id: u64,
     force: bool,
     check_auth: bool,
+    auth_force: bool,
 ) -> DaemonMessage {
     // The settings list is also the normal pre-session discovery path. Make
     // sure a Claude session can start with a non-empty model manifest even if
@@ -33,7 +34,7 @@ pub(super) fn providers_reply(
             let authentication = state.provider_health(&agent.id);
             let enabled = state.provider_switches.is_enabled(&agent.id);
             let auth_check = if check_auth {
-                state.check_provider_auth(&agent)
+                state.check_provider_auth(&agent, auth_force)
             } else if enabled {
                 state.provider_auth_check(&agent.id)
             } else {

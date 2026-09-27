@@ -2567,7 +2567,10 @@ fn providers_list_round_trips_with_camel_case_and_unknown_auth() {
 
 #[test]
 fn providers_auth_check_is_an_explicit_read_only_request() {
-    let request = ClientMessage::ProvidersAuthCheck { id: 21 };
+    let request = ClientMessage::ProvidersAuthCheck {
+        id: 21,
+        force: false,
+    };
     let encoded = serde_json::to_value(&request).expect("json");
     assert_eq!(encoded["type"], "providers_auth_check");
     assert_eq!(encoded["id"], 21);

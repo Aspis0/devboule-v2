@@ -264,7 +264,7 @@ pub(super) fn session_state_event(
 
 /// The test-only provider-check seam: one shared callable per state.
 #[cfg(test)]
-type AuthProbe = std::sync::Arc<
+pub(crate) type AuthProbe = std::sync::Arc<
     dyn Fn(&crate::provider_catalog::InstalledAgent) -> Option<crate::provider_auth::AuthCheck>
         + Send
         + Sync,
@@ -863,15 +863,31 @@ impl ServerState {
         let age = i64::try_from(unix_millis())
             .unwrap_or(i64::MAX)
             .saturating_sub(cached.checked_at);
-        (age < Self::AUTH_CHECK_REUSE_MS).then_some(cached)
+        // A backward clock step makes the age negative; only a non-negative
+        // age inside the window is fresh.
+        (0..Self::AUTH_CHECK_REUSE_MS)
+            .contains(&age)
+            .then_some(cached)
     }
 
     pub(crate) fn check_provider_auth(
         &self,
         agent: &crate::provider_catalog::InstalledAgent,
+        force: bool,
     ) -> Option<crate::provider_auth::AuthCheck> {
-        if let Some(cached) = self.fresh_auth_check(&agent.id) {
-            return Some(cached);
+        // The OFF gate and the installed gate sit above the reuse window: a
+        // switched-off or removed provider is never served from the cache,
+        // however fresh it is.
+        if !self.provider_switches.is_enabled(&agent.id) {
+            return None;
+        }
+        if !agent.installed || agent.origin == crate::provider_catalog::ProviderOrigin::NpxWrapper {
+            return None;
+        }
+        if !force {
+            if let Some(cached) = self.fresh_auth_check(&agent.id) {
+                return Some(cached);
+            }
         }
         let (flight, guard) = {
             let mut in_flight = self
@@ -901,17 +917,12 @@ impl ServerState {
         };
         let result = flight
             .get_or_init(|| {
-                crate::provider_auth::check_if_enabled(
-                    self.provider_switches.is_enabled(&agent.id),
-                    || {
-                        #[cfg(test)]
-                        if let Some(probe) = probe.as_ref() {
-                            return probe(agent);
-                        }
-                        crate::provider_auth::check(agent)
-                    },
-                )
-                .map(|check| self.record_provider_auth_check(&agent.id, check))
+                #[cfg(test)]
+                if let Some(probe) = probe.as_ref() {
+                    return probe(agent);
+                }
+                crate::provider_auth::check(agent)
+                    .map(|check| self.record_provider_auth_check(&agent.id, check))
             })
             .clone();
         drop(guard);

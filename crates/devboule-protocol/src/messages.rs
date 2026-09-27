@@ -766,8 +766,12 @@ pub enum ClientMessage {
         id: u64,
     },
     /// Explicitly re-check provider authentication for the Providers page.
+    /// `force` bypasses the daemon's short reuse window: a panel open may
+    /// reuse a fresh observation, a deliberate Refresh must measure again.
     ProvidersAuthCheck {
         id: u64,
+        #[serde(default)]
+        force: bool,
     },
     ProvidersRefresh {
         id: u64,
@@ -1128,7 +1132,7 @@ impl ClientMessage {
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
-            | Self::ProvidersAuthCheck { id }
+            | Self::ProvidersAuthCheck { id, .. }
             | Self::ProvidersRefresh { id }
             | Self::ProviderUpdate { id, .. }
             | Self::Invoke { id, .. }

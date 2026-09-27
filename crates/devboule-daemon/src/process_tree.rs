@@ -22,6 +22,8 @@ mod platform {
     use windows_sys::Win32::Foundation::{
         DuplicateHandle, DUPLICATE_SAME_ACCESS, STILL_ACTIVE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
+    #[cfg(test)]
+    use windows_sys::Win32::System::JobObjects::JobObjectBasicProcessIdList;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
         JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
@@ -126,6 +128,46 @@ mod platform {
                     ));
                 }
                 thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        /// The PIDs currently assigned to this job. Test-only: a test that
+        /// kills a tree checks these PIDs against tasklist rather than a
+        /// machine-wide image name, so a co-tenant process cannot fail it.
+        #[cfg(test)]
+        pub fn pids(&self) -> io::Result<Vec<u32>> {
+            #[repr(C)]
+            struct BasicProcessIdList {
+                number_of_assigned_processes: u32,
+                number_of_process_ids_in_list: u32,
+                process_id_list: [usize; 1],
+            }
+            let mut buffer = vec![0u8; 4096];
+            loop {
+                let mut return_length = 0u32;
+                let ok = unsafe {
+                    QueryInformationJobObject(
+                        self.handle,
+                        JobObjectBasicProcessIdList,
+                        buffer.as_mut_ptr().cast(),
+                        buffer.len() as u32,
+                        &mut return_length,
+                    )
+                };
+                if ok == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let list = unsafe { &*(buffer.as_ptr() as *const BasicProcessIdList) };
+                let count = list.number_of_process_ids_in_list as usize;
+                let needed = 2 * mem::size_of::<u32>() + count * mem::size_of::<usize>();
+                if needed <= buffer.len() {
+                    let ids = unsafe {
+                        let ptr = buffer.as_ptr().add(2 * mem::size_of::<u32>()) as *const usize;
+                        (0..count).map(|index| *ptr.add(index) as u32).collect()
+                    };
+                    return Ok(ids);
+                }
+                buffer.resize(needed, 0);
             }
         }
 
