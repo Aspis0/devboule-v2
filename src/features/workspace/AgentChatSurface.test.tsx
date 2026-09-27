@@ -329,8 +329,47 @@ describe("AgentChatSurface", () => {
     expect(row?.textContent).toContain("Codex declined an out-of-scope request.");
     expect(row?.textContent).not.toContain("Agent");
     expect(row?.getAttribute("role")).toBeNull();
+    expect(row?.querySelector(".workspace-chat-label")).toBeNull();
     expect(row?.style.opacity).toBe("");
     expect(row?.classList.contains("workspace-chat-system")).toBe(true);
+  });
+
+  it("renders user bubbles and assistant Markdown without role labels", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "user-markdown",
+        text: "Use `C:\\Users\\x\\design-sandbox`.",
+      });
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "assistant-markdown",
+        text: "### Heading\n\nA **bold** answer.\n\n- first item",
+      });
+    });
+
+    const user = container.querySelector<HTMLElement>(".workspace-chat-user");
+    const assistant = container.querySelector<HTMLElement>(".workspace-chat-assistant");
+    expect(user?.querySelector(".workspace-chat-bubble .workspace-chat-copy")?.textContent).toBe(
+      "Use `C:\\Users\\x\\design-sandbox`.",
+    );
+    expect(user?.querySelector(".workspace-chat-label")).toBeNull();
+    expect(assistant?.querySelector(".plan-markdown-heading-3")?.textContent).toBe("Heading");
+    expect(assistant?.querySelector("strong")?.textContent).toBe("bold");
+    expect(assistant?.querySelector("ul li")?.textContent).toBe("first item");
+    expect(assistant?.querySelector(".workspace-chat-label")).toBeNull();
+    expect(user?.querySelector(".timeline-copy-chip")?.getAttribute("aria-label")).toBe(
+      "Copy message",
+    );
+    expect(assistant?.querySelector(".timeline-copy-chip")?.getAttribute("aria-label")).toBe(
+      "Copy message",
+    );
   });
 
   it("publishes the last assistant message while the chat is on screen", async () => {
@@ -856,10 +895,10 @@ describe("AgentChatSurface", () => {
     expect(chatItems[1]?.textContent).toContain("null parent id");
     const childItems = container.querySelectorAll(".workspace-chat-subagent");
     expect(childItems).toHaveLength(2);
-    expect(childItems[0]?.textContent).toContain("Subagent");
+    expect(childItems[0]?.querySelector(".workspace-chat-label")).toBeNull();
     expect(childItems[0]?.textContent).toContain("Child output");
     expect((childItems[0] as HTMLElement).style.marginInlineStart).toBe("64px");
-    expect(childItems[1]?.textContent).toContain("depth unavailable");
+    expect(childItems[1]?.classList.contains("workspace-chat-subagent-depth-unknown")).toBe(true);
     expect((childItems[1] as HTMLElement).style.marginInlineStart).toBe("");
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
@@ -1794,6 +1833,8 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "402 Payment Required",
     );
+    expect(container.querySelector('[role="alert"] .workspace-chat-label')).toBeNull();
+    expect(container.querySelector(".workspace-chat-error-line > span")?.textContent).toBe("△");
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,

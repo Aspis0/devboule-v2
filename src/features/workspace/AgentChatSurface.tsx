@@ -71,6 +71,8 @@ import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
 import { MarkdownText } from "../../components/MarkdownText";
+import { MessageCopyButton } from "./timeline/MessageCopyButton";
+import "./timeline/timeline.css";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
 import { setHeldAssistantText } from "./attentionNotice";
@@ -305,15 +307,10 @@ function subagentDepthCopy(item: AgentChatItem): string {
   return hasParentToolUseId(item) && !hasMeasuredSpawnDepth(item) ? " · depth unavailable" : "";
 }
 
-function itemLabel(item: AgentChatItem): string {
+function thoughtLabel(item: AgentChatItem): string {
   const subagentLabel = hasParentToolUseId(item);
   const depthCopy = subagentDepthCopy(item);
-  if (item.role === "user") return "You";
-  if (item.role === "assistant") return subagentLabel ? `Subagent${depthCopy}` : "Agent";
-  if (item.role === "thought") {
-    return subagentLabel ? `Subagent thought${depthCopy}` : "Thought";
-  }
-  return "Error";
+  return subagentLabel ? `Subagent thought${depthCopy}` : "Thought";
 }
 
 const SUBAGENT_STATUSES: AgentSubagentStatus[] = [
@@ -637,7 +634,7 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
     return (
       <ThoughtRow
         key={item.id}
-        label={itemLabel(item)}
+        label={thoughtLabel(item)}
         className={className}
         style={style}
         text={item.text}
@@ -649,7 +646,6 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
   if (item.role === "system") {
     return (
       <div className={className} key={item.id} data-severity={item.severity} style={style}>
-        <div className="workspace-chat-label">System</div>
         <div className="workspace-chat-copy">{item.text}</div>
       </div>
     );
@@ -731,20 +727,40 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
     return <A2aOutgoingMessageCard key={item.id} item={item} />;
   }
 
+  if (item.role === "error") {
+    return (
+      <div className={className} key={item.id} role="alert" style={style}>
+        <div className="workspace-chat-error-line">
+          <span aria-hidden="true">△</span>
+          <span className="workspace-chat-copy">{item.text}</span>
+        </div>
+        {item.detail ? <div className="workspace-chat-error-detail">{item.detail}</div> : null}
+      </div>
+    );
+  }
+
+  if (item.role === "user") {
+    return (
+      <div className={className} key={item.id} style={style}>
+        <div className="workspace-chat-bubble">
+          <div className="workspace-chat-copy">{item.text}</div>
+          <MessageCopyButton text={item.text} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={className}
       key={item.id}
-      role={item.role === "error" ? "alert" : undefined}
       style={style}
+      title={isSubagent && measuredDepth === null ? "Subagent depth unavailable" : undefined}
     >
-      <div className="workspace-chat-label">{itemLabel(item)}</div>
-      <div className="workspace-chat-copy">{item.text}</div>
-      {item.role === "error" && item.detail ? (
-        // The demoted raw text: env vars, OS error numbers, internal words.
-        // Under the sentence, muted — read on request, not on the way past.
-        <div className="workspace-chat-error-detail">{item.detail}</div>
-      ) : null}
+      <div className="workspace-chat-copy">
+        <MarkdownText text={item.text} />
+      </div>
+      <MessageCopyButton text={item.text} />
     </div>
   );
 }

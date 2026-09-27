@@ -408,8 +408,10 @@
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  gap: 15px;
-  padding: 18px 20px 10px;
+  max-width: 760px;
+  margin: 0 auto;
+  gap: 10px;
+  padding: 4px 24px 0;
   overflow-y: auto;
 }
 
@@ -568,10 +570,10 @@
 
 .workspace-chat-entry {
   flex: none;
-  max-width: 86%;
+  max-width: 100%;
   color: var(--ink);
-  font-size: 12.5px;
-  line-height: 1.65;
+  font-size: 14px;
+  line-height: 1.45;
   text-wrap: pretty;
   white-space: pre-wrap;
 }
@@ -587,8 +589,7 @@
 
 .workspace-chat-user {
   align-self: flex-end;
-  color: var(--terracotta-deep);
-  text-align: right;
+  width: 100%;
 }
 
 .workspace-chat-label {
@@ -667,8 +668,9 @@
 }
 
 .workspace-chat-system {
-  color: var(--silence);
-  opacity: 0.68;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
 }
 
 .workspace-chat-tool {
@@ -830,13 +832,15 @@
 }
 
 .workspace-chat-error {
-  color: var(--danger-deep);
+  color: var(--danger);
+  font-family: var(--font-ui);
+  font-size: 12px;
 }
 
 /* The demoted raw text under a transcript error item: present for the copy,
    muted so only the sentence reads at a glance. */
 .workspace-chat-error-detail {
-  color: var(--silence);
+  color: var(--muted);
   font-size: var(--type-meta);
   margin-top: 2px;
   overflow-wrap: anywhere;

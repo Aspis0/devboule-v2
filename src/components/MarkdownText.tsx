@@ -2,14 +2,24 @@ import type { ReactNode } from "react";
 
 function inline(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
+  const escaped = new Uint8Array(text.length);
+  for (let index = 0; index < text.length - 1; index += 1) {
+    if (text[index] === "\\" && /[!-/:-@[-`{-~]/.test(text[index + 1]!)) {
+      escaped[index + 1] = 1;
+      index += 1;
+    }
+  }
   const next = (character: string) => {
     const positions = new Int32Array(text.length + 1);
     positions[text.length] = -1;
     for (let index = text.length - 1; index >= 0; index -= 1) {
-      positions[index] = text[index] === character ? index : positions[index + 1];
+      positions[index] =
+        text[index] === character && escaped[index] === 0 ? index : positions[index + 1];
     }
     return positions;
   };
+  const plain = (start: number, end: number) =>
+    text.slice(start, end).replace(/\\([!-/:-@[-`{-~])/g, "$1");
   const ticks = next("`");
   const stars = next("*");
   const brackets = next("]");
@@ -22,21 +32,26 @@ function inline(text: string): ReactNode[] {
     let kind: "code" | "strong" | "em" | "link" | undefined;
     let contentStart = index + 1;
     let contentEnd = -1;
-    if (text[index] === "`" && ticks[index + 1] > index + 1) {
+    if (text[index] === "`" && escaped[index] === 0 && ticks[index + 1] > index + 1) {
       kind = "code";
       end = ticks[index + 1];
       contentEnd = end;
-    } else if (text.startsWith("**", index) && stars[index + 2] > index + 2) {
+    } else if (
+      text.startsWith("**", index) &&
+      escaped[index] === 0 &&
+      escaped[index + 1] === 0 &&
+      stars[index + 2] > index + 2
+    ) {
       kind = "strong";
       contentStart = index + 2;
       contentEnd = stars[index + 2];
       end = contentEnd + 2;
       if (!text.startsWith("**", contentEnd)) end = -1;
-    } else if (text[index] === "*" && stars[index + 1] > index + 1) {
+    } else if (text[index] === "*" && escaped[index] === 0 && stars[index + 1] > index + 1) {
       kind = "em";
       contentEnd = stars[index + 1];
       end = contentEnd + 1;
-    } else if (text[index] === "[" && brackets[index + 1] > index + 1) {
+    } else if (text[index] === "[" && escaped[index] === 0 && brackets[index + 1] > index + 1) {
       const close = brackets[index + 1];
       if (text[close + 1] === "(" && parens[close + 2] > close + 2) {
         kind = "link";
@@ -48,7 +63,7 @@ function inline(text: string): ReactNode[] {
       offset += 1;
       continue;
     }
-    if (index > renderedUntil) nodes.push(text.slice(renderedUntil, index));
+    if (index > renderedUntil) nodes.push(plain(renderedUntil, index));
     const key = index;
     const content = text.slice(contentStart, contentEnd);
     if (kind === "code") nodes.push(<code key={key}>{content}</code>);
@@ -70,8 +85,8 @@ function inline(text: string): ReactNode[] {
     renderedUntil = end;
     offset = end;
   }
-  if (renderedUntil === 0) return [text];
-  if (renderedUntil < text.length) nodes.push(text.slice(renderedUntil));
+  if (renderedUntil === 0) return [plain(0, text.length)];
+  if (renderedUntil < text.length) nodes.push(plain(renderedUntil, text.length));
   return nodes;
 }
 

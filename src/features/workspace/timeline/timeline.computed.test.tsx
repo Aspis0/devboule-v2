@@ -1,0 +1,123 @@
+// @vitest-environment happy-dom
+
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { assembleCssProof, removeCssProof } from "../cssProof";
+
+const rootDir = resolve(import.meta.dirname, "../../../..");
+const read = (path: string) => readFileSync(resolve(rootDir, path), "utf8");
+// The production build emits Workspace.css before the timeline stylesheet.
+const { inject, rulesFor } = assembleCssProof([
+  read("src/styles/tokens.css"),
+  read("src/styles/global.css"),
+  read("src/features/workspace/Workspace.css"),
+  read("src/features/workspace/timeline/timeline.css"),
+]);
+
+afterEach(removeCssProof);
+
+describe("timeline computed styles", () => {
+  it("centers a 760 px rail with the specified padding and gap", () => {
+    inject([".workspace-conversation"]);
+    const rail = document.createElement("div");
+    rail.className = "workspace-conversation";
+    document.body.appendChild(rail);
+
+    const style = getComputedStyle(rail);
+    expect(style.maxWidth).toBe("760px");
+    expect(style.marginLeft).toBe("auto");
+    expect(style.marginRight).toBe("auto");
+    expect(style.paddingTop).toBe("4px");
+    expect(style.paddingRight).toBe("24px");
+    expect(style.paddingBottom).toBe("0px");
+    expect(style.gap).toBe("10px");
+    rail.remove();
+  });
+
+  it("gives user messages the bubble width, inset, corner shape, fill, and ink", () => {
+    inject([".workspace-chat-bubble"]);
+    const bubble = document.createElement("div");
+    bubble.className = "workspace-chat-bubble";
+    document.body.appendChild(bubble);
+
+    const style = getComputedStyle(bubble);
+    expect(style.maxWidth).toBe("70%");
+    expect(style.padding).toBe("16px");
+    expect(style.borderRadius).toBe("16px 2px 16px 16px");
+    expect(style.backgroundColor).toBe("#fbf8f1");
+    expect(style.color).toBe("#1c1a17");
+    bubble.remove();
+  });
+
+  it("styles assistant Markdown and keeps the copy chip visible on keyboard focus", () => {
+    inject([
+      ".workspace-chat-assistant",
+      ".workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-3",
+      ".workspace-chat-assistant .workspace-chat-copy ul",
+      ".workspace-chat-assistant .workspace-chat-copy code:not(pre code)",
+      ".workspace-chat-assistant .workspace-chat-copy pre",
+      ".timeline-copy-chip",
+      ".timeline-copy-chip:focus-visible",
+    ]);
+    const assistant = document.createElement("div");
+    assistant.className = "workspace-chat-assistant";
+    assistant.innerHTML = [
+      '<div class="workspace-chat-copy">',
+      '<div class="plan-markdown-heading-3">Heading</div>',
+      "<ul><li>item</li></ul>",
+      "<code>inline</code><pre><code>block</code></pre>",
+      '<button class="timeline-copy-chip" type="button">Copy</button>',
+      "</div>",
+    ].join("");
+    document.body.appendChild(assistant);
+
+    const heading = assistant.querySelector<HTMLElement>(".plan-markdown-heading-3");
+    const list = assistant.querySelector<HTMLElement>("ul");
+    const inlineCode = assistant.querySelector<HTMLElement>(".workspace-chat-copy > code");
+    const codeBlock = assistant.querySelector<HTMLElement>("pre");
+    const copy = assistant.querySelector<HTMLButtonElement>(".timeline-copy-chip");
+    if (
+      heading === null ||
+      list === null ||
+      inlineCode === null ||
+      codeBlock === null ||
+      copy === null
+    ) {
+      throw new Error("Markdown or copy markup did not render");
+    }
+    expect(getComputedStyle(assistant).fontSize).toBe("14px");
+    expect(getComputedStyle(heading).fontSize).toBe("14px");
+    expect(getComputedStyle(heading).fontWeight).toBe("600");
+    expect(getComputedStyle(list).paddingLeft).toBe("18px");
+    expect(getComputedStyle(inlineCode).fontSize).toBe("13px");
+    expect(getComputedStyle(inlineCode).fontFamily).toContain("JetBrains Mono");
+    expect(getComputedStyle(codeBlock).backgroundColor).toBe("#262019");
+    expect(getComputedStyle(copy).opacity).toBe("0");
+    copy.focus();
+    expect(document.activeElement).toBe(copy);
+    expect(rulesFor(".timeline-copy-chip:focus-visible")).toContain("opacity: 1");
+    expect(rulesFor(".timeline-copy-chip:focus-visible")).toContain("outline: 2px solid");
+    assistant.remove();
+  });
+
+  it("keeps system notices quiet and the streaming meta line at 13 px", () => {
+    inject([".workspace-chat-system", ".workspace-conversation .workspace-chat-typing"]);
+    const system = document.createElement("div");
+    system.className = "workspace-chat-system";
+    const rail = document.createElement("div");
+    rail.className = "workspace-conversation";
+    const stream = document.createElement("div");
+    stream.className = "workspace-chat-typing";
+    rail.append(stream);
+    document.body.append(system, rail);
+
+    expect(getComputedStyle(system).fontSize).toBe("12px");
+    expect(getComputedStyle(system).color).toBe("#686256");
+    expect(getComputedStyle(system).fontFamily).toContain("Inter");
+    expect(getComputedStyle(stream).fontSize).toBe("13px");
+    expect(getComputedStyle(stream).color).toBe("#686256");
+    system.remove();
+    rail.remove();
+  });
+});

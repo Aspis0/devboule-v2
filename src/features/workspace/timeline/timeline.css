@@ -1,0 +1,148 @@
+.workspace-chat-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.workspace-chat-bubble {
+  position: relative;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 70%;
+  padding: 16px;
+  border-radius: 16px 2px 16px 16px;
+  background: var(--bubble-bg);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.workspace-chat-assistant {
+  position: relative;
+  width: 100%;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.workspace-chat-assistant .workspace-chat-copy {
+  font-size: inherit;
+  line-height: inherit;
+  white-space: normal;
+}
+
+.workspace-chat-assistant .workspace-chat-copy p {
+  margin: 4px 0;
+}
+
+.workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-3 {
+  margin: 4px 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.workspace-chat-assistant .workspace-chat-copy ul,
+.workspace-chat-assistant .workspace-chat-copy ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.workspace-chat-assistant .workspace-chat-copy li {
+  margin: 2px 0;
+}
+
+.workspace-chat-assistant .workspace-chat-copy code:not(pre code) {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--fill-code-inline);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.workspace-chat-assistant .workspace-chat-copy pre {
+  width: fit-content;
+  max-width: 100%;
+  margin: 4px 0 2px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow: auto;
+}
+
+.workspace-chat-assistant .workspace-chat-copy pre code {
+  font: inherit;
+}
+
+.workspace-chat-assistant .workspace-chat-copy strong {
+  font-weight: 600;
+}
+
+.workspace-chat-error-line {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.workspace-chat-error-line > span:first-child {
+  flex: none;
+  color: var(--danger);
+}
+
+.timeline-copy-chip {
+  position: absolute;
+  z-index: 1;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-card);
+  color: var(--muted);
+  font-size: 12px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.timeline-copy-chip:hover {
+  background: var(--fill-hover);
+  color: var(--ink);
+}
+
+.timeline-copy-chip:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.workspace-chat-user:hover .workspace-chat-bubble,
+.workspace-chat-user:focus-within .workspace-chat-bubble {
+  padding-right: 96px;
+}
+
+.workspace-chat-user:hover .timeline-copy-chip,
+.workspace-chat-user:focus-within .timeline-copy-chip,
+.workspace-chat-assistant:hover .timeline-copy-chip,
+.workspace-chat-assistant:focus-within .timeline-copy-chip {
+  opacity: 1;
+}
+
+.workspace-chat-assistant:hover .workspace-chat-copy,
+.workspace-chat-assistant:focus-within .workspace-chat-copy {
+  padding-right: 84px;
+}
+
+.workspace-conversation .workspace-chat-typing {
+  padding-left: 2px;
+  color: var(--muted);
+  font-size: 13px;
+  font-family: var(--font-ui);
+}
