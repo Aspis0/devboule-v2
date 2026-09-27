@@ -72,7 +72,7 @@ vi.mock("../../oracle/OraclePanel", () => ({
 
 import { projectAdd, projectsList, workspacesList } from "../../../lib/tauri";
 import type { AgentProfilesDocument, Project } from "../../../types/ipc";
-import { SettingsSurface } from "../SettingsSurface";
+import { ProjectsPanel } from "./ProjectsPanel";
 import { open } from "@tauri-apps/plugin-dialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -109,12 +109,7 @@ describe("Settings projects", () => {
 
   async function renderProjects() {
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
-    const projectsTab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-projects']",
-    );
-    if (!projectsTab) throw new Error("Projects tab did not render");
-    await act(async () => projectsTab.click());
+    await act(async () => root.render(<ProjectsPanel />));
     await act(async () => undefined);
   }
 

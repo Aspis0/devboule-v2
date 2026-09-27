@@ -5,6 +5,7 @@ import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
+import "./general.css";
 
 const RETENTION_FIELDS = [
   "sessionMaxBytes",

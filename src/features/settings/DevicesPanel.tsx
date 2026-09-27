@@ -21,7 +21,7 @@ import type {
 } from "../../types/ipc";
 import { SettingsHeading } from "./SettingsSurface";
 import { nextCaps } from "./peerCaps";
-import "./settings.css";
+import "./devices.css";
 
 /**
  * Devices panel: this device's identity, the two pairing directions, the

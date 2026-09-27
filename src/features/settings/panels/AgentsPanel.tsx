@@ -29,6 +29,7 @@ import type {
 } from "../../../types/ipc";
 import { useWorkspaceDaemon } from "../../workspace/workspaceDaemon";
 import { SettingsHeading } from "../SettingsSurface";
+import "../profiles.css";
 /**
  * The handshake capability that gates the whole Agents section, spelled
  * exactly like the daemon's own name for it. A daemon that does not

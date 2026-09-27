@@ -21,6 +21,7 @@ import {
   toolPolicyFor,
 } from "../providerStatus";
 import type { ProviderCatalog, ProviderInfo, ToolPolicyEntry } from "../../../types/ipc";
+import "../providers.css";
 /** Muted version line under the executable path; renders nothing without data. */
 export function ProviderVersionLine({ provider }: { provider: ProviderInfo }) {
   const segments = providerVersionSegments(provider);

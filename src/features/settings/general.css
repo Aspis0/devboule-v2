@@ -1,0 +1,152 @@
+.retention-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.retention-summary,
+.retention-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.retention-blocked-copy,
+.retention-help {
+  margin: 0;
+  color: var(--terracotta-deep);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.retention-help {
+  color: var(--ink-soft);
+}
+
+.retention-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.retention-limit-input {
+  width: 160px;
+  margin-left: auto;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.settings-retention-alert {
+  padding: 9px 11px;
+  color: var(--terracotta-deep);
+  background: color-mix(in srgb, var(--terracotta) 10%, transparent);
+  border: 1px solid var(--terracotta);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+/* Appearance (theme choice) — new tokens only; Settings' own redesign is a
+   later slice, so these rows use the shell's type and line tokens. */
+.appearance-section {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-8);
+  margin-bottom: var(--space-16);
+}
+
+.appearance-heading {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
+}
+
+.appearance-options {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+}
+
+.appearance-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  min-height: var(--control-menu);
+  padding: var(--space-4) var(--space-8);
+  cursor: pointer;
+  border-radius: var(--radius-7);
+}
+
+.appearance-option:hover {
+  background: var(--fill-hover);
+}
+
+.appearance-option-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.appearance-option-label {
+  font-size: var(--type-small);
+  color: var(--ink);
+}
+
+.appearance-option-hint {
+  font-size: var(--type-meta);
+  color: var(--muted);
+}
+
+/* The radios take the accent, not the OS default blue, in both themes. */
+.appearance-option input {
+  accent-color: var(--accent);
+}
+
+.appearance-persist-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+/* Default send: what Enter does while the agent runs (General tab). */
+
+.send-behavior {
+  margin-bottom: 18px;
+}
+
+.send-behavior-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.send-behavior-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.send-behavior-option > span {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.send-behavior-note {
+  color: var(--silence);
+  font-size: 11px;
+}

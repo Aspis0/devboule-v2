@@ -72,7 +72,7 @@ vi.mock("../oracle/OraclePanel", () => ({
 
 import { journalRetentionGet, journalRetentionSet, journalUsage } from "../../lib/tauri";
 import type { AgentProfilesDocument, JournalRetention } from "../../types/ipc";
-import { SettingsSurface } from "./SettingsSurface";
+import { JournalRetentionPanel } from "./JournalRetentionPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 describe("Settings retention panel", () => {
@@ -120,12 +120,7 @@ describe("Settings retention panel", () => {
 
   it("renders why retention is blocked and the measured counters", async () => {
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
-    const general = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-general']",
-    );
-    if (!general) throw new Error("General tab did not render");
-    await act(async () => general.click());
+    await act(async () => root.render(<JournalRetentionPanel />));
     await act(async () => undefined);
 
     expect(container.textContent).toContain("Retention is blocked because");
@@ -138,12 +133,7 @@ describe("Settings retention panel", () => {
 
   it("requires an explicit zero instead of treating an empty field as no limit", async () => {
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
-    const general = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-general']",
-    );
-    if (!general) throw new Error("General tab did not render");
-    await act(async () => general.click());
+    await act(async () => root.render(<JournalRetentionPanel />));
     await act(async () => undefined);
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Maximum age']");
     if (!input) throw new Error("Maximum age input did not render");
@@ -160,12 +150,7 @@ describe("Settings retention panel", () => {
 
   it("commits a complete value on blur instead of persisting each prefix", async () => {
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
-    const general = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-general']",
-    );
-    if (!general) throw new Error("General tab did not render");
-    await act(async () => general.click());
+    await act(async () => root.render(<JournalRetentionPanel />));
     await act(async () => undefined);
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Maximum sessions']");
     if (!input) throw new Error("Maximum sessions input did not render");
@@ -192,12 +177,7 @@ describe("Settings retention panel", () => {
       }),
     );
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
-    const general = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-general']",
-    );
-    if (!general) throw new Error("General tab did not render");
-    await act(async () => general.click());
+    await act(async () => root.render(<JournalRetentionPanel />));
     await act(async () => undefined);
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Maximum sessions']");
     if (!input) throw new Error("Maximum sessions input did not render");
@@ -222,12 +202,7 @@ describe("Settings retention panel", () => {
       message: "rejected",
     });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
-    const general = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-general']",
-    );
-    if (!general) throw new Error("General tab did not render");
-    await act(async () => general.click());
+    await act(async () => root.render(<JournalRetentionPanel />));
     await act(async () => undefined);
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Maximum age']");
     if (!input) throw new Error("Maximum age input did not render");

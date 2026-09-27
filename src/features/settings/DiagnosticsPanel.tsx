@@ -4,6 +4,7 @@ import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
 import type { DaemonDiagnostics } from "../../types/ipc";
 import { SettingsHeading } from "./SettingsSurface";
+import "./diagnostics.css";
 
 type DiagnosticsRecord = Record<string, unknown>;
 

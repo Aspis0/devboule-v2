@@ -1,131 +1,159 @@
+/* Settings shell: the grouped left menu and the content column. The shared
+   card and stack primitives stay here because every page renders inside this
+   shell; each page's own rules live in its page file. */
 .settings-surface {
+  display: flex;
   min-height: 0;
-  background: var(--surface-muted);
+  flex: 1;
+  background: var(--ground-app);
 }
 
-.settings-header {
+.settings-menu {
   display: flex;
   flex: none;
-  align-items: center;
-  gap: 12px;
-  height: 44px;
-  padding: 0 16px;
+  flex-direction: column;
+  width: 280px;
+  padding: 12px 10px 12px 14px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
 }
 
-.settings-header-title {
+.settings-back-row {
   display: flex;
-  min-width: 0;
   align-items: center;
-  gap: 12px;
-}
-
-.settings-header h1 {
-  margin: 0;
-  font-family: "Fraunces", Georgia, serif;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.settings-header-divider {
-  width: 1px;
-  height: 16px;
-  background: var(--border);
-}
-
-.settings-eyebrow {
-  overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-lock-button,
-.model-choice-control,
-.settings-dashed-action {
-  cursor: pointer;
-}
-
-.settings-lock-button {
-  display: grid;
-  height: 26px;
-  margin-left: auto;
-  padding: 0 12px;
-  place-items: center;
-  color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 11px;
-}
-
-.settings-lock-button:hover,
-.settings-lock-button:focus-visible {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta);
-}
-
-.settings-tab-bar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 3px;
-  padding: 9px 14px 0;
-}
-
-.settings-section-tab {
-  height: 30px;
-  padding: 0 13px;
-  color: var(--ink-soft);
+  gap: 8px;
+  height: 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
   background: transparent;
-  border-radius: 9px 9px 0 0;
+  color: var(--muted);
+  font-size: 13px;
   cursor: pointer;
+}
+
+.settings-back-row:hover {
+  background: var(--fill-hover);
+  color: var(--ink);
+}
+
+.settings-back-row:focus-visible,
+.settings-menu-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-menu-group {
+  margin: 14px 0 4px;
+  padding: 0 8px;
+}
+
+.settings-menu-group-label {
+  color: var(--muted);
   font-size: 12px;
   font-weight: 500;
-  white-space: nowrap;
 }
 
-.settings-section-tab:hover,
-.settings-section-tab:focus-visible,
-.settings-section-tab-active {
-  color: var(--terracotta-deep);
-  background: var(--surface);
-}
-
-.settings-content {
-  flex: 1;
-  min-height: 0;
-  padding: 26px 0 40px;
+.settings-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
   background: transparent;
+  color: var(--ink-soft);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.settings-scroll {
+.settings-menu-row:hover {
+  background: var(--fill-hover);
+}
+
+.settings-menu-row-active {
+  background: var(--fill-selected);
+  color: var(--ink);
+}
+
+.settings-menu-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted);
+}
+
+.settings-menu-row-active .settings-menu-icon {
+  color: var(--ink);
+}
+
+.settings-host-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  margin: 2px 0;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-card);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.settings-host-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  margin-left: auto;
+  border-radius: 999px;
+}
+
+.settings-host-dot-green {
+  background: var(--green);
+}
+
+.settings-host-dot-border {
+  background: var(--border-strong);
+}
+
+.settings-host-dot-terracotta {
+  background: var(--terracotta);
+}
+
+.settings-main {
+  flex: 1;
+  min-width: 0;
+  padding: 26px 36px;
   overflow-y: auto;
 }
 
-.settings-scroll::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
+.settings-main-inner {
+  outline: none;
 }
 
-.settings-scroll::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border: 3px solid transparent;
-  border-radius: 8px;
-  background-clip: content-box;
+.settings-page-title {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 400;
+  outline: none;
 }
 
-.settings-scroll::-webkit-scrollbar-track {
-  background: transparent;
+.settings-page-intro {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
-.settings-content-inner {
-  max-width: 820px;
-  margin: 0 auto;
-  padding: 0 30px;
+.settings-page-empty {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
-
 .settings-page-heading h2 {
   margin: 0;
   font-family: "Fraunces", Georgia, serif;
@@ -141,75 +169,10 @@
   line-height: 1.6;
 }
 
-.retention-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.retention-summary,
-.retention-limits {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.retention-blocked-copy,
-.retention-help {
-  margin: 0;
-  color: var(--terracotta-deep);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.retention-help {
-  color: var(--ink-soft);
-}
-
-.retention-limit-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.retention-limit-input {
-  width: 160px;
-  margin-left: auto;
-  padding: 7px 9px;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-}
-
-.settings-retention-alert {
-  padding: 9px 11px;
-  color: var(--terracotta-deep);
-  background: color-mix(in srgb, var(--terracotta) 10%, transparent);
-  border: 1px solid var(--terracotta);
-  border-radius: 8px;
-  font-size: 12px;
-}
-
 .provider-list,
 .settings-stack {
   display: flex;
   flex-direction: column;
-}
-
-.provider-list {
-  gap: 8px;
-  margin-top: 18px;
-}
-
-.provider-card {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface-muted);
 }
 
 .settings-card,
@@ -217,105 +180,6 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-}
-
-.provider-card {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 13px;
-  padding: 13px 15px;
-}
-
-/* Consent and error blocks wrap to their own row under the card's main line. */
-.provider-card-block {
-  flex-basis: 100%;
-}
-
-.provider-tools {
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.provider-tools summary {
-  cursor: pointer;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.provider-tool-list {
-  display: grid;
-  gap: 3px;
-  margin-top: 6px;
-}
-
-.provider-tool-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.provider-tool-name {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-}
-
-.provider-tool-description {
-  color: var(--silence);
-  font-size: 10.5px;
-}
-
-.provider-tool-note {
-  flex: 1 1 100%;
-  padding-left: 22px;
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.provider-consent {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.provider-consent-command {
-  color: var(--ink-soft);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-}
-
-.provider-consent-notice {
-  margin: 0;
-  color: var(--silence);
-  font-size: 12px;
-}
-
-.provider-consent-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.provider-consent-actions .provider-refresh,
-.provider-update-error .provider-refresh {
-  margin-top: 0;
-}
-
-.provider-update-error pre {
-  max-height: 160px;
-  margin: 0;
-  padding: 8px 10px;
-  overflow: auto;
-  color: var(--ochre-deep);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
 }
 
 .provider-mark {
@@ -358,92 +222,12 @@
   display: block;
 }
 
-.provider-name {
-  font-size: 13px;
-  font-weight: 500;
-}
-
 .provider-detail,
 .settings-card-meta {
   margin-top: 2px;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
-}
-
-.provider-version {
-  display: block;
-  margin-top: 2px;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-}
-
-.provider-refresh {
-  display: grid;
-  width: fit-content;
-  height: 26px;
-  margin-top: 14px;
-  padding: 0 12px;
-  place-items: center;
-  color: var(--ink-soft);
-  cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 11px;
-}
-
-.provider-refresh:hover,
-.provider-refresh:focus-visible {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta);
-}
-
-.provider-refresh:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.provider-controls {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-}
-
-.provider-status {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-}
-
-.provider-status-ready {
-  color: var(--green-deep);
-}
-.provider-status-disabled {
-  color: var(--silence);
-}
-.provider-status-missing {
-  color: var(--ochre-deep);
-}
-.provider-status-idle {
-  color: var(--silence);
-}
-
-.provider-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 16px 0;
-  color: var(--ink-soft);
-}
-
-.provider-empty p {
-  margin: 0;
-  max-width: 42em;
-  color: var(--silence);
-  font-size: 12.5px;
 }
 
 .provider-switch {
@@ -596,209 +380,10 @@
   color: var(--danger-deep);
 }
 
-.settings-device-card {
-  gap: 12px;
-}
-
-.device-dot {
-  width: 7px;
-  height: 7px;
-  flex: none;
-  border-radius: 999px;
-}
-
-.device-dot-ready {
-  background: var(--green);
-}
-.device-dot-idle {
-  background: var(--border-strong);
-}
-
-.settings-devices-list {
-  margin-top: 18px;
-}
-
 @media (max-width: 900px) {
-  .settings-tab-bar {
-    overflow-x: auto;
-  }
-
   .default-model-grid {
     grid-template-columns: 1fr;
   }
-}
-
-/* Diagnostics panel: the report's cards reuse .settings-card; the rows and
-   the copied text block are the only new surface. */
-.diagnostics-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.diagnostics-copy,
-.diagnostics-retry {
-  display: grid;
-  width: fit-content;
-  height: 26px;
-  margin-top: 14px;
-  padding: 0 12px;
-  place-items: center;
-  color: var(--ink-soft);
-  cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 11px;
-}
-
-.diagnostics-copy:hover,
-.diagnostics-copy:focus-visible,
-.diagnostics-retry:hover,
-.diagnostics-retry:focus-visible {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta);
-}
-
-.diagnostics-copy-note {
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.diagnostics-copy-failed {
-  color: var(--terracotta-deep);
-}
-
-.diagnostics-grid {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.diagnostics-rows {
-  display: grid;
-  gap: 4px;
-  margin: 0;
-}
-
-.diagnostics-row {
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  font-size: 11px;
-}
-
-.diagnostics-row dt {
-  color: var(--silence);
-}
-
-.diagnostics-row dd {
-  margin: 0;
-  color: var(--ink-soft);
-  font-family: "JetBrains Mono", monospace;
-}
-
-.diagnostics-providers {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 11px;
-  color: var(--ink-soft);
-}
-
-.diagnostics-provider-field {
-  margin-right: 12px;
-}
-
-.diagnostics-provider-key {
-  color: var(--silence);
-}
-
-.diagnostics-text {
-  max-height: 280px;
-  margin: 14px 0 0;
-  padding: 10px 12px;
-  overflow: auto;
-  color: var(--ink-soft);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 10.5px;
-  white-space: pre;
-}
-
-.diagnostics-error,
-.diagnostics-empty,
-.diagnostics-loading {
-  margin-top: 14px;
-  color: var(--ink-soft);
-}
-
-.diagnostics-section-empty {
-  margin: 0;
-  color: var(--silence);
-  font-size: 11px;
-}
-
-/* Devices panel: this device, the pairing directions, the confirmations this
-   device owes, and the paired list. Every card is a .settings-card; these
-   rules only lay the panel out. */
-.device-section {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  padding: 13px 15px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-
-.device-copy {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 11.5px;
-  line-height: 1.55;
-}
-
-.device-self-head,
-.device-peer-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 9px;
-}
-
-.device-self-head .settings-card-value,
-.device-peer-head .settings-card-value {
-  margin-left: auto;
-}
-
-.device-fingerprint-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 9px;
-}
-
-.device-fingerprint {
-  color: var(--ink-soft);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-  word-break: break-word;
-}
-
-.device-role-chip {
-  flex: none;
-  padding: 1px 7px;
-  color: var(--ink-soft);
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .settings-device-action {
@@ -825,447 +410,4 @@
   color: var(--silence);
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.device-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.device-pair-block {
-  display: grid;
-  gap: 5px;
-  justify-items: start;
-}
-
-.device-pair-code {
-  color: var(--ink);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 20px;
-  letter-spacing: 0.18em;
-}
-
-.device-pair-form {
-  display: grid;
-  gap: 8px;
-}
-
-.device-field {
-  display: grid;
-  gap: 3px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.device-field input {
-  padding: 5px 8px;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11.5px;
-}
-
-.device-field-hint {
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.device-role-choice {
-  display: grid;
-  gap: 5px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.device-role-choice legend {
-  padding: 0;
-  color: var(--silence);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.device-role-option {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 7px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.device-role-name {
-  color: var(--ink);
-  font-weight: 500;
-}
-
-.device-role-hint {
-  flex: 1 1 100%;
-  padding-left: 22px;
-  font-size: 10.5px;
-}
-
-.device-error {
-  margin: 0;
-  color: var(--danger-deep);
-  font-size: 11px;
-}
-
-/* The peer, pending and revoked cards carry `settings-card` in the JSX as well
-   as their own class: `display: flex` comes from there, and these rules only
-   override how the column lays out. Removing that class silently turns every
-   declaration below inert. */
-.device-peer,
-.device-pending {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 5px;
-  padding: 9px 0;
-  border-top: 1px solid var(--line-subtle);
-}
-
-.device-caps {
-  display: grid;
-  gap: 3px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.device-caps-legend {
-  padding: 0;
-  color: var(--silence);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.device-cap {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.device-cap-note {
-  flex: 1 1 100%;
-  padding-left: 22px;
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.device-inline-confirm {
-  display: grid;
-  gap: 6px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.device-revoked {
-  margin-top: 4px;
-  color: var(--silence);
-  font-size: 11px;
-}
-
-.device-revoked summary {
-  cursor: pointer;
-}
-
-.device-revoked-row {
-  gap: 9px;
-  padding: 5px 0;
-}
-
-/* Settings → Agents: the daemon's agent-profile store. The list order is a
-   feature, the tick is the consent, and the off state is a closed door. */
-.agent-profiles-intro {
-  margin: 0;
-  color: var(--silence);
-  font-size: 11px;
-}
-
-.agent-profiles-off {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-}
-
-.agent-profiles-off p {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-}
-
-.agent-profile-list {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.agent-profile-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 13px;
-  padding: 11px 13px;
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-
-.agent-profile-order {
-  display: grid;
-  gap: 4px;
-}
-
-.agent-profile-order .settings-device-action {
-  height: 22px;
-  padding: 0 8px;
-}
-
-.agent-profile-main {
-  display: grid;
-  flex: 1 1 260px;
-  gap: 3px;
-}
-
-.agent-profile-meta {
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-}
-
-.agent-profile-note {
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.agent-profile-note-label {
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.agent-profile-note-empty {
-  color: var(--silence);
-  font-style: italic;
-}
-
-.agent-profile-tick {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.agent-profile-tick > span {
-  display: grid;
-  gap: 2px;
-}
-
-.agent-profile-tick-note {
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.agent-inline-editor {
-  flex-basis: 100%;
-  display: grid;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.agent-profiles textarea {
-  padding: 7px 9px;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.45;
-  resize: vertical;
-}
-
-.agent-byte-counter {
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-}
-
-.agent-standing {
-  display: grid;
-  gap: 7px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
-.agent-standing-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-/* The delegation switch, beside the profiles: the section reuses the profile
-   tick's voice. Its three `source` sentences must stay visually distinct
-   states, so the source line renders as its own status paragraph under the
-   row rather than as a note inside the label. */
-.agent-delegation {
-  display: grid;
-  gap: 6px;
-  padding: 12px 14px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-}
-
-.agent-delegation-row {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.agent-delegation-row > span {
-  display: grid;
-  gap: 2px;
-}
-
-.agent-delegation-source {
-  margin: 0;
-}
-
-/* The switch with no value (the first read in flight, or a rejected write
-   whose re-read failed too): the control itself must look unknown, not look
-   off (audit 3, F5). `indeterminate` paints the dash; the dashed outline and
-   the silence colour are the treatment the roster's unknown pill wears, so
-   "this app cannot name this value" reads the same way on both surfaces. */
-.agent-delegation-switch-unknown {
-  outline: 1px dashed var(--silence);
-  outline-offset: 2px;
-  opacity: 0.8;
-}
-
-.agent-delegation-unavailable {
-  margin: 0;
-  padding: 10px 14px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  color: var(--silence);
-  font-size: 11px;
-}
-
-/* Appearance (theme choice) — new tokens only; Settings' own redesign is a
-   later slice, so these rows use the shell's type and line tokens. */
-.appearance-section {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--space-8);
-  margin-bottom: var(--space-16);
-}
-
-.appearance-heading {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  font-weight: var(--weight-label);
-}
-
-.appearance-options {
-  display: flex;
-  width: 100%;
-  flex-direction: column;
-}
-
-.appearance-option {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-8);
-  min-height: var(--control-menu);
-  padding: var(--space-4) var(--space-8);
-  cursor: pointer;
-  border-radius: var(--radius-7);
-}
-
-.appearance-option:hover {
-  background: var(--fill-hover);
-}
-
-.appearance-option-copy {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.appearance-option-label {
-  font-size: var(--type-small);
-  color: var(--ink);
-}
-
-.appearance-option-hint {
-  font-size: var(--type-meta);
-  color: var(--muted);
-}
-
-/* The radios take the accent, not the OS default blue, in both themes. */
-.appearance-option input {
-  accent-color: var(--accent);
-}
-
-.appearance-persist-note {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--type-meta);
-}
-
-/* Default send: what Enter does while the agent runs (General tab). */
-
-.send-behavior {
-  margin-bottom: 18px;
-}
-
-.send-behavior-options {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.send-behavior-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  background: var(--surface-muted);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-.send-behavior-option > span {
-  display: grid;
-  gap: 2px;
-  font-size: 12px;
-}
-
-.send-behavior-note {
-  color: var(--silence);
-  font-size: 11px;
 }

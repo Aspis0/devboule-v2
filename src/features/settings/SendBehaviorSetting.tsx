@@ -5,7 +5,7 @@ import {
   subscribeSendBehavior,
   type SendBehavior,
 } from "../../lib/sendBehavior";
-import "./settings.css";
+import "./general.css";
 
 /** Paseo's "Default send" choice, reduced to this app's two behaviours and put
  * in the row form every other General-tab setting uses. The copy says what the

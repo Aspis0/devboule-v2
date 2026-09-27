@@ -86,7 +86,7 @@ import type {
   ProviderInfo,
   ProviderVocabulary,
 } from "../../../types/ipc";
-import { SettingsSurface } from "../SettingsSurface";
+import { AgentProfilesPanel } from "./AgentsPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 describe("Settings agents panel", () => {
@@ -142,13 +142,8 @@ describe("Settings agents panel", () => {
     );
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({ document: doc });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<AgentProfilesPanel />));
     await act(async () => undefined);
-    const tab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-agents']",
-    );
-    if (!tab) throw new Error("Agents tab did not render");
-    await act(async () => tab.click());
     await act(async () => undefined);
   }
 
@@ -169,13 +164,8 @@ describe("Settings agents panel", () => {
       () => new Promise<AgentProfilesReply>(() => undefined),
     );
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<AgentProfilesPanel />));
     await act(async () => undefined);
-    const tab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-agents']",
-    );
-    if (!tab) throw new Error("Agents tab did not render");
-    await act(async () => tab.click());
     await act(async () => undefined);
   }
 
@@ -194,13 +184,8 @@ describe("Settings agents panel", () => {
     );
     vi.mocked(agentProfilesGet).mockRejectedValueOnce({ code: "io", message: "pipe is gone" });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<AgentProfilesPanel />));
     await act(async () => undefined);
-    const tab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-agents']",
-    );
-    if (!tab) throw new Error("Agents tab did not render");
-    await act(async () => tab.click());
     await act(async () => undefined);
   }
 
@@ -284,13 +269,8 @@ describe("Settings agents panel", () => {
     // agent_profiles: an older daemon. The tab still navigates; the section
     // is absent, not disabled and not an error.
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<AgentProfilesPanel />));
     await act(async () => undefined);
-    const tab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-agents']",
-    );
-    if (!tab) throw new Error("Agents tab did not render");
-    await act(async () => tab.click());
     await act(async () => undefined);
 
     expect(agentProfilesGet).not.toHaveBeenCalled();
@@ -1784,13 +1764,8 @@ describe("Settings agents panel — new profile form", () => {
     vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWith(capabilities));
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({ document: doc });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<AgentProfilesPanel />));
     await act(async () => undefined);
-    const tab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-agents']",
-    );
-    if (!tab) throw new Error("Agents tab did not render");
-    await act(async () => tab.click());
     await act(async () => undefined);
   }
 
@@ -3133,13 +3108,8 @@ describe("Settings agents panel — new profile form", () => {
       message: "the store is unreachable",
     });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<AgentProfilesPanel />));
     await act(async () => undefined);
-    const failedTab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-agents']",
-    );
-    if (!failedTab) throw new Error("Agents tab did not render");
-    await act(async () => failedTab.click());
     await act(async () => undefined);
     await collectScenario("load failed");
 
@@ -3149,13 +3119,8 @@ describe("Settings agents panel — new profile form", () => {
       () => new Promise<AgentProfilesReply>(() => undefined),
     );
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<AgentProfilesPanel />));
     await act(async () => undefined);
-    const loadingTab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-agents']",
-    );
-    if (!loadingTab) throw new Error("Agents tab did not render");
-    await act(async () => loadingTab.click());
     await act(async () => undefined);
     await collectScenario("loading");
 
@@ -3314,7 +3279,7 @@ describe("Settings agents panel — new profile form", () => {
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(47);
+    expect(sentences).toHaveLength(49);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

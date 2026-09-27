@@ -88,7 +88,8 @@ import type {
   ProviderUpdateOutcome,
   ToolPolicyReply,
 } from "../../../types/ipc";
-import { ALWAYS_ON_REASON, SettingsSurface, toolPolicyFor } from "../SettingsSurface";
+import { ALWAYS_ON_REASON, toolPolicyFor } from "../SettingsSurface";
+import { ProvidersPanel } from "./ProvidersPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 describe("Settings providers catalog", () => {
@@ -148,7 +149,7 @@ describe("Settings providers catalog", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     expect(container.textContent).toContain("grok");
@@ -164,7 +165,7 @@ describe("Settings providers catalog", () => {
   it("says when no agent CLI is on PATH", async () => {
     vi.mocked(providersList).mockResolvedValueOnce({ providers: [], unreadableDirs: 0 });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     expect(container.textContent).toContain("No agent CLI found on PATH");
@@ -174,7 +175,7 @@ describe("Settings providers catalog", () => {
   it("does not call an unreadable PATH scan an empty catalog", async () => {
     vi.mocked(providersList).mockResolvedValueOnce({ providers: [], unreadableDirs: 3 });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     expect(container.textContent).toContain(
@@ -196,7 +197,7 @@ describe("Settings providers catalog", () => {
       unreadableDirs: 2,
     });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     expect(container.textContent).toContain("grok");
@@ -217,7 +218,7 @@ describe("Settings providers catalog", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     const status = container.querySelector(".provider-status-missing");
@@ -241,7 +242,7 @@ describe("Settings providers catalog", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     const status = container.querySelector(".provider-status-missing");
@@ -263,7 +264,7 @@ describe("Settings providers catalog", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     const status = Array.from(container.querySelectorAll(".provider-status")).find((element) =>
@@ -288,7 +289,7 @@ describe("Settings providers catalog", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     const status = container.querySelector(".provider-status-idle");
@@ -326,7 +327,7 @@ describe("Settings providers catalog", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     expect(container.textContent).toContain("codex-acp");
@@ -357,7 +358,7 @@ describe("Settings provider version lines and refresh", () => {
 
   async function renderProvidersTab() {
     root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => root.render(<ProvidersPanel />));
     await act(async () => undefined);
   }
 
@@ -643,7 +644,7 @@ describe("Settings provider version lines and refresh", () => {
     await act(async () =>
       root.render(
         <StrictMode>
-          <SettingsSurface />
+          <ProvidersPanel />
         </StrictMode>,
       ),
     );
@@ -707,10 +708,10 @@ describe("Settings provider update and install", () => {
       root.render(
         strict ? (
           <StrictMode>
-            <SettingsSurface />
+            <ProvidersPanel />
           </StrictMode>
         ) : (
-          <SettingsSurface />
+          <ProvidersPanel />
         ),
       ),
     );
@@ -1047,7 +1048,7 @@ describe("Settings provider tool toggles", () => {
   async function renderToolSettings(policies: ToolPolicyReply = { policies: [] }) {
     vi.mocked(toolPolicyGet).mockResolvedValueOnce(policies);
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<ProvidersPanel />));
     await act(async () => undefined);
     const summary = container.querySelector<HTMLElement>(".provider-tools summary");
     if (!summary) throw new Error("Tool settings disclosure did not render");
@@ -1174,7 +1175,7 @@ describe("Settings provider tool toggles", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     expect(toolPolicyGet).not.toHaveBeenCalled();
@@ -1195,7 +1196,7 @@ describe("Settings provider tool toggles", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<ProvidersPanel />));
     await act(async () => undefined);
 
     // The gate reads the handshake, and only the per-tool section goes: the
@@ -1273,7 +1274,7 @@ describe("Settings provider tool toggles", () => {
     });
     vi.mocked(toolPolicyGet).mockRejectedValueOnce({ code: "io", message: "pipe is gone" });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<ProvidersPanel />));
     await act(async () => undefined);
     const summary = container.querySelector<HTMLElement>(".provider-tools summary");
     if (!summary) throw new Error("Tool settings disclosure did not render");
@@ -1448,7 +1449,7 @@ describe("Settings provider tool toggles", () => {
       policies: [{ providerId: "grok", enabled: null, disabledTools: ["grok_tool"] }],
     });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<ProvidersPanel />));
     await act(async () => undefined);
     await act(async () => {
       for (const summary of container.querySelectorAll<HTMLElement>(".provider-tools summary")) {
@@ -1496,7 +1497,7 @@ describe("Settings provider tool toggles", () => {
       message: "A system or file operation failed on this machine.",
     });
     root = createRoot(container);
-    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => root!.render(<ProvidersPanel />));
     await act(async () => undefined);
     const summary = container.querySelector<HTMLElement>(".provider-tools summary");
     if (!summary) throw new Error("Tool settings disclosure did not render");
@@ -1517,7 +1518,7 @@ describe("Settings provider tool toggles", () => {
       });
       vi.mocked(toolPolicyGet).mockResolvedValueOnce({ policies: [] });
       root = createRoot(container);
-      await act(async () => root!.render(<SettingsSurface />));
+      await act(async () => root!.render(<ProvidersPanel />));
       await act(async () => undefined);
       const summary = container.querySelector<HTMLElement>(".provider-tools summary");
       if (!summary) throw new Error("Tool settings disclosure did not render");

@@ -6,6 +6,7 @@ import {
   closeChoiceFromStored,
   type CloseBehaviorChoice,
 } from "./closeBehaviorChoice";
+import "./general.css";
 
 const CHOICE_LABELS: Record<CloseBehaviorChoice, string> = {
   ask: "Ask every time",

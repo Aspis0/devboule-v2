@@ -407,7 +407,7 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     );
   });
 
-  it("renders beside the profiles in the Agents tab - one consent surface", async () => {
+  it("renders beside the profiles on the Agent profiles page - one consent surface", async () => {
     vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWithDelegated(DELEGATION_DAEMON));
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
       document: { profiles: [], standingInstructions: "" },
@@ -415,11 +415,11 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     root = createRoot(container);
     await act(async () => root!.render(<SettingsSurface />));
     await act(async () => undefined);
-    const tab = container.querySelector<HTMLButtonElement>(
-      "[aria-controls='settings-panel-agents']",
+    const row = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent?.trim() === "Agent profiles",
     );
-    if (!tab) throw new Error("Agents tab did not render");
-    await act(async () => tab.click());
+    if (!row) throw new Error("Agent profiles row did not render");
+    await act(async () => row.click());
     await act(async () => undefined);
 
     const panel = container.querySelector("#settings-panel-agents");

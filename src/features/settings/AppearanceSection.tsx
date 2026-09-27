@@ -6,6 +6,7 @@ import {
   type StorageLike,
   type ThemePreference,
 } from "../../lib/theme";
+import "./general.css";
 
 const OPTIONS: readonly { value: ThemePreference; label: string; hint: string }[] = [
   { value: "light", label: "Light", hint: "Warm sand — the default." },

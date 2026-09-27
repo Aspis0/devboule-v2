@@ -1,114 +1,174 @@
-import { useState } from "react";
-import type { KeyboardEvent } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import type { KeyboardEvent, RefObject } from "react";
+import { useAppStore } from "../../store/appStore";
+import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
+import { daemonDotTone, daemonLabel } from "../workspace/sidebar/SidebarFooter";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
 import { OraclePanel } from "../oracle/OraclePanel";
+import { AppearanceSection } from "./AppearanceSection";
+import { CloseBehaviorSetting } from "./CloseBehaviorSetting";
+import { SendBehaviorSetting } from "./SendBehaviorSetting";
+import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { ProvidersPanel } from "./panels/ProvidersPanel";
 import { AgentProfilesPanel } from "./panels/AgentsPanel";
 import { ProjectsPanel } from "./panels/ProjectsPanel";
-import { GeneralPanel } from "./panels/GeneralPanel";
+import {
+  SETTINGS_MENU,
+  SETTINGS_PAGE_ORDER,
+  settingsPageById,
+  type SettingsMenuPage,
+  type SettingsPageId,
+} from "./settingsMenu";
+import { SettingsMenuIcon } from "./menuIcons";
 import "./settings.css";
 
-export type SettingsTab =
-  | "general"
-  | "projects"
-  | "oracle"
-  | "providers"
-  | "agents"
-  | "devices"
-  | "diagnostics";
+/** The quiet line under every page with no function yet. */
+const EMPTY_PAGE_NOTE = "This page is not available yet.";
 
-// Real navigation for the Settings surface, not a mock: add or remove an
-// entry here when a tab comes or goes.
-export const SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] = [
-  { id: "general", label: "General" },
-  { id: "projects", label: "Projects" },
-  { id: "oracle", label: "Oracle" },
-  { id: "providers", label: "Providers & models" },
-  { id: "agents", label: "Agents" },
-  { id: "devices", label: "Devices" },
-  { id: "diagnostics", label: "Diagnostics" },
-];
+function SettingsEmptyPage({
+  page,
+  titleRef,
+}: {
+  page: SettingsMenuPage;
+  titleRef: RefObject<HTMLHeadingElement | null>;
+}) {
+  const titleId = `settings-page-title-${page.id}`;
+  return (
+    <section aria-labelledby={titleId}>
+      <h2 className="settings-page-title" id={titleId} ref={titleRef} tabIndex={-1}>
+        {page.label}
+      </h2>
+      <p className="settings-page-intro">{page.intro}</p>
+      <p className="settings-page-empty">{EMPTY_PAGE_NOTE}</p>
+      {page.note ? <p className="settings-page-empty">{page.note}</p> : null}
+    </section>
+  );
+}
 
 export function SettingsSurface() {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("providers");
+  const [activePage, setActivePage] = useState<SettingsPageId>("providers");
+  const selectSurface = useAppStore((state) => state.selectSurface);
+  const daemon = useWorkspaceDaemon();
+  const menuRef = useRef<HTMLElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLHeadingElement | null>(null);
+  const previousPage = useRef<SettingsPageId>(activePage);
 
-  const settingsTabs = SETTINGS_TABS.map((tab) => ({
-    ...tab,
-    active: activeTab === tab.id,
-  }));
-  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    const currentIndex = SETTINGS_TABS.findIndex((tab) => tab.id === activeTab);
-    let nextIndex = currentIndex;
+  // Focus follows navigation, never the mount: the title of an empty page,
+  // otherwise the content top. The ref comparison (not a first-render flag)
+  // is what survives StrictMode's double effect.
+  useEffect(() => {
+    if (previousPage.current === activePage) return;
+    previousPage.current = activePage;
+    const content = contentRef.current;
+    if (!content) return;
+    const title = content.querySelector<HTMLElement>(".settings-page-title");
+    (title ?? content).focus();
+  }, [activePage]);
 
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      nextIndex = (currentIndex + 1) % SETTINGS_TABS.length;
-    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      nextIndex = (currentIndex - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
-    } else if (event.key === "Home") {
-      nextIndex = 0;
-    } else if (event.key === "End") {
-      nextIndex = SETTINGS_TABS.length - 1;
-    } else {
+  function handleMenuKeyDown(event: KeyboardEvent<HTMLButtonElement>, id: SettingsPageId) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setActivePage(id);
       return;
     }
-
+    const index = SETTINGS_PAGE_ORDER.indexOf(id);
+    let next: number | null = null;
+    if (event.key === "ArrowDown") next = (index + 1) % SETTINGS_PAGE_ORDER.length;
+    else if (event.key === "ArrowUp")
+      next = (index - 1 + SETTINGS_PAGE_ORDER.length) % SETTINGS_PAGE_ORDER.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = SETTINGS_PAGE_ORDER.length - 1;
+    else return;
     event.preventDefault();
-    setActiveTab(SETTINGS_TABS[nextIndex].id);
+    menuRef.current
+      ?.querySelector<HTMLElement>(`[data-settings-page="${SETTINGS_PAGE_ORDER[next]}"]`)
+      ?.focus();
   }
 
-  function renderActivePanel() {
-    switch (activeTab) {
+  function renderContent() {
+    switch (activePage) {
+      case "appearance":
+        return <AppearanceSection />;
+      case "diagnostics":
+        return (
+          <>
+            <DiagnosticsPanel />
+            <div className="settings-subheading">Journal storage</div>
+            <JournalRetentionPanel />
+            <div className="settings-subheading">Window</div>
+            <CloseBehaviorSetting />
+            <div className="settings-subheading">Message sending</div>
+            <SendBehaviorSetting />
+          </>
+        );
       case "providers":
         return <ProvidersPanel />;
-      case "oracle":
-        return (
-          <div id="settings-panel-oracle" role="tabpanel" aria-label="Oracle administration">
-            <OraclePanel />
-          </div>
-        );
+      case "profiles":
+        return <AgentProfilesPanel />;
       case "projects":
         return <ProjectsPanel />;
-      case "agents":
-        return <AgentProfilesPanel />;
-      case "devices":
+      case "oracle":
+        return <OraclePanel />;
+      case "paired":
         return <DevicesPanel />;
-      case "general":
-        return <GeneralPanel />;
-      case "diagnostics":
-        return <DiagnosticsPanel />;
+      default:
+        return <SettingsEmptyPage page={settingsPageById(activePage)} titleRef={titleRef} />;
     }
   }
 
+  const hostSentence = daemonLabel(daemon);
+
   return (
-    <section className="surface-card settings-surface" aria-labelledby="settings-title">
-      <header className="settings-header">
-        <div className="settings-header-title">
-          <h1 id="settings-title">Settings</h1>
-          <span className="settings-header-divider" aria-hidden="true" />
-          <span className="settings-eyebrow">devboule 2.0 · rust · tauri shell</span>
-        </div>
-      </header>
-
-      <div className="settings-tab-bar" role="tablist" aria-label="Settings sections">
-        {settingsTabs.map((tab) => (
-          <button
-            className={`settings-section-tab${tab.active ? " settings-section-tab-active" : ""}`}
-            type="button"
-            role="tab"
-            aria-selected={tab.active}
-            aria-controls={`settings-panel-${tab.id}`}
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            onKeyDown={handleTabKeyDown}
-          >
-            {tab.label}
-          </button>
+    <section className="surface-card settings-surface" aria-label="Settings">
+      <nav className="settings-menu" aria-label="Settings pages" ref={menuRef}>
+        <button
+          type="button"
+          className="settings-back-row"
+          onClick={() => selectSurface("workspace")}
+        >
+          <SettingsMenuIcon id="back" />
+          Back to workspace
+        </button>
+        {SETTINGS_MENU.map((group) => (
+          <Fragment key={group.label}>
+            <div className="settings-menu-group" data-settings-group role="presentation">
+              <span className="settings-menu-group-label">{group.label}</span>
+            </div>
+            {group.host ? (
+              <div className="settings-host-row" title={hostSentence}>
+                <SettingsMenuIcon id="host" />
+                <span>This PC</span>
+                <span
+                  className={`settings-host-dot settings-host-dot-${daemonDotTone(daemon.state)}`}
+                  role="img"
+                  aria-label={hostSentence}
+                />
+              </div>
+            ) : null}
+            {group.pages.map((page) => (
+              <button
+                key={page.id}
+                type="button"
+                className={`settings-menu-row${activePage === page.id ? " settings-menu-row-active" : ""}`}
+                data-settings-page={page.id}
+                aria-current={activePage === page.id ? "page" : undefined}
+                onClick={() => setActivePage(page.id)}
+                onKeyDown={(event) => handleMenuKeyDown(event, page.id)}
+              >
+                <SettingsMenuIcon id={page.id} />
+                {page.label}
+              </button>
+            ))}
+          </Fragment>
         ))}
-      </div>
+      </nav>
 
-      <div className="settings-content settings-scroll">
-        <div className="settings-content-inner">{renderActivePanel()}</div>
+      <div className="settings-main">
+        <div className="settings-main-inner" ref={contentRef} tabIndex={-1} data-settings-content>
+          {renderContent()}
+        </div>
       </div>
     </section>
   );
@@ -128,8 +188,7 @@ export function SettingsHeading({ title, description }: SettingsHeadingProps) {
   );
 }
 
-// The surface keeps the names its importers use: the shell above, the
-// heading its sibling panels render, and the three symbols the panel tests
-// import from this path.
+// The surface keeps the names its importers use: the heading its sibling
+// panels render, and the three symbols the panel tests import from this path.
 export { ALWAYS_ON_REASON, toolPolicyFor } from "./providerStatus";
 export { DelegationSetting } from "./panels/AgentsPanel";
