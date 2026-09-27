@@ -1135,6 +1135,47 @@ describe("Settings agents panel", () => {
     expect(container.querySelector('.agent-profiles > [role="alert"]')).toBeNull();
   });
 
+  it("lands mid-save close focus on the list, and re-owns the pencil on settle", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [makeProfile({ name: "Scout" })], standingInstructions: "" },
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const nameField = container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Profile name"]',
+    );
+    if (!nameField) throw new Error("dialog name field did not render");
+    await typeText(nameField, "Scout");
+
+    let resolveSet: (() => void) | undefined;
+    vi.mocked(agentProfilesSet).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSet = resolve;
+        }),
+    );
+    await act(async () => panelButton("Save").click());
+    await act(async () => undefined);
+    // The opener is disabled mid-save: closing must land on the list,
+    // not drop focus to the body.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await act(async () => dialogButton("Close dialog").click());
+    await act(async () => undefined);
+    expect(container.querySelector(".edit-scrim")).toBeNull();
+    expect(document.activeElement?.classList.contains("agent-profile-list")).toBe(true);
+
+    // The write settles into a closed dialog: the pencil is re-owned.
+    await act(async () => {
+      resolveSet?.();
+    });
+    await act(async () => undefined);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Edit Scout");
+  });
+
   it("holds the dialog's exits while its save is in flight", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({

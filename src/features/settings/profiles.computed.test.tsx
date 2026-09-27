@@ -129,11 +129,15 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
     pane.appendChild(standing);
     document.body.appendChild(pane);
     const inPane = getComputedStyle(standing);
+    // Parity first: whatever the values are, both contexts compute them.
     for (const property of ["paddingTop", "borderRadius", "fontSize", "lineHeight"]) {
       expect(inCard[property as "paddingTop"]).toBe(inPane[property as "paddingTop"]);
     }
-    expect(inCard.paddingTop).not.toBe("");
-    expect(inCard.borderRadius).not.toBe("");
+    // Then the values themselves: parity at 40 px would pass above and
+    // still be wrong, so the sheet's own numbers are pinned here.
+    expect(inCard.paddingTop).toBe("7px");
+    expect(inCard.borderRadius).toBe("8px");
+    expect(inCard.fontSize).toBe("12px");
   });
 
   it("holds the dialog card at 480 px with a 14 px radius, scrolling inside", () => {

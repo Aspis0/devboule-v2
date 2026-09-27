@@ -336,20 +336,19 @@ export function AgentProfilesPanel() {
   // re-render lands, is a silent no-op that drops focus to the body.
   // State, not a ref, so owing focus re-renders into the effect below.
   const [pendingFocus, setPendingFocus] = useState<
-    { opener: HTMLElement } | { rowIndex: number } | { trashProfileId: string } | null
+    | { opener: HTMLElement }
+    | { rowIndex: number }
+    | { trashProfileId: string }
+    | { listNow: true }
+    | null
   >(null);
 
   useEffect(() => {
     if (pendingFocus === null) return;
     setPendingFocus(null);
     if ("opener" in pendingFocus) {
-      const { opener } = pendingFocus;
-      // A creation that reached the store's cap disables its own opener,
-      // and focusing a disabled button is a no-op that drops focus to the
-      // body — so a dead opener is left alone.
-      if (opener.isConnected && !(opener instanceof HTMLButtonElement && opener.disabled)) {
-        opener.focus();
-      }
+      // Owed only for a live opener (closeDialog checks); focus it.
+      pendingFocus.opener.focus();
     } else if ("rowIndex" in pendingFocus) {
       const rows = listRef.current?.querySelectorAll(".agent-profile-row");
       const pencil = rows
@@ -357,6 +356,8 @@ export function AgentProfilesPanel() {
         ?.querySelector<HTMLButtonElement>('button[aria-label^="Edit "]');
       if (pencil) pencil.focus();
       else listRef.current?.focus();
+    } else if ("listNow" in pendingFocus) {
+      listRef.current?.focus();
     } else {
       // Keyed on the row's data attribute and compared in JS: the name is
       // free text (quotes and backslashes are legal in it) and must never
@@ -578,8 +579,21 @@ export function AgentProfilesPanel() {
     setDialog(null);
     setEditorDraft(null);
     const opener = returnFocusRef.current;
-    returnFocusRef.current = null;
-    if (opener !== null) setPendingFocus({ opener });
+    if (
+      opener !== null &&
+      opener.isConnected &&
+      !(opener instanceof HTMLButtonElement && opener.disabled)
+    ) {
+      // Live opener: the usual return, and the ref is spent.
+      returnFocusRef.current = null;
+      setPendingFocus({ opener });
+    } else {
+      // Dead opener (mid-save close, or a create at the cap): land on the
+      // list now. The ref is kept, not spent: the settle path re-enters
+      // here, and by then the write has re-enabled the opener, so the
+      // pencil is re-owned instead of lost.
+      setPendingFocus({ listNow: true });
+    }
   }
 
   function openCreateDialog(opener: HTMLElement) {

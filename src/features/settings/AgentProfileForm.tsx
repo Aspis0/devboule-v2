@@ -211,13 +211,24 @@ export function AgentProfileForm({
   // and switching back restores what was typed.
   const providerDraftsRef = useRef(new Map<string, ProviderSpecificFields>());
   const formErrorRef = useRef<HTMLParagraphElement>(null);
+  const scrolledErrorRef = useRef<string | null>(null);
 
   // A fresh refusal lands above the buttons, which may be below the card's
-  // own fold on a short window: bring it into view. Guarded — the harness
-  // has no scrolling — so this never throws where it cannot scroll.
+  // own fold on a short window: bring it into view. Keyed on the words so
+  // a re-issued identical refusal does not scroll twice; unkeyed deps
+  // would either miss the dedup or trip the hooks rule, so the effect
+  // runs per render and guards itself. The harness has no scrolling —
+  // the guarded call never throws where it cannot scroll.
   useEffect(() => {
-    if (formError !== null) formErrorRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [formError]);
+    if (formError === null) {
+      scrolledErrorRef.current = null;
+      return;
+    }
+    const key = `${formError.sentence}\n${formError.detail ?? ""}`;
+    if (scrolledErrorRef.current === key) return;
+    scrolledErrorRef.current = key;
+    formErrorRef.current?.scrollIntoView?.({ block: "nearest" });
+  });
 
   // The catalog lands after the first paint; default the picker to the first
   // installed provider once there is one, and let the vocabulary effect run.

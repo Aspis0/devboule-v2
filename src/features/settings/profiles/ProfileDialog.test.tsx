@@ -12,6 +12,26 @@ describe("ProfileDialog", () => {
   let container: HTMLDivElement;
   let root: Root | undefined;
 
+  function renderDialogBody(onClose: () => void, withDirtyButton: boolean, busy: boolean) {
+    return (
+      <ProfileDialog title="Edit profile — Coder" busy={busy} onClose={onClose}>
+        {({ requestClose, markDirty }) => (
+          <>
+            <input aria-label="First field" />
+            <button type="button" onClick={requestClose}>
+              Cancel
+            </button>
+            {withDirtyButton ? (
+              <button type="button" onClick={markDirty}>
+                Make dirty
+              </button>
+            ) : null}
+          </>
+        )}
+      </ProfileDialog>
+    );
+  }
+
   function renderDialog({
     onClose = () => undefined,
     withDirtyButton = false,
@@ -23,24 +43,26 @@ describe("ProfileDialog", () => {
   } = {}) {
     root = createRoot(container);
     act(() => {
-      root!.render(
-        <ProfileDialog title="Edit profile — Coder" busy={busy} onClose={onClose}>
-          {({ requestClose, markDirty }) => (
-            <>
-              <input aria-label="First field" />
-              <button type="button" onClick={requestClose}>
-                Cancel
-              </button>
-              {withDirtyButton ? (
-                <button type="button" onClick={markDirty}>
-                  Make dirty
-                </button>
-              ) : null}
-            </>
-          )}
-        </ProfileDialog>,
-      );
+      root!.render(renderDialogBody(onClose, withDirtyButton, busy));
     });
+  }
+
+  // Re-render with the save started: the busy transition mid-dialog.
+  function renderDialogHandle({
+    onClose = () => undefined,
+    withDirtyButton = false,
+  }: {
+    onClose?: () => void;
+    withDirtyButton?: boolean;
+  } = {}) {
+    renderDialog({ onClose, withDirtyButton, busy: false });
+    return {
+      rerenderBusy() {
+        act(() => {
+          root!.render(renderDialogBody(onClose, withDirtyButton, true));
+        });
+      },
+    };
   }
 
   function pressKey(key: string, shiftKey = false) {
@@ -192,10 +214,15 @@ describe("ProfileDialog", () => {
   it("holds every exit while a save is in flight", () => {
     const onClose = vi.fn();
     renderDialog({ onClose, withDirtyButton: true, busy: true });
-    // Dirty or not, nothing closes mid-save: Escape, scrim, ×, Cancel.
+    // Dirty or not, nothing closes outright mid-save: Escape, scrim, ×
+    // and Cancel arm the honest exit instead.
     pressKey("Escape");
     expect(onClose).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("let it finish");
+    // The sentence promises nothing about the outcome: the save continues,
+    // and a refusal is named, not foretold.
+    expect(container.textContent).toContain("A save is still running.");
+    expect(container.textContent).toContain("the reason will appear on the page behind");
+    expect(container.textContent).not.toContain("is being saved");
     const scrim = container.querySelector<HTMLElement>(".edit-scrim");
     act(() => {
       scrim?.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
@@ -228,5 +255,23 @@ describe("ProfileDialog", () => {
     act(() => buttonByText("Keep waiting").click());
     expect(onClose).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("A save is still running.");
+    // The confirm unmounted under its focused button: focus stays in the
+    // card, with the modal still open.
+    expect(document.activeElement?.classList.contains("edit-card")).toBe(true);
+  });
+
+  it("hands the exit to the leaving confirm when a save starts under discard", () => {
+    const onClose = vi.fn();
+    const { rerenderBusy } = renderDialogHandle({ onClose, withDirtyButton: true });
+    act(() => buttonByText("Make dirty").click());
+    pressKey("Escape");
+    expect(container.textContent).toContain("Discard unsaved changes?");
+    // The save starts: discard disarms, Escape now arms leaving only.
+    act(() => rerenderBusy());
+    expect(container.textContent).not.toContain("Discard unsaved changes?");
+    pressKey("Escape");
+    expect(container.textContent).toContain("A save is still running.");
+    expect(container.textContent).not.toContain("Discard unsaved changes?");
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

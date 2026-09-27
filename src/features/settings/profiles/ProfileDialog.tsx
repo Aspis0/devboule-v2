@@ -109,10 +109,21 @@ export function ProfileDialog({
 
   // A settled write ends the leaving arm: its sentence claims a running
   // save, so it must not outlive the run. The discard arm survives — after
-  // a refusal its sentence is true again.
+  // a refusal its sentence is true again. A save starting under an armed
+  // discard takes the exit over: the leaving confirm owns mid-flight, so
+  // the discard sentence never shares the card with a write carrying the
+  // text it claims goes with it.
   useEffect(() => {
-    if (!busy) setLeavingArmed(false);
-  }, [busy]);
+    if (busy) {
+      setDiscardArmed(false);
+      return;
+    }
+    if (!leavingArmed) return;
+    setLeavingArmed(false);
+    // Either confirm unmounts under its focused button: keep focus in the
+    // card rather than dropping it to the body with the modal still open.
+    if (confirmRef.current?.contains(document.activeElement)) cardRef.current?.focus();
+  }, [busy, leavingArmed]);
 
   const body = children({ requestClose, markDirty });
 
@@ -162,7 +173,10 @@ export function ProfileDialog({
               <button
                 type="button"
                 className="settings-device-action"
-                onClick={() => setDiscardArmed(false)}
+                onClick={() => {
+                  setDiscardArmed(false);
+                  cardRef.current?.focus();
+                }}
               >
                 Keep editing
               </button>
@@ -172,8 +186,8 @@ export function ProfileDialog({
         {leavingArmed ? (
           <div className="device-inline-confirm" role="alert" ref={confirmRef}>
             <p className="device-copy">
-              A save is still running. Close the dialog and let it finish — what you typed is being
-              saved.
+              A save is still running. Closing hides this form — the save still finishes, but if the
+              daemon refuses it your text is gone and the reason will appear on the page behind.
             </p>
             <div className="device-actions">
               <button type="button" className="settings-device-action" onClick={() => onClose()}>
@@ -182,7 +196,10 @@ export function ProfileDialog({
               <button
                 type="button"
                 className="settings-device-action"
-                onClick={() => setLeavingArmed(false)}
+                onClick={() => {
+                  setLeavingArmed(false);
+                  cardRef.current?.focus();
+                }}
               >
                 Keep waiting
               </button>
