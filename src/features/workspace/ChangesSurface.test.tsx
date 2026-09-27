@@ -117,7 +117,7 @@ describe("ChangesSurface", () => {
     // Anchored on the panel's own words first: the absence assertions below
     // must not be satisfiable by a panel that renders nothing.
     expect(container.textContent).toContain("No uncommitted changes in this workspace.");
-    expect(controls()).toContain("Refresh");
+    expect(container.querySelector('button[aria-label="Refresh"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Mockup");
     expect(container.querySelector('[role="note"]')).toBeNull();
   });
@@ -160,7 +160,8 @@ describe("ChangesSurface", () => {
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(caveat);
     expect(container.querySelectorAll(".workspace-file-change")).toHaveLength(1);
-    expect(container.textContent).toContain("crates/devboule-daemon/src/workspace_git_status.rs");
+    expect(container.querySelector('.workspace-file-change[title="crates/devboule-daemon/src/workspace_git_status.rs"]')).not.toBeNull();
+    expect(container.textContent).toContain("workspace_git_status.rs");
     expect(container.textContent).toContain("≈+92 −41");
     expect(container.textContent).not.toContain("No uncommitted changes");
   });
@@ -187,20 +188,25 @@ describe("ChangesSurface", () => {
     await render(<ChangesSurface workspaceId={WORKSPACE} />);
 
     expect(container.querySelectorAll(".workspace-file-change")).toHaveLength(3);
-    expect(container.textContent).toContain("crates/devboule-daemon/src/workspace_git_status.rs");
+    expect(container.querySelector('.workspace-file-change[title="crates/devboule-daemon/src/workspace_git_status.rs"]')).not.toBeNull();
+    expect(container.querySelector('.workspace-file-change[title="notes/todo.md"]')).not.toBeNull();
+    expect(container.querySelector('.workspace-file-change[title="src/writer.ts"]')).not.toBeNull();
+    expect(container.textContent).toContain("workspace_git_status.rs");
+    expect(container.textContent).toContain("todo.md");
     expect(container.textContent).toContain("+92 −41");
     expect(container.textContent).toContain("untracked");
     expect(container.textContent).toContain("deleted");
     // `capped` says the counts are not exact: a mark, never an invented number.
     // The whole row's text, marks included — dropping `≈` changes this string.
+    // The row shows the basename; the full path rides its `title`.
     const cappedRow = Array.from(container.querySelectorAll(".workspace-file-change")).find(
-      (element) => element.textContent?.includes("notes/todo.md"),
+      (element) => element.getAttribute("title") === "notes/todo.md",
     );
     if (cappedRow === undefined) throw new Error("capped row did not render");
-    expect(cappedRow.textContent).toBe("notes/todo.mduntracked≈+7 −0");
-    expect(container.querySelector(".workspace-file-change-muted")?.textContent).toContain(
-      "src/writer.ts",
-    );
+    expect(cappedRow.textContent).toBe("todo.mduntracked≈+7 −0");
+    expect(
+      container.querySelector('.workspace-file-change[title="src/writer.ts"]')?.className,
+    ).toContain("workspace-file-change-muted");
     expect(container.textContent).not.toContain("Mockup");
   });
 
@@ -280,12 +286,16 @@ describe("ChangesSurface", () => {
     );
     await render(<ChangesSurface workspaceId={WORKSPACE} />);
 
-    // Anchor: the real reply's path must be on screen first, so the absence
-    // assertions cannot pass on an empty panel.
-    expect(container.textContent).toContain("src/real-change.ts");
+    // Anchor: the real reply's file must be on screen first, by its title —
+    // the tree shows basenames — so the absence assertions cannot pass on
+    // an empty panel.
+    expect(
+      container.querySelector('.workspace-file-change[title="src/real-change.ts"]'),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("real-change.ts");
     expect(container.textContent).toContain("+14 −3");
     const labels = controls();
-    expect(labels).toContain("Refresh");
+    expect(container.querySelector('button[aria-label="Refresh"]')).not.toBeNull();
     expect(labels).toContain("Stage");
     expect(labels).toContain("Unstage");
     expect(labels).toContain("Commit");
@@ -505,10 +515,8 @@ describe("ChangesSurface", () => {
     await render(<ChangesSurface workspaceId={WORKSPACE} />);
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
 
-    const refresh = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Refresh",
-    );
-    if (refresh === undefined) throw new Error("refresh button did not render");
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
+    if (refresh === null) throw new Error("refresh button did not render");
     await act(async () => {
       refresh.click();
     });
@@ -528,13 +536,11 @@ describe("ChangesSurface", () => {
       }),
     );
     await render(<ChangesSurface workspaceId={id} />);
-    expect(container.textContent).toContain("src/real.ts");
+    expect(container.querySelector('.workspace-file-change[title="src/real.ts"]')).not.toBeNull();
 
     vi.mocked(workspaceGitStatus).mockRejectedValue(new Error("the daemon refused this read"));
-    const refresh = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Refresh",
-    );
-    if (refresh === undefined) throw new Error("refresh button did not render");
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
+    if (refresh === null) throw new Error("refresh button did not render");
     await act(async () => {
       refresh.click();
     });
@@ -542,7 +548,7 @@ describe("ChangesSurface", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
       "the daemon refused this read",
     );
-    expect(container.textContent).toContain("src/real.ts");
+    expect(container.querySelector('.workspace-file-change[title="src/real.ts"]')).not.toBeNull();
   });
 
   it("asks nothing while no workspace is selected and says so", async () => {

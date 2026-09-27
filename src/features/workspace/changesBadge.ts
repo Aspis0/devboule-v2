@@ -18,3 +18,24 @@ export function changesBadgeLabel(status: WorkspaceGitStatus): string {
   if (status.error !== null) return "unavailable";
   return "clean";
 }
+
+/**
+ * The branch row's total: the same `≈` rule as the badge, but `null` when
+ * the reply withheld its rows (`rows` empty, `dirty` true) — a cut-short
+ * list is not a zero total, so the row shows no numbers at all. A clean
+ * tree reads `+0 −0`: known exact zeros, not an absence.
+ */
+export function changesTotalsLabel(status: WorkspaceGitStatus): string | null {
+  if (status.rows.length === 0 && status.dirty) return null;
+  const counts = `+${status.totals.additions} −${status.totals.deletions}`;
+  const exact = status.error === null && !status.rows.some((row) => row.capped);
+  return exact ? counts : `≈${counts}`;
+}
+
+/**
+ * The branch row's name: `# branch.head` verbatim — including git's own
+ * `(detached)` — and `No branch` when the wire names none, never blank.
+ */
+export function changesBranchLabel(branch: string | null): string {
+  return branch ?? "No branch";
+}

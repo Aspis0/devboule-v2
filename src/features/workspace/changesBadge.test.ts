@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceGitStatus } from "../../types/ipc";
-import { changesBadgeLabel } from "./changesBadge";
+import { changesBadgeLabel, changesBranchLabel, changesTotalsLabel } from "./changesBadge";
 
 function status(overrides: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
   return {
@@ -80,5 +80,40 @@ describe("changesBadgeLabel", () => {
     expect(
       changesBadgeLabel(status({ error: "this workspace folder is inside a git repository" })),
     ).toBe("unavailable");
+  });
+});
+
+describe("changesTotalsLabel", () => {
+  it("states the exact totals of an exact list", () => {
+    expect(
+      changesTotalsLabel(
+        status({ dirty: true, totals: { additions: 96, deletions: 41 }, rows: [ROW] }),
+      ),
+    ).toBe("+96 −41");
+  });
+
+  it("keeps the inexact mark when any count is a floor", () => {
+    expect(
+      changesTotalsLabel(
+        status({
+          dirty: true,
+          totals: { additions: 96, deletions: 41 },
+          rows: [{ ...ROW, capped: true }],
+        }),
+      ),
+    ).toBe("≈+96 −41");
+  });
+
+  it("reads a clean tree as known zeros, a withheld list as nothing", () => {
+    expect(changesTotalsLabel(status())).toBe("+0 −0");
+    expect(changesTotalsLabel(status({ dirty: true }))).toBeNull();
+  });
+});
+
+describe("changesBranchLabel", () => {
+  it("prints the wire's name verbatim and a missing one honestly", () => {
+    expect(changesBranchLabel("feature/redesign")).toBe("feature/redesign");
+    expect(changesBranchLabel("(detached)")).toBe("(detached)");
+    expect(changesBranchLabel(null)).toBe("No branch");
   });
 });

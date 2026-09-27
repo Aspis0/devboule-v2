@@ -2,13 +2,14 @@ import { memo, useState } from "react";
 import type {
   WorkspaceGitDiffLine,
   WorkspaceGitFileDiff,
-  WorkspaceGitRow,
   WorkspaceGitStatus,
 } from "../../types/ipc";
 import { useWorkspaceChanges, type ChangesReply } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import { useWorkspaceGitActions } from "./useWorkspaceGitActions";
 import { ErrorText } from "../../components/ErrorText";
+import { ChangesTreeView } from "./ChangesTreeView";
+import { changesBranchLabel, changesTotalsLabel } from "./changesBadge";
 import "./panel/changes.css";
 
 interface ChangesSurfaceProps {
@@ -17,7 +18,14 @@ interface ChangesSurfaceProps {
    * settles — a panel with no workspace reads nothing and says so.
    */
   workspaceId: string | null;
+  /**
+   * Slice 8's hand-off: open a file as a diff tab. Optional until that tab
+   * kind exists — the pencil that calls it renders only beside it.
+   */
+  onOpenFile?: (workspaceId: string, path: string) => void;
 }
+
+type ChangesPanelView = "uncommitted" | "commits";
 
 const DIFF_LINE_CLASS: Record<WorkspaceGitDiffLine["kind"], string> = {
   add: "added",
@@ -45,117 +53,150 @@ function caveatOf(reply: WorkspaceGitStatus | null): string | null {
   return reply !== null && reply.error !== null ? reply.error : null;
 }
 
-function rowCounts(row: WorkspaceGitRow): string {
-  // `capped` says the two numbers are not the file's exact line counts, so
-  // they carry the mark instead of passing for exact ones.
-  return `${row.capped ? "≈" : ""}+${row.additions} −${row.deletions}`;
+/**
+ * The branch row: the wire's branch name (verbatim, including `(detached)`)
+ * with a display-only chevron — branch switching is out of scope by owner
+ * decision, so the chevron is a span, never a control that looks like it
+ * switches — the total beside it, and Refresh as a quiet icon button.
+ */
+function BranchRow({
+  branch,
+  totals,
+  onRefresh,
+}: {
+  branch: string | null;
+  totals: string | null;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="workspace-changes-branch">
+      <svg
+        className="workspace-changes-branch-icon"
+        width="12"
+        height="12"
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden="true"
+      >
+        <line x1="6" x2="6" y1="3" y2="15" stroke="currentColor" strokeWidth="2" />
+        <circle cx="18" cy="6" r="3" stroke="currentColor" strokeWidth="2" />
+        <circle cx="6" cy="18" r="3" stroke="currentColor" strokeWidth="2" />
+        <path d="M18 9a9 9 0 0 1-9 9" stroke="currentColor" strokeWidth="2" />
+      </svg>
+      <span className="workspace-changes-branch-name" title={branch ?? undefined}>
+        {changesBranchLabel(branch)}
+      </span>
+      <span className="workspace-changes-branch-chevron" aria-hidden="true">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="m6 9 6 6 6-6"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+      {totals !== null ? (
+        <span className="workspace-changes-branch-totals">{totals}</span>
+      ) : null}
+      <button
+        type="button"
+        className="workspace-changes-refresh"
+        aria-label="Refresh"
+        title="Refresh"
+        onClick={onRefresh}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M21 12a9 9 0 1 1-2.64-6.36"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+          <path
+            d="M21 3v6h-6"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
+  );
 }
 
 /**
- * What one row acts on: its path, and for a renamed row its `renamedFrom`
- * too. Both sides, always — a rename row keyed only on its new path is a
- * half operation waiting to happen: the old side's deletion stays staged
- * and the confirmation would claim success anyway (measured on git
- * 2.54.0; `renamedFrom` is the bare token `-z` writes after the `2`
- * record, which the status parse now carries instead of dropping).
+ * Uncommitted | Commits. Uncommitted is the tree below; Commits is an
+ * honest empty state — its data needs a daemon history command that does
+ * not exist yet, so the view holds no rows, real or invented.
  */
-function pathsOf(row: WorkspaceGitRow): string[] {
-  return row.renamedFrom ? [row.path, row.renamedFrom] : [row.path];
+function ChangesViewSwitch({
+  view,
+  onChange,
+}: {
+  view: ChangesPanelView;
+  onChange: (view: ChangesPanelView) => void;
+}) {
+  return (
+    <div className="workspace-changes-seg" role="group" aria-label="Changes view">
+      {(["uncommitted", "commits"] as const).map((candidate) => (
+        <button
+          key={candidate}
+          type="button"
+          className={`workspace-changes-seg-button${
+            view === candidate ? " workspace-changes-seg-button-is-on" : ""
+          }`}
+          aria-pressed={view === candidate}
+          onClick={() => onChange(candidate)}
+        >
+          {candidate === "uncommitted" ? "Uncommitted" : "Commits"}
+        </button>
+      ))}
+    </div>
+  );
 }
 
-function FileRows({
-  rows,
-  selection,
-  onSelect,
-  onStage,
-  onUnstage,
-  onDiscard,
-  menuPath,
-  onToggleMenu,
+/**
+ * The commit row closes the panel: the hand-written message field and the
+ * outline Commit, the same acts the top toolbar used to hold. Enter commits
+ * a non-blank message; an empty one never reaches the wire (the button is
+ * disabled for it, and the daemon refuses it again — the frontend's check
+ * is a courtesy, the daemon's is the rule).
+ */
+function CommitRow({
+  message,
+  onMessage,
+  onCommit,
   acting,
 }: {
-  rows: WorkspaceGitRow[];
-  selection: string | null;
-  onSelect: (path: string) => void;
-  onStage: (paths: string[]) => void;
-  onUnstage: (paths: string[]) => void;
-  onDiscard: (paths: string[]) => void;
-  menuPath: string | null;
-  onToggleMenu: (path: string) => void;
+  message: string;
+  onMessage: (message: string) => void;
+  onCommit: () => void;
   acting: boolean;
 }) {
   return (
-    <div className="workspace-file-changes">
-      {rows.map((row) => (
-        // The row is a wrapper, not a button: the select control keeps its
-        // own button (and its exact text, marks and status word), and its
-        // actions are siblings beside it — a button may not nest. The menu
-        // overlays the rows below it, the way the Files tree's does.
-        <div className="workspace-file-change-row" key={row.path}>
-          <button
-            type="button"
-            className={`workspace-file-change${
-              selection === row.path ? " workspace-file-change-selected" : ""
-            }${row.status === "deleted" ? " workspace-file-change-muted" : ""}`}
-            aria-pressed={selection === row.path}
-            title={row.path}
-            onClick={() => onSelect(row.path)}
-          >
-            <span>{row.path}</span>
-            <span className="workspace-file-change-status">{row.status}</span>
-            <span title={row.capped ? "counts are not exact" : undefined}>{rowCounts(row)}</span>
-          </button>
-          <span className="workspace-file-change-actions">
-            <button
-              type="button"
-              className="workspace-file-change-action"
-              disabled={acting}
-              title={`Stage ${row.path}`}
-              onClick={() => onStage(pathsOf(row))}
-            >
-              Stage
-            </button>
-            <button
-              type="button"
-              className="workspace-file-change-action"
-              disabled={acting}
-              title={`Unstage ${row.path}`}
-              onClick={() => onUnstage(pathsOf(row))}
-            >
-              Unstage
-            </button>
-            <button
-              type="button"
-              className="workspace-tree-menu-trigger"
-              aria-label={`${row.path} actions`}
-              aria-expanded={menuPath === row.path}
-              disabled={acting}
-              onClick={() => onToggleMenu(row.path)}
-            >
-              ⋯
-            </button>
-          </span>
-          {/* Discard lives in the menu, not on the row: it is the one act
-              here that loses data, and it must be chosen, not hit. This
-              panel only ever shows the uncommitted tree (DECISIONS §2), so
-              Paseo's `diffMode === "uncommitted"` gate is structural: the
-              control exists nowhere else. Its confirmation is the writer
-              hook's own — this menu can reach the discard only through it. */}
-          {menuPath === row.path ? (
-            <div className="workspace-tree-menu" role="menu">
-              <button
-                type="button"
-                role="menuitem"
-                className="workspace-tree-menu-item"
-                disabled={acting}
-                onClick={() => onDiscard(pathsOf(row))}
-              >
-                Discard
-              </button>
-            </div>
-          ) : null}
-        </div>
-      ))}
+    <div className="workspace-commit-row">
+      <input
+        className="workspace-commit-message"
+        aria-label="Commit message"
+        placeholder="Commit message…"
+        value={message}
+        disabled={acting}
+        onChange={(event) => onMessage(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && message.trim() !== "") onCommit();
+        }}
+      />
+      <button
+        type="button"
+        className="workspace-commit-button"
+        disabled={acting || message.trim() === ""}
+        onClick={onCommit}
+      >
+        Commit
+      </button>
     </div>
   );
 }
@@ -224,28 +265,34 @@ function DiffCard({ path, diff }: { path: string; diff: ChangesReply<WorkspaceGi
 
 /**
  * The Changes panel: a presenter over the reads `useWorkspaceChanges` makes
- * and the writes `useWorkspaceGitActions` runs. Every state the wire can
- * produce is its own screen — loading, not a repository, a clean tree, a
- * caveat (the wire's sentence, verbatim), the row list, and the selected
- * file's diff — and since the owner overturned DECISIONS §4 on 2026-09-22
- * the panel also **writes**: Stage and Unstage on every row, Discard inside
- * the row's menu, Commit in the toolbar over a hand-written message.
- * Discard is the one act that asks first — the native `confirm()` inside
- * the writer hook stands between the click and the wire, and a No reaches
- * no command; the commit is **staged only** (no `add -A` exists behind
- * this panel, `DECISIONS-write.md` §2) and no message is ever generated.
- * Every act refreshes the panel immediately, whatever the answer, and a
- * refusal appears as the wire's own pathless sentence under the toolbar.
- * The `cargo test · 142 passed` card stays gone: no source of test results
- * exists, and an invented number beside real data is worse than an empty
- * space.
+ * and the writes `useWorkspaceGitActions` runs. The body is the redesign's
+ * (SPEC-regions §Right panel): a branch row with the total, the
+ * Uncommitted | Commits switch, the folder tree with aggregated stats, and
+ * the commit row at the bottom. Every state the wire can produce is its own
+ * screen — loading, not a repository, a clean tree, a caveat (the wire's
+ * sentence, verbatim), the tree, and the selected file's diff — and since
+ * the owner overturned DECISIONS §4 on 2026-09-22 the panel also **writes**:
+ * Stage and Unstage on every row, Discard inside the row's menu, Commit
+ * over a hand-written message. Discard is the one act that asks first —
+ * the native `confirm()` inside the writer hook stands between the click
+ * and the wire, and a No reaches no command; the commit is **staged
+ * only** (no `add -A` exists behind this panel, `DECISIONS-write.md` §2)
+ * and no message is ever generated. Every act refreshes the panel
+ * immediately, whatever the answer, and a refusal appears as the wire's
+ * own pathless sentence under the switch. The `cargo test · 142 passed`
+ * card stays gone: no source of test results exists, and an invented
+ * number beside real data is worse than an empty space.
  */
-export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: ChangesSurfaceProps) {
+export const ChangesSurface = memo(function ChangesSurface({
+  workspaceId,
+  onOpenFile,
+}: ChangesSurfaceProps) {
   const { status, diff, selection, select, refresh } = useWorkspaceChanges(workspaceId);
   const { stage, unstage, discard, commit } = useWorkspaceGitActions({ workspaceId, refresh });
+  const [view, setView] = useState<ChangesPanelView>("uncommitted");
   const [menuPath, setMenuPath] = useState<string | null>(null);
   const [actionError, setActionError] = useState<ErrorSentence | null>(null);
-  // One act at a time: the rows and the toolbar stay answering while the
+  // One act at a time: the rows and the commit row stay answering while the
   // wire decides, so a double click cannot fire two writes into the index.
   const [acting, setActing] = useState(false);
   const [message, setMessage] = useState("");
@@ -253,10 +300,17 @@ export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: Chan
   const caveat = caveatOf(reply);
   const notice = caveat ?? status.failure;
   const loading = workspaceId !== null && reply === null && status.failure === null;
+  // The chrome stands on a usable answer only: a withheld list (rows empty,
+  // dirty true) or an error with no rows behind it shows no branch total
+  // and no tree — never zeros for an unknown tree.
+  const usable =
+    reply !== null &&
+    reply.isGit &&
+    (reply.rows.length > 0 || (reply.error === null && !reply.dirty));
 
   /** One act, one shape: clear the previous refusal, hold the controls
    * while the wire decides, and surface a refusal as the alert under the
-   * toolbar — the wire's own sentence, pathless by the daemon's rule.
+   * switch — the wire's own sentence, pathless by the daemon's rule.
    * Returns what the act answered, so Commit can clear its field on
    * success only. */
   const runAct = async (act: Promise<ErrorSentence | null>): Promise<ErrorSentence | null> => {
@@ -276,7 +330,7 @@ export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: Chan
   };
   const runDiscard = (paths: string[]): void => {
     // The menu closes first: the confirmation (or the refusal) that comes
-    // back belongs under the toolbar, not under a menu that has gone.
+    // back belongs under the switch, not under a menu that has gone.
     setMenuPath(null);
     void runAct(discard(paths));
   };
@@ -288,39 +342,7 @@ export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: Chan
   };
 
   return (
-    <div>
-      {workspaceId !== null ? (
-        // No workspace, no refresh: with nothing to read, a control that
-        // cannot do anything is a small lie (fix round R5).
-        <div className="workspace-changes-toolbar">
-          <button type="button" className="workspace-secondary-action" onClick={refresh}>
-            Refresh
-          </button>
-          <input
-            className="workspace-commit-message"
-            aria-label="Commit message"
-            placeholder="Commit message…"
-            value={message}
-            disabled={acting}
-            onChange={(event) => setMessage(event.target.value)}
-            onKeyDown={(event) => {
-              // Enter commits a non-blank message; an empty one never
-              // reaches the wire (the button is disabled for it, and the
-              // daemon refuses it again — the frontend's check is a
-              // courtesy, the daemon's is the rule).
-              if (event.key === "Enter" && message.trim() !== "") runCommit();
-            }}
-          />
-          <button
-            type="button"
-            className="workspace-secondary-action"
-            disabled={acting || message.trim() === ""}
-            onClick={runCommit}
-          >
-            Commit
-          </button>
-        </div>
-      ) : null}
+    <div className="workspace-changes">
       {notice !== null ? (
         <div className="workspace-changes-error" role="alert">
           {typeof notice === "string" ? (
@@ -353,44 +375,62 @@ export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: Chan
         <div className="workspace-changes-state" role="status">
           Loading changes…
         </div>
-      ) : reply === null ? null : caveat !== null ? (
-        // A caveat distrusts part of this reply, never all of it: a failed
-        // count round still returns the real list (every row then marked
-        // `capped`), so the rows below stand beside the sentence. With no rows
-        // the panel claims nothing at all.
-        reply.rows.length > 0 ? (
-          <FileRows
-            rows={reply.rows}
-            selection={selection}
-            onSelect={select}
-            onStage={runStage}
-            onUnstage={runUnstage}
-            onDiscard={runDiscard}
-            menuPath={menuPath}
-            onToggleMenu={(path) => setMenuPath(menuPath === path ? null : path)}
-            acting={acting}
-          />
-        ) : null
-      ) : !reply.isGit ? (
+      ) : reply === null ? null : !reply.isGit ? (
         <div className="workspace-changes-state">
           This workspace folder is not a git repository.
         </div>
-      ) : !reply.dirty ? (
-        <div className="workspace-changes-state">No uncommitted changes in this workspace.</div>
-      ) : (
-        <FileRows
-          rows={reply.rows}
-          selection={selection}
-          onSelect={select}
-          onStage={runStage}
-          onUnstage={runUnstage}
-          onDiscard={runDiscard}
-          menuPath={menuPath}
-          onToggleMenu={(path) => setMenuPath(menuPath === path ? null : path)}
-          acting={acting}
-        />
+      ) : !usable ? null : (
+        <>
+          <BranchRow branch={reply.branch} totals={changesTotalsLabel(reply)} onRefresh={refresh} />
+          <ChangesViewSwitch view={view} onChange={setView} />
+          {view === "commits" ? (
+            <div className="workspace-panel-empty">
+              <p className="workspace-panel-empty-title">Commits</p>
+              <p className="workspace-panel-empty-intro">
+                History of this branch will appear here.
+              </p>
+              <p className="workspace-panel-empty-note">
+                Listing history needs a command the daemon does not have yet, so this view
+                stays empty on purpose.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* A caveat distrusts part of this reply, never all of it: this
+                  branch renders only when rows stand behind it (or the tree
+                  is clean), so a failed count round keeps its real list
+                  beside the sentence above. */}
+              {!reply.dirty ? (
+                <div className="workspace-changes-state">
+                  No uncommitted changes in this workspace.
+                </div>
+              ) : (
+                <ChangesTreeView
+                  key={workspaceId}
+                  workspaceId={workspaceId}
+                  rows={reply.rows}
+                  selection={selection}
+                  onSelect={select}
+                  onStage={runStage}
+                  onUnstage={runUnstage}
+                  onDiscard={runDiscard}
+                  menuPath={menuPath}
+                  onToggleMenu={(path) => setMenuPath(menuPath === path ? null : path)}
+                  acting={acting}
+                  onOpenFile={onOpenFile}
+                />
+              )}
+              {selection !== null ? <DiffCard path={selection} diff={diff} /> : null}
+              <CommitRow
+                message={message}
+                onMessage={setMessage}
+                onCommit={runCommit}
+                acting={acting}
+              />
+            </>
+          )}
+        </>
       )}
-      {selection !== null ? <DiffCard path={selection} diff={diff} /> : null}
     </div>
   );
 });

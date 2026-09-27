@@ -140,7 +140,8 @@ describe("ChangesSurface actions", () => {
   // fails on the very first `not.toHaveBeenCalled`.
   it("a declined confirmation reaches no wire and changes nothing, an accepted one acts once", async () => {
     await render(<ChangesSurface workspaceId={WORKSPACE} />);
-    expect(container.textContent).toContain(ROW_PATH);
+    // The tree shows the basename; the full path rides the row's title.
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
     await openMenu();
     await act(async () => {
@@ -150,7 +151,7 @@ describe("ChangesSurface actions", () => {
     expect(vi.mocked(confirm)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain(ROW_PATH);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
     vi.mocked(confirm).mockResolvedValue(true);
     await openMenu();
@@ -175,7 +176,7 @@ describe("ChangesSurface actions", () => {
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(dirtyReply());
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(statusReply());
     await render(<ChangesSurface workspaceId={WORKSPACE} />);
-    expect(container.textContent).toContain(ROW_PATH);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
     await act(async () => {
       button(`button[title="Stage ${ROW_PATH}"]`).click();
@@ -186,7 +187,7 @@ describe("ChangesSurface actions", () => {
     expect(vi.mocked(workspaceGitStage)).toHaveBeenCalledWith(WORKSPACE, [ROW_PATH]);
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain("No uncommitted changes in this workspace.");
-    expect(container.textContent).not.toContain(ROW_PATH);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).toBeNull();
   });
 
   // The review's §4.1 defect, fixed end to end from the row down to the
@@ -215,7 +216,7 @@ describe("ChangesSurface actions", () => {
       }),
     );
     await render(<ChangesSurface workspaceId={WORKSPACE} />);
-    expect(container.textContent).toContain("notes/todo-v2.md");
+    expect(container.querySelector('.workspace-file-change[title="notes/todo-v2.md"]')).not.toBeNull();
 
     await act(async () => {
       button('button[title="Stage notes/todo-v2.md"]').click();

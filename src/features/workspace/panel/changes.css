@@ -226,3 +226,272 @@
 .workspace-diff-note-error {
   color: var(--danger-deep);
 }
+
+/* R7b redesign (SPEC-regions §Right panel, mockup a-workspace-2.html:179-190
+   with values from mockups/skeleton*.css, which win): branch row, the
+   Uncommitted | Commits switch, the h24 folder tree, and the bottom commit
+   row. UI text is sans throughout — the moved rules above still say mono,
+   and every rule below beats them by coming later at equal specificity.
+   Numbers read in tabular sans; only diff lines keep their mono. */
+
+/* The branch row: glyph + name + display-only chevron, the total and the
+   quiet refresh pushed right. h-auto, 12px interface text. */
+.workspace-changes-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px 4px;
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.workspace-changes-branch-icon {
+  flex: none;
+  color: var(--muted);
+}
+
+.workspace-changes-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-changes-branch-chevron {
+  display: flex;
+  flex: none;
+  color: var(--muted);
+}
+
+.workspace-changes-branch-totals {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.workspace-changes-refresh {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.workspace-changes-refresh:hover,
+.workspace-changes-refresh:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+/* Uncommitted | Commits: 24px buttons on a fill-tool bed, the active one
+   a panel-card chip. */
+.workspace-changes-seg {
+  display: inline-flex;
+  gap: 2px;
+  margin: 2px 6px 8px;
+  padding: 2px;
+  background: var(--fill-tool);
+  border-radius: 7px;
+}
+
+.workspace-changes-seg-button {
+  height: 24px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.workspace-changes-seg-button-is-on {
+  color: var(--ink);
+  background: var(--panel-card);
+  box-shadow: var(--shadow-pop);
+}
+
+/* The tree: h24 rows at 12px sans, folders and files sharing one shape.
+   Depth pads the row wrapper, the mockup's 14px indent per level. */
+.workspace-changes-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 13px;
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.workspace-changes-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workspace-changes-file-row,
+.workspace-changes-folder-row {
+  padding-left: calc(var(--tree-depth, 0) * 14px);
+}
+
+.workspace-changes-folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 24px;
+  padding: 0 6px;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.workspace-changes-folder:hover {
+  background: var(--fill-hover);
+}
+
+.workspace-changes-chevron {
+  flex: none;
+  width: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+}
+
+.workspace-changes-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-changes-folder-stats {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* File rows keep the moved `.workspace-file-change*` bones and wear the
+   tree's look over them: h24, sans, tabular stats. The open file is a
+   fill-tool row with the pencil (SPEC-regions), not the old selection tint.
+   Bare selectors on purpose: the computed-style proof only models those. */
+.workspace-changes-file {
+  height: 24px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.workspace-changes-file:hover {
+  background: var(--fill-hover);
+}
+
+.workspace-file-change-selected,
+.workspace-file-change-selected:hover {
+  color: var(--ink);
+  background: var(--fill-tool);
+}
+
+.workspace-file-change-selected > span:last-child {
+  color: var(--muted);
+}
+
+.workspace-file-change-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-file-change-stats-is-add {
+  color: var(--tone-add);
+}
+
+/* The pencil beside the open file: the slice-8 hand-off, quiet until hover. */
+.workspace-changes-pencil {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.workspace-changes-pencil:hover,
+.workspace-changes-pencil:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+/* The commit row closes the panel: input 28 with the outline Commit,
+   divided from the tree by the panel's hairline. */
+.workspace-commit-row {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.workspace-commit-row .workspace-commit-message {
+  height: 28px;
+  color: var(--ink);
+  background: transparent;
+  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.workspace-commit-row .workspace-commit-message::placeholder {
+  color: var(--muted);
+}
+
+.workspace-commit-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.workspace-commit-button:hover:not(:disabled),
+.workspace-commit-button:focus-visible:not(:disabled) {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-commit-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
