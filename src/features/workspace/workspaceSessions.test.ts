@@ -733,9 +733,11 @@ describe("session origin badge", () => {
     expect(names.get("device-phone")).toBe("Xiaomi 14");
   });
 
-  it("leaves a blank display name out instead of printing a bare from", () => {
-    const names = peerDeviceNames([{ ...pairedPhone, displayName: "   " }]);
-    expect(names.has("device-phone")).toBe(false);
+  it("names another device when the map holds a blank display name", () => {
+    // A blank name is not a name, but the shared map passes rows through
+    // verbatim for the cards — so the strip treats blank as unnamed here,
+    // at the consumer, instead of printing a bare `from `.
+    const names = new Map([["device-phone", "   "]]);
     expect(sessionOriginBadge({ origin: { kind: "peer", deviceId: "device-phone" } }, names)).toBe(
       "from another device",
     );
@@ -939,7 +941,7 @@ describe("session delegation badges", () => {
         ...liveSession("child-2"),
         delegation: { answered: 0, state: "active" },
       }),
-    ).toEqual([{ tone: "active", label: "answers to its creator" }]);
+    ).toEqual([{ tone: "active", label: "Answers to its creator." }]);
   });
 
   it("joins the answered count to the active pill once a card has been answered", () => {
@@ -948,7 +950,7 @@ describe("session delegation badges", () => {
         ...liveSession("child-3"),
         delegation: { answered: 3, state: "active" },
       }),
-    ).toEqual([{ tone: "active", label: "answers to its creator · answered ×3" }]);
+    ).toEqual([{ tone: "active", label: "Answers to its creator — 3 cards answered so far." }]);
   });
 
   it("renders the loud unattended pill straight from the ledger", () => {
@@ -986,7 +988,7 @@ describe("session delegation badges", () => {
       unattended: "unknown",
     });
     expect(badges).toEqual([
-      { tone: "active", label: "answers to its creator · answered ×2" },
+      { tone: "active", label: "Answers to its creator — 2 cards answered so far." },
       { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
     ]);
   });
@@ -1034,7 +1036,7 @@ describe("session delegation badges", () => {
         unattended: outOfUnion,
       }),
     ).toEqual([
-      { tone: "active", label: "answers to its creator" },
+      { tone: "active", label: "Answers to its creator." },
       { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
     ]);
   });
@@ -1121,13 +1123,13 @@ describe("delegation facts ride the roster push", () => {
     watched.listener?.([childSnapshot(1, "active")]);
     const row = controller.getState().sessions[0];
     expect(sessionDelegationBadges(row)).toEqual([
-      { tone: "active", label: "answers to its creator · answered ×1" },
+      { tone: "active", label: "Answers to its creator — 1 card answered so far." },
     ]);
 
     watched.listener?.([childSnapshot(3, "active")]);
     const rowAfter = controller.getState().sessions[0];
     expect(sessionDelegationBadges(rowAfter)).toEqual([
-      { tone: "active", label: "answers to its creator · answered ×3" },
+      { tone: "active", label: "Answers to its creator — 3 cards answered so far." },
     ]);
     release();
   });
@@ -1281,8 +1283,7 @@ describe("delegation facts ride the roster push", () => {
 
   it("ratchets the tri-state: a push claiming no over a known unknown cannot downgrade it either", async () => {
     // Re-audit F8: the ratchet covered `yes` only, so the softer warning —
-    // "may run without asking — cannot establish" — was erasable by a later
-    // push saying `no`. `unknown` warns, and the downgrade direction is the
+    // "Permission mode unknown" — was erasable by a later push saying `no`. `unknown` warns, and the downgrade direction is the
     // one that removes a warning; only a louder value may replace it.
     const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
       listener: null,
@@ -1475,7 +1476,7 @@ describe("delegation facts ride the roster push", () => {
     expect(row.createdBy).toBe("s.parent.1");
     expect(row.delegation).toEqual({ answered: 0, state: "active" });
     expect(sessionDelegationBadges(row)).toEqual([
-      { tone: "active", label: "answers to its creator" },
+      { tone: "active", label: "Answers to its creator." },
     ]);
     release();
   });

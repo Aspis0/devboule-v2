@@ -487,6 +487,53 @@ describe("SessionStrip", () => {
     expect(globalThis.__stripChipRenders).toBe(0);
   });
 
+  it("names the chip with label and state only, never the provenance paragraph", () => {
+    // happy-dom has no accname engine; the button's text content is the
+    // exact set accname collects from, so equality here is the name.
+    const props = propsOf(
+      [
+        session("a", "agent a", {
+          origin: { kind: "peer", deviceId: "d1" },
+          unattended: "yes",
+        }),
+      ],
+      "a",
+    );
+    props.peerNames = new Map([["d1", "pixel"]]);
+    props.resolveCreator = () => "created by planner";
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root!.render(<SessionStrip {...props} />);
+    });
+    const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
+    const label = tab.querySelector(".workspace-tab-label")?.textContent ?? "";
+    const state = tab.querySelector(".workspace-sr-only")?.textContent ?? "";
+    expect(label).toBe("agent a");
+    expect(tab.textContent).toBe(label + state);
+    // The provenance still describes the chip, from beside the button.
+    const describedBy = tab.getAttribute("aria-describedby")!;
+    expect(tab.querySelector(`#${describedBy}`)).toBeNull();
+    const row = tab.closest(".workspace-session-row")!;
+    expect(row.querySelector(`#${describedBy}`)?.textContent).toContain("created by planner");
+  });
+
+  it("marks a tab that is both selected and multi-selected", () => {
+    // The state the hover cascade resolves: both classes on one chip.
+    const props = propsOf([session("a", "agent a"), session("b", "agent b")], "a");
+    props.tabSelection.selection.add("a");
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root!.render(<SessionStrip {...props} />);
+    });
+    const tab = container!.querySelector<HTMLElement>("#workspace-session-tab-a")!;
+    expect(tab.classList.contains("workspace-session-tab-selected")).toBe(true);
+    expect(tab.classList.contains("workspace-session-tab-multiselected")).toBe(true);
+  });
+
   it("announces the selection size politely", () => {
     renderStrip([session("a", "agent a")], "a");
     expect(container!.querySelector('[role="status"]')).not.toBeNull();

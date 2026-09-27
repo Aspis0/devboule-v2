@@ -188,17 +188,13 @@ export function sessionTitle(
  * The display name for each paired device, keyed by device id. This is the
  * `DevicesList` map the session badge resolves against; revoked rows are kept,
  * because a session started by a device that has since been revoked still
- * belongs to it. A row with no display name is left out rather than mapped
- * to a blank: the map answers whether the roster named this device, and a
- * blank is not a name.
+ * belongs to it. Rows pass through verbatim, blank display names included:
+ * the map feeds the A2A card and the permission card as well as the strip,
+ * and blank-name handling belongs to each consumer, never to this shared
+ * producer.
  */
 export function peerDeviceNames(peers: readonly PeerRow[]): Map<string, string> {
-  return new Map(
-    peers.flatMap((peer) => {
-      const name = peer.displayName.trim();
-      return name ? [[peer.deviceId, name] as const] : [];
-    }),
-  );
+  return new Map(peers.map((peer) => [peer.deviceId, peer.displayName]));
 }
 
 /** The badge for a session whose origin the daemon did not send at all. */
@@ -225,9 +221,11 @@ export function sessionOriginUnknown(session: Pick<Session, "origin">): boolean 
  * the origin, and the name comes from the devices list the workspace holds. An
  * id the list does not know yet reads `from another device` — the raw id is
  * not a name, and the tooltip is now the only place the origin is shown. A
- * peer origin that names no device reads the same way rather than yielding
- * no badge: the session still came from a peer, and silence is the one
- * reading the tab may not give.
+ * blank name in the map counts as unnamed here, at this consumer: the map
+ * itself passes rows through verbatim for the cards. A peer origin that
+ * names no device reads the same way rather than yielding no badge: the
+ * session still came from a peer, and silence is the one reading the tab
+ * may not give.
  *
  * An absent origin is a third state, not a local one: the tab says `origin
  * unknown` rather than staying silent, which would read as a local session. It
@@ -245,7 +243,8 @@ export function sessionOriginBadge(
   if (origin?.kind === "local") return null;
   if (origin?.kind !== "peer") return UNKNOWN_ORIGIN_BADGE;
   const { deviceId } = origin;
-  const name = deviceId === undefined ? undefined : deviceNames.get(deviceId);
+  const raw = deviceId === undefined ? undefined : deviceNames.get(deviceId);
+  const name = raw?.trim() || undefined;
   return name === undefined ? "from another device" : `from ${name}`;
 }
 
@@ -282,19 +281,18 @@ export interface DelegationBadge {
  * back to find agents ran all night. A fact of the child's birth — never
  * derived from the live switch, which a human can turn off while such a child
  * keeps running without asking. */
-export const UNATTENDED_BADGE_LABEL = "runs unattended · created in an auto-accepting profile";
+export const UNATTENDED_BADGE_LABEL = "Runs unattended — created in an auto-accepting profile.";
 
 /** The softer marker's words: present, because "the daemon could not
  * establish" must never collapse into nothing — that is the collapse, in
  * pixels. */
-export const UNATTENDED_UNKNOWN_BADGE_LABEL = "may run without asking — cannot establish";
+export const UNATTENDED_UNKNOWN_BADGE_LABEL = "Permission mode unknown — may run without asking.";
 
 /** The delegation ledger's own unknown marker: the row is a child, but no push
  * has said who answers it (or the state it sent is one this build cannot
  * read). Present, softer, and never collapsed into "off" — a fifth state
  * reading as nobody-answers is the roster's version of the confirmed defect. */
-export const DELEGATION_UNKNOWN_BADGE_LABEL =
-  "answering unknown — the daemon did not say who answers";
+export const DELEGATION_UNKNOWN_BADGE_LABEL = "Unknown who answers for this session.";
 
 /**
  * The table the delegation state walks — one row per value of
@@ -315,7 +313,10 @@ const DELEGATION_STATE_BADGES: Record<
   off: () => null,
   active: (answered) => ({
     tone: "active",
-    label: `answers to its creator${answered > 0 ? ` · answered ×${answered}` : ""}`,
+    label:
+      answered > 0
+        ? `Answers to its creator — ${answered} ${answered === 1 ? "card" : "cards"} answered so far.`
+        : "Answers to its creator.",
   }),
   unattended: () => ({ tone: "unattended", label: UNATTENDED_BADGE_LABEL }),
   unknown: () => ({ tone: "unknown", label: DELEGATION_UNKNOWN_BADGE_LABEL }),

@@ -55,7 +55,7 @@ export function StripChip({
   onClose,
 }: StripChipProps) {
   const title = sessionTitle(session);
-  const provenanceId = `strip-chip-${session.id}-provenance`;
+  const provenanceId = `${sessionTabElementId(session.id)}-provenance`;
   const described = provenanceLines.length > 0 ? provenanceId : undefined;
   return (
     <div className="workspace-session-row" onContextMenu={onRowContextMenu}>
@@ -86,17 +86,17 @@ export function StripChip({
         ) : (
           // The states that lost their painted words keep them here: heard,
           // never seen, so the accessible name still carries the state.
-          // The title keeps the same line for the mouse; aria-describedby
-          // below keeps it out of the accessible description, so no
-          // reader hears it twice.
           <span className="workspace-sr-only">{display.stateLine}</span>
         )}
-        {described !== undefined ? (
-          <span id={provenanceId} className="workspace-sr-only">
-            {provenanceLines.join(" ")}
-          </span>
-        ) : null}
       </button>
+      {/* The description lives beside the button, never inside it: a
+          described-by span inside the button would join the accessible
+          name and be announced twice. */}
+      {described !== undefined ? (
+        <span id={provenanceId} className="workspace-sr-only">
+          {provenanceLines.join(" ")}
+        </span>
+      ) : null}
       <span className="workspace-session-chip">
         <button
           type="button"

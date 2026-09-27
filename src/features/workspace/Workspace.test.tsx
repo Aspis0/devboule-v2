@@ -3473,7 +3473,7 @@ describe("delegation on the roster", () => {
     expect(loud).not.toBeNull();
     const loudTab = loud?.closest(".workspace-session-tab");
     expect(loudTab?.getAttribute("title")).toContain(
-      "runs unattended \u00b7 created in an auto-accepting profile",
+      "Runs unattended — created in an auto-accepting profile.",
     );
     // The take-back sits beside the row it can act on, and its accessible
     // name declares the global scope.
@@ -3506,7 +3506,7 @@ describe("delegation on the roster", () => {
     const loudAfter = container.querySelector(".strip-dot-unattended");
     expect(loudAfter).not.toBeNull();
     expect(loudAfter?.closest(".workspace-session-tab")?.getAttribute("title")).toContain(
-      "runs unattended \u00b7 created in an auto-accepting profile",
+      "Runs unattended — created in an auto-accepting profile.",
     );
     // A control that cannot act is gone.
     expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
@@ -3684,7 +3684,9 @@ describe("delegation on the roster", () => {
 
     expect(container.querySelector(".workspace-tab-delegation-active")).toBeNull();
     const tab = container.querySelector(".workspace-session-tab");
-    expect(tab?.getAttribute("title")).toContain("answers to its creator \u00b7 answered \u00d73");
+    expect(tab?.getAttribute("title")).toContain(
+      "Answers to its creator — 3 cards answered so far.",
+    );
   });
 
   it("shows a creator-answered card resolving with its attribution instead of vanishing", async () => {

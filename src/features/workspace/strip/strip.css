@@ -102,6 +102,15 @@
   outline-offset: -1px;
 }
 
+/* A hovered multi-selected chip keeps the hover look: the multi fill
+   already loses to :hover on specificity, and the 1 px accent outline
+   above is what keeps the multi identity visible. Placed after the
+   selected hover so it wins that tie too. */
+.workspace-session-tab-multiselected:hover,
+.workspace-session-tab-multiselected:focus-visible {
+  background: var(--fill-chip-hover);
+}
+
 .workspace-session-tab .workspace-status-dot {
   width: 6px;
   height: 6px;
@@ -156,6 +165,16 @@
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The spec's hover treatment: when the × shows, the label gives it room
+   (pad-right 16) and fades its own tail, so at the 96 floor the text
+   dissolves under the scrim instead of vanishing behind an opaque block. */
+.workspace-session-row:hover .workspace-tab-label,
+.workspace-session-row:focus-within .workspace-tab-label {
+  padding-right: 16px;
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
 }
 
 /* The one chip that still uses words: a session asking for an action. */
@@ -227,9 +246,8 @@
 }
 
 .workspace-rate {
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  color: var(--muted);
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -285,15 +303,11 @@
 
 .workspace-session-row:hover .workspace-session-chip::before,
 .workspace-session-row:focus-within .workspace-session-chip::before {
-  background: var(--fill-chip-hover);
+  background: linear-gradient(to right, transparent 0%, var(--fill-chip-hover) 60%);
 }
 
 .workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before {
-  background: var(--selection);
-}
-
-.workspace-session-row:has(.workspace-session-tab-multiselected) .workspace-session-chip::before {
-  background: var(--fill-selected-soft);
+  background: linear-gradient(to right, transparent 0%, var(--selection) 60%);
 }
 
 .workspace-session-row:hover .workspace-session-chip,

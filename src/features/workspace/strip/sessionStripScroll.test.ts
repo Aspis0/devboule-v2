@@ -83,6 +83,7 @@ describe("the session strip", () => {
     const both = css.match(
       /\.workspace-session-tabs-scroll\[data-fade-left="true"\]\[data-fade-right="true"\] \{([\s\S]*?)\n\}/,
     )?.[1];
+    expect(both).toContain("-webkit-mask-image:");
     expect(both).toContain("mask-image:");
   });
 
@@ -103,14 +104,50 @@ describe("the session strip", () => {
     }
   });
 
-  it("scrims the close chip in the multi-selected fill", () => {
-    // A chip that is both selected and multi-selected paints
-    // --fill-selected-soft; its scrim must not punch a --selection
-    // rectangle into it.
-    const scrim = css.match(
-      /\.workspace-session-row:has\(\.workspace-session-tab-multiselected\)[\s\S]*?\.workspace-session-chip::before \{([\s\S]*?)\n\}/,
+  it("keeps the hover look on multi-selected chips, chip and scrim alike", () => {
+    // A hovered multi-selected chip keeps the hover fill: the multi rule
+    // (0,1,0) already loses to :hover (0,2,0) on the chip, so the scrim
+    // needs no multi rule of its own beating the hover scrim.
+    const hovered = css.match(
+      /\.workspace-session-tab-multiselected:hover,[\s\S]*?\{([\s\S]*?)\n\}/,
     )?.[1];
-    expect(scrim).toContain("background: var(--fill-selected-soft);");
+    expect(hovered).toContain("background: var(--fill-chip-hover);");
+    expect(css).not.toContain(":has(.workspace-session-tab-multiselected)");
+  });
+
+  it("fades the label's tail under the close overlay on hover", () => {
+    // The spec's hover treatment: the label gets pad-right 16 and a right
+    // mask when the × shows, so at the 96 floor the label fades instead of
+    // vanishing under an opaque block. happy-dom has no layout; this pins
+    // the declarations, and the live window judges the pixels.
+    const hovered = css.match(
+      /\.workspace-session-row:hover \.workspace-tab-label,[\s\S]*?\{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(hovered).toContain("padding-right: 16px;");
+    expect(hovered).toContain("mask-image:");
+    expect(hovered).toContain("-webkit-mask-image:");
+  });
+
+  it("fades the close scrim instead of painting an opaque block", () => {
+    // The overlay's ground is a gradient to transparent, per chip state,
+    // so the fading label shows through it toward the ×.
+    const hoverScrim = css.match(
+      /\.workspace-session-row:hover \.workspace-session-chip::before,[\s\S]*?\{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(hoverScrim).toContain("linear-gradient");
+    expect(hoverScrim).toContain("transparent");
+    const selectedScrim = ruleBody(
+      ".workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before",
+    );
+    expect(selectedScrim).toContain("linear-gradient");
+  });
+
+  it("sets the session count in sans metadata type, never mono", () => {
+    // Mono never appears in UI metadata: the count is 12 px sans --muted.
+    const rate = ruleBody(".workspace-rate");
+    expect(rate).not.toContain("monospace");
+    expect(rate).not.toContain("Mono");
+    expect(rate).toContain("12px");
   });
 
   it("keeps the close chip a narrow trailing overlay that hides unclickable", () => {
