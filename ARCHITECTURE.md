@@ -44,8 +44,8 @@ mounts one surface at a time from a registry (`src/types/surface.ts:22`, `src/ap
 
 The protocol crate is the only place the wire types are declared, and the dependency is deliberate:
 `src-tauri/Cargo.toml:28` ("Shared wire types. The daemon and this crate must not declare their own
-copies"). Protocol version 11 (`crates/devboule-protocol/src/lib.rs`, `PROTOCOL_VERSION`), with
-`PROTOCOL_MIN_VERSION` also 11 — the two are equal so a v10 peer is refused at the handshake instead of
+copies"). Protocol version 12 (`crates/devboule-protocol/src/lib.rs`, `PROTOCOL_VERSION`), with
+`PROTOCOL_MIN_VERSION` also 12 — the two are equal so a v11 peer is refused at the handshake instead of
 dying at the first frame.
 
 ### The daemon is a separate process
@@ -1124,8 +1124,6 @@ This document describes what the code does, not what anyone intended. The intent
 notes that are **not part of this repository**, and in the headers of the daemon's own modules, which
 are unusually forthcoming about what was measured and what was decided against. Where a module header
 and this document disagree, the header was written first and this document is a reading of the code.
-
-
 
 
 

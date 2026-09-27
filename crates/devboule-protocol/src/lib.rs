@@ -167,7 +167,9 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// Version 11 includes plan permission requests and `SessionSetName`: the
 /// plan kind/body have their own review flow, and a rename frame must not be
 /// sent to a daemon that cannot parse it.
-pub const PROTOCOL_VERSION: u32 = 11;
+/// Version 12 adds the provider on/off frame, which a version 11 daemon cannot
+/// deserialize and which has its own negotiated capability.
+pub const PROTOCOL_VERSION: u32 = 12;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.
@@ -796,11 +798,10 @@ mod tests {
         assert!(client
             .iter()
             .any(|cap| cap.as_str() == caps::PROVIDER_SWITCHES));
-        assert_eq!(
+        assert!(
             intersect_capabilities(&client, &daemon)
                 .iter()
                 .any(|cap| cap.as_str() == caps::PROVIDER_SWITCHES),
-            true,
             "the app and daemon must negotiate the switch frame independently"
         );
     }
