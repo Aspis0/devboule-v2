@@ -2047,13 +2047,9 @@ mod tests {
         assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
     }
 
-    // Verbatim raw-stdio capture of `@agentclientprotocol/claude-agent-acp@0.76.0`
-    // (2026-09-09, probe kept out-of-band under %TEMP%/acp-probe). The initialize
-    // request used Devboule's own advertised params (fs read/write + terminal,
-    // clientInfo "devboule"); no prompt was ever sent. The agent's `session/new`
-    // result carries the model catalog as a `configOptions` select entry — not
-    // as `models`/`availableModels` — which is why the manifest used to come
-    // out with an empty model list.
+    // Captured from claude-agent-acp 0.76.0 on 2026-09-09; the agent list is
+    // replaced by synthetic entries.
+
     const CLAUDE_ACP_076_INITIALIZE: &str =
         include_str!("../fixtures/acp-claude-076-initialize.json");
     const CLAUDE_ACP_076_SESSION_NEW: &str =
@@ -2061,9 +2057,9 @@ mod tests {
 
     fn claude_acp_076_frames() -> (serde_json::Value, serde_json::Value) {
         let initialize: serde_json::Value =
-            serde_json::from_str(CLAUDE_ACP_076_INITIALIZE).expect("verbatim initialize frame");
+            serde_json::from_str(CLAUDE_ACP_076_INITIALIZE).expect("captured initialize frame");
         let new_session: serde_json::Value =
-            serde_json::from_str(CLAUDE_ACP_076_SESSION_NEW).expect("verbatim session/new frame");
+            serde_json::from_str(CLAUDE_ACP_076_SESSION_NEW).expect("captured session/new frame");
         (initialize, new_session)
     }
 

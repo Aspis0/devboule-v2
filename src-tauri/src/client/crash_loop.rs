@@ -61,8 +61,9 @@ mod tests {
     use super::*;
 
     fn delays_after(count: u32) -> Option<Duration> {
-        let mut brake = CrashLoopBrake::default();
-        (0..count).for_each(|_| brake.observe_fast_failure());
+        let brake = CrashLoopBrake {
+            consecutive_fast_failures: count,
+        };
         brake.backoff_delay()
     }
 
@@ -90,6 +91,16 @@ mod tests {
         assert_eq!(delays_after(10), Some(MAX_BACKOFF));
         assert_eq!(delays_after(100), Some(MAX_BACKOFF));
         assert_eq!(delays_after(u32::MAX), Some(MAX_BACKOFF));
+    }
+
+    #[test]
+    fn consecutive_fast_failures_saturate() {
+        let mut brake = CrashLoopBrake {
+            consecutive_fast_failures: u32::MAX - 1,
+        };
+        brake.observe_fast_failure();
+        brake.observe_fast_failure();
+        assert_eq!(brake.consecutive_fast_failures, u32::MAX);
     }
 
     /// M-b's unit anchor: a reset restores the fast path.

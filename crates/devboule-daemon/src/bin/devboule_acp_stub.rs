@@ -10,10 +10,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-/// Verbatim `session/new` response captured from
-/// `@agentclientprotocol/claude-agent-acp@0.76.0` over raw stdio
-/// (2026-09-09; no prompt sent). Used verbatim by the `--config-options`
-/// mode, with only the sessionId overridden.
+/// Captured from claude-agent-acp 0.76.0 on 2026-09-09; the agent list is
+/// replaced by synthetic entries. The sessionId is overridden per test.
 const CLAUDE_076_SESSION_NEW: &str = include_str!("../../fixtures/acp-claude-076-session-new.json");
 
 fn claude_076_result(session_id: &str) -> Value {
@@ -191,7 +189,7 @@ fn main() -> io::Result<()> {
     let stream_first = std::env::args().any(|arg| arg == "--stream-first");
     let emit_malformed = !std::env::args().any(|arg| arg == "--no-malformed");
     // Emulate an ACP v1 `configOptions` peer (claude-agent-acp 0.76 shape):
-    // session/new answers with the verbatim captured frame; model/effort
+    // session/new answers with the captured frame; model/effort
     // switches go through session/set_config_option with a plain-string
     // value; session/set_model does not exist (-32601, measured).
     let config_options = std::env::args().any(|arg| arg == "--config-options");
@@ -228,7 +226,7 @@ fn main() -> io::Result<()> {
     let mut reject_config_once = std::env::var_os("DEVBOULE_STUB_REJECT_CONFIG_ONCE").is_some();
     // A real agent keeps its config-option state across a session: model
     // switches must not reset the effort option and vice versa. Start from
-    // the verbatim captured session/new result and mutate it in place.
+    // the captured session/new result and mutate it in place.
     let mut config_state = if config_mode {
         let mut state = if hybrid_effort_only {
             vendor_effort_only_result()
@@ -262,6 +260,15 @@ fn main() -> io::Result<()> {
     // JSON-RPC error and the process keeps reading instead of exiting, so
     // the daemon observes a handshake failure against a live process.
     let fail_session_new = std::env::var_os("DEVBOULE_STUB_FAIL_SESSION_NEW").is_some();
+    let feature_probe_gate = std::env::args()
+        .any(|arg| arg == "--feature-probe-gate")
+        .then(|| {
+            let started = std::env::var("DEVBOULE_ACP_STUB_PROBE_STARTED_FILE")
+                .expect("feature probe started file");
+            let release = std::env::var("DEVBOULE_ACP_STUB_PROBE_RELEASE_FILE")
+                .expect("feature probe release file");
+            (started, release)
+        });
     // Every question carries a fresh tool call id — a real agent never names
     // an id it has already answered (the daemon refuses such a repeat before
     // it can become a card). The old reuse road exists for the one test that
@@ -536,6 +543,23 @@ fn main() -> io::Result<()> {
                         }),
                     )?;
                     continue;
+                }
+                if let Some((started, release)) = &feature_probe_gate {
+                    let mut started_log = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(started)
+                        .expect("open feature probe start log");
+                    writeln!(started_log, "{}", std::process::id())
+                        .expect("record held feature probe");
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    while !std::path::Path::new(release).exists() {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "feature probe was not released"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                 }
                 emit(
                     &mut stdout,

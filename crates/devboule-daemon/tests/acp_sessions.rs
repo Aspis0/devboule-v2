@@ -38,6 +38,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+const SYNTHETIC_AGENT_OPTION_IDS: &[&str] = &["default", "p4-agent-alpha", "p4-agent-beta"];
 
 fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
@@ -365,17 +366,21 @@ fn stub_only_path() -> PathGuard {
 /// Ask until the ACP feature read has answered, so a test can say "the read is
 /// over" without sleeping on a guess. `probing` while the worker runs; the
 /// answer is the list.
-fn wait_for_probing(client: &DaemonClient) -> devboule_protocol::VocabularyFeatures {
+fn wait_for_probing(
+    client: &DaemonClient,
+    model: Option<&str>,
+) -> devboule_protocol::VocabularyFeatures {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let DaemonMessage::ProviderVocabulary { features, .. } = client
-            .provider_vocabulary_get("devboule-acp-stub", None, false)
+            .provider_vocabulary_get("devboule-acp-stub", model, false)
             .expect("vocabulary rpc")
         else {
             panic!("unexpected vocabulary reply");
         };
         let axis = features.expect("a new daemon answers the axis");
         if axis.state == devboule_protocol::VocabularyState::Present {
+            assert_synthetic_agent_options_match_fixture(&axis);
             return axis;
         }
         assert!(
@@ -387,8 +392,22 @@ fn wait_for_probing(client: &DaemonClient) -> devboule_protocol::VocabularyFeatu
     }
 }
 
+fn assert_synthetic_agent_options_match_fixture(axis: &devboule_protocol::VocabularyFeatures) {
+    let Some(agent) = axis.items.iter().find(|feature| feature.id == "agent") else {
+        panic!("the provider feature response omitted the agent fixture option");
+    };
+    assert!(
+        agent
+            .options
+            .iter()
+            .map(|option| option.id.as_str())
+            .eq(SYNTHETIC_AGENT_OPTION_IDS.iter().copied()),
+        "agent feature options differ from the synthetic session/new fixture"
+    );
+}
+
 fn wait_for_file(path: &Path) -> String {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         if let Ok(value) = std::fs::read_to_string(path) {
             if !value.is_empty() {
@@ -3741,20 +3760,23 @@ impl AcpTest {
         Self::new_config_options_with(wrong_config_value, false, false)
     }
 
-    /// `load_modes_only`: the reattach reply (session/load) carries modes
-    /// only, so the restart records no switch shape. `malformed_config_reply`:
-    /// set_config_option answers JSON-RPC success with no parseable catalog.
-    /// The config-options stub with a vendor-authored dial beside the two
-    /// switches (`--feature-option`), optionally advertising
-    /// `sessionCapabilities.close` so a test can tell the two cleanup answers
-    /// apart. A real provider process: the only way to ask what the probe
-    /// returns and what it does on the way out.
     fn new_feature_probe(advertise_close: bool) -> Self {
-        let args: Vec<&str> = if advertise_close {
-            vec!["--config-options", "--feature-option", "--advertise-close"]
-        } else {
-            vec!["--config-options", "--feature-option"]
-        };
+        Self::new_feature_probe_with_gate(advertise_close, false)
+    }
+
+    /// Holds the provider-wide probe so the test can query two models before it answers.
+    fn new_held_feature_probe(advertise_close: bool) -> Self {
+        Self::new_feature_probe_with_gate(advertise_close, true)
+    }
+
+    fn new_feature_probe_with_gate(advertise_close: bool, hold_probe: bool) -> Self {
+        let mut args = vec!["--feature-option"];
+        if advertise_close {
+            args.push("--advertise-close");
+        }
+        if hold_probe {
+            args.push("--feature-probe-gate");
+        }
         Self::new_with_options(&args, false, false, false, false, true, false, false, false)
     }
 
@@ -3899,6 +3921,8 @@ impl AcpTest {
         let set_model_file = observation_dir.join("stub set model.txt");
         let set_model_effort_file = observation_dir.join("stub set model effort.txt");
         let set_config_file = observation_dir.join("stub set config.txt");
+        let probe_started_file = observation_dir.join("probe started.txt");
+        let probe_release_file = observation_dir.join("probe release.txt");
         let mut argv = vec![stub_bin().to_string_lossy().into_owned()];
         if config_options {
             argv.push("--config-options".to_string());
@@ -3918,6 +3942,11 @@ impl AcpTest {
         let session_close_file = observation_dir.join("stub session close.txt");
         std::env::set_var("DEVBOULE_ACP_STUB_CLOSE_FILE", &session_close_file);
         std::env::set_var("DEVBOULE_ACP_STUB_SET_CONFIG_FILE", &set_config_file);
+        let hold_feature_probe = extra_args.contains(&"--feature-probe-gate");
+        if hold_feature_probe {
+            std::env::set_var("DEVBOULE_ACP_STUB_PROBE_STARTED_FILE", &probe_started_file);
+            std::env::set_var("DEVBOULE_ACP_STUB_PROBE_RELEASE_FILE", &probe_release_file);
+        }
         let mut env_names = vec![
             "DEVBOULE_ACP_COMMAND",
             "DEVBOULE_ACP_PROVIDER_ID",
@@ -3930,6 +3959,10 @@ impl AcpTest {
             "DEVBOULE_ACP_STUB_SET_CONFIG_LOG_FILE",
             "DEVBOULE_ACP_STUB_SET_CONFIG_FILE",
         ];
+        if hold_feature_probe {
+            env_names.push("DEVBOULE_ACP_STUB_PROBE_STARTED_FILE");
+            env_names.push("DEVBOULE_ACP_STUB_PROBE_RELEASE_FILE");
+        }
         if reject_set_model {
             std::env::set_var("DEVBOULE_STUB_REJECT_SET_MODEL", "1");
             env_names.push("DEVBOULE_STUB_REJECT_SET_MODEL");
@@ -4095,6 +4128,11 @@ impl AcpTest {
 
 impl Drop for AcpTest {
     fn drop(&mut self) {
+        // Stop providers before removing their shared observation directory.
+        if let Some(mut child) = self._harness.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         let _ = std::fs::remove_dir_all(&self.observation_dir);
     }
 }
@@ -7092,7 +7130,7 @@ fn a_created_child_receives_its_profiles_declared_feature() {
 fn the_feature_probe_closes_its_session_only_when_the_agent_advertises_close() {
     let _lock = lock_tests();
     let advertising = AcpTest::new_feature_probe(true);
-    wait_for_probing(&advertising.client);
+    wait_for_probing(&advertising.client, None);
     let closed = wait_for_file(&advertising.session_close_file());
     assert!(
         !closed.trim().is_empty(),
@@ -7100,7 +7138,7 @@ fn the_feature_probe_closes_its_session_only_when_the_agent_advertises_close() {
     );
 
     let silent = AcpTest::new_feature_probe(false);
-    wait_for_probing(&silent.client);
+    wait_for_probing(&silent.client, None);
     // `wait_for_probing` returns only once the read has answered, and the close
     // is sent before the process is torn down — so a wrong request would already
     // have been written.
@@ -7128,18 +7166,20 @@ fn acp_feature_read_answers_the_declared_dial_after_starting_the_provider() {
         let axis = features.clone().expect("the axis is answered");
         saw_probing = axis.probing;
     }
-    let axis = wait_for_probing(&test.client);
+    let axis = wait_for_probing(&test.client, None);
     assert!(
         saw_probing,
         "the first ask answers `probing` rather than a list it has not read"
     );
+    let feature_ids = axis
+        .items
+        .iter()
+        .map(|feature| feature.id.as_str())
+        .collect::<Vec<_>>();
     assert_eq!(
-        axis.items
-            .iter()
-            .map(|feature| feature.id.as_str())
-            .collect::<Vec<_>>(),
+        feature_ids,
         ["autoAccept", "fast", "agent"],
-        "the daemon's tick beside the agent's own dials, and no switch or mode: {axis:?}"
+        "the response should contain the three ACP feature ids"
     );
     assert_eq!(
         axis.items
@@ -7151,7 +7191,7 @@ fn acp_feature_read_answers_the_declared_dial_after_starting_the_provider() {
             devboule_protocol::VocabularyOrigin::Provider,
             devboule_protocol::VocabularyOrigin::Provider
         ],
-        "authorship is per row, because the list is mixed: {axis:?}"
+        "authorship is per row, because the list is mixed"
     );
     // The answer is cached: the same question is answered without a new read.
     let again = test
@@ -7162,16 +7202,14 @@ fn acp_feature_read_answers_the_declared_dial_after_starting_the_provider() {
         panic!("unexpected reply");
     };
     let cached = features.expect("the axis is answered");
-    assert!(!cached.probing, "a cached answer is final: {cached:?}");
+    assert!(!cached.probing, "a cached answer is final");
 }
 
-/// The cache key carries the model, so a read made against one model is never
-/// the answer for another — the half that protects a stored value, since the
-/// store's prune asks for the profile's own pair.
+/// The probe is shared by provider because `session/new` has no model field.
 #[test]
-fn acp_feature_read_answers_per_model_and_not_across_models() {
+fn acp_feature_read_answer_is_shared_across_models() {
     let _lock = lock_tests();
-    let test = AcpTest::new_feature_probe(false);
+    let test = AcpTest::new_held_feature_probe(false);
     let axis_a = test
         .client
         .provider_vocabulary_get("devboule-acp-stub", Some("stub-model-new"), false)
@@ -7180,12 +7218,8 @@ fn acp_feature_read_answers_per_model_and_not_across_models() {
         panic!("unexpected reply");
     };
     let first = features.expect("the axis is answered");
-    assert!(
-        first.probing || first.state == devboule_protocol::VocabularyState::Present,
-        "model A's question starts its own read: {first:?}"
-    );
-    // Model B was never read. It must not be answered with A's list: the honest
-    // reply is a second read, not a stale one.
+    assert!(first.probing, "the held probe is still in progress");
+    wait_for_file(&test.observation_dir.join("probe started.txt"));
     let axis_b = test
         .client
         .provider_vocabulary_get("devboule-acp-stub", Some("stub-model"), false)
@@ -7194,8 +7228,16 @@ fn acp_feature_read_answers_per_model_and_not_across_models() {
         panic!("unexpected reply");
     };
     let second = features.expect("the axis is answered");
-    assert!(
-        second.probing,
-        "a second model gets its own read, not the first's answer: {second:?}"
+    assert!(second.probing, "both models share the held probe");
+    std::fs::write(test.observation_dir.join("probe release.txt"), "release")
+        .expect("release feature probe");
+    wait_for_probing(&test.client, Some("stub-model"));
+    let probe_starts = std::fs::read_to_string(test.observation_dir.join("probe started.txt"))
+        .expect("feature probe start log");
+    let probe_process_ids = probe_starts.lines().collect::<Vec<_>>();
+    assert_eq!(
+        probe_process_ids.len(),
+        1,
+        "held feature reads were observed in provider processes: {probe_process_ids:?}"
     );
 }
