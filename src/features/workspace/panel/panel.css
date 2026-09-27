@@ -4,63 +4,8 @@
    .workspace-surface-option, .workspace-surface-name) and the dot tones
    stay in Workspace.css with the strip and sidebar that use them; the
    Changes and Files bodies keep theirs there until R7b/R7c. */
-.workspace-right-toolbar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
-  height: 44px;
-}
-
-.workspace-right-toolbar {
-  padding: 0 10px;
-}
-
 .workspace-right-panel {
   background: transparent;
-}
-
-.workspace-surface-selector {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  height: 29px;
-  padding: 0 11px;
-  color: var(--ink);
-  text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  cursor: pointer;
-}
-
-.workspace-surface-selector:hover,
-.workspace-surface-selector:focus-visible {
-  border-color: var(--terracotta);
-}
-
-.workspace-surface-selector .workspace-status-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.workspace-surface-meta {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-surface-chevron {
-  flex: none;
-  margin-left: auto;
-  color: var(--silence);
-  font-size: 10px;
 }
 
 .workspace-surface-options {
@@ -73,18 +18,113 @@
   background: var(--selection);
 }
 
-.workspace-surface-option-meta {
+.workspace-side-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+/* The tab row: h36, the spec tabs sharing the width, the kebab pinned right. */
+.workspace-panel-tabs {
+  display: flex;
   flex: none;
-  margin-left: auto;
+  align-items: stretch;
+  gap: 2px;
+  height: 36px;
+  padding: 0 4px 0 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.workspace-panel-tab {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 8px;
+  color: var(--muted);
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.workspace-panel-tab:hover,
+.workspace-panel-tab:focus-visible {
+  color: var(--ink);
+}
+
+.workspace-panel-tab-active,
+.workspace-panel-tab-active:hover,
+.workspace-panel-tab-active:focus-visible {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.workspace-panel-icon {
+  display: block;
+  flex: none;
+}
+
+.workspace-panel-tab-label {
+  overflow: hidden;
+  font-size: var(--type-small);
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+
+.workspace-panel-tab-badge {
+  flex: none;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
   white-space: nowrap;
 }
 
-.workspace-side-scroll {
-  flex: 1;
-  min-height: 0;
-  padding: 12px;
-  overflow-y: auto;
+.workspace-panel-kebab {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+/* The kebab popup: the shared menu look, anchored under the button so the
+   panel body never moves. The Files row menu is the z-index precedent. */
+.workspace-panel-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 4;
+  min-width: 190px;
+}
+
+.workspace-panel-menu .workspace-panel-icon {
+  color: var(--muted);
+}
+
+.workspace-panel-menu .workspace-surface-option:hover .workspace-panel-icon,
+.workspace-panel-menu .workspace-surface-option:focus-visible .workspace-panel-icon {
+  color: var(--ink);
+}
+
+/* A panel with nothing built yet: its name, the one line of what it will
+   hold, and the honest note. No controls, like the empty Settings pages. */
+.workspace-panel-empty {
+  padding: 16px 12px;
+}
+
+.workspace-panel-empty-title {
+  margin: 0 0 4px;
+  color: var(--ink);
+  font-size: var(--type-small);
+  font-weight: 600;
+}
+
+.workspace-panel-empty-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--type-small);
+  line-height: 1.5;
 }

@@ -1,56 +1,16 @@
 import { memo } from "react";
-import { MOCK_SHIP_STEPS } from "./mockData";
 import { DesignPreviewPanel } from "../design/DesignPreviewPanel";
 
 // The Changes panel lives in `ChangesSurface.tsx` and the Files panel in
 // `FilesSurface.tsx`: each carries its own data source, so neither is one of
-// these mock bodies.
+// these placeholders.
 
-interface AppSurfaceProps {
-  appBuild: number;
-  onReload: () => void;
-}
-
-export const AppSurface = memo(function AppSurface({ appBuild, onReload }: AppSurfaceProps) {
+export const AppSurface = memo(function AppSurface() {
   return (
-    <div>
-      <div className="workspace-changes-mockup-note" role="note">
-        Mockup — this browser page is a static example. The dev-server preview is not built yet.
-      </div>
-      <div className="workspace-browser-card">
-        <div className="workspace-browser-toolbar">
-          <span className="workspace-browser-dots">
-            <span />
-            <span />
-          </span>
-          <span className="workspace-browser-address">web.rust-core.devboule.localhost</span>
-          <button
-            type="button"
-            className="workspace-browser-reload"
-            onClick={onReload}
-            title="Reload"
-          >
-            ↻
-          </button>
-        </div>
-        <div className="workspace-browser-page">
-          <div className="workspace-browser-title-row">
-            <span className="workspace-browser-mark" />
-            <span className="workspace-browser-title">Index browser</span>
-            <span className="workspace-browser-build">build {appBuild}</span>
-          </div>
-          <div className="workspace-browser-skeleton">
-            <div />
-            <div className="workspace-skeleton-82" />
-            <div className="workspace-skeleton-64" />
-            <div className="workspace-skeleton-74" />
-          </div>
-        </div>
-      </div>
-      <div className="workspace-browser-status">
-        <span className="workspace-status-dot workspace-dot-green" />
-        vite dev · hot reload on agent write
-      </div>
+    <div className="workspace-panel-empty">
+      <h2 className="workspace-panel-empty-title">Interactive app</h2>
+      <p className="workspace-panel-empty-note">The running app preview will live here.</p>
+      <p className="workspace-panel-empty-note">This panel is not available yet.</p>
     </div>
   );
 });
@@ -64,47 +24,12 @@ export const DesignPanel = memo(function DesignPanel() {
   return <DesignPreviewPanel />;
 });
 
-interface PullRequestSurfaceProps {
-  prLabel: string;
-  onOpen: () => void;
-}
-
-export const PullRequestSurface = memo(function PullRequestSurface({
-  prLabel,
-  onOpen,
-}: PullRequestSurfaceProps) {
+export const PullRequestSurface = memo(function PullRequestSurface() {
   return (
-    <div>
-      <div className="workspace-pr-summary">
-        <div className="workspace-pr-meta-row">
-          <span className="workspace-pr-status">draft</span>
-          <span className="workspace-pr-number">#412</span>
-        </div>
-        <div className="workspace-pr-title">Move the Oracle index writer to Rust</div>
-        <div className="workspace-pr-copy">
-          Async flush, batched LanceDB add, TS writer deleted. Bench: 1 400 chunks/s vs 310.
-        </div>
-      </div>
-      <div className="workspace-ship-card">
-        <div className="workspace-ship-label">Ship</div>
-        <div className="workspace-ship-steps">
-          {MOCK_SHIP_STEPS.map((step, index) => (
-            <span className="workspace-ship-step" key={step}>
-              <span
-                className={`workspace-ship-ring${index < 4 ? " workspace-ship-ring-active" : ""}${index < 3 ? " workspace-ship-fill-active" : index === 3 ? " workspace-ship-fill-current" : ""}`}
-              />
-              <span
-                className={`workspace-ship-step-name${index < 4 ? " workspace-ship-step-active" : ""}`}
-              >
-                {step}
-              </span>
-            </span>
-          ))}
-        </div>
-      </div>
-      <button type="button" className="workspace-open-pr" onClick={onOpen}>
-        {prLabel}
-      </button>
+    <div className="workspace-panel-empty">
+      <h2 className="workspace-panel-empty-title">Pull request</h2>
+      <p className="workspace-panel-empty-note">The pull request summary will live here.</p>
+      <p className="workspace-panel-empty-note">This panel is not available yet.</p>
     </div>
   );
 });

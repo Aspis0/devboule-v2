@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AppSurface, DesignPanel } from "./sidePanels";
+import { AppSurface, DesignPanel, PullRequestSurface } from "./sidePanels";
 import { useAppStore } from "../../store/appStore";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,47 +51,36 @@ describe("side panel dead controls", () => {
   // that the one act that loses data asks first), and no mockup notice —
   // are anchored there against real content instead of the mock's.
   describe("AppSurface", () => {
-    it("no longer renders the dead Reindex and Export buttons", async () => {
-      await render(<AppSurface appBuild={41} onReload={() => undefined} />);
+    it("names the panel and says what will live here", async () => {
+      await render(<AppSurface />);
 
-      // Anchor on the panel's real content first so the label assertions below
-      // cannot pass on an unrendered panel.
-      expect(container.querySelector(".workspace-browser-reload")).not.toBeNull();
-      expect(container.textContent).toContain("web.rust-core.devboule.localhost");
-      const labels = Array.from(container.querySelectorAll("button")).map(
-        (button) => button.textContent,
-      );
-      expect(labels).not.toContain("Reindex");
-      expect(labels).not.toContain("Export");
+      expect(container.textContent).toContain("Interactive app");
+      expect(container.textContent).toContain("not available yet");
     });
 
-    it("keeps the wired reload button", async () => {
-      let reloads = 0;
-      await render(
-        <AppSurface
-          appBuild={41}
-          onReload={() => {
-            reloads += 1;
-          }}
-        />,
-      );
+    it("carries no controls and no mock browser", async () => {
+      await render(<AppSurface />);
 
-      const reload = container.querySelector<HTMLButtonElement>(".workspace-browser-reload");
-      if (reload === null) throw new Error("reload button did not render");
-      await act(async () => {
-        reload.click();
-      });
-      expect(reloads).toBe(1);
+      expect(container.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
+      expect(container.textContent).not.toContain("Mockup");
+      expect(container.querySelector('[role="note"]')).toBeNull();
+    });
+  });
+
+  describe("PullRequestSurface", () => {
+    it("names the panel and says what will live here", async () => {
+      await render(<PullRequestSurface />);
+
+      expect(container.textContent).toContain("Pull request");
+      expect(container.textContent).toContain("not available yet");
     });
 
-    it("labels the static page as a mockup", async () => {
-      await render(<AppSurface appBuild={41} onReload={() => undefined} />);
+    it("carries no controls and no mock ship card", async () => {
+      await render(<PullRequestSurface />);
 
-      const note = container.querySelector('[role="note"]');
-      if (note === null) throw new Error("mockup notice did not render");
-      expect(note.textContent).toBe(
-        "Mockup — this browser page is a static example. The dev-server preview is not built yet.",
-      );
+      expect(container.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
+      expect(container.textContent).not.toContain("#412");
+      expect(container.querySelector('[role="note"]')).toBeNull();
     });
   });
 

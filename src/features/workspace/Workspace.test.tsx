@@ -316,7 +316,6 @@ import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from ".
 import { createSenderProbe, type SenderProbe } from "./queueSenderDouble";
 import { createDelegationController } from "../../lib/delegation";
 import type { SessionStateSnapshot } from "../../types/ipc";
-import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 
 const terminal = (
   id: string,
@@ -378,15 +377,6 @@ const cleanChanges: WorkspaceGitStatus = {
   branch: "main",
   totals: { additions: 0, deletions: 0 },
   rows: [],
-  error: null,
-};
-
-const dirtyChanges: WorkspaceGitStatus = {
-  isGit: true,
-  dirty: true,
-  branch: "main",
-  totals: { additions: 12, deletions: 3 },
-  rows: [{ path: "src/writer.ts", additions: 12, deletions: 3, status: "modified", capped: false }],
   error: null,
 };
 
@@ -853,189 +843,7 @@ describe("Workspace sessions", () => {
     expect(container.textContent).not.toContain("No tabs yet");
   });
 
-  it("renders and selects an extra panel supplied through the registry", async () => {
-    const extraPanel: SidePanelEntry = {
-      id: "plugin-panel-test",
-      name: "Plugin panel",
-      meta: "test",
-      dotTone: "green",
-      render: () => <div data-testid="plugin-panel">Plugin panel content</div>,
-    };
-    const registry: SidePanelEntry[] = [...SIDE_PANEL_REGISTRY, extraPanel];
-
-    root = createRoot(container);
-    await act(async () => root.render(<Workspace sidePanelRegistry={registry} />));
-    await act(async () => undefined);
-
-    const selector = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
-    if (selector === null) throw new Error("side panel selector did not render");
-    await act(async () => selector.click());
-    const option = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("Plugin panel"));
-    if (option === undefined) throw new Error("extra registry panel did not render");
-    await act(async () => option.click());
-
-    expect(container.querySelector("[data-testid=plugin-panel]")?.textContent).toBe(
-      "Plugin panel content",
-    );
-
-    // The toolbar sits outside every boundary, so the selector node survives
-    // the switch and stays usable directly.
-    await act(async () => selector.click());
-    const selectedOption = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("Plugin panel"));
-    expect(selectedOption?.getAttribute("aria-selected")).toBe("true");
-  });
-
-  it("leaves the panel escape controls usable when the panel body throws", async () => {
-    // The toolbar is chrome, not panel content: a body throw replaces the
-    // body fallback, while the collapse button and the selector stay mounted
-    // so the user can leave the broken panel.
-    const bodyThrows: SidePanelEntry = {
-      id: "body-throws",
-      name: "Body throws",
-      meta: "test",
-      dotTone: "green",
-      // A throw in the panel body's own render (not in the registry
-      // dispatch, which runs in Workspace's render and no boundary below it
-      // could catch).
-      render: () => <BodyThrows />,
-    };
-    function BodyThrows(): ReactNode {
-      throw new Error("panel body failed");
-    }
-
-    root = createRoot(container);
-    await act(async () => root.render(<Workspace sidePanelRegistry={[bodyThrows]} />));
-    await act(async () => undefined);
-
-    const alert = container.querySelector(".surface-fallback");
-    if (alert === null) throw new Error("side panel fallback did not render");
-    expect(alert.textContent).toContain("panel body failed");
-
-    const collapse = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Collapse side panel"]',
-    );
-    if (collapse === null) throw new Error("collapse button did not survive the body throw");
-    // The selector stays usable too: the switcher menu opens, so the user
-    // can leave the broken panel for a healthy one.
-    const select = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
-    if (select === null) throw new Error("selector did not survive the body throw");
-    await act(async () => select.click());
-    expect(container.querySelector(".workspace-surface-menu")).not.toBeNull();
-    await act(async () => collapse.click());
-    expect(container.querySelector('button[aria-label="Show side panel"]')).not.toBeNull();
-  });
-
-  describe("the Changes badge in the panel selector", () => {
-    afterEach(() => {
-      // An override above must not leak: `clearAllMocks` keeps implementations,
-      // and the second top-level describe has no pin of its own.
-      vi.mocked(workspaceGitStatus).mockResolvedValue(cleanChanges);
-    });
-
-    async function renderWorkspace() {
-      root = createRoot(container);
-      await act(async () => root.render(<Workspace />));
-      // Projects → workspaces → selection is a three-hop chain; flush it
-      // rather than guess one tick.
-      for (let hop = 0; hop < 4; hop += 1) {
-        await act(async () => undefined);
-      }
-    }
-
-    function badge(): string | null | undefined {
-      return container.querySelector(".workspace-surface-meta")?.textContent;
-    }
-
-    function option(label: string): HTMLButtonElement {
-      const match = Array.from(
-        container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-      ).find((button) => button.textContent?.includes(label));
-      if (match === undefined) throw new Error(`side panel option did not render: ${label}`);
-      return match;
-    }
-
-    it("shows nothing known until the open panel's own read lands, then the label it read", async () => {
-      // A workspace id no other test has read: the badge store is module-level
-      // and only ever grows, so "never read" needs an id nothing has reported.
-      vi.mocked(workspacesList).mockResolvedValue([{ ...workspace, id: "workspace-badge-unread" }]);
-      // The restored selection lives in the fresh workspace too: selection is
-      // navigation, so the view must land there and read THAT workspace.
-      vi.mocked(sessionsList).mockResolvedValue([
-        terminal("session-1", "shell one", "workspace-badge-unread"),
-      ]);
-      const pending = deferred<WorkspaceGitStatus>();
-      vi.mocked(workspaceGitStatus).mockReturnValue(pending.promise);
-      await renderWorkspace();
-
-      // Two readers now: the sidebar's row stat and the open panel's badge —
-      // each reads for itself, and neither shows anything known yet.
-      // Two independent readers read the fresh id: the sidebar's row stat
-      // and the open panel's badge (the sidebar's cadence is pinned in
-      // useWorkspaceStats.test.tsx, where the triggers are controllable).
-      const freshReads = vi
-        .mocked(workspaceGitStatus)
-        .mock.calls.filter((call) => call[0] === "workspace-badge-unread").length;
-      expect(freshReads).toBeGreaterThanOrEqual(2);
-      expect(badge()).toBe("—");
-
-      await act(async () => {
-        pending.resolve(dirtyChanges);
-      });
-      expect(badge()).toBe("+12 −3");
-    });
-
-    it("keeps the last label the Changes panel read once another panel is selected", async () => {
-      // Its own workspace id as well: the label written here must not become
-      // another test's badge.
-      vi.mocked(workspacesList).mockResolvedValue([{ ...workspace, id: "workspace-badge-kept" }]);
-      vi.mocked(workspaceGitStatus).mockResolvedValue(dirtyChanges);
-      await renderWorkspace();
-      expect(badge()).toBe("+12 −3");
-
-      const selector = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
-      if (selector === null) throw new Error("side panel selector did not render");
-      await act(async () => selector.click());
-      await act(async () => option("Files").click());
-      // The toolbar now carries the selected panel's badge …
-      expect(badge()).toBe("read-only");
-
-      // … while Changes keeps the value it last read: no panel is mounted to
-      // refresh it (DECISIONS §9: no background poller for a decoration).
-      await act(async () => selector.click());
-      expect(option("Changes").querySelector(".workspace-surface-option-meta")?.textContent).toBe(
-        "+12 −3",
-      );
-    });
-  });
-
-  it("renders the first registry entry for an unknown active panel without selecting it", async () => {
-    const fallbackPanel: SidePanelEntry = {
-      id: "only-available-panel",
-      name: "Available panel",
-      meta: "test",
-      dotTone: "green",
-      render: () => <div data-testid="fallback-panel">Fallback content</div>,
-    };
-
-    root = createRoot(container);
-    await act(async () => root.render(<Workspace sidePanelRegistry={[fallbackPanel]} />));
-    await act(async () => undefined);
-
-    expect(container.querySelector("[data-testid=fallback-panel]")?.textContent).toBe(
-      "Fallback content",
-    );
-    const selector = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
-    if (selector === null) throw new Error("side panel selector did not render");
-    await act(async () => selector.click());
-
-    const option = container.querySelector<HTMLButtonElement>(".workspace-surface-option");
-    if (option === null) throw new Error("fallback panel option did not render");
-    expect(option.getAttribute("aria-selected")).toBe("false");
-  });
+  // The right panel’s tab tests live in sidePanelTabs.test.tsx.
 
   it("exposes the checkout path on hover and omits it when the daemon sent none", async () => {
     const worktreeWorkspace: IpcWorkspace = {

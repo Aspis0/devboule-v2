@@ -112,8 +112,7 @@
 }
 
 .workspace-icon-button,
-.workspace-project-add,
-.workspace-browser-reload {
+.workspace-project-add {
   display: grid;
   flex: none;
   place-items: center;
@@ -165,34 +164,16 @@
   border-radius: 999px;
 }
 
-.workspace-dot-terracotta,
-.workspace-surface-dot-terracotta {
+.workspace-dot-terracotta {
   background: var(--terracotta);
 }
 
-.workspace-dot-green,
-.workspace-surface-dot-green {
+.workspace-dot-green {
   background: var(--green);
 }
 
-.workspace-dot-border,
-.workspace-surface-dot-silence {
+.workspace-dot-border {
   background: var(--border-strong);
-}
-
-.workspace-surface-dot-purple {
-  background: var(--purple);
-}
-
-.workspace-surface-dot-ochre {
-  background: var(--ochre);
-}
-
-/* The browser panel's dots shrink to 5px; the sidebar's daemon foot dot is
-   sized in sidebar.css. */
-.workspace-browser-status .workspace-status-dot {
-  width: 5px;
-  height: 5px;
 }
 
 /* Restore: the keyboard focus ring's offset neighbour - icon buttons change
@@ -237,11 +218,7 @@
 .workspace-session-cwd,
 .workspace-diff-header,
 .workspace-diff-lines,
-.workspace-files-tree,
-.workspace-browser-address,
-.workspace-browser-build,
-.workspace-browser-status,
-.workspace-pr-number {
+.workspace-files-tree {
   font-family: "JetBrains Mono", monospace;
 }
 
@@ -1024,8 +1001,7 @@
   animation: caret 1s steps(1) infinite;
 }
 
-.workspace-row-selected .workspace-row-meta,
-.workspace-surface-option-selected .workspace-surface-option-meta {
+.workspace-row-selected .workspace-row-meta {
   color: var(--ink-soft);
 }
 
@@ -1388,8 +1364,7 @@
   animation: rise 0.18s ease both;
 }
 
-.workspace-menu-label,
-.workspace-ship-label {
+.workspace-menu-label {
   color: var(--silence);
   font-size: 9.5px;
   font-weight: 600;
@@ -1468,16 +1443,6 @@
   gap: 6px;
   justify-content: flex-end;
   padding: 8px 0 2px;
-}
-
-.workspace-changes-mockup-note {
-  margin-bottom: 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--ochre);
-  border-radius: 8px;
-  color: var(--ochre-deep);
-  font-size: 11px;
-  line-height: 1.55;
 }
 
 .workspace-changes-toolbar {
@@ -1937,130 +1902,6 @@
   line-height: 1.55;
 }
 
-.workspace-browser-card {
-  overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-}
-
-.workspace-browser-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 7px 9px;
-  background: transparent;
-}
-
-.workspace-browser-dots {
-  display: flex;
-  flex: none;
-  gap: 4px;
-}
-
-.workspace-browser-dots span {
-  width: 7px;
-  height: 7px;
-  background: var(--border-strong);
-  border-radius: 999px;
-}
-
-.workspace-browser-address {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  min-width: 0;
-  height: auto;
-  padding: 0;
-  overflow: hidden;
-  color: var(--ink-soft);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: transparent;
-  font-size: 9.5px;
-}
-
-.workspace-browser-reload {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
-  font-size: 11px;
-}
-
-.workspace-browser-reload:hover,
-.workspace-browser-reload:focus-visible {
-  color: var(--terracotta-deep);
-  background: var(--selection);
-}
-
-.workspace-browser-page {
-  height: 232px;
-  padding: 12px;
-  background: transparent;
-}
-
-.workspace-browser-title-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding-bottom: 9px;
-}
-
-.workspace-browser-mark {
-  width: 16px;
-  height: 16px;
-  background: var(--terracotta);
-  border-radius: 5px;
-}
-
-.workspace-browser-title {
-  font-family: "Fraunces", Georgia, serif;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.workspace-browser-build {
-  margin-left: auto;
-  color: var(--silence);
-  font-size: 9px;
-}
-
-.workspace-browser-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.workspace-browser-skeleton div {
-  width: 100%;
-  height: 26px;
-  background: var(--surface-muted);
-  border-radius: 6px;
-}
-
-.workspace-browser-skeleton .workspace-skeleton-82 {
-  width: 82%;
-}
-
-.workspace-browser-skeleton .workspace-skeleton-64 {
-  width: 64%;
-  background: var(--selection);
-}
-
-.workspace-browser-skeleton .workspace-skeleton-74 {
-  width: 74%;
-}
-
-.workspace-browser-status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-top: 9px;
-  color: var(--silence);
-  font-size: 10px;
-}
-
 .workspace-grounding-row {
   display: flex;
   align-items: center;
@@ -2141,127 +1982,6 @@
   color: var(--silence);
   font-size: 10.5px;
   line-height: 1.55;
-}
-
-.workspace-pr-summary {
-  padding: 13px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-}
-
-.workspace-pr-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.workspace-pr-status {
-  display: grid;
-  height: 20px;
-  padding: 0 9px;
-  place-items: center;
-  color: var(--terracotta-deep);
-  background: var(--selection);
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.workspace-pr-number {
-  color: var(--silence);
-  font-size: 10.5px;
-}
-
-.workspace-pr-title {
-  margin-top: 9px;
-  font-family: "Fraunces", Georgia, serif;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.workspace-pr-copy {
-  margin-top: 7px;
-  color: var(--ink-soft);
-  font-size: 11.5px;
-  line-height: 1.6;
-}
-
-.workspace-ship-card {
-  margin-top: 13px;
-  padding: 12px 13px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-
-.workspace-ship-steps {
-  display: flex;
-  align-items: center;
-  margin-top: 10px;
-}
-
-.workspace-ship-step {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-}
-
-.workspace-ship-ring {
-  width: 15px;
-  height: 15px;
-  background: var(--surface);
-  border: 1.25px solid var(--border-strong);
-  border-radius: 999px;
-}
-
-.workspace-ship-ring-active {
-  border-color: var(--terracotta);
-}
-
-.workspace-ship-fill-active {
-  background: var(--terracotta);
-}
-
-.workspace-ship-fill-current {
-  background: var(--selection);
-}
-
-.workspace-ship-step-name {
-  color: var(--silence);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.workspace-ship-step-active {
-  color: var(--terracotta-deep);
-}
-
-.workspace-open-pr {
-  display: grid;
-  width: 100%;
-  height: 30px;
-  margin-top: 9px;
-  place-items: center;
-  color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  cursor: pointer;
-  font-size: 11.5px;
-  font-weight: 500;
-}
-
-.workspace-open-pr:hover,
-.workspace-open-pr:focus-visible {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta);
 }
 
 .workspace-project-dialog-backdrop {

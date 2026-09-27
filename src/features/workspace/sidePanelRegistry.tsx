@@ -2,15 +2,14 @@ import type { ReactNode } from "react";
 import { AppSurface, DesignPanel, PullRequestSurface } from "./sidePanels";
 import { ChangesSurface } from "./ChangesSurface";
 import { FilesSurface } from "./FilesSurface";
-import { CHANGES_BADGE_UNREAD, changesBadge } from "./changesBadge";
+import { changesBadge } from "./changesBadge";
+import type { PanelIconName } from "./panel/PanelIcon";
 
-export type DotTone = "terracotta" | "silence" | "green" | "purple" | "ochre";
+/** Where the tab row offers a panel: a visible tab, or the kebab menu. The
+ * three spec tabs stay tabs; mock and future panels must not crowd them. */
+export type PanelPlacement = "tab" | "menu";
 
 export interface SidePanelContext {
-  appBuild: number;
-  onReload: () => void;
-  prLabel: string;
-  onOpenPullRequest: () => void;
   /**
    * The selected workspace's id — the only form of it that may leave this
    * process (`src/types/ipc.ts` declares `Workspace.path` display-only).
@@ -22,7 +21,7 @@ export interface SidePanelContext {
  * A panel whose own reads produce the badge, instead of a value written into
  * the registry. The snapshot is keyed by workspace so one checkout's numbers
  * can never appear under another's name, and `null` means this panel has never
- * read — the registry then falls back to the entry's static `meta`.
+ * read — the tab then shows the unread mark.
  */
 export interface SidePanelLiveMeta {
   subscribe: (listener: () => void) => () => void;
@@ -32,10 +31,9 @@ export interface SidePanelLiveMeta {
 export interface SidePanelEntry {
   id: string;
   name: string;
-  /** The badge beside the panel's name; a panel with live data overrides it. */
-  meta: string;
+  placement: PanelPlacement;
+  icon: PanelIconName;
   liveMeta?: SidePanelLiveMeta;
-  dotTone: DotTone;
   render: (context: SidePanelContext) => ReactNode;
 }
 
@@ -43,48 +41,41 @@ export interface SidePanelEntry {
 // Workspace; this is intentionally not a plugin registration API.
 export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
   {
-    id: "changes",
-    name: "Changes",
-    // Before the first read, and what a workspace never read shows (DECISIONS §9:
-    // the open panel's poll supplies the real label, a closed panel keeps it).
-    meta: CHANGES_BADGE_UNREAD,
-    liveMeta: changesBadge,
-    dotTone: "terracotta",
-    render: ({ workspaceId }) => <ChangesSurface workspaceId={workspaceId} />,
-  },
-  // The Files panel reads a real tree, but has no live badge: its meta is a
-  // property of the panel, never an invented count (an example of one, the
-  // old `2 140`, was exactly the defect this comment used to carry).
-  {
     id: "files",
     name: "Files",
-    meta: "read-only",
-    dotTone: "silence",
+    placement: "tab",
+    icon: "files",
     render: ({ workspaceId }) => <FilesSurface workspaceId={workspaceId} />,
   },
-  // This metadata is a mockup: it is an invented value for the mock Interactive app panel.
   {
-    id: "app",
-    name: "Interactive app",
-    meta: "localhost",
-    dotTone: "green",
-    render: ({ appBuild, onReload }) => <AppSurface appBuild={appBuild} onReload={onReload} />,
+    id: "changes",
+    name: "Changes",
+    placement: "tab",
+    icon: "changes",
+    // Before the first read, and what a workspace never read shows (DECISIONS §9:
+    // the open panel's poll supplies the real label, a closed panel keeps it).
+    liveMeta: changesBadge,
+    render: ({ workspaceId }) => <ChangesSurface workspaceId={workspaceId} />,
   },
   {
     id: "design",
     name: "Design",
-    meta: "session mirror",
-    dotTone: "purple",
+    placement: "tab",
+    icon: "design",
     render: () => <DesignPanel />,
   },
-  // This metadata is a mockup: it is an invented value for the mock Pull request panel.
+  {
+    id: "app",
+    name: "Interactive app",
+    placement: "menu",
+    icon: "app",
+    render: () => <AppSurface />,
+  },
   {
     id: "pr",
     name: "Pull request",
-    meta: "#412",
-    dotTone: "ochre",
-    render: ({ prLabel, onOpenPullRequest }) => (
-      <PullRequestSurface prLabel={prLabel} onOpen={onOpenPullRequest} />
-    ),
+    placement: "menu",
+    icon: "pr",
+    render: () => <PullRequestSurface />,
   },
 ];
