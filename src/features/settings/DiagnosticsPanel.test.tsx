@@ -292,6 +292,25 @@ describe("diagnostics panel", () => {
     await act(async () => retry.click());
     expect(container.textContent).toContain("healthy diagnostics child");
   });
+
+  it("groups each report section into a headed house card", async () => {
+    vi.mocked(daemonDiagnostics).mockResolvedValue(sampleReport);
+    root = createRoot(container);
+    await act(async () => renderPanel());
+    await act(async () => undefined);
+
+    const sections = [
+      ...container.querySelectorAll("section.diagnostics-card.diagnostics-section"),
+    ];
+    expect(sections.map((section) => section.querySelector("h3")?.textContent)).toEqual([
+      "Daemon",
+      "Health",
+      "Journal",
+      "Sessions",
+      "Providers",
+      "Environment",
+    ]);
+  });
 });
 
 describe("formatDiagnostics", () => {

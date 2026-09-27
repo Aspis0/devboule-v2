@@ -4,6 +4,7 @@ import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { NewProjectDialog } from "../../../components/NewProjectDialog";
 import type { Project, Workspace } from "../../../types/ipc";
+import "../projects.css";
 export function ProjectsPanel() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workspacesByProject, setWorkspacesByProject] = useState<Record<string, Workspace[]>>({});
@@ -64,7 +65,7 @@ export function ProjectsPanel() {
 
   return (
     <div id="settings-panel-projects">
-      <div className="settings-stack settings-stack-spaced">
+      <section aria-label="Projects">
         {loading ? <div role="status">Loading projects…</div> : null}
         {error !== null ? (
           <div role="alert">
@@ -78,15 +79,16 @@ export function ProjectsPanel() {
             </button>
           </div>
         ) : null}
-        {error === null
-          ? projects.map((project) => {
+        {error === null && projects.length > 0 ? (
+          <div className="proj-card">
+            {projects.map((project) => {
               const workspaces = workspacesByProject[project.id];
               const workspaceCount = workspaces?.length;
               const workspaceError = workspaceErrors[project.id];
               return (
-                <div className="settings-card settings-project-card" key={project.id}>
+                <div className="proj-row settings-project-card" key={project.id}>
                   <span className="settings-card-copy">
-                    <span className="settings-card-title">{project.name}</span>
+                    <span className="settings-card-title proj-name">{project.name}</span>
                     <span className="settings-card-meta">{project.path}</span>
                     {(workspaces ?? []).map((workspace) =>
                       // Render exactly what the daemon sent: no project-path
@@ -119,20 +121,21 @@ export function ProjectsPanel() {
                   )}
                 </div>
               );
-            })
-          : null}
+            })}
+          </div>
+        ) : null}
         {!loading && error === null && projects.length === 0 ? (
           <div role="status">No projects registered</div>
         ) : null}
-        <button
-          className="settings-dashed-action"
-          type="button"
-          ref={addProjectRef}
-          onClick={() => setDialogOpen(true)}
-        >
-          <span aria-hidden="true">+</span>Add project
-        </button>
-      </div>
+      </section>
+      <button
+        className="settings-dashed-action"
+        type="button"
+        ref={addProjectRef}
+        onClick={() => setDialogOpen(true)}
+      >
+        <span aria-hidden="true">+</span>Add project
+      </button>
 
       <NewProjectDialog open={dialogOpen} onClose={closeDialog} onCreate={handleProjectAdded} />
     </div>

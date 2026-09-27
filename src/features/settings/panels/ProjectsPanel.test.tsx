@@ -239,4 +239,13 @@ describe("Settings projects", () => {
     expect(container.textContent).toContain("canonical-name");
     expect(container.textContent).toContain("D:\\canonical-project");
   });
+
+  it("wraps the project rows in one house card", async () => {
+    await renderProjects();
+
+    const card = container.querySelector(".proj-card");
+    if (card === null) throw new Error("project house card did not render");
+    expect(card.querySelectorAll(".settings-project-card")).toHaveLength(1);
+    expect(card.textContent).toContain("real-project");
+  });
 });

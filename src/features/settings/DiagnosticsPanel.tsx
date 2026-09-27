@@ -178,8 +178,8 @@ interface RecordSectionProps {
 function RecordSection({ title, record }: RecordSectionProps) {
   const entries = sortedEntries(record);
   return (
-    <section className="settings-card diagnostics-section">
-      <h3 className="settings-card-title">{title}</h3>
+    <section className="diagnostics-card diagnostics-section">
+      <h3 className="diagnostics-card-title">{title}</h3>
       {entries.length === 0 ? (
         // A blank card in a diagnostics panel reads as "there is no problem".
         // When a section carries nothing the frontend recognises — the most
@@ -230,8 +230,8 @@ export class DiagnosticsErrorBoundary extends Component<
     if (this.state.error !== null) {
       return (
         <div id="settings-panel-diagnostics">
-          <div className="settings-card diagnostics-error" role="alert">
-            <h3 className="settings-card-title">Could not render the diagnostics</h3>
+          <section className="diagnostics-card diagnostics-error" role="alert">
+            <h3 className="diagnostics-card-title">Could not render the diagnostics</h3>
             <p>
               <ErrorText
                 sentence={errorSentence(this.state.error).sentence}
@@ -250,7 +250,7 @@ export class DiagnosticsErrorBoundary extends Component<
             >
               Try again
             </button>
-          </div>
+          </section>
         </div>
       );
     }
@@ -334,8 +334,8 @@ function DiagnosticsPanelContent() {
   if (error !== null) {
     return (
       <div id="settings-panel-diagnostics">
-        <div className="settings-card diagnostics-error" role="alert">
-          <h3 className="settings-card-title">Could not load the diagnostics</h3>
+        <section className="diagnostics-card diagnostics-error" role="alert">
+          <h3 className="diagnostics-card-title">Could not load the diagnostics</h3>
           <p>
             <ErrorText
               sentence={error.sentence}
@@ -347,7 +347,7 @@ function DiagnosticsPanelContent() {
           <button type="button" className="diagnostics-retry" onClick={retry}>
             Try again
           </button>
-        </div>
+        </section>
       </div>
     );
   }
@@ -387,33 +387,31 @@ function DiagnosticsPanelContent() {
         ) : null}
       </div>
       <p className="diagnostics-note">{SAFETY_NOTE}</p>
-      <div className="diagnostics-grid">
-        <RecordSection title="Daemon" record={source.daemon} />
-        <RecordSection title="Health" record={health} />
-        <RecordSection title="Journal" record={journal} />
-        <RecordSection title="Sessions" record={source.sessions} />
-        {providers.length > 0 ? (
-          <section className="settings-card diagnostics-section">
-            <h3 className="settings-card-title">Providers</h3>
-            <ul className="diagnostics-providers">
-              {providers.map((row, index) => {
-                const entries = sortedEntries(row);
-                return (
-                  <li key={index}>
-                    {entries.map(([key, value]) => (
-                      <span className="diagnostics-provider-field" key={key}>
-                        <span className="diagnostics-provider-key">{humanizeKey(key)}</span>{" "}
-                        {formatValue(value)}
-                      </span>
-                    ))}
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        ) : null}
-        <RecordSection title="Environment" record={source.environment} />
-      </div>
+      <RecordSection title="Daemon" record={source.daemon} />
+      <RecordSection title="Health" record={health} />
+      <RecordSection title="Journal" record={journal} />
+      <RecordSection title="Sessions" record={source.sessions} />
+      {providers.length > 0 ? (
+        <section className="diagnostics-card diagnostics-section">
+          <h3 className="diagnostics-card-title">Providers</h3>
+          <ul className="diagnostics-providers">
+            {providers.map((row, index) => {
+              const entries = sortedEntries(row);
+              return (
+                <li key={index}>
+                  {entries.map(([key, value]) => (
+                    <span className="diagnostics-provider-field" key={key}>
+                      <span className="diagnostics-provider-key">{humanizeKey(key)}</span>{" "}
+                      {formatValue(value)}
+                    </span>
+                  ))}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+      <RecordSection title="Environment" record={source.environment} />
       <pre className="diagnostics-text">{formatDiagnostics(report)}</pre>
     </div>
   );

@@ -1,59 +1,86 @@
-.retention-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+/* Diagnostics page: the daemon report plus the transcript-history section,
+   which renders here (general.css names this sheet as its owner). R17-5
+   owns this file.
+   Geometry-critical declarations stay on bare classes: the diagnostics
+   geometry test reads them through cssProof, which models bare selectors
+   only. */
+
+/* Same vertical rhythm as the shell's `.settings-main-inner > section`:
+   our sections sit inside #settings-panel-diagnostics, so the shell rule
+   cannot reach them and the 18 px reference is restated here. */
+#settings-panel-diagnostics > section {
+  margin-bottom: 18px;
 }
 
-.retention-summary,
-.retention-limits {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* One house card per report section: the title is the section label, the
+   rows below divide on `--line`. */
+.diagnostics-card {
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-card);
 }
 
-.retention-blocked-copy,
-.retention-help {
+.diagnostics-section {
+  padding: 4px 0 10px;
+}
+
+.diagnostics-card-title {
   margin: 0;
-  color: var(--terracotta-deep);
+  padding: 9px 14px 8px;
+  color: var(--muted);
   font-size: 12px;
-  line-height: 1.5;
+  font-weight: 500;
 }
 
-.retention-help {
-  color: var(--ink-soft);
+.diagnostics-rows {
+  display: grid;
+  margin: 0;
 }
 
-.retention-limit-row {
+.diagnostics-row {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  justify-content: space-between;
+  padding: 6px 14px;
 }
 
-.retention-limit-input {
-  width: 160px;
-  margin-left: auto;
-  padding: 7px 9px;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 7px;
+.diagnostics-row + .diagnostics-row {
+  border-top: 1px solid var(--line);
+}
+
+/* The key is the row's label, in the spec's sizes and never mono. The
+   value stays mono: numbers, paths and versions are data. */
+.diagnostics-row dt {
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.diagnostics-row dd {
+  margin: 0;
+  color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
 }
 
-.settings-retention-alert {
-  padding: 9px 11px;
-  color: var(--terracotta-deep);
-  background: color-mix(in srgb, var(--terracotta) 10%, transparent);
-  border: 1px solid var(--terracotta);
-  border-radius: 8px;
-  font-size: 12px;
+.diagnostics-providers {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 14px 2px;
+  list-style: none;
+  font-size: 11px;
+  color: var(--ink-soft);
 }
 
-/* Diagnostics panel: the report's cards reuse .settings-card; the rows and
-   the copied text block are the only new surface. */
+.diagnostics-provider-field {
+  margin-right: 12px;
+}
+
+.diagnostics-provider-key {
+  color: var(--silence);
+}
+
 .diagnostics-actions {
   display: flex;
   align-items: center;
@@ -77,11 +104,19 @@
 }
 
 .diagnostics-copy:hover,
+.diagnostics-retry:hover {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta);
+}
+
+/* The hover above moves colour and edge only; the drawn focus ring lives
+   here so a keyboard tab is never mistaken for a rest state. */
 .diagnostics-copy:focus-visible,
-.diagnostics-retry:hover,
 .diagnostics-retry:focus-visible {
   color: var(--terracotta-deep);
   border-color: var(--terracotta);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .diagnostics-copy-note {
@@ -93,54 +128,10 @@
   color: var(--terracotta-deep);
 }
 
-.diagnostics-grid {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.diagnostics-rows {
-  display: grid;
-  gap: 4px;
-  margin: 0;
-}
-
-.diagnostics-row {
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  font-size: 11px;
-}
-
-.diagnostics-row dt {
-  color: var(--silence);
-}
-
-.diagnostics-row dd {
-  margin: 0;
-  color: var(--ink-soft);
-  font-family: "JetBrains Mono", monospace;
-}
-
-.diagnostics-providers {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 11px;
-  color: var(--ink-soft);
-}
-
-.diagnostics-provider-field {
-  margin-right: 12px;
-}
-
-.diagnostics-provider-key {
-  color: var(--silence);
-}
-
+/* The raw report text is data, so mono stays — declared here instead of
+   relying on the `pre` default, so the allowlist test can see it. */
 .diagnostics-text {
+  max-width: 720px;
   max-height: 280px;
   margin: 14px 0 0;
   padding: 10px 12px;
@@ -149,11 +140,23 @@
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 8px;
+  font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
   white-space: pre;
 }
 
-.diagnostics-error,
+/* The load failure is an alert on a card; the empty and loading states
+   stay plain lines. */
+.diagnostics-error {
+  max-width: 720px;
+  margin-top: 14px;
+  padding: 13px 15px;
+  color: var(--ink-soft);
+  background: var(--panel-card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
 .diagnostics-empty,
 .diagnostics-loading {
   margin-top: 14px;
@@ -162,6 +165,7 @@
 
 .diagnostics-section-empty {
   margin: 0;
+  padding: 6px 14px;
   color: var(--silence);
   font-size: 11px;
 }
@@ -169,5 +173,74 @@
 .diagnostics-note {
   margin: 8px 0 0;
   color: var(--muted);
+  font-size: 12px;
+}
+
+/* Transcript history (JournalRetentionPanel renders on this page). The
+   usage and limits blocks are house list-cards; their rows reuse the
+   shell's borderless `.settings-card`, divided here. */
+.retention-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.retention-summary,
+.retention-limits {
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-card);
+  padding: 4px 0;
+}
+
+.retention-summary > .settings-card,
+.retention-limits > .retention-limit-row {
+  padding-right: 14px;
+  padding-left: 14px;
+}
+
+.retention-summary > .settings-card + .settings-card,
+.retention-limits > .retention-limit-row + .retention-limit-row {
+  border-top: 1px solid var(--line);
+}
+
+.retention-blocked-copy,
+.retention-help {
+  margin: 0;
+  color: var(--terracotta-deep);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.retention-help {
+  color: var(--ink-soft);
+}
+
+.retention-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+}
+
+.retention-limit-input {
+  width: 160px;
+  margin-left: auto;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.settings-retention-alert {
+  padding: 9px 11px;
+  color: var(--terracotta-deep);
+  background: color-mix(in srgb, var(--terracotta) 10%, transparent);
+  border: 1px solid var(--terracotta);
+  border-radius: 8px;
   font-size: 12px;
 }

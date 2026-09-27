@@ -420,7 +420,9 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     // now live in the shell sheet), so the allowlist scans all six. Each
     // entry names its owner: devices (this slice), shell legacy + shell
     // model picker (R17-0), providers (R17-1's own guard mirrors it),
-    // retention + diagnostics rows (diagnostics sheet).
+    // retention + diagnostics rows + the raw report text (diagnostics
+    // sheet; R17-5 declares the `pre` face explicitly instead of relying
+    // on the user-agent default).
     const sheets: Record<string, readonly string[]> = {
       "src/features/settings/devices.css": [
         ".dev-pair-code",
@@ -442,7 +444,11 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
       ],
       "src/features/settings/profiles.css": [],
       "src/features/settings/general.css": [],
-      "src/features/settings/diagnostics.css": [".retention-limit-input", ".diagnostics-row dd"],
+      "src/features/settings/diagnostics.css": [
+        ".retention-limit-input",
+        ".diagnostics-row dd",
+        ".diagnostics-text",
+      ],
     };
     let scanned = 0;
     for (const [sheet, allowed] of Object.entries(sheets)) {

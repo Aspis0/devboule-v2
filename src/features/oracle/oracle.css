@@ -3,29 +3,12 @@
   padding-bottom: 18px;
 }
 
-.oracle-page-heading {
-  margin-bottom: 18px;
-}
-
-.oracle-page-heading h2 {
-  margin: 3px 0 0;
-  font-family: "Fraunces", Georgia, serif;
-  font-size: 24px;
-  font-weight: 600;
-}
-
-.oracle-page-heading p,
 .oracle-stage-description,
 .oracle-ready-intro p,
 .oracle-index-progress p {
   color: var(--ink-soft);
   font-size: 12.5px;
   line-height: 1.6;
-}
-
-.oracle-page-heading p {
-  max-width: 560px;
-  margin: 5px 0 0;
 }
 
 .oracle-eyebrow {
@@ -35,12 +18,16 @@
   text-transform: uppercase;
 }
 
+/* The setup flow sits on the house card: the ground and edge already
+   resolve through the shell aliases (--surface is --panel-card, --border
+   is --line), so only the metrics move here. The four-step rail inside
+   is untouched. */
 .oracle-stage-card {
   overflow: hidden;
+  max-width: 720px;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--surface);
-  box-shadow: 0 14px 30px rgba(var(--ink-rgb), 0.06);
 }
 
 .oracle-stage-rail,
@@ -543,11 +530,11 @@
 }
 
 .oracle-query-surface {
+  max-width: 720px;
   padding: 18px;
   background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 14px;
-  box-shadow: 0 10px 24px rgba(var(--ink-rgb), 0.05);
+  border: 1px solid var(--border);
+  border-radius: 12px;
 }
 
 .oracle-ready-intro {
@@ -558,7 +545,7 @@
 
 .oracle-ready-intro h3 {
   margin-top: 4px;
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .oracle-ready-intro p {

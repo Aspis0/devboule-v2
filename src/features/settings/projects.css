@@ -1,0 +1,47 @@
+/* Projects page: the daemon's project rows, their workspaces, and the Add
+   project action. R17-5 owns this file.
+   Geometry-critical declarations stay on bare classes: the projects
+   geometry test reads them through cssProof, which models bare selectors
+   only. */
+
+/* Same vertical rhythm as the shell's `.settings-main-inner > section`:
+   our sections sit inside #settings-panel-projects, so the shell rule
+   cannot reach them and the 18 px reference is restated here. */
+#settings-panel-projects > section {
+  margin-bottom: 18px;
+}
+
+/* One house card for the project list; rows below the first divide on
+   `--line`. The Add project control keeps the shell's dashed action. */
+.proj-card {
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-card);
+  padding: 4px 0;
+}
+
+.proj-row + .proj-row {
+  border-top: 1px solid var(--line);
+}
+
+.proj-row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 10px 14px;
+}
+
+/* The row's type, in the spec's sizes and never mono: the name is the
+   label, the workspace paths keep the shell's mono meta face through
+   `.settings-card-meta` (paths are data, read verbatim), lifted to meta
+   12 below. */
+.proj-name {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+#settings-panel-projects .settings-card-meta {
+  font-size: 12px;
+}
