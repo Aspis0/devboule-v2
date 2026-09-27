@@ -98,48 +98,6 @@ fn provider_set_enabled_reply(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::provider_set_enabled_reply;
-    use crate::provider_switches::SwitchError;
-    use devboule_protocol::{DaemonMessage, ErrorCode};
-
-    #[test]
-    fn provider_switch_reply_echoes_id_and_maps_invalid_and_io_failures() {
-        assert!(matches!(
-            provider_set_enabled_reply(51, "claude", Ok(())),
-            DaemonMessage::ProviderSetEnabledOk { id: 51 }
-        ));
-
-        let invalid = provider_set_enabled_reply(
-            52,
-            "missing-provider",
-            Err(SwitchError::InvalidRequest("not published".to_string())),
-        );
-        let DaemonMessage::Error(invalid) = invalid else {
-            panic!("invalid requests map to Error: {invalid:?}");
-        };
-        assert_eq!(invalid.id, Some(52));
-        assert_eq!(invalid.code, ErrorCode::InvalidRequest);
-        assert_eq!(
-            invalid.message,
-            "Could not switch 'missing-provider': not published"
-        );
-
-        let io = provider_set_enabled_reply(
-            53,
-            "claude",
-            Err(SwitchError::Io(std::io::Error::other("disk full"))),
-        );
-        let DaemonMessage::Error(io) = io else {
-            panic!("write failures map to Error: {io:?}");
-        };
-        assert_eq!(io.id, Some(53));
-        assert_eq!(io.code, ErrorCode::Io);
-        assert_eq!(io.message, "Could not switch 'claude': disk full");
-    }
-}
-
 pub(super) fn agent_profiles_set(
     state: &Arc<ServerState>,
     id: u64,
@@ -256,5 +214,47 @@ pub(super) fn delegation_set(
             )
             .with_id(id),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_set_enabled_reply;
+    use crate::provider_switches::SwitchError;
+    use devboule_protocol::{DaemonMessage, ErrorCode};
+
+    #[test]
+    fn provider_switch_reply_echoes_id_and_maps_invalid_and_io_failures() {
+        assert!(matches!(
+            provider_set_enabled_reply(51, "claude", Ok(())),
+            DaemonMessage::ProviderSetEnabledOk { id: 51 }
+        ));
+
+        let invalid = provider_set_enabled_reply(
+            52,
+            "missing-provider",
+            Err(SwitchError::InvalidRequest("not published".to_string())),
+        );
+        let DaemonMessage::Error(invalid) = invalid else {
+            panic!("invalid requests map to Error: {invalid:?}");
+        };
+        assert_eq!(invalid.id, Some(52));
+        assert_eq!(invalid.code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            invalid.message,
+            "Could not switch 'missing-provider': not published"
+        );
+
+        let io = provider_set_enabled_reply(
+            53,
+            "claude",
+            Err(SwitchError::Io(std::io::Error::other("disk full"))),
+        );
+        let DaemonMessage::Error(io) = io else {
+            panic!("write failures map to Error: {io:?}");
+        };
+        assert_eq!(io.id, Some(53));
+        assert_eq!(io.code, ErrorCode::Io);
+        assert_eq!(io.message, "Could not switch 'claude': disk full");
     }
 }

@@ -1739,7 +1739,7 @@ fn a_disabled_claude_catalog_uses_fallback_without_entering_a_probe() {
         .set("claude", false)
         .expect("disable Claude");
     let before = state.version_probe_entry_count();
-    let snapshot = state.claude_models_in_paths(&[temp.clone()]);
+    let snapshot = state.claude_models_in_paths(std::slice::from_ref(&temp));
     assert_eq!(
         snapshot.state,
         crate::claude_catalog::ClaudeCatalogState::Provisional
