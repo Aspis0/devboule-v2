@@ -4,6 +4,7 @@ import { FilesPreview, formatSize } from "./FilesPreview";
 import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
 import { useWorkspaceFilePreview } from "./useWorkspaceFilePreview";
 import { useWorkspaceFiles, type DirectoryCell } from "./useWorkspaceFiles";
+import "./panel/files.css";
 import { ErrorText } from "../../components/ErrorText";
 import type { ErrorSentence } from "../../lib/errorSentence";
 
