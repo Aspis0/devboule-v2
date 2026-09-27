@@ -31,16 +31,18 @@ afterEach(async () => {
 });
 
 describe("sidebar computed styles (real stylesheets, no app launch)", () => {
-  // Sheet order matches the bundle: tokens, global, strip (pulled in by
-  // SessionStrip, which Workspace imports before its own CSS), workspace,
-  // the Changes body (pulled in by ChangesSurface, straight after the
-  // panel chrome in bundle order), sidebar.
+  // Sheet order matches the bundle's import graph: tokens, global, then
+  // Workspace.css — pulled in by NewProjectDialog, which Workspace imports
+  // at :15, before the registry chain (:16) that pulls in changes.css —
+  // then changes.css, strip (SessionStrip, :23), sidebar (Sidebar, :37).
+  // First importer wins the position, so the :80 re-import of
+  // Workspace.css changes nothing.
   const { rulesFor, inject } = assembleCssProof([
     read("src/styles/tokens.css"),
     read("src/styles/global.css"),
-    read("src/features/workspace/strip/strip.css"),
     read("src/features/workspace/Workspace.css"),
     read("src/features/workspace/panel/changes.css"),
+    read("src/features/workspace/strip/strip.css"),
     read("src/features/workspace/sidebar/sidebar.css"),
   ]);
 
@@ -186,6 +188,17 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
   it("diff removed lines keep their colour rule", () => {
     const body = rulesFor(".workspace-diff-removed");
     expect(body).toContain("color:");
+  });
+
+  it("the inline diff header reads sans, not the workspace mono rule", () => {
+    // The mono group in Workspace.css names .workspace-diff-header, so the
+    // Changes sheet must answer with a HIGHER-specificity scoped rule — one
+    // that holds in whichever order the bundle emits the two sheets. This
+    // harness renders no diff header element, so the assertion reads the
+    // rule itself; the Tree suite proves the computed style on a live one.
+    const body = rulesFor(".workspace-changes .workspace-diff-header");
+    expect(body).toContain("font-family");
+    expect(body).not.toContain("JetBrains Mono");
   });
 
   it("the R2a cleanup's deleted hover and focus rules are restored", () => {

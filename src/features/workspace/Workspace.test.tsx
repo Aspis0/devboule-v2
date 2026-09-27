@@ -1657,18 +1657,19 @@ describe("Workspace sessions", () => {
     expect(search.value).toBe("history-only");
     await act(async () => historyToggle.click());
     expect(search.value).toBe("");
-    expect(container.textContent).toContain("main");
+    // The Changes branch row names the same "main" (the mocked git
+    // branch), so the workspace-list assertions scope to the sidebar —
+    // and the lookup hard-fails, so a renamed aside breaks loudly
+    // instead of passing on an empty string.
+    const sidebar = container.querySelector('aside[aria-label="Workspaces"]');
+    if (sidebar === null) throw new Error("Workspaces sidebar did not render");
+    expect(sidebar.textContent).toContain("main");
 
     await act(async () => {
       setSearchValue(search, "missing");
     });
     expect(search.value).toBe("missing");
-    // Scoped to the sidebar: the Changes branch row now names the same
-    // "main" (the mocked git branch), so a whole-container absence would
-    // fail on the panel instead of the filtered workspace list.
-    const sidebarText = (): string =>
-      container.querySelector('aside[aria-label="Workspaces"]')?.textContent ?? "";
-    expect(sidebarText()).not.toContain("main");
+    expect(sidebar.textContent).not.toContain("main");
     await act(async () => historyToggle.click());
     await act(async () => {
       setSearchValue(search, "Saved");
@@ -1676,7 +1677,7 @@ describe("Workspace sessions", () => {
     await act(async () => historyToggle.click());
 
     expect(search.value).toBe("missing");
-    expect(sidebarText()).not.toContain("main");
+    expect(sidebar.textContent).not.toContain("main");
   });
 
   it("does not render a permission card before typed_permissions is negotiated", async () => {

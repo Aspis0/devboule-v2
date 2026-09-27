@@ -37,7 +37,7 @@ function basename(path: string): string {
   return slash < 0 ? path : path.slice(slash + 1);
 }
 
-export function buildChangesTree(rows: WorkspaceGitRow[]): ChangesTreeNode[] {
+export function buildChangesTree(rows: WorkspaceGitRow[], inexact = false): ChangesTreeNode[] {
   const top: ChangesTreeNode[] = [];
   const folders = new Map<string, ChangesTreeFolder>();
 
@@ -76,13 +76,15 @@ export function buildChangesTree(rows: WorkspaceGitRow[]): ChangesTreeNode[] {
 
   // Post-order sums, leaves first: each folder's totals are its own files
   // plus every descendant folder's, and one capped row anywhere below
-  // marks the whole chain above it.
+  // marks the whole chain above it. `inexact` (a caveat on the reply)
+  // marks every folder too, so the tree never reads exact under a branch
+  // total that reads estimated.
   const sum = (
     nodes: ChangesTreeNode[],
   ): { additions: number; deletions: number; capped: boolean } => {
     let additions = 0;
     let deletions = 0;
-    let capped = false;
+    let capped = inexact;
     for (const node of nodes) {
       if (node.kind === "file") {
         additions += node.row.additions;

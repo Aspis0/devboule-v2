@@ -259,7 +259,7 @@ describe("ChangesSurface", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
     });
-    expect(container.querySelector('[aria-pressed="true"]')).not.toBeNull();
+    expect(container.querySelector('[aria-current="true"]')).not.toBeNull();
     expect(container.querySelector(".workspace-diff-lines")).not.toBeNull();
 
     // Switch to B, whose answer has not arrived yet.
@@ -268,7 +268,7 @@ describe("ChangesSurface", () => {
     });
     expect(container.textContent).toContain("Loading changes…");
     expect(container.textContent).not.toContain("a.ts");
-    expect(container.querySelector('[aria-pressed="true"]')).toBeNull();
+    expect(container.querySelector('[aria-current="true"]')).toBeNull();
     expect(container.querySelector(".workspace-diff-card")).toBeNull();
 
     await act(async () => {
@@ -342,7 +342,7 @@ describe("ChangesSurface", () => {
     });
 
     expect(vi.mocked(workspaceGitDiff).mock.calls[0]).toEqual([WORKSPACE, "src/writer.ts"]);
-    expect(first.getAttribute("aria-pressed")).toBe("true");
+    expect(first.getAttribute("aria-current")).toBe("true");
     expect(container.querySelector(".workspace-diff-header span:first-child")?.textContent).toBe(
       "src/writer.ts",
     );
@@ -575,6 +575,55 @@ describe("ChangesSurface", () => {
     // empty panel.
     expect(container.textContent).toContain("No workspace is selected.");
     expect(controls()).not.toContain("Refresh");
+    expect(container.querySelector('button[aria-label="Refresh"]')).toBeNull();
     expect(container.querySelector(".workspace-changes-toolbar")).toBeNull();
+  });
+
+  // R7b fix pass 1: Refresh exists on every screen with a workspace — the
+  // refused first read is exactly when a manual retry matters, and the 5 s
+  // poll is no substitute when the reads themselves are what fails.
+  it("keeps a refresh control on a refused first read", async () => {
+    vi.mocked(workspaceGitStatus).mockRejectedValue(new Error("the daemon is restarting"));
+    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
+
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
+    if (refresh === null) throw new Error("refresh button did not render on refusal");
+    await act(async () => {
+      refresh.click();
+    });
+    expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a refresh control while the first read is still in flight", async () => {
+    const pending = deferred<WorkspaceGitStatus>();
+    vi.mocked(workspaceGitStatus).mockReturnValue(pending.promise);
+    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Loading changes…");
+
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
+    if (refresh === null) throw new Error("refresh button did not render while loading");
+    await act(async () => {
+      refresh.click();
+    });
+    expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      pending.resolve(statusReply());
+    });
+    expect(container.textContent).toContain("No uncommitted changes in this workspace.");
+  });
+
+  it("keeps a refresh control when the folder is not a repository", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply({ isGit: false }));
+    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    expect(container.textContent).toContain("This workspace folder is not a git repository.");
+
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
+    if (refresh === null) throw new Error("refresh button did not render off-repo");
+    await act(async () => {
+      refresh.click();
+    });
+    expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
   });
 });

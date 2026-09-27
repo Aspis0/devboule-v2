@@ -1,19 +1,23 @@
-import { useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import type { WorkspaceGitRow } from "../../types/ipc";
 import { buildChangesTree, type ChangesTreeFolder, type ChangesTreeNode } from "./changesTree";
 
 /**
- * The Changes folder tree: folders with their subtree sums, file rows with
- * the row's own acts, collapse and arrow keys. Semantics are a `tree`, but
- * deliberately not a strict roving-tabindex one: every row's buttons stay
- * tabbable, because Stage, Unstage and the Discard menu must remain
- * keyboard-reachable without entering a navigation mode. Arrows move
- * between the rows' main buttons; Right expands a folder, Left collapses
- * it (or steps out to its parent). Folders open expanded; the parent keys
- * this view by workspace, so a switch starts expanded again.
+ * The Changes folder tree as a disclosure list: folders are buttons naming
+ * the group they own, files are rows with the row's own acts. Deliberately
+ * NOT role="tree": every row carries up to five tabbable controls (select,
+ * pencil, Stage, Unstage, the Discard menu), so the single-tab-stop roving
+ * pattern the tree role promises cannot hold — and rows that promise it to
+ * an AT while keeping five tab stops lie twice. Disclosure buttons are
+ * natively keyboard-operable (Tab + Enter/Space); there is no arrow-key
+ * layer, so arrows always belong to the focused control itself. Folders
+ * open expanded; collapse state is per mount.
  */
 interface ChangesTreeViewProps {
   rows: WorkspaceGitRow[];
+  /** True when the reply carries a caveat: every folder sum below is a
+   * floor, capped rows or not (the branch total says the same). */
+  inexact: boolean;
   selection: string | null;
   onSelect: (path: string) => void;
   onStage: (paths: string[]) => void;
@@ -50,13 +54,48 @@ function isNewRow(row: WorkspaceGitRow): boolean {
   return row.status === "added" || row.status === "untracked";
 }
 
-function FileNode({
+/** The mockup's row geometry: 6px pad plus one 14px step per depth — the
+ * same indent() FilesSurface keeps, so the two trees agree. Inline, so the
+ * computed-style proof can read the number that sets the name's x. */
+function indent(depth: number): { paddingLeft: string } {
+  return { paddingLeft: `${6 + depth * 14}px` };
+}
+
+/** A group id from a folder path: slashes are legal in ids but hostile in
+ * selectors, so everything outside a small safe set becomes a dash. */
+function groupIdFor(path: string): string {
+  return `changes-group-${path.replace(/[^a-zA-Z0-9-_.:]/g, "-")}`;
+}
+
+const FileIcon = (
+  <svg
+    className="workspace-changes-file-icon"
+    width="12"
+    height="12"
+    viewBox="0 0 24 24"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path
+      d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M14 2v4a2 2 0 0 0 2 2h4"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+const FileNode = memo(function FileNode({
   path,
   name,
   row,
   depth,
-  index,
-  count,
   selection,
   onSelect,
   onStage,
@@ -72,8 +111,6 @@ function FileNode({
   name: string;
   row: WorkspaceGitRow;
   depth: number;
-  index: number;
-  count: number;
   selection: string | null;
   onSelect: (path: string) => void;
   onStage: (paths: string[]) => void;
@@ -91,25 +128,20 @@ function FileNode({
     // own button (and its exact text, marks and status word), and its
     // actions are siblings beside it — a button may not nest. The menu
     // overlays the rows below it, the way the Files tree's does.
-    <div
-      className="workspace-file-change-row workspace-changes-file-row"
-      role="treeitem"
-      aria-selected={selected}
-      aria-level={depth + 1}
-      aria-setsize={count}
-      aria-posinset={index + 1}
-      style={{ "--tree-depth": depth } as CSSProperties}
-    >
+    <li className="workspace-file-change-row">
       <button
         type="button"
-        data-tree-focus={path}
         className={`workspace-file-change workspace-changes-file${
           selected ? " workspace-file-change-selected" : ""
         }${row.status === "deleted" ? " workspace-file-change-muted" : ""}`}
-        aria-pressed={selected}
+        // Selecting shows the diff below; pressing again changes nothing,
+        // so this is current-item marking, never a toggle contract.
+        aria-current={selected ? "true" : undefined}
         title={path}
+        style={indent(depth)}
         onClick={() => onSelect(path)}
       >
+        {FileIcon}
         <span className="workspace-file-change-name">{name}</span>
         <span className="workspace-file-change-status">{row.status}</span>
         <span
@@ -119,26 +151,6 @@ function FileNode({
           {countsLabel(row.additions, row.deletions, row.capped)}
         </span>
       </button>
-      {/* The file open as diff carries the pencil affordance (SPEC-regions):
-          slice 8's tab, reached through the one callback this panel owes it. */}
-      {selected && onOpenFile ? (
-        <button
-          type="button"
-          className="workspace-changes-pencil"
-          aria-label="Open diff in a tab"
-          title="Open diff in a tab"
-          onClick={() => onOpenFile(workspaceId, path)}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-      ) : null}
       <span className="workspace-file-change-actions">
         <button
           type="button"
@@ -169,6 +181,27 @@ function FileNode({
           ⋯
         </button>
       </span>
+      {/* The file open as diff carries the pencil affordance (SPEC-regions):
+          slice 8's tab, reached through the one callback this panel owes it —
+          last in the row, where the mockup puts it. */}
+      {selected && onOpenFile ? (
+        <button
+          type="button"
+          className="workspace-changes-pencil"
+          aria-label="Open diff in a tab"
+          title="Open diff in a tab"
+          onClick={() => onOpenFile(workspaceId, path)}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      ) : null}
       {/* Discard lives in the menu, not on the row: it is the one act
           here that loses data, and it must be chosen, not hit. This
           panel only ever shows the uncommitted tree, so the control
@@ -187,44 +220,34 @@ function FileNode({
           </button>
         </div>
       ) : null}
-    </div>
+    </li>
   );
-}
+});
 
-function FolderNode({
+const FolderNode = memo(function FolderNode({
   folder,
   depth,
-  index,
-  count,
   expanded,
   onToggle,
   children,
 }: {
   folder: ChangesTreeFolder;
   depth: number;
-  index: number;
-  count: number;
   expanded: boolean;
   onToggle: (path: string) => void;
-  children: (nodes: ChangesTreeNode[], nextDepth: number) => React.ReactNode;
+  children: (nodes: ChangesTreeNode[], nextDepth: number) => ReactNode;
 }) {
+  const groupId = groupIdFor(folder.path);
   return (
-    <div
-      className="workspace-changes-folder-row"
-      role="treeitem"
-      aria-expanded={expanded}
-      aria-level={depth + 1}
-      aria-setsize={count}
-      aria-posinset={index + 1}
-      style={{ "--tree-depth": depth } as CSSProperties}
-    >
+    <li className="workspace-changes-folder-row">
       <button
         type="button"
-        data-tree-focus={folder.path}
         className="workspace-changes-folder"
         aria-expanded={expanded}
+        aria-controls={groupId}
         aria-label={`${expanded ? "Collapse" : "Expand"} ${folder.path}`}
         title={folder.path}
+        style={indent(depth)}
         onClick={() => onToggle(folder.path)}
       >
         <span className="workspace-changes-chevron" aria-hidden="true">
@@ -239,16 +262,17 @@ function FolderNode({
         </span>
       </button>
       {expanded ? (
-        <div className="workspace-changes-group" role="group">
+        <ul id={groupId} className="workspace-changes-group">
           {children(folder.children, depth + 1)}
-        </div>
+        </ul>
       ) : null}
-    </div>
+    </li>
   );
-}
+});
 
-export function ChangesTreeView({
+export const ChangesTreeView = memo(function ChangesTreeView({
   rows,
+  inexact,
   selection,
   onSelect,
   onStage,
@@ -260,20 +284,20 @@ export function ChangesTreeView({
   onOpenFile,
   workspaceId,
 }: ChangesTreeViewProps) {
-  const nodes = useMemo(() => buildChangesTree(rows), [rows]);
+  const nodes = useMemo(() => buildChangesTree(rows, inexact), [rows, inexact]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
-  const toggle = (path: string): void => {
+  const toggle = useCallback((path: string): void => {
     setCollapsed((current) => {
       const next = new Set(current);
       if (next.has(path)) next.delete(path);
       else next.add(path);
       return next;
     });
-  };
+  }, []);
 
-  const renderNodes = (list: ChangesTreeNode[], depth: number): React.ReactNode =>
-    list.map((node, index) =>
+  const renderNodes = (list: ChangesTreeNode[], depth: number): ReactNode =>
+    list.map((node) =>
       node.kind === "file" ? (
         <FileNode
           key={node.path}
@@ -281,8 +305,6 @@ export function ChangesTreeView({
           name={node.name}
           row={node.row}
           depth={depth}
-          index={index}
-          count={list.length}
           selection={selection}
           onSelect={onSelect}
           onStage={onStage}
@@ -299,8 +321,6 @@ export function ChangesTreeView({
           key={node.path}
           folder={node}
           depth={depth}
-          index={index}
-          count={list.length}
           expanded={!collapsed.has(node.path)}
           onToggle={toggle}
         >
@@ -309,72 +329,5 @@ export function ChangesTreeView({
       ),
     );
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    const items = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>("[data-tree-focus]"),
-    );
-    const active = document.activeElement as HTMLElement | null;
-    const at = active === null ? -1 : items.indexOf(active);
-    const focusAt = (next: number): void => {
-      items[next]?.focus();
-    };
-    switch (event.key) {
-      case "ArrowDown":
-        event.preventDefault();
-        focusAt(at < 0 ? 0 : (at + 1) % items.length);
-        break;
-      case "ArrowUp":
-        event.preventDefault();
-        focusAt(at < 0 ? items.length - 1 : (at - 1 + items.length) % items.length);
-        break;
-      case "Home":
-        event.preventDefault();
-        focusAt(0);
-        break;
-      case "End":
-        event.preventDefault();
-        focusAt(items.length - 1);
-        break;
-      case "ArrowRight": {
-        // On a collapsed folder toggle: open it. A file row's button
-        // carries no `aria-expanded`, so files keep their own keys.
-        if (active?.getAttribute("aria-expanded") === "false") {
-          event.preventDefault();
-          active.click();
-        }
-        break;
-      }
-      case "ArrowLeft": {
-        // On an open folder: close it. Anywhere deeper: step out to
-        // the owning folder's toggle instead of guessing.
-        if (active?.getAttribute("aria-expanded") === "true") {
-          event.preventDefault();
-          (active as HTMLElement).click();
-        } else {
-          const group = active?.closest('[role="group"]');
-          const parent = group?.parentElement?.querySelector<HTMLElement>(
-            ":scope > button[data-tree-focus]",
-          );
-          if (parent !== null && parent !== undefined) {
-            event.preventDefault();
-            parent.focus();
-          }
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  };
-
-  return (
-    <div
-      className="workspace-changes-tree"
-      role="tree"
-      aria-label="Uncommitted changes"
-      onKeyDown={onKeyDown}
-    >
-      {renderNodes(nodes, 0)}
-    </div>
-  );
-}
+  return <ul className="workspace-changes-tree">{renderNodes(nodes, 0)}</ul>;
+});

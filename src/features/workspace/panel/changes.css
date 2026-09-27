@@ -1,12 +1,16 @@
 /* The Changes panel body (R7b): branch row, Uncommitted|Commits switch, folder tree,
    file rows, commit row and the inline diff card. Moved byte-identical out of
    Workspace.css so the panel owns its rules the way strip/strip.css owns the
-   strip's; loaded through panel.css, straight after it in bundle order. */
+   strip's; loaded by ChangesSurface itself, which the import graph places
+   BEFORE Workspace.css (registry chain at Workspace.tsx:16 vs :80 — though
+   Workspace.css also arrives early through NewProjectDialog at :15, so no
+   rule here may depend on beating it by position; see below). */
 
-.workspace-changes-toolbar {
+/* The panel root: a flex column so the commit row can pin to its bottom. */
+.workspace-changes {
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
+  flex-direction: column;
+  min-height: 100%;
 }
 
 /* Loading, no workspace, not a repository, clean tree: the panel's own words
@@ -26,13 +30,6 @@
   color: var(--danger-deep);
   font-size: 11px;
   line-height: 1.55;
-}
-
-.workspace-file-changes {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 13px;
 }
 
 .workspace-file-change-row {
@@ -130,15 +127,6 @@
   font-size: 10px;
 }
 
-.workspace-file-change-selected {
-  color: var(--ink);
-  background: var(--selection);
-}
-
-.workspace-file-change-selected > span:last-child {
-  color: var(--terracotta-deep);
-}
-
 .workspace-file-change-muted {
   color: var(--silence);
 }
@@ -230,9 +218,13 @@
 /* R7b redesign (SPEC-regions §Right panel, mockup a-workspace-2.html:179-190
    with values from mockups/skeleton*.css, which win): branch row, the
    Uncommitted | Commits switch, the h24 folder tree, and the bottom commit
-   row. UI text is sans throughout — the moved rules above still say mono,
-   and every rule below beats them by coming later at equal specificity.
-   Numbers read in tabular sans; only diff lines keep their mono. */
+   row. UI text is sans throughout. The moved rules above still say mono in
+   places; the R7b rules below override them within this same sheet, so
+   their position here is deterministic. The ONE cross-sheet conflict —
+   Workspace.css's mono group naming .workspace-diff-header — is answered
+   with a higher-specificity scoped rule instead of a position bet, and the
+   computed-style proof assembles the sheets in import-graph order to check
+   it. Numbers read in tabular sans; only diff lines keep their mono. */
 
 /* The branch row: glyph + name + display-only chevron, the total and the
    quiet refresh pushed right. h-auto, 12px interface text. */
@@ -293,6 +285,13 @@
   background: var(--fill-hover);
 }
 
+/* The retry beside the state screens: the same quiet button, left-aligned
+   under the sentence it answers. */
+.workspace-changes-refresh-line {
+  display: flex;
+  padding: 4px 6px;
+}
+
 /* Uncommitted | Commits: 24px buttons on a fill-tool bed, the active one
    a panel-card chip. */
 .workspace-changes-seg {
@@ -335,15 +334,21 @@
   font-size: 12px;
 }
 
-.workspace-changes-group {
+/* The tree is a nested disclosure list. Depth pads the buttons inline
+   (FilesSurface's indent() precedent), so the rule below only resets the
+   list shape. */
+ul.workspace-changes-tree,
+ul.workspace-changes-group {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.workspace-changes-file-row,
-.workspace-changes-folder-row {
-  padding-left: calc(var(--tree-depth, 0) * 14px);
+ul.workspace-changes-tree {
+  margin-bottom: 13px;
 }
 
 .workspace-changes-folder {
@@ -392,13 +397,24 @@
 }
 
 /* File rows keep the moved `.workspace-file-change*` bones and wear the
-   tree's look over them: h24, sans, tabular stats. The open file is a
-   fill-tool row with the pencil (SPEC-regions), not the old selection tint.
-   Bare selectors on purpose: the computed-style proof only models those. */
+   tree's look over them: the mockup's 0 6px pad and 6px gap, h24, sans.
+   The inline depth pad beats the shorthand's left side. The open file is
+   a fill-tool row with the pencil (SPEC-regions), not the old tint — the
+   moved `.workspace-file-change-selected` pair above is deleted, so this
+   is the sheet's single answer. Bare selectors on purpose: the
+   computed-style proof only models those. */
 .workspace-changes-file {
   height: 24px;
+  padding: 0 6px;
+  gap: 6px;
   font-family: var(--font-ui);
   font-size: 12px;
+}
+
+.workspace-changes-file-icon {
+  flex: none;
+  width: 12px;
+  color: var(--muted);
 }
 
 .workspace-changes-file:hover {
@@ -425,7 +441,14 @@
   color: var(--tone-add);
 }
 
-/* The pencil beside the open file: the slice-8 hand-off, quiet until hover. */
+/* The inline diff card's header bar is UI text (path + counts), not code:
+   Workspace.css's mono group names it, so this scoped rule — not a position
+   bet — holds it at sans in either sheet order. The lines keep mono. */
+.workspace-changes .workspace-diff-header {
+  font-family: var(--font-ui);
+}
+
+/* The pencil after the row's acts: the slice-8 hand-off, quiet until hover. */
 .workspace-changes-pencil {
   display: flex;
   flex: none;
@@ -447,14 +470,18 @@
   background: var(--fill-hover);
 }
 
-/* The commit row closes the panel: input 28 with the outline Commit,
-   divided from the tree by the panel's hairline. */
+/* The commit row closes the panel: sticky to the scrollport's bottom with
+   margin-top auto pushing it there on short trees, divided from the tree
+   by the panel's hairline. */
 .workspace-commit-row {
   display: flex;
-  flex: none;
   gap: 6px;
+  margin-top: auto;
   padding: 10px 12px;
+  background: var(--panel-side);
   border-top: 1px solid var(--line);
+  position: sticky;
+  bottom: 0;
 }
 
 .workspace-commit-row .workspace-commit-message {

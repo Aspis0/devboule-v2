@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import type {
   WorkspaceGitDiffLine,
   WorkspaceGitFileDiff,
@@ -54,6 +54,42 @@ function caveatOf(reply: WorkspaceGitStatus | null): string | null {
 }
 
 /**
+ * The quiet retry: one icon button with the label, shared by the branch
+ * row and the state screens. Loading, a refused first read and a folder
+ * that is not a repository all keep it — a refused read is exactly when a
+ * manual retry matters, and the 5 s poll is no substitute when the reads
+ * themselves are what fails. Only a panel with no workspace has no
+ * refresh: with nothing to read, a control is a small lie (fix round R5).
+ */
+function RefreshButton({ onRefresh }: { onRefresh: () => void }) {
+  return (
+    <button
+      type="button"
+      className="workspace-changes-refresh"
+      aria-label="Refresh"
+      title="Refresh"
+      onClick={onRefresh}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M21 12a9 9 0 1 1-2.64-6.36"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+        <path
+          d="M21 3v6h-6"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+/**
  * The branch row: the wire's branch name (verbatim, including `(detached)`)
  * with a display-only chevron — branch switching is out of scope by owner
  * decision, so the chevron is a span, never a control that looks like it
@@ -98,29 +134,7 @@ function BranchRow({
         </svg>
       </span>
       {totals !== null ? <span className="workspace-changes-branch-totals">{totals}</span> : null}
-      <button
-        type="button"
-        className="workspace-changes-refresh"
-        aria-label="Refresh"
-        title="Refresh"
-        onClick={onRefresh}
-      >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M21 12a9 9 0 1 1-2.64-6.36"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-          />
-          <path
-            d="M21 3v6h-6"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
+      <RefreshButton onRefresh={onRefresh} />
     </div>
   );
 }
@@ -298,40 +312,57 @@ export const ChangesSurface = memo(function ChangesSurface({
   const caveat = caveatOf(reply);
   const notice = caveat ?? status.failure;
   const loading = workspaceId !== null && reply === null && status.failure === null;
-  // The chrome stands on a usable answer only: a withheld list (rows empty,
-  // dirty true) or an error with no rows behind it shows no branch total
-  // and no tree — never zeros for an unknown tree.
-  const usable =
-    reply !== null &&
-    reply.isGit &&
-    (reply.rows.length > 0 || (reply.error === null && !reply.dirty));
+  // The chrome (branch row, switch) stands on any answer that names the
+  // checkout — including a withheld list, whose header facts survive the
+  // cap (branch and `dirty` still stand) — while an error with no rows
+  // behind it, or a folder that is not a repository, shows no chrome at
+  // all. Totals and the tree stay countable-only: never zeros for an
+  // unknown tree.
+  const chrome = reply !== null && reply.isGit && (reply.rows.length > 0 || reply.error === null);
 
   /** One act, one shape: clear the previous refusal, hold the controls
    * while the wire decides, and surface a refusal as the alert under the
    * switch — the wire's own sentence, pathless by the daemon's rule.
    * Returns what the act answered, so Commit can clear its field on
-   * success only. */
-  const runAct = async (act: Promise<ErrorSentence | null>): Promise<ErrorSentence | null> => {
-    setActionError(null);
-    setActing(true);
-    const error = await act;
-    setActing(false);
-    if (error !== null) setActionError(error);
-    return error;
-  };
+   * success only. Stable across renders (setState setters only), so the
+   * memoised tree below survives commit-field keystrokes. */
+  const runAct = useCallback(
+    async (act: Promise<ErrorSentence | null>): Promise<ErrorSentence | null> => {
+      setActionError(null);
+      setActing(true);
+      const error = await act;
+      setActing(false);
+      if (error !== null) setActionError(error);
+      return error;
+    },
+    [],
+  );
 
-  const runStage = (paths: string[]): void => {
-    void runAct(stage(paths));
-  };
-  const runUnstage = (paths: string[]): void => {
-    void runAct(unstage(paths));
-  };
-  const runDiscard = (paths: string[]): void => {
-    // The menu closes first: the confirmation (or the refusal) that comes
-    // back belongs under the switch, not under a menu that has gone.
-    setMenuPath(null);
-    void runAct(discard(paths));
-  };
+  const runStage = useCallback(
+    (paths: string[]): void => {
+      void runAct(stage(paths));
+    },
+    [runAct, stage],
+  );
+  const runUnstage = useCallback(
+    (paths: string[]): void => {
+      void runAct(unstage(paths));
+    },
+    [runAct, unstage],
+  );
+  const runDiscard = useCallback(
+    (paths: string[]): void => {
+      // The menu closes first: the confirmation (or the refusal) that
+      // comes back belongs under the switch, not under a menu that
+      // has gone.
+      setMenuPath(null);
+      void runAct(discard(paths));
+    },
+    [runAct, discard],
+  );
+  const toggleMenu = useCallback((path: string): void => {
+    setMenuPath((current) => (current === path ? null : path));
+  }, []);
   const runCommit = (): void => {
     void (async () => {
       const error = await runAct(commit(message));
@@ -370,20 +401,34 @@ export const ChangesSurface = memo(function ChangesSurface({
       {workspaceId === null ? (
         <div className="workspace-changes-state">No workspace is selected.</div>
       ) : loading ? (
-        <div className="workspace-changes-state" role="status">
-          Loading changes…
+        <>
+          <div className="workspace-changes-state" role="status">
+            Loading changes…
+          </div>
+          <div className="workspace-changes-refresh-line">
+            <RefreshButton onRefresh={refresh} />
+          </div>
+        </>
+      ) : reply === null ? (
+        <div className="workspace-changes-refresh-line">
+          <RefreshButton onRefresh={refresh} />
         </div>
-      ) : reply === null ? null : !reply.isGit ? (
-        <div className="workspace-changes-state">
-          This workspace folder is not a git repository.
-        </div>
-      ) : !usable ? null : (
+      ) : !reply.isGit ? (
+        <>
+          <div className="workspace-changes-state">
+            This workspace folder is not a git repository.
+          </div>
+          <div className="workspace-changes-refresh-line">
+            <RefreshButton onRefresh={refresh} />
+          </div>
+        </>
+      ) : !chrome ? null : (
         <>
           <BranchRow branch={reply.branch} totals={changesTotalsLabel(reply)} onRefresh={refresh} />
           <ChangesViewSwitch view={view} onChange={setView} />
           {view === "commits" ? (
             <div className="workspace-panel-empty">
-              <p className="workspace-panel-empty-title">Commits</p>
+              <h2 className="workspace-panel-empty-title">Commits</h2>
               <p className="workspace-panel-empty-intro">
                 History of this branch will appear here.
               </p>
@@ -394,30 +439,30 @@ export const ChangesSurface = memo(function ChangesSurface({
             </div>
           ) : (
             <>
-              {/* A caveat distrusts part of this reply, never all of it: this
-                  branch renders only when rows stand behind it (or the tree
-                  is clean), so a failed count round keeps its real list
-                  beside the sentence above. */}
-              {!reply.dirty ? (
-                <div className="workspace-changes-state">
-                  No uncommitted changes in this workspace.
-                </div>
-              ) : (
+              {/* A caveat distrusts part of this reply, never all of it:
+                  rows on screen stand beside the sentence above, a clean
+                  tree says so, and a withheld list shows nothing countable
+                  — the branch name above is all that survived the cap. */}
+              {reply.rows.length > 0 ? (
                 <ChangesTreeView
-                  key={workspaceId}
                   workspaceId={workspaceId}
                   rows={reply.rows}
+                  inexact={reply.error !== null}
                   selection={selection}
                   onSelect={select}
                   onStage={runStage}
                   onUnstage={runUnstage}
                   onDiscard={runDiscard}
                   menuPath={menuPath}
-                  onToggleMenu={(path) => setMenuPath(menuPath === path ? null : path)}
+                  onToggleMenu={toggleMenu}
                   acting={acting}
                   onOpenFile={onOpenFile}
                 />
-              )}
+              ) : !reply.dirty ? (
+                <div className="workspace-changes-state">
+                  No uncommitted changes in this workspace.
+                </div>
+              ) : null}
               {selection !== null ? <DiffCard path={selection} diff={diff} /> : null}
               <CommitRow
                 message={message}

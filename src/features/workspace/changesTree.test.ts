@@ -16,16 +16,15 @@ function folderOf(nodes: ReturnType<typeof buildChangesTree>, path: string): Cha
 }
 
 describe("buildChangesTree", () => {
-  it("keeps root files top-level in the daemon's order, never sorted", async () => {
-    const { buildChangesTree } = await import("./changesTree");
+  it("keeps root files top-level in the daemon's order, never sorted", () => {
     const nodes = buildChangesTree([
       row({ path: "zebra.ts", additions: 1 }),
       row({ path: "apple.ts", additions: 2 }),
     ]);
 
-    expect(nodes.map((node) => (node.kind === "file" ? node.path : node.path))).toEqual([
-      "zebra.ts",
-      "apple.ts",
+    expect(nodes.map((node) => `${node.kind}:${node.path}`)).toEqual([
+      "file:zebra.ts",
+      "file:apple.ts",
     ]);
   });
 
@@ -48,7 +47,7 @@ describe("buildChangesTree", () => {
     expect(docs.deletions).toBe(4);
   });
 
-  it("marks every ancestor of a capped row, never the row's own numbers", () => {
+  it("marks every ancestor of a capped row with the floor sums", () => {
     const nodes = buildChangesTree([
       row({ path: "src/exact.ts", additions: 3, deletions: 1 }),
       row({ path: "src/sub/floor.ts", additions: 40, deletions: 2, capped: true }),
@@ -62,6 +61,43 @@ describe("buildChangesTree", () => {
     const exact = src.children.find((node) => node.kind === "file" && node.path === "src/exact.ts");
     if (exact === undefined || exact.kind !== "file") throw new Error("exact row did not build");
     expect(exact.row.capped).toBe(false);
+  });
+
+  it("marks every folder estimated when the reply carries a caveat", () => {
+    const nodes = buildChangesTree(
+      [row({ path: "src/exact.ts", additions: 3, deletions: 1 })],
+      true,
+    );
+
+    const src = folderOf(nodes, "src");
+    expect(src.additions).toBe(3);
+    expect(src.capped).toBe(true);
+  });
+
+  it("groups a rename under its new path, acting on both sides", () => {
+    const nodes = buildChangesTree([
+      row({
+        path: "docs/new.ts",
+        renamedFrom: "src/old.ts",
+        additions: 2,
+        deletions: 5,
+      }),
+    ]);
+
+    // The old side's deletion has no folder of its own: the acts take
+    // both paths (pathsOf), the tree shows where the file stands now.
+    expect(nodes.map((node) => `${node.kind}:${node.path}`)).toEqual(["folder:docs"]);
+    const docs = folderOf(nodes, "docs");
+    expect(docs.additions).toBe(2);
+    expect(docs.deletions).toBe(5);
+  });
+
+  it("never splits a POSIX filename on its backslash", () => {
+    // `git status --porcelain=v2 -z` prints `/` on every platform, so `/`
+    // is the only separator this builder knows; a backslash inside a name
+    // is data, not depth.
+    const nodes = buildChangesTree([row({ path: "a\\b.ts", additions: 1 })]);
+    expect(nodes.map((node) => `${node.kind}:${node.path}`)).toEqual(["file:a\\b.ts"]);
   });
 
   it("shows each file under its basename with the full path kept for acts", () => {
