@@ -5,12 +5,11 @@
 //! The parser and source pins live in [`super::endpoint_query_unit`].
 
 use std::fs;
-use std::path::PathBuf;
 
 use oracle_core::{model_dir_for, OracleDataPaths, SqliteStore, BGE_SMALL_APPROX_BYTES};
 
 use super::host::{published, query_body, response_json, send, unique_paths, TestHost, QUERY_PATH};
-use super::support::{copy_model_bundle, TestEnvironment};
+use super::support::TestEnvironment;
 use crate::oracle::runtime::{OracleRuntime, DEFAULT_ORACLE_MODEL};
 use crate::oracle::{OracleEndpoint, OracleResult};
 
@@ -62,13 +61,11 @@ fn the_model_gate_answers_with_both_verbatim_f3_phrases() {
         "first F3 phrase must match verbatim: {response}"
     );
 
-    let model_source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("recon")
-        .join("models")
-        .join(DEFAULT_ORACLE_MODEL);
-    copy_model_bundle(&model_source, &model_dir, &["model_config.json"]);
+    // The second refusal needs a config file on disk whose declared bundle
+    // is absent; a stub that fails to load keeps the test inside the repo.
+    fs::create_dir_all(&model_dir).expect("model dir");
+    fs::write(model_dir.join("model_config.json"), "{\"stub\": true}")
+        .expect("stub model_config.json");
 
     let (status, response) = send(
         record.port,
