@@ -1,6 +1,7 @@
-// Source test, not a layout test. It reads the declarations that make the
-// squeezed-tab defect impossible and fails when one of them is deleted; it cannot
-// see a clipped pixel. happy-dom computes no layout, and a programmatic `.click()`
+// Source test, not a layout test. It reads the declarations that keep the
+// strip's overflow contract — shrink toward the 96 px floor, then scroll —
+// and fails when one of them is deleted; it cannot see a clipped pixel.
+// happy-dom computes no layout, and a programmatic `.click()`
 // bypasses hit-testing — which is how the old hover pills stayed green while
 // owning none of their own pixels (D8, night field test of 18 September), until
 // they covered a tab's label and an ordinary click archived it. Whether the
@@ -20,8 +21,13 @@ function ruleBody(selector: string): string {
   return body;
 }
 
+/** The exact declared value of one property in a rule body. */
+function declaredValue(body: string, property: string): string | undefined {
+  return body.match(new RegExp(`^\\s*${property}\\s*:\\s*([^;]+);`, "m"))?.[1]?.trim();
+}
+
 describe("the session strip", () => {
-  it("scrolls its tabs instead of squeezing them", () => {
+  it("clips tabs that overflow instead of wrapping them", () => {
     const scroller = ruleBody(".workspace-session-tabs-scroll");
     expect(scroller).toContain("overflow-x: auto;");
     // A lone `overflow-x: auto` computes the other axis to `auto`, and the row
@@ -31,14 +37,23 @@ describe("the session strip", () => {
 
   it("shrinks chips toward the 96 px floor before the strip scrolls", () => {
     // The row shares a shortfall proportionally and stops at the floor;
-    // past it the scrollport overflows and scrolls instead.
+    // past it the scrollport overflows and scrolls instead. The floor is
+    // asserted as the exact declared value: any `min-content` term in it
+    // raises the floor to the label's own width and the strip never
+    // shrinks. happy-dom computes no layout, so the real shrink is a live
+    // check; this pins the declaration the live behaviour depends on.
     const row = ruleBody(".workspace-session-row");
     expect(row).not.toContain("flex: none;");
-    expect(row).toContain("min-width:");
-    expect(row).toContain("96px");
+    expect(declaredValue(row, "min-width")).toBe("96px");
+    // A row carrying the take-back never shrinks under its action.
+    const takeBackRow = css.match(
+      /\.workspace-session-row:has\(\.workspace-tab-takeback\) \{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(takeBackRow).toBeDefined();
+    expect(declaredValue(takeBackRow ?? "", "min-width")).toBe("fit-content");
     const chip = ruleBody(".workspace-session-tab");
-    expect(chip).toContain("min-width: 96px;");
-    expect(chip).toContain("max-width: 160px;");
+    expect(declaredValue(chip, "min-width")).toBe("96px");
+    expect(declaredValue(chip, "max-width")).toBe("160px");
   });
 
   it("hides the native scrollbar on the scrollport", () => {
@@ -61,6 +76,7 @@ describe("the session strip", () => {
       return body;
     };
     for (const fadeSide of ["left", "right"]) {
+      expect(side(fadeSide)).toContain("-webkit-mask-image:");
       expect(side(fadeSide)).toContain("mask-image:");
       expect(side(fadeSide)).toContain("36px");
     }
@@ -68,6 +84,33 @@ describe("the session strip", () => {
       /\.workspace-session-tabs-scroll\[data-fade-left="true"\]\[data-fade-right="true"\] \{([\s\S]*?)\n\}/,
     )?.[1];
     expect(both).toContain("mask-image:");
+  });
+
+  it("paints every dot tone from its own rule", () => {
+    // A missing or misspelled tone rule paints a colourless 6 px dot — a
+    // state rendering as nothing — so each tone pins its declaration here,
+    // beside the component test that pins the class name.
+    const tones: Array<[string, string]> = [
+      [".strip-dot-live", "background: var(--green);"],
+      [".strip-dot-attention", "background: var(--tone-attention);"],
+      [".strip-dot-unattended", "background: var(--tone-unattended);"],
+      [".strip-dot-recovered", "outline: 1.5px solid var(--tone-recovered);"],
+      [".strip-dot-idle", "background: var(--border-strong);"],
+      [".strip-dot-ended,\n.strip-dot-unknown", "background: var(--terracotta);"],
+    ];
+    for (const [selector, declaration] of tones) {
+      expect(ruleBody(selector)).toContain(declaration);
+    }
+  });
+
+  it("scrims the close chip in the multi-selected fill", () => {
+    // A chip that is both selected and multi-selected paints
+    // --fill-selected-soft; its scrim must not punch a --selection
+    // rectangle into it.
+    const scrim = css.match(
+      /\.workspace-session-row:has\(\.workspace-session-tab-multiselected\)[\s\S]*?\.workspace-session-chip::before \{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(scrim).toContain("background: var(--fill-selected-soft);");
   });
 
   it("keeps the close chip a narrow trailing overlay that hides unclickable", () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 /** Which sides of the strip still hide chips: the fade renders only there. */
 export interface StripFade {
@@ -56,7 +56,10 @@ export function useStripFade(
     };
   }, [read, schedule, scrollportRef]);
 
-  useEffect(() => {
+  // The roster re-read lands in the same commit, before paint: a push that
+  // changes the overflow state never shows one frame with the old mask.
+  // (The subscription effect above stays passive — listeners are not paint.)
+  useLayoutEffect(() => {
     read();
   }, [read, tabs]);
 

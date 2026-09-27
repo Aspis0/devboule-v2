@@ -21,9 +21,10 @@ export interface StripChipProps {
   multiselected: boolean;
   tabIndex: 0 | -1;
   display: ChipDisplay;
-  /** First line of the tooltip: the state words a screen reader hears. */
-  stateWords: string;
   tooltip: string;
+  /** The tooltip's lines after the state: origin, creator, details. Heard
+   * through aria-describedby, never painted; empty means undescribed. */
+  provenanceLines: string[];
   menuOpen: boolean;
   takeBack: boolean;
   onTakeBack: () => void;
@@ -42,8 +43,8 @@ export function StripChip({
   multiselected,
   tabIndex,
   display,
-  stateWords,
   tooltip,
+  provenanceLines,
   menuOpen,
   takeBack,
   onTakeBack,
@@ -54,6 +55,8 @@ export function StripChip({
   onClose,
 }: StripChipProps) {
   const title = sessionTitle(session);
+  const provenanceId = `strip-chip-${session.id}-provenance`;
+  const described = provenanceLines.length > 0 ? provenanceId : undefined;
   return (
     <div className="workspace-session-row" onContextMenu={onRowContextMenu}>
       <button
@@ -67,6 +70,7 @@ export function StripChip({
         tabIndex={tabIndex}
         title={tooltip}
         aria-keyshortcuts="Delete"
+        aria-describedby={described}
         className={`workspace-session-tab${selected ? " workspace-session-tab-selected" : ""}${multiselected ? " workspace-session-tab-multiselected" : ""}`}
         onClick={onTabClick}
         onAuxClick={onTabAuxClick}
@@ -82,8 +86,16 @@ export function StripChip({
         ) : (
           // The states that lost their painted words keep them here: heard,
           // never seen, so the accessible name still carries the state.
-          <span className="workspace-sr-only">{stateWords}</span>
+          // The title keeps the same line for the mouse; aria-describedby
+          // below keeps it out of the accessible description, so no
+          // reader hears it twice.
+          <span className="workspace-sr-only">{display.stateLine}</span>
         )}
+        {described !== undefined ? (
+          <span id={provenanceId} className="workspace-sr-only">
+            {provenanceLines.join(" ")}
+          </span>
+        ) : null}
       </button>
       <span className="workspace-session-chip">
         <button

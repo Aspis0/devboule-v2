@@ -32,14 +32,23 @@
 /* The 36 px fade to the pane ground, only on the side that still hides
    chips — the strip sets data-fade-left/right from its scroll position. */
 .workspace-session-tabs-scroll[data-fade-right="true"] {
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 36px), transparent);
   mask-image: linear-gradient(to right, black calc(100% - 36px), transparent);
 }
 
 .workspace-session-tabs-scroll[data-fade-left="true"] {
+  -webkit-mask-image: linear-gradient(to left, black calc(100% - 36px), transparent);
   mask-image: linear-gradient(to left, black calc(100% - 36px), transparent);
 }
 
 .workspace-session-tabs-scroll[data-fade-left="true"][data-fade-right="true"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 36px,
+    black calc(100% - 36px),
+    transparent
+  );
   mask-image: linear-gradient(
     to right,
     transparent,
@@ -163,14 +172,19 @@
 }
 
 .workspace-session-add {
+  display: grid;
+  flex: none;
+  place-items: center;
   width: 28px;
   height: 28px;
+  padding: 0;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   background: var(--fill-plus);
   color: var(--ink);
   font-size: 16px;
   line-height: 1;
+  cursor: pointer;
 }
 
 /* The provider choice menu opened from the tab strip floats below the +
@@ -220,18 +234,22 @@
 }
 
 /* One row per session tab: the tab button, the trailing close chip, and the
-   take-back. Rows shrink with the strip toward the 96 px floor and only
-   then scroll: `flex-basis: auto` sizes each row to its chip, `flex-shrink`
-   shares a shortfall proportionally, and `min-width` stops the squeeze at
-   the chip's own floor (or the row's content, when the take-back rides
-   along) — past that the scrollport overflows and scrolls. */
+   take-back. Rows share a shortfall proportionally down to the 96 px floor
+   and only then scroll: the floor is explicit, so a long nowrap label can
+   never raise it (its min-content would) and the chip's own 96 px minimum
+   always fills the row exactly. A row carrying the take-back keeps its whole
+   action instead: it never shrinks under its content. */
 .workspace-session-row {
   position: relative;
   display: flex;
   flex: 0 1 auto;
   align-items: center;
-  min-width: max(96px, min-content);
+  min-width: 96px;
   border-radius: 6px;
+}
+
+.workspace-session-row:has(.workspace-tab-takeback) {
+  min-width: fit-content;
 }
 
 /* The trailing close chip: an overlay about 48 px wide on the row's
@@ -272,6 +290,10 @@
 
 .workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before {
   background: var(--selection);
+}
+
+.workspace-session-row:has(.workspace-session-tab-multiselected) .workspace-session-chip::before {
+  background: var(--fill-selected-soft);
 }
 
 .workspace-session-row:hover .workspace-session-chip,

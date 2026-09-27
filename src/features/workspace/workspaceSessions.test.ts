@@ -733,6 +733,14 @@ describe("session origin badge", () => {
     expect(names.get("device-phone")).toBe("Xiaomi 14");
   });
 
+  it("leaves a blank display name out instead of printing a bare from", () => {
+    const names = peerDeviceNames([{ ...pairedPhone, displayName: "   " }]);
+    expect(names.has("device-phone")).toBe(false);
+    expect(sessionOriginBadge({ origin: { kind: "peer", deviceId: "device-phone" } }, names)).toBe(
+      "from another device",
+    );
+  });
+
   it("keeps the origin a roster push carries for a session no list has described", async () => {
     const watched: {
       listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
@@ -841,11 +849,10 @@ describe("session title", () => {
   });
 
   it("bounds the id fallback by grapheme clusters, never a halved scalar", () => {
-    // Audit 3 F10: the title's id fallback was the last unit-based cut of a
-    // daemon-generated id — the same cut the `created by` badge 100 lines
-    // below cites as its reason for bounding. Nine rockets (18 UTF-16 units)
-    // fall past the 8-unit limit either way; the slice halves four of them
-    // into U+FFFD in the strip, the cluster bound shortens whole glyphs.
+    // The title's id fallback bounds by grapheme clusters: nine rockets
+    // (18 UTF-16 units) fall past the 8-unit limit either way; the slice
+    // halves four of them into U+FFFD in the strip, the cluster bound
+    // shortens whole glyphs.
     const astralId = "🚀".repeat(9);
     expect(sessionTitle({ ...liveSession(astralId, "  "), kind: "acp" })).toBe(
       `Agent ${"🚀".repeat(8)}…`,

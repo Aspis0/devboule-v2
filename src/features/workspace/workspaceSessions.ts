@@ -178,9 +178,9 @@ export function sessionTitle(
   if (displayName) return displayName;
   const title = session.title.trim();
   if (title) return title;
-  // The id fallback bounds by grapheme clusters, like the `created by` badge
-  // and the answerer head: a unit-based cut halves an astral scalar and
-  // renders U+FFFD in the strip (audit 3, F10 — the sibling of :275-276).
+  // The id fallback bounds by grapheme clusters, like the permission card's
+  // answerer head: a unit-based cut halves an astral scalar and renders
+  // U+FFFD in the strip.
   return `${isAgentKind(session.kind) ? "Agent" : "Terminal"} ${boundByGraphemes(session.id, 8)}`;
 }
 
@@ -188,10 +188,17 @@ export function sessionTitle(
  * The display name for each paired device, keyed by device id. This is the
  * `DevicesList` map the session badge resolves against; revoked rows are kept,
  * because a session started by a device that has since been revoked still
- * belongs to it.
+ * belongs to it. A row with no display name is left out rather than mapped
+ * to a blank: the map answers whether the roster named this device, and a
+ * blank is not a name.
  */
 export function peerDeviceNames(peers: readonly PeerRow[]): Map<string, string> {
-  return new Map(peers.map((peer) => [peer.deviceId, peer.displayName]));
+  return new Map(
+    peers.flatMap((peer) => {
+      const name = peer.displayName.trim();
+      return name ? [[peer.deviceId, name] as const] : [];
+    }),
+  );
 }
 
 /** The badge for a session whose origin the daemon did not send at all. */

@@ -12,13 +12,18 @@ export type ChipDot =
   | "unknown";
 
 /** Everything a chip shows besides its label: the dot, its pulse, the one
- * words case, and the tooltip that carries the rest. */
+ * words case, the state line that names it to assistive tech, the detail
+ * lines that follow, and the tooltip that joins them for the mouse. */
 export interface ChipDisplay {
   dot: ChipDot;
   pulse: boolean;
   /** Only "Needs your approval" ever renders on the chip; every other state
    * speaks through the dot and the tooltip. */
   words: string | null;
+  /** The state in plain words; always the tooltip's first line. */
+  stateLine: string;
+  /** Everything after the state line: attention, unattended, delegation. */
+  detailLines: string[];
   tooltip: string;
 }
 
@@ -80,12 +85,11 @@ function recoveredLine(state: { integrity?: unknown }): string {
  * unattended on the dot; the tooltip keeps every true line, starting with
  * the state — a recovered session with an ask stays recovered in words. */
 export function chipDisplay(session: Session): ChipDisplay {
-  const lines: string[] = [];
+  const detailLines: string[] = [];
   // A null on the wire is absence, not attention: serde's default for an
   // `Option` without `skip_serializing_if`, met on version skew or a peer.
   const attention = session.attention ?? undefined;
   const base = stateLine(session);
-  lines.push(base.line);
   let dot: ChipDot = base.dot;
   let pulse = base.pulse;
   let words: string | null = null;
@@ -95,13 +99,13 @@ export function chipDisplay(session: Session): ChipDisplay {
     pulse = false;
     if (attention.reason === "permission") {
       words = "Needs your approval";
-      lines.push("Needs your approval");
+      detailLines.push("Needs your approval");
     } else if (attention.reason === "finished") {
-      lines.push("Done");
+      detailLines.push("Done");
     } else if (attention.reason === "error") {
-      lines.push("Failed");
+      detailLines.push("Failed");
     } else {
-      lines.push("Needs attention");
+      detailLines.push("Needs attention");
     }
   }
 
@@ -109,11 +113,20 @@ export function chipDisplay(session: Session): ChipDisplay {
   const loud = badges.some((badge) => badge.tone === "unattended") || session.unattended === "yes";
   if (loud) {
     if (attention === undefined) dot = "unattended";
-    if (!lines.includes(UNATTENDED_BADGE_LABEL)) lines.push(UNATTENDED_BADGE_LABEL);
+    if (!detailLines.includes(UNATTENDED_BADGE_LABEL)) detailLines.push(UNATTENDED_BADGE_LABEL);
   }
   for (const badge of badges) {
-    if (badge.tone !== "unattended" && !lines.includes(badge.label)) lines.push(badge.label);
+    if (badge.tone !== "unattended" && !detailLines.includes(badge.label)) {
+      detailLines.push(badge.label);
+    }
   }
 
-  return { dot, pulse, words, tooltip: lines.join("\n") };
+  return {
+    dot,
+    pulse,
+    words,
+    stateLine: base.line,
+    detailLines,
+    tooltip: [base.line, ...detailLines].join("\n"),
+  };
 }

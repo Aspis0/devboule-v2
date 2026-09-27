@@ -2,6 +2,15 @@
 // the app: comments stripped, tokens resolved to their light values, and the
 // rules a test names injected into the document in sheet order, so the
 // cascade under test is the bundle's own.
+//
+// Scope, stated plainly: this models bare single-class selectors, in the
+// light theme, in source order. It adjudicates neither specificity (a
+// higher-specificity rule in a later sheet beats the injected one
+// invisibly) nor pseudo-classes, descendant selectors, attribute
+// selectors, the dark theme, or anything inside @-blocks (skipped
+// whole). Enough for "which sheet's bare rule wins"; not a cascade
+// proof. Tests that need the assembled sheets' joint contents should read
+// them through `rulesFor`, not assume this file sees what it drops.
 
 interface CssRule {
   selector: string;
@@ -47,6 +56,9 @@ function selectorMatches(ruleSelector: string, target: string): boolean {
 export function assembleCssProof(sheets: readonly string[]): {
   rulesFor: (target: string) => string;
   inject: (targets: readonly string[]) => void;
+  /** The light-theme value of one token, read from the sheets themselves
+   * so tests track `tokens.css` instead of duplicating its hexes. */
+  token: (name: string) => string | undefined;
 } {
   const stripped = sheets.map((sheet) => sheet.replace(/\/\*[\s\S]*?\*\//g, ""));
   const tokens = new Map<string, string>();
@@ -83,7 +95,7 @@ export function assembleCssProof(sheets: readonly string[]): {
     document.head.appendChild(style);
   }
 
-  return { rulesFor, inject };
+  return { rulesFor, inject, token: (name: string) => tokens.get(name) };
 }
 
 /** Removes every `<style>` an `inject` above added. Call in `afterEach`. */

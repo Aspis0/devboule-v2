@@ -3,6 +3,20 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __stripChipRenders: number | undefined;
+}
+
+vi.mock("./StripChip", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./StripChip")>();
+  const Counted = (props: Parameters<typeof actual.StripChip>[0]) => {
+    globalThis.__stripChipRenders = (globalThis.__stripChipRenders ?? 0) + 1;
+    return actual.StripChip(props);
+  };
+  return { ...actual, StripChip: Counted };
+});
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Session } from "../../../types/ipc";
 import { SessionStrip } from "./SessionStrip";
@@ -127,7 +141,6 @@ describe("SessionStrip", () => {
     );
     const tabs = [...container!.querySelectorAll<HTMLElement>(".workspace-session-tab")];
     for (const tab of tabs) {
-      expect(tab.querySelector(".workspace-tab-meta")).toBeNull();
       expect(tab.querySelector(".workspace-tab-attention")).toBeNull();
       expect(tab.querySelector(".workspace-tab-delegation")).toBeNull();
       expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
@@ -327,6 +340,25 @@ describe("SessionStrip", () => {
     expect(props.selectSession).not.toHaveBeenCalled();
   });
 
+  it("does not switch tabs on a composing chord outside any field", () => {
+    // The tag guard alone would let this through: only the isComposing
+    // guard stands between a composing chord on the focused chip and a tab
+    // switch that yanks focus away mid-composition.
+    const props = renderStrip([session("a", "agent a"), session("b", "agent b")], "a");
+    const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
+    const event = new KeyboardEvent("keydown", {
+      key: "]",
+      altKey: true,
+      shiftKey: true,
+      bubbles: true,
+    });
+    Object.defineProperty(event, "isComposing", { value: true });
+    act(() => {
+      tab.dispatchEvent(event);
+    });
+    expect(props.selectSession).not.toHaveBeenCalled();
+  });
+
   it("paints every state with its own dot tone", () => {
     renderStrip(
       [
@@ -382,7 +414,6 @@ describe("SessionStrip", () => {
       "s",
     );
     const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
-    expect(tab.querySelector(".workspace-tab-meta")).toBeNull();
     expect(tab.querySelector(".workspace-sr-only")?.textContent).toContain("Quiet");
     expect(tab.getAttribute("aria-keyshortcuts")).toContain("Delete");
   });
@@ -395,6 +426,65 @@ describe("SessionStrip", () => {
     const tabs = [...container!.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")];
     expect(tabs).toHaveLength(1);
     expect(tabs[0].tabIndex).toBe(0);
+  });
+
+  it("describes provenance to assistive tech without painting it", () => {
+    const props = propsOf(
+      [
+        session("a", "agent a", {
+          origin: { kind: "peer", deviceId: "d1" },
+          unattended: "yes",
+        }),
+      ],
+      "a",
+    );
+    props.peerNames = new Map([["d1", "pixel"]]);
+    props.resolveCreator = () => "created by planner";
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root!.render(<SessionStrip {...props} />);
+    });
+    const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
+    // One description source: the provenance lines live in the
+    // described-by span, not only in the title a reader may never hear.
+    const describedBy = tab.getAttribute("aria-describedby");
+    expect(describedBy).not.toBeNull();
+    const provenance = container!.querySelector<HTMLElement>(`#${CSS.escape(describedBy!)}`);
+    expect(provenance?.textContent).toContain("from pixel");
+    expect(provenance?.textContent).toContain("created by planner");
+    expect(provenance?.textContent).toContain("auto-accepting");
+    // The state still names the chip exactly once.
+    expect(tab.querySelector(".workspace-sr-only")?.textContent).toContain("Running");
+  });
+
+  it("leaves a chip with no provenance undescribed", () => {
+    // Local, human-started, live: no state details, no origin line, no
+    // creator — nothing for a description to carry. (An absent origin
+    // would be provenance: "origin unknown".)
+    renderStrip([session("a", "agent a", { origin: { kind: "local" } })], "a");
+    const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
+    expect(tab.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("does not re-render chips when the parent re-renders around them", () => {
+    // Unrelated Workspace renders (composer keystrokes, pane state) must
+    // not walk the chips: same inputs in, zero chip renders out. Without
+    // the rows memo every chip function runs again and the count climbs.
+    const sessions = [session("a", "agent a"), session("b", "agent b")];
+    const stable = propsOf(sessions, "a");
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root!.render(<SessionStrip {...stable} />);
+    });
+    globalThis.__stripChipRenders = 0;
+    act(() => {
+      root!.render(<SessionStrip {...stable} />);
+    });
+    expect(globalThis.__stripChipRenders).toBe(0);
   });
 
   it("announces the selection size politely", () => {

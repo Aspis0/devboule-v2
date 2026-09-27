@@ -30,7 +30,7 @@ afterEach(async () => {
 describe("strip computed styles (real stylesheets, no app launch)", () => {
   // Sheet order matches the bundle: tokens, global, strip (pulled in by
   // SessionStrip, which Workspace imports before its own CSS), workspace.
-  const { inject } = assembleCssProof([
+  const { inject, token } = assembleCssProof([
     read("src/styles/tokens.css"),
     read("src/styles/global.css"),
     read("src/features/workspace/strip/strip.css"),
@@ -76,10 +76,18 @@ describe("strip computed styles (real stylesheets, no app launch)", () => {
     const add = document.querySelector<HTMLElement>(".workspace-session-add");
     if (add === null) throw new Error("session add did not render");
     const style = getComputedStyle(add);
-    // --fill-plus and --ink in the light theme: the shared base group must
-    // not override them, whatever the bundle order does. (happy-dom reports
-    // the specified value, not a normalised rgb().)
-    expect(style.backgroundColor).toBe("#f5f1e8");
-    expect(style.color).toBe("#1c1a17");
+    // The strip's own fill and ink: the shared base group must not
+    // override them, whatever the bundle order does. Expected values come
+    // from the sheets, so a theme retune moves the test with the tokens.
+    // (happy-dom reports the specified value, not a normalised rgb().)
+    expect(style.backgroundColor).toBe(token("--fill-plus"));
+    expect(style.color).toBe(token("--ink"));
+    // The layout the shared group used to lend: the strip's rule carries
+    // it all, so a second removal cannot silently uncentre the glyph.
+    expect(style.display).toBe("grid");
+    expect(style.placeItems).toBe("center");
+    expect(style.paddingTop).toBe("0px");
+    expect(style.cursor).toBe("pointer");
+    expect(style.flexShrink).toBe("0");
   });
 });

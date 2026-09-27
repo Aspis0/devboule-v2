@@ -77,10 +77,7 @@ describe("useStripFade", () => {
   });
 
   it("coalesces a burst of scroll events into one read", async () => {
-    let renders = 0;
-    const el = mount(TABS, () => {
-      renders += 1;
-    });
+    const el = mount(TABS, () => {});
     let reads = 0;
     Object.defineProperties(el, {
       scrollWidth: {
@@ -93,17 +90,29 @@ describe("useStripFade", () => {
       clientWidth: { value: 200, configurable: true },
       scrollLeft: { value: 0, writable: true, configurable: true },
     });
+    const burst = () => {
+      act(() => {
+        el.dispatchEvent(new Event("scroll", { bubbles: true }));
+        el.dispatchEvent(new Event("scroll", { bubbles: true }));
+        el.dispatchEvent(new Event("scroll", { bubbles: true }));
+      });
+    };
+    const nextFrame = () =>
+      act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+    // Two bursts on two separate frames cost two reads: one per frame.
+    // A read per event would cost six; no coalescing at all would cost
+    // more than two. (Per-frame versus per-task debouncing stays a code
+    // read — no timer in this repo can tell them apart.)
     reads = 0;
-    act(() => {
-      el.dispatchEvent(new Event("scroll", { bubbles: true }));
-      el.dispatchEvent(new Event("scroll", { bubbles: true }));
-      el.dispatchEvent(new Event("scroll", { bubbles: true }));
-    });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    burst();
+    await nextFrame();
     expect(reads).toBe(1);
     expect(el.dataset.fadeRight).toBe("true");
+    burst();
+    await nextFrame();
+    expect(reads).toBe(2);
   });
 
   it("re-reads when the roster changes without any scroll event", () => {
@@ -117,10 +126,13 @@ describe("useStripFade", () => {
       scrollLeft: { value: 0, writable: true, configurable: true },
     });
     expect(el.dataset.fadeRight).toBe("false");
+    const beforeRosterChange = renders;
     rerender([...TABS, { id: "c" }], () => {
       renders += 1;
     });
     expect(el.dataset.fadeRight).toBe("true");
-    expect(renders).toBeGreaterThan(0);
+    // The commit for the new rows plus the one state update the re-read
+    // schedules — and nothing else.
+    expect(renders).toBe(beforeRosterChange + 2);
   });
 });

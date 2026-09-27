@@ -1,8 +1,9 @@
 import {
+  memo,
+  useCallback,
   useMemo,
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -19,6 +20,11 @@ import { useStripFade } from "./useStripFade";
 import { useStripKeyboard } from "./useStripKeyboard";
 import { StripChip } from "./StripChip";
 import "./strip.css";
+
+/** Chips re-render only when their own props change: every other prop the
+ * strip passes is stable across unrelated renders (see the callbacks
+ * below), so a composer keystroke never walks the strip. */
+const MemoStripChip = memo(StripChip);
 
 export interface StripNewTab {
   open: boolean;
@@ -68,21 +74,28 @@ export function SessionStrip({
   const scrollportRef = useRef<HTMLDivElement>(null);
   useSelectedTabVisible(scrollportRef, selectedSessionId, sessions);
   const fade = useStripFade(scrollportRef, sessions);
+  const { selection, handleTabClick } = tabSelection;
+  const { menu, openMenu, closeSingle } = tabClose;
+  const menuSessionId = menu?.sessionId;
   const keyboard = useStripKeyboard({
     sessions,
     selectedSessionId,
     selectSession,
-    closeTab: tabClose.closeSingle,
+    closeTab: closeSingle,
   });
+  const { tabIndexFor, onChipKeyDown: keyboardChipKeyDown } = keyboard;
 
-  const onChipKeyDown = (session: Session, event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-      event.preventDefault();
-      tabClose.openMenu(session.id);
-      return;
-    }
-    keyboard.onChipKeyDown(session.id, event);
-  };
+  const handleChipKeyDown = useCallback(
+    (session: Session, event: ReactKeyboardEvent<HTMLElement>) => {
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+        event.preventDefault();
+        openMenu(session.id);
+        return;
+      }
+      keyboardChipKeyDown(session.id, event);
+    },
+    [openMenu, keyboardChipKeyDown],
+  );
 
   // One derivation per row, recomputed only when the roster, the names, or
   // the take-back switch change — a keystroke or daemon tick that leaves
@@ -91,21 +104,69 @@ export function SessionStrip({
     () =>
       sessions.map((session) => {
         const display = chipDisplay(session);
-        const tooltip = [
-          display.tooltip,
-          sessionOriginBadge(session, peerNames) ?? undefined,
-          resolveCreator(session) ?? undefined,
-        ]
+        const origin = sessionOriginBadge(session, peerNames) ?? undefined;
+        const creator = resolveCreator(session) ?? undefined;
+        const tooltip = [display.tooltip, origin, creator]
           .filter((line) => line !== undefined)
           .join("\n");
         return {
           session,
           display,
           tooltip,
+          provenanceLines: [...display.detailLines, origin, creator].filter(
+            (line) => line !== undefined,
+          ),
           takeBack: takeBackAvailable && sessionDelegationTakeBack(session),
         };
       }),
     [sessions, peerNames, resolveCreator, takeBackAvailable],
+  );
+
+  // The rows themselves, memoised on the same stable inputs: an
+  // unrelated parent render reuses the very same elements, so the
+  // memoised chips below never re-render for it.
+  const rows = useMemo(
+    () =>
+      chips.map(({ session, display, tooltip, provenanceLines, takeBack }) => (
+        <MemoStripChip
+          key={session.id}
+          session={session}
+          selected={selectedSessionId === session.id}
+          multiselected={selection.has(session.id)}
+          tabIndex={tabIndexFor(session.id)}
+          display={display}
+          tooltip={tooltip}
+          provenanceLines={provenanceLines}
+          menuOpen={menuSessionId === session.id}
+          takeBack={takeBack}
+          onTakeBack={onTakeBack}
+          onTabClick={(event) => handleTabClick(session, event)}
+          onTabAuxClick={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              closeSingle(session.id);
+            }
+          }}
+          onRowContextMenu={(event) => {
+            event.preventDefault();
+            openMenu(session.id);
+          }}
+          onChipKeyDown={(event) => handleChipKeyDown(session, event)}
+          onClose={() => closeSingle(session.id)}
+        />
+      )),
+    [
+      chips,
+      selectedSessionId,
+      selection,
+      tabIndexFor,
+      menuSessionId,
+      onTakeBack,
+      handleTabClick,
+      closeSingle,
+      openMenu,
+      handleChipKeyDown,
+    ],
   );
 
   return (
@@ -120,37 +181,7 @@ export function SessionStrip({
         data-fade-left={fade.left ? "true" : "false"}
         data-fade-right={fade.right ? "true" : "false"}
       >
-        {chips.map(({ session, display, tooltip, takeBack }) => {
-          const onRowContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
-            event.preventDefault();
-            tabClose.openMenu(session.id);
-          };
-          return (
-            <StripChip
-              key={session.id}
-              session={session}
-              selected={selectedSessionId === session.id}
-              multiselected={tabSelection.selection.has(session.id)}
-              tabIndex={keyboard.tabIndexFor(session.id)}
-              display={display}
-              stateWords={display.tooltip.split("\n")[0] ?? display.tooltip}
-              tooltip={tooltip}
-              menuOpen={tabClose.menu?.sessionId === session.id}
-              takeBack={takeBack}
-              onTakeBack={onTakeBack}
-              onTabClick={(event) => tabSelection.handleTabClick(session, event)}
-              onTabAuxClick={(event) => {
-                if (event.button === 1) {
-                  event.preventDefault();
-                  tabClose.closeSingle(session.id);
-                }
-              }}
-              onRowContextMenu={onRowContextMenu}
-              onChipKeyDown={(event) => onChipKeyDown(session, event)}
-              onClose={() => tabClose.closeSingle(session.id)}
-            />
-          );
-        })}
+        {rows}
       </div>
       <div className="workspace-session-add-wrap">
         <button

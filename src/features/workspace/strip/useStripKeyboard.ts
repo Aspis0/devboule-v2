@@ -32,10 +32,10 @@ export function useStripKeyboard({
     setFollowedSelection(selectedSessionId);
     setFocusedId(selectedSessionId);
   }
-  // For the commit between the selected row leaving the list and the
-  // selection reconciling after it, neither id is in the strip: the stop
-  // falls back to the first tab so Tab never skips the whole strip.
-  // Zero tabs is correctly no tab stop.
+  // Whenever the id the stop would sit on is not in the list — the commit
+  // between the selected row leaving and the selection reconciling after
+  // it, or a focused id gone stale — the stop falls back to the first tab
+  // so Tab never skips the whole strip. Zero tabs is correctly no tab stop.
   const activeId = sessions.some((session) => session.id === (focusedId ?? selectedSessionId))
     ? (focusedId ?? selectedSessionId)
     : (sessions[0]?.id ?? null);

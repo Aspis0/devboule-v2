@@ -152,6 +152,25 @@ describe("chipDisplay", () => {
     expect(display.tooltip).toContain("Running");
   });
 
+  it("exposes the state line as its own field, first in the tooltip", () => {
+    const cases: Array<Parameters<typeof chipDisplay>[0]> = [
+      base(),
+      base({ state: { type: "silent", generation: 2 }, elapsedMs: 4 * 60_000 }),
+      base({ attention: { reason: "error", atMs: 7 } }),
+      base({ unattended: "yes" }),
+    ];
+    for (const session of cases) {
+      const display = chipDisplay(session);
+      expect(display.stateLine.length).toBeGreaterThan(0);
+      expect(display.tooltip.startsWith(display.stateLine)).toBe(true);
+      for (const line of display.detailLines) {
+        expect(display.tooltip).toContain(line);
+      }
+    }
+    const permission = chipDisplay(base({ attention: { reason: "permission", atMs: 7 } }));
+    expect(permission.detailLines).toContain("Needs your approval");
+  });
+
   it("keeps the state line when attention is set", () => {
     const display = chipDisplay(
       base({
