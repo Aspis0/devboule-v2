@@ -184,6 +184,40 @@ describe("DeviceKebab", () => {
     expect(document.activeElement).toBe(kebabButton());
   });
 
+  it("closes when focus moves outside the menu and the trigger", async () => {
+    // Tab away from the open menu: focus lands on content the menu floats
+    // over, so the menu must go with it — no orphan `role="menu"` with
+    // `aria-expanded="true"` and focus somewhere else in the page.
+    await renderKebab();
+    await openFirstMenu();
+    const outside = document.createElement("button");
+    outside.textContent = "elsewhere";
+    document.body.appendChild(outside);
+    await act(async () => {
+      outside.focus();
+      outside.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
+    expect(kebabButton().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("stays open when focus moves between the trigger and the menu", async () => {
+    await renderKebab();
+    kebabButton().focus();
+    await openFirstMenu();
+    await act(async () => {
+      kebabButton().dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
+    const items = menuItems();
+    if (items.length === 0) throw new Error("kebab menu did not render");
+    await act(async () => {
+      items[0]?.focus();
+      items[0]?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
+  });
+
   it("closes on an outside press", async () => {
     await renderKebab();
     await openFirstMenu();

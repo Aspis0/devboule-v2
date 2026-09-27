@@ -65,6 +65,134 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
+/** The declarations of one theme block: later same-token lines win. */
+function themeBlock(tokens: string, selector: string): string {
+  // Tokens are declared across several same-selector blocks; join them
+  // all so an alias in a later block still resolves.
+  const bodies: string[] = [];
+  const escaped = selector.replace(/[^a-z0-9]/gi, "\\$&");
+  const pattern = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "g");
+  for (const match of tokens.matchAll(pattern)) bodies.push(match[1] ?? "");
+  if (bodies.length === 0) throw new Error(`${selector} block not found`);
+  return bodies.join("\n");
+}
+
+/** A token's value inside one theme block, through `var()` indirections. */
+function themeValue(body: string, token: string): string {
+  // Last match wins: a later same-token line overrides the earlier one.
+  const matches = [...body.matchAll(new RegExp(`${token}:\\s*([^;]+);`, "g"))];
+  if (matches.length === 0) throw new Error(`${token} not found`);
+  let value = matches[matches.length - 1]![1]!.trim();
+  for (let pass = 0; pass < 3; pass += 1) {
+    const ref = value.match(/^var\((--[a-z-]+)\)$/);
+    if (ref === null) return value;
+    const next = [...body.matchAll(new RegExp(`${ref[1]}:\\s*([^;]+);`, "g"))];
+    if (next.length === 0) throw new Error(`unresolved ${value}`);
+    value = next[next.length - 1]![1]!.trim();
+  }
+  return value;
+}
+
+/** WCAG 2.x relative luminance of a `#rrggbb` colour. */
+function luminance(hex: string): number {
+  const channels = [1, 3, 5].map((at) => {
+    const channel = parseInt(hex.slice(at, at + 2), 16) / 255;
+    return channel <= 0.03928 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!;
+}
+
+/** WCAG contrast ratio of two `#rrggbb` colours. */
+function contrastRatio(a: string, b: string): number {
+  const [hi, lo] = luminance(a) > luminance(b) ? [a, b] : [b, a];
+  return (luminance(hi) + 0.05) / (luminance(lo) + 0.05);
+}
+
+interface StyleRule {
+  selector: string;
+  body: string;
+}
+
+/** Flat rules in source order; `@`-blocks splice their inner rules inline. */
+function styleRules(source: string): StyleRule[] {
+  const rules: StyleRule[] = [];
+  let index = 0;
+  while (index < source.length) {
+    const open = source.indexOf("{", index);
+    if (open < 0) return rules;
+    const selector = source.slice(index, open).trim();
+    let depth = 1;
+    let cursor = open + 1;
+    while (depth > 0 && cursor < source.length) {
+      if (source[cursor] === "{") depth += 1;
+      if (source[cursor] === "}") depth -= 1;
+      cursor += 1;
+    }
+    const body = source.slice(open + 1, cursor - 1);
+    if (selector.startsWith("@")) {
+      for (const inner of styleRules(body)) rules.push(inner);
+    } else if (selector !== "") {
+      rules.push({ selector: selector.replace(/\s+/g, " "), body });
+    }
+    index = cursor;
+  }
+  return rules;
+}
+
+/** Specificity as [ids, classes, elements]; pseudo-classes count as classes. */ function selectorSpecificity(
+  selector: string,
+): [number, number, number] {
+  const flat = selector.replace(/::[a-z-]+/g, " ");
+  const ids = (flat.match(/#[a-zA-Z0-9_-]+/g) ?? []).length;
+  const classes =
+    (flat.match(/\.[a-zA-Z0-9_-]+/g) ?? []).length +
+    (flat.match(/\[[^\]]+\]/g) ?? []).length +
+    (flat.match(/:(?!:)[a-z-]+/g) ?? []).length;
+  const elements = (flat.match(/(^|[\s>+~])([a-zA-Z][a-zA-Z0-9-]*)/g) ?? []).length;
+  return [ids, classes, elements];
+}
+
+/** The `var()` token colouring one rule's border, if it declares one. */
+function ruleBorderToken(body: string): string | null {
+  const longhand = body.match(/border-color\s*:\s*var\((--[a-z-]+)\)/);
+  if (longhand !== null) return longhand[1]!;
+  const shorthand = body.match(/(?:^|;)\s*border\s*:[^;]*var\((--[a-z-]+)\)/);
+  return shorthand?.[1] ?? null;
+}
+
+/**
+ * The border-colour token that wins for one interactive state, replaying
+ * the cascade by hand: highest specificity, source order breaking ties.
+ */
+function winningBorderToken(rules: StyleRule[], state: string): string | null {
+  const rank = (a: [number, number, number], b: [number, number, number]): number =>
+    a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  // A holder, never null itself: every real specificity beats (-1,-1,-1),
+  // so the first candidate always installs and no null-narrowing is needed.
+  const best: { spec: [number, number, number]; index: number; token: string | null } = {
+    spec: [-1, -1, -1],
+    index: -1,
+    token: null,
+  };
+  rules.forEach((rule, index) => {
+    const token = ruleBorderToken(rule.body);
+    if (token === null) return;
+    for (const part of rule.selector.split(",")) {
+      const trimmed = part.trim();
+      if (!trimmed.includes(".settings-device-action")) continue;
+      const pseudos = trimmed.match(/:(?!:)[a-z-]+/g) ?? [];
+      if (!pseudos.every((pseudo) => pseudo === `:${state}`)) continue;
+      const spec = selectorSpecificity(trimmed);
+      if (rank(spec, best.spec) > 0 || (rank(spec, best.spec) === 0 && index > best.index)) {
+        best.spec = spec;
+        best.index = index;
+        best.token = token;
+      }
+    }
+  });
+  return best.token;
+}
+
 describe("shared form rules live in the shell sheet (real stylesheets)", () => {
   // Eight components (ProfileRow, ProfileDialog, AgentProfileForm,
   // AgentProfileFeatures, AgentProfileOverlay, AgentProfileVocabulary,
@@ -277,18 +405,46 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     }
   });
 
-  it("keeps mono type to code, never UI words", () => {
-    // The pairing code is typed off a screen, the fingerprint is read aloud
-    // in fours, and the two pairing inputs are typed verbatim: every kept
-    // mono face is characters the person reads one by one. The role chip
-    // and every meta line are UI words and stay sans — and so do the Agents
-    // page's Name and Icon fields, which share the `.device-field` rule:
-    // their mono comes from nowhere after this slice.
-    const css = read("src/features/settings/devices.css");
-    const allowed = new Set([".dev-pair-code", ".dev-fingerprint", ".dev-typed-input"]);
-    const seen = monoSelectors(css);
-    expect(seen.length).toBeGreaterThan(0);
-    expect(seen.filter((selector) => !allowed.has(selector))).toEqual([]);
+  it("keeps mono type to code on every settings sheet", () => {
+    // N5: the risk moved sheets once already (the shared `device-*` rules
+    // now live in the shell sheet), so the allowlist scans all six. Each
+    // entry names its owner: devices (this slice), shell legacy + shell
+    // model picker (R17-0), providers (R17-1's own guard mirrors it),
+    // retention + diagnostics rows (diagnostics sheet).
+    const sheets: Record<string, readonly string[]> = {
+      "src/features/settings/devices.css": [
+        ".dev-pair-code",
+        ".dev-fingerprint",
+        ".dev-typed-input",
+      ],
+      "src/features/settings/settings.css": [
+        // Legacy meta lines still rendered by other slices' panels, and
+        // the shell's own model picker control: declared, not refactored.
+        ".settings-card-meta",
+        ".settings-card-value",
+        ".model-choice-control",
+      ],
+      "src/features/settings/providers.css": [
+        ".prov-detail-code",
+        ".provider-consent-command",
+        ".provider-update-error pre",
+        ".provider-version",
+      ],
+      "src/features/settings/profiles.css": [],
+      "src/features/settings/general.css": [],
+      "src/features/settings/diagnostics.css": [".retention-limit-input", ".diagnostics-row dd"],
+    };
+    let scanned = 0;
+    for (const [sheet, allowed] of Object.entries(sheets)) {
+      const seen = monoSelectors(read(sheet));
+      scanned += seen.length;
+      expect(
+        seen.filter((selector) => !allowed.includes(selector)),
+        sheet,
+      ).toEqual([]);
+    }
+    // The scanner is alive: it found mono faces somewhere.
+    expect(scanned).toBeGreaterThan(0);
   });
 
   it("leaves the shared field rule without a mono face", () => {
@@ -300,59 +456,67 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     expect(proof.rulesFor(".dev-typed-input")).toMatch(/monospace/);
   });
 
-  it("lifts the action buttons off the card ground", () => {
-    // `.settings-device-action` fills `--surface`, which resolves to
-    // `--panel-card` — the card ground itself. Without the scoped override
-    // below, every button on this page is fill-on-fill (1.00 : 1). The two
-    // buttons are real elements in a real `#settings-panel-devices`
-    // ancestor, so the ID-scoped override wins by specificity, not order.
-    proof.inject([".settings-device-action", "#settings-panel-devices .settings-device-action"]);
-    const panel = document.createElement("div");
-    panel.id = "settings-panel-devices";
-    const onCard = document.createElement("button");
-    onCard.className = "settings-device-action";
-    panel.appendChild(onCard);
-    document.body.appendChild(panel);
-    const offCard = document.createElement("button");
-    offCard.className = "settings-device-action";
-    document.body.appendChild(offCard);
-    expect(getComputedStyle(onCard).backgroundColor).not.toBe(
-      getComputedStyle(offCard).backgroundColor,
+  it("separates the action buttons from the card by a measured ratio", () => {
+    // N3: "different" proves nothing — 1.063 passes it. This reads the
+    // override rule's own token names, resolves them per theme, and gates
+    // both ratios: the fill floor locks the override (the base is exactly
+    // 1.00), the border floor is the visibility bar the resting state
+    // clears with margin. No quiet fill token reaches 1.3 in both themes
+    // (panel-side is 1.063/1.076, fill-hover 1.153/1.246), so the border
+    // carries the boundary and the test says so.
+    const devices = read("src/features/settings/devices.css");
+    const override = devices.match(
+      /#settings-panel-devices \.settings-device-action\s*\{([^}]*)\}/,
     );
+    if (override === null) throw new Error("scoped button override not found");
+    const tokenName = (prop: string): string => {
+      const found = override[1]!.match(new RegExp(`${prop}:\\s*var\\((--[a-z-]+)\\)`));
+      if (found === null) throw new Error(`${prop} token not found in override`);
+      return found[1]!;
+    };
+    const fillToken = tokenName("background");
+    const borderToken = tokenName("border-color");
+    const tokens = read("src/styles/tokens.css");
+    // Light is the `:root` blocks; dark is `[data-theme="dark"]`.
+    for (const body of [themeBlock(tokens, ":root"), themeBlock(tokens, '[data-theme="dark"]')]) {
+      const card = themeValue(body, "--panel-card");
+      expect(contrastRatio(themeValue(body, fillToken), card)).toBeGreaterThanOrEqual(1.05);
+      expect(contrastRatio(themeValue(body, borderToken), card)).toBeGreaterThanOrEqual(1.3);
+    }
+  });
+
+  it("keeps the house hover and focus border on the card buttons", () => {
+    // N1: the id-scoped override (1,1,0) outranks the house `:hover` /
+    // `:focus-visible` rules (0,2,0), so without id-scoped states the
+    // terracotta border never renders on this page. happy-dom has no
+    // pseudo-class state, so this replays the cascade by hand over the
+    // assembled sheets in order: every rule that can colour the pill in
+    // each state, ranked by specificity with source order breaking ties.
+    const joined = [
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/settings/devices.css"),
+      read("src/features/settings/settings.css"),
+    ]
+      .map((sheet) => sheet.replace(/\/\*[\s\S]*?\*\//g, ""))
+      .join("\n");
+    const rules = styleRules(joined);
+    for (const state of ["hover", "focus-visible"]) {
+      const token = winningBorderToken(rules, state);
+      if (token === null) throw new Error(`no border rule for :${state}`);
+      expect(token, `:${state}`).toBe("--terracotta");
+    }
   });
 
   it("keeps the button fill distinct from the card ground in both themes", () => {
     // Premise guard for the override above: it fills `--panel-side`, which
-    // must resolve away from `--panel-card` light and dark. (Not
-    // `--surface-muted`: that alias has no dark declaration anywhere in
-    // the token sheet, so it would compute to transparent there.) Values
-    // come from the token sheet, not from constants in this file.
+    // must resolve away from `--panel-card` light and dark (`--surface-muted`
+    // resolves to the same colour in both themes, so either name fills
+    // identically). Values come from the token sheet, not from constants
+    // in this file.
     const tokens = read("src/styles/tokens.css");
-    const themeValue = (body: string, token: string): string => {
-      const found = body.match(new RegExp(`${token}:\\s*([^;]+);`));
-      if (found === null) throw new Error(`${token} not found`);
-      let value = found[1]!.trim();
-      for (let pass = 0; pass < 3; pass += 1) {
-        const ref = value.match(/^var\((--[a-z-]+)\)$/);
-        if (ref === null) return value;
-        const next = body.match(new RegExp(`${ref[1]}:\\s*([^;]+);`));
-        if (next === null) throw new Error(`unresolved ${value}`);
-        value = next[1]!.trim();
-      }
-      return value;
-    };
-    const block = (selector: string): string => {
-      // Tokens are declared across several same-selector blocks; join them
-      // all so an alias in a later block still resolves.
-      const bodies: string[] = [];
-      const escaped = selector.replace(/[^a-z0-9]/gi, "\\$&");
-      const pattern = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "g");
-      for (const match of tokens.matchAll(pattern)) bodies.push(match[1] ?? "");
-      if (bodies.length === 0) throw new Error(`${selector} block not found`);
-      return bodies.join("\n");
-    };
-    // Light is the `:root` block; dark is `[data-theme="dark"]`.
-    for (const body of [block(":root"), block('[data-theme="dark"]')]) {
+    // Light is the `:root` blocks; dark is `[data-theme="dark"]`.
+    for (const body of [themeBlock(tokens, ":root"), themeBlock(tokens, '[data-theme="dark"]')]) {
       expect(themeValue(body, "--panel-side")).not.toBe(themeValue(body, "--panel-card"));
     }
   });
@@ -361,8 +525,13 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     // SPEC-regions: section labels 12/500 muted. The titles sit inside
     // the card heads (with the intro copy they belong to), so the device's
     // own 14px name below keeps an emphasis of its own.
-    proof.inject([".dev-card-title"]);
-    expect(getComputedStyle(box("dev-card-title")).fontSize).toBe("12px");
+    proof.inject([".dev-card-title", ".dev-meta"]);
+    const title = box("dev-card-title");
+    expect(getComputedStyle(title).fontSize).toBe("12px");
+    expect(getComputedStyle(title).fontWeight).toBe("500");
+    // Muted, proved without a hex: the same computed colour as the
+    // house meta line.
+    expect(getComputedStyle(title).color).toBe(getComputedStyle(box("dev-meta")).color);
   });
 
   it("keeps the first card on the shell's 18px rhythm", () => {
@@ -374,12 +543,14 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
   });
 
   it("lays revoked rows out as rows, aligned under the paired names", () => {
-    // The revoked list carries no glyph, so its names align under the
-    // paired names (38px: 14 pad + 14 glyph + 10 gap) with padding, and
-    // the row itself is flex like every other device row.
+    // The revoked list carries no glyph, so the rows align their names
+    // under the paired names (38px: 14 pad + 14 glyph + 10 gap) with
+    // their own padding — the `<summary>` disclosure label stays at the
+    // card's 14px edge.
     proof.inject([".dev-revoked", ".dev-revoked-row"]);
     const row = box("dev-revoked-row");
     expect(getComputedStyle(row).display).toBe("flex");
-    expect(proof.rulesFor(".dev-revoked")).toContain("padding-left: 24px");
+    expect(getComputedStyle(row).paddingLeft).toBe("24px");
+    expect(proof.rulesFor(".dev-revoked")).not.toContain("padding-left");
   });
 });

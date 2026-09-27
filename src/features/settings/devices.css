@@ -21,11 +21,19 @@
 
 /* The shell's action pill fills `--surface`, which resolves to this card's
    own ground: without this scope the buttons are fill-on-fill. `--panel-side`
-   is the Profiles rows' fill, declared in both themes (`--surface-muted`
-   has no dark declaration and would compute to transparent there). */
+   is the Profiles rows' fill, declared in both themes (it is also what the
+   `--surface-muted` alias resolves to in both themes). */
 #settings-panel-devices .settings-device-action {
   background: var(--panel-side);
   border-color: var(--line-strong);
+}
+
+/* The id above outranks the house `:hover` / `:focus-visible` border, so
+   the two states are re-stated inside the same scope: without this the
+   terracotta border never renders on this page. */
+#settings-panel-devices .settings-device-action:hover,
+#settings-panel-devices .settings-device-action:focus-visible {
+  border-color: var(--terracotta);
 }
 
 /* A form card: this device, pair a device. */
@@ -167,7 +175,6 @@
 }
 
 .dev-kebab-wrap {
-  position: relative;
   flex: none;
 }
 
@@ -199,11 +206,11 @@
 
 /* The row menu renders through the house portal (fixed off the anchor,
    flipped above it when the space below is smaller), so it carries no
-   absolute offsets of its own: the popover sets position inline. */
+   positioning of its own: the popover sets position, width and z-index
+   inline. The wrap span below is only a structural hook. */
 .dev-menu-pop {
   display: flex;
   flex-direction: column;
-  min-width: 140px;
   padding: 4px;
   background: var(--panel-card);
   border: 1px solid var(--line-strong);
@@ -339,7 +346,6 @@
 
 .dev-revoked {
   margin: 0 14px 8px;
-  padding-left: 24px;
   color: var(--silence);
   font-size: 11px;
 }
@@ -353,5 +359,5 @@
   flex-wrap: wrap;
   align-items: baseline;
   gap: 9px;
-  padding: 5px 0;
+  padding: 5px 0 5px 24px;
 }

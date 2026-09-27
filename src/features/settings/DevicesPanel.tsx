@@ -265,8 +265,19 @@ function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCa
   useEffect(() => {
     if (armed !== null) confirmRef.current?.focus();
   }, [armed]);
+  // Disarming unmounts the confirm that holds focus. Landing back on the
+  // row's kebab — the control the person came from — keeps the tab order
+  // on the row instead of dropping it on `<body>`.
+  const rowRef = useRef<HTMLDivElement>(null);
+  const wasArmedRef = useRef(false);
+  useEffect(() => {
+    if (wasArmedRef.current && armed === null) {
+      rowRef.current?.querySelector<HTMLButtonElement>(".dev-kebab")?.focus();
+    }
+    wasArmedRef.current = armed !== null;
+  }, [armed]);
   return (
-    <div className="dev-row-wrap">
+    <div className="dev-row-wrap" ref={rowRef}>
       <div className="dev-row">
         <span className="dev-glyph">
           <DeviceGlyph />

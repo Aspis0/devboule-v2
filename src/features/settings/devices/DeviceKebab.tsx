@@ -52,8 +52,25 @@ export function DeviceKebab({
       }
     };
     document.addEventListener("pointerdown", onPointerDown);
+    // Tab away from the open menu: focus lands on content the menu floats
+    // over, so the menu goes with it. Without this the `role="menu"` stays
+    // open with `aria-expanded="true"` and focus somewhere else — focus
+    // never entered the menu (no autofocus on destructive items), so the
+    // blur handler alone cannot see it leave.
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target as Node | null;
+      if (
+        target !== null &&
+        !menuRef.current?.contains(target) &&
+        !buttonRef.current?.contains(target)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("focusin", onFocusIn);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("focusin", onFocusIn);
       window.removeEventListener("dev-kebab-open", closeOthers);
     };
   }, [open]);

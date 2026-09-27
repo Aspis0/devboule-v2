@@ -173,10 +173,13 @@ describe("devices panel", () => {
 
   function menuItemByText(text: string): HTMLButtonElement {
     // The row menu renders through a portal on document.body, outside the
-    // panel root, so its items are found on the document, not the container.
-    const found = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
-    ).find((item) => (item.textContent ?? "").trim() === text);
+    // panel root — and only one menu is ever open (the kebabs close each
+    // other) — so items are found inside the open menu, never the container.
+    const menu = document.querySelector('[role="menu"]');
+    if (menu === null) throw new Error("row menu did not render");
+    const found = Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(
+      (item) => (item.textContent ?? "").trim() === text,
+    );
     if (found === undefined) throw new Error(`menu item did not render: ${text}`);
     return found;
   }
@@ -467,7 +470,7 @@ describe("devices panel", () => {
       await Promise.resolve();
     });
 
-    const alert = container.querySelector('[role="alert"]');
+    const alert = container.querySelector('.device-error[role="alert"]');
     if (alert === null) throw new Error("pairing error did not render");
     expect(alert.textContent).toContain("The agent daemon refused that request as invalid.");
     expect(alert.querySelector(".error-detail-sr-only")).not.toBeNull();
@@ -613,7 +616,7 @@ describe("devices panel", () => {
     expect(pairingConfirm).toHaveBeenCalledWith(PENDING.deviceId, false);
     expect(container.textContent).not.toContain("Waiting for your confirmation");
     expect(container.textContent).not.toContain("Marco's MacBook Pro");
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('.device-error[role="alert"]')).toBeNull();
     // The panel asked the daemon again: taking the card off screen is its own
     // belief, and only the next reply confirms it.
     expect(vi.mocked(devicesList).mock.calls.length).toBeGreaterThan(1);
@@ -639,7 +642,7 @@ describe("devices panel", () => {
     expect(container.textContent).not.toContain("TABLET-V477JRIG");
     expect(container.textContent).toContain("Marco's MacBook Pro");
     expect(container.textContent).toContain("Waiting for your confirmation (1)");
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('.device-error[role="alert"]')).toBeNull();
   });
 
   it("shows a failed confirmation verbatim on the card it belongs to", async () => {
@@ -655,7 +658,7 @@ describe("devices panel", () => {
       await Promise.resolve();
     });
 
-    const alert = container.querySelector('[role="alert"]');
+    const alert = container.querySelector('.device-error[role="alert"]');
     if (alert === null) throw new Error("confirmation error did not render");
     expect(alert.textContent).toContain("The agent daemon refused that request as invalid.");
     expect(alert.querySelector(".error-detail-sr-only")).not.toBeNull();
@@ -771,7 +774,7 @@ describe("devices panel", () => {
     });
 
     expect(checkboxByLabel("send").checked).toBe(false);
-    const alert = container.querySelector('[role="alert"]');
+    const alert = container.querySelector('.device-error[role="alert"]');
     if (alert === null) throw new Error("capability error did not render");
     expect(alert.textContent).toContain("The agent daemon refused that request as invalid.");
     expect(alert.querySelector(".error-detail-sr-only")).not.toBeNull();
@@ -909,7 +912,7 @@ describe("devices panel", () => {
     });
     await renderPanel();
 
-    const alert = container.querySelector('[role="alert"]');
+    const alert = container.querySelector('.device-actions[role="alert"]');
     if (alert === null) throw new Error("load failure did not render");
     expect(alert.textContent).toContain("A system or file operation failed on this machine.");
     expect(buttonByText("Retry")).toBeTruthy();
@@ -980,7 +983,7 @@ describe("devices panel", () => {
 
     // The stale reply was dropped: the toggle the daemon confirmed stays on.
     expect(checkboxByLabel("send").checked).toBe(true);
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('.device-error[role="alert"]')).toBeNull();
   });
 
   it("keeps the newest reply when two overlapping polls resolve out of order", async () => {
@@ -1057,7 +1060,16 @@ describe("devices panel", () => {
       await Promise.resolve();
     });
     expect(container.textContent).not.toContain("Xiaomi 14");
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('.device-error[role="alert"]')).toBeNull();
+
+    // And the optimistic override went with the write: when the peer
+    // comes back with the daemon's own set, no stale switch survives.
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(container.textContent).toContain("Xiaomi 14");
+    expect(checkboxByLabel("send").checked).toBe(false);
   });
 
   it("clears the waiting card once the far side's row arrives", async () => {
@@ -1164,7 +1176,7 @@ describe("devices panel", () => {
     const confirm = container.querySelector(".device-inline-confirm");
     if (confirm === null) throw new Error("revoke confirm did not render");
     expect(confirm.getAttribute("role")).toBe("alert");
-    expect(confirm.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(confirm);
   });
 
   it("moves focus into the armed lost-device confirm too", async () => {
@@ -1183,7 +1195,36 @@ describe("devices panel", () => {
     const confirm = container.querySelector(".device-inline-confirm");
     if (confirm === null) throw new Error("revoke confirm did not render");
     expect(confirm.textContent).toContain("closes its connections");
-    expect(confirm.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(confirm);
+  });
+
+  it("returns focus to the row's kebab on Cancel, never the body", async () => {
+    // Disarming unmounts the confirm that holds focus: without a landing
+    // spot the browser drops focus on `<body>` and the tab order resets
+    // to the top of the document, losing the row the person was on.
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
+    await renderPanel();
+    await openRowKebab();
+
+    await act(async () => {
+      menuItemByText("Revoke").click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(document.activeElement).not.toBe(document.body);
+
+    await act(async () => {
+      buttonByText("Cancel").click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector(".device-inline-confirm")).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector(".dev-kebab"));
   });
 
   it("arms the confirm on one row only when two are paired", async () => {
@@ -1241,7 +1282,7 @@ describe("devices panel", () => {
     await submitForm();
 
     expect(pairingComplete).not.toHaveBeenCalled();
-    const alert = container.querySelector('[role="alert"]');
+    const alert = container.querySelector('.device-error[role="alert"]');
     if (alert === null) throw new Error("address error did not render");
     expect(alert.textContent).toContain("host:port");
 
