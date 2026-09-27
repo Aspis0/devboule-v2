@@ -34,6 +34,7 @@ import {
   useWorkspacePanelResize,
 } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
+import { setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
 import { useProviderConsent } from "./useProviderConsent";
@@ -157,6 +158,12 @@ export function Workspace({
     retryProjects,
     reuseOrCreateWorkspace,
   } = useWorkspaceProjects();
+  // The one seam Settings → Providers may use: the last-selected workspace,
+  // read when a provider install/login opens its terminal tab. The surfaces
+  // never mount together, so the cell outlives them; unmount clears nothing.
+  useEffect(() => {
+    setLastSelectedWorkspaceId(selectedWorkspace);
+  }, [selectedWorkspace]);
   const {
     leftWidth,
     rightWidth,

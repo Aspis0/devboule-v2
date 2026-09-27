@@ -13,7 +13,13 @@ import {
   PROVIDER_VOCABULARY_CAPABILITY,
   type ModelCountCache,
 } from "../providers/ProviderModelCount";
-import { providerLogin, providerTerminalPlan } from "../providers/providerTerminalCommands";
+import {
+  detectTerminalShell,
+  providerLogin,
+  providerNoLoginNote,
+  providerTerminalPlan,
+} from "../providers/providerTerminalCommands";
+import { getLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
 import {
   clearTerminalRun,
   clearTerminalRuns,
@@ -40,13 +46,23 @@ interface ProviderConsent {
 /** The consent's own words: what Confirm types, and what it changes. */
 const NPM_WARNING =
   "This changes your global npm installation; running sessions keep the old version until they are restarted.";
-const TERMINAL_LEAD = "Confirm opens a terminal tab and types these lines, then takes you there.";
+const TERMINAL_LEAD = "Confirm opens a terminal tab and types this line, then takes you there.";
+// The PTY starts `-NoProfile`, so a profile-provided npm is absent here —
+// the daemon road's one honest sentence, restored where it can now happen.
+const NPM_MISSING =
+  "If the tab says npm is not recognized, install Node.js/npm and try again — the tab starts without your shell profile.";
+const NO_WORKSPACE_INSTALL =
+  "No workspace is open, so this installs in the background instead of a terminal tab.";
 
-/** The row line after a terminal handoff, until Refresh or dismiss. */
+/**
+ * The row line after a terminal handoff, until a successful Refresh or
+ * dismiss. Handoff truth only: nothing here observes the install, so
+ * nothing here may claim it is running.
+ */
 function terminalRunNotice(verb: "install" | "login"): string {
   return verb === "install"
-    ? "Installing in a terminal — finish the login there."
-    : "Logging in from a terminal — finish it there.";
+    ? "Install and login sent to a terminal tab — finish them there."
+    : "Login sent to a terminal tab — finish it there.";
 }
 
 /**
@@ -141,6 +157,11 @@ export function ProvidersPanel() {
   // surface reads it: the supervisor's `daemon_status`.
   const daemon = useSettingsDaemon();
   const selectSurface = useAppStore((state) => state.selectSurface);
+  // The workspace a terminal handoff opens under: the "+" menu's own rule
+  // is that a terminal without one starts in the daemon's directory, so
+  // without one this page offers no tab at all (headless install instead).
+  const terminalWorkspaceId = getLastSelectedWorkspaceId();
+  const terminalShell = detectTerminalShell();
   const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
   const vocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
 
@@ -202,16 +223,17 @@ export function ProvidersPanel() {
     setRefreshing(true);
     setError(null);
     setTerminalError(null);
-    // The refetch is the proof the handoff landed: installed rows move
-    // sections, so every waiting note goes with it.
-    clearTerminalRuns();
-    setRunsEpoch((epoch) => epoch + 1);
     // Counts belong to the old catalog: drop them so the next expand re-reads.
     invalidateModelCounts();
     const seq = ++fetchSeqRef.current;
     void providersRefresh()
       .then((fresh) => {
         if (seq === fetchSeqRef.current) setCatalog(fresh);
+        // The refetch is the proof a handoff landed: installed rows move
+        // sections, so waiting notes clear only on success — a Refresh
+        // mid-install must not re-offer Install for a run still going.
+        clearTerminalRuns();
+        setRunsEpoch((epoch) => epoch + 1);
       })
       .catch((cause: unknown) => {
         if (seq === fetchSeqRef.current) {
@@ -240,14 +262,18 @@ export function ProvidersPanel() {
   function confirmConsent() {
     if (consent === null || consentInFlightRef.current) return;
     consentInFlightRef.current = true;
-    // Only the headless update runs here: install and login hand their
-    // exact lines to a terminal tab instead (the login is interactive,
-    // which the daemon's headless npm road cannot do).
-    if (consent.verb !== "update") {
+    // Terminal handoff when a workspace can host the tab; headless daemon
+    // npm otherwise (update always, install when no workspace is open —
+    // the daemon needs no cwd). A login without a workspace has no entry
+    // points, so reaching here with one is a dead branch, never a send.
+    if (consent.verb !== "update" && terminalWorkspaceId !== null) {
       const { provider, verb } = consent;
-      pendingFocusRowRef.current = provider.id;
       setConsent(null);
-      confirmTerminal(provider, verb);
+      confirmTerminal(provider, verb, terminalWorkspaceId);
+      return;
+    }
+    if (consent.verb === "login") {
+      setConsent(null);
       return;
     }
     const { provider } = consent;
@@ -291,17 +317,25 @@ export function ProvidersPanel() {
   }
 
   /**
-   * Install and login run in a terminal tab, not in the daemon: the login
-   * is interactive (browser, TUI), which the headless npm road cannot do.
-   * The tab is created with no workspace, so it renders in whichever
-   * workspace the person lands on — same shared controller the "+" menu
-   * uses, minus its focus arming, which lives in Workspace-local state.
+   * Install and login run in a terminal tab under the current workspace —
+   * never in the daemon's directory (the "+" menu refuses that create,
+   * and so does this page). The login is interactive (browser, TUI),
+   * which the headless npm road cannot do.
    */
-  function confirmTerminal(provider: ProviderInfo, verb: "install" | "login") {
-    const plan = providerTerminalPlan(provider, verb);
+  function confirmTerminal(provider: ProviderInfo, verb: "install" | "login", workspaceId: string) {
+    const plan = providerTerminalPlan(provider, verb, terminalShell);
     if (plan === null) return;
+    // The controller drops a create while one is in flight without asking
+    // the daemon: say that plainly, never the daemon-refusal sentence.
+    if (sharedSessionController().getState().creating) {
+      setTerminalError({
+        providerId: provider.id,
+        text: "A terminal is already starting — wait a moment and try again.",
+      });
+      return;
+    }
     void sharedSessionController()
-      .create("terminal", null, null)
+      .create("terminal", null, workspaceId)
       .then((session) => {
         if (session === null) {
           setTerminalError({
@@ -315,40 +349,51 @@ export function ProvidersPanel() {
         setRunsEpoch((epoch) => epoch + 1);
         setTerminalError(null);
         // create() already selected the tab; the surface switch remounts
-        // this panel, so the handoff note lives in the module store.
-        selectSurface("workspace");
+        // this panel, so the handoff note lives in the module store. And
+        // only while this panel is still the surface: a slow create must
+        // not yank the person back from where they went meanwhile.
+        if (useAppStore.getState().activeSurface === "settings") selectSurface("workspace");
       });
   }
 
   const unreadableDirs = catalog?.unreadableDirs ?? 0;
-  // The headless update's one line; install and login show their terminal
-  // plan (install plus login) through consentPlan below.
+  // The headless road's one line (update always; install when no workspace
+  // can host a tab — the daemon allowlists the package by id, so even a
+  // line our own pattern refused stays safe here). Terminal install and
+  // login show their gated plan through consentPlan below.
   const npmCommand =
-    consent !== null && consent.verb === "update" && consent.provider.npmPackage
+    consent !== null &&
+    (consent.verb === "update" || (consent.verb === "install" && terminalWorkspaceId === null)) &&
+    consent.provider.npmPackage
       ? `npm install -g ${consent.provider.npmPackage}@latest`
       : null;
   const consentPlan =
-    consent !== null && consent.verb !== "update"
-      ? providerTerminalPlan(consent.provider, consent.verb)
+    consent !== null && consent.verb !== "update" && terminalWorkspaceId !== null
+      ? providerTerminalPlan(consent.provider, consent.verb, terminalShell)
       : null;
   // Update keeps its global-npm warning verbatim; a terminal handoff names
-  // the tab first, then the npm change the install line makes.
+  // the tab first, then the npm change the install line makes, then the
+  // profile caveat the PTY reintroduces.
   const consentNotice =
     consent === null
       ? null
       : consent.verb === "update"
         ? NPM_WARNING
-        : consentPlan === null
-          ? null
-          : consent.verb === "install"
-            ? `${TERMINAL_LEAD} ${NPM_WARNING}${consentPlan.note ? ` ${consentPlan.note}` : ""}`
-            : consentPlan.note
-              ? `${TERMINAL_LEAD} ${consentPlan.note}`
-              : TERMINAL_LEAD;
+        : terminalWorkspaceId === null
+          ? consent.verb === "install"
+            ? `${NO_WORKSPACE_INSTALL} ${NPM_WARNING}`
+            : null
+          : consentPlan === null
+            ? null
+            : consent.verb === "install"
+              ? `${TERMINAL_LEAD} ${NPM_WARNING} ${NPM_MISSING}${consentPlan.note ? ` ${consentPlan.note}` : ""}`
+              : consentPlan.note
+                ? `${TERMINAL_LEAD} ${consentPlan.note}`
+                : TERMINAL_LEAD;
   const consentLines =
     consent === null
       ? null
-      : consent.verb === "update"
+      : consent.verb === "update" || (consent.verb === "install" && terminalWorkspaceId === null)
         ? npmCommand !== null
           ? [npmCommand]
           : null
@@ -358,6 +403,11 @@ export function ProvidersPanel() {
     const withTools = toolPolicySupported && (provider.tools ?? []).length > 0;
     const runHere = npmRun?.providerId === provider.id;
     const runHereNotice = terminalRuns().find((run) => run.providerId === provider.id) ?? null;
+    // Log in needs a tab under a workspace; without a known workspace the
+    // details say so, and without a documented login they name where the
+    // login lives instead. Both are hints, never buttons to nowhere.
+    const loginDocumented = providerLogin(provider.id) !== null;
+    const canTerminalHere = terminalWorkspaceId !== null;
     return (
       <ProviderRow
         key={provider.id}
@@ -386,9 +436,16 @@ export function ProvidersPanel() {
         onTurnAllOn={() => toolStore.turnAllOn(provider.id)}
         onOpenUpdate={(trigger) => openConsent(provider, "update", trigger)}
         onOpenLogin={
-          providerLogin(provider.id) !== null
+          loginDocumented && canTerminalHere
             ? (trigger) => openConsent(provider, "login", trigger)
             : undefined
+        }
+        loginHint={
+          loginDocumented
+            ? canTerminalHere
+              ? null
+              : "Log in needs an open workspace."
+            : (providerNoLoginNote(provider.id) ?? null)
         }
         onConfirmConsent={confirmConsent}
         onCancelConsent={() => setConsent(null)}
@@ -480,9 +537,13 @@ export function ProvidersPanel() {
               ) : (
                 <div className="prov-card" aria-busy={refreshing}>
                   {visibleAvailable.map((provider) => {
+                    const runHere = npmRun?.providerId === provider.id;
                     const consentHere = consent?.provider.id === provider.id;
                     const availableNotice =
                       terminalRuns().find((run) => run.providerId === provider.id) ?? null;
+                    // Install is offered only when a safe line exists: the
+                    // plan refuses packages outside the strict name shape.
+                    const installPlan = providerTerminalPlan(provider, "install", terminalShell);
                     return (
                       <div
                         className="prov-available-row"
@@ -513,7 +574,11 @@ export function ProvidersPanel() {
                               Dismiss
                             </button>
                           </span>
-                        ) : provider.npmPackage ? (
+                        ) : runHere && npmRun ? (
+                          <span className="prov-busy" role="status">
+                            {npmRun.verb === "install" ? "Installing…" : "Updating…"}
+                          </span>
+                        ) : installPlan !== null ? (
                           <button
                             className="provider-refresh provider-install"
                             type="button"

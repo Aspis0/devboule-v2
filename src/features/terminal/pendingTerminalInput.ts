@@ -6,9 +6,16 @@
  * retypes, and a re-request replaces a run the tab never picked up.
  */
 const pending = new Map<string, readonly string[]>();
+/** A tab that never mounts leaves its entry; the map is app-lifetime, so
+ * only recent handoffs are kept — a new request evicts the oldest. */
+const MAX_PENDING = 20;
 
 export function requestTerminalInput(sessionId: string, lines: readonly string[]): void {
   pending.set(sessionId, [...lines]);
+  if (pending.size > MAX_PENDING) {
+    const oldest = pending.keys().next();
+    if (!oldest.done) pending.delete(oldest.value);
+  }
 }
 
 /** The requested lines, or null when nobody requested for this tab. Consumes. */

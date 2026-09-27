@@ -104,6 +104,12 @@ export function bannerText(banner: TerminalBanner): string | null {
     : `${prefix} Some output was not saved.`;
 }
 
+function focusIfIdle(host: HTMLElement): void {
+  const active = document.activeElement;
+  if (active !== null && active !== document.body) return;
+  host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus();
+}
+
 export const TerminalSurface = memo(function TerminalSurface({
   workspaceId,
   sessionId,
@@ -180,6 +186,12 @@ export const TerminalSurface = memo(function TerminalSurface({
       sessionId,
       sessionRecovered: sessionRecoveredRef.current,
       host,
+      consumeInitialInput: () => takeTerminalInput(sessionId),
+      onInitialInputTaken: () => {
+        // The provider-install tab just started typing: take focus only if
+        // it is still where navigation left it (body), never steal it.
+        if (mounted) focusIfIdle(host);
+      },
       createView: async (viewHost, options) => {
         const { createTerminalView } = await import("./createTerminalView");
         return createTerminalView(viewHost, options);
@@ -207,17 +219,10 @@ export const TerminalSurface = memo(function TerminalSurface({
 
     void session
       .start()
-      .then(async () => {
+      .then(() => {
         // start() resolves only after createView opened the xterm, so the
         // helper textarea exists here — take the armed request if any.
         if (mounted) takeAutoFocus();
-        // A provider install/login handed to this tab before it existed:
-        // type each line plus Enter through the normal road (a start still
-        // applying its snapshot queues them in order behind it).
-        const pending = takeTerminalInput(sessionId);
-        if (pending !== null) {
-          for (const line of pending) await session.writeToPty(`${line}\n`);
-        }
       })
       .catch(() => {
         if (mounted) setBanner({ kind: "error", message: "Could not start the terminal." });

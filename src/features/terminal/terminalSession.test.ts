@@ -49,6 +49,8 @@ function makeHarness(options?: {
   rejectDetach?: boolean;
   failCreateView?: boolean;
   failCreateChannel?: boolean;
+  consumeInitialInput?: () => readonly string[] | null;
+  onInitialInputTaken?: () => void;
 }): Harness {
   const written: string[] = [];
   const snapshots: SessionSnapshot[] = [];
@@ -216,6 +218,8 @@ function makeHarness(options?: {
     onCtrlCArmed: (armed) => ctrlCStates.push(armed),
     onPermissionRequest: (request, subscriptionId) =>
       permissionRequests.push([request, subscriptionId]),
+    consumeInitialInput: options?.consumeInitialInput,
+    onInitialInputTaken: options?.onInitialInputTaken,
     setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds) as unknown as number,
     clearTimeout: (id) => clearTimeout(id),
     scheduleFrame: (callback) => {
@@ -1047,6 +1051,97 @@ describe("TerminalSession write failures", () => {
       kind: "error",
       message: "Could not send input to the terminal.",
     });
+  });
+});
+
+describe("TerminalSession initial input", () => {
+  function taker(lines: readonly string[], takes: { count: number }) {
+    let taken = false;
+    return (): readonly string[] | null => {
+      takes.count += 1;
+      if (taken) return null;
+      taken = true;
+      return lines;
+    };
+  }
+
+  function sends(harness: { invoke: ReturnType<typeof vi.fn> }): unknown[] {
+    return harness.invoke.mock.calls
+      .filter(([command]) => command === "session_send")
+      .map(([, args]) => args);
+  }
+
+  it("takes at snapshot release, never before, terminated as xterm Enter", async () => {
+    const takes = { count: 0 };
+    const sent = vi.fn();
+    const harness = makeHarness({
+      deferSnapshot: true,
+      consumeInitialInput: taker(["npm install -g @openai/codex@latest"], takes),
+      onInitialInputTaken: sent,
+    });
+    await harness.session.start();
+    harness.invoke.mockClear();
+
+    expect(takes.count).toBe(0);
+    expect(sends(harness)).toEqual([]);
+
+    harness.completeSnapshot();
+
+    expect(takes.count).toBe(1);
+    expect(sends(harness)).toEqual([
+      {
+        id: "session-1",
+        subscriptionId: 17,
+        text: "npm install -g @openai/codex@latest\r",
+      },
+    ]);
+    expect(sent).toHaveBeenCalledTimes(1);
+  });
+
+  it("a disposed instance never consumes, so the surviving one still can", async () => {
+    const takes = { count: 0 };
+    const harness = makeHarness({
+      deferSnapshot: true,
+      consumeInitialInput: taker(["codex login"], takes),
+    });
+    await harness.session.start();
+    harness.invoke.mockClear();
+
+    harness.session.dispose();
+    harness.completeSnapshot();
+
+    expect(takes.count).toBe(0);
+    expect(sends(harness)).toEqual([]);
+  });
+
+  it("flushes user bytes typed during the snapshot before the initial lines", async () => {
+    const takes = { count: 0 };
+    const harness = makeHarness({
+      deferSnapshot: true,
+      consumeInitialInput: taker(["codex login"], takes),
+    });
+    await harness.session.start();
+    harness.invoke.mockClear();
+
+    harness.emitInput("typed first");
+    harness.completeSnapshot();
+
+    expect(sends(harness)).toEqual([
+      { id: "session-1", subscriptionId: 17, text: "typed first" },
+      { id: "session-1", subscriptionId: 17, text: "codex login\r" },
+    ]);
+  });
+
+  it("reports nothing sent when no initial input was handed over", async () => {
+    const sent = vi.fn();
+    const harness = makeHarness({
+      consumeInitialInput: () => null,
+      onInitialInputTaken: sent,
+    });
+    await harness.session.start();
+
+    expect(sends(harness)).toEqual([]);
+    expect(sent).not.toHaveBeenCalled();
   });
 });
 

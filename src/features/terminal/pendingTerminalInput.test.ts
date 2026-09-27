@@ -26,4 +26,12 @@ describe("pendingTerminalInput", () => {
     requestTerminalInput("session-1", ["new"]);
     expect(takeTerminalInput("session-1")).toEqual(["new"]);
   });
+
+  it("evicts the oldest handoff past the bound, never unbounded", () => {
+    for (let index = 0; index < 25; index += 1) {
+      requestTerminalInput(`session-${index}`, [`line-${index}`]);
+    }
+    expect(takeTerminalInput("session-0")).toBeNull();
+    expect(takeTerminalInput("session-24")).toEqual(["line-24"]);
+  });
 });

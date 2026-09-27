@@ -71,6 +71,19 @@ export interface TerminalSessionDeps {
   onPermissionRequest?: (request: PermissionRequest, subscriptionId: number) => void;
   /** The whole resolution event, so the host can read `answeredBy` off it. */
   onPermissionResolved?: (resolution: PermissionResolved) => void;
+  /**
+   * Lines handed to this tab before it existed (a provider install/login).
+   * Taken here — once the PTY is attached and the snapshot released — and
+   * never by a disposed instance, so a StrictMode double-mount or a tab
+   * switch cannot consume what the surviving instance still needs. The
+   * lines arrive raw; this controller terminates each with the same `\r`
+   * xterm's own Enter takes (`handleViewData` ← `onData`).
+   */
+  consumeInitialInput?: () => readonly string[] | null;
+  /** Fired when initial input was taken and queued to type: the host can
+   * offer focus to the tab that is about to type. Queued, not sent — the
+   * release can run while the attach is still in flight (see below). */
+  onInitialInputTaken?: () => void;
   setTimeout?: (callback: () => void, milliseconds: number) => number;
   clearTimeout?: (id: number) => void;
   scheduleFrame?: (callback: () => void) => number;
@@ -302,6 +315,9 @@ export class TerminalSession {
 
     if (this.disposed || this.exited) return;
     this.flushPermissionRequests();
+    // The snapshot may have released while the attach was still in flight
+    // (queued, unsent, no subscription yet): flush now that one exists.
+    this.flushPendingInput();
     // The host may have just become visible. Let ResizeObserver/layout settle
     // before fitting; doResize also ignores zero-sized hosts defensively.
     this.requestResize();
@@ -597,6 +613,29 @@ export class TerminalSession {
   }
 
   private releasePendingInput(): void {
+    // The take is atomic with this queueing: a dispose between take and
+    // send is impossible in one synchronous run, and a disposed instance
+    // never reaches here (`releaseSnapshotEvents` guards it) — so the
+    // lines are either queued on this live instance or still waiting for
+    // the next one. User bytes first: they were typed first.
+    // The release can run while the attach is still in flight (the daemon
+    // may emit the snapshot re-entrantly), when `subscriptionId` is still
+    // null and `sendToPty` would drop the bytes after consuming them. So
+    // this only queues; `flushPendingInput` sends once a subscription
+    // exists — at release time, and again after the attach confirms.
+    const queued = this.pendingInput.splice(0);
+    const initial = this.deps.consumeInitialInput?.() ?? null;
+    this.pendingInput.push(
+      ...queued,
+      ...(initial === null ? [] : initial.map((line) => `${line}\r`)),
+    );
+    if (initial !== null) this.deps.onInitialInputTaken?.();
+    this.flushPendingInput();
+  }
+
+  /** Send whatever is queued, if this instance holds a subscription. */
+  private flushPendingInput(): void {
+    if (this.subscriptionId === null) return;
     const input = this.pendingInput.splice(0);
     for (const data of input) void this.sendToPty(data);
   }

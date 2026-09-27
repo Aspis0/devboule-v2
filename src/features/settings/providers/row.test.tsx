@@ -64,6 +64,7 @@ describe("ProviderRow", () => {
       onToggleTools: () => {},
       onTurnAllOn: () => {},
       onOpenUpdate: () => {},
+      loginHint: null,
       onConfirmConsent: () => {},
       onCancelConsent: () => {},
       onDismissFailure: () => {},
@@ -402,12 +403,12 @@ describe("ProviderRow", () => {
   it("opens collapsed details for a terminal handoff, with Dismiss", async () => {
     const onDismissNotice = vi.fn();
     await renderRow({
-      terminalNotice: "Installing in a terminal — finish the login there.",
+      terminalNotice: "Install and login sent to a terminal tab — finish them there.",
       onDismissNotice,
     });
     expect(chevron().getAttribute("aria-expanded")).toBe("true");
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
-      "Installing in a terminal — finish the login there.",
+      "Install and login sent to a terminal tab — finish them there.",
     );
     const dismiss = container.querySelector<HTMLButtonElement>(
       '[role="status"] .provider-update-error-dismiss',
@@ -415,5 +416,22 @@ describe("ProviderRow", () => {
     if (!dismiss) throw new Error("notice Dismiss did not render");
     await act(async () => dismiss.click());
     expect(onDismissNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the login hint instead of the button once details open", async () => {
+    // No auto-expand: the hint is for someone who opened details looking
+    // for the login, not a reason to open every row with one by default.
+    await renderRow({ loginHint: "Log in needs an open workspace." });
+    expect(container.querySelector(".prov-details")).toBeNull();
+    await act(async () => chevron().click());
+    expect(container.querySelector(".provider-login")).toBeNull();
+    expect(container.textContent).toContain("Log in needs an open workspace.");
+  });
+
+  it("shows neither button nor hint when silence is correct", async () => {
+    await renderRow({ loginHint: null });
+    await act(async () => chevron().click());
+    expect(container.querySelector(".provider-login")).toBeNull();
+    expect(container.textContent).not.toContain("Log in");
   });
 });

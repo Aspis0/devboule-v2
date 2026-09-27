@@ -312,6 +312,7 @@ import type {
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
 import type { MessageQueue } from "./messageQueue";
 import { resetSharedSessionControllerForTests, sharedSessionController } from "./workspaceSessions";
+import { getLastSelectedWorkspaceId, setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe, type SenderProbe } from "./queueSenderDouble";
 import { createDelegationController } from "../../lib/delegation";
@@ -570,6 +571,15 @@ describe("Workspace sessions", () => {
     expect(row?.textContent).not.toContain("live session");
     expect(row?.querySelector(".sidebar-row-dot-pulse")).not.toBeNull();
     expect(row?.title).toBe("C:\\devboule");
+  });
+
+  it("publishes the selected workspace for surfaces it never mounts alongside", async () => {
+    setLastSelectedWorkspaceId(null);
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    expect(getLastSelectedWorkspaceId()).toBe("workspace-1");
   });
 
   it("after a reconnect, a restored selection in another workspace is honoured again", async () => {

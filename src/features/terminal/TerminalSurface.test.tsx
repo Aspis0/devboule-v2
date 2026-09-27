@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bannerText, TerminalSurface } from "./TerminalSurface";
-import { requestTerminalInput } from "./pendingTerminalInput";
+import { requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
 
 const coreMocks = vi.hoisted(() => {
   const snapshotEvent = {
@@ -377,8 +377,8 @@ describe("TerminalSurface observer wiring", () => {
     ).toBe(false);
   });
 
-  it("types a requested install then login, each plus Enter, in order", async () => {
-    requestTerminalInput("session-1", ["npm install -g @openai/codex@latest", "codex login"]);
+  it("types a requested line once, terminated as xterm Enter", async () => {
+    requestTerminalInput("session-1", ["npm install -g @openai/codex@latest"]);
     root = createRoot(container);
     await act(async () => {
       root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
@@ -390,9 +390,101 @@ describe("TerminalSurface observer wiring", () => {
       .mock.calls.filter(([command]) => command === "session_send")
       .map(([, args]) => args);
     expect(sends).toEqual([
-      { id: "session-1", subscriptionId: 17, text: "npm install -g @openai/codex@latest\n" },
-      { id: "session-1", subscriptionId: 17, text: "codex login\n" },
+      {
+        id: "session-1",
+        subscriptionId: 17,
+        text: "npm install -g @openai/codex@latest\r",
+      },
     ]);
+    expect(takeTerminalInput("session-1")).toBeNull();
+  });
+
+  it("survives a StrictMode double mount: exactly one instance types", async () => {
+    requestTerminalInput("session-1", ["npm install -g @openai/codex@latest"]);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <StrictMode>
+          <TerminalSurface workspaceId="w1" sessionId="session-1" />
+        </StrictMode>,
+      );
+    });
+    await act(async () => flush(400));
+
+    const sends = vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "session_send")
+      .map(([, args]) => args);
+    // The disposed first instance must never consume what the survivor needs.
+    expect(sends).toEqual([
+      {
+        id: "session-1",
+        subscriptionId: 17,
+        text: "npm install -g @openai/codex@latest\r",
+      },
+    ]);
+    expect(takeTerminalInput("session-1")).toBeNull();
+  });
+
+  it("keeps the lines across a tab switch mid-snapshot and types them once", async () => {
+    requestTerminalInput("session-1", ["codex login"]);
+    // The first mount attaches but its snapshot never arrives — the tab
+    // switch disposes it mid-snapshot, before any take could happen.
+    vi.mocked(invoke).mockImplementationOnce(async (command: string) => {
+      if (command === "sessions_list") return [];
+      if (command === "session_attach") return 17;
+      return undefined;
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+    });
+    await act(async () => flush(200));
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "session_send"),
+    ).toHaveLength(0);
+
+    await act(async () => root?.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+    });
+    await act(async () => flush(400));
+
+    const sends = vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "session_send")
+      .map(([, args]) => args);
+    expect(sends).toEqual([{ id: "session-1", subscriptionId: 17, text: "codex login\r" }]);
+    expect(takeTerminalInput("session-1")).toBeNull();
+  });
+
+  it("takes focus when the handoff tab starts typing into an idle page", async () => {
+    requestTerminalInput("session-1", ["codex login"]);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+    });
+    await act(async () => flush(400));
+
+    expect(container.querySelector(".xterm-helper-textarea")).not.toBeNull();
+    expect(document.activeElement).toBe(container.querySelector(".xterm-helper-textarea"));
+  });
+
+  it("never steals focus the person moved elsewhere", async () => {
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    requestTerminalInput("session-1", ["codex login"]);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+    });
+    await act(async () => {
+      outside.focus();
+    });
+    await act(async () => flush(400));
+
+    expect(document.activeElement).toBe(outside);
   });
 
   it("sends nothing when no run was requested for the tab", async () => {

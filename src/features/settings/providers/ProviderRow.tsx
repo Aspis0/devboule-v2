@@ -71,6 +71,11 @@ export interface ProviderRowProps {
   onOpenUpdate: (trigger: HTMLButtonElement | null) => void;
   /** Absent when the provider documents no login command: no entry points. */
   onOpenLogin?: (trigger: HTMLButtonElement | null) => void;
+  /**
+   * Why no Log in button is shown: a no-workspace or no-command sentence.
+   * Null when the button shows or when silence is correct (never both).
+   */
+  loginHint: string | null;
   onConfirmConsent: () => void;
   onCancelConsent: () => void;
   onDismissFailure: () => void;
@@ -106,6 +111,7 @@ export function ProviderRow({
   onTurnAllOn,
   onOpenUpdate,
   onOpenLogin,
+  loginHint,
   onConfirmConsent,
   onCancelConsent,
   onDismissFailure,
@@ -270,6 +276,10 @@ export function ProviderRow({
               >
                 Log in
               </button>
+            </div>
+          ) : loginHint !== null ? (
+            <div className="prov-detail-line">
+              <span className="prov-terminal-note">{loginHint}</span>
             </div>
           ) : null}
           {consentOpen && consentLines !== null && consentVerb !== null ? (
