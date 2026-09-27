@@ -111,18 +111,6 @@
   text-transform: uppercase;
 }
 
-.workspace-right-toolbar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
-  height: 44px;
-}
-
-.workspace-right-toolbar {
-  padding: 0 10px;
-}
-
 .workspace-icon-button,
 .workspace-project-add,
 .workspace-browser-reload {
@@ -1379,58 +1367,11 @@
   color: var(--muted);
 }
 
-.workspace-right-panel {
-  background: transparent;
-}
-
-.workspace-surface-selector {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  height: 29px;
-  padding: 0 11px;
-  color: var(--ink);
-  text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  cursor: pointer;
-}
-
-.workspace-surface-selector:hover,
-.workspace-surface-selector:focus-visible {
-  border-color: var(--terracotta);
-}
-
-.workspace-surface-selector .workspace-status-dot {
-  width: 6px;
-  height: 6px;
-}
-
 .workspace-surface-name {
   flex: none;
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
-}
-
-.workspace-surface-meta {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-surface-chevron {
-  flex: none;
-  margin-left: auto;
-  color: var(--silence);
-  font-size: 10px;
 }
 
 .workspace-surface-menu {
@@ -1458,12 +1399,6 @@
 
 .workspace-menu-label {
   padding: 2px 6px 7px;
-}
-
-.workspace-surface-options {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
 
 .workspace-provider-group {
@@ -1494,22 +1429,9 @@
   background: var(--surface-muted);
 }
 
-.workspace-surface-option-selected {
-  background: var(--selection);
-}
-
 .workspace-surface-option .workspace-status-dot {
   width: 6px;
   height: 6px;
-}
-
-.workspace-surface-option-meta {
-  flex: none;
-  margin-left: auto;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  white-space: nowrap;
 }
 
 .workspace-consent-provider {
@@ -1546,13 +1468,6 @@
   gap: 6px;
   justify-content: flex-end;
   padding: 8px 0 2px;
-}
-
-.workspace-side-scroll {
-  flex: 1;
-  min-height: 0;
-  padding: 12px;
-  overflow-y: auto;
 }
 
 .workspace-changes-mockup-note {

@@ -78,6 +78,7 @@ import {
 } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
+import "./panel/panel.css";
 import { useAppStore } from "../../store/appStore";
 
 type ActiveSidePanel = SidePanelEntry["id"];
