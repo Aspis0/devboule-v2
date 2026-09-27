@@ -263,7 +263,9 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   padding: 6px 6px 2px;
 }
 
-.workspace-files-sort {
+/* The order named, not offered: one criterion means a label, never a
+   control that cannot do anything. */
+.workspace-files-sort-label {
   display: flex;
   flex: none;
   align-items: center;
@@ -271,20 +273,9 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   height: 24px;
   padding: 0 6px;
   color: var(--muted);
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
   font-family: var(--font-ui);
   font-size: 12px;
   white-space: nowrap;
-}
-
-.workspace-files-sort:hover,
-.workspace-files-sort:focus-visible,
-.workspace-files-sort[aria-expanded="true"] {
-  color: var(--ink);
-  background: var(--fill-hover);
 }
 
 .workspace-files-spacer {
@@ -344,18 +335,29 @@ ul.workspace-files-group {
 
 /* File and folder rows keep the moved `.workspace-tree-dir/file` bones
    and wear the tree's look over them: the mockup's 0 6px pad and 6px gap,
-   h24, sans. The inline depth pad beats the shorthand's left side. Bare
-   selectors on purpose: the computed-style proof only models those. */
+   h24, 6px radius, sans — and no space-between: the name sits beside its
+   icon while the size is pushed right with a margin of its own. The
+   inline depth pad beats the shorthand's left side. Bare selectors on
+   purpose: the computed-style proof only models those. */
 .workspace-files-row {
   height: 24px;
   padding: 0 6px;
   gap: 6px;
+  justify-content: flex-start;
+  border-radius: 6px;
   font-family: var(--font-ui);
   font-size: 12px;
 }
 
 .workspace-files-row:hover {
   background: var(--fill-hover);
+}
+
+/* The row's own menu trigger fits its row: the moved 27px bone would make
+   every row 27px tall. Scoped, so the Changes panel's trigger — same
+   class, merged R7b code — keeps the height it shipped with. */
+.workspace-files .workspace-tree-menu-trigger {
+  height: 24px;
 }
 
 .workspace-files-file-icon {
@@ -371,7 +373,9 @@ ul.workspace-files-group {
 }
 
 .workspace-files-row .workspace-tree-size {
+  margin-left: auto;
   color: var(--muted);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -383,9 +387,11 @@ ul.workspace-files-group {
   background: var(--fill-tool);
 }
 
-/* The rename input and the row menu items are UI text, not code. */
-.workspace-tree-rename,
-.workspace-tree-menu-item {
+/* The rename input and the row menu items are UI text, not code. Scoped:
+   the Changes panel renders its Discard item with the same menu class,
+   and this slice must not restyle merged R7b code in passing. */
+.workspace-files .workspace-tree-rename,
+.workspace-files .workspace-tree-menu-item {
   font-family: var(--font-ui);
   font-size: 12px;
 }
@@ -415,7 +421,13 @@ ul.workspace-files-group {
 
 /* The preview card's header bar is UI text (path + stat), not code: the
    scoped rule holds it at sans the way the Changes panel holds its diff
-   header. The file's own bytes below keep their mono. */
+   header. The file's own bytes below keep their mono — declared here, not
+   left to the UA stylesheet's `pre`, so a global reset cannot silently
+   flip the preview to sans. */
 .workspace-files .workspace-diff-header {
   font-family: var(--font-ui);
+}
+
+.workspace-file-preview-text {
+  font-family: "JetBrains Mono", monospace;
 }

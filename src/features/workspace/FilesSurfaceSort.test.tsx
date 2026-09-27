@@ -17,6 +17,22 @@ import { workspaceFileRead, workspaceFilesList } from "../../lib/tauri";
 import { FilesSurface } from "./FilesSurface";
 import { assembleCssProof, removeCssProof } from "./cssProof";
 
+/** How many folder sorts the panel ran: the memo test's only observable.
+ * Reset per test; the wrapper calls through, so the order assertions keep
+ * proving the contract while this counts its cost. */
+let sortCalls = 0;
+
+vi.mock("./filesSort", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./filesSort")>();
+  return {
+    ...actual,
+    sortFileEntries: (entries: readonly WorkspaceFileEntry[]) => {
+      sortCalls += 1;
+      return actual.sortFileEntries(entries);
+    },
+  };
+});
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const rootDir = resolve(import.meta.dirname, "../../..");
@@ -67,6 +83,10 @@ describe("FilesSurface R7c sort and toolbar", () => {
     });
   });
 
+  beforeEach(() => {
+    sortCalls = 0;
+  });
+
   afterEach(async () => {
     const current = root;
     if (current !== undefined) {
@@ -106,12 +126,6 @@ describe("FilesSurface R7c sort and toolbar", () => {
       container.querySelectorAll<HTMLButtonElement>(".workspace-tree-dir"),
     ).find((button) => button.title === path);
     if (match === undefined) throw new Error(`folder row did not render: ${path}`);
-    return match;
-  }
-
-  function sortButton(): HTMLButtonElement {
-    const match = container.querySelector<HTMLButtonElement>(".workspace-files-sort");
-    if (match === null) throw new Error("sort control did not render");
     return match;
   }
 
@@ -178,62 +192,72 @@ describe("FilesSurface R7c sort and toolbar", () => {
     expect(labels()).toEqual(["src", "a.txt", "z.txt"]);
   });
 
-  // The toolbar's sort control: the current criterion with its chevron,
-  // opening a small menu — Name checked, Modified honestly disabled (the
-  // wire carries no file times, so the item cannot sort yet). Escape
-  // closes and focus returns to the control that opened it.
-  it("offers Name checked and Modified honestly disabled in the sort menu", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
-
-    const sort = sortButton();
-    expect(sort.textContent).toContain("Name");
-    expect(sort.getAttribute("aria-haspopup")).toBe("menu");
-    expect(sort.getAttribute("aria-expanded")).toBe("false");
-
-    await act(async () => {
-      sort.click();
-    });
-    expect(sort.getAttribute("aria-expanded")).toBe("true");
-    const items = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
+  // The sort is memoised on the entries reference (F-05): a reply is
+  // immutable once it lands, so opening a menu and typing a rename —
+  // re-renders with the same references — must not re-sort. Kills the
+  // plain-closure FolderGroup that re-sorts every folder per keystroke.
+  it("does not re-sort folders while a menu opens and a rename is typed", async () => {
+    vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) =>
+      Promise.resolve(
+        path === ""
+          ? listing([entry("src", "dir"), entry("b.txt", "file", 1)])
+          : listing([entry("src/z.txt", "file", 1), entry("src/a.txt", "file", 2)]),
+      ),
     );
-    expect(items.map((item) => item.textContent)).toEqual(["Name", "Modified"]);
-    expect(items[0]?.getAttribute("aria-checked")).toBe("true");
-    const modified = items[1];
-    if (modified === undefined) throw new Error("Modified option did not render");
-    expect(modified.disabled).toBe(true);
-    expect(modified.title).toContain("file times");
-
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
     await act(async () => {
-      modified.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      dirButton("src").click();
     });
-    expect(container.querySelector('[role="menu"]')).toBeNull();
-    expect(document.activeElement).toBe(sort);
+    const settled = sortCalls;
+    expect(settled).toBeGreaterThan(0);
+
+    const trigger = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-tree-menu-trigger"),
+    ).find((button) => button.getAttribute("aria-label") === "a.txt actions");
+    if (trigger === undefined) throw new Error("row menu trigger did not render");
+    await act(async () => {
+      trigger.click();
+    });
+    expect(sortCalls).toBe(settled);
+
+    const rename = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Rename");
+    if (rename === undefined) throw new Error("Rename item did not render");
+    await act(async () => {
+      rename.click();
+    });
+    const input = container.querySelector<HTMLInputElement>(".workspace-tree-rename");
+    if (input === null) throw new Error("rename input did not render");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    if (setter === undefined) throw new Error("no value setter");
+    await act(async () => {
+      setter.call(input, "a2.txt");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(sortCalls).toBe(settled);
   });
 
-  // Choosing the checked criterion closes the menu and keeps the order —
-  // the menu changes the criterion, it never re-reads.
-  it("choosing Name closes the menu and owes no re-read", async () => {
+  // One criterion means no menu (F-03): the toolbar names the order with
+  // a static label — the mockup's own `.ftoolbar` shape — instead of a
+  // control that cannot do anything. Clicking it opens nothing.
+  it("names the order with a static label and offers no menu", async () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("b.txt", "file", 1), entry("a.txt", "file", 2)]),
     );
     await render(<FilesSurface workspaceId={WORKSPACE} />);
-    expect(vi.mocked(workspaceFilesList)).toHaveBeenCalledTimes(1);
 
+    expect(labels()).toEqual(["a.txt", "b.txt"]);
+    const label = container.querySelector(".workspace-files-sort-label");
+    if (label === null) throw new Error("sort label did not render");
+    expect(label.textContent).toContain("Name");
+    expect(label.tagName).not.toBe("BUTTON");
+    expect(container.querySelector('[role="menu"]')).toBeNull();
     await act(async () => {
-      sortButton().click();
+      label.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    const name = container.querySelector<HTMLButtonElement>(
-      '[role="menuitemradio"][aria-checked="true"]',
-    );
-    if (name === null) throw new Error("Name option did not render");
-    await act(async () => {
-      name.click();
-    });
-
     expect(container.querySelector('[role="menu"]')).toBeNull();
     expect(labels()).toEqual(["a.txt", "b.txt"]);
-    expect(vi.mocked(workspaceFilesList)).toHaveBeenCalledTimes(1);
   });
 
   // The refresh is a quiet icon button, as R7b's: no text control anywhere
@@ -286,14 +310,6 @@ describe("FilesSurface R7c sort and toolbar", () => {
     });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(toggle.getAttribute("aria-controls")).toBeNull();
-
-    const trigger = container.querySelector<HTMLButtonElement>(".workspace-tree-menu-trigger");
-    if (trigger === null) throw new Error("row menu trigger did not render");
-    await act(async () => {
-      trigger.focus();
-      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    });
-    expect(document.activeElement).toBe(trigger);
   });
 
   // Slice 8's hand-off: the selected file carries a pencil that opens it
@@ -345,29 +361,50 @@ describe("FilesSurface R7c sort and toolbar", () => {
     expect(container.querySelector('[aria-label="Open file in a tab"]')).toBeNull();
   });
 
-  // The mockup's Files chrome from the real sheets in bundle order: the
-  // toolbar (sort left, quiet refresh right), h24 sans rows with the 14px
-  // indent step, the selected file as a fill-tool row, and the preview
+  // The mockup's Files chrome from the sheets that can name these
+  // selectors, in the order the production bundle emits them (measured
+  // with `vite build`: index.css — tokens, global, errorBoundaries,
+  // PermissionCard, PickerChip — then artifactPreview, then Workspace.css
+  // in the SidebarFooter chunk, then the Workspace chunk as changes →
+  // files → QueueTrack → strip → sidebar (which carries the history
+  // rules; no history.css source exists) → panel.css; the
+  // settings/design/marketplace/polis/oracle chunks load after and name
+  // none of these selectors, verified by grep). The toolbar (sort label
+  // left, quiet refresh right), h24 sans rows with the 14px indent step,
+  // the trigger fitting its row, the name beside its icon, mockup radii
+  // and sizes, the selected file as a fill-tool row, and the preview
   // card's header as UI text — only the file's own bytes keep mono.
-  it("paints toolbar, rows and preview header from the real sheets in bundle order", async () => {
+  it("paints toolbar, rows and preview header from the sheets in bundle order", async () => {
     const { inject, token } = assembleCssProof([
       read("src/styles/tokens.css"),
       read("src/styles/global.css"),
+      read("src/app/errorBoundaries.css"),
+      read("src/components/PermissionCard.css"),
+      read("src/components/PickerChip.css"),
+      read("src/features/design/artifactPreview.css"),
       read("src/features/workspace/Workspace.css"),
       read("src/features/workspace/panel/changes.css"),
       read("src/features/workspace/panel/files.css"),
+      read("src/features/workspace/QueueTrack.css"),
       read("src/features/workspace/strip/strip.css"),
+      read("src/features/workspace/sidebar/sidebar.css"),
       read("src/features/workspace/panel/panel.css"),
     ]);
     inject([
-      ".workspace-files",
       ".workspace-files-toolbar",
-      ".workspace-files-sort",
+      ".workspace-files-sort-label",
       ".workspace-files-refresh",
       ".workspace-files-tree",
       ".workspace-files-row",
+      ".workspace-tree-dir",
+      ".workspace-tree-file",
       ".workspace-files-file-icon",
       ".workspace-tree-chevron",
+      ".workspace-tree-size",
+      ".workspace-files-row .workspace-tree-size",
+      ".workspace-files-row .workspace-tree-chevron",
+      ".workspace-tree-menu-trigger",
+      ".workspace-files .workspace-tree-menu-trigger",
       ".workspace-files-selected",
       ".workspace-files-pencil",
       ".workspace-diff-header",
@@ -393,6 +430,13 @@ describe("FilesSurface R7c sort and toolbar", () => {
     expect(getComputedStyle(folder).fontSize).toBe("12px");
     expect(getComputedStyle(folder).fontFamily).not.toContain("JetBrains Mono");
     expect(getComputedStyle(folder).paddingLeft).toBe("6px");
+    // The mockup's 6px radius, not the moved bone's 8px.
+    expect(getComputedStyle(folder).borderRadius).toBe("6px");
+    // The trigger fits its row: 24px, so the tallest child never makes
+    // the row taller than the button the proof measures above.
+    const trigger = container.querySelector<HTMLElement>(".workspace-tree-menu-trigger");
+    if (trigger === null) throw new Error("row menu trigger did not render");
+    expect(getComputedStyle(trigger).height).toBe("24px");
 
     await act(async () => {
       folder.click();
@@ -401,9 +445,16 @@ describe("FilesSurface R7c sort and toolbar", () => {
     if (file === null) throw new Error("nested file row did not render");
     // One 14px step below its folder's 6px pad.
     expect(getComputedStyle(file).paddingLeft).toBe("20px");
+    // The name sits beside its icon: no space-between, the size pushed
+    // right with a margin instead.
+    expect(getComputedStyle(file).justifyContent).toBe("flex-start");
     const icon = file.querySelector<HTMLElement>(".workspace-files-file-icon");
     if (icon === null) throw new Error("file icon did not render");
     expect(getComputedStyle(icon).width).toBe("12px");
+    const size = file.querySelector<HTMLElement>(".workspace-tree-size");
+    if (size === null) throw new Error("file size did not render");
+    expect(getComputedStyle(size).marginLeft).toBe("auto");
+    expect(getComputedStyle(size).fontSize).toBe("12px");
 
     await act(async () => {
       file.click();

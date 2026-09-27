@@ -65,8 +65,7 @@ What is wired and what is not:
   spelling the filesystem resolves to it (NTFS folds case, Win32 drops
   trailing dots and spaces: `.GIT`, `.git.`, `.git ` are the same folder),
   orders the
-  entries itself (folders first, then names in byte order, never a locale
-  collation), and stops a huge folder at its entry cap with `capped` saying
+  entries itself (folders first, then names in byte order), and stops a huge folder at its entry cap with `capped` saying
   the list is partial — never a silent cut. An entry that will not stat or
   is a link is skipped: one bad entry never fails the whole listing, and
   the reply **counts** those skips in `skipped`, which the panel shows — a
@@ -75,7 +74,10 @@ What is wired and what is not:
   cap belong to `capped`). Every
   state is its own screen — loading, no workspace, an empty folder, the
   wire's refusal sentence (root and per-folder are separate places), the
-  partial-list note and the not-listed note. Folders toggle; files are
+  partial-list note and the not-listed note. The panel sorts client-side
+  over the daemon's order — folders first always, then names in the
+  panel's locale collation — and names that order in the toolbar.
+  Folders toggle; files are
   rows. Each row carries a menu — **Rename** (inline edit, Enter commits),
   **Duplicate**, and **Delete** — driven by `useWorkspaceFileActions.ts`
   over `workspace_file_rename` / `workspace_file_duplicate` /

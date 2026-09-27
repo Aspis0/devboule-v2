@@ -167,6 +167,27 @@ describe("FilesSurface", () => {
     expect(vi.mocked(workspaceFilesList).mock.calls).toHaveLength(2);
   });
 
+  // A refresh that fails after a first success says so once: the root's
+  // own alert above the stale list — never the same sentence again as a
+  // row inside the tree (F-01: the rewrite rendered both, two live
+  // regions announcing one refusal).
+  it("shows a failed refresh once, above the list that stays", async () => {
+    vi.mocked(workspaceFilesList).mockResolvedValue(
+      listing([entry("src", "dir"), entry("README.md", "file", 12)]),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    vi.mocked(workspaceFilesList).mockRejectedValue(new Error("the daemon refused this read"));
+
+    await act(async () => {
+      refreshButton().click();
+    });
+
+    const alerts = Array.from(container.querySelectorAll('[role="alert"]'));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.textContent).toBe("the daemon refused this read");
+    expect(labels()).toEqual(["src", "README.md"]);
+  });
+
   // The revoked rule's replacement (owner, 2026-09-26 night): the daemon's
   // folders-first, byte-order sequence arrives once, and the panel sorts
   // client-side over it — folders first always, then the Name collation.
@@ -327,14 +348,13 @@ describe("FilesSurface", () => {
     expect(container.textContent).not.toContain("Mockup");
     expect(container.querySelector('[role="note"]')).toBeNull();
     expect(container.querySelectorAll(".workspace-tree-file")).toHaveLength(1);
-    // With every menu closed, the buttons on screen are only the sort
-    // control and the quiet refresh, the folder toggles, the file rows
-    // and the rows' own menu triggers — how the panel orders and reads,
-    // and how it reaches its three acts.
+    // The toolbar names the order with a label, not a control, so the
+    // buttons on screen are only the quiet refresh, the folder toggles,
+    // the file rows and the rows' own menu triggers — how the panel
+    // reads, and how it reaches its three acts.
     for (const button of Array.from(container.querySelectorAll("button"))) {
       expect(
-        button.classList.contains("workspace-files-sort") ||
-          button.classList.contains("workspace-files-refresh") ||
+        button.classList.contains("workspace-files-refresh") ||
           button.classList.contains("workspace-tree-dir") ||
           button.classList.contains("workspace-tree-file") ||
           button.classList.contains("workspace-tree-menu-trigger"),
