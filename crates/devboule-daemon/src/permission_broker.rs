@@ -857,14 +857,17 @@ impl PermissionBroker {
         let Ok(pending) = self.take(tool_call_id, Some(expected)) else {
             return false;
         };
-        self.complete(
-            &pending,
-            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
-            None,
-            journal_outcome,
-            None,
-        )
-        .is_ok()
+        let done = self
+            .complete(
+                &pending,
+                serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                None,
+                journal_outcome,
+                None,
+            )
+            .is_ok();
+        Self::clear_attention_after_withdrawal(&pending);
+        done
     }
 
     /// The table lock closes the gap between checking cancellation and inserting a card.
@@ -899,14 +902,17 @@ impl PermissionBroker {
             return false;
         };
         cancelled.mark_cancelled();
-        self.complete(
-            &pending,
-            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
-            None,
-            "cancelled",
-            None,
-        )
-        .is_ok()
+        let done = self
+            .complete(
+                &pending,
+                serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                None,
+                "cancelled",
+                None,
+            )
+            .is_ok();
+        Self::clear_attention_after_withdrawal(&pending);
+        done
     }
 
     /// Soft interrupt: complete every pending request as cancelled but leave
@@ -948,6 +954,15 @@ impl PermissionBroker {
                 "cancelled",
                 None,
             );
+            Self::clear_attention_after_withdrawal(&pending);
+        }
+    }
+
+    /// The withdrawal half of the attention contract: answers keep their
+    /// own clear and its push, so only these doors clear here.
+    fn clear_attention_after_withdrawal(pending: &Arc<PendingPermission>) {
+        if let Some(runtime) = pending.runtime.upgrade() {
+            runtime.clear_permission_attention_if_idle();
         }
     }
 

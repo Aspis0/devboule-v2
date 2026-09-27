@@ -2025,16 +2025,32 @@ impl SessionRuntime {
             );
         }
         notify_observers(&stream);
-        drop(stream);
-        // A withdrawal parks no answer: with no card left, a standing
-        // permission attention would ride every later push unchanged.
-        if !self.permission_pending()
-            && self
-                .attention()
-                .is_some_and(|attention| attention.reason == AttentionReason::Permission)
+    }
+
+    /// Clear a standing permission attention once its last card is gone.
+    /// Withdrawal doors only: answers keep their own clear and its push.
+    /// Lock order attention -> broker pending; the caller must hold neither
+    /// (complete() only reaches here after take()/drain() released the table).
+    pub(crate) fn clear_permission_attention_if_idle(&self) -> bool {
+        let Ok(mut attention) = self.attention.lock() else {
+            return false;
+        };
+        if !attention
+            .as_ref()
+            .is_some_and(|current| current.reason == AttentionReason::Permission)
         {
-            self.clear_attention();
+            return false;
         }
+        // Re-checked under the attention lock: a card parking now inserts
+        // before its raise lands, so it either stops this clear or raises
+        // after it — its attention survives either way.
+        if self.permission_pending() {
+            return false;
+        }
+        attention.take();
+        drop(attention);
+        self.request_transition();
+        true
     }
 
     /// Whether this session's journal already holds a decision for this

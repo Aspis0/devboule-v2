@@ -286,16 +286,34 @@ fn answering_permission_acknowledges_attention() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-fn snapshot_attention(
-    registry: &SessionRegistry,
-    owner: &OwnerId,
+/// Pushed roster rows, one entry per transition the sink saw. Installed
+/// after the setup so only the withdrawal's own pushes are counted.
+fn install_sink(registry: &SessionRegistry) -> Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>> {
+    let log: Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>> = Arc::new(Mutex::new(Vec::new()));
+    let fired = Arc::clone(&log);
+    registry.set_transition_sink(Arc::new(move |_owner, snapshots| {
+        fired
+            .lock()
+            .expect("sink log")
+            .push(snapshots.unwrap_or_default());
+    }));
+    log
+}
+
+/// The last pushed row for this session. A push that never carried the row
+/// fails here, so a missing row cannot pass as a cleared attention.
+fn last_pushed_row(
+    sink: &Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
     session_id: &str,
-) -> Option<devboule_protocol::Attention> {
-    registry
-        .state_snapshots(owner)
-        .into_iter()
-        .find(|snapshot| snapshot.id == session_id)
-        .and_then(|snapshot| snapshot.attention)
+) -> SessionStateSnapshot {
+    sink.lock()
+        .expect("sink log")
+        .iter()
+        .flatten()
+        .filter(|snapshot| snapshot.id == session_id)
+        .cloned()
+        .last()
+        .expect("a push carried the session row")
 }
 
 #[test]
@@ -328,6 +346,7 @@ fn cancelling_a_parked_card_clears_permission_attention() {
         devboule_protocol::AttentionReason::Permission
     );
 
+    let sink = install_sink(&registry);
     broker.cancel_pending();
 
     assert!(
@@ -335,8 +354,8 @@ fn cancelling_a_parked_card_clears_permission_attention() {
         "withdrawing the last card clears permission attention"
     );
     assert!(
-        snapshot_attention(&registry, &owner, session_id).is_none(),
-        "the next roster snapshot carries no attention"
+        last_pushed_row(&sink, session_id).attention.is_none(),
+        "the pushed row carries no attention"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -373,6 +392,10 @@ fn withdrawing_one_of_two_cards_keeps_permission_attention() {
         devboule_protocol::AttentionReason::Permission
     );
 
+    // Deliberate asymmetry, and the answer side is the wrong one: a wire
+    // answer clears unconditionally even with a card still parked, while a
+    // withdrawal keeps the pill while one is. Widening the answer door is a
+    // separate decision; this test pins the withdrawal half.
     assert!(broker.cancel("two-cards-first", &pending_first, "cancelled"));
 
     assert_eq!(
@@ -468,7 +491,7 @@ fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
     });
     let token = token_rx.recv().expect("call token");
     let mut spins = 0;
-    while broker.pending_len() == 0 && spins < 1000 {
+    while runtime.attention().is_none() && spins < 10_000 {
         std::thread::sleep(Duration::from_millis(1));
         spins += 1;
     }
@@ -478,6 +501,7 @@ fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
         devboule_protocol::AttentionReason::Permission
     );
 
+    let sink = install_sink(&registry);
     assert!(broker.cancel_mcp_call(&runtime.session_id, &cancel_id, &token));
 
     assert_eq!(
@@ -489,8 +513,157 @@ fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
         "mcp cancel clears permission attention"
     );
     assert!(
-        snapshot_attention(&registry, &owner, "s.mcp-withdraw.1").is_none(),
-        "the next roster snapshot carries no attention"
+        last_pushed_row(&sink, session_id).attention.is_none(),
+        "the pushed row carries no attention"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn closing_the_broker_clears_permission_attention() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-close-attention", "process-close-attention");
+    let session_id = "s.close-attention.1";
+    let runtime = insert_live_agent(&registry, session_id, owner.clone());
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("session row");
+    let conn = ConnHandle::new(14);
+    registry
+        .attach(session_id, None, &conn, &owner, true)
+        .expect("attach");
+    let request = permission_broker::permission("close-attention-card");
+    runtime.publish_agent_event(request.clone(), None);
+    let broker = runtime.permission_broker().expect("permission broker");
+    broker
+        .register(25, request, &runtime)
+        .expect("permission request");
+    assert_eq!(
+        runtime.attention().expect("permission attention").reason,
+        devboule_protocol::AttentionReason::Permission
+    );
+
+    let sink = install_sink(&registry);
+    broker.close();
+
+    assert!(
+        runtime.attention().is_none(),
+        "closing the broker clears permission attention"
+    );
+    assert!(
+        last_pushed_row(&sink, session_id).attention.is_none(),
+        "the pushed row carries no attention"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn withdrawing_from_a_dead_session_still_pushes_the_cleared_row() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-dead-attention", "process-dead-attention");
+    let session_id = "s.dead-attention.1";
+    let runtime = insert_live_agent(&registry, session_id, owner.clone());
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("session row");
+    let conn = ConnHandle::new(15);
+    registry
+        .attach(session_id, None, &conn, &owner, true)
+        .expect("attach");
+    let request = permission_broker::permission("dead-attention-card");
+    runtime.publish_agent_event(request.clone(), None);
+    let broker = runtime.permission_broker().expect("permission broker");
+    broker
+        .register(26, request, &runtime)
+        .expect("permission request");
+    assert_eq!(
+        runtime.attention().expect("permission attention").reason,
+        devboule_protocol::AttentionReason::Permission
+    );
+    runtime.mark_exited(Some(1));
+    runtime.close_output();
+
+    let sink = install_sink(&registry);
+    broker.cancel_pending();
+
+    assert!(
+        runtime.attention().is_none(),
+        "the withdrawal clears even with the output closed"
+    );
+    assert!(
+        last_pushed_row(&sink, session_id).attention.is_none(),
+        "the clear pushes its own row: the resolved publish is dropped"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn auto_answer_grants_without_touching_permission_attention() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-auto-attention", "process-auto-attention");
+    let session_id = "s.auto-attention.1";
+    let runtime = insert_live_agent(&registry, session_id, owner.clone());
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("session row");
+    runtime.store_session_manifest(SessionEvent::SessionManifest {
+        provider_id: Some("test".to_string()),
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(devboule_protocol::SessionModeStateView {
+            current_mode_id: "auto_accept".to_string(),
+            available_modes: Vec::new(),
+        }),
+    });
+    let conn = ConnHandle::new(16);
+    registry
+        .attach(session_id, None, &conn, &owner, true)
+        .expect("attach");
+    let request = permission_broker::permission("auto-attention-card");
+    runtime.publish_agent_event(request.clone(), None);
+    let broker = runtime.permission_broker().expect("permission broker");
+    broker
+        .register(27, request, &runtime)
+        .expect("permission request");
+    assert_eq!(
+        runtime.attention().expect("permission attention").reason,
+        devboule_protocol::AttentionReason::Permission
+    );
+
+    assert!(
+        broker
+            .auto_answer("auto-attention-card", &runtime)
+            .expect("mode grant"),
+        "the mode grants the card"
+    );
+    assert_eq!(broker.pending_len(), 0);
+    // Deliberate: a mode grant is answer-side, and only withdrawal doors
+    // clear. No owner clears for a mode grant today; changing that is a
+    // separate decision, so this test pins the boundary, not the wish.
+    assert_eq!(
+        runtime.attention().expect("grant keeps attention").reason,
+        devboule_protocol::AttentionReason::Permission
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
