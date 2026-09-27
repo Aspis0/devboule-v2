@@ -7,8 +7,10 @@ import {
 
 interface PanelTabsKeyboardArgs {
   tabs: readonly { id: string }[];
-  /** The selected panel, which may be a kebab entry with no tab. */
   activeId: string;
+  /** The tab carrying the stop: the active tab, or the last one while a
+   * kebab panel shows. */
+  stopId: string | null;
   onSelect: (id: string) => void;
   listRef: RefObject<HTMLElement | null>;
 }
@@ -20,6 +22,7 @@ interface PanelTabsKeyboardArgs {
 export function usePanelTabsKeyboard({
   tabs,
   activeId,
+  stopId,
   onSelect,
   listRef,
 }: PanelTabsKeyboardArgs): {
@@ -28,16 +31,16 @@ export function usePanelTabsKeyboard({
 } {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   // The roving stop follows outside selection (a click, a kebab pick): the
-  // adjust-state-when-a-prop-changes form, since arrows always select.
+  // adjust-state-when-a-prop-changes form, since arrows always select. A pick
+  // outside the tabs parks focus on the stop, never on thin air.
   const [followedSelection, setFollowedSelection] = useState(activeId);
   if (followedSelection !== activeId) {
     setFollowedSelection(activeId);
-    setFocusedId(activeId);
+    setFocusedId(stopId);
   }
-  // A kebab panel has no tab: the stop falls back to the first tab so Tab
-  // never skips the whole row. Zero tabs is correctly no tab stop.
-  const activeTab = tabs.some((tab) => tab.id === (focusedId ?? activeId))
-    ? (focusedId ?? activeId)
+  // Zero tabs is correctly no tab stop.
+  const activeTab = tabs.some((tab) => tab.id === (focusedId ?? stopId))
+    ? (focusedId ?? stopId)
     : (tabs[0]?.id ?? null);
 
   const focusTab = useCallback(

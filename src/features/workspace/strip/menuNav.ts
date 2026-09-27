@@ -1,6 +1,7 @@
 // Why: the strip's two menus share one keyboard model — arrows, Home and End
-// among the ENABLED entries — extracted so the tab menu cannot drift from
-// the "+" menu's behaviour, and so neither copies it again.
+// among the ENABLED entries (menuitem and menuitemradio) — extracted so the
+// tab menu cannot drift from the "+" menu's behaviour, and so neither copies
+// it again.
 
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
@@ -14,7 +15,8 @@ export function moveMenuFocus(root: HTMLElement | null, event: ReactKeyboardEven
     return;
   }
   const enabled = [
-    ...(root?.querySelectorAll<HTMLButtonElement>("[role='menuitem']") ?? []),
+    ...(root?.querySelectorAll<HTMLButtonElement>("[role='menuitem'], [role='menuitemradio']") ??
+      []),
   ].filter((item) => !item.disabled);
   if (enabled.length === 0) return;
   event.preventDefault();

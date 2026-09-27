@@ -9,7 +9,7 @@ export const AppSurface = memo(function AppSurface() {
   return (
     <div className="workspace-panel-empty">
       <h2 className="workspace-panel-empty-title">Interactive app</h2>
-      <p className="workspace-panel-empty-note">The running app preview will live here.</p>
+      <p className="workspace-panel-empty-intro">The running app preview will live here.</p>
       <p className="workspace-panel-empty-note">This panel is not available yet.</p>
     </div>
   );
@@ -28,7 +28,7 @@ export const PullRequestSurface = memo(function PullRequestSurface() {
   return (
     <div className="workspace-panel-empty">
       <h2 className="workspace-panel-empty-title">Pull request</h2>
-      <p className="workspace-panel-empty-note">The pull request summary will live here.</p>
+      <p className="workspace-panel-empty-intro">The pull request summary will live here.</p>
       <p className="workspace-panel-empty-note">This panel is not available yet.</p>
     </div>
   );

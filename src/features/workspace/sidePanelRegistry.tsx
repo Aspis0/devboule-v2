@@ -52,8 +52,8 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     name: "Changes",
     placement: "tab",
     icon: "changes",
-    // Before the first read, and what a workspace never read shows (DECISIONS §9:
-    // the open panel's poll supplies the real label, a closed panel keeps it).
+    // The open panel's poll supplies the label R7b's branch row reads; the
+    // tab row itself carries no badge (no room at 300 px).
     liveMeta: changesBadge,
     render: ({ workspaceId }) => <ChangesSurface workspaceId={workspaceId} />,
   },

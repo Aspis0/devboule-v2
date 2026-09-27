@@ -1,17 +1,10 @@
-/* The right panel's own chrome, moved out of Workspace.css: the open
-   rail's toolbar and switcher, the panel menu's selected and meta rows,
-   and the body scroll. Shared menu chrome (.workspace-surface-menu,
-   .workspace-surface-option, .workspace-surface-name) and the dot tones
-   stay in Workspace.css with the strip and sidebar that use them; the
-   Changes and Files bodies keep theirs there until R7b/R7c. */
+/* The right panel's own chrome: the open rail, the tab row with its kebab
+   popup, and the body scroll. Shared menu chrome (.workspace-surface-menu,
+   .workspace-surface-option, .workspace-surface-name, .workspace-surface-options)
+   stays in Workspace.css with the strip and picker that use it; the Changes
+   and Files bodies keep theirs there until R7b/R7c. */
 .workspace-right-panel {
   background: transparent;
-}
-
-.workspace-surface-options {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
 
 .workspace-surface-option-selected {
@@ -25,24 +18,31 @@
   overflow-y: auto;
 }
 
-/* The tab row: h36, the spec tabs sharing the width, the kebab pinned right. */
+/* The tab row, mockup values (a-workspace-2.html:179-190): h36, content-width
+   tabs, a spacer pushing the kebab right. */
 .workspace-panel-tabs {
   display: flex;
   flex: none;
-  align-items: stretch;
+  align-items: center;
   gap: 2px;
   height: 36px;
-  padding: 0 4px 0 8px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--line);
+}
+
+.workspace-panel-tablist {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
 }
 
 .workspace-panel-tab {
   display: flex;
-  flex: 1 1 0;
+  flex: none;
   align-items: center;
-  justify-content: center;
   gap: 6px;
-  min-width: 0;
+  height: 35px;
   padding: 0 8px;
   color: var(--muted);
   background: transparent;
@@ -69,18 +69,13 @@
 }
 
 .workspace-panel-tab-label {
-  overflow: hidden;
   font-size: var(--type-small);
   font-weight: 500;
-  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.workspace-panel-tab-badge {
-  flex: none;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  white-space: nowrap;
+.workspace-panel-spacer {
+  flex: 1;
 }
 
 .workspace-panel-kebab {
@@ -88,6 +83,12 @@
   display: flex;
   flex: none;
   align-items: center;
+}
+
+/* The kebab names what is showing while a menu-placed panel is up. */
+.workspace-panel-kebab-active {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 /* The kebab popup: the shared menu look, anchored under the button so the
@@ -116,14 +117,21 @@
 }
 
 .workspace-panel-empty-title {
-  margin: 0 0 4px;
+  margin: 0;
   color: var(--ink);
   font-size: var(--type-small);
   font-weight: 600;
 }
 
+.workspace-panel-empty-intro {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--type-small);
+  line-height: 1.5;
+}
+
 .workspace-panel-empty-note {
-  margin: 0;
+  margin: 12px 0 0;
   color: var(--muted);
   font-size: var(--type-small);
   line-height: 1.5;

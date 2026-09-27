@@ -1,175 +1,162 @@
 import {
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import type { SidePanelEntry, SidePanelLiveMeta } from "../sidePanelRegistry";
-import { CHANGES_BADGE_UNREAD } from "../changesBadge";
+import type { SidePanelEntry } from "../sidePanelRegistry";
 import { PanelIcon } from "./PanelIcon";
 import { usePanelTabsKeyboard } from "./usePanelTabsKeyboard";
+import { moveMenuFocus } from "../strip/menuNav";
+
+/** The panel body's id, shared with the tabs' aria-controls. */
+export const SIDE_PANEL_BODY_ID = "workspace-side-panel";
+/** The kebab button's id: what labels the body while a kebab panel shows. */
+export const SIDE_PANEL_KEBAB_ID = "workspace-panel-kebab";
+/** A tab's id for the body's aria-labelledby. */
+export function sidePanelTabId(id: string): string {
+  return `panel-tab-${id}`;
+}
 
 interface SidePanelTabsProps {
   registry: readonly SidePanelEntry[];
   activeId: string;
   onSelect: (id: string) => void;
-  workspaceId: string | null;
   onCollapse: () => void;
 }
 
-// The selected tab's live badge: the panel's own label when it has read this
-// workspace, the unread mark before its first read. A component of its own so
-// only the tab re-renders when the poll reports.
-function PanelTabBadge({
-  liveMeta,
-  workspaceId,
-}: {
-  liveMeta: SidePanelLiveMeta;
-  workspaceId: string | null;
-}): ReactNode {
-  const label = useSyncExternalStore(
-    liveMeta.subscribe,
-    () => liveMeta.snapshot(workspaceId) ?? CHANGES_BADGE_UNREAD,
-  );
-  return <span className="workspace-panel-tab-badge">{label}</span>;
-}
-
-/** The right panel's tab row: the spec tabs, then the kebab holding the
- * mock panels and the collapse entry. Tabs own selection; kebab entries
- * render in the same body without claiming a tab. */
+/** The right panel's tab row: the spec tabs in a tablist, a spacer, then the
+ * kebab holding the menu-placed panels and the collapse entry. While a kebab
+ * panel shows, no tab claims it; the stop stays on the last tab and the
+ * kebab names what is showing. */
 export function SidePanelTabs({
   registry,
   activeId,
   onSelect,
-  workspaceId,
   onCollapse,
 }: SidePanelTabsProps): ReactNode {
-  const tabs = registry.filter((entry) => entry.placement === "tab");
-  const menuEntries = registry.filter((entry) => entry.placement === "menu");
+  const tabs = useMemo(() => registry.filter((entry) => entry.placement === "tab"), [registry]);
+  const menuEntries = useMemo(
+    () => registry.filter((entry) => entry.placement === "menu"),
+    [registry],
+  );
+  const activeIsTab = tabs.some((entry) => entry.id === activeId);
+  const [lastTabId, setLastTabId] = useState<string | null>(null);
+  if (activeIsTab && lastTabId !== activeId) setLastTabId(activeId);
+  const stopId = activeIsTab ? activeId : (lastTabId ?? tabs[0]?.id ?? null);
+
   const listRef = useRef<HTMLDivElement>(null);
   const { tabIndexFor, onTabKeyDown } = usePanelTabsKeyboard({
     tabs,
     activeId,
+    stopId,
     onSelect,
     listRef,
   });
 
   const [menuOpen, setMenuOpen] = useState(false);
   const kebabRef = useRef<HTMLButtonElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const activeMenuEntry = menuEntries.find((entry) => entry.id === activeId) ?? null;
 
-  // Opening moves focus into the menu; closing by choice returns it.
+  // Opening moves focus into the menu; the house close hands it back only
+  // when it sits inside the menu that is about to unmount.
   useEffect(() => {
     if (menuOpen) {
       menuRef.current?.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
     }
   }, [menuOpen]);
 
-  function closeMenu(returnFocus: boolean): void {
+  const closeMenu = useCallback(() => {
+    if (menuRef.current?.contains(document.activeElement) === true) {
+      kebabRef.current?.focus({ preventScroll: true });
+    }
     setMenuOpen(false);
-    if (returnFocus) kebabRef.current?.focus({ preventScroll: true });
-  }
+  }, []);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
-    const onPointer = (event: MouseEvent) => {
-      // A dismissal from outside leaves focus where the user put it: only
-      // an explicit choice or Escape returns to the kebab.
-      if (event.target instanceof Node && !listRef.current?.contains(event.target)) {
-        setMenuOpen(false);
-      }
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (wrapRef.current?.contains(event.target)) return;
+      closeMenu();
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeMenu(true);
-      }
-    };
-    window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [menuOpen]);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [menuOpen, closeMenu]);
 
-  function menuItems(): HTMLButtonElement[] {
-    if (menuRef.current === null) return [];
-    return [...menuRef.current.querySelectorAll<HTMLButtonElement>("button")];
-  }
+  // Open over a viewport that then moves is stale: close, handing focus back
+  // to the kebab only when the menu had it.
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    window.addEventListener("resize", closeMenu);
+    return () => window.removeEventListener("resize", closeMenu);
+  }, [menuOpen, closeMenu]);
 
-  function onMenuKeyDown(event: ReactKeyboardEvent<HTMLElement>): void {
-    const items = menuItems();
-    const current = items.indexOf(document.activeElement as HTMLButtonElement);
-    switch (event.key) {
-      case "ArrowDown":
-        event.preventDefault();
-        items[(current + 1) % items.length]?.focus();
-        break;
-      case "ArrowUp":
-        event.preventDefault();
-        items[(current - 1 + items.length) % items.length]?.focus();
-        break;
-      case "Home":
-        event.preventDefault();
-        items[0]?.focus();
-        break;
-      case "End":
-        event.preventDefault();
-        items[items.length - 1]?.focus();
-        break;
-      default:
-        break;
+  function onMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (event.key === "Escape") {
+      kebabRef.current?.focus({ preventScroll: true });
+      setMenuOpen(false);
+      return;
     }
+    if (event.key === "Tab") {
+      // An in-flow popup: focus is already leaving; just unmount under it.
+      setMenuOpen(false);
+      return;
+    }
+    moveMenuFocus(menuRef.current, event);
   }
 
   function pickEntry(id: string): void {
     onSelect(id);
-    closeMenu(true);
+    kebabRef.current?.focus({ preventScroll: true });
+    setMenuOpen(false);
   }
 
-  const activeMenuEntry = menuEntries.find((entry) => entry.id === activeId) ?? null;
-
   return (
-    <div className="workspace-panel-tabs" role="tablist" aria-label="Side panel" ref={listRef}>
-      {tabs.map((entry) => {
-        const selected = entry.id === activeId;
-        return (
-          <button
-            key={entry.id}
-            type="button"
-            role="tab"
-            data-panel-tab={entry.id}
-            aria-selected={selected}
-            tabIndex={tabIndexFor(entry.id)}
-            className={`workspace-panel-tab${selected ? " workspace-panel-tab-active" : ""}`}
-            onClick={() => onSelect(entry.id)}
-            onKeyDown={(event) => onTabKeyDown(entry.id, event)}
-          >
-            <PanelIcon name={entry.icon} />
-            <span className="workspace-panel-tab-label">{entry.name}</span>
-            {entry.liveMeta === undefined ? null : (
-              <PanelTabBadge liveMeta={entry.liveMeta} workspaceId={workspaceId} />
-            )}
-          </button>
-        );
-      })}
-      <div className="workspace-panel-kebab">
+    <div className="workspace-panel-tabs">
+      <div className="workspace-panel-tablist" role="tablist" aria-label="Side panel" ref={listRef}>
+        {tabs.map((entry) => {
+          const selected = entry.id === activeId;
+          return (
+            <button
+              key={entry.id}
+              id={sidePanelTabId(entry.id)}
+              type="button"
+              role="tab"
+              data-panel-tab={entry.id}
+              aria-selected={selected}
+              aria-controls={SIDE_PANEL_BODY_ID}
+              tabIndex={tabIndexFor(entry.id)}
+              className={`workspace-panel-tab${selected ? " workspace-panel-tab-active" : ""}`}
+              onClick={() => onSelect(entry.id)}
+              onKeyDown={(event) => onTabKeyDown(entry.id, event)}
+            >
+              <PanelIcon name={entry.icon} />
+              <span className="workspace-panel-tab-label">{entry.name}</span>
+            </button>
+          );
+        })}
+      </div>
+      <span className="workspace-panel-spacer" aria-hidden="true" />
+      <div className="workspace-panel-kebab" ref={wrapRef}>
         <button
           ref={kebabRef}
+          id={SIDE_PANEL_KEBAB_ID}
           type="button"
-          className="workspace-icon-button"
+          className={`workspace-icon-button${
+            activeMenuEntry === null ? "" : " workspace-panel-kebab-active"
+          }`}
           aria-label={
             activeMenuEntry === null ? "More panels" : `More panels, ${activeMenuEntry.name} open`
           }
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          onClick={() => {
-            if (menuOpen) closeMenu(true);
-            else setMenuOpen(true);
-          }}
+          onClick={() => setMenuOpen((open) => !open)}
         >
           <PanelIcon name="kebab" />
         </button>
@@ -206,7 +193,8 @@ export function SidePanelTabs({
                 className="workspace-surface-option"
                 onClick={() => {
                   onCollapse();
-                  closeMenu(true);
+                  kebabRef.current?.focus({ preventScroll: true });
+                  setMenuOpen(false);
                 }}
               >
                 <PanelIcon name="chevron-right" />

@@ -369,7 +369,10 @@ describe("the right panel's tabs", () => {
     ]);
     await renderWorkspace();
 
-    const row = tablist();
+    const row = container.querySelector<HTMLElement>(
+      ".workspace-right-panel .workspace-panel-tabs",
+    );
+    if (row === null) throw new Error("side panel tab row did not render");
     expect(getComputedStyle(row).height).toBe("36px");
     const label = tabByName("Changes").querySelector<HTMLElement>(".workspace-panel-tab-label");
     if (label === null) throw new Error("active tab label did not render");
@@ -386,6 +389,8 @@ describe("the right panel's tabs", () => {
 
     expect(tabs()).toHaveLength(3);
     const button = kebab();
+    // The trigger lives beside the tablist, not inside it (strip shape).
+    expect(tablist().contains(button)).toBe(false);
     expect(button.getAttribute("aria-haspopup")).toBe("menu");
     expect(button.getAttribute("aria-expanded")).toBe("false");
     await act(async () => button.click());
@@ -393,11 +398,51 @@ describe("the right panel's tabs", () => {
     const menu = container.querySelector(".workspace-panel-menu");
     if (menu === null) throw new Error("kebab menu did not render");
     expect(menu.getAttribute("role")).toBe("menu");
+    expect(tablist().contains(menu)).toBe(false);
     expect(menuItems().map((item) => item.textContent)).toEqual([
       "Interactive app",
       "Pull request",
       "Collapse panel",
     ]);
+  });
+
+  it("links each tab to the panel with ids, and the panel back with aria-labelledby", async () => {
+    await renderWorkspace();
+
+    const panel = tabpanel();
+    expect(panel.id).toBe("workspace-side-panel");
+    expect(panel.tabIndex).toBe(0);
+    for (const tab of tabs()) {
+      expect(tab.getAttribute("aria-controls")).toBe("workspace-side-panel");
+    }
+    expect(tabByName("Changes").id).toBe("panel-tab-changes");
+    expect(panel.getAttribute("aria-labelledby")).toBe("panel-tab-changes");
+    await act(async () => tabByName("Design").click());
+    expect(tabpanel().getAttribute("aria-labelledby")).toBe("panel-tab-design");
+  });
+
+  it("sizes tabs to content: no flex growth, no ellipsis, a spacer before the kebab", async () => {
+    const { rulesFor } = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/workspace/strip/strip.css"),
+      read("src/features/workspace/Workspace.css"),
+      read("src/features/workspace/panel/panel.css"),
+    ]);
+    // The F1 root cause was flex growth splitting the row into equal thirds.
+    expect(rulesFor(".workspace-panel-tab")).not.toContain("flex: 1");
+    expect(rulesFor(".workspace-panel-tab")).toContain("flex: none");
+    expect(rulesFor(".workspace-panel-tab-label")).not.toContain("text-overflow");
+    await renderWorkspace();
+    // The mockup's spacer: content tabs first, the kebab pushed right.
+    const spacer = container.querySelector(".workspace-panel-tabs > .workspace-panel-spacer");
+    if (spacer === null) throw new Error("tab row spacer did not render");
+    // In a layout engine each label fits its tab; happy-dom reports zeros.
+    for (const tab of tabs()) {
+      const label = tab.querySelector<HTMLElement>(".workspace-panel-tab-label");
+      if (label === null) throw new Error("tab label did not render");
+      expect(label.scrollWidth).toBeLessThanOrEqual(tab.clientWidth);
+    }
   });
 
   it("closes the kebab on Escape and returns focus, and walks its items with arrows", async () => {
@@ -431,8 +476,12 @@ describe("the right panel's tabs", () => {
     expect(panel.textContent).toContain("Interactive app");
     expect(panel.textContent).toContain("not available yet");
     expect(panel.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
-    // No tab claims a selection the kebab now owns.
-    for (const tab of tabs()) expect(tab.getAttribute("aria-selected")).toBe("false");
+    // The tablist keeps a valid state: no tab claims the kebab's panel, the
+    // stop stays on the last tab, and the kebab names what is showing.
+    expect(tabByName("Changes").getAttribute("aria-selected")).toBe("false");
+    expect(tabByName("Changes").tabIndex).toBe(0);
+    expect(kebab().getAttribute("aria-label")).toBe("More panels, Interactive app open");
+    expect(kebab().className).toContain("workspace-panel-kebab-active");
   });
 
   it("shows Pull request as an honest empty state with no controls", async () => {
@@ -445,12 +494,35 @@ describe("the right panel's tabs", () => {
 
     const panel = tabpanel();
     expect(panel.getAttribute("aria-label")).toBe("Pull request");
+    expect(panel.getAttribute("aria-labelledby")).toBe(kebab().id);
     expect(panel.textContent).toContain("Pull request");
     expect(panel.textContent).toContain("not available yet");
     expect(panel.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
+    expect(tabByName("Changes").getAttribute("aria-selected")).toBe("false");
+    expect(tabByName("Changes").tabIndex).toBe(0);
+    expect(kebab().getAttribute("aria-label")).toBe("More panels, Pull request open");
     await act(async () => kebab().click());
     const checked = menuItems().find((item) => item.textContent === "Pull request");
     expect(checked?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("closes the kebab on Tab and on an outside pointerdown", async () => {
+    await renderWorkspace();
+
+    await act(async () => kebab().click());
+    const first = menuItems()[0];
+    expect(document.activeElement).toBe(first);
+    await act(async () => {
+      first.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    });
+    expect(container.querySelector(".workspace-panel-menu")).toBeNull();
+
+    await act(async () => kebab().click());
+    expect(container.querySelector(".workspace-panel-menu")).not.toBeNull();
+    await act(async () => {
+      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    });
+    expect(container.querySelector(".workspace-panel-menu")).toBeNull();
   });
 
   it("collapses the rail from the kebab and restores the same tab", async () => {
@@ -467,7 +539,7 @@ describe("the right panel's tabs", () => {
     expect(tabByName("Files").getAttribute("aria-selected")).toBe("true");
   });
 
-  it("shows nothing known on the Changes tab until the open panel's own read lands", async () => {
+  it("carries no badge on any tab, while the open panel still reads for itself", async () => {
     vi.mocked(workspacesList).mockResolvedValue([{ ...workspace, id: "workspace-tabs-unread" }]);
     vi.mocked(sessionsList).mockResolvedValue([
       terminal("session-1", "shell one", "workspace-tabs-unread"),
@@ -476,34 +548,46 @@ describe("the right panel's tabs", () => {
     vi.mocked(workspaceGitStatus).mockReturnValue(pending.promise);
     await renderWorkspace();
 
-    const badge = tabByName("Changes").querySelector(".workspace-panel-tab-badge");
-    if (badge === null) throw new Error("Changes tab badge did not render");
-    expect(badge.textContent).toBe("—");
-
+    // The counts live in the Changes branch row (R7b), never on the tab.
+    expect(container.querySelector(".workspace-panel-tab-badge")).toBeNull();
     await act(async () => {
       pending.resolve(dirtyChanges);
     });
-    expect(tabByName("Changes").querySelector(".workspace-panel-tab-badge")?.textContent).toBe(
-      "+12 −3",
-    );
+    expect(container.querySelector(".workspace-panel-tab-badge")).toBeNull();
+    // Two independent readers read the fresh id: the sidebar's row stat and
+    // the open panel's poll (the sidebar's cadence is pinned in
+    // useWorkspaceStats.test.tsx, where the triggers are controllable).
+    const freshReads = vi
+      .mocked(workspaceGitStatus)
+      .mock.calls.filter((call) => call[0] === "workspace-tabs-unread").length;
+    expect(freshReads).toBeGreaterThanOrEqual(2);
   });
 
-  it("keeps the last label the Changes tab read once another tab is selected", async () => {
-    vi.mocked(workspacesList).mockResolvedValue([{ ...workspace, id: "workspace-tabs-kept" }]);
-    vi.mocked(workspaceGitStatus).mockResolvedValue(dirtyChanges);
+  it("shows no badge on any tab once another tab is selected", async () => {
     await renderWorkspace();
 
-    expect(tabByName("Changes").querySelector(".workspace-panel-tab-badge")?.textContent).toBe(
-      "+12 −3",
-    );
     await act(async () => tabByName("Files").click());
-    // The Files tab carries no badge: it has no live counts to show.
-    expect(tabByName("Files").querySelector(".workspace-panel-tab-badge")).toBeNull();
-    // … while Changes keeps the value it last read: no panel is mounted to
-    // refresh it, so the badge keeps the last value.
-    expect(tabByName("Changes").querySelector(".workspace-panel-tab-badge")?.textContent).toBe(
-      "+12 −3",
+    expect(container.querySelector(".workspace-panel-tab-badge")).toBeNull();
+  });
+
+  it("resets the panel scroll offset on a workspace switch", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, otherWorkspace]);
+    await renderWorkspace();
+
+    const scroller = container.querySelector<HTMLElement>(".workspace-side-scroll");
+    if (scroller === null) throw new Error("panel scrollport did not render");
+    await act(async () => {
+      scroller.scrollTop = 120;
+    });
+    const otherRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+      (row) => row.textContent?.includes("other-main") === true,
     );
+    if (otherRow === undefined) throw new Error("second workspace row did not render");
+    await act(async () => otherRow.click());
+    for (let hop = 0; hop < 4; hop += 1) {
+      await act(async () => undefined);
+    }
+    expect(container.querySelector<HTMLElement>(".workspace-side-scroll")?.scrollTop).toBe(0);
   });
 
   it("starts clean on a workspace switch: a commit draft does not carry across", async () => {
@@ -618,7 +702,8 @@ describe("the right panel's tabs", () => {
       "Fallback content",
     );
     // The only tab is showing, but nothing selected it: the active id names
-    // a panel this registry never had.
+    // a panel this registry never had. The stop still sits on it.
     expect(tabByName("Available panel").getAttribute("aria-selected")).toBe("false");
+    expect(tabByName("Available panel").tabIndex).toBe(0);
   });
 });

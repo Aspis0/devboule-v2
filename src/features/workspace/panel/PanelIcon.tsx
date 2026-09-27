@@ -15,24 +15,21 @@ export type PanelIconName =
 
 function paths(name: PanelIconName): ReactNode {
   switch (name) {
+    // The tab glyphs are the mockup's own (a-workspace-2.html:180-182): the
+    // branch-row merge belongs to the Changes branch row (R7b), not the tab.
     case "files":
-      return <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />;
+      return (
+        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      );
     case "changes":
       return (
         <>
-          <path d="M6 3v12" />
-          <circle cx="18" cy="6" r="3" />
-          <circle cx="6" cy="18" r="3" />
-          <path d="M18 9a9 9 0 0 1-9 9" />
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <path d="M12 3v18" />
         </>
       );
     case "design":
-      return (
-        <>
-          <path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19l-4 1z" />
-          <path d="M14.5 6.5l3 3" />
-        </>
-      );
+      return <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />;
     case "app":
       return (
         <>
@@ -60,9 +57,9 @@ function paths(name: PanelIconName): ReactNode {
     case "kebab":
       return (
         <>
-          <circle cx="12" cy="5" r="1.3" fill="currentColor" stroke="none" />
-          <circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none" />
-          <circle cx="12" cy="19" r="1.3" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="5" r="1" />
+          <circle cx="12" cy="12" r="1" />
+          <circle cx="12" cy="19" r="1" />
         </>
       );
     case "chevron-right":
@@ -79,7 +76,7 @@ export function PanelIcon({ name, size = 14 }: { name: PanelIconName; size?: num
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.5}
+      strokeWidth={2}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

@@ -14,7 +14,12 @@ import { ErrorText } from "../../components/ErrorText";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
-import { SidePanelTabs } from "./panel/SidePanelTabs";
+import {
+  SIDE_PANEL_BODY_ID,
+  SIDE_PANEL_KEBAB_ID,
+  SidePanelTabs,
+  sidePanelTabId,
+} from "./panel/SidePanelTabs";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
@@ -1360,23 +1365,28 @@ export function Workspace({
               registry={sidePanelRegistry}
               activeId={activeSidePanel}
               onSelect={setActiveSidePanel}
-              workspaceId={selectedWorkspace}
               onCollapse={() => setRightCollapsed(true)}
             />
 
             <div
+              key={`${selectedSurface.id}:${selectedWorkspace ?? ""}`}
+              id={SIDE_PANEL_BODY_ID}
               className="workspace-scroll workspace-side-scroll"
               role="tabpanel"
               aria-label={selectedSurface.name}
+              aria-labelledby={
+                selectedSurface.placement === "tab"
+                  ? sidePanelTabId(selectedSurface.id)
+                  : SIDE_PANEL_KEBAB_ID
+              }
+              tabIndex={0}
             >
               {/* A body throw replaces the body only; the tab row above stays
-                    mounted so the user can leave the panel. The boundary key
-                    carries the workspace too, so a switch starts the panel
-                    clean instead of carrying drafts across. */}
-              <SurfaceErrorBoundary
-                key={`${selectedSurface.id}:${selectedWorkspace ?? ""}`}
-                surfaceLabel={selectedSurface.name}
-              >
+                    mounted so the user can leave the panel. The scrollport
+                    carries the key, so a workspace or panel switch remounts
+                    body and offset together: drafts, menus, errors and scroll
+                    all start clean. */}
+              <SurfaceErrorBoundary surfaceLabel={selectedSurface.name}>
                 {selectedSurface.render({
                   workspaceId: selectedWorkspace,
                 })}
