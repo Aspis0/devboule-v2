@@ -105,9 +105,7 @@ describe("ChangesSurface R7b panel body", () => {
     expect(branchRow().textContent).not.toContain("≈");
     // The chevron is display-only: branch switching is out of scope, so it
     // is a span, never a control that looks like it switches.
-    expect(branchRow().querySelector(".workspace-changes-branch-chevron")?.tagName).toBe(
-      "SPAN",
-    );
+    expect(branchRow().querySelector(".workspace-changes-branch-chevron")?.tagName).toBe("SPAN");
   });
 
   it("prints a detached head and a missing branch honestly, never blank", async () => {
@@ -301,9 +299,7 @@ describe("ChangesSurface R7b panel body", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
     });
-    const pencil = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Open diff in a tab"]',
-    );
+    const pencil = container.querySelector<HTMLButtonElement>('[aria-label="Open diff in a tab"]');
     if (pencil === null) throw new Error("pencil did not render on the selected row");
     await act(async () => {
       pencil.click();
@@ -351,9 +347,7 @@ describe("ChangesSurface R7b panel body", () => {
     const fileRow = container.querySelector<HTMLElement>(".workspace-changes-file");
     if (fileRow === null) throw new Error("file row did not render");
     expect(getComputedStyle(fileRow).height).toBe("24px");
-    const addStats = container.querySelector<HTMLElement>(
-      ".workspace-file-change-stats-is-add",
-    );
+    const addStats = container.querySelector<HTMLElement>(".workspace-file-change-stats-is-add");
     if (addStats === null) throw new Error("add-tone stats did not render");
     expect(getComputedStyle(addStats).color).toBe(token("--tone-add"));
   });

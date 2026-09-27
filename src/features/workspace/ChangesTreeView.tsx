@@ -113,11 +113,7 @@ function FileNode({
         <span className="workspace-file-change-name">{name}</span>
         <span className="workspace-file-change-status">{row.status}</span>
         <span
-          className={
-            isNewRow(row)
-              ? "workspace-file-change-stats-is-add"
-              : undefined
-          }
+          className={isNewRow(row) ? "workspace-file-change-stats-is-add" : undefined}
           title={row.capped ? "counts are not exact" : undefined}
         >
           {countsLabel(row.additions, row.deletions, row.capped)}
@@ -210,10 +206,7 @@ function FolderNode({
   count: number;
   expanded: boolean;
   onToggle: (path: string) => void;
-  children: (
-    nodes: ChangesTreeNode[],
-    nextDepth: number,
-  ) => React.ReactNode;
+  children: (nodes: ChangesTreeNode[], nextDepth: number) => React.ReactNode;
 }) {
   return (
     <div
@@ -375,7 +368,12 @@ export function ChangesTreeView({
   };
 
   return (
-    <div className="workspace-changes-tree" role="tree" aria-label="Uncommitted changes" onKeyDown={onKeyDown}>
+    <div
+      className="workspace-changes-tree"
+      role="tree"
+      aria-label="Uncommitted changes"
+      onKeyDown={onKeyDown}
+    >
       {renderNodes(nodes, 0)}
     </div>
   );

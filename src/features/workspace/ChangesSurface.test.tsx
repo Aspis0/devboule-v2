@@ -160,7 +160,11 @@ describe("ChangesSurface", () => {
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(caveat);
     expect(container.querySelectorAll(".workspace-file-change")).toHaveLength(1);
-    expect(container.querySelector('.workspace-file-change[title="crates/devboule-daemon/src/workspace_git_status.rs"]')).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.workspace-file-change[title="crates/devboule-daemon/src/workspace_git_status.rs"]',
+      ),
+    ).not.toBeNull();
     expect(container.textContent).toContain("workspace_git_status.rs");
     expect(container.textContent).toContain("≈+92 −41");
     expect(container.textContent).not.toContain("No uncommitted changes");
@@ -188,7 +192,11 @@ describe("ChangesSurface", () => {
     await render(<ChangesSurface workspaceId={WORKSPACE} />);
 
     expect(container.querySelectorAll(".workspace-file-change")).toHaveLength(3);
-    expect(container.querySelector('.workspace-file-change[title="crates/devboule-daemon/src/workspace_git_status.rs"]')).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.workspace-file-change[title="crates/devboule-daemon/src/workspace_git_status.rs"]',
+      ),
+    ).not.toBeNull();
     expect(container.querySelector('.workspace-file-change[title="notes/todo.md"]')).not.toBeNull();
     expect(container.querySelector('.workspace-file-change[title="src/writer.ts"]')).not.toBeNull();
     expect(container.textContent).toContain("workspace_git_status.rs");

@@ -216,7 +216,9 @@ describe("ChangesSurface actions", () => {
       }),
     );
     await render(<ChangesSurface workspaceId={WORKSPACE} />);
-    expect(container.querySelector('.workspace-file-change[title="notes/todo-v2.md"]')).not.toBeNull();
+    expect(
+      container.querySelector('.workspace-file-change[title="notes/todo-v2.md"]'),
+    ).not.toBeNull();
 
     await act(async () => {
       button('button[title="Stage notes/todo-v2.md"]').click();

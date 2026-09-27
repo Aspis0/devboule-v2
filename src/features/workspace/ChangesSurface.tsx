@@ -97,9 +97,7 @@ function BranchRow({
           />
         </svg>
       </span>
-      {totals !== null ? (
-        <span className="workspace-changes-branch-totals">{totals}</span>
-      ) : null}
+      {totals !== null ? <span className="workspace-changes-branch-totals">{totals}</span> : null}
       <button
         type="button"
         className="workspace-changes-refresh"
@@ -390,8 +388,8 @@ export const ChangesSurface = memo(function ChangesSurface({
                 History of this branch will appear here.
               </p>
               <p className="workspace-panel-empty-note">
-                Listing history needs a command the daemon does not have yet, so this view
-                stays empty on purpose.
+                Listing history needs a command the daemon does not have yet, so this view stays
+                empty on purpose.
               </p>
             </div>
           ) : (

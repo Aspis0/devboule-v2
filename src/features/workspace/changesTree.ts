@@ -77,7 +77,9 @@ export function buildChangesTree(rows: WorkspaceGitRow[]): ChangesTreeNode[] {
   // Post-order sums, leaves first: each folder's totals are its own files
   // plus every descendant folder's, and one capped row anywhere below
   // marks the whole chain above it.
-  const sum = (nodes: ChangesTreeNode[]): { additions: number; deletions: number; capped: boolean } => {
+  const sum = (
+    nodes: ChangesTreeNode[],
+  ): { additions: number; deletions: number; capped: boolean } => {
     let additions = 0;
     let deletions = 0;
     let capped = false;
