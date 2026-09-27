@@ -95,8 +95,11 @@ fn run_check_redacts_stdout_and_bounds_captured_output() {
 
     #[cfg(windows)]
     {
-        let agent = fake_agent(vec!["/C".into(), "echo private-token".into()]);
-        let result = run_check_with_timeout(&agent, &[], Duration::from_secs(2));
+        let agent = fake_agent(vec![
+            "/C".into(),
+            "for /L %i in (1,1,10000) do @echo private-token".into(),
+        ]);
+        let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
         assert_eq!(result.0, "logged_in");
         assert!(!format!("{result:?}").contains("private-token"));
     }
