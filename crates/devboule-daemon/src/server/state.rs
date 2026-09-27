@@ -109,6 +109,9 @@ pub struct ServerState {
     /// multi-user daemon must key it by owner, or the failure reasons leak
     /// across users.
     provider_health: Mutex<HashMap<String, String>>,
+    /// Latest explicit Providers-page auth observation, keyed by provider.
+    /// Like last-start health, this relies on the daemon remaining single-user.
+    provider_auth_checks: Mutex<HashMap<String, crate::provider_auth::AuthCheck>>,
     /// Version declared by the provider's most recent successful ACP
     /// initialize handshake, keyed by provider id.
     provider_versions: Mutex<HashMap<String, String>>,
@@ -356,6 +359,7 @@ impl ServerState {
             journal_error: Mutex::new(journal_error),
             session_watchers: Mutex::new(HashMap::new()),
             provider_health: Mutex::new(HashMap::new()),
+            provider_auth_checks: Mutex::new(HashMap::new()),
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
             claude_version_probes: Mutex::new(HashSet::new()),
@@ -779,6 +783,30 @@ impl ServerState {
             .get(provider_id)
             .cloned()
             .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    pub(crate) fn record_provider_auth_check(
+        &self,
+        provider_id: &str,
+        check: crate::provider_auth::AuthCheck,
+    ) -> crate::provider_auth::AuthCheck {
+        let mut checks = self
+            .provider_auth_checks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        checks.insert(provider_id.to_string(), check.clone());
+        check
+    }
+
+    pub(crate) fn provider_auth_check(
+        &self,
+        provider_id: &str,
+    ) -> Option<crate::provider_auth::AuthCheck> {
+        self.provider_auth_checks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(provider_id)
+            .cloned()
     }
 
     pub(crate) fn record_provider_version(&self, provider_id: &str, version: &str) {

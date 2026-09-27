@@ -1,6 +1,6 @@
 import type { ProviderInfo, ToolPolicyEntry } from "../../types/ipc";
 
-/** The dot tone of one provider row: live only after a measured start. */
+/** The dot tone of one provider row. */
 export type ProviderRowTone = "live" | "idle" | "failed";
 
 /** One plain status word per measured state, with the reason kept as detail. */
@@ -12,25 +12,39 @@ export interface ProviderRowStatus {
 }
 
 /**
- * Row status from the daemon's measured authentication. One function owns
- * the mapping so the coming daemon auth-check slice can swap it in one
- * place. The words are deliberately past-tense honest: `authentication` is
- * the last start observation, never a login probe, so nothing here may
- * claim present state (no "Ready"). A failure keeps its reason in
- * `detail`, rendered into screen-reader text by the row — never carried by
- * `aria-label`/`title` alone.
+ * Prefer the explicit auth observation when the daemon has one; providers
+ * without a check keep the honest last-start words. Details are rendered into
+ * screen-reader text by the row, never carried by `aria-label`/`title` alone.
  */
 export function providerRowStatus(provider: ProviderInfo): ProviderRowStatus {
+  const authCheckReason = provider.authStatus === "unknown" ? (provider.authReason ?? null) : null;
+  if (provider.authStatus === "logged_in") {
+    return { tone: "live", word: "Logged in", detail: provider.authReason ?? null };
+  }
+  if (provider.authStatus === "logged_out") {
+    return { tone: "failed", word: "Not logged in", detail: provider.authReason ?? null };
+  }
+  if (provider.authStatus === "credentials_found") {
+    return { tone: "idle", word: "Credentials found", detail: provider.authReason ?? null };
+  }
   if (provider.authentication === "ok")
-    return { tone: "live", word: "Started", detail: "Last measured start completed." };
+    return {
+      tone: "live",
+      word: "Started",
+      detail: authCheckReason ?? "Last measured start completed.",
+    };
   if (provider.authentication.startsWith("failed:")) {
     const reason = provider.authentication.slice("failed:".length).trim();
-    return { tone: "failed", word: "Start failed", detail: reason.length > 0 ? reason : null };
+    return {
+      tone: "failed",
+      word: "Start failed",
+      detail: authCheckReason ?? (reason.length > 0 ? reason : null),
+    };
   }
   return {
     tone: "idle",
     word: "Not started yet",
-    detail: "The daemon has not measured a start yet.",
+    detail: authCheckReason ?? "The daemon has not measured a start yet.",
   };
 }
 

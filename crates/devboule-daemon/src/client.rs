@@ -1529,6 +1529,19 @@ impl DaemonClient {
         }
     }
 
+    pub fn providers_auth_check(&self) -> Result<(Vec<ProviderInfo>, u32), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProvidersAuthCheck { id })? {
+            DaemonMessage::Providers {
+                providers,
+                unreadable_dirs,
+                ..
+            } => Ok((providers, unreadable_dirs)),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn provider_update(
         &self,
         provider_id: &str,

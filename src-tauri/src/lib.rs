@@ -136,6 +136,7 @@ pub fn run() {
             backend::provider_vocabulary::provider_vocabulary_get,
             backend::providers::providers_list,
             backend::providers::providers_refresh,
+            backend::providers::providers_auth_check,
             backend::providers::provider_update,
             backend::providers::provider_set_enabled,
             oracle::oracle_workspace_get,

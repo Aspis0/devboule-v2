@@ -49,6 +49,19 @@ pub async fn providers_refresh(
     })
 }
 
+#[tauri::command]
+pub async fn providers_auth_check(
+    bridge: State<'_, DaemonBridge>,
+) -> Result<ProviderCatalog, CommandError> {
+    let client = require_client(&bridge)?;
+    let (providers, unreadable_dirs) =
+        off_main_thread(move || client.providers_auth_check()).await?;
+    Ok(ProviderCatalog {
+        providers,
+        unreadable_dirs,
+    })
+}
+
 /// The window must not wait on this call either: the daemon runs the
 /// provider's package install inline, and the client's budget for it is
 /// `PROVIDER_UPDATE_RPC_TIMEOUT` (240 s).

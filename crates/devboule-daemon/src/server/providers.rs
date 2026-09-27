@@ -3,7 +3,12 @@
 
 use super::*;
 
-pub(super) fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) -> DaemonMessage {
+pub(super) fn providers_reply(
+    state: &Arc<ServerState>,
+    id: u64,
+    force: bool,
+    check_auth: bool,
+) -> DaemonMessage {
     // The settings list is also the normal pre-session discovery path. Make
     // sure a Claude session can start with a non-empty model manifest even if
     // the user has not opened the settings panel's Refresh button.
@@ -26,7 +31,18 @@ pub(super) fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) ->
         .into_iter()
         .map(|agent| {
             let authentication = state.provider_health(&agent.id);
-            wire_provider(state, agent, authentication)
+            let enabled = state.provider_switches.is_enabled(&agent.id);
+            let auth_check = if check_auth {
+                crate::provider_auth::check_if_enabled(enabled, || {
+                    crate::provider_auth::check(&agent)
+                })
+                .map(|check| state.record_provider_auth_check(&agent.id, check))
+            } else if enabled {
+                state.provider_auth_check(&agent.id)
+            } else {
+                None
+            };
+            wire_provider(state, agent, authentication, auth_check)
         })
         .collect();
     DaemonMessage::Providers {
@@ -134,7 +150,11 @@ fn wire_provider(
     state: &ServerState,
     agent: crate::provider_catalog::InstalledAgent,
     authentication: String,
+    auth_check: Option<crate::provider_auth::AuthCheck>,
 ) -> devboule_protocol::ProviderInfo {
+    let auth_status = auth_check.as_ref().map(|check| check.status.to_string());
+    let auth_reason = auth_check.as_ref().map(|check| check.reason.to_string());
+    let auth_checked_at = auth_check.map(|check| check.checked_at);
     let installed_version = match agent.install_channel {
         crate::provider_catalog::InstallChannel::Native => agent
             .installed_version
@@ -153,6 +173,9 @@ fn wire_provider(
         executable: agent.executable.to_string_lossy().into_owned(),
         acp_available: agent.acp_command.is_some(),
         authentication,
+        auth_status,
+        auth_reason,
+        auth_checked_at,
         protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
         origin: agent.installed.then(|| agent.origin.as_wire().to_string()),
         launch_args: agent.launch_args,

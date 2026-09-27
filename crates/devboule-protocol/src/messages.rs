@@ -765,6 +765,10 @@ pub enum ClientMessage {
     ProvidersList {
         id: u64,
     },
+    /// Explicitly re-check provider authentication for the Providers page.
+    ProvidersAuthCheck {
+        id: u64,
+    },
     ProvidersRefresh {
         id: u64,
     },
@@ -1124,6 +1128,7 @@ impl ClientMessage {
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
+            | Self::ProvidersAuthCheck { id }
             | Self::ProvidersRefresh { id }
             | Self::ProviderUpdate { id, .. }
             | Self::Invoke { id, .. }
@@ -1216,6 +1221,7 @@ impl ClientMessage {
             | Self::JournalUsage { .. }
             | Self::JournalRetentionGet { .. }
             | Self::ProvidersList { .. }
+            | Self::ProvidersAuthCheck { .. }
             | Self::ProvidersRefresh { .. }
             | Self::ProviderUpdate { .. }
             | Self::ProjectsList { .. }
@@ -1302,6 +1308,7 @@ impl ClientMessage {
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
             Self::ProvidersList { .. } => "ProvidersList",
+            Self::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             Self::ProvidersRefresh { .. } => "ProvidersRefresh",
             Self::ProviderUpdate { .. } => "ProviderUpdate",
             Self::Invoke { .. } => "Invoke",
@@ -1347,6 +1354,7 @@ impl ClientMessage {
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
             | Self::ProvidersList { .. }
+            | Self::ProvidersAuthCheck { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
             | Self::SessionAttachmentRead { .. }
@@ -2609,8 +2617,9 @@ pub struct PendingPairing {
     pub expires_at: i64,
 }
 
-/// One CLI agent the daemon found on PATH. Authentication is never probed:
-/// an executable on PATH is "installed, status unknown".
+/// One CLI agent the daemon found on PATH. `authentication` remains the last
+/// session-start observation; the optional auth fields carry a separate
+/// explicit check made for the Providers page.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInfo {
@@ -2618,6 +2627,15 @@ pub struct ProviderInfo {
     pub executable: String,
     pub acp_available: bool,
     pub authentication: String,
+    /// Login state from an explicit check, or Grok credential-file presence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_status: Option<String>,
+    /// Safe, fixed one-line explanation; raw CLI output is never sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_reason: Option<String>,
+    /// Unix milliseconds for the last explicit check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_checked_at: Option<i64>,
     /// Chat launch dialect. `"acp"` or `"stream-json"` when the catalog
     /// entry can start a session; omitted when the CLI is installed but
     /// not chat-capable.

@@ -66,6 +66,8 @@ pub struct KnownAgent {
     /// Native Codex app-server argv, used only by the Codex adapter.
     pub app_server_args: Option<&'static [&'static str]>,
     pub npm_package: Option<&'static str>,
+    /// Fixed non-interactive login check. None means no documented check.
+    pub auth_check_args: Option<&'static [&'static str]>,
 }
 
 /// Agents currently relevant to the first provider catalog slice.
@@ -101,6 +103,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         rpc_args: None,
         app_server_args: None,
         npm_package: Some("@anthropic-ai/claude-code"),
+        auth_check_args: Some(&["auth", "status"]),
     },
     KnownAgent {
         id: "codex",
@@ -110,6 +113,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         rpc_args: None,
         app_server_args: Some(&["app-server"]),
         npm_package: Some("@openai/codex"),
+        auth_check_args: Some(&["login", "status"]),
     },
     KnownAgent {
         id: "grok",
@@ -119,6 +123,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         rpc_args: None,
         app_server_args: None,
         npm_package: None,
+        auth_check_args: None,
     },
     KnownAgent {
         id: "pi",
@@ -130,6 +135,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         rpc_args: Some(&["--mode", "rpc"]),
         app_server_args: None,
         npm_package: None,
+        auth_check_args: Some(&["auth", "check"]),
     },
     KnownAgent {
         id: "qwen",
@@ -142,6 +148,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         rpc_args: None,
         app_server_args: None,
         npm_package: Some("@qwen-code/qwen-code"),
+        auth_check_args: None,
     },
     KnownAgent {
         id: "gemini",
@@ -151,6 +158,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         rpc_args: None,
         app_server_args: None,
         npm_package: Some("@google/gemini-cli"),
+        auth_check_args: None,
     },
 ];
 
@@ -180,6 +188,7 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[
         rpc_args: None,
         app_server_args: None,
         npm_package: None,
+        auth_check_args: None,
     },
     // A provider id whose binary cannot exist anywhere (`S5` e2e): it is what
     // makes `provider not installed` reachable without depending on what the
@@ -194,6 +203,7 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[
         rpc_args: None,
         app_server_args: None,
         npm_package: None,
+        auth_check_args: None,
     },
 ];
 #[cfg(not(debug_assertions))]

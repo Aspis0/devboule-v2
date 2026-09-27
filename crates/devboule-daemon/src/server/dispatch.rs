@@ -59,7 +59,7 @@ pub(super) fn dispatch(
         let spawn = std::thread::Builder::new()
             .name("daemon-providers-refresh".to_string())
             .spawn(move || {
-                let reply = providers_reply(&worker_state, id, true);
+                let reply = providers_reply(&worker_state, id, true, false);
                 outbound.enqueue_reply(reply);
             });
         if spawn.is_err() {
@@ -301,7 +301,8 @@ pub(super) fn dispatch_immediate(
             }
             dispatch_session(state, owner, request, conn, typed_permissions_ok, passed)
         }
-        ClientMessage::ProvidersList { id } => providers_reply(state, id, false),
+        ClientMessage::ProvidersList { id } => providers_reply(state, id, false, false),
+        ClientMessage::ProvidersAuthCheck { id } => providers_reply(state, id, false, true),
         ClientMessage::ToolPolicyGet { id } => tool_policy_get(state, id, passed),
         ClientMessage::ToolPolicySet {
             id,

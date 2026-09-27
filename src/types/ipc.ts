@@ -1442,6 +1442,12 @@ export interface ProviderInfo {
    * start failed with a one-line reason.
    */
   authentication: string;
+  /** Latest explicit login check; absent means the provider has no documented check. */
+  authStatus?: "logged_in" | "logged_out" | "unknown" | "credentials_found" | null;
+  /** Safe, one-line explanation with all CLI output removed. */
+  authReason?: string | null;
+  /** Unix milliseconds when the daemon last ran this provider's auth check. */
+  authCheckedAt?: number | null;
   /** `"acp"`, `"stream-json"`, `"pi-rpc"`, or `"codex-app-server"` when chat is available. */
   protocol?: string | null;
   /** `"user-binary"` from PATH; `"npx-wrapper"` from the ACP registry. */

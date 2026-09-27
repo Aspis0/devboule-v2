@@ -203,6 +203,7 @@ export type CommandArgs = {
   sessions_unwatch: undefined;
   providers_list: undefined;
   providers_refresh: undefined;
+  providers_auth_check: undefined;
   provider_update: { providerId: string };
   oracle_status: undefined;
   oracle_workspace_get: undefined;
@@ -305,6 +306,7 @@ type CommandResults = {
   sessions_unwatch: void;
   providers_list: ProviderCatalog;
   providers_refresh: ProviderCatalog;
+  providers_auth_check: ProviderCatalog;
   provider_update: ProviderUpdateOutcome;
   oracle_status: OracleIndexStatus;
   oracle_workspace_get: OracleWorkspace;
@@ -464,6 +466,7 @@ export const COMMAND_ARG_KEYS = {
   sessions_unwatch: [],
   providers_list: [],
   providers_refresh: [],
+  providers_auth_check: [],
   provider_update: ["providerId"],
   oracle_status: [],
   oracle_workspace_get: [],
@@ -888,6 +891,7 @@ export const sessionsUnwatch = () => invokeTyped("sessions_unwatch");
 export const providersList = () => invokeTyped("providers_list");
 /** Same catalog as `providersList`, but re-probed (up to ~10s: skips the npx-registry TTL). */
 export const providersRefresh = () => invokeTyped("providers_refresh");
+export const providersAuthCheck = () => invokeTyped("providers_auth_check");
 /**
  * Runs `npm install -g <package>@latest` inside the daemon for one npm-installed
  * provider. Minutes-long: the promise settles only when npm finishes. The

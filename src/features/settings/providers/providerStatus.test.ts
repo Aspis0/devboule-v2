@@ -24,6 +24,37 @@ function providerWith(overrides: Partial<ProviderInfo> = {}): ProviderInfo {
 }
 
 describe("providerRowStatus", () => {
+  it.each([
+    ["logged_in", "Logged in", "live"],
+    ["logged_out", "Not logged in", "failed"],
+    ["credentials_found", "Credentials found", "idle"],
+  ] as const)("maps auth result %s to %s", (authStatus, word, tone) => {
+    const status = providerRowStatus(
+      providerWith({ authStatus, authReason: "CLI status check completed." }),
+    );
+    expect(status.word).toBe(word);
+    expect(status.tone).toBe(tone);
+    expect(status.detail).toBe("CLI status check completed.");
+  });
+
+  it("keeps last-start wording when the auth check is unknown or absent", () => {
+    expect(
+      providerRowStatus(providerWith({ authStatus: "unknown", authentication: "ok" })).word,
+    ).toBe("Started");
+    expect(
+      providerRowStatus(providerWith({ authStatus: null, authentication: "unknown" })).word,
+    ).toBe("Not started yet");
+    const failedStart = providerRowStatus(
+      providerWith({
+        authStatus: "unknown",
+        authReason: "The provider status check timed out.",
+        authentication: "failed: older start failure",
+      }),
+    );
+    expect(failedStart.word).toBe("Start failed");
+    expect(failedStart.detail).toBe("The provider status check timed out.");
+  });
+
   it("reads a measured start as Started with the live tone, never Ready", () => {
     const status = providerRowStatus(providerWith({ authentication: "ok" }));
     expect(status.tone).toBe("live");

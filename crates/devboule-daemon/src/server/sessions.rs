@@ -493,6 +493,7 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }
+        | ClientMessage::ProvidersAuthCheck { .. }
         | ClientMessage::ProvidersRefresh { .. }
         | ClientMessage::ProviderUpdate { .. }
         | ClientMessage::Invoke { .. }

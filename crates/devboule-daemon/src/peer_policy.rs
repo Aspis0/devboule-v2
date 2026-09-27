@@ -266,6 +266,7 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::SessionDelete { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::JournalRetentionSet { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersRefresh { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ProvidersAuthCheck { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProviderUpdate { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProjectAdd { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::WorkspaceCreate { .. } => with_capability(caps, CAP_ADMIN),
@@ -1491,6 +1492,7 @@ pub(crate) mod tests {
             },
             ClientMessage::WorkspaceFilePreviewUnstage { id: 1 },
             ClientMessage::ProvidersList { id: 1 },
+            ClientMessage::ProvidersAuthCheck { id: 1 },
             ClientMessage::Status { id: 1 },
             ClientMessage::DaemonDiagnostics { id: 1 },
         ];
@@ -2462,6 +2464,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
+            ClientMessage::ProvidersAuthCheck { .. } => administrative(),
             ClientMessage::ProvidersRefresh { .. } => administrative(),
             ClientMessage::ProviderUpdate { .. } => administrative(),
             ClientMessage::Invoke { .. } => administrative(),
@@ -2488,7 +2491,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 68;
+    pub(crate) const VARIANT_COUNT: usize = 69;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2546,6 +2549,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
             ClientMessage::WorkspaceDelete { .. } => "WorkspaceDelete",
             ClientMessage::ProvidersList { .. } => "ProvidersList",
+            ClientMessage::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             ClientMessage::ProvidersRefresh { .. } => "ProvidersRefresh",
             ClientMessage::ProviderUpdate { .. } => "ProviderUpdate",
             ClientMessage::Invoke { .. } => "Invoke",
@@ -2816,6 +2820,7 @@ pub(crate) mod tests {
                 force: false,
             },
             ClientMessage::ProvidersList { id: 1 },
+            ClientMessage::ProvidersAuthCheck { id: 1 },
             ClientMessage::ProvidersRefresh { id: 1 },
             ClientMessage::ProviderUpdate {
                 id: 1,

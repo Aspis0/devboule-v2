@@ -27,6 +27,7 @@ vi.mock("../../../lib/tauri", async (importOriginal) => {
     })),
     providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providersRefresh: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
+    providersAuthCheck: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providerUpdate: vi.fn(async () => ({ ok: true, exitCode: 0, log: "" })),
     providerSetEnabled: vi.fn(async () => undefined),
     daemonDiagnostics: vi.fn(async () => ({
@@ -48,6 +49,7 @@ import {
   providerVocabularyGet,
   providersList,
   providersRefresh,
+  providersAuthCheck,
   toolPolicyGet,
   toolPolicySet,
 } from "../../../lib/tauri";
@@ -537,6 +539,15 @@ describe("provider rows and status", () => {
 });
 
 describe("providers refresh", () => {
+  it("checks login on open and explicit Refresh only", async () => {
+    await renderPanel();
+    expect(providersAuthCheck).toHaveBeenCalledTimes(1);
+    const button = container.querySelector<HTMLButtonElement>(".provider-refresh");
+    if (!button) throw new Error("Refresh button did not render");
+    await act(async () => button.click());
+    expect(providersAuthCheck).toHaveBeenCalledTimes(2);
+  });
+
   let container: HTMLDivElement;
   let root: Root;
 

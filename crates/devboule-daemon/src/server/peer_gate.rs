@@ -326,6 +326,7 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
+        ClientMessage::ProvidersAuthCheck { .. } => None,
         ClientMessage::ProvidersRefresh { .. } => None,
         ClientMessage::ProviderUpdate { .. } => None,
         ClientMessage::Invoke { .. } => None,
@@ -564,6 +565,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }
+        | ClientMessage::ProvidersAuthCheck { .. }
         | ClientMessage::ProvidersRefresh { .. }
         | ClientMessage::ProviderUpdate { .. }
         | ClientMessage::Invoke { .. }

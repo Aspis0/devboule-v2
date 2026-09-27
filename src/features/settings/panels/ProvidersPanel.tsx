@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { providerUpdate, providersList, providersRefresh } from "../../../lib/tauri";
+import {
+  providerUpdate,
+  providersAuthCheck,
+  providersList,
+  providersRefresh,
+} from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { useAppStore } from "../../../store/appStore";
@@ -54,6 +59,24 @@ interface ProviderNpmRun {
 interface ProviderConsent {
   provider: ProviderInfo;
   verb: "update" | "install" | "login";
+}
+
+function mergeAuthChecks(catalog: ProviderCatalog, checked: ProviderCatalog): ProviderCatalog {
+  const checks = new Map(checked.providers.map((provider) => [provider.id, provider]));
+  return {
+    ...catalog,
+    providers: catalog.providers.map((provider) => {
+      const check = checks.get(provider.id);
+      return check?.authStatus == null
+        ? provider
+        : {
+            ...provider,
+            authStatus: check.authStatus,
+            authReason: check.authReason,
+            authCheckedAt: check.authCheckedAt,
+          };
+    }),
+  };
 }
 
 /** The consent's own words: what Confirm types, and what it changes. */
@@ -246,8 +269,17 @@ export function ProvidersPanel() {
     let cancelled = false;
     const seq = ++fetchSeqRef.current;
     void providersList()
-      .then((listed) => {
-        if (!cancelled && seq === fetchSeqRef.current) setCatalog(listed);
+      .then(async (listed) => {
+        if (cancelled || seq !== fetchSeqRef.current) return;
+        setCatalog(listed);
+        try {
+          const checked = await providersAuthCheck();
+          if (!cancelled && seq === fetchSeqRef.current) {
+            setCatalog(mergeAuthChecks(listed, checked));
+          }
+        } catch {
+          // Catalog discovery still works when an auth check cannot run.
+        }
       })
       .catch((cause: unknown) => {
         if (!cancelled && seq === fetchSeqRef.current) {
@@ -270,8 +302,14 @@ export function ProvidersPanel() {
     invalidateModelCounts();
     const seq = ++fetchSeqRef.current;
     void providersRefresh()
-      .then((fresh) => {
-        if (seq === fetchSeqRef.current) setCatalog(fresh);
+      .then(async (fresh) => {
+        let checkedCatalog = fresh;
+        try {
+          checkedCatalog = mergeAuthChecks(fresh, await providersAuthCheck());
+        } catch {
+          // Keep the fresh catalog and its last-start fallback.
+        }
+        if (seq === fetchSeqRef.current) setCatalog(checkedCatalog);
         // The refetch is the proof a handoff landed: installed rows move
         // sections, so waiting notes clear only on success — a Refresh
         // mid-install must not re-offer Install for a run still going.
@@ -370,7 +408,9 @@ export function ProvidersPanel() {
         // The refetch is the proof: the fresh catalog carries the new version.
         void providersList()
           .then((fresh) => {
-            if (seq === fetchSeqRef.current) setCatalog(fresh);
+            if (seq === fetchSeqRef.current) {
+              setCatalog((current) => (current === null ? fresh : mergeAuthChecks(fresh, current)));
+            }
           })
           .catch((cause: unknown) => {
             if (seq === fetchSeqRef.current) setError(errorSentence(cause));

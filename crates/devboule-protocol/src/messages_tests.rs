@@ -1948,6 +1948,9 @@ fn provider_info_enabled_travels_only_when_off() {
         executable: "grok.exe".to_string(),
         acp_available: true,
         authentication: "unknown".to_string(),
+        auth_status: None,
+        auth_reason: None,
+        auth_checked_at: None,
         protocol: Some("acp".to_string()),
         origin: None,
         launch_args: None,
@@ -2530,6 +2533,9 @@ fn providers_list_round_trips_with_camel_case_and_unknown_auth() {
             executable: r"C:\Users\gualt\AppData\Roaming\npm\grok.cmd".to_string(),
             acp_available: true,
             authentication: "unknown".to_string(),
+            auth_status: None,
+            auth_reason: None,
+            auth_checked_at: None,
             protocol: Some("acp".to_string()),
             origin: None,
             launch_args: None,
@@ -2560,6 +2566,19 @@ fn providers_list_round_trips_with_camel_case_and_unknown_auth() {
 }
 
 #[test]
+fn providers_auth_check_is_an_explicit_read_only_request() {
+    let request = ClientMessage::ProvidersAuthCheck { id: 21 };
+    let encoded = serde_json::to_value(&request).expect("json");
+    assert_eq!(encoded["type"], "providers_auth_check");
+    assert_eq!(encoded["id"], 21);
+    assert!(!request.is_state_changing());
+    assert_eq!(
+        serde_json::from_value::<ClientMessage>(encoded).expect("round trip"),
+        request
+    );
+}
+
+#[test]
 fn providers_refresh_round_trips_with_same_providers_shape() {
     let request = ClientMessage::ProvidersRefresh { id: 12 };
     let encoded = serde_json::to_value(&request).expect("json");
@@ -2574,6 +2593,9 @@ fn providers_refresh_round_trips_with_same_providers_shape() {
                 executable: "grok.exe".to_string(),
                 acp_available: true,
                 authentication: "unknown".to_string(),
+                auth_status: None,
+                auth_reason: None,
+                auth_checked_at: None,
                 protocol: Some("acp".to_string()),
                 origin: Some("user-binary".to_string()),
                 launch_args: None,
@@ -2592,6 +2614,9 @@ fn providers_refresh_round_trips_with_same_providers_shape() {
                 executable: "pi.exe".to_string(),
                 acp_available: false,
                 authentication: "unknown".to_string(),
+                auth_status: None,
+                auth_reason: None,
+                auth_checked_at: None,
                 protocol: None,
                 origin: Some("user-binary".to_string()),
                 launch_args: None,
@@ -2631,6 +2656,9 @@ fn provider_origin_is_camel_case_on_the_wire() {
             executable: "@agentclientprotocol/codex-acp@1.10.0".to_string(),
             acp_available: true,
             authentication: "unknown".to_string(),
+            auth_status: None,
+            auth_reason: None,
+            auth_checked_at: None,
             protocol: Some("acp".to_string()),
             origin: Some("npx-wrapper".to_string()),
             launch_args: None,
@@ -2654,6 +2682,9 @@ fn provider_origin_is_camel_case_on_the_wire() {
         executable: r"C:\npm\grok.exe".to_string(),
         acp_available: true,
         authentication: "unknown".to_string(),
+        auth_status: None,
+        auth_reason: None,
+        auth_checked_at: None,
         protocol: Some("acp".to_string()),
         origin: Some("user-binary".to_string()),
         launch_args: None,
@@ -2682,6 +2713,9 @@ fn provider_launch_args_and_pickable_are_optional_camel_case_fields() {
         executable: "@agentclientprotocol/codex-acp@1.10.0".to_string(),
         acp_available: true,
         authentication: "unknown".to_string(),
+        auth_status: None,
+        auth_reason: None,
+        auth_checked_at: None,
         protocol: Some("acp".to_string()),
         origin: Some("npx-wrapper".to_string()),
         launch_args: Some(vec!["--registry=https://evil".to_string()]),
@@ -2770,6 +2804,9 @@ fn provider_info_installed_false_is_emitted_and_missing_means_true() {
         executable: String::new(),
         acp_available: false,
         authentication: "unknown".to_string(),
+        auth_status: None,
+        auth_reason: None,
+        auth_checked_at: None,
         protocol: None,
         origin: Some("user-binary".to_string()),
         launch_args: None,
@@ -2811,6 +2848,9 @@ fn synthetic_provider_info_round_trips_installed_package_and_latest_version() {
         executable: String::new(),
         acp_available: false,
         authentication: "unknown".to_string(),
+        auth_status: None,
+        auth_reason: None,
+        auth_checked_at: None,
         protocol: None,
         origin: None,
         launch_args: None,

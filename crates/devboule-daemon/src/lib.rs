@@ -77,6 +77,8 @@ mod plan_text;
 mod process_tree;
 #[cfg(feature = "server")]
 mod profile_delivery;
+#[cfg(feature = "server")]
+mod provider_auth;
 pub mod provider_catalog;
 #[cfg(feature = "server")]
 mod provider_feature_probe;

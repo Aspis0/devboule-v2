@@ -124,7 +124,7 @@ fn providers_list_answers_a_live_user_row() {
         "vocabulary answers the live row absent: {vocab:?}"
     );
     // The list does not — red.
-    let reply = super::providers::providers_reply(&state, 1, false);
+    let reply = super::providers::providers_reply(&state, 1, false, false);
     let providers = match reply {
         DaemonMessage::Providers { providers, .. } => providers,
         other => panic!("ProvidersList must answer Providers, got {other:?}"),
