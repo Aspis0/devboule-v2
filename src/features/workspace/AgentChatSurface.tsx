@@ -52,6 +52,8 @@ import {
 } from "../../lib/toolCallGroups";
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
+import { PaneHeader } from "./paneHeader/PaneHeader";
+import { paneHeaderStatus } from "./paneHeader/paneHeaderStatus";
 import {
   INTERRUPTED_TOOL_CLASS,
   INTERRUPTED_TOOL_COPY,
@@ -207,37 +209,8 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
   return Promise.reject(new Error(`Unsupported agent command: ${command}`));
 }
 
-function formatElapsed(elapsedMs: number): string {
-  const minutes = Math.floor(elapsedMs / 60_000);
-  if (minutes > 0) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-  const seconds = Math.floor(elapsedMs / 1_000);
-  return `${seconds} second${seconds === 1 ? "" : "s"}`;
-}
-
 function observedType(state: SessionState | null | undefined): SessionState["type"] | null {
   return state?.type ?? null;
-}
-
-function toolbarStatus(
-  observed: SessionState | null | undefined,
-  elapsedMs: number | null | undefined,
-  agent: AgentSessionState,
-): { copy: string; tone: "green" | "terracotta" | "border" } {
-  const type = observedType(observed);
-  if (type === "ended" || type === "recovered") {
-    return { copy: "Finished", tone: "terracotta" };
-  }
-  if (type === "silent") {
-    return {
-      copy: typeof elapsedMs === "number" ? `Silent for ${formatElapsed(elapsedMs)}` : "Silent",
-      tone: "border",
-    };
-  }
-  if (agent.status === "error") return { copy: "Needs attention", tone: "terracotta" };
-  if (agent.status === "closed") return { copy: "Finished", tone: "terracotta" };
-  if (agent.status === "running") return { copy: "Working…", tone: "green" };
-  if (type === "live") return { copy: "Live", tone: "green" };
-  return { copy: "Connecting…", tone: "border" };
 }
 
 const MAX_VISIBLE_SUBAGENT_DEPTH = 4;
@@ -982,7 +955,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // failure, not a guarantee: sends may be slow, and a failure is recorded
   // as a turn-level note.
   const daemonGone = daemonState === "disconnected" || daemonState === "connecting";
-  const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
+  const { copy: statusLabel, tone: statusDot } = paneHeaderStatus(observedState, elapsedMs, state);
   // The workspace's reopen bar describes this recovered attach state once —
   // while it is shown (a recovered row always shows it), the controller's own
   // attach-state ERROR entry and the composer footer would be second and third
@@ -1032,17 +1005,18 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   );
   return (
     <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
-      <div className="workspace-agent-toolbar">
-        <span className={`workspace-status-dot workspace-dot-${statusDot}`} />
-        <span className="workspace-agent-title">{title || "Agent"}</span>
-        {state.subagents.length > 0 ? (
-          <SubagentMenu subagents={state.subagents} statusCounts={state.subagentStatusCounts} />
-        ) : null}
-        <span className="workspace-agent-status" role="status">
-          {statusLabel}
-        </span>
-        {cwd ? <span className="workspace-session-cwd">{cwd}</span> : null}
-      </div>
+      <PaneHeader
+        kind="agent"
+        title={title || "Agent"}
+        statusWord={statusLabel}
+        dotTone={statusDot}
+        cwd={cwd}
+        subagentSlot={
+          state.subagents.length > 0 ? (
+            <SubagentMenu subagents={state.subagents} statusCounts={state.subagentStatusCounts} />
+          ) : null
+        }
+      />
       {manifest !== null && (manifest.providerId !== undefined || manifest.models.length > 0) ? (
         <div
           className={`workspace-agent-manifest${pendingSwitch ? " workspace-agent-manifest-pending" : ""}`}

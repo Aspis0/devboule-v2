@@ -341,100 +341,12 @@
   overflow-wrap: anywhere;
 }
 
-.workspace-session-cwd {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .workspace-terminal-shell {
   display: flex;
   flex: 1;
   min-height: 0;
   background: var(--surface-muted);
   flex-direction: column;
-}
-
-.workspace-terminal-toolbar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
-  min-height: 39px;
-  padding: 0 14px;
-}
-
-.workspace-terminal-toolbar .workspace-status-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.workspace-terminal-title {
-  flex: none;
-  color: var(--ink);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.workspace-terminal-status {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-terminal-interrupt {
-  flex: none;
-  height: 24px;
-  margin-left: auto;
-  padding: 0 9px;
-  color: var(--ink-soft);
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-}
-
-.workspace-terminal-interrupt:hover,
-.workspace-terminal-interrupt:focus-visible,
-.workspace-terminal-interrupt[aria-pressed="true"] {
-  color: var(--terracotta-deep);
-  background: var(--selection);
-}
-
-.workspace-terminal-interrupt:disabled,
-.workspace-terminal-close:disabled {
-  color: var(--silence);
-  cursor: not-allowed;
-  opacity: 1;
-}
-
-.workspace-terminal-close {
-  flex: none;
-  height: 24px;
-  padding: 0 9px;
-  color: var(--ink-soft);
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-}
-
-.workspace-terminal-close:hover,
-.workspace-terminal-close:focus-visible {
-  color: var(--danger-deep);
-  background: transparent;
 }
 
 /* The terminal's one surface in both themes. The host carries margins, not
@@ -509,23 +421,6 @@
   flex-direction: column;
 }
 
-.workspace-agent-toolbar {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex: none;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-height: 39px;
-  padding: 7px 20px;
-}
-
-.workspace-agent-toolbar .workspace-status-dot {
-  width: 6px;
-  height: 6px;
-}
-
 .workspace-agent-manifest {
   display: flex;
   flex: none;
@@ -557,17 +452,6 @@
   opacity: 0.55;
 }
 
-.workspace-agent-title {
-  flex: 1 1 160px;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 11.5px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .workspace-agent-status,
 .workspace-chat-finish,
 .workspace-chat-empty,
@@ -575,18 +459,6 @@
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
-}
-
-.workspace-agent-status {
-  flex: 1 1 90px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-agent-toolbar .workspace-session-cwd {
-  flex: 0 1 180px;
 }
 
 .workspace-subagent-menu {

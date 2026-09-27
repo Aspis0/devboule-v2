@@ -5,6 +5,7 @@ import { takeTerminalInput } from "./pendingTerminalInput";
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
+import { PaneHeader } from "../workspace/paneHeader/PaneHeader";
 import { sessionDotTone } from "../workspace/workspaceSessions";
 
 interface TerminalSurfaceProps {
@@ -266,39 +267,42 @@ export const TerminalSurface = memo(function TerminalSurface({
 
   return (
     <div id={id} className="workspace-terminal-shell" role="tabpanel" aria-label="Terminal output">
-      <div className="workspace-terminal-toolbar">
-        {/* The tab chip's own tone function: an ended or recovered session is
-            never green (E1.1, live finding 1). */}
-        <span className={`workspace-status-dot workspace-dot-${sessionDotTone(observedState)}`} />
-        <span className="workspace-terminal-title">Terminal</span>
-        <span className="workspace-terminal-status">
-          {ended ? "" : (message ?? "Connected to the local shell")}
-        </span>
-        {cwd ? <span className="workspace-session-cwd">{cwd}</span> : null}
-        {ended ? null : (
-          <button
-            type="button"
-            className="workspace-terminal-interrupt"
-            onClick={() => sessionRef.current?.requestCtrlC()}
-            disabled={banner?.kind === "exited" || banner?.kind === "recovered"}
-            aria-pressed={ctrlCArmed}
-          >
-            {ctrlCArmed ? "Press Ctrl+C again" : "Ctrl+C"}
-          </button>
-        )}
-        <button
-          type="button"
-          className="workspace-terminal-close"
-          onClick={() => {
-            sessionRef.current?.close();
-            setBanner({ kind: "closed" });
-            onClosed?.();
-          }}
-          disabled={banner?.kind === "exited" || banner?.kind === "closed"}
-        >
-          Close
-        </button>
-      </div>
+      {/* The tab chip's own tone function: an ended or recovered session is
+          never green (E1.1, live finding 1). */}
+      <PaneHeader
+        kind="terminal"
+        title="Terminal"
+        statusWord={ended ? "" : (message ?? "Connected to the local shell")}
+        dotTone={sessionDotTone(observedState)}
+        cwd={cwd}
+        trailingSlot={
+          <>
+            {ended ? null : (
+              <button
+                type="button"
+                className="workspace-terminal-interrupt"
+                onClick={() => sessionRef.current?.requestCtrlC()}
+                disabled={banner?.kind === "exited" || banner?.kind === "recovered"}
+                aria-pressed={ctrlCArmed}
+              >
+                {ctrlCArmed ? "Press Ctrl+C again" : "Ctrl+C"}
+              </button>
+            )}
+            <button
+              type="button"
+              className="workspace-terminal-close"
+              onClick={() => {
+                sessionRef.current?.close();
+                setBanner({ kind: "closed" });
+                onClosed?.();
+              }}
+              disabled={banner?.kind === "exited" || banner?.kind === "closed"}
+            >
+              Close
+            </button>
+          </>
+        }
+      />
       {/* The ground wrapper owns the terminal's surface colour: the host's
           margins sit on it, so the terminal reads as one surface in both
           themes and the fit measures a padding-free box. */}
