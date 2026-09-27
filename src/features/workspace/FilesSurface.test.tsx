@@ -112,10 +112,8 @@ describe("FilesSurface", () => {
   }
 
   function refreshButton(): HTMLButtonElement {
-    const match = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Refresh",
-    );
-    if (match === undefined) throw new Error("refresh button did not render");
+    const match = container.querySelector<HTMLButtonElement>(".workspace-files-refresh");
+    if (match === null) throw new Error("refresh button did not render");
     return match;
   }
 
@@ -169,16 +167,18 @@ describe("FilesSurface", () => {
     expect(vi.mocked(workspaceFilesList).mock.calls).toHaveLength(2);
   });
 
-  // Kills a client-side sort — `localeCompare` or any other: the daemon's
-  // folders-first, byte-order sequence arrives once, and the panel renders
-  // the order it is given instead of becoming a second authority for it.
-  it("renders the daemon's order as it came, unsorted", async () => {
+  // The revoked rule's replacement (owner, 2026-09-26 night): the daemon's
+  // folders-first, byte-order sequence arrives once, and the panel sorts
+  // client-side over it — folders first always, then the Name collation.
+  // The full sort contract (collation, stability, per-folder, toolbar)
+  // lives in FilesSurfaceSort.test.tsx; this pins the move, nothing more.
+  it("renders the panel's sorted order, not the daemon's", async () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("src", "dir"), entry("Zeta.c", "file", 1), entry("alpha.txt", "file", 2)]),
     );
     await render(<FilesSurface workspaceId={WORKSPACE} />);
 
-    expect(labels()).toEqual(["src", "Zeta.c", "alpha.txt"]);
+    expect(labels()).toEqual(["src", "alpha.txt", "Zeta.c"]);
     // The other half of R2's rule, in the same breath: with `skipped: 0`
     // (the builder's default) the not-listed note must not be drawn.
     expect(container.textContent).not.toContain("not listed");
@@ -191,7 +191,7 @@ describe("FilesSurface", () => {
     expect(container.textContent).toContain("This folder is empty.");
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.querySelector(".workspace-files-tree")).toBeNull();
-    expect(controls()).toContain("Refresh");
+    expect(container.querySelector('[aria-label="Refresh"]')).not.toBeNull();
   });
 
   // Kills the mutation that renders the wire's refusal as an empty folder:
@@ -327,15 +327,17 @@ describe("FilesSurface", () => {
     expect(container.textContent).not.toContain("Mockup");
     expect(container.querySelector('[role="note"]')).toBeNull();
     expect(container.querySelectorAll(".workspace-tree-file")).toHaveLength(1);
-    // With every menu closed, the buttons on screen are only the refresh
-    // control, the folder toggles, the file rows and the rows' own menu
-    // triggers — how the panel reads and how it reaches its three acts.
+    // With every menu closed, the buttons on screen are only the sort
+    // control and the quiet refresh, the folder toggles, the file rows
+    // and the rows' own menu triggers — how the panel orders and reads,
+    // and how it reaches its three acts.
     for (const button of Array.from(container.querySelectorAll("button"))) {
       expect(
-        button.classList.contains("workspace-tree-dir") ||
+        button.classList.contains("workspace-files-sort") ||
+          button.classList.contains("workspace-files-refresh") ||
+          button.classList.contains("workspace-tree-dir") ||
           button.classList.contains("workspace-tree-file") ||
-          button.classList.contains("workspace-tree-menu-trigger") ||
-          button.textContent === "Refresh",
+          button.classList.contains("workspace-tree-menu-trigger"),
       ).toBe(true);
     }
     // The acts exist: open the file row's menu and they are named there.

@@ -1,0 +1,416 @@
+// @vitest-environment happy-dom
+
+import { act } from "react";
+import type { ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkspaceDirectory, WorkspaceFileEntry } from "../../types/ipc";
+
+vi.mock("../../lib/tauri", () => ({
+  workspaceFilesList: vi.fn(),
+  workspaceFileRead: vi.fn(),
+}));
+
+import { workspaceFileRead, workspaceFilesList } from "../../lib/tauri";
+import { FilesSurface } from "./FilesSurface";
+import { assembleCssProof, removeCssProof } from "./cssProof";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const rootDir = resolve(import.meta.dirname, "../../..");
+
+function read(path: string): string {
+  return readFileSync(resolve(rootDir, path), "utf8");
+}
+
+const WORKSPACE = "workspace-files-sort-subject";
+
+function entry(
+  path: string,
+  kind: WorkspaceFileEntry["kind"],
+  size: number | null = null,
+): WorkspaceFileEntry {
+  const segments = path.split("/");
+  return { path, name: segments[segments.length - 1], kind, size };
+}
+
+function listing(
+  entries: WorkspaceFileEntry[],
+  overrides: Partial<WorkspaceDirectory> = {},
+): WorkspaceDirectory {
+  return { path: "", entries, capped: false, skipped: 0, error: null, ...overrides };
+}
+
+describe("FilesSurface R7c sort and toolbar", () => {
+  let container: HTMLDivElement;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = undefined;
+    vi.mocked(workspaceFilesList).mockResolvedValue(listing([]));
+    vi.mocked(workspaceFileRead).mockResolvedValue({
+      status: "ok",
+      kind: "text",
+      content: "",
+      size: 0,
+      modifiedAt: 0,
+      error: null,
+      fromLine: 1,
+      lines: 0,
+      hasMore: false,
+      truncated: false,
+      note: null,
+    });
+  });
+
+  afterEach(async () => {
+    const current = root;
+    if (current !== undefined) {
+      await act(async () => {
+        current.unmount();
+      });
+    }
+    container.remove();
+    removeCssProof();
+    vi.clearAllMocks();
+  });
+
+  async function render(ui: ReactNode) {
+    const previous = root;
+    if (previous !== undefined) {
+      await act(async () => {
+        previous.unmount();
+      });
+    }
+    root = createRoot(container);
+    const current = root;
+    await act(async () => {
+      current.render(ui);
+    });
+  }
+
+  /** The visible rows' labels, in DOM order — which must be the panel's
+   * sorted order, not the reply's. */
+  function labels(): (string | null | undefined)[] {
+    return Array.from(container.querySelectorAll(".workspace-tree-label")).map(
+      (element) => element.textContent,
+    );
+  }
+
+  function dirButton(path: string): HTMLButtonElement {
+    const match = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-tree-dir"),
+    ).find((button) => button.title === path);
+    if (match === undefined) throw new Error(`folder row did not render: ${path}`);
+    return match;
+  }
+
+  function sortButton(): HTMLButtonElement {
+    const match = container.querySelector<HTMLButtonElement>(".workspace-files-sort");
+    if (match === null) throw new Error("sort control did not render");
+    return match;
+  }
+
+  // The revoked rule's replacement (owner, 2026-09-26 night): the panel
+  // sorts client-side, folders first always. The daemon's folders-first
+  // byte order arrives once; the panel is the second authority by decision.
+  // This reply is scrambled on purpose — a file first, the folder last —
+  // so the daemon's order can never pass for the panel's.
+  it("sorts folders first, then files by name", async () => {
+    vi.mocked(workspaceFilesList).mockResolvedValue(
+      listing([entry("Zeta.c", "file", 1), entry("alpha.txt", "file", 2), entry("src", "dir")]),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    expect(labels()).toEqual(["src", "alpha.txt", "Zeta.c"]);
+  });
+
+  // The panel collation, pinned: `en`, base sensitivity, numeric. Case
+  // folds (Zeta sorts after alpha), numbers run naturally (a2 before
+  // a10), accents fold to their base (éclair with e). Kills the byte-order
+  // sort the daemon itself uses, which would put every uppercase first.
+  it("orders names with the panel collation, not byte order", async () => {
+    vi.mocked(workspaceFilesList).mockResolvedValue(
+      listing([
+        entry("Zeta.c", "file", 1),
+        entry("README.md", "file", 2),
+        entry("éclair.md", "file", 3),
+        entry("a10.txt", "file", 4),
+        entry("a2.txt", "file", 5),
+      ]),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    expect(labels()).toEqual(["a2.txt", "a10.txt", "éclair.md", "README.md", "Zeta.c"]);
+  });
+
+  // Equal under the collation (`A.txt` vs `a.txt` at base sensitivity) is
+  // the daemon's order kept: the sort is stable, never a coin toss.
+  // A guard more than a red test — the old code rendered the reply's order
+  // too, so this passes before and after; it kills the unstable-sort
+  // mutation (an index-keyed shuffle) instead.
+  it("keeps the daemon's order for names the collation calls equal", async () => {
+    vi.mocked(workspaceFilesList).mockResolvedValue(
+      listing([entry("a.txt", "file", 1), entry("A.txt", "file", 2)]),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    expect(labels()).toEqual(["a.txt", "A.txt"]);
+  });
+
+  // The sort is per folder, not root-only: an expanded folder's own reply
+  // is ordered the same way before it renders.
+  it("sorts an expanded folder's own entries the same way", async () => {
+    vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) =>
+      path === ""
+        ? Promise.resolve(listing([entry("src", "dir")]))
+        : Promise.resolve(listing([entry("src/z.txt", "file", 1), entry("src/a.txt", "file", 2)])),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await act(async () => {
+      dirButton("src").click();
+    });
+
+    expect(labels()).toEqual(["src", "a.txt", "z.txt"]);
+  });
+
+  // The toolbar's sort control: the current criterion with its chevron,
+  // opening a small menu — Name checked, Modified honestly disabled (the
+  // wire carries no file times, so the item cannot sort yet). Escape
+  // closes and focus returns to the control that opened it.
+  it("offers Name checked and Modified honestly disabled in the sort menu", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    const sort = sortButton();
+    expect(sort.textContent).toContain("Name");
+    expect(sort.getAttribute("aria-haspopup")).toBe("menu");
+    expect(sort.getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => {
+      sort.click();
+    });
+    expect(sort.getAttribute("aria-expanded")).toBe("true");
+    const items = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
+    );
+    expect(items.map((item) => item.textContent)).toEqual(["Name", "Modified"]);
+    expect(items[0]?.getAttribute("aria-checked")).toBe("true");
+    const modified = items[1];
+    if (modified === undefined) throw new Error("Modified option did not render");
+    expect(modified.disabled).toBe(true);
+    expect(modified.title).toContain("file times");
+
+    await act(async () => {
+      modified.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(sort);
+  });
+
+  // Choosing the checked criterion closes the menu and keeps the order —
+  // the menu changes the criterion, it never re-reads.
+  it("choosing Name closes the menu and owes no re-read", async () => {
+    vi.mocked(workspaceFilesList).mockResolvedValue(
+      listing([entry("b.txt", "file", 1), entry("a.txt", "file", 2)]),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    expect(vi.mocked(workspaceFilesList)).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      sortButton().click();
+    });
+    const name = container.querySelector<HTMLButtonElement>(
+      '[role="menuitemradio"][aria-checked="true"]',
+    );
+    if (name === null) throw new Error("Name option did not render");
+    await act(async () => {
+      name.click();
+    });
+
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(labels()).toEqual(["a.txt", "b.txt"]);
+    expect(vi.mocked(workspaceFilesList)).toHaveBeenCalledTimes(1);
+  });
+
+  // The refresh is a quiet icon button, as R7b's: no text control anywhere
+  // in the toolbar, one labelled icon that re-reads tree and preview.
+  it("refreshes from a quiet icon button, never a text control", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (candidate) => candidate.textContent === "Refresh",
+      ),
+    ).toBe(false);
+    const refresh = container.querySelector<HTMLButtonElement>(".workspace-files-refresh");
+    if (refresh === null) throw new Error("refresh icon button did not render");
+    expect(refresh.getAttribute("aria-label")).toBe("Refresh");
+    expect(refresh.textContent).not.toContain("Refresh");
+
+    await act(async () => {
+      refresh.click();
+    });
+    expect(vi.mocked(workspaceFilesList)).toHaveBeenCalledTimes(2);
+  });
+
+  // Disclosure-list semantics, as R7b chose: no role="tree" (rows carry a
+  // menu trigger each, so the single-tab-stop pattern cannot hold), every
+  // expanded folder's toggle naming the group it owns — and only while it
+  // owns one. Arrow keys belong to the focused control itself.
+  it("renders folders as disclosures owning their groups, with no tree role", async () => {
+    vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) =>
+      path === ""
+        ? Promise.resolve(listing([entry("src", "dir")]))
+        : Promise.resolve(listing([entry("src/a.txt", "file", 1)])),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await act(async () => {
+      dirButton("src").click();
+    });
+
+    expect(container.querySelector('[role="tree"]')).toBeNull();
+    const tree = container.querySelector(".workspace-files-tree");
+    if (tree === null) throw new Error("tree did not render");
+    expect(tree.tagName).toBe("UL");
+    const toggle = dirButton("src");
+    const groupId = toggle.getAttribute("aria-controls");
+    if (groupId === null) throw new Error("folder toggle names no group");
+    expect(container.querySelector(`#${CSS.escape(groupId)}`)?.tagName).toBe("UL");
+
+    await act(async () => {
+      toggle.click();
+    });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBeNull();
+
+    const trigger = container.querySelector<HTMLButtonElement>(".workspace-tree-menu-trigger");
+    if (trigger === null) throw new Error("row menu trigger did not render");
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  // Slice 8's hand-off: the selected file carries a pencil that opens it
+  // as a main tab through one callback — the workspace id plus the
+  // workspace-relative path, never an absolute path. No callback, no
+  // pencil: a control with no destination is a lie.
+  it("hands the selected file to slice 8 as id plus relative path", async () => {
+    vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) =>
+      Promise.resolve(
+        path === ""
+          ? listing([entry("docs", "dir")])
+          : listing([entry("docs/SETUP.md", "file", 6)]),
+      ),
+    );
+    const onOpenFile = vi.fn();
+    await render(<FilesSurface workspaceId={WORKSPACE} onOpenFile={onOpenFile} />);
+    expect(container.querySelector('[aria-label="Open file in a tab"]')).toBeNull();
+    await act(async () => {
+      dirButton("docs").click();
+    });
+
+    const file = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-tree-file"),
+    ).find((button) => button.title === "docs/SETUP.md");
+    if (file === undefined) throw new Error("file row did not render");
+    await act(async () => {
+      file.click();
+    });
+    const pencil = container.querySelector<HTMLButtonElement>('[aria-label="Open file in a tab"]');
+    if (pencil === null) throw new Error("pencil did not render on the selected row");
+    await act(async () => {
+      pencil.click();
+    });
+
+    expect(onOpenFile).toHaveBeenCalledWith(WORKSPACE, "docs/SETUP.md");
+    const [, path] = onOpenFile.mock.calls[0] as [string, string];
+    expect(path.startsWith("/")).toBe(false);
+    expect(path).not.toContain(":");
+    expect(path).not.toContain("\\");
+  });
+
+  it("shows no pencil while slice 8 has no callback", async () => {
+    vi.mocked(workspaceFilesList).mockResolvedValue(listing([entry("a.txt", "file", 1)]));
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".workspace-tree-file")?.click();
+    });
+    expect(container.querySelector('[aria-label="Open file in a tab"]')).toBeNull();
+  });
+
+  // The mockup's Files chrome from the real sheets in bundle order: the
+  // toolbar (sort left, quiet refresh right), h24 sans rows with the 14px
+  // indent step, the selected file as a fill-tool row, and the preview
+  // card's header as UI text — only the file's own bytes keep mono.
+  it("paints toolbar, rows and preview header from the real sheets in bundle order", async () => {
+    const { inject, token } = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/workspace/Workspace.css"),
+      read("src/features/workspace/panel/changes.css"),
+      read("src/features/workspace/panel/files.css"),
+      read("src/features/workspace/strip/strip.css"),
+      read("src/features/workspace/panel/panel.css"),
+    ]);
+    inject([
+      ".workspace-files",
+      ".workspace-files-toolbar",
+      ".workspace-files-sort",
+      ".workspace-files-refresh",
+      ".workspace-files-tree",
+      ".workspace-files-row",
+      ".workspace-files-file-icon",
+      ".workspace-tree-chevron",
+      ".workspace-files-selected",
+      ".workspace-files-pencil",
+      ".workspace-diff-header",
+      ".workspace-files .workspace-diff-header",
+    ]);
+    vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) =>
+      Promise.resolve(
+        path === "" ? listing([entry("src", "dir")]) : listing([entry("src/a.txt", "file", 2048)]),
+      ),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} onOpenFile={() => undefined} />);
+
+    const toolbar = container.querySelector<HTMLElement>(".workspace-files-toolbar");
+    if (toolbar === null) throw new Error("toolbar did not render");
+    expect(getComputedStyle(toolbar).display).toBe("flex");
+    const refresh = container.querySelector<HTMLElement>(".workspace-files-refresh");
+    if (refresh === null) throw new Error("refresh icon button did not render");
+    expect(getComputedStyle(refresh).width).toBe("24px");
+    expect(getComputedStyle(refresh).height).toBe("24px");
+
+    const folder = dirButton("src");
+    expect(getComputedStyle(folder).height).toBe("24px");
+    expect(getComputedStyle(folder).fontSize).toBe("12px");
+    expect(getComputedStyle(folder).fontFamily).not.toContain("JetBrains Mono");
+    expect(getComputedStyle(folder).paddingLeft).toBe("6px");
+
+    await act(async () => {
+      folder.click();
+    });
+    const file = container.querySelector<HTMLElement>('.workspace-tree-file[title="src/a.txt"]');
+    if (file === null) throw new Error("nested file row did not render");
+    // One 14px step below its folder's 6px pad.
+    expect(getComputedStyle(file).paddingLeft).toBe("20px");
+    const icon = file.querySelector<HTMLElement>(".workspace-files-file-icon");
+    if (icon === null) throw new Error("file icon did not render");
+    expect(getComputedStyle(icon).width).toBe("12px");
+
+    await act(async () => {
+      file.click();
+    });
+    expect(getComputedStyle(file).backgroundColor).toBe(token("--fill-tool"));
+    const header = container.querySelector<HTMLElement>(".workspace-diff-header");
+    if (header === null) throw new Error("preview header did not render");
+    expect(getComputedStyle(header).fontFamily).not.toContain("JetBrains Mono");
+  });
+});

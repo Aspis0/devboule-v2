@@ -322,7 +322,7 @@ describe("FilesFileActions", () => {
 
     expect(vi.mocked(workspaceFileRead).mock.calls).toContainEqual([WORKSPACE, "GUIDE.md"]);
     const selected = container.querySelector<HTMLButtonElement>(
-      '.workspace-tree-file[aria-pressed="true"]',
+      '.workspace-tree-file[aria-current="true"]',
     );
     expect(selected?.getAttribute("title")).toBe("GUIDE.md");
   });
@@ -372,9 +372,9 @@ describe("FilesFileActions", () => {
     expect(vi.mocked(workspaceFileDelete).mock.calls).toEqual([[WORKSPACE, "README.md"]]);
     expect(container.textContent).not.toContain("README.md");
     // The preview died with the file: no card still showing bytes of it, no
-    // row left pressed, and no re-read of the dead path ever issued.
+    // row left current, and no re-read of the dead path ever issued.
     expect(container.querySelector(".workspace-diff-card")).toBeNull();
-    expect(container.querySelector('[aria-pressed="true"]')).toBeNull();
+    expect(container.querySelector('[aria-current="true"]')).toBeNull();
     expect(vi.mocked(workspaceFileRead).mock.calls).toEqual([[WORKSPACE, "README.md"]]);
     expect(alertText()).toBeNull();
   });

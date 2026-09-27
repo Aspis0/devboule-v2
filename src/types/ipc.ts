@@ -176,8 +176,10 @@ export interface WorkspaceDirectory {
   /** The requested path, echoed verbatim — the caller's own text, even in a
    * refusal that rejects it; the empty string is the folder itself. */
   path: string;
-  /** Already ordered by the daemon: folders first, then by name in byte
-   * order. The panel renders this order and sorts nothing. */
+  /** The listing's own order: folders first, then by name in byte order.
+   * The Files panel sorts client-side over it — folders first always, then
+   * the toolbar's criterion (owner decision 2026-09-26, revoking the rule
+   * that the daemon's order is the single authority). */
   entries: WorkspaceFileEntry[];
   /** `true` when the entry cap dropped entries of this folder. Never
    * silently truncated. */

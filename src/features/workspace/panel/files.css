@@ -239,3 +239,183 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   font-size: 11px;
   line-height: 1.55;
 }
+
+/* R7c redesign (SPEC-regions §Right panel, mockup a-workspace-5.html:131-141
+   with values from mockups/skeleton-workspace.css, which win): the toolbar
+   with the sort control and a quiet refresh, h24 sans rows at the Changes
+   tree's 14px indent step, and the selected file as a fill-tool row with its
+   pencil. UI text is sans throughout. The moved rules above still say mono
+   in places; the rules below override them within this same sheet, so their
+   position here is deterministic. The ONE cross-sheet conflict —
+   Workspace.css's mono group naming .workspace-files-tree — is answered
+   with a higher-specificity scoped rule instead of a position bet, the way
+   changes.css holds its diff header. Only the preview's own bytes keep
+   their mono. */
+
+/* The toolbar: sort control left, the spacer, the quiet refresh right —
+   the mockup's ftoolbar geometry. position:relative anchors the sort menu,
+   which reuses the row menu's overlay shape. */
+.workspace-files-toolbar {
+  position: relative;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 6px;
+  padding: 6px 6px 2px;
+}
+
+.workspace-files-sort {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 6px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.workspace-files-sort:hover,
+.workspace-files-sort:focus-visible,
+.workspace-files-sort[aria-expanded="true"] {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-files-spacer {
+  flex: 1;
+}
+
+/* The quiet retry: R7b's refresh strokes at the same 24px hit area. */
+.workspace-files-refresh {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.workspace-files-refresh:hover,
+.workspace-files-refresh:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+/* The tree is a nested disclosure list. Depth pads the buttons inline
+   (the Changes tree's 14px precedent), so the rules below only reset the
+   list shape and wear the mockup's look over the moved bones. */
+.workspace-files-tree {
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  list-style: none;
+}
+
+ul.workspace-files-tree,
+ul.workspace-files-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The tree container sits under Workspace.css's mono group rule; this
+   scoped rule — not a position bet — holds it at sans in either sheet
+   order. The rows answer their own moved mono rules by position below. */
+.workspace-files .workspace-files-tree {
+  font-family: var(--font-ui);
+}
+
+/* File and folder rows keep the moved `.workspace-tree-dir/file` bones
+   and wear the tree's look over them: the mockup's 0 6px pad and 6px gap,
+   h24, sans. The inline depth pad beats the shorthand's left side. Bare
+   selectors on purpose: the computed-style proof only models those. */
+.workspace-files-row {
+  height: 24px;
+  padding: 0 6px;
+  gap: 6px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.workspace-files-row:hover {
+  background: var(--fill-hover);
+}
+
+.workspace-files-file-icon {
+  flex: none;
+  width: 12px;
+  color: var(--muted);
+}
+
+.workspace-files-row .workspace-tree-chevron {
+  width: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.workspace-files-row .workspace-tree-size {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The open file is a fill-tool row (SPEC-regions), not a tint — the mockup's
+   `.is-open-file`. The size beside it stays muted. */
+.workspace-files-selected,
+.workspace-files-selected:hover {
+  color: var(--ink);
+  background: var(--fill-tool);
+}
+
+/* The rename input and the row menu items are UI text, not code. */
+.workspace-tree-rename,
+.workspace-tree-menu-item {
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+/* The pencil after the row's trigger: the slice-8 hand-off, quiet until
+   hover — the Changes pencil's strokes at the same hit area. */
+.workspace-files-pencil {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.workspace-files-pencil:hover,
+.workspace-files-pencil:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+/* The preview card's header bar is UI text (path + stat), not code: the
+   scoped rule holds it at sans the way the Changes panel holds its diff
+   header. The file's own bytes below keep their mono. */
+.workspace-files .workspace-diff-header {
+  font-family: var(--font-ui);
+}

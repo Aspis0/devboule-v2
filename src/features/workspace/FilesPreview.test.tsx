@@ -180,10 +180,8 @@ describe("FilesPreview", () => {
     });
     expect(vi.mocked(workspaceFileRead).mock.calls).toHaveLength(1);
 
-    const refresh = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Refresh",
-    );
-    if (refresh === undefined) throw new Error("refresh button did not render");
+    const refresh = container.querySelector<HTMLButtonElement>(".workspace-files-refresh");
+    if (refresh === null) throw new Error("refresh button did not render");
     await act(async () => {
       refresh.click();
     });

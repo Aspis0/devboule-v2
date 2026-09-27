@@ -1,12 +1,12 @@
-import { memo, useId, useState, type ReactNode } from "react";
+import { memo, useId, useRef, useState, type ReactNode } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 import { FilesPreview, formatSize } from "./FilesPreview";
 import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
 import { useWorkspaceFilePreview } from "./useWorkspaceFilePreview";
-import { useWorkspaceFiles, type DirectoryCell } from "./useWorkspaceFiles";
-import "./panel/files.css";
+import { useWorkspaceFiles } from "./useWorkspaceFiles";
 import { ErrorText } from "../../components/ErrorText";
 import type { ErrorSentence } from "../../lib/errorSentence";
+import "./panel/files.css";
 
 interface FilesSurfaceProps {
   /**
@@ -14,6 +14,11 @@ interface FilesSurfaceProps {
    * settles — a panel with no workspace reads nothing and says so.
    */
   workspaceId: string | null;
+  /**
+   * Slice 8's hand-off: open a file as a main tab. Optional until that tab
+   * kind exists — the pencil that calls it renders only beside it.
+   */
+  onOpenFile?: (workspaceId: string, path: string) => void;
 }
 
 /** What a reply past the entry cap says about itself: declared, never silent. */
@@ -28,70 +33,192 @@ function skippedLabel(skipped: number): string {
   return `${skipped} ${skipped === 1 ? "entry is" : "entries are"} not listed (links and entries that cannot be read are skipped here).`;
 }
 
-type Row =
-  | { kind: "entry"; entry: WorkspaceFileEntry; depth: number }
-  | { kind: "loading"; path: string; depth: number }
-  | { kind: "error"; path: string; depth: number; message: ErrorSentence }
-  | { kind: "note"; id: "capped" | "skipped"; path: string; depth: number; text: string };
+/**
+ * The toolbar's criterion. `modified` stays honestly disabled until the
+ * wire carries file times — `WorkspaceFileEntry` has no mtime field, so
+ * the comparator below keeps the daemon's order for it (a stable sort over
+ * equal keys, never a shuffle); enabling the item is a daemon slice's job.
+ */
+type FilesSort = "name" | "modified";
 
 /**
- * The rows on screen: the root's entries, then each expanded folder's own
- * entries under it — one level per request, in the order the daemon sent
- * them. **The panel sorts nothing**: the folders-first, byte-order sequence
- * is the daemon's, so there is one authority for order and a client-side
- * `localeCompare` can never disagree with it. A folder expanded without an
- * answer yet shows its loading row; a folder whose read refused shows the
- * wire's sentence under its row and claims nothing else.
+ * The panel collation: `en`, base sensitivity, numeric. Case folds (Zeta
+ * sorts after alpha, and `A.txt` equals `a.txt`), numbers run naturally
+ * (`a2` before `a10`), accents fold to their base (éclair with e) — the
+ * human order the daemon's byte order is not, stated here so the ordering
+ * test pins a name rather than an accident.
  */
-function visibleRows(
-  cells: Readonly<Record<string, DirectoryCell>>,
-  expanded: ReadonlySet<string>,
-): Row[] {
-  const rows: Row[] = [];
-  const walk = (path: string, depth: number): void => {
-    const cell = cells[path];
-    if (cell === undefined || cell.reply === null) return;
-    if (cell.reply.capped) {
-      rows.push({ kind: "note", id: "capped", path, depth, text: PARTIAL_LIST });
-    }
-    if (cell.reply.skipped > 0) {
-      rows.push({
-        kind: "note",
-        id: "skipped",
-        path,
-        depth,
-        text: skippedLabel(cell.reply.skipped),
-      });
-    }
-    for (const entry of cell.reply.entries) {
-      rows.push({ kind: "entry", entry, depth });
-      if (entry.kind !== "dir" || !expanded.has(entry.path)) continue;
-      const child = cells[entry.path];
-      if (child === undefined || (child.reply === null && child.failure === null)) {
-        rows.push({ kind: "loading", path: entry.path, depth: depth + 1 });
-        continue;
-      }
-      if (child.failure !== null) {
-        rows.push({
-          kind: "error",
-          path: entry.path,
-          depth: depth + 1,
-          message: child.failure,
-        });
-      }
-      if (child.reply !== null) walk(entry.path, depth + 1);
-    }
-  };
-  walk("", 0);
-  return rows;
+const NAME_ORDER = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
+/**
+ * One comparison: folders before files, always and under every criterion —
+ * then the criterion itself. `modified` has no mtime to compare on this
+ * wire, so it compares nothing: the sort's stability keeps the daemon's
+ * relative order instead of inventing one.
+ */
+function compareEntries(a: WorkspaceFileEntry, b: WorkspaceFileEntry, sort: FilesSort): number {
+  if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+  if (sort === "modified") return 0;
+  return NAME_ORDER.compare(a.name, b.name);
 }
 
-const indent = (depth: number): { paddingLeft: string } => ({ paddingLeft: `${8 + depth * 14}px` });
+/** The reply's entries in the panel's order — a copy, never sorted in place. */
+function sortedEntries(
+  entries: readonly WorkspaceFileEntry[],
+  sort: FilesSort,
+): WorkspaceFileEntry[] {
+  return [...entries].sort((a, b) => compareEntries(a, b, sort));
+}
+
+/** The mockup's row geometry: 6px pad plus one 14px step per depth — the
+ * same step the Changes tree keeps, so the two trees agree. Inline, so the
+ * computed-style proof can read the number that sets the name's x. */
+const indent = (depth: number): { paddingLeft: string } => ({ paddingLeft: `${6 + depth * 14}px` });
+
+/** A group id from a folder path: every unsafe character becomes its
+ * hex code, so distinct paths can never share an id (`a b` → `a-20-b`
+ * beside `a-b`). Dots, dashes, underscores and colons pass through —
+ * legal in ids, escaped at lookup time. */
+function groupIdFor(path: string): string {
+  return `files-group-${path.replace(/[^a-zA-Z0-9-_.:]/g, (glyph) => `-${glyph.charCodeAt(0).toString(16)}-`)}`;
+}
 
 /** The inline rename in progress: which row it is, and what is typed so far. */
 interface Renaming {
   path: string;
   value: string;
+}
+
+const FileIcon = (
+  <svg
+    className="workspace-files-file-icon"
+    width="12"
+    height="12"
+    viewBox="0 0 24 24"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path
+      d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M14 2v4a2 2 0 0 0 2 2h4"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+/**
+ * The toolbar: the sort control on the left (the criterion with its
+ * chevron, opening the small menu that changes it), a spacer, and Refresh
+ * as a quiet icon button — R7b's refresh, same strokes. New file is not
+ * here: it needs a daemon write command that does not exist yet.
+ */
+function FilesToolbar({
+  sort,
+  onSort,
+  onRefresh,
+}: {
+  sort: FilesSort;
+  onSort: (sort: FilesSort) => void;
+  onRefresh: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const sortRef = useRef<HTMLButtonElement | null>(null);
+  const closeMenu = (): void => {
+    setMenuOpen(false);
+    sortRef.current?.focus();
+  };
+  return (
+    <div className="workspace-files-toolbar">
+      <button
+        type="button"
+        className="workspace-files-sort"
+        ref={sortRef}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        title="Sort files"
+        onClick={() => setMenuOpen((open) => !open)}
+      >
+        <span>{sort === "name" ? "Name" : "Modified"}</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="m6 9 6 6 6-6"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      {menuOpen ? (
+        <div
+          className="workspace-tree-menu"
+          role="menu"
+          aria-label="Sort files"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") closeMenu();
+          }}
+        >
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={sort === "name"}
+            className="workspace-tree-menu-item"
+            onClick={() => {
+              onSort("name");
+              setMenuOpen(false);
+            }}
+          >
+            Name
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={sort === "modified"}
+            className="workspace-tree-menu-item"
+            disabled
+            title="Modified needs file times the daemon does not send yet — Name is the only order this panel can keep."
+            onClick={() => {
+              onSort("modified");
+              setMenuOpen(false);
+            }}
+          >
+            Modified
+          </button>
+        </div>
+      ) : null}
+      <span className="workspace-files-spacer" aria-hidden="true" />
+      <button
+        type="button"
+        className="workspace-files-refresh"
+        aria-label="Refresh"
+        title="Refresh"
+        onClick={onRefresh}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M21 12a9 9 0 1 1-2.64-6.36"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+          <path
+            d="M21 3v6h-6"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
+  );
 }
 
 /**
@@ -102,20 +229,28 @@ interface Renaming {
  * sentence, the capped and skipped notes, the tree itself, a per-folder
  * loading/error row under an expanded folder, the clicked file's preview
  * below it (loading / text / staged image, video or PDF / binary / too
- * large / the refusal's sentence, one screen each), and — since the owner
- * reopened DECISIONS §5 on 2026-09-22 — each row's own menu (Rename,
- * Duplicate, and Delete behind the native confirmation the one act that
- * loses data owes), the inline rename it starts, and a write's refusal
- * under the toolbar as the alert it is. The confirmation lives in the
- * writer hook, not here — this menu can reach the delete only through it.
- * Rename and duplicate lose no data, so they ask for nothing: no create
- * or download control exists here, nothing coming from this module's
- * imports either — they reach two read commands, those three writes, and
- * the preview's stage and unstage, whose writes touch only the daemon's
- * own `previews` folder (a staged copy and its revoke), never this
- * checkout.
+ * large / the refusal's sentence, one screen each), and each row's own
+ * menu (Rename, Duplicate, and Delete behind the native confirmation the
+ * one act that loses data owes), the inline rename it starts, and a
+ * write's refusal under the toolbar as the alert it is. The confirmation
+ * lives in the writer hook, not here — this menu can reach the delete only
+ * through it. Rename and duplicate lose no data, so they ask for nothing:
+ * no create or download control exists here, nothing coming from this
+ * module's imports either — they reach two read commands, those three
+ * writes, and the preview's stage and unstage, whose writes touch only the
+ * daemon's own `previews` folder (a staged copy and its revoke), never
+ * this checkout.
+ *
+ * The toolbar sorts client-side (owner decision 2026-09-26, revoking the
+ * single-authority rule): folders first always, then the criterion — Name
+ * in the panel collation. The tree is a nested disclosure list, as the
+ * Changes panel chose: no `role="tree"`, folders owning their groups,
+ * arrows left to the focused control itself.
  */
-export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSurfaceProps) {
+export const FilesSurface = memo(function FilesSurface({
+  workspaceId,
+  onOpenFile,
+}: FilesSurfaceProps) {
   const { cells, expanded, toggle, refresh, refreshPath, rekey } = useWorkspaceFiles(workspaceId);
   const {
     preview,
@@ -133,6 +268,7 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
     select,
     deselect,
   });
+  const [sort, setSort] = useState<FilesSort>("name");
   const [menuPath, setMenuPath] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Renaming | null>(null);
   const [actionError, setActionError] = useState<ErrorSentence | null>(null);
@@ -186,118 +322,215 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
   const rootFailure = root?.failure ?? null;
   const rootReply = root?.reply ?? null;
   const loading = workspaceId !== null && rootReply === null && rootFailure === null;
-  const rows = visibleRows(cells, expanded);
 
-  /** One tree entry: its own button (or the input renaming it), the row's
-   * menu trigger, and the menu itself when this row's is open. */
-  const entryRow = ({ entry, depth }: { entry: WorkspaceFileEntry; depth: number }): ReactNode => {
+  /** One tree entry: its row (the rename input, a folder disclosure, or a
+   * file button with its icon), the row's menu trigger and menu, the
+   * slice-8 pencil on the selected file, and — for an expanded folder —
+   * the group it owns. */
+  const entryNode = ({ entry, depth }: { entry: WorkspaceFileEntry; depth: number }): ReactNode => {
     const beingRenamed = renaming !== null && renaming.path === entry.path;
+    const isDir = entry.kind === "dir";
+    const isExpanded = isDir && expanded.has(entry.path);
+    const groupId = isDir ? groupIdFor(entry.path) : undefined;
+    const selected = !isDir && selection === entry.path;
     return (
-      <div className="workspace-tree-row" key={entry.path} style={indent(depth)}>
-        {beingRenamed ? (
-          <input
-            className="workspace-tree-rename"
-            aria-label={`Rename ${entry.name}`}
-            value={renaming.value}
-            autoFocus
-            onChange={(event) => setRenaming({ path: entry.path, value: event.target.value })}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void commitRename(entry);
-              if (event.key === "Escape") setRenaming(null);
-            }}
-            // Clicking away abandons the edit — a rename is never committed
-            // by losing focus, only by Enter.
-            onBlur={() => {
-              if (!acting) setRenaming(null);
-            }}
-          />
-        ) : entry.kind === "dir" ? (
-          <button
-            type="button"
-            className="workspace-tree-dir"
-            aria-expanded={expanded.has(entry.path)}
-            title={entry.path}
-            onClick={() => toggle(entry.path)}
-          >
-            <span className="workspace-tree-chevron">{expanded.has(entry.path) ? "▾" : "▸"}</span>
-            <span className="workspace-tree-label">{entry.name}</span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="workspace-tree-file"
-            aria-pressed={selection === entry.path}
-            title={entry.path}
-            onClick={() => select(entry.path)}
-          >
-            <span className="workspace-tree-label">{entry.name}</span>
-            {entry.size !== null ? (
-              <span className="workspace-tree-size">{formatSize(entry.size)}</span>
-            ) : null}
-          </button>
-        )}
-        {beingRenamed ? null : (
-          <button
-            type="button"
-            className="workspace-tree-menu-trigger"
-            aria-label={`${entry.name} actions`}
-            aria-expanded={menuPath === entry.path}
-            disabled={acting}
-            onClick={() => setMenuPath(menuPath === entry.path ? null : entry.path)}
-          >
-            ⋯
-          </button>
-        )}
-        {menuPath === entry.path ? (
-          <div className="workspace-tree-menu" role="menu">
+      <li className="workspace-files-item" key={entry.path}>
+        <div className="workspace-tree-row">
+          {beingRenamed ? (
+            <input
+              className="workspace-tree-rename"
+              aria-label={`Rename ${entry.name}`}
+              value={renaming.value}
+              autoFocus
+              onChange={(event) => setRenaming({ path: entry.path, value: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void commitRename(entry);
+                if (event.key === "Escape") setRenaming(null);
+              }}
+              // Clicking away abandons the edit — a rename is never committed
+              // by losing focus, only by Enter.
+              onBlur={() => {
+                if (!acting) setRenaming(null);
+              }}
+            />
+          ) : isDir ? (
             <button
               type="button"
-              role="menuitem"
-              className="workspace-tree-menu-item"
-              disabled={acting}
-              onClick={() => startRename(entry)}
+              className="workspace-tree-dir workspace-files-row"
+              aria-expanded={isExpanded}
+              // Named only while it resolves: a collapsed disclosure owns no
+              // group node, and a dangling aria-controls is an ARIA violation.
+              aria-controls={isExpanded && groupId !== undefined ? groupId : undefined}
+              aria-label={`${isExpanded ? "Collapse" : "Expand"} ${entry.path}`}
+              title={entry.path}
+              style={indent(depth)}
+              onClick={() => toggle(entry.path)}
             >
-              Rename
+              <span className="workspace-tree-chevron" aria-hidden="true">
+                {isExpanded ? "▾" : "▸"}
+              </span>
+              <span className="workspace-tree-label">{entry.name}</span>
             </button>
+          ) : (
             <button
               type="button"
-              role="menuitem"
-              className="workspace-tree-menu-item"
-              disabled={acting}
-              onClick={() => void runDuplicate(entry)}
+              className={`workspace-tree-file workspace-files-row${
+                selected ? " workspace-files-selected" : ""
+              }`}
+              // Selecting shows the preview below; pressing again changes
+              // nothing, so this is current-item marking, never a toggle
+              // contract.
+              aria-current={selected ? "true" : undefined}
+              title={entry.path}
+              style={indent(depth)}
+              onClick={() => select(entry.path)}
             >
-              Duplicate
+              {FileIcon}
+              <span className="workspace-tree-label">{entry.name}</span>
+              {entry.size !== null ? (
+                <span className="workspace-tree-size">{formatSize(entry.size)}</span>
+              ) : null}
             </button>
+          )}
+          {beingRenamed ? null : (
             <button
               type="button"
-              role="menuitem"
-              className="workspace-tree-menu-item"
+              className="workspace-tree-menu-trigger"
+              aria-label={`${entry.name} actions`}
+              aria-expanded={menuPath === entry.path}
               disabled={acting}
-              onClick={() => void runDelete(entry)}
+              onClick={() => setMenuPath(menuPath === entry.path ? null : entry.path)}
             >
-              Delete
+              ⋯
             </button>
-          </div>
+          )}
+          {/* The file open below carries the pencil (SPEC-regions): slice
+              8's tab, reached through the one callback this panel owes it —
+              last in the row, where the mockup puts it. */}
+          {selected && onOpenFile !== undefined && workspaceId !== null ? (
+            <button
+              type="button"
+              className="workspace-files-pencil"
+              aria-label="Open file in a tab"
+              title="Open file in a tab"
+              onClick={() => onOpenFile(workspaceId, entry.path)}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          ) : null}
+          {menuPath === entry.path ? (
+            <div className="workspace-tree-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="workspace-tree-menu-item"
+                disabled={acting}
+                onClick={() => startRename(entry)}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="workspace-tree-menu-item"
+                disabled={acting}
+                onClick={() => void runDuplicate(entry)}
+              >
+                Duplicate
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="workspace-tree-menu-item"
+                disabled={acting}
+                onClick={() => void runDelete(entry)}
+              >
+                Delete
+              </button>
+            </div>
+          ) : null}
+        </div>
+        {isDir && isExpanded && groupId !== undefined ? (
+          <ul id={groupId} className="workspace-files-group">
+            {folderChildren(entry.path, depth + 1)}
+          </ul>
         ) : null}
-      </div>
+      </li>
+    );
+  };
+
+  /** One folder's group: its capped and skipped notes, then each entry's
+   * own row — or the loading and refusal rows while the folder's read is
+   * still owed. A folder expanded without an answer yet shows its loading
+   * row; a folder whose read refused shows the wire's sentence under its
+   * row and claims nothing else. */
+  const folderChildren = (path: string, depth: number): ReactNode => {
+    const cell = cells[path];
+    if (cell === undefined || (cell.reply === null && cell.failure === null)) {
+      return (
+        <li className="workspace-tree-row-note" role="status" style={indent(depth)}>
+          Loading…
+        </li>
+      );
+    }
+    // A read that did not answer may not hide the list beside it: the
+    // refusal stands above whatever the last answer still shows — the same
+    // rule the root gives its own stale reply.
+    const refusal =
+      cell.failure === null ? null : (
+        <li
+          className="workspace-tree-row-note workspace-tree-row-note-error"
+          role="alert"
+          style={indent(depth)}
+        >
+          <ErrorText
+            sentence={cell.failure.sentence}
+            detail={cell.failure.detail}
+            // The list's id prefixes a path: a path may hold spaces
+            // (aria-describedby parses its value as an id list), and the
+            // hex escaping in groupIdFor keeps distinct paths distinct.
+            id={`${listId}-files-error-${groupIdFor(path)}`}
+          />
+        </li>
+      );
+    const reply = cell.reply;
+    if (reply === null) return <>{refusal}</>;
+    return (
+      <>
+        {refusal}
+        {reply.capped ? (
+          <li className="workspace-tree-row-note" role="status" style={indent(depth)}>
+            {PARTIAL_LIST}
+          </li>
+        ) : null}
+        {reply.skipped > 0 ? (
+          <li className="workspace-tree-row-note" role="status" style={indent(depth)}>
+            {skippedLabel(reply.skipped)}
+          </li>
+        ) : null}
+        {sortedEntries(reply.entries, sort).map((entry) => entryNode({ entry, depth }))}
+      </>
     );
   };
 
   // The list's own id: every error row derives its id from it, so two
   // mounted lists never share one aria-describedby target (ErrorText's
-  // contract) even before a row's index is considered.
+  // contract) even before a path is considered.
   const listId = useId();
 
   return (
-    <div>
+    <div className="workspace-files">
       {workspaceId !== null ? (
         // No workspace, no refresh: with nothing to read, a control that
         // cannot do anything is a small lie (the Changes panel's fix, R5).
-        <div className="workspace-files-toolbar">
-          <button type="button" className="workspace-secondary-action" onClick={refreshAll}>
-            Refresh
-          </button>
-        </div>
+        <FilesToolbar sort={sort} onSort={setSort} onRefresh={refreshAll} />
       ) : null}
       {rootFailure !== null ? (
         <div className="workspace-files-error" role="alert">
@@ -332,47 +565,9 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
           <div className="workspace-files-state">This folder is empty.</div>
         )
       ) : (
-        <div id={listId} className="workspace-files-tree">
-          {rows.map((row, rowIndex) =>
-            row.kind === "entry" ? (
-              entryRow(row)
-            ) : row.kind === "loading" ? (
-              <div
-                key={`loading:${row.path}`}
-                className="workspace-tree-row-note"
-                role="status"
-                style={indent(row.depth)}
-              >
-                Loading…
-              </div>
-            ) : row.kind === "error" ? (
-              <div
-                key={`error:${row.path}`}
-                className="workspace-tree-row-note workspace-tree-row-note-error"
-                role="alert"
-                style={indent(row.depth)}
-              >
-                <ErrorText
-                  sentence={row.message.sentence}
-                  detail={row.message.detail}
-                  // The list's id prefixes an index: a path may hold spaces
-                  // (aria-describedby parses its value as an id list), and a
-                  // bare index is unique only inside ONE list.
-                  id={`${listId}-files-error-${rowIndex}`}
-                />
-              </div>
-            ) : (
-              <div
-                key={`note:${row.id}:${row.path}`}
-                className="workspace-tree-row-note"
-                role="status"
-                style={indent(row.depth)}
-              >
-                {row.text}
-              </div>
-            ),
-          )}
-        </div>
+        <ul id={listId} className="workspace-files-tree">
+          {folderChildren("", 0)}
+        </ul>
       )}
       {/* The clicked file's own answer, below the tree the way the Changes
           panel puts its diff below the rows: its states are the preview's,
