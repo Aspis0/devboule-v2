@@ -45,6 +45,11 @@ describe("settingsDaemon", () => {
       await act(async () => root!.unmount());
       root = undefined;
     }
+    // Drain while still on fake timers: fire any orphaned poll timeout so
+    // `inFlight` cannot leak through the dropped timers into the next test.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
     container.remove();
     vi.clearAllMocks();
     vi.useRealTimers();
@@ -77,5 +82,25 @@ describe("settingsDaemon", () => {
     if (!dot) throw new Error("host dot did not render");
     expect(dot.className).toContain("settings-host-dot-green");
     expect(vi.mocked(daemonStatus).mock.calls.length).toBe(2);
+  });
+
+  it("issues one call across a StrictMode-like double mount", async () => {
+    // Mount, unmount and remount while the first call is still in flight
+    // (StrictMode does this on every mount): the remount must share the
+    // outstanding call, and the orphaned answer must still apply to it.
+    const resolvers: Array<(value: DaemonStatus) => void> = [];
+    vi.mocked(daemonStatus).mockImplementation(
+      () => new Promise<DaemonStatus>((resolve) => void resolvers.push(resolve)),
+    );
+    root = createRoot(container);
+    await act(async () => root!.render(<HostDot />));
+    await act(async () => root!.unmount());
+    root = createRoot(container);
+    await act(async () => root!.render(<HostDot />));
+    expect(vi.mocked(daemonStatus).mock.calls.length).toBe(1);
+    resolvers[0]!(liveDaemon());
+    await act(async () => undefined);
+    const dot = container.querySelector(".settings-host-dot");
+    expect(dot?.className).toContain("settings-host-dot-green");
   });
 });

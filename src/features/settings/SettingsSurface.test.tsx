@@ -72,6 +72,7 @@ vi.mock("../oracle/OraclePanel", () => ({
 
 import {
   daemonStatus,
+  delegationGet,
   journalRetentionGet,
   journalUsage,
   projectsList,
@@ -541,5 +542,46 @@ describe("Settings menu shell", () => {
     const content = container.querySelector("[data-settings-content]");
     if (!content) throw new Error("Settings content did not render");
     expect(content.textContent).toContain("Oracle mock");
+  });
+
+  it("never calls the daemon old on a slow answer", async () => {
+    // A good answer first, so the panels mount with capabilities; then the
+    // daemon goes slow and every later poll hangs past the timeout. The hung
+    // calls are settable deferreds so teardown settles them deterministically
+    // instead of leaking module state into the next test.
+    const pending: Array<(value: DaemonStatus) => void> = [];
+    const capable = {
+      ...connectedDaemon(),
+      capabilities: [...connectedDaemon().capabilities, "permission_delegation"],
+    };
+    vi.mocked(daemonStatus).mockResolvedValue(capable);
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
+    vi.useFakeTimers();
+    try {
+      root = createRoot(container);
+      await act(async () => root.render(<SettingsSurface />));
+      await act(async () => undefined);
+      vi.mocked(daemonStatus).mockImplementation(
+        () => new Promise<DaemonStatus>((resolve) => void pending.push(resolve)),
+      );
+      await act(async () => {
+        // Past the interval tick and its timeout window: the hung call is
+        // downgraded while newer polls keep issuing.
+        await vi.advanceTimersByTimeAsync(4100);
+      });
+      await act(async () => openPage("Agent profiles").click());
+      await act(async () => undefined);
+      const content = container.querySelector("[data-settings-content]");
+      if (!content) throw new Error("Settings content did not render");
+      expect(content.querySelector("#settings-panel-agents")).not.toBeNull();
+      expect(content.textContent).not.toContain("older than this app");
+      const dot = container.querySelector(".settings-host-dot");
+      expect(dot?.className).toContain("settings-host-dot-terracotta");
+      expect(dot?.className).not.toContain("settings-host-dot-green");
+    } finally {
+      for (const resolve of pending.splice(0)) resolve(capable);
+      await act(async () => undefined);
+      vi.useRealTimers();
+    }
   });
 });

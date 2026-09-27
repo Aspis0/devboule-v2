@@ -3,6 +3,7 @@
    shell; each page's own rules live in its page file. */
 .settings-surface {
   display: flex;
+  flex-direction: row;
   min-height: 0;
   flex: 1;
   background: var(--ground-app);
@@ -16,6 +17,27 @@
   padding: 12px 10px 12px 14px;
   overflow-y: auto;
   border-right: 1px solid var(--line);
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.settings-menu::-webkit-scrollbar,
+.settings-main::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.settings-menu::-webkit-scrollbar-thumb,
+.settings-main::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: content-box;
+}
+
+.settings-menu::-webkit-scrollbar-track,
+.settings-main::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .settings-back-row {
@@ -123,24 +145,17 @@
   background: var(--terracotta);
 }
 
-/* Screen-reader-only utility owned here, so the live region never depends
-   on another surface's stylesheet. */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 .settings-main {
   flex: 1;
   min-width: 0;
   padding: 26px 36px;
   overflow-y: auto;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.settings-main-inner {
+  max-width: 720px;
 }
 
 .settings-page-title {

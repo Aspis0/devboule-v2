@@ -652,6 +652,19 @@ button:focus-visible {
   border: 0;
 }
 
+/* Screen-reader-only utility for every surface (loaded by main.tsx for the
+   whole app). One definition: surfaces must not carry their own copies. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Visually hidden, but read by screen readers in browse mode; nothing here
    is keyboard-focusable, and user-select keeps the raw text out of the
    clipboard when the visible line around it is copied. */

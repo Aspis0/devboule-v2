@@ -7,27 +7,29 @@ import { SETTINGS_MENU } from "./settingsMenu";
 // no root, no afterEach. Each guard parses the declaration it pins, so a
 // mutation run fails on the assertion below rather than on a hook.
 
-function ruleBody(css: string, selector: string): string | null {
-  const start = css.indexOf(selector);
-  if (start === -1) return null;
-  const open = css.indexOf("{", start);
-  const close = open === -1 ? -1 : css.indexOf("}", open);
-  if (open === -1 || close === -1) return null;
-  return css.slice(open + 1, close);
-}
-
-/** The value of the `outline` declaration in the selector's rule, if any. */
-function outlineValue(css: string, selector: string): string | null {
-  const body = ruleBody(css, selector);
-  if (body === null) return null;
-  for (const declaration of body.split(";")) {
-    const colon = declaration.indexOf(":");
-    if (colon === -1) continue;
-    if (declaration.slice(0, colon).trim() === "outline") {
-      return declaration.slice(colon + 1).trim();
+/** Every `outline`/`outline-style` value declared for the selector, in sheet
+    order: the cascade winner is last, and a killing override anywhere in the
+    list must fail the guard. */
+function outlineValues(css: string, selector: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  while (true) {
+    const start = css.indexOf(selector, from);
+    if (start === -1) break;
+    const open = css.indexOf("{", start);
+    const close = open === -1 ? -1 : css.indexOf("}", open);
+    if (open === -1 || close === -1) break;
+    for (const declaration of css.slice(open + 1, close).split(";")) {
+      const colon = declaration.indexOf(":");
+      if (colon === -1) continue;
+      const prop = declaration.slice(0, colon).trim();
+      if (prop === "outline" || prop === "outline-style") {
+        out.push(declaration.slice(colon + 1).trim());
+      }
     }
+    from = close + 1;
   }
-  return null;
+  return out;
 }
 
 function settingsCss(name: string): string {
@@ -36,16 +38,26 @@ function settingsCss(name: string): string {
 
 describe("Settings static contracts", () => {
   it("rings keyboard focus on the menu rows with a drawn outline", () => {
-    const outline = outlineValue(settingsCss("settings.css"), ".settings-menu-row:focus-visible");
-    expect(outline).not.toBeNull();
-    expect(outline).not.toMatch(/^(none|0|transparent)$/i);
-    expect(outline).toContain("solid");
+    const outlines = outlineValues(settingsCss("settings.css"), ".settings-menu-row:focus-visible");
+    expect(outlines.length).toBeGreaterThan(0);
+    for (const outline of outlines) {
+      expect(outline).not.toMatch(/^(none|0|transparent)$/i);
+      const tokens = outline.split(/\s+/).map((token) => token.toLowerCase());
+      expect(
+        tokens.some((token) =>
+          ["solid", "dotted", "dashed", "double", "groove", "ridge", "inset", "outset"].includes(
+            token,
+          ),
+        ),
+      ).toBe(true);
+    }
   });
 
-  it("keeps its screen-reader utility inside the settings styles", () => {
-    const srOnly = /\.sr-only\s*\{([^}]*)\}/.exec(settingsCss("settings.css"))?.[1] ?? "";
-    expect(srOnly).toContain("position: absolute");
-    expect(srOnly).toContain("overflow: hidden");
+  it("keeps its screen-reader utility in the global styles, not in settings", () => {
+    const global = settingsCss("../../styles/global.css");
+    const shell = settingsCss("settings.css");
+    expect(global).toContain(".sr-only");
+    expect(shell).not.toContain(".sr-only");
   });
 
   it("defines section labels once, at the spec values", () => {

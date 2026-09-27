@@ -3250,9 +3250,10 @@ describe("Settings agents panel — new profile form", () => {
     );
     await collectScenario("tick note pin");
 
-    // 24. The shell header above the panel: the page title and the intro that
-    // now carries the panel's order sentence. Rendered through the surface so
-    // the net covers the sentence where users actually read it.
+    // 24. The shell header above the panel: the intro that now carries the
+    // panel's order sentence (the title stays out — labels are not sentences).
+    // Rendered through the surface so the net covers the sentence where users
+    // actually read it.
     vi.mocked(daemonStatus).mockResolvedValue(
       daemonStatusWith([
         "ping",
@@ -3278,8 +3279,11 @@ describe("Settings agents panel — new profile form", () => {
     await act(async () => undefined);
     const content = container.querySelector("[data-settings-content]");
     if (!content) throw new Error("settings content did not render");
+    // The net holds sentences, not labels: the shell page title above the
+    // panel is pinned by the shell titles test, so only the intro (which
+    // carries the panel's order sentence) enters here.
     for (const element of Array.from(
-      content.querySelectorAll<HTMLElement>(".settings-page-title, .settings-page-intro"),
+      content.querySelectorAll<HTMLElement>(".settings-page-intro"),
     )) {
       const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
       if (text === "" || seen.has(text)) continue;
@@ -3293,7 +3297,7 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Fifty: the delegation section's one sentence on this panel (an
+    // Forty-nine: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
@@ -3309,14 +3313,14 @@ describe("Settings agents panel — new profile form", () => {
     // control's own sentence, the three cap refusals, the model/mode
     // refusals, the two profile-cap sentences, the two catalog sentences,
     // the idle-close field's own hint and the off toggle's note, the shell page
-    // title and intro (scenario 24, collected through the surface), the tick notes (including the
+    // title and intro (scenario 24 collects the intro through the surface), the tick notes (including the
     // open-editor clause on the row tick), and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry), and the standing box's keep-it-short
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(50);
+    expect(sentences).toHaveLength(49);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

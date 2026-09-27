@@ -36,14 +36,22 @@ let current: DaemonStatus = CONNECTING_DAEMON;
 const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let inFlight = false;
+// Tags each issued request so an orphaned older answer can neither emit
+// over a newer one nor clear the guard early. Deleted on purpose: no
+// `inFlight = false` on unmount — the timeout below owns that case, and
+// clearing it would let a remount issue a second concurrent call whose
+// older answer could then win (StrictMode double-mounts every mount).
+let generation = 0;
 
 // A hung `daemon_status` must not wedge the poll: bound every call by the
 // poll interval, so a call that never settles still releases `inFlight`
 // and the rejection path reports disconnected, never live.
+const TIMEOUT_MESSAGE = "daemon_status timed out";
+
 function withTimeout(promise: Promise<DaemonStatus>): Promise<DaemonStatus> {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   const limit = new Promise<DaemonStatus>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error("daemon_status timed out")), POLL_MS);
+    timeout = setTimeout(() => reject(new Error(TIMEOUT_MESSAGE)), POLL_MS);
   });
   return Promise.race([promise, limit]).finally(() => {
     if (timeout !== null) clearTimeout(timeout);
@@ -58,14 +66,27 @@ function emit(next: DaemonStatus) {
 function tick() {
   if (inFlight) return;
   inFlight = true;
+  const gen = ++generation;
   void withTimeout(daemonStatus()).then(
     (next) => {
+      if (gen !== generation) return;
       inFlight = false;
       if (listeners.size > 0) emit(next);
     },
-    () => {
+    // A timeout is "unresponsive", not "disconnected": keep the last known
+    // status and only downgrade the state, so capability gates hold and no
+    // timer ever prints the old-daemon sentence. A rejected call is a real
+    // failure and still reports disconnected.
+    (cause: unknown) => {
+      if (gen !== generation) return;
       inFlight = false;
-      if (listeners.size > 0) emit(DISCONNECTED_DAEMON);
+      if (listeners.size > 0) {
+        emit(
+          cause instanceof Error && cause.message === TIMEOUT_MESSAGE
+            ? { ...current, state: "unresponsive" }
+            : DISCONNECTED_DAEMON,
+        );
+      }
     },
   );
 }
@@ -84,9 +105,6 @@ function subscribe(listener: () => void): () => void {
         clearInterval(timer);
         timer = null;
       }
-      // An unmount with a request in flight must not latch the guard:
-      // the orphaned call settles into no listeners and is dropped.
-      inFlight = false;
       // A fresh mount cycle starts from connecting, exactly like the
       // per-caller hook: without this, a mount would first render the
       // previous cycle's capabilities and flap the panels' gates.
