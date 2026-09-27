@@ -530,6 +530,12 @@ function carrySession(listed: Session, previous: Session | undefined): Session {
     ...listed,
     createdBy,
     origin: listed.origin ?? previous?.origin,
+    // The list carries neither push-only field (the protocol Session struct
+    // has no activity and no attention), so an omitting list lets the row's
+    // known values stand — a reconnect refresh must not strip the turn the
+    // daemon described, nor clear a pending ask the card still shows.
+    activity: listed.activity ?? previous?.activity,
+    attention: listed.attention ?? previous?.attention,
     delegation:
       listed.delegation ??
       previous?.delegation ??

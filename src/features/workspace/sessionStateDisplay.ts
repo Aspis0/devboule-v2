@@ -53,13 +53,15 @@ function recoveredLine(state: { integrity?: unknown }): string {
   return integrityTail(state, "Recovered — restored after the restart");
 }
 
-// The pulse means a turn runs: an attached but idle session keeps its tone
-// with a static dot. Absent is not idle — a journal row or a skewed push has
-// no runtime to report a status for — so only an explicit non-working
-// activity stills it.
+// The pulse means a turn runs, full stop: only `working` pulses. Absent is
+// unknown, and unknown never pulses — a journal row or a skewed push has no
+// runtime to report, which is not a turn running. The protocol's own rule
+// for this field (never read absent as idle; wait for it, don't act on it)
+// and the sibling `attention` rule (absence renders as nothing) both point
+// the same way, and the cost is one-sided: a static dot on an unheard-from
+// row is invisible, a breathing one is a false "it is working".
 function gatePulse(pulse: boolean, activity: AgentActivityState | undefined): boolean {
   if (!pulse) return false;
-  if (activity === undefined) return true;
   return activity === "working";
 }
 
@@ -87,7 +89,7 @@ export function rosterStateDisplay(
             pulse: false,
             word: "Quiet",
             detail: quietShort(elapsedMs),
-            line: `Quiet ${quietShort(elapsedMs)} — no output for ${quietLong(elapsedMs)}, may still be working.`,
+            line: `Quiet — no output for ${quietLong(elapsedMs)}, may still be working.`,
           }
         : {
             dot: "idle",

@@ -363,7 +363,7 @@ describe("SessionStrip", () => {
   it("paints every state with its own dot tone", () => {
     renderStrip(
       [
-        session("live", "live one"),
+        session("live", "live one", { activity: "working" }),
         session("silent", "quiet one", {
           state: { type: "silent", generation: 1 },
           elapsedMs: 60_000,

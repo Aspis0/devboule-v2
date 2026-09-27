@@ -348,7 +348,7 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Running");
+    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Running");
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -359,7 +359,7 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Running");
+    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Running");
     const textarea = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Message the agent"]',
     );
@@ -477,7 +477,9 @@ describe("AgentChatSurface", () => {
     });
 
     expect(container.textContent).toContain("DEVBOULE");
-    expect(container.querySelector(".workspace-agent-status")?.textContent).toBe("Running");
+    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
+      "Running",
+    );
     expect(container.querySelector(".workspace-chat-typing")).toBeNull();
 
     const conversation = container.querySelector(".workspace-conversation");
@@ -1386,7 +1388,7 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Stopped");
+    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Stopped");
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Ready");
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Finished");
     expect(
@@ -1436,7 +1438,9 @@ describe("AgentChatSurface", () => {
 
     expect(container.textContent).toContain("what did we decide");
     expect(container.textContent).toContain("we decided to ship it");
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Recovered");
+    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe(
+      "Recovered",
+    );
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -1572,7 +1576,7 @@ describe("AgentChatSurface", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(false);
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Running");
+    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Running");
     expect(container.querySelector(".workspace-composer-hint")).toBeNull();
     expect(container.querySelector('[data-testid="model-chip"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="effort-chip"]')).not.toBeNull();
@@ -2168,12 +2172,16 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Quiet · 12 s");
+    const status = container.querySelector('[role="status"]');
+    // The first text node is the visible word; the sentence follows in a
+    // screen-reader-only span inside the same live region.
+    expect(status?.childNodes[0]?.textContent).toBe("Quiet · 12 s");
     expect(container.querySelector('[role="status"]')?.getAttribute("title")).toContain(
-      "Quiet 12 s — no output for 12 seconds, may still be working.",
+      "Quiet — no output for 12 seconds, may still be working.",
     );
-    expect(container.querySelector('[role="status"]')?.getAttribute("aria-label")).toContain(
-      "Quiet 12 s — no output for 12 seconds, may still be working.",
+    expect(container.querySelector('[role="status"]')?.getAttribute("aria-label")).toBeNull();
+    expect(container.querySelector("[role='status'] .sr-only")?.textContent).toContain(
+      "Quiet — no output for 12 seconds, may still be working.",
     );
   });
 

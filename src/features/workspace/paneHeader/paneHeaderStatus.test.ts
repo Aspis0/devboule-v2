@@ -48,7 +48,7 @@ describe("headerDisplay", () => {
       detail: "4 m",
       tone: "border",
       pulse: false,
-      tooltip: "Quiet 4 m — no output for 4 minutes, may still be working.",
+      tooltip: "Quiet — no output for 4 minutes, may still be working.",
     });
     expect(headerDisplay(SILENT, null, "idle", "working", undefined)).toEqual({
       word: "Quiet",
@@ -141,8 +141,8 @@ describe("the pulse means a turn runs, not that the process is up", () => {
     expect(headerDisplay(LIVE, 0, "running", "blocked", undefined).pulse).toBe(false);
   });
 
-  it("keeps today's pulse while the roster says nothing either way", () => {
-    expect(headerDisplay(LIVE, 0, "idle", undefined, undefined).pulse).toBe(true);
+  it("stills a row the roster says nothing about", () => {
+    expect(headerDisplay(LIVE, 0, "idle", undefined, undefined).pulse).toBe(false);
   });
 });
 

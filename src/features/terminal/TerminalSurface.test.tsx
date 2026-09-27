@@ -373,7 +373,9 @@ describe("TerminalSurface observer wiring", () => {
       vi.mocked(invoke).mock.calls.filter(([command]) => command === "session_attach"),
     ).toHaveLength(2);
     expect(container.querySelector(".workspace-terminal-banner")).toBeNull();
-    expect(container.querySelector(".workspace-terminal-status")?.textContent).toBe("Running");
+    expect(container.querySelector(".workspace-terminal-status")?.childNodes[0]?.textContent).toBe(
+      "Running",
+    );
     expect(
       container.querySelector<HTMLButtonElement>(".workspace-terminal-interrupt")?.disabled,
     ).toBe(false);
@@ -567,7 +569,9 @@ describe("a recovered terminal states its ended state once", () => {
     // Once in the whole pane: the header status carries no second copy.
     const pane = container.querySelector(".workspace-terminal-shell");
     expect((pane?.textContent?.split(sentence).length ?? 0) - 1).toBe(1);
-    expect(container.querySelector(".workspace-terminal-status")?.textContent).toBe("Recovered");
+    expect(container.querySelector(".workspace-terminal-status")?.childNodes[0]?.textContent).toBe(
+      "Recovered",
+    );
 
     // The shared state mapping: a recovered row reads Recovered on the ring
     // dot, never green, never like an ended row.

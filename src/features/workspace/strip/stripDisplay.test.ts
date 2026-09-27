@@ -16,7 +16,7 @@ function base(overrides: Partial<Session> = {}): Session {
 
 describe("chipDisplay", () => {
   it("marks a running session with the pulse and no chip words", () => {
-    const display = chipDisplay(base());
+    const display = chipDisplay(base({ activity: "working" }));
     expect(display.dot).toBe("live");
     expect(display.pulse).toBe(true);
     expect(display.words).toBeNull();
@@ -30,7 +30,8 @@ describe("chipDisplay", () => {
     expect(display.dot).toBe("idle");
     expect(display.pulse).toBe(false);
     expect(display.words).toBeNull();
-    expect(display.tooltip).toContain("Quiet 4 m");
+    expect(display.tooltip).toContain("no output for 4 minutes");
+    expect(display.tooltip).not.toContain("Quiet 4 m");
     expect(display.tooltip).toContain("may still be working");
   });
 
@@ -208,11 +209,11 @@ describe("chip pulse follows the turn, not the process", () => {
     expect(display.pulse).toBe(false);
   });
 
-  it("keeps today's pulse while the roster says nothing either way", () => {
-    // Absent is not idle: a journal row or a skewed push has no runtime to
-    // report, so it keeps the mapping's own pulse.
+  it("stills a row the roster says nothing about", () => {
+    // Absent is unknown, and unknown never pulses: a journal row or a
+    // skewed push has no runtime to report, which is not a turn running.
     const display = chipDisplay(base({ activity: undefined }));
     expect(display.dot).toBe("live");
-    expect(display.pulse).toBe(true);
+    expect(display.pulse).toBe(false);
   });
 });

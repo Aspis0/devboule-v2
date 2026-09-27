@@ -141,7 +141,9 @@ describe("terminal pane header title", () => {
       );
     });
     await act(async () => undefined);
-    expect(container.querySelector(".workspace-terminal-status")?.textContent).toBe("Failed");
+    expect(container.querySelector(".workspace-terminal-status")?.childNodes[0]?.textContent).toBe(
+      "Failed",
+    );
     expect(container.querySelector(".workspace-status-dot")?.className).toContain(
       "workspace-dot-terracotta",
     );
@@ -160,8 +162,9 @@ describe("terminal pane header title", () => {
     });
     await act(async () => undefined);
     const status = container.querySelector(".workspace-terminal-status");
-    expect(status?.textContent).toBe("Quiet");
+    expect(status?.childNodes[0]?.textContent).toBe("Quiet");
     expect(status?.getAttribute("title")).toContain("may still be working");
-    expect(status?.getAttribute("aria-label")).toContain("may still be working");
+    expect(status?.getAttribute("aria-label")).toBeNull();
+    expect(status?.querySelector(".sr-only")?.textContent).toContain("may still be working");
   });
 });

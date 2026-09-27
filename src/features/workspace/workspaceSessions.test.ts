@@ -29,6 +29,8 @@ import {
 } from "./workspaceSessions";
 import { fireAttentionToast, forgetAttentionFor, type ToastContent } from "./attentionNotice";
 import { workspaceView } from "./workspaceProjects";
+import { chipDisplay } from "./strip/stripDisplay";
+import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 
 const liveSession = (id: string, title = id): Session => ({
   id,
@@ -546,6 +548,78 @@ describe("workspace session controller", () => {
       id: "agent-1",
       attention: { reason: "permission", atMs: 42 },
     });
+    release();
+  });
+
+  it("a reconnect refresh carries activity and attention forward from the previous rows", async () => {
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const agent = (id: string): Session => ({ ...liveSession(id, id), kind: "acp" });
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [agent("idle-1"), agent("work-1"), agent("ask-1")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+
+    const release = controller.watch();
+    await controller.refresh();
+    // The daemon describes turns and asks over the push path only: the
+    // protocol Session struct carries neither field.
+    watched.listener?.([
+      {
+        id: "idle-1",
+        workspaceId: null,
+        kind: "acp",
+        title: "idle-1",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        activity: "idle",
+      },
+      {
+        id: "work-1",
+        workspaceId: null,
+        kind: "acp",
+        title: "work-1",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        activity: "working",
+      },
+      {
+        id: "ask-1",
+        workspaceId: null,
+        kind: "acp",
+        title: "ask-1",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        activity: "blocked",
+        attention: { reason: "permission", atMs: 7 },
+      },
+    ]);
+    // Reconnect: a fresh list without either push-only field.
+    await controller.refresh();
+
+    const kept = new Map(controller.getState().sessions.map((row) => [row.id, row]));
+    expect(kept.get("idle-1")?.activity).toBe("idle");
+    expect(kept.get("work-1")?.activity).toBe("working");
+    expect(kept.get("ask-1")).toMatchObject({
+      activity: "blocked",
+      attention: { reason: "permission", atMs: 7 },
+    });
+    // And both surfaces read the kept values: the idle row is still, the
+    // working row pulses, the asking row keeps its approval word.
+    expect(chipDisplay(kept.get("idle-1")!).pulse).toBe(false);
+    expect(chipDisplay(kept.get("work-1")!).pulse).toBe(true);
+    expect(chipDisplay(kept.get("ask-1")!).words).toBe("Needs your approval");
+    const ask = kept.get("ask-1")!;
+    expect(headerDisplay(ask.state, ask.elapsedMs, "idle", ask.activity, ask.attention).word).toBe(
+      "Needs your approval",
+    );
     release();
   });
 
