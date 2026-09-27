@@ -1663,7 +1663,12 @@ describe("Workspace sessions", () => {
       setSearchValue(search, "missing");
     });
     expect(search.value).toBe("missing");
-    expect(container.textContent).not.toContain("main");
+    // Scoped to the sidebar: the Changes branch row now names the same
+    // "main" (the mocked git branch), so a whole-container absence would
+    // fail on the panel instead of the filtered workspace list.
+    const sidebarText = (): string =>
+      container.querySelector('aside[aria-label="Workspaces"]')?.textContent ?? "";
+    expect(sidebarText()).not.toContain("main");
     await act(async () => historyToggle.click());
     await act(async () => {
       setSearchValue(search, "Saved");
@@ -1671,7 +1676,7 @@ describe("Workspace sessions", () => {
     await act(async () => historyToggle.click());
 
     expect(search.value).toBe("missing");
-    expect(container.textContent).not.toContain("main");
+    expect(sidebarText()).not.toContain("main");
   });
 
   it("does not render a permission card before typed_permissions is negotiated", async () => {
