@@ -2269,10 +2269,17 @@ fn resolve_direct_program(paths: &[PathBuf], command: &str) -> Option<(PathBuf, 
         launch_path_candidates(dir, command)
             .into_iter()
             .find_map(|path| {
-                executable_file_exists(&path)
-                    .then(|| absolute_path(&path).map(|program| (program, dir.clone())))
+                if !executable_file_exists(&path) {
+                    return None;
+                }
+                let program = absolute_path(&path)?;
+                // The search directory in the same normalised form as the
+                // program: TEMP can be an 8.3 short path while canonicalize
+                // returns the long form, and mixing the two in one
+                // ResolvedLaunch breaks later literal comparisons.
+                let source = program.parent().map(Path::to_path_buf)?;
+                Some((program, source))
             })
-            .flatten()
     })
 }
 
@@ -2517,7 +2524,7 @@ fn absolute_path(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn normalize_windows_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_windows_path(path: PathBuf) -> PathBuf {
     use std::ffi::{OsStr, OsString};
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
 

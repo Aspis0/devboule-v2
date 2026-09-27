@@ -2035,8 +2035,8 @@ mod registry_path {
                 "PATH".to_string(),
                 format!(
                     "{};{}",
-                    inherited.to_string_lossy(),
-                    installed.to_string_lossy()
+                    canonical(&inherited).to_string_lossy(),
+                    canonical(&installed).to_string_lossy()
                 )
             ))
         );
@@ -2180,8 +2180,8 @@ mod registry_path {
                 "PATH".to_string(),
                 format!(
                     "{};{}",
-                    node_dir.to_string_lossy(),
-                    shim_dir.to_string_lossy()
+                    canonical(&node_dir).to_string_lossy(),
+                    canonical(&shim_dir).to_string_lossy()
                 )
             )),
             "the child PATH carries the shim's directory, not only node's"
@@ -2246,8 +2246,8 @@ mod registry_path {
                 "PATH".to_string(),
                 format!(
                     "{};{}",
-                    node_dir.to_string_lossy(),
-                    npx_dir.to_string_lossy()
+                    canonical(&node_dir).to_string_lossy(),
+                    canonical(&npx_dir).to_string_lossy()
                 )
             )),
             "the launched ACP process carries the npx directory"

@@ -41,6 +41,18 @@ impl WindowsPathSource for RegistryPathSource {
     }
 }
 
+/// A PATH entry in the form discovery and spawn compare: the canonicalize
+/// long form without the `\\?\` prefix, or the literal entry when the
+/// folder is missing. `same_directory` compares literal text, so every side
+/// must normalise the same way — an 8.3 TEMP (`RUNNER~1`) would otherwise
+/// never match its canonicalised launch folder, and a registry-found
+/// provider would silently lose its spawn PATH.
+fn canonical_directory(directory: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&directory)
+        .map(crate::provider_catalog::normalize_windows_path)
+        .unwrap_or(directory)
+}
+
 /// One captured view of the three PATH values. A request captures once and
 /// answers discovery, spawn policy and diagnostics from the capture; the
 /// registry is never re-read per agent.
@@ -61,18 +73,24 @@ impl PathSnapshot {
     }
 
     /// The directories discovery searches: the inherited PATH first, then the
-    /// machine and user registry entries it does not already name.
+    /// machine and user registry entries it does not already name. Every
+    /// entry is in canonical form, the same form launches resolve to, so the
+    /// literal `same_directory` comparison recognises them.
     pub(crate) fn directories(&self) -> Vec<PathBuf> {
         let mut directories: Vec<PathBuf> = self
             .process
             .as_ref()
-            .map(|paths| std::env::split_paths(paths).collect())
+            .map(|paths| {
+                std::env::split_paths(paths)
+                    .map(canonical_directory)
+                    .collect()
+            })
             .unwrap_or_default();
         for read in [&self.machine, &self.user] {
             let Some(value) = read.value() else {
                 continue;
             };
-            for entry in std::env::split_paths(value) {
+            for entry in std::env::split_paths(value).map(canonical_directory) {
                 if entry.as_os_str().is_empty()
                     || directories
                         .iter()
@@ -94,14 +112,14 @@ impl PathSnapshot {
     /// registry entries discovery used — so a provider found through a
     /// registry folder still sees its own tools (node, git).
     pub(crate) fn spawn_path_for(&self, launch_directory: &Path) -> Option<(String, String)> {
-        let process = self
-            .process
-            .as_ref()
-            .map(|paths| paths.to_string_lossy().into_owned());
         let process_directories: Vec<PathBuf> = self
             .process
             .as_ref()
-            .map(|paths| std::env::split_paths(paths).collect())
+            .map(|paths| {
+                std::env::split_paths(paths)
+                    .map(canonical_directory)
+                    .collect()
+            })
             .unwrap_or_default();
         if process_directories
             .iter()
@@ -124,9 +142,21 @@ impl PathSnapshot {
         if extensions.is_empty() {
             return None;
         }
-        let value = match process {
-            Some(process) => format!("{};{}", process, extensions.join(";")),
-            None => extensions.join(";"),
+        // The inherited prefix is rebuilt from the same canonical
+        // directories discovery searched: the raw PATH text can spell a
+        // folder short while the launch resolved it long.
+        let value = if self.process.is_some() {
+            format!(
+                "{};{}",
+                process_directories
+                    .iter()
+                    .map(|directory| directory.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(";"),
+                extensions.join(";")
+            )
+        } else {
+            extensions.join(";")
         };
         Some(("PATH".to_string(), value))
     }

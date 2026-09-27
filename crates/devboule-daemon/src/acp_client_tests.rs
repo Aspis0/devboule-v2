@@ -1491,7 +1491,10 @@ fn the_default_acp_route_carries_the_spawn_path_of_the_picked_agent() {
             "PATH".to_string(),
             format!(
                 "devboule-no-such-inherited-path;{}",
-                installed.to_string_lossy()
+                crate::provider_catalog::normalize_windows_path(
+                    std::fs::canonicalize(&installed).expect("canonical install directory")
+                )
+                .to_string_lossy()
             )
         )],
         "the default ACP launch carries the registry folders on the child PATH"
