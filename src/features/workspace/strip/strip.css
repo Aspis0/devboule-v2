@@ -83,6 +83,16 @@
   background: var(--selection);
 }
 
+/* A hovered multi-selected chip keeps the hover look: the multi fill
+   already loses to :hover on specificity, and the 1 px accent outline
+   below is what keeps the multi identity visible. Placed before the
+   selected hover so a both-classes chip loses that tie: its chip and
+   its scrim then agree on the selection fill. */
+.workspace-session-tab-multiselected:hover,
+.workspace-session-tab-multiselected:focus-visible {
+  background: var(--fill-chip-hover);
+}
+
 .workspace-session-tab-selected:hover,
 .workspace-session-tab-selected:focus-visible {
   background: var(--selection);
@@ -100,15 +110,6 @@
   background: var(--fill-selected-soft);
   outline: 1px solid var(--accent);
   outline-offset: -1px;
-}
-
-/* A hovered multi-selected chip keeps the hover look: the multi fill
-   already loses to :hover on specificity, and the 1 px accent outline
-   above is what keeps the multi identity visible. Placed after the
-   selected hover so it wins that tie too. */
-.workspace-session-tab-multiselected:hover,
-.workspace-session-tab-multiselected:focus-visible {
-  background: var(--fill-chip-hover);
 }
 
 .workspace-session-tab .workspace-status-dot {
@@ -167,12 +168,12 @@
   white-space: nowrap;
 }
 
-/* The spec's hover treatment: when the × shows, the label gives it room
-   (pad-right 16) and fades its own tail, so at the 96 floor the text
-   dissolves under the scrim instead of vanishing behind an opaque block. */
+/* The spec's hover treatment: when the × shows, the label fades its own
+   tail. The mask alone does it — paint-only, so hover changes no flex
+   base size and the strip never reflows under the pointer. (A hover-only
+   padding here would grow every mid-width chip 16 px on hover and on Tab.) */
 .workspace-session-row:hover .workspace-tab-label,
 .workspace-session-row:focus-within .workspace-tab-label {
-  padding-right: 16px;
   -webkit-mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
   mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
 }

@@ -104,6 +104,26 @@ describe("the session strip", () => {
     }
   });
 
+  it("resolves selected+multiselected+hover to the selection fill on chip and scrim", () => {
+    // All three hover-capable chip rules share specificity (0,2,0), and
+    // both scrim rules share (0,3,1): ties break by source order. The
+    // multi hover must sit before the selected hover so a both-classes
+    // chip agrees with its scrim (selection), while a multi-only chip
+    // still takes the hover fill from the earlier plain hover rule.
+    const multiHoverAt = css.indexOf(".workspace-session-tab-multiselected:hover");
+    const selectedHoverAt = css.indexOf(".workspace-session-tab-selected:hover");
+    expect(multiHoverAt).toBeGreaterThan(-1);
+    expect(selectedHoverAt).toBeGreaterThan(-1);
+    expect(multiHoverAt).toBeLessThan(selectedHoverAt);
+    const hoverScrimAt = css.indexOf(
+      ".workspace-session-row:hover .workspace-session-chip::before",
+    );
+    const selectedScrimAt = css.indexOf(
+      ".workspace-session-row:has(.workspace-session-tab-selected)",
+    );
+    expect(selectedScrimAt).toBeGreaterThan(hoverScrimAt);
+  });
+
   it("keeps the hover look on multi-selected chips, chip and scrim alike", () => {
     // A hovered multi-selected chip keeps the hover fill: the multi rule
     // (0,1,0) already loses to :hover (0,2,0) on the chip, so the scrim
@@ -116,14 +136,14 @@ describe("the session strip", () => {
   });
 
   it("fades the label's tail under the close overlay on hover", () => {
-    // The spec's hover treatment: the label gets pad-right 16 and a right
-    // mask when the × shows, so at the 96 floor the label fades instead of
-    // vanishing under an opaque block. happy-dom has no layout; this pins
-    // the declarations, and the live window judges the pixels.
+    // The hover treatment is the right mask alone: adding padding here
+    // would change the chip's flex base size and reflow the strip.
+    // happy-dom has no layout; this pins the declarations, and the live
+    // window judges the pixels.
     const hovered = css.match(
       /\.workspace-session-row:hover \.workspace-tab-label,[\s\S]*?\{([\s\S]*?)\n\}/,
     )?.[1];
-    expect(hovered).toContain("padding-right: 16px;");
+    expect(hovered).not.toContain("padding");
     expect(hovered).toContain("mask-image:");
     expect(hovered).toContain("-webkit-mask-image:");
   });
