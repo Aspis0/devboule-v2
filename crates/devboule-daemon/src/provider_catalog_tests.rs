@@ -1882,7 +1882,7 @@ mod registry_path {
         discover_catalog_in_paths, discover_with_path_source, find_available_with_path_source,
     };
     use crate::windows_path_env::{
-        attach_spawn_path_env, long_path_name, short_path_name, PathSnapshot, WindowsPathSource,
+        attach_spawn_path_env, short_path_name, PathSnapshot, WindowsPathSource,
     };
     use crate::windows_registry_path::{RegistryPathError, RegistryPathRead};
     use std::ffi::OsString;
@@ -1890,15 +1890,6 @@ mod registry_path {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
-
-    /// The long form via the handle-free query: a different syscall than
-    /// the product's canonicalize, so the expectation is independent of it.
-    fn long(dir: &Path) -> String {
-        long_path_name(dir)
-            .expect("long form of a real directory")
-            .to_string_lossy()
-            .into_owned()
-    }
 
     /// The 8.3 short alias when the volume holds one, else the path
     /// itself: feeds the runner's spelling in on any machine.
@@ -2033,10 +2024,12 @@ mod registry_path {
         let installed = grok_install_directory("registry-path-spawn");
         let inherited = temporary_directory("registry-path-spawn-base");
         fs::create_dir_all(&inherited).expect("inherited directory");
+        let inherited_short = short(&inherited);
+        let installed_short = short(&installed);
         let source = StalePathSource {
-            process: OsString::from(short(&inherited).as_os_str()),
+            process: OsString::from(inherited_short.as_os_str()),
             machine: absent(),
-            user: Mutex::new(Some(short(&installed).to_string_lossy().into_owned())),
+            user: Mutex::new(Some(installed_short.to_string_lossy().into_owned())),
         };
 
         let discovery = discover_with_path_source(&source);
@@ -2046,7 +2039,13 @@ mod registry_path {
             .iter()
             .find(|agent| agent.id == "grok")
             .expect("grok discovered through the registry PATH");
-        let expected_path = format!("{};{}", long(&inherited), long(&installed));
+        // As-written in, as-written out: the short spellings fed above are
+        // what the child carries; the long form serves only the match.
+        let expected_path = format!(
+            "{};{}",
+            inherited_short.to_string_lossy(),
+            installed_short.to_string_lossy()
+        );
         assert_eq!(
             grok.spawn_path_env,
             Some(("PATH".to_string(), expected_path))
@@ -2176,10 +2175,12 @@ mod registry_path {
         fs::create_dir_all(&node_dir).expect("node directory");
         fs::write(node_dir.join("node.exe"), b"stub").expect("node stub");
 
+        let node_short = short(&node_dir);
+        let shim_short = short(&shim_dir);
         let source = StalePathSource {
-            process: OsString::from(short(&node_dir).as_os_str()),
+            process: OsString::from(node_short.as_os_str()),
             machine: absent(),
-            user: Mutex::new(Some(short(&shim_dir).to_string_lossy().into_owned())),
+            user: Mutex::new(Some(shim_short.to_string_lossy().into_owned())),
         };
 
         let discovery = discover_with_path_source(&source);
@@ -2194,7 +2195,13 @@ mod registry_path {
             canonical(&node_dir.join("node.exe")),
             "the shim unwraps to node"
         );
-        let expected_path = format!("{};{}", long(&node_dir), long(&shim_dir));
+        // As-written in, as-written out: the short spellings fed above are
+        // what the child carries; the long form serves only the match.
+        let expected_path = format!(
+            "{};{}",
+            node_short.to_string_lossy(),
+            shim_short.to_string_lossy()
+        );
         assert_eq!(
             codex.spawn_path_env,
             Some(("PATH".to_string(), expected_path)),
@@ -2243,10 +2250,12 @@ mod registry_path {
             }
         }
 
+        let node_short = short(&node_dir);
+        let npx_short = short(&npx_dir);
         let source = StalePathSource {
-            process: OsString::from(short(&node_dir).as_os_str()),
+            process: OsString::from(node_short.as_os_str()),
             machine: absent(),
-            user: Mutex::new(Some(short(&npx_dir).to_string_lossy().into_owned())),
+            user: Mutex::new(Some(npx_short.to_string_lossy().into_owned())),
         };
         let cache_dir = temporary_directory("registry-path-npx-cache");
         let snapshot = PathSnapshot::capture(&source);
@@ -2263,7 +2272,13 @@ mod registry_path {
             row.acp_command.is_some(),
             "npx resolves through the launcher shim"
         );
-        let expected_path = format!("{};{}", long(&node_dir), long(&npx_dir));
+        // As-written in, as-written out: the short spellings fed above are
+        // what the child carries; the long form serves only the match.
+        let expected_path = format!(
+            "{};{}",
+            node_short.to_string_lossy(),
+            npx_short.to_string_lossy()
+        );
         assert_eq!(
             row.spawn_path_env,
             Some(("PATH".to_string(), expected_path)),

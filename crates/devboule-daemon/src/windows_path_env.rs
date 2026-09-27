@@ -42,14 +42,19 @@ impl WindowsPathSource for RegistryPathSource {
     }
 }
 
-/// One PATH entry as the snapshot compares it. `resolved` is the
-/// canonical long form when a resolver could open the entry, else the
-/// plain spelling of the as-written entry; `canonicalised` is false
-/// exactly then, and those entries are counted in
+/// One PATH entry as the snapshot compares it. `raw` is the plain
+/// spelling of the as-written entry; `resolved` is the canonical long
+/// form when a resolver could open the entry, else the same plain
+/// spelling. Comparisons (dedup, launch matching) read `resolved`;
+/// everything the snapshot hands out (directories, the child PATH)
+/// reads `raw`, so a user's PATH is never rewritten to the disk's case.
+/// `canonicalised` is false exactly when no resolver opened the entry,
+/// and those entries are counted in
 /// `PathSnapshot::canonicalize_failures` instead of silently behaving
 /// like the pre-fix bug.
 #[derive(Clone, Debug)]
 struct DirEntry {
+    raw: PathBuf,
     resolved: PathBuf,
     canonicalised: bool,
 }
@@ -61,6 +66,7 @@ struct DirEntry {
 /// never one per agent.
 fn resolve_entry(raw: PathBuf) -> DirEntry {
     note_resolve_call();
+    let plain = PathBuf::from(plain_path(&raw.to_string_lossy()));
     let canonical = match stage1_canonicalize(&raw) {
         Ok(canonical) => Some(canonical),
         // A denied open suggests the volume answered, so the name may
@@ -78,11 +84,13 @@ fn resolve_entry(raw: PathBuf) -> DirEntry {
     };
     match canonical {
         Some(canonical) => DirEntry {
+            raw: plain.clone(),
             resolved: PathBuf::from(plain_path(&canonical.to_string_lossy())),
             canonicalised: true,
         },
         None => DirEntry {
-            resolved: PathBuf::from(plain_path(&raw.to_string_lossy())),
+            raw: plain.clone(),
+            resolved: plain,
             canonicalised: false,
         },
     }
@@ -275,13 +283,15 @@ impl PathSnapshot {
         }
     }
 
-    /// The directories discovery searches, in resolved form: the inherited
-    /// PATH first, then the machine and user registry entries it does not
-    /// already name.
+    /// The directories discovery searches, in as-written form: the
+    /// inherited PATH first, then the machine and user registry entries
+    /// it does not already name. Comparisons behind the dedup read the
+    /// resolved forms; what comes out keeps the entry as written (after
+    /// the verbatim strip), never the disk's case.
     pub(crate) fn directories(&self) -> Vec<PathBuf> {
         self.merged_entries
             .iter()
-            .map(|entry| entry.resolved.clone())
+            .map(|entry| entry.raw.clone())
             .collect()
     }
 
@@ -299,8 +309,10 @@ impl PathSnapshot {
     /// names that folder (the healthy case, no environment override), `None`
     /// when no PATH names it (a user-declared command whose environment is
     /// the user's own), and otherwise the inherited PATH plus exactly the
-    /// registry entries discovery used, in resolved form — so a provider
-    /// found through a registry folder still sees its own tools (node, git).
+    /// registry entries discovery used, in as-written form — so a provider
+    /// found through a registry folder still sees its own tools (node, git)
+    /// without its PATH rewritten to the disk's case. Matching reads the
+    /// resolved forms, so an 8.3 alias still names its long folder.
     pub(crate) fn spawn_path_for(&self, launch_directory: &Path) -> Option<(String, String)> {
         if self
             .process_entries
@@ -320,20 +332,20 @@ impl PathSnapshot {
             .merged_entries
             .iter()
             .skip(self.process_entries.len())
-            .map(|entry| entry.resolved.to_string_lossy().into_owned())
+            .map(|entry| entry.raw.to_string_lossy().into_owned())
             .collect();
         if extensions.is_empty() {
             return None;
         }
-        // The inherited prefix is rebuilt from the same resolved
-        // directories discovery searched: the raw PATH text can spell a
-        // folder short while the launch resolved it long.
+        // The inherited prefix is rebuilt from the same as-written
+        // directories discovery searched: the resolved forms serve only
+        // the comparisons above, never the emitted text.
         let value = if self.process.is_some() {
             format!(
                 "{};{}",
                 self.process_entries
                     .iter()
-                    .map(|entry| entry.resolved.to_string_lossy().into_owned())
+                    .map(|entry| entry.raw.to_string_lossy().into_owned())
                     .collect::<Vec<_>>()
                     .join(";"),
                 extensions.join(";")
@@ -477,102 +489,147 @@ mod tests {
         RegistryPathRead::Failed(RegistryPathError::Win32(2))
     }
 
+    /// A root nothing ever creates, so entries under it can never hit the
+    /// filesystem: no test depends on whether `C:\tools` or any other
+    /// real path exists on the machine running the suite (on the GitHub
+    /// runner `C:\tools` exists and canonicalize rewrites its case). A
+    /// fixed drive path, never a temp dir join: only `test_dirs.rs` may
+    /// ask for the system temp dir.
+    fn fake_root() -> PathBuf {
+        PathBuf::from(r"C:\devboule-ci-green-3-9f3a4b1c-no-such-dir")
+    }
+
+    fn fake_dir(name: &str) -> PathBuf {
+        fake_root().join(name)
+    }
+
     #[test]
     fn merged_paths_append_machine_then_user_entries_after_the_process_path() {
+        let tools = fake_dir("Tools");
+        let from_machine = fake_dir("FromMachine");
+        let from_user = fake_dir("FromUser");
         let snapshot = PathSnapshot::capture(&StubSource {
-            process: Some(OsString::from(r"C:\Tools")),
-            machine: read(r"D:\FromMachine"),
-            user: read(r"C:\FromUser"),
+            process: Some(OsString::from(tools.as_os_str())),
+            machine: read(&from_machine.to_string_lossy()),
+            user: read(&from_user.to_string_lossy()),
         });
 
         assert_eq!(
             snapshot.directories(),
-            vec![
-                PathBuf::from(r"C:\Tools"),
-                PathBuf::from(r"D:\FromMachine"),
-                PathBuf::from(r"C:\FromUser"),
-            ]
+            vec![tools, from_machine, from_user,]
         );
     }
 
     #[test]
     fn merged_paths_skip_registry_entries_the_process_path_already_has() {
+        let tools = fake_dir("Tools");
+        let other = fake_dir("Other");
+        let only_machine = fake_dir("OnlyMachine");
+        let only_user = fake_dir("OnlyUser");
+        let tools_lower_trailing = format!("{};", fake_dir("tools").to_string_lossy());
+        let other_upper = fake_dir("OTHER").to_string_lossy().into_owned();
+        let process = std::env::join_paths([&tools, &other])
+            .expect("join process PATH")
+            .into_string()
+            .expect("process PATH");
         let snapshot = PathSnapshot::capture(&StubSource {
-            process: Some(OsString::from(r"C:\Tools;C:\Other")),
-            machine: read(r"c:\tools\;D:\OnlyMachine"),
-            user: read(r"C:\OTHER;C:\OnlyUser"),
+            process: Some(OsString::from(process)),
+            machine: read(&format!(
+                "{tools_lower_trailing}{}",
+                only_machine.to_string_lossy()
+            )),
+            user: read(&format!("{other_upper};{}", only_user.to_string_lossy())),
         });
 
         assert_eq!(
             snapshot.directories(),
-            vec![
-                PathBuf::from(r"C:\Tools"),
-                PathBuf::from(r"C:\Other"),
-                PathBuf::from(r"D:\OnlyMachine"),
-                PathBuf::from(r"C:\OnlyUser"),
-            ]
+            vec![tools, other, only_machine, only_user,]
         );
     }
 
     #[test]
     fn merged_paths_survive_a_missing_process_path_and_unreadable_registry_values() {
+        let from_machine = fake_dir("FromMachine");
         let snapshot = PathSnapshot::capture(&StubSource {
             process: None,
             machine: failed(),
-            user: read(r"D:\FromMachine"),
+            user: read(&from_machine.to_string_lossy()),
         });
 
-        assert_eq!(
-            snapshot.directories(),
-            vec![PathBuf::from(r"D:\FromMachine")]
-        );
+        assert_eq!(snapshot.directories(), vec![from_machine]);
     }
 
     #[test]
     fn spawn_path_for_a_registry_folder_carries_the_registry_entries() {
+        let tools = fake_dir("Tools");
+        let other = fake_dir("Other");
+        let from_machine = fake_dir("FromMachine");
+        let other_lower = fake_dir("other").to_string_lossy().into_owned();
+        let process = std::env::join_paths([&tools, &other])
+            .expect("join process PATH")
+            .into_string()
+            .expect("process PATH");
         let snapshot = PathSnapshot::capture(&StubSource {
-            process: Some(OsString::from(r"C:\Tools;C:\Other")),
-            machine: read(r"D:\FromMachine"),
-            user: read(r"c:\other"),
+            process: Some(OsString::from(process)),
+            machine: read(&from_machine.to_string_lossy()),
+            user: read(&other_lower),
         });
 
         assert_eq!(
-            snapshot.spawn_path_for(Path::new(r"D:\FromMachine")),
+            snapshot.spawn_path_for(&from_machine),
             Some((
                 "PATH".to_string(),
-                r"C:\Tools;C:\Other;D:\FromMachine".to_string()
+                format!(
+                    "{};{};{}",
+                    tools.to_string_lossy(),
+                    other.to_string_lossy(),
+                    from_machine.to_string_lossy()
+                )
             ))
         );
     }
 
     #[test]
     fn spawn_path_for_is_none_when_the_inherited_path_covers_the_folder() {
+        let tools = fake_dir("Tools");
+        let tools_lower = fake_dir("tools").to_string_lossy().into_owned();
         let snapshot = PathSnapshot::capture(&StubSource {
-            process: Some(OsString::from(r"C:\Tools")),
-            machine: read(r"c:\tools"),
+            process: Some(OsString::from(tools.as_os_str())),
+            machine: read(&tools_lower),
             user: failed(),
         });
 
-        assert_eq!(snapshot.spawn_path_for(Path::new(r"C:\Tools")), None);
+        assert_eq!(snapshot.spawn_path_for(&tools), None);
     }
 
     #[test]
     fn spawn_path_for_is_none_when_no_path_names_the_folder() {
+        let tools = fake_dir("Tools");
+        let from_machine = fake_dir("FromMachine");
+        let elsewhere = fake_dir("Elsewhere");
         let snapshot = PathSnapshot::capture(&StubSource {
-            process: Some(OsString::from(r"C:\Tools")),
-            machine: read(r"D:\FromMachine"),
+            process: Some(OsString::from(tools.as_os_str())),
+            machine: read(&from_machine.to_string_lossy()),
             user: failed(),
         });
 
-        assert_eq!(snapshot.spawn_path_for(Path::new(r"E:\Elsewhere")), None);
+        assert_eq!(snapshot.spawn_path_for(&elsewhere), None);
     }
 
     #[test]
     fn outcome_lines_name_every_source_that_was_read() {
+        let tools = fake_dir("Tools");
+        let from_machine = fake_dir("FromMachine");
+        let from_user = fake_dir("FromUser");
+        let machine_value = format!(
+            "{};{}",
+            tools.to_string_lossy(),
+            from_machine.to_string_lossy()
+        );
         let lines = path_registry_outcome_lines(&StubSource {
-            process: Some(OsString::from(r"C:\Tools")),
-            machine: read(r"C:\Tools;D:\FromMachine"),
-            user: read(r"C:\FromUser"),
+            process: Some(OsString::from(tools.as_os_str())),
+            machine: read(&machine_value),
+            user: read(&from_user.to_string_lossy()),
         });
 
         assert_eq!(
@@ -589,9 +646,10 @@ mod tests {
 
     #[test]
     fn a_failed_registry_read_is_visible_in_the_outcome_lines() {
+        let tools = fake_dir("Tools");
         let lines = path_registry_outcome_lines(&StubSource {
-            process: Some(OsString::from(r"C:\Tools")),
-            machine: read(r"C:\Tools"),
+            process: Some(OsString::from(tools.as_os_str())),
+            machine: read(&tools.to_string_lossy()),
             user: failed(),
         });
 
@@ -603,6 +661,50 @@ mod tests {
                 "1 PATH entry could not be canonicalised and is compared as written".to_string(),
             ]
         );
+    }
+
+    /// The runner's `C:\tools` folder: entries keep their as-written
+    /// spelling even when the disk spells the same folder differently.
+    /// A real temp dir is addressed through a spelling that differs only
+    /// in case; the snapshot must hand out the as-written form while
+    /// still matching the disk spelling for spawn decisions.
+    #[test]
+    fn entries_keep_their_as_written_spelling_when_the_disk_differs_only_in_case() {
+        let folder = real_temp_dir("pass3-case-tools");
+        let disk_name = folder
+            .file_name()
+            .expect("temp dir name")
+            .to_string_lossy()
+            .into_owned();
+        let masked_name = disk_name.to_uppercase();
+        assert_ne!(
+            masked_name, disk_name,
+            "the fixture name must change under case folding"
+        );
+        let as_written = folder.with_file_name(&masked_name);
+        assert!(as_written.is_dir(), "case alone still names the folder");
+        // The launch side is canonical in production (the catalog resolves
+        // it), so the spawn decision is asked with the long form: under a
+        // short TEMP the folder itself carries a short parent, and only
+        // the canonical spelling literally matches the resolved entry.
+        let launch = long_form(&folder);
+
+        let snapshot = PathSnapshot::capture(&StubSource {
+            process: None,
+            machine: failed(),
+            user: read(&as_written.to_string_lossy()),
+        });
+        assert_eq!(snapshot.directories(), vec![as_written.clone()]);
+        assert_eq!(
+            snapshot.spawn_path_for(&launch),
+            Some((
+                "PATH".to_string(),
+                as_written.to_string_lossy().into_owned()
+            )),
+            "the disk spelling matches, the child carries the as-written one"
+        );
+
+        std::fs::remove_dir_all(folder).expect("temporary directory cleanup");
     }
 
     /// A drop-guard for the stage-1 mock: a panicking assertion must not
@@ -690,11 +792,12 @@ mod tests {
         assert_eq!(
             snapshot.directories(),
             vec![
-                long_form(&inherited),
-                long_form(&extra),
-                long_form(&machine_only),
-                long_form(&user_only),
-            ]
+                inherited.clone(),
+                extra.clone(),
+                machine_only.clone(),
+                user_only.clone()
+            ],
+            "directories keep each entry as written"
         );
         for _ in 0..5 {
             let _ = snapshot.directories();
@@ -716,8 +819,9 @@ mod tests {
     }
 
     /// Two spellings of one folder — the 8.3 short alias on the machine
-    /// PATH, the long form on the user PATH — collapse to one entry, and
-    /// the child's PATH carries it once, long.
+    /// PATH, the long form on the user PATH — collapse to one entry kept
+    /// as written (the machine spelling wins), and either spelling still
+    /// matches for spawn because the comparison reads the resolved forms.
     #[test]
     fn two_spellings_of_one_folder_collapse_to_one_entry() {
         let other = real_temp_dir("pass1-collapse-other");
@@ -731,24 +835,19 @@ mod tests {
         };
 
         let snapshot = PathSnapshot::capture(&source);
-        assert_eq!(
-            snapshot.directories(),
-            vec![long_form(&other), long.clone()]
-        );
+        assert_eq!(snapshot.directories(), vec![other.clone(), short.clone()]);
+        let expected_value = format!("{};{}", other.to_string_lossy(), short.to_string_lossy());
         let pair = snapshot.spawn_path_for(&long);
         assert_eq!(
             pair,
-            Some((
-                "PATH".to_string(),
-                format!(
-                    "{};{}",
-                    long_form(&other).to_string_lossy(),
-                    long.to_string_lossy()
-                )
-            ))
+            Some(("PATH".to_string(), expected_value)),
+            "the long spelling matches the short entry; the child carries as-written"
         );
+        // The launch side is canonical: only the long spelling is asked.
+        // A short launch spelling is not a production case (the catalog
+        // resolves the launch directory) and matches nothing literally.
         assert!(
-            !pair.expect("spawn pair").1.contains(r"\\?\"),
+            !pair.as_ref().expect("spawn pair").1.contains(r"\\?\"),
             "the child PATH carries no verbatim prefix"
         );
 
@@ -775,7 +874,7 @@ mod tests {
         assert_eq!(snapshot.canonicalize_failures(), 1);
         assert_eq!(
             snapshot.directories(),
-            vec![long_form(&visible), blocked.clone()]
+            vec![visible.clone(), blocked.clone()]
         );
         assert_eq!(
             snapshot.spawn_path_for(&blocked),
@@ -783,7 +882,7 @@ mod tests {
                 "PATH".to_string(),
                 format!(
                     "{};{}",
-                    long_form(&visible).to_string_lossy(),
+                    visible.to_string_lossy(),
                     blocked.to_string_lossy()
                 )
             )),
@@ -806,14 +905,16 @@ mod tests {
         }
     }
 
-    /// A denied open still yields the long form via the handle-free query:
-    /// nothing is recorded, nothing falls back. The short spelling is fed
-    /// in — the mock-all fails stage 1 for it — and stage 2 still returns
-    /// the long form.
+    /// A denied open still yields the long form for comparisons via the
+    /// handle-free query: nothing is recorded, nothing falls back. The
+    /// short spelling is fed in — the mock-all fails stage 1 for it — and
+    /// the snapshot hands out the as-written short form while the long
+    /// spelling still matches.
     #[test]
     fn permission_denied_falls_back_to_the_long_name_query() {
         let folder = real_temp_dir("pass1-denied-long-name");
         let short = short_form(&folder);
+        let long = long_form(&folder);
         let _guard = Stage1MockGuard::arm_all(std::io::ErrorKind::PermissionDenied);
 
         reset_resolve_calls();
@@ -828,13 +929,20 @@ mod tests {
             "stage 1 attempt plus the handle-free query"
         );
         assert_eq!(snapshot.canonicalize_failures(), 0);
-        assert_eq!(snapshot.directories(), vec![long_form(&folder)]);
+        assert_eq!(snapshot.directories(), vec![short.clone()]);
+        assert_eq!(
+            snapshot.spawn_path_for(&long),
+            Some(("PATH".to_string(), short.to_string_lossy().into_owned())),
+            "the long spelling matches the short entry via the resolved form"
+        );
 
         std::fs::remove_dir_all(folder).expect("temporary directory cleanup");
     }
 
-    /// Real directories resolve to the plain long form: an 8.3 alias in,
-    /// no verbatim prefix out.
+    /// Real directories resolve to the plain long form for comparisons
+    /// while the entry keeps its as-written spelling for everything the
+    /// snapshot hands out: an 8.3 alias in, the alias out, the long form
+    /// in the resolved comparison — and no verbatim prefix anywhere.
     #[test]
     fn real_directories_resolve_to_plain_long_forms() {
         let folder = real_temp_dir("pass1-verbatim-long-name");
@@ -843,10 +951,19 @@ mod tests {
         for spelling in [&folder, &short] {
             let entry = resolve_entry(spelling.clone());
             assert!(entry.canonicalised, "{spelling:?} resolves");
-            assert_eq!(entry.resolved, long, "{spelling:?} resolves long");
+            assert_eq!(
+                entry.raw,
+                PathBuf::from(plain_path(&spelling.to_string_lossy())),
+                "{spelling:?} is handed out as written"
+            );
+            assert_eq!(entry.resolved, long, "{spelling:?} compares long");
+            assert!(
+                !entry.raw.to_string_lossy().contains(r"\\?\"),
+                "{spelling:?} carries no verbatim prefix as written"
+            );
             assert!(
                 !entry.resolved.to_string_lossy().contains(r"\\?\"),
-                "{spelling:?} carries no verbatim prefix"
+                "{spelling:?} carries no verbatim prefix resolved"
             );
         }
 

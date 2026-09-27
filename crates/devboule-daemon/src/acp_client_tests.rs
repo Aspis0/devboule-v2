@@ -1487,11 +1487,11 @@ fn the_default_acp_route_carries_the_spawn_path_of_the_picked_agent() {
     let command = super::catalog_acp_command(agent, PathBuf::from(r"C:\workdir"));
 
     assert_eq!(command.provider_id.as_deref(), Some("grok"));
+    // As-written in, as-written out: the short spelling fed above is what
+    // the child carries; the long form serves only the match.
     let expected_path = format!(
         "devboule-no-such-inherited-path;{}",
-        crate::windows_path_env::long_path_name(&installed)
-            .expect("long form of a real directory")
-            .to_string_lossy()
+        short.to_string_lossy()
     );
     assert_eq!(
         command.env,
