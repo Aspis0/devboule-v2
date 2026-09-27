@@ -195,7 +195,7 @@ describe("ProfileDialog", () => {
     // Dirty or not, nothing closes mid-save: Escape, scrim, ×, Cancel.
     pressKey("Escape");
     expect(onClose).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain("Discard unsaved changes?");
+    expect(container.textContent).toContain("let it finish");
     const scrim = container.querySelector<HTMLElement>(".edit-scrim");
     act(() => {
       scrim?.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
@@ -207,5 +207,26 @@ describe("ProfileDialog", () => {
     act(() => buttonByText("Make dirty").click());
     pressKey("Escape");
     expect(container.textContent).not.toContain("Discard unsaved changes?");
+  });
+
+  it("lets a busy Escape abandon the view while the write finishes", () => {
+    const onClose = vi.fn();
+    renderDialog({ onClose, withDirtyButton: true, busy: true });
+    act(() => buttonByText("Make dirty").click());
+    pressKey("Escape");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("A save is still running.");
+    act(() => buttonByText("Close dialog").click());
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps waiting when told to", () => {
+    const onClose = vi.fn();
+    renderDialog({ onClose, withDirtyButton: true, busy: true });
+    pressKey("Escape");
+    expect(container.textContent).toContain("A save is still running.");
+    act(() => buttonByText("Keep waiting").click());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("A save is still running.");
   });
 });

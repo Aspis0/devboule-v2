@@ -336,7 +336,7 @@ export function AgentProfilesPanel() {
   // re-render lands, is a silent no-op that drops focus to the body.
   // State, not a ref, so owing focus re-renders into the effect below.
   const [pendingFocus, setPendingFocus] = useState<
-    { opener: HTMLElement } | { rowIndex: number } | { trashName: string } | null
+    { opener: HTMLElement } | { rowIndex: number } | { trashProfileId: string } | null
   >(null);
 
   useEffect(() => {
@@ -358,9 +358,13 @@ export function AgentProfilesPanel() {
       if (pencil) pencil.focus();
       else listRef.current?.focus();
     } else {
-      listRef.current
-        ?.querySelector<HTMLButtonElement>(`button[aria-label="Delete ${pendingFocus.trashName}"]`)
-        ?.focus();
+      // Keyed on the row's data attribute and compared in JS: the name is
+      // free text (quotes and backslashes are legal in it) and must never
+      // reach a selector string.
+      const row = Array.from(listRef.current?.querySelectorAll(".agent-profile-row") ?? []).find(
+        (candidate) => candidate.getAttribute("data-profile-id") === pendingFocus.trashProfileId,
+      );
+      row?.querySelector<HTMLButtonElement>('button[aria-label^="Delete "]')?.focus();
     }
   }, [pendingFocus]);
   const [deleteArmedId, setDeleteArmedId] = useState<string | null>(null);
@@ -580,6 +584,9 @@ export function AgentProfilesPanel() {
 
   function openCreateDialog(opener: HTMLElement) {
     returnFocusRef.current = opener;
+    // A new dialog starts without the previous one's sentence: a refusal
+    // from profile X must not greet profile Z.
+    setError(null);
     setDeleteArmedId(null);
     setDialog({ mode: "create" });
   }
@@ -592,6 +599,7 @@ export function AgentProfilesPanel() {
     // Closing one is the human abandoning it.
     if (row !== undefined) setEditorDraft({ id, ...seedFromProfile(row) });
     returnFocusRef.current = opener;
+    setError(null);
     setDeleteArmedId(null);
     setDialog({ mode: "edit", id });
   }
@@ -633,7 +641,7 @@ export function AgentProfilesPanel() {
     const current = documentRef.current;
     if (current === null) return;
     const index = current.profiles.findIndex((profile) => profile.id === id);
-    const removedName = current.profiles[index]?.name ?? "";
+    const removedId = current.profiles[index]?.id ?? "";
     const updated = cloneDocument(current);
     updated.profiles = updated.profiles.filter((profile) => profile.id !== id);
     setDeleteArmedId(null);
@@ -644,7 +652,7 @@ export function AgentProfilesPanel() {
       // when nothing is left. On refusal the row is back: land on the
       // trash that armed the delete. Owed through the state above, once
       // the re-render has committed the target.
-      setPendingFocus(confirmed ? { rowIndex: index } : { trashName: removedName });
+      setPendingFocus(confirmed ? { rowIndex: index } : { trashProfileId: removedId });
     });
   }
 
@@ -827,120 +835,129 @@ export function AgentProfilesPanel() {
           rebuilds the two-level setting that was refused in so many words. */}
       {/* Inert while the dialog is open: `aria-modal` promises the pane
           behind is hidden from assistive tech, and the trap only holds the
-          keyboard. The dialog renders below, outside both inert subtrees. */}
+          keyboard. The dialog renders below, outside the inert subtree. */}
       <div inert={dialog !== null}>
         <DelegationSetting />
-      </div>
-      <div className="settings-stack settings-stack-spaced agent-profiles" inert={dialog !== null}>
-        {/* The error renders here only with no dialog open: an open dialog
+        <div className="settings-stack settings-stack-spaced agent-profiles">
+          {/* The error renders here only with no dialog open: an open dialog
             carries it inside its own card, above the buttons, instead of
             leaving the sentence behind the scrim. */}
-        {error === null || dialog !== null ? null : (
-          <p role="alert" className="device-error">
-            <ErrorText sentence={error.sentence} detail={error.detail} id="settings-agents-error" />
-          </p>
-        )}
-        {loading && !loadFailed ? <div role="status">Loading agent profiles…</div> : null}
-        {loadFailed ? (
-          <button type="button" className="settings-device-action" onClick={retryLoad}>
-            Retry
-          </button>
-        ) : null}
-        {/* The behaviour card: standing instructions only. Rendered from the
+          {error === null || dialog !== null ? null : (
+            <p role="alert" className="device-error">
+              <ErrorText
+                sentence={error.sentence}
+                detail={error.detail}
+                id="settings-agents-error"
+              />
+            </p>
+          )}
+          {loading && !loadFailed ? <div role="status">Loading agent profiles…</div> : null}
+          {loadFailed ? (
+            <button type="button" className="settings-device-action" onClick={retryLoad}>
+              Retry
+            </button>
+          ) : null}
+          {/* The behaviour card: standing instructions only. Rendered from the
             first paint, locked while the fetch runs: they are half of the
             same document, so the box must exist — disabled — before the
             store answers. */}
-        <div className="agent-standing">
-          <span className="settings-subheading">Standing instructions</span>
-          <p className="device-copy">
-            Rules you write once: every agent this daemon starts — one you open, one an agent
-            created, a Design child — receives them with its first task.
-          </p>
-          <textarea
-            aria-label="Standing instructions for every agent"
-            aria-describedby={STANDING_HINT_ID}
-            value={standingValue}
-            disabled={loading}
-            onChange={(event) => setStandingDraft(event.target.value)}
-            rows={6}
-          />
-          <span className="device-field-hint" id={STANDING_HINT_ID}>
-            Keep it short: every agent also receives its own task.
-          </span>
-          <div className="agent-standing-actions">
-            <span className="agent-byte-counter">
-              {standingBytes} / {MAX_STANDING_INSTRUCTIONS_BYTES} bytes — over the cap the save is
-              refused, nothing is truncated
-            </span>
-            <button
-              type="button"
-              className="settings-device-action"
-              disabled={busy || loading}
-              onClick={saveStandingInstructions}
-            >
-              Save standing instructions
-            </button>
-          </div>
-        </div>
-        {document !== null && profiles.every((profile) => !profile.enabledForAgents) ? (
-          <div className="agent-profiles-off" role="status">
-            <p>
-              No profile is ticked, so agents cannot start agents — every creation attempt is
-              refused.
+          <div className="agent-standing">
+            <span className="settings-subheading">Standing instructions</span>
+            <p className="device-copy">
+              Rules you write once: every agent this daemon starts — one you open, one an agent
+              created, a Design child — receives them with its first task.
             </p>
-            <p>Tick “agents may create this” on a profile to let agents start that kind.</p>
+            <textarea
+              aria-label="Standing instructions for every agent"
+              aria-describedby={STANDING_HINT_ID}
+              value={standingValue}
+              disabled={loading}
+              onChange={(event) => setStandingDraft(event.target.value)}
+              rows={6}
+            />
+            <span className="device-field-hint" id={STANDING_HINT_ID}>
+              Keep it short: every agent also receives its own task.
+            </span>
+            <div className="agent-standing-actions">
+              <span className="agent-byte-counter">
+                {standingBytes} / {MAX_STANDING_INSTRUCTIONS_BYTES} bytes — over the cap the save is
+                refused, nothing is truncated
+              </span>
+              <button
+                type="button"
+                className="settings-device-action"
+                disabled={busy || loading}
+                onClick={saveStandingInstructions}
+              >
+                Save standing instructions
+              </button>
+            </div>
           </div>
-        ) : null}
-        {document !== null ? (
-          <p className="device-copy agent-profiles-intro">
-            The note is what a creating agent reads to choose between profiles — write it for the
-            agent, not for yourself.
-          </p>
-        ) : null}
-        {document !== null ? (
-          <div className="agent-profile-create-row">
-            {/* The store's cap, mirrored: at the cap the form is not offered,
-                and the sentence says why before the human types anything. */}
-            {profiles.length >= MAX_PROFILES ? (
-              <p className="device-field-hint" role="status">
-                The store holds the maximum of {MAX_PROFILES} profiles the daemon allows: delete one
-                before creating another.
+          {document !== null && profiles.every((profile) => !profile.enabledForAgents) ? (
+            <div className="agent-profiles-off" role="status">
+              <p>
+                No profile is ticked, so agents cannot start agents — every creation attempt is
+                refused.
               </p>
-            ) : null}
-            <button
-              type="button"
-              className="settings-device-action"
-              aria-haspopup="dialog"
-              disabled={busy || loading || profiles.length >= MAX_PROFILES}
-              onClick={(event) => openCreateDialog(event.currentTarget)}
-            >
-              New profile
-            </button>
-          </div>
-        ) : null}
-        <ol className="agent-profile-list" ref={listRef} tabIndex={-1}>
-          {profiles.map((profile, index) => (
-            <li className="agent-profile-row" key={profile.id}>
-              <ProfileRow
-                profile={profile}
-                isFirst={index === 0}
-                isLast={index === profiles.length - 1}
-                busy={busy}
-                loading={loading}
-                dialogHoldsTick={
-                  dialog !== null && dialog.mode === "edit" && dialog.id === profile.id
-                }
-                deleteArmed={deleteArmedId === profile.id}
-                onMove={move}
-                onToggle={toggleEnabled}
-                onEdit={openEditDialog}
-                onDeleteArm={(id) => setDeleteArmedId(id)}
-                onDeleteCancel={() => setDeleteArmedId(null)}
-                onDeleteConfirm={remove}
-              />
-            </li>
-          ))}
-        </ol>
+              <p>Tick “agents may create this” on a profile to let agents start that kind.</p>
+            </div>
+          ) : null}
+          {document !== null ? (
+            <p className="device-copy agent-profiles-intro">
+              The note is what a creating agent reads to choose between profiles — write it for the
+              agent, not for yourself.
+            </p>
+          ) : null}
+          {document !== null ? (
+            <div className="agent-profile-create-row">
+              {/* The store's cap, mirrored: at the cap the form is not offered,
+                and the sentence says why before the human types anything. */}
+              {profiles.length >= MAX_PROFILES ? (
+                <p className="device-field-hint" role="status">
+                  The store holds the maximum of {MAX_PROFILES} profiles the daemon allows: delete
+                  one before creating another.
+                </p>
+              ) : null}
+              <button
+                type="button"
+                className="settings-device-action"
+                aria-haspopup="dialog"
+                disabled={busy || loading || profiles.length >= MAX_PROFILES}
+                onClick={(event) => openCreateDialog(event.currentTarget)}
+              >
+                New profile
+              </button>
+            </div>
+          ) : null}
+          <ol
+            className="agent-profile-list"
+            ref={listRef}
+            tabIndex={-1}
+            aria-label="Agent profiles"
+          >
+            {profiles.map((profile, index) => (
+              <li className="agent-profile-row" key={profile.id} data-profile-id={profile.id}>
+                <ProfileRow
+                  profile={profile}
+                  isFirst={index === 0}
+                  isLast={index === profiles.length - 1}
+                  busy={busy}
+                  loading={loading}
+                  dialogHoldsTick={
+                    dialog !== null && dialog.mode === "edit" && dialog.id === profile.id
+                  }
+                  deleteArmed={deleteArmedId === profile.id}
+                  onMove={move}
+                  onToggle={toggleEnabled}
+                  onEdit={openEditDialog}
+                  onDeleteArm={(id) => setDeleteArmedId(id)}
+                  onDeleteCancel={() => setDeleteArmedId(null)}
+                  onDeleteConfirm={remove}
+                />
+              </li>
+            ))}
+          </ol>
+        </div>
       </div>
       {dialog !== null &&
       document !== null &&

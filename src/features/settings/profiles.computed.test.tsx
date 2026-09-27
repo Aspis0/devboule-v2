@@ -80,11 +80,26 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
   });
 
   it("sizes the row's icon buttons 26 px and dims the dead ends", () => {
-    inject([".profile-icon-btn", ".profile-is-dim"]);
+    inject([".profile-icon-btn", ".profile-icon-btn:disabled", ".profile-icon-btn.profile-is-dim"]);
     const button = box("profile-icon-btn");
     expect(getComputedStyle(button).width).toBe("26px");
     expect(getComputedStyle(button).height).toBe("26px");
-    expect(getComputedStyle(box("profile-is-dim")).opacity).toBe("0.4");
+    const dimmed = document.createElement("button");
+    dimmed.className = "profile-icon-btn profile-is-dim";
+    document.body.appendChild(dimmed);
+    expect(getComputedStyle(dimmed).opacity).toBe("0.4");
+    // Both rules on one disabled button: the dead-end dim wins over the
+    // generic disabled treatment.
+    const deadEnd = document.createElement("button");
+    deadEnd.className = "profile-icon-btn profile-is-dim";
+    deadEnd.disabled = true;
+    document.body.appendChild(deadEnd);
+    expect(getComputedStyle(deadEnd).opacity).toBe("0.4");
+    const busyPencil = document.createElement("button");
+    busyPencil.className = "profile-icon-btn";
+    busyPencil.disabled = true;
+    document.body.appendChild(busyPencil);
+    expect(getComputedStyle(busyPencil).opacity).toBe("0.55");
   });
 
   it("paints the delete action in the danger colour", () => {
@@ -100,6 +115,25 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
     expect(style.position).toBe("fixed");
     expect(style.display).toBe("grid");
     expect(style.backgroundColor).toBe(token("--scrim"));
+  });
+
+  it("styles the dialog's textareas like the pane's", () => {
+    inject([".agent-profiles textarea", ".edit-card textarea"]);
+    const card = box("edit-card");
+    const field = document.createElement("textarea");
+    card.appendChild(field);
+    const inCard = getComputedStyle(field);
+    const pane = document.createElement("div");
+    pane.className = "agent-profiles";
+    const standing = document.createElement("textarea");
+    pane.appendChild(standing);
+    document.body.appendChild(pane);
+    const inPane = getComputedStyle(standing);
+    for (const property of ["paddingTop", "borderRadius", "fontSize", "lineHeight"]) {
+      expect(inCard[property as "paddingTop"]).toBe(inPane[property as "paddingTop"]);
+    }
+    expect(inCard.paddingTop).not.toBe("");
+    expect(inCard.borderRadius).not.toBe("");
   });
 
   it("holds the dialog card at 480 px with a 14 px radius, scrolling inside", () => {

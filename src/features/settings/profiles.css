@@ -160,7 +160,7 @@
   color: var(--danger);
 }
 
-.profile-is-dim {
+.profile-icon-btn.profile-is-dim {
   opacity: 0.4;
 }
 
@@ -287,7 +287,8 @@
   border-radius: 10px;
 }
 
-.agent-profiles textarea {
+.agent-profiles textarea,
+.edit-card textarea {
   padding: 7px 9px;
   color: var(--ink);
   background: var(--surface);

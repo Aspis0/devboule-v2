@@ -219,7 +219,7 @@ describe("Settings agents panel", () => {
     return button;
   }
 
-  function sectionButton(text: string): HTMLButtonElement {
+  function panelButton(text: string): HTMLButtonElement {
     // The whole Agents tab: the dialog renders outside the stack now, so
     // the scope is the panel, not the list column.
     const button = Array.from(
@@ -460,7 +460,7 @@ describe("Settings agents panel", () => {
     expect(agentProfilesSet).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Deletes this profile");
 
-    await act(async () => sectionButton("Delete now").click());
+    await act(async () => panelButton("Delete now").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -493,7 +493,7 @@ describe("Settings agents panel", () => {
     await typeText(nameField, "Scout");
     await typeText(noteField, "Maps the work before anyone builds.");
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -570,7 +570,7 @@ describe("Settings agents panel", () => {
       ).click(),
     );
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -618,7 +618,7 @@ describe("Settings agents panel", () => {
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
       document: { profiles: [explorer], standingInstructions: "" },
     });
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     const first = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
@@ -635,7 +635,7 @@ describe("Settings agents panel", () => {
         standingInstructions: "",
       },
     });
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenLastCalledWith({
       profiles: [{ ...explorer, idleCloseMinutes: 45 }],
@@ -655,7 +655,7 @@ describe("Settings agents panel", () => {
         standingInstructions: "",
       },
     });
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenLastCalledWith({
       profiles: [{ ...explorer, idleCloseMinutes: 0 }],
@@ -694,7 +694,7 @@ describe("Settings agents panel", () => {
         standingInstructions: "",
       },
     });
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(agentProfilesSet).toHaveBeenLastCalledWith({
@@ -720,7 +720,7 @@ describe("Settings agents panel", () => {
     await typeText(idleField, "1e999");
     expect(idleField.value).toBe("1e999");
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     expect(agentProfilesSet).not.toHaveBeenCalled();
     const alert = container.querySelector('[role="alert"]');
@@ -756,7 +756,7 @@ describe("Settings agents panel", () => {
     );
     if (!nameField) throw new Error("name field did not render");
     await typeText(nameField, "Scout");
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     // Refused before the write: the daemon's rule, named by the form first.
@@ -780,7 +780,7 @@ describe("Settings agents panel", () => {
     const iconField = container.querySelector<HTMLInputElement>('[aria-label="Profile icon"]');
     if (!iconField) throw new Error("icon field did not render");
     await typeText(iconField, "eye");
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
@@ -794,7 +794,7 @@ describe("Settings agents panel", () => {
     const iconAgain = container.querySelector<HTMLInputElement>('[aria-label="Profile icon"]');
     if (!iconAgain) throw new Error("icon field did not render on the second open");
     await typeText(iconAgain, "");
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     const sent = vi.mocked(agentProfilesSet).mock.calls[1]?.[0] as AgentProfilesDocument;
     expect(sent.profiles[0]?.icon).toBeNull();
@@ -820,7 +820,7 @@ describe("Settings agents panel", () => {
     expect(peersTick.checked).toBe(true);
     await act(async () => agentsTick.click());
     await act(async () => peersTick.click());
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
@@ -841,7 +841,7 @@ describe("Settings agents panel", () => {
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
@@ -886,7 +886,7 @@ describe("Settings agents panel", () => {
       "Written by an older build.",
     );
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -923,7 +923,7 @@ describe("Settings agents panel", () => {
     );
     if (!noteField) throw new Error("note field did not render");
     await typeText(noteField, "Updated note for the agent.");
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
@@ -955,7 +955,7 @@ describe("Settings agents panel", () => {
     expect(container.textContent).not.toContain("Remove denial");
     expect(container.textContent).not.toContain("Other stored tool denials");
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -985,7 +985,7 @@ describe("Settings agents panel", () => {
       "This profile blocks some tools from an older setting.",
     );
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -1055,7 +1055,7 @@ describe("Settings agents panel", () => {
       standingInstructions: "",
     });
 
-    await act(async () => sectionButton("New profile").click());
+    await act(async () => panelButton("New profile").click());
     await act(async () => undefined);
     expect(container.querySelector(".edit-scrim")).not.toBeNull();
     expect(container.querySelector(".edit-title")?.textContent).toBe("New profile");
@@ -1124,7 +1124,7 @@ describe("Settings agents panel", () => {
     );
     if (!nameField) throw new Error("dialog name field did not render");
     await typeText(nameField, "🦄".repeat(61));
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     // The dialog stays open, and the sentence is inside the card — not
@@ -1156,24 +1156,123 @@ describe("Settings agents panel", () => {
           resolveSet = resolve;
         }),
     );
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
-    // In flight: Escape arms nothing, Cancel is dead, the card stays.
+    // In flight: Escape arms the honest exit, it does not close; the card
+    // stays, and abandoning the view is a second, named click.
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
-    expect(container.textContent).not.toContain("Discard unsaved changes?");
     expect(container.querySelector(".edit-scrim")).not.toBeNull();
-    const cancel = dialogButton("Cancel");
-    expect(cancel.disabled).toBe(true);
+    expect(container.textContent).toContain("A save is still running.");
+    expect(container.textContent).not.toContain("Discard unsaved changes?");
+    await act(async () => dialogButton("Close dialog").click());
+    await act(async () => undefined);
+    expect(container.querySelector(".edit-scrim")).toBeNull();
 
     await act(async () => {
       resolveSet?.();
     });
     await act(async () => undefined);
-    // Confirmation closes the dialog the save already paid for.
-    expect(container.querySelector(".edit-scrim")).toBeNull();
+    // The write still landed after the view was abandoned.
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("lands delete focus on the previous pencil when the last row goes", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "a", name: "Alpha" }), makeProfile({ id: "b", name: "Beta" })],
+      standingInstructions: "",
+    });
+    vi.mocked(agentProfilesGet).mockResolvedValue({
+      document: { profiles: [makeProfile({ id: "a", name: "Alpha" })], standingInstructions: "" },
+    });
+
+    await act(async () => {
+      const trash = Array.from(
+        rowByName("Beta").querySelectorAll<HTMLButtonElement>("button"),
+      ).find((candidate) => candidate.getAttribute("aria-label") === "Delete Beta");
+      if (!trash) throw new Error("row trash button did not render");
+      await trash.click();
+    });
+    await act(async () => undefined);
+    await act(async () => panelButton("Delete now").click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    // The deleted index is past the end now: the clamp lands previous.
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Edit Alpha");
+  });
+
+  it("keeps stored extras when the peers tick flips on", async () => {
+    const guarded = makeProfile({
+      toolOverlay: ["devboule_list_profiles"],
+    });
+    await renderAgentsPanel({ profiles: [guarded], standingInstructions: "" });
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [
+          {
+            ...guarded,
+            toolOverlay: [
+              "devboule_list_profiles",
+              "devboule_send_message",
+              "devboule_create_agent",
+            ],
+          },
+        ],
+        standingInstructions: "",
+      },
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const peersTick = container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Children cannot message peers or create further agents"]',
+    );
+    if (!peersTick) throw new Error("peers tick did not render");
+    expect(peersTick.checked).toBe(false);
+    // Tick on: the pair joins the stored list, the extra stays.
+    await act(async () => peersTick.click());
+    await act(async () => panelButton("Save").click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
+      profiles: [
+        {
+          ...guarded,
+          toolOverlay: ["devboule_list_profiles", "devboule_send_message", "devboule_create_agent"],
+        },
+      ],
+      standingInstructions: "",
+    });
+  });
+
+  it("drops no stale refusal into the next dialog", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
+      standingInstructions: "",
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const nameField = container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Profile name"]',
+    );
+    if (!nameField) throw new Error("dialog name field did not render");
+    await typeText(nameField, "");
+    await act(async () => panelButton("Save").click());
+    await act(async () => undefined);
+    expect(container.querySelector('.edit-card [role="alert"]')).not.toBeNull();
+    // Abandon the dirty dialog through the check, then open another row:
+    // the first row's sentence must not greet the second.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await act(async () => dialogButton("Discard").click());
+    await act(async () => undefined);
+    await act(async () => rowButton("Coder", "Edit").click());
+    await act(async () => undefined);
+    expect(container.querySelector('.edit-card [role="alert"]')).toBeNull();
   });
 
   it("lands delete focus on the next row's pencil, the previous at the end", async () => {
@@ -1194,10 +1293,38 @@ describe("Settings agents panel", () => {
 
     await act(async () => rowButton("Alpha", "Delete").click());
     await act(async () => undefined);
-    await act(async () => sectionButton("Delete now").click());
+    await act(async () => panelButton("Delete now").click());
     await act(async () => undefined);
     await act(async () => undefined);
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Edit Beta");
+  });
+
+  it("lands delete focus on the trash when refused, even with a hostile name", async () => {
+    const hostile = 'Bob "the \\ builder';
+    await renderAgentsPanel({
+      profiles: [makeProfile({ name: hostile })],
+      standingInstructions: "",
+    });
+    vi.mocked(agentProfilesSet).mockRejectedValueOnce({
+      code: "io",
+      message: "profile file unwritable",
+    });
+
+    await act(async () => {
+      // Found by comparing labels, never by interpolating the hostile
+      // name into a selector — the production code must do the same.
+      const trash = Array.from(
+        rowByName(hostile).querySelectorAll<HTMLButtonElement>("button"),
+      ).find((candidate) => candidate.getAttribute("aria-label") === `Delete ${hostile}`);
+      if (!trash) throw new Error("row trash button did not render");
+      await trash.click();
+    });
+    await act(async () => undefined);
+    await act(async () => panelButton("Delete now").click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    // No throw, no boundary: focus is back on the arming trash.
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(`Delete ${hostile}`);
   });
 
   it("lands delete focus on the list when nothing is left, and on the trash when refused", async () => {
@@ -1209,7 +1336,7 @@ describe("Settings agents panel", () => {
 
     await act(async () => rowButton("Explorer", "Delete").click());
     await act(async () => undefined);
-    await act(async () => sectionButton("Delete now").click());
+    await act(async () => panelButton("Delete now").click());
     await act(async () => undefined);
     await act(async () => undefined);
     // Refused: the row is back, focus on the trash that armed it.
@@ -1221,7 +1348,7 @@ describe("Settings agents panel", () => {
     });
     await act(async () => rowButton("Explorer", "Delete").click());
     await act(async () => undefined);
-    await act(async () => sectionButton("Delete now").click());
+    await act(async () => panelButton("Delete now").click());
     await act(async () => undefined);
     await act(async () => undefined);
     // Confirmed with nothing left: the list itself holds focus.
@@ -1269,7 +1396,7 @@ describe("Settings agents panel", () => {
     const prompt = `\u{0085}${"a".repeat(8192)}`;
     await typeText(spawnField, prompt);
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -1292,7 +1419,7 @@ describe("Settings agents panel", () => {
     const flood = "é".repeat(4097);
     await typeText(spawnField, flood);
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).not.toHaveBeenCalled();
@@ -1318,7 +1445,7 @@ describe("Settings agents panel", () => {
     // wire shape of none is the key's absence.
     await typeText(spawnField, "   ");
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -1410,7 +1537,7 @@ describe("Settings agents panel", () => {
     await typeText(editorNameField, "Scout");
     await typeText(editorNoteField, "Maps the work before anyone builds.");
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     await act(async () => undefined);
 
@@ -1430,7 +1557,7 @@ describe("Settings agents panel", () => {
 
     // The retry sends the same draft, and confirmation — never submission —
     // closes the editor.
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenCalledTimes(2);
@@ -1468,7 +1595,7 @@ describe("Settings agents panel", () => {
     // Delete that same row: the optimistic removal unmounts the editor —
     // the row, and the editor rendered inside it, are gone from the screen.
     await act(async () => rowButton("Explorer", "Delete").click());
-    await act(async () => sectionButton("Delete now").click());
+    await act(async () => panelButton("Delete now").click());
     await act(async () => undefined);
     expect(container.querySelector(".agent-inline-editor")).toBeNull();
 
@@ -1539,7 +1666,7 @@ describe("Settings agents panel", () => {
     const flood = "é".repeat(1100);
     await typeText(noteField, flood);
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).not.toHaveBeenCalled();
@@ -1565,7 +1692,7 @@ describe("Settings agents panel", () => {
     if (!field) throw new Error("standing instructions field did not render");
     await typeText(field, "Report your result in your final message.");
 
-    await act(async () => sectionButton("Save standing instructions").click());
+    await act(async () => panelButton("Save standing instructions").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -1584,7 +1711,7 @@ describe("Settings agents panel", () => {
     const flood = "é".repeat(4200);
     await typeText(field, flood);
 
-    await act(async () => sectionButton("Save standing instructions").click());
+    await act(async () => panelButton("Save standing instructions").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).not.toHaveBeenCalled();
@@ -1649,7 +1776,7 @@ describe("Settings agents panel", () => {
           resolveSet = resolve;
         }),
     );
-    await act(async () => sectionButton("Save standing instructions").click());
+    await act(async () => panelButton("Save standing instructions").click());
     await act(async () => undefined);
 
     // The write is in flight carrying "Always report"; the human keeps
@@ -1689,7 +1816,7 @@ describe("Settings agents panel", () => {
       document: { profiles: [{ ...makeProfile(), name }], standingInstructions: "" },
     });
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(container.querySelector('[role="alert"]')).toBeNull();
@@ -1713,7 +1840,7 @@ describe("Settings agents panel", () => {
     const name = "🦄".repeat(61);
     await typeText(nameField, name);
 
-    await act(async () => sectionButton("Save").click());
+    await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).not.toHaveBeenCalled();
@@ -1732,7 +1859,7 @@ describe("Settings agents panel", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "A system or file operation failed on this machine.",
     );
-    const retry = sectionButton("Retry");
+    const retry = panelButton("Retry");
 
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
       document: { profiles: [makeProfile()], standingInstructions: "" },
@@ -1827,7 +1954,7 @@ describe("Settings agents panel", () => {
     // another row's write is still in flight — the hole the lock closes.
     await act(async () => rowButton("Coder", "Edit").click());
     await act(async () => undefined);
-    const save = sectionButton("Save");
+    const save = panelButton("Save");
 
     vi.mocked(agentProfilesSet).mockImplementationOnce(() => new Promise<void>(() => undefined));
     await act(async () => tickBox("Explorer").click());
@@ -1870,7 +1997,7 @@ describe("Settings agents panel", () => {
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(agentProfilesGet).toHaveBeenCalledTimes(2);
     expect(tickBox("Explorer").disabled).toBe(true);
-    expect(sectionButton("New profile").disabled).toBe(true);
+    expect(panelButton("New profile").disabled).toBe(true);
 
     // The read-back lands: the window closes, the minted id is adopted,
     // and the panel is writable again.
@@ -1883,7 +2010,7 @@ describe("Settings agents panel", () => {
     await act(async () => undefined);
 
     expect(tickBox("Explorer").disabled).toBe(false);
-    expect(sectionButton("New profile").disabled).toBe(false);
+    expect(panelButton("New profile").disabled).toBe(false);
     expect(tickBox("Explorer").checked).toBe(true);
   });
 
@@ -3474,6 +3601,34 @@ describe("Settings agents panel — new profile form", () => {
     });
     await collectScenario("discard armed");
 
+    // 15c. Older stored denials: the quiet line, not a control.
+    await renderAgentsPanel({
+      profiles: [
+        makeProfile({
+          toolOverlay: ["devboule_send_message", "devboule_create_agent", "devboule_list_profiles"],
+        }),
+      ],
+      standingInstructions: "",
+    });
+    await openEditorOn("Explorer");
+    await collectScenario("legacy denials");
+
+    // 15d. A save in flight: the honest exit while the write runs. The
+    // write stays pending past the collect (the busy-lock test's shape) —
+    // the pane unmounts under it without settling anything.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    const flightName = container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!flightName) throw new Error("editor name field did not render");
+    await typeText(flightName, "Scout");
+    vi.mocked(agentProfilesSet).mockImplementationOnce(() => new Promise<void>(() => undefined));
+    await act(async () => agentsSectionButton("Save").click());
+    await act(async () => undefined);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await collectScenario("save in flight");
+
     // 16. The name-cap refusal.
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
     await openEditorOn("Explorer");
@@ -3633,7 +3788,7 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Fifty: the delegation section's one sentence on this panel (an
+    // Fifty-two: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
@@ -3651,13 +3806,14 @@ describe("Settings agents panel — new profile form", () => {
     // the idle-close field's own hint and the off toggle's note, the shell page
     // intro (scenario 24 collects it through the surface; the title stays out), the tick notes (including the
     // open-dialog clause on the row tick), the no-spawn-prompt sentence on
-    // rows without one, the discard check's sentence, and the standing
+    // rows without one, the discard check's sentence, the legacy-denials
+    // line, the save-in-flight sentence, and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry), and the standing box's keep-it-short
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(50);
+    expect(sentences).toHaveLength(52);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

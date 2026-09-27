@@ -19,10 +19,12 @@ function focusableIn(container: HTMLElement): HTMLElement[] {
  * text. Focus returns to whoever opened the dialog — the panel owns that,
  * this shell never learns the opener.
  *
- * `busy` is a save in flight: while it holds, nothing here closes — not
- * Escape, not the scrim, not the ×, not Cancel, not Discard. Closing
- * mid-save would abandon a write the panel must see settle, and the discard
- * sentence would lie about text the write is still carrying.
+ * `busy` is a save in flight: a bare close would abandon a write the panel
+ * must see settle, and the discard sentence would lie about text the write
+ * is still carrying. So while `busy` holds, every exit arms a different,
+ * honest confirm instead — "a save is still running, close and let it
+ * finish" — and closing unmounts only the view: the panel owns the write
+ * and still settles it, landing the refusal (if any) in the pane behind.
  */
 export function ProfileDialog({
   title,
@@ -38,15 +40,17 @@ export function ProfileDialog({
 }) {
   const titleId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
-  const discardRef = useRef<HTMLDivElement>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
   const [discardArmed, setDiscardArmed] = useState(false);
+  // Armed while busy: the exit that abandons the view, not the write.
+  const [leavingArmed, setLeavingArmed] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   const markDirty = useCallback(() => setDirty(true), []);
 
   const requestClose = useCallback(() => {
-    if (busy) return;
-    if (dirty) setDiscardArmed(true);
+    if (busy) setLeavingArmed(true);
+    else if (dirty) setDiscardArmed(true);
     else onClose();
   }, [busy, dirty, onClose]);
 
@@ -96,12 +100,19 @@ export function ProfileDialog({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [requestClose]);
 
-  // Arming the discard check moves focus into it and names it: it appears
-  // above the form on an Escape the human may not have meant, so the thing
+  // Arming either confirm moves focus into it and names it: it appears
+  // above the form on a keypress the human may not have meant, so the thing
   // that appeared must say so itself.
   useEffect(() => {
-    if (discardArmed) discardRef.current?.querySelector("button")?.focus();
-  }, [discardArmed]);
+    if (discardArmed || leavingArmed) confirmRef.current?.querySelector("button")?.focus();
+  }, [discardArmed, leavingArmed]);
+
+  // A settled write ends the leaving arm: its sentence claims a running
+  // save, so it must not outlive the run. The discard arm survives — after
+  // a refusal its sentence is true again.
+  useEffect(() => {
+    if (!busy) setLeavingArmed(false);
+  }, [busy]);
 
   const body = children({ requestClose, markDirty });
 
@@ -129,14 +140,13 @@ export function ProfileDialog({
             type="button"
             className="profile-dialog-close"
             aria-label="Close profile dialog"
-            disabled={busy}
             onClick={requestClose}
           >
             ×
           </button>
         </div>
         {discardArmed ? (
-          <div className="device-inline-confirm" role="alert" ref={discardRef}>
+          <div className="device-inline-confirm" role="alert" ref={confirmRef}>
             <p className="device-copy">
               Discard unsaved changes? What was typed in this form goes with them.
             </p>
@@ -155,6 +165,26 @@ export function ProfileDialog({
                 onClick={() => setDiscardArmed(false)}
               >
                 Keep editing
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {leavingArmed ? (
+          <div className="device-inline-confirm" role="alert" ref={confirmRef}>
+            <p className="device-copy">
+              A save is still running. Close the dialog and let it finish — what you typed is being
+              saved.
+            </p>
+            <div className="device-actions">
+              <button type="button" className="settings-device-action" onClick={() => onClose()}>
+                Close dialog
+              </button>
+              <button
+                type="button"
+                className="settings-device-action"
+                onClick={() => setLeavingArmed(false)}
+              >
+                Keep waiting
               </button>
             </div>
           </div>

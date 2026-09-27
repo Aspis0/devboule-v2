@@ -210,6 +210,14 @@ export function AgentProfileForm({
   // switching away clears them (the new provider's vocabulary is its own),
   // and switching back restores what was typed.
   const providerDraftsRef = useRef(new Map<string, ProviderSpecificFields>());
+  const formErrorRef = useRef<HTMLParagraphElement>(null);
+
+  // A fresh refusal lands above the buttons, which may be below the card's
+  // own fold on a short window: bring it into view. Guarded — the harness
+  // has no scrolling — so this never throws where it cannot scroll.
+  useEffect(() => {
+    if (formError !== null) formErrorRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [formError]);
 
   // The catalog lands after the first paint; default the picker to the first
   // installed provider once there is one, and let the vocabulary effect run.
@@ -630,7 +638,7 @@ export function AgentProfileForm({
         </p>
       ) : null}
       {formError === null ? null : (
-        <p role="alert" className="device-error">
+        <p role="alert" className="device-error" ref={formErrorRef}>
           <ErrorText
             sentence={formError.sentence}
             detail={formError.detail}
@@ -647,7 +655,7 @@ export function AgentProfileForm({
         >
           {mode === "create" ? "Create profile" : "Save"}
         </button>
-        <button type="button" className="settings-device-action" disabled={busy} onClick={onCancel}>
+        <button type="button" className="settings-device-action" onClick={onCancel}>
           Cancel
         </button>
       </div>
