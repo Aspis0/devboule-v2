@@ -68,8 +68,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "diagnostics",
         label: "Diagnostics",
-        intro:
-          "Numbers and versions about the app itself, already redacted by the daemon, plus the transcript history it keeps.",
+        intro: "Numbers and versions about the app itself, plus the transcript history it keeps.",
       },
     ],
   },
@@ -79,12 +78,14 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "providers",
         label: "Providers",
-        intro: "The agent CLIs this daemon can start, and the tools each one offers.",
+        intro:
+          "The agent CLIs this daemon can start, and the tools each one offers. An executable is not a login: the status shows the last measured start outcome.",
       },
       {
         id: "profiles",
         label: "Agent profiles",
-        intro: "The kinds of agent that can be started, and the instructions they all receive.",
+        intro:
+          "The kinds of agent that can be started, and the instructions they all receive. The order here is the order agents read, top down.",
       },
       {
         id: "usage",
@@ -106,7 +107,8 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "oracle",
         label: "Oracle",
-        intro: "Ask where code lives and get the smallest useful source spans to open.",
+        intro:
+          "Local code search. Ask where code lives and get the smallest useful source spans to open.",
       },
     ],
   },

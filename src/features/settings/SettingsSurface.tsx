@@ -19,6 +19,7 @@ import {
   type SettingsPageId,
 } from "./settingsMenu";
 import { SettingsMenuIcon } from "./menuIcons";
+import { HostDot } from "./HostDot";
 import "./settings.css";
 
 /** The quiet line under every page with no function yet. */
@@ -65,6 +66,9 @@ export function SettingsSurface() {
     previousPage.current = activePage;
     if (focusTitleOnChange.current) {
       focusTitleOnChange.current = false;
+      // A mouse click announces through the focused title; drop any
+      // keyboard-path message so the status node never names a stale page.
+      setLiveMessage("");
       titleRef.current?.focus();
     } else {
       setLiveMessage(`${settingsPageById(activePage).label} page open`);
@@ -148,6 +152,7 @@ export function SettingsSurface() {
               <div className="settings-host-row">
                 <SettingsMenuIcon id="host" />
                 <span>This PC</span>
+                <HostDot />
               </div>
             ) : null}
             {group.pages.map((page) => (
@@ -157,7 +162,7 @@ export function SettingsSurface() {
                 className={`settings-menu-row${activePage === page.id ? " settings-menu-row-active" : ""}`}
                 data-settings-page={page.id}
                 aria-current={activePage === page.id ? "page" : undefined}
-                onClick={() => openPage(page.id, true)}
+                onClick={(event) => openPage(page.id, event.detail !== 0)}
                 onKeyDown={(event) => handleMenuKeyDown(event, page.id)}
               >
                 <SettingsMenuIcon id={page.id} />
@@ -181,21 +186,6 @@ export function SettingsSurface() {
   );
 }
 
-interface SettingsHeadingProps {
-  title: string;
-  description?: string;
-}
-
-export function SettingsHeading({ title, description }: SettingsHeadingProps) {
-  return (
-    <div className="settings-page-heading">
-      <h2>{title}</h2>
-      {description && <p>{description}</p>}
-    </div>
-  );
-}
-
-// The surface keeps the names its importers use: the heading its sibling
-// panels render, and the three symbols the panel tests import from this path.
+// The two symbols the panel tests import from this path.
 export { ALWAYS_ON_REASON, toolPolicyFor } from "./providerStatus";
 export { DelegationSetting } from "./panels/AgentsPanel";

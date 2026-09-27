@@ -66,10 +66,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
 
-vi.mock("../../oracle/OraclePanel", () => ({
-  OraclePanel: () => <div>Oracle mock</div>,
-}));
-
 import { projectAdd, projectsList, workspacesList } from "../../../lib/tauri";
 import type { AgentProfilesDocument, Project } from "../../../types/ipc";
 import { ProjectsPanel } from "./ProjectsPanel";

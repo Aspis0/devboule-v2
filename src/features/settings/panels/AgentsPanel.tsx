@@ -27,7 +27,7 @@ import type {
   DelegationReply,
   ProviderCatalog,
 } from "../../../types/ipc";
-import { useWorkspaceDaemon } from "../../workspace/workspaceDaemon";
+import { useSettingsDaemon } from "../settingsDaemon";
 import "../profiles.css";
 /**
  * The handshake capability that gates the whole Agents section, spelled
@@ -170,7 +170,7 @@ export function DelegationSetting({
   /** Injectable so tests get a fresh controller, like the tauri seams. */
   controller?: DelegationController;
 }) {
-  const daemon = useWorkspaceDaemon();
+  const daemon = useSettingsDaemon();
   const delegationSupported = daemon.capabilities.includes(DELEGATION_CAPABILITY);
   const delegation = useDelegationState(controller);
 
@@ -297,7 +297,7 @@ export function DelegationSetting({
  * this fetch is the only way the picker gets its rows.
  */
 export function AgentProfilesPanel() {
-  const daemon = useWorkspaceDaemon();
+  const daemon = useSettingsDaemon();
   const agentProfilesSupported = daemon.capabilities.includes(AGENT_PROFILES_CAPABILITY);
   const providerVocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
   const [document, setDocument] = useState<AgentProfilesDocument | null>(null);

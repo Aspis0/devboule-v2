@@ -265,6 +265,10 @@ describe("Settings menu shell", () => {
     return row;
   }
 
+  function mouseClick(target: Element) {
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+  }
+
   function keyDown(target: Element, key: string) {
     target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
   }
@@ -355,9 +359,9 @@ describe("Settings menu shell", () => {
     await renderShell();
     // Leave the default page first: clicking the already-open row is not a
     // navigation and moves nothing.
-    await act(async () => openPage("Appearance").click());
+    await act(async () => mouseClick(openPage("Appearance")));
     await act(async () => undefined);
-    await act(async () => openPage(label).click());
+    await act(async () => mouseClick(openPage(label)));
     await act(async () => undefined);
     const title = container.querySelector(`#settings-page-title-${id}`);
     if (!title) throw new Error("Page title did not render");
@@ -365,35 +369,112 @@ describe("Settings menu shell", () => {
     expect(document.activeElement).toBe(title);
   });
 
+  it("treats an assistive-tech click like Enter: focus stays in the menu", async () => {
+    await renderShell();
+    // Leave the default page first: activating the already-open row changes
+    // nothing and announces nothing.
+    await act(async () => mouseClick(openPage("Appearance")));
+    await act(async () => undefined);
+    const row = openPage("Providers");
+    await act(async () => row.focus());
+    // AT-synthesised clicks carry detail 0: no pointer was involved.
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+    });
+    await act(async () => undefined);
+    expect(document.activeElement).toBe(row);
+    expect(container.querySelector(".settings-live")?.textContent).toContain("Providers");
+  });
+
   it("shows a back row to the workspace", async () => {
     await renderShell();
     expect(openPage("Back to workspace").tagName).toBe("BUTTON");
   });
 
-  it("shows a static host row with no status dot", async () => {
+  it("shows the host row with the daemon live dot and no action", async () => {
     await renderShell();
     const menu = container.querySelector("[aria-label='Settings pages']");
     const host = menu?.querySelector(".settings-host-row");
     if (!host) throw new Error("Host row did not render");
     expect(host.textContent).toContain("This PC");
     expect(host.tagName).not.toBe("BUTTON");
-    expect(host.querySelector("[class*='settings-host-dot']")).toBeNull();
+    expect(host.querySelector(".settings-host-dot-green")).not.toBeNull();
   });
 
-  it("keeps a visible focus ring on the navigation target", () => {
+  it.each([
+    ["connecting", "settings-host-dot-border"],
+    ["disconnected", "settings-host-dot-terracotta"],
+    ["error", "settings-host-dot-terracotta"],
+    ["unresponsive", "settings-host-dot-terracotta"],
+  ])("maps the %s daemon state to %s", async (state, dotClass) => {
+    vi.mocked(daemonStatus).mockResolvedValue({
+      ...connectedDaemon(),
+      state: state as DaemonStatus["state"],
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(container.querySelector(`.${dotClass}`)).not.toBeNull();
+  });
+
+  it("shares one daemon poll across the whole surface", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue(connectedDaemon());
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+    // The host dot, the providers panel, the profiles panel and the
+    // delegation switch each read daemon state; all of them must share one
+    // poll, so visiting three pages still issues a single daemon_status.
+    for (const label of ["Agent profiles", "Paired devices", "Providers"]) {
+      await act(async () => openPage(label).click());
+      await act(async () => undefined);
+    }
+    expect(vi.mocked(daemonStatus).mock.calls.length).toBe(1);
+  });
+
+  it("keeps a visible focus ring on keyboard focus of the navigation target", () => {
     const css = readFileSync(resolve(import.meta.dirname, "settings.css"), "utf8");
-    const titleBlock = /\.settings-page-title\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-    expect(titleBlock).not.toMatch(/outline\s*:\s*none/);
-    expect(css).toContain(".settings-page-title:focus");
+    const focusRule = /\.settings-page-title:focus-visible\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(focusRule).toMatch(/outline\s*:\s*(?!none\b)[^;]+;/);
   });
 
+  it("keeps its screen-reader utility inside the settings styles", () => {
+    const css = readFileSync(resolve(import.meta.dirname, "settings.css"), "utf8");
+    const srOnly = /\.sr-only\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(srOnly).toContain("position: absolute");
+    expect(srOnly).toContain("overflow: hidden");
+  });
+
+  it("defines section labels once, at the spec values", () => {
+    const shell = readFileSync(resolve(import.meta.dirname, "settings.css"), "utf8");
+    const profiles = readFileSync(resolve(import.meta.dirname, "profiles.css"), "utf8");
+    const diagnostics = readFileSync(resolve(import.meta.dirname, "diagnostics.css"), "utf8");
+    for (const css of [profiles, diagnostics]) {
+      expect(css).not.toContain(".settings-subheading");
+    }
+    const rule = /\.settings-subheading\s*\{([^}]*)\}/.exec(shell)?.[1] ?? "";
+    expect(rule).toContain("font-size: 12px");
+    expect(rule).toContain("font-weight: 500");
+  });
+
+  it("keeps the panel explanation sentences", () => {
+    const pages = SETTINGS_MENU.flatMap((group) => group.pages);
+    const profiles = pages.find((page) => page.id === "profiles")?.intro ?? "";
+    const providers = pages.find((page) => page.id === "providers")?.intro ?? "";
+    expect(profiles).toContain("The order here is the order agents read");
+    expect(providers).toContain("An executable is not a login");
+  });
+
+  // Every unavailable page gets the no-controls assertion, note or not: a
+  // future unavailable page with a note must not slip through unasserted.
   const EMPTY_PAGES = SETTINGS_MENU.flatMap((group) => group.pages).filter(
-    (page) => page.unavailable === true && page.note === undefined,
+    (page) => page.unavailable === true,
   );
 
-  it.each(EMPTY_PAGES.map((page) => [page.id, page.label, page.intro]))(
+  it.each(EMPTY_PAGES.map((page) => [page.id, page.label, page.intro, page.note ?? ""]))(
     "shows the %s page as an honest empty state",
-    async (_id, title, intro) => {
+    async (_id, title, intro, note) => {
       await renderShell();
       await act(async () => openPage(title).click());
       await act(async () => undefined);
@@ -402,21 +483,10 @@ describe("Settings menu shell", () => {
       expect(content.textContent).toContain(title);
       expect(content.textContent).toContain(intro);
       expect(content.textContent).toContain("not available yet");
+      if (note !== "") expect(content.textContent).toContain(note);
       expect(content.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
     },
   );
-
-  it("says the notification toasts exist but have no control", async () => {
-    await renderShell();
-    await act(async () => openPage("Notifications").click());
-    await act(async () => undefined);
-    const content = container.querySelector("[data-settings-content]");
-    if (!content) throw new Error("Settings content did not render");
-    expect(content.textContent).toContain("Notifications");
-    expect(content.textContent).toContain("not available yet");
-    expect(content.textContent).toMatch(/toasts?/i);
-    expect(content.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
-  });
 
   it.each(
     SETTINGS_MENU.flatMap((group) => group.pages).map((page) => [page.id, page.label, page.intro]),
@@ -430,7 +500,6 @@ describe("Settings menu shell", () => {
     expect(titles).toHaveLength(1);
     expect(titles[0].textContent).toBe(label);
     expect(content.textContent).toContain(intro);
-    expect(content.querySelectorAll(".settings-page-heading")).toHaveLength(0);
   });
 
   it("holds the close behaviour on Layout and the send behaviour on Editing", async () => {

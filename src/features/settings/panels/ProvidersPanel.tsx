@@ -8,7 +8,7 @@ import {
 } from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
-import { useWorkspaceDaemon } from "../../workspace/workspaceDaemon";
+import { useSettingsDaemon } from "../settingsDaemon";
 import {
   ALWAYS_ON_REASON,
   ALWAYS_ON_TOOL,
@@ -331,7 +331,7 @@ export function ProvidersPanel() {
   // surface reads it (Workspace, Design): the supervisor's `daemon_status`.
   // A daemon that never advertised `tool_policy` leaves the toggles off the
   // screen, so no card asks it for a policy it cannot answer.
-  const daemon = useWorkspaceDaemon();
+  const daemon = useSettingsDaemon();
   const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
 
   useEffect(() => {

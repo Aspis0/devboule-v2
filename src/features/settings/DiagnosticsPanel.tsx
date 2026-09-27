@@ -356,6 +356,7 @@ function DiagnosticsPanelContent() {
     return (
       <div id="settings-panel-diagnostics">
         <p className="diagnostics-loading">Loading the diagnostics…</p>
+        <p className="diagnostics-note">{SAFETY_NOTE}</p>
       </div>
     );
   }
