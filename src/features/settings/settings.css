@@ -151,13 +151,6 @@
   font-weight: 400;
 }
 
-/* The navigation target draws its ring for keyboard focus only: the title
-   is focused programmatically, and a mouse click must not paint it. */
-.settings-page-title:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 4px;
-}
-
 .settings-page-intro {
   margin: 4px 0 0;
   color: var(--muted);

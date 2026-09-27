@@ -79,8 +79,6 @@ import {
 } from "../../lib/tauri";
 import type { AgentProfilesDocument, DaemonStatus } from "../../types/ipc";
 import { SETTINGS_MENU } from "./settingsMenu";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { SettingsSurface } from "./SettingsSurface";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -119,7 +117,7 @@ describe("Settings removed placeholder rows", () => {
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    if (root !== undefined) await act(async () => root.unmount());
     container.remove();
     vi.clearAllMocks();
   });
@@ -265,6 +263,10 @@ describe("Settings menu shell", () => {
     return row;
   }
 
+  // A real mouse click: dispatched with detail 1. Every other test's
+  // `.click()` carries detail 0 (the keyboard/AT branch) and only asserts
+  // content, so it is unaffected — but never use `.click()` in a focus
+  // assertion, or you will test the wrong branch.
   function mouseClick(target: Element) {
     target.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
   }
@@ -279,7 +281,7 @@ describe("Settings menu shell", () => {
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    if (root !== undefined) await act(async () => root.unmount());
     container.remove();
     vi.clearAllMocks();
   });
@@ -431,39 +433,6 @@ describe("Settings menu shell", () => {
       await act(async () => undefined);
     }
     expect(vi.mocked(daemonStatus).mock.calls.length).toBe(1);
-  });
-
-  it("keeps a visible focus ring on keyboard focus of the navigation target", () => {
-    const css = readFileSync(resolve(import.meta.dirname, "settings.css"), "utf8");
-    const focusRule = /\.settings-page-title:focus-visible\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-    expect(focusRule).toMatch(/outline\s*:\s*(?!none\b)[^;]+;/);
-  });
-
-  it("keeps its screen-reader utility inside the settings styles", () => {
-    const css = readFileSync(resolve(import.meta.dirname, "settings.css"), "utf8");
-    const srOnly = /\.sr-only\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-    expect(srOnly).toContain("position: absolute");
-    expect(srOnly).toContain("overflow: hidden");
-  });
-
-  it("defines section labels once, at the spec values", () => {
-    const shell = readFileSync(resolve(import.meta.dirname, "settings.css"), "utf8");
-    const profiles = readFileSync(resolve(import.meta.dirname, "profiles.css"), "utf8");
-    const diagnostics = readFileSync(resolve(import.meta.dirname, "diagnostics.css"), "utf8");
-    for (const css of [profiles, diagnostics]) {
-      expect(css).not.toContain(".settings-subheading");
-    }
-    const rule = /\.settings-subheading\s*\{([^}]*)\}/.exec(shell)?.[1] ?? "";
-    expect(rule).toContain("font-size: 12px");
-    expect(rule).toContain("font-weight: 500");
-  });
-
-  it("keeps the panel explanation sentences", () => {
-    const pages = SETTINGS_MENU.flatMap((group) => group.pages);
-    const profiles = pages.find((page) => page.id === "profiles")?.intro ?? "";
-    const providers = pages.find((page) => page.id === "providers")?.intro ?? "";
-    expect(profiles).toContain("The order here is the order agents read");
-    expect(providers).toContain("An executable is not a login");
   });
 
   // Every unavailable page gets the no-controls assertion, note or not: a

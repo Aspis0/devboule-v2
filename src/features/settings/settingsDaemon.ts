@@ -37,6 +37,19 @@ const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let inFlight = false;
 
+// A hung `daemon_status` must not wedge the poll: bound every call by the
+// poll interval, so a call that never settles still releases `inFlight`
+// and the rejection path reports disconnected, never live.
+function withTimeout(promise: Promise<DaemonStatus>): Promise<DaemonStatus> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const limit = new Promise<DaemonStatus>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error("daemon_status timed out")), POLL_MS);
+  });
+  return Promise.race([promise, limit]).finally(() => {
+    if (timeout !== null) clearTimeout(timeout);
+  });
+}
+
 function emit(next: DaemonStatus) {
   current = next;
   for (const listener of listeners) listener();
@@ -45,7 +58,7 @@ function emit(next: DaemonStatus) {
 function tick() {
   if (inFlight) return;
   inFlight = true;
-  void daemonStatus().then(
+  void withTimeout(daemonStatus()).then(
     (next) => {
       inFlight = false;
       if (listeners.size > 0) emit(next);
@@ -71,6 +84,9 @@ function subscribe(listener: () => void): () => void {
         clearInterval(timer);
         timer = null;
       }
+      // An unmount with a request in flight must not latch the guard:
+      // the orphaned call settles into no listeners and is dropped.
+      inFlight = false;
       // A fresh mount cycle starts from connecting, exactly like the
       // per-caller hook: without this, a mount would first render the
       // previous cycle's capabilities and flap the panels' gates.

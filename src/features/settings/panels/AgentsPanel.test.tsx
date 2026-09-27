@@ -83,6 +83,7 @@ import type {
   ProviderVocabulary,
 } from "../../../types/ipc";
 import { AgentProfilesPanel } from "./AgentsPanel";
+import { SettingsSurface } from "../SettingsSurface";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 describe("Settings agents panel", () => {
@@ -2917,7 +2918,6 @@ describe("Settings agents panel — new profile form", () => {
     // a role=status wrapper) is dropped — its text would falsely "contain"
     // the real sentences inside it.
     const SENTENCE_SELECTOR = [
-      ".settings-page-heading p",
       ".device-field-hint",
       ".device-copy",
       ".agent-profile-tick-note",
@@ -3250,9 +3250,50 @@ describe("Settings agents panel — new profile form", () => {
     );
     await collectScenario("tick note pin");
 
+    // 24. The shell header above the panel: the page title and the intro that
+    // now carries the panel's order sentence. Rendered through the surface so
+    // the net covers the sentence where users actually read it.
+    vi.mocked(daemonStatus).mockResolvedValue(
+      daemonStatusWith([
+        "ping",
+        "status",
+        "sessions",
+        "journal",
+        "typed_permissions",
+        "devices",
+        "agent_profiles",
+      ]),
+    );
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [], standingInstructions: "" },
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const profilesRow = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent?.trim() === "Agent profiles",
+    );
+    if (!profilesRow) throw new Error("Agent profiles row did not render");
+    await act(async () => profilesRow.click());
+    await act(async () => undefined);
+    const content = container.querySelector("[data-settings-content]");
+    if (!content) throw new Error("settings content did not render");
+    for (const element of Array.from(
+      content.querySelectorAll<HTMLElement>(".settings-page-title, .settings-page-intro"),
+    )) {
+      const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (text === "" || seen.has(text)) continue;
+      seen.add(text);
+      scenarioNames.push("shell header");
+      sentences.push(text);
+    }
+    await act(async () => root!.unmount());
+    root = undefined;
+    container.innerHTML = "";
+
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Forty-seven: the delegation section's one sentence on this panel (an
+    // Fifty: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
@@ -3267,15 +3308,15 @@ describe("Settings agents panel — new profile form", () => {
     // the overlay add
     // control's own sentence, the three cap refusals, the model/mode
     // refusals, the two profile-cap sentences, the two catalog sentences,
-    // the idle-close field's own hint and the off toggle's note, the heading
-    // description, the intro copy, the tick notes (including the
+    // the idle-close field's own hint and the off toggle's note, the shell page
+    // title and intro (scenario 24, collected through the surface), the tick notes (including the
     // open-editor clause on the row tick), and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry), and the standing box's keep-it-short
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(48);
+    expect(sentences).toHaveLength(50);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;
