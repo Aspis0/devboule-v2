@@ -13,37 +13,52 @@ function focusableIn(container: HTMLElement): HTMLElement[] {
 /**
  * The scrim dialog around the profile form, for creating and editing alike.
  * It owns the card, the focus trap and the dirty check; the form owns every
- * field. Escape, the scrim and the form's Cancel all arrive at one
+ * field. Escape, the scrim, the × and the form's Cancel all arrive at one
  * `requestClose`: clean closes at once, dirty arms an inline discard check
  * (the app's `device-inline-confirm` pattern) instead of dropping typed
  * text. Focus returns to whoever opened the dialog — the panel owns that,
  * this shell never learns the opener.
+ *
+ * `busy` is a save in flight: while it holds, nothing here closes — not
+ * Escape, not the scrim, not the ×, not Cancel, not Discard. Closing
+ * mid-save would abandon a write the panel must see settle, and the discard
+ * sentence would lie about text the write is still carrying.
  */
 export function ProfileDialog({
   title,
+  busy,
   onClose,
   children,
 }: {
   title: string;
+  /** True while the panel's write is in flight: every exit goes dead. */
+  busy: boolean;
   onClose: () => void;
   children: (api: { requestClose: () => void; markDirty: () => void }) => ReactNode;
 }) {
   const titleId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
+  const discardRef = useRef<HTMLDivElement>(null);
   const [discardArmed, setDiscardArmed] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   const markDirty = useCallback(() => setDirty(true), []);
 
   const requestClose = useCallback(() => {
+    if (busy) return;
     if (dirty) setDiscardArmed(true);
     else onClose();
-  }, [dirty, onClose]);
+  }, [busy, dirty, onClose]);
 
   useEffect(() => {
     const card = cardRef.current;
     if (card === null) return;
-    focusableIn(card)[0]?.focus();
+    // The form's first field, not the ×: opening a dialog lands the human
+    // where the work is; the × stays reachable one Shift+Tab away.
+    const fields = card.querySelectorAll<HTMLElement>(
+      "input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
+    );
+    (fields[0] ?? focusableIn(card)[0])?.focus();
   }, []);
 
   useEffect(() => {
@@ -81,13 +96,21 @@ export function ProfileDialog({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [requestClose]);
 
+  // Arming the discard check moves focus into it and names it: it appears
+  // above the form on an Escape the human may not have meant, so the thing
+  // that appeared must say so itself.
+  useEffect(() => {
+    if (discardArmed) discardRef.current?.querySelector("button")?.focus();
+  }, [discardArmed]);
+
   const body = children({ requestClose, markDirty });
 
   return (
     <div
       className="edit-scrim"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) requestClose();
+        if (event.button !== 0 || event.target !== event.currentTarget) return;
+        requestClose();
       }}
     >
       <div
@@ -98,16 +121,32 @@ export function ProfileDialog({
         aria-labelledby={titleId}
         tabIndex={-1}
       >
-        <div className="edit-title" id={titleId}>
-          {title}
+        <div className="edit-card-header">
+          <h2 className="edit-title" id={titleId}>
+            {title}
+          </h2>
+          <button
+            type="button"
+            className="profile-dialog-close"
+            aria-label="Close profile dialog"
+            disabled={busy}
+            onClick={requestClose}
+          >
+            ×
+          </button>
         </div>
         {discardArmed ? (
-          <div className="device-inline-confirm">
+          <div className="device-inline-confirm" role="alert" ref={discardRef}>
             <p className="device-copy">
               Discard unsaved changes? What was typed in this form goes with them.
             </p>
             <div className="device-actions">
-              <button type="button" className="settings-device-action" onClick={() => onClose()}>
+              <button
+                type="button"
+                className="settings-device-action"
+                disabled={busy}
+                onClick={() => onClose()}
+              >
                 Discard
               </button>
               <button

@@ -17,7 +17,7 @@ describe("profileMetaText", () => {
     ).toBe("claude · opus-4-6 · agent · high thinking");
   });
 
-  it("says no thinking when the profile stores none", () => {
+  it("says nothing about thinking when the profile stores none", () => {
     expect(
       profileMetaText({
         provider: "pi",
@@ -25,10 +25,10 @@ describe("profileMetaText", () => {
         modeId: "agent",
         thinkingOptionId: null,
       }),
-    ).toBe("pi · mimo-2-6 · agent · no thinking");
+    ).toBe("pi · mimo-2-6 · agent");
   });
 
-  it("treats blank thinking as none", () => {
+  it("treats blank thinking as unset", () => {
     expect(
       profileMetaText({
         provider: "pi",
@@ -36,7 +36,7 @@ describe("profileMetaText", () => {
         modeId: "agent",
         thinkingOptionId: "  ",
       }),
-    ).toBe("pi · mimo-2-6 · agent · no thinking");
+    ).toBe("pi · mimo-2-6 · agent");
   });
 });
 

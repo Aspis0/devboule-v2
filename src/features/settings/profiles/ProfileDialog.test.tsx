@@ -15,14 +15,16 @@ describe("ProfileDialog", () => {
   function renderDialog({
     onClose = () => undefined,
     withDirtyButton = false,
+    busy = false,
   }: {
     onClose?: () => void;
     withDirtyButton?: boolean;
+    busy?: boolean;
   } = {}) {
     root = createRoot(container);
     act(() => {
       root!.render(
-        <ProfileDialog title="Edit profile — Coder" onClose={onClose}>
+        <ProfileDialog title="Edit profile — Coder" busy={busy} onClose={onClose}>
           {({ requestClose, markDirty }) => (
             <>
               <input aria-label="First field" />
@@ -80,7 +82,11 @@ describe("ProfileDialog", () => {
     renderDialog();
     const dialog = container.querySelector('[role="dialog"]');
     expect(dialog?.getAttribute("aria-modal")).toBe("true");
-    expect(dialog?.textContent).toContain("Edit profile — Coder");
+    // The labelled-by id names the visible title: a typo in the wiring
+    // would leave the dialog unnamed and every other assertion green.
+    const labelledBy = dialog?.getAttribute("aria-labelledby") ?? "";
+    expect(labelledBy).not.toBe("");
+    expect(container.querySelector(`#${labelledBy}`)?.textContent).toBe("Edit profile — Coder");
     expect(container.querySelector(".edit-scrim")).not.toBeNull();
     expect(container.querySelector(".edit-card")).not.toBeNull();
   });
@@ -94,11 +100,18 @@ describe("ProfileDialog", () => {
     renderDialog();
     const first = field("First field");
     const cancel = buttonByText("Cancel");
+    const close = container.querySelector<HTMLElement>('button[aria-label="Close profile dialog"]');
+    if (!close) throw new Error("dialog × button did not render");
+    // DOM order is ×, field, Cancel: Tab wraps at both ends.
     cancel.focus();
     pressKey("Tab");
-    expect(document.activeElement).toBe(first);
+    expect(document.activeElement).toBe(close);
     pressKey("Tab", true);
     expect(document.activeElement).toBe(cancel);
+    close.focus();
+    pressKey("Tab", true);
+    expect(document.activeElement).toBe(cancel);
+    expect(first).not.toBeNull();
   });
 
   it("closes on Escape when nothing changed", () => {
@@ -140,5 +153,59 @@ describe("ProfileDialog", () => {
     act(() => buttonByText("Cancel").click());
     expect(onClose).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Discard unsaved changes?");
+  });
+
+  it("closes a clean dialog through the × button", () => {
+    const onClose = vi.fn();
+    renderDialog({ onClose });
+    const close = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Close profile dialog"]',
+    );
+    if (!close) throw new Error("dialog × button did not render");
+    act(() => close.click());
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on a left scrim click, never on a card or right click", () => {
+    const onClose = vi.fn();
+    renderDialog({ onClose });
+    const scrim = container.querySelector<HTMLElement>(".edit-scrim");
+    const card = container.querySelector<HTMLElement>(".edit-card");
+    if (!scrim || !card) throw new Error("scrim or card did not render");
+    // Inside the card: the target is not the scrim, so nothing closes.
+    act(() => {
+      card.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    // Right button on the scrim: not a dismissal.
+    act(() => {
+      scrim.dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    // Left button on the scrim itself: close.
+    act(() => {
+      scrim.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds every exit while a save is in flight", () => {
+    const onClose = vi.fn();
+    renderDialog({ onClose, withDirtyButton: true, busy: true });
+    // Dirty or not, nothing closes mid-save: Escape, scrim, ×, Cancel.
+    pressKey("Escape");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Discard unsaved changes?");
+    const scrim = container.querySelector<HTMLElement>(".edit-scrim");
+    act(() => {
+      scrim?.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => buttonByText("Cancel").click());
+    expect(onClose).not.toHaveBeenCalled();
+    // The discard arm itself is unreachable, and Discard is dead if armed.
+    act(() => buttonByText("Make dirty").click());
+    pressKey("Escape");
+    expect(container.textContent).not.toContain("Discard unsaved changes?");
   });
 });

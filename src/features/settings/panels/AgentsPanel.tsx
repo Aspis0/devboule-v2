@@ -327,12 +327,47 @@ export function AgentProfilesPanel() {
   // Who opened the dialog: closing it returns focus there — the row's
   // pencil, or the New-profile button for a creation.
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  // The list itself, for focus after a delete: when the deleted row is
+  // gone there is no pencil left to land on, so the list is the fallback.
+  const listRef = useRef<HTMLOListElement>(null);
+  // Focus owed after a close or a delete, applied from an effect: the
+  // target only exists in the committed DOM, and the dialog's `inert`
+  // subtree is already gone — focusing into `inert`, or before the
+  // re-render lands, is a silent no-op that drops focus to the body.
+  // State, not a ref, so owing focus re-renders into the effect below.
+  const [pendingFocus, setPendingFocus] = useState<
+    { opener: HTMLElement } | { rowIndex: number } | { trashName: string } | null
+  >(null);
+
+  useEffect(() => {
+    if (pendingFocus === null) return;
+    setPendingFocus(null);
+    if ("opener" in pendingFocus) {
+      const { opener } = pendingFocus;
+      // A creation that reached the store's cap disables its own opener,
+      // and focusing a disabled button is a no-op that drops focus to the
+      // body — so a dead opener is left alone.
+      if (opener.isConnected && !(opener instanceof HTMLButtonElement && opener.disabled)) {
+        opener.focus();
+      }
+    } else if ("rowIndex" in pendingFocus) {
+      const rows = listRef.current?.querySelectorAll(".agent-profile-row");
+      const pencil = rows
+        ?.item(Math.min(pendingFocus.rowIndex, (rows?.length ?? 1) - 1))
+        ?.querySelector<HTMLButtonElement>('button[aria-label^="Edit "]');
+      if (pencil) pencil.focus();
+      else listRef.current?.focus();
+    } else {
+      listRef.current
+        ?.querySelector<HTMLButtonElement>(`button[aria-label="Delete ${pendingFocus.trashName}"]`)
+        ?.focus();
+    }
+  }, [pendingFocus]);
   const [deleteArmedId, setDeleteArmedId] = useState<string | null>(null);
-  // The open editor's unsaved draft, keyed to its row. It lives HERE, not in
-  // the editor's own state, because the row the editor is rendered in can be
-  // removed by an in-flight delete and put back by that delete's revert: the
-  // editor unmounts and remounts, and a draft kept locally would remount
-  // empty. Rule 3 of the write discipline (at `persist`) applies to it
+  // The open dialog's unsaved draft, keyed to its row. It lives HERE, not in
+  // the dialog's own state, because the dialog unmounts when its row is
+  // removed by an in-flight delete and remounts on that delete's revert:
+  // a draft kept locally would remount empty. Rule 3 of the write discipline (at `persist`) applies to it
   // exactly as to the standing draft below: no write that did not carry the
   // text may release it.
   const [editorDraft, setEditorDraft] = useState<(ProfileFormSeed & { id: string }) | null>(null);
@@ -540,7 +575,7 @@ export function AgentProfilesPanel() {
     setEditorDraft(null);
     const opener = returnFocusRef.current;
     returnFocusRef.current = null;
-    if (opener !== null && opener.isConnected) opener.focus();
+    if (opener !== null) setPendingFocus({ opener });
   }
 
   function openCreateDialog(opener: HTMLElement) {
@@ -597,10 +632,20 @@ export function AgentProfilesPanel() {
   function remove(id: string) {
     const current = documentRef.current;
     if (current === null) return;
+    const index = current.profiles.findIndex((profile) => profile.id === id);
+    const removedName = current.profiles[index]?.name ?? "";
     const updated = cloneDocument(current);
     updated.profiles = updated.profiles.filter((profile) => profile.id !== id);
     setDeleteArmedId(null);
-    void persist(updated);
+    void persist(updated).then((confirmed) => {
+      // The confirm unmounted with the write, so focus needs a new home.
+      // On success the row is gone: land on the pencil of the row now at
+      // the deleted index, the previous one at the end, or the list itself
+      // when nothing is left. On refusal the row is back: land on the
+      // trash that armed the delete. Owed through the state above, once
+      // the re-render has committed the target.
+      setPendingFocus(confirmed ? { rowIndex: index } : { trashName: removedName });
+    });
   }
 
   function saveProfileFields(id: string, draft: ProfileFormSeed) {
@@ -780,9 +825,17 @@ export function AgentProfilesPanel() {
       {/* Beside the profiles, on purpose: the switch and the profiles it
           governs are one consent surface, and splitting them across tabs
           rebuilds the two-level setting that was refused in so many words. */}
-      <DelegationSetting />
-      <div className="settings-stack settings-stack-spaced agent-profiles">
-        {error === null ? null : (
+      {/* Inert while the dialog is open: `aria-modal` promises the pane
+          behind is hidden from assistive tech, and the trap only holds the
+          keyboard. The dialog renders below, outside both inert subtrees. */}
+      <div inert={dialog !== null}>
+        <DelegationSetting />
+      </div>
+      <div className="settings-stack settings-stack-spaced agent-profiles" inert={dialog !== null}>
+        {/* The error renders here only with no dialog open: an open dialog
+            carries it inside its own card, above the buttons, instead of
+            leaving the sentence behind the scrim. */}
+        {error === null || dialog !== null ? null : (
           <p role="alert" className="device-error">
             <ErrorText sentence={error.sentence} detail={error.detail} id="settings-agents-error" />
           </p>
@@ -865,7 +918,7 @@ export function AgentProfilesPanel() {
             </button>
           </div>
         ) : null}
-        <ol className="agent-profile-list">
+        <ol className="agent-profile-list" ref={listRef} tabIndex={-1}>
           {profiles.map((profile, index) => (
             <li className="agent-profile-row" key={profile.id}>
               <ProfileRow
@@ -888,57 +941,58 @@ export function AgentProfilesPanel() {
             </li>
           ))}
         </ol>
-        {dialog !== null &&
-        document !== null &&
-        (dialog.mode === "create" || dialogTarget !== null) ? (
-          <ProfileDialog
-            title={
-              dialog.mode === "create" ? "New profile" : `Edit profile — ${dialogTarget?.name}`
-            }
-            onClose={closeDialog}
-          >
-            {({ requestClose, markDirty }) =>
-              dialog.mode === "create" ? (
-                <AgentProfileForm
-                  mode="create"
-                  hideHeading
-                  seed={EMPTY_PROFILE_FORM_SEED}
-                  providers={installedProviders}
-                  catalogLoading={catalog === null && catalogError === null}
-                  catalogError={catalogError}
-                  vocabularySupported={providerVocabularySupported}
-                  busy={busy}
-                  onCreate={createProfile}
-                  onDirty={markDirty}
-                  onCancel={requestClose}
-                />
-              ) : (
-                <AgentProfileForm
-                  mode="edit"
-                  hideHeading
-                  seed={
-                    editorDraft?.id === dialog.id
-                      ? editorDraft
-                      : dialogTarget !== null
-                        ? seedFromProfile(dialogTarget)
-                        : EMPTY_PROFILE_FORM_SEED
-                  }
-                  providers={installedProviders}
-                  catalogLoading={catalog === null && catalogError === null}
-                  catalogError={catalogError}
-                  vocabularySupported={providerVocabularySupported}
-                  busy={busy}
-                  onCreate={createProfile}
-                  onSaveSeed={(draft) => saveProfileFields(dialog.id, draft)}
-                  onSeedChange={(draft) => setEditorDraft({ id: dialog.id, ...draft })}
-                  onDirty={markDirty}
-                  onCancel={requestClose}
-                />
-              )
-            }
-          </ProfileDialog>
-        ) : null}
       </div>
+      {dialog !== null &&
+      document !== null &&
+      (dialog.mode === "create" || dialogTarget !== null) ? (
+        <ProfileDialog
+          title={dialog.mode === "create" ? "New profile" : `Edit profile — ${dialogTarget?.name}`}
+          busy={busy}
+          onClose={closeDialog}
+        >
+          {({ requestClose, markDirty }) =>
+            dialog.mode === "create" ? (
+              <AgentProfileForm
+                mode="create"
+                hideHeading
+                seed={EMPTY_PROFILE_FORM_SEED}
+                providers={installedProviders}
+                catalogLoading={catalog === null && catalogError === null}
+                catalogError={catalogError}
+                vocabularySupported={providerVocabularySupported}
+                busy={busy}
+                onCreate={createProfile}
+                onDirty={markDirty}
+                formError={error}
+                onCancel={requestClose}
+              />
+            ) : (
+              <AgentProfileForm
+                mode="edit"
+                hideHeading
+                seed={
+                  editorDraft?.id === dialog.id
+                    ? editorDraft
+                    : dialogTarget !== null
+                      ? seedFromProfile(dialogTarget)
+                      : EMPTY_PROFILE_FORM_SEED
+                }
+                providers={installedProviders}
+                catalogLoading={catalog === null && catalogError === null}
+                catalogError={catalogError}
+                vocabularySupported={providerVocabularySupported}
+                busy={busy}
+                onCreate={createProfile}
+                onSaveSeed={(draft) => saveProfileFields(dialog.id, draft)}
+                onSeedChange={(draft) => setEditorDraft({ id: dialog.id, ...draft })}
+                onDirty={markDirty}
+                formError={error}
+                onCancel={requestClose}
+              />
+            )
+          }
+        </ProfileDialog>
+      ) : null}
     </div>
   );
 }

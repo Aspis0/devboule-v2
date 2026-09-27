@@ -73,12 +73,12 @@ export function ProfileRow({
         {profileTileText(profile)}
       </span>
       <div className="agent-profile-main">
-        <span className="settings-card-title profile-name">{profile.name}</span>
-        <span className="agent-profile-meta profile-meta">{profileMetaText(profile)}</span>
+        <span className="profile-name">{profile.name}</span>
+        <span className="profile-meta">{profileMetaText(profile)}</span>
         {profile.spawnPrompt ? (
           <span className="profile-spawn">
             <PenMark />
-            <span>{profile.spawnPrompt}</span>
+            <span className="profile-spawn-text">{profile.spawnPrompt}</span>
           </span>
         ) : (
           <span className="profile-spawn profile-spawn-empty">
@@ -120,7 +120,7 @@ export function ProfileRow({
       <div className="profile-row-actions">
         <button
           type="button"
-          className={`profile-icon-btn${isFirst ? " is-dim" : ""}`}
+          className={`profile-icon-btn${isFirst ? " profile-is-dim" : ""}`}
           aria-label={`Move ${profile.name} up`}
           title={`Move ${profile.name} up`}
           disabled={locked || isFirst}
@@ -130,7 +130,7 @@ export function ProfileRow({
         </button>
         <button
           type="button"
-          className={`profile-icon-btn${isLast ? " is-dim" : ""}`}
+          className={`profile-icon-btn${isLast ? " profile-is-dim" : ""}`}
           aria-label={`Move ${profile.name} down`}
           title={`Move ${profile.name} down`}
           disabled={locked || isLast}

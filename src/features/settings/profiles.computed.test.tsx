@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
 // The Agents rows and the profile dialog against the real stylesheets: the
-// assembled sheets in bundle order (tokens, global, settings, profiles —
-// main.tsx first, the lazy settings chunk after), so a geometry regression
-// against SPEC-regions.md §Settings fails here, not live. Bare single-class
-// selectors only: that is what the cssProof harness injects.
+// assembled sheets in the bundle's own order — tokens, global (main.tsx),
+// then the lazy settings chunk in ESM evaluation order, which is profiles
+// (imported through AgentsPanel at SettingsSurface.tsx:12) before settings
+// (SettingsSurface.tsx:23). Bare single-class selectors only: that is what
+// the cssProof harness injects.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -32,8 +33,8 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
   const { inject, rulesFor, token } = assembleCssProof([
     read("src/styles/tokens.css"),
     read("src/styles/global.css"),
-    read("src/features/settings/settings.css"),
     read("src/features/settings/profiles.css"),
+    read("src/features/settings/settings.css"),
   ]);
 
   it("draws the glyph tile 28 px with an 8 px radius", () => {
@@ -45,33 +46,51 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
     expect(style.borderRadius).toBe("8px");
   });
 
+  it("gives the main column the row's growth, gap and min-width", () => {
+    inject([".agent-profile-main"]);
+    const main = box("agent-profile-main");
+    const style = getComputedStyle(main);
+    expect(style.display).toBe("grid");
+    expect(style.flexGrow).toBe("1");
+    expect(style.flexBasis).toBe("260px");
+    expect(style.gap).toBe("3px");
+    expect(style.minWidth).toBe("0");
+  });
+
   it("sets the row type to the spec's sizes", () => {
+    // The name carries no other sizing class: `.settings-card-title` (13 px
+    // in settings.css, which is later in the chunk) is not on the element,
+    // so 14 px here is won, not unopposed-by-absence.
     inject([".profile-name", ".profile-meta", ".profile-spawn"]);
     expect(getComputedStyle(box("profile-name")).fontSize).toBe("14px");
     expect(getComputedStyle(box("profile-meta")).fontSize).toBe("12px");
     expect(getComputedStyle(box("profile-spawn")).fontSize).toBe("13px");
   });
 
-  it("clamps the row's spawn prompt to two lines", () => {
-    inject([".profile-spawn"]);
-    expect(getComputedStyle(box("profile-spawn")).overflow).toBe("hidden");
-    const source = rulesFor(".profile-spawn");
-    expect(source).toContain("-webkit-line-clamp: 2");
+  it("lays the pen beside the spawn text and clamps the text to two lines", () => {
+    inject([".profile-spawn", ".profile-spawn-text"]);
+    const row = box("profile-spawn");
+    expect(getComputedStyle(row).display).toBe("flex");
+    const text = box("profile-spawn-text");
+    expect(getComputedStyle(text).overflow).toBe("hidden");
+    // happy-dom does not compute `-webkit-line-clamp` (undefined above),
+    // so the two-line budget is read from the assembled source — stated as
+    // a source check, not a computed value.
+    expect(rulesFor(".profile-spawn-text")).toContain("-webkit-line-clamp: 2");
   });
 
   it("sizes the row's icon buttons 26 px and dims the dead ends", () => {
-    inject([".profile-icon-btn", ".is-dim"]);
+    inject([".profile-icon-btn", ".profile-is-dim"]);
     const button = box("profile-icon-btn");
     expect(getComputedStyle(button).width).toBe("26px");
     expect(getComputedStyle(button).height).toBe("26px");
-    expect(getComputedStyle(box("is-dim")).opacity).toBe("0.4");
+    expect(getComputedStyle(box("profile-is-dim")).opacity).toBe("0.4");
   });
 
   it("paints the delete action in the danger colour", () => {
     inject([".profile-icon-btn", ".profile-icon-btn-trash"]);
-    const danger = token("--danger");
-    expect(danger).not.toBeUndefined();
-    expect(rulesFor(".profile-icon-btn-trash")).toContain(danger);
+    const trash = box("profile-icon-btn profile-icon-btn-trash");
+    expect(getComputedStyle(trash).color).toBe(token("--danger"));
   });
 
   it("covers the window with the scrim and centres the dialog", () => {
@@ -83,11 +102,12 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
     expect(style.backgroundColor).toBe(token("--scrim"));
   });
 
-  it("holds the dialog card at 480 px with a 14 px radius", () => {
+  it("holds the dialog card at 480 px with a 14 px radius, scrolling inside", () => {
     inject([".edit-card"]);
     const card = box("edit-card");
     const style = getComputedStyle(card);
     expect(style.width).toBe("480px");
     expect(style.borderRadius).toBe("14px");
+    expect(style.overflowY).toBe("auto");
   });
 });

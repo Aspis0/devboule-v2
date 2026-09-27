@@ -191,7 +191,12 @@ describe("Settings agents panel", () => {
   }
 
   function rowByName(name: string): HTMLElement {
-    const row = profileRows().find((row) => row.textContent?.includes(name));
+    // Keyed on the name element, not the row's whole text: the row now
+    // carries arbitrary user prose (spawn prompt, note), and a fixture
+    // naming another profile would otherwise retarget the lookup.
+    const row = profileRows().find(
+      (candidate) => candidate.querySelector(".profile-name")?.textContent === name,
+    );
     if (!row) throw new Error(`profile row ${name} did not render`);
     return row;
   }
@@ -215,8 +220,10 @@ describe("Settings agents panel", () => {
   }
 
   function sectionButton(text: string): HTMLButtonElement {
+    // The whole Agents tab: the dialog renders outside the stack now, so
+    // the scope is the panel, not the list column.
     const button = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".agent-profiles button"),
+      container.querySelectorAll<HTMLButtonElement>("#settings-panel-agents button"),
     ).find((candidate) => candidate.textContent === text);
     if (!button) throw new Error(`button ${text} did not render`);
     return button;
@@ -271,6 +278,13 @@ describe("Settings agents panel", () => {
     // resolved default, exactly as the tool-toggles block does for its write.
     vi.mocked(agentProfilesSet).mockReset();
     vi.mocked(agentProfilesSet).mockImplementation(async () => undefined);
+    // The read side gets the same treatment: a queued read-back a test never
+    // consumed would otherwise leak into the next test's initial load — the
+    // mechanism behind a whole-file cascade, now drained here instead.
+    vi.mocked(agentProfilesGet).mockReset();
+    vi.mocked(agentProfilesGet).mockImplementation(async () => ({
+      document: { profiles: [], standingInstructions: "" },
+    }));
   });
 
   it("hides the section and never fetches when the daemon lacks agent_profiles", async () => {
@@ -307,11 +321,12 @@ describe("Settings agents panel", () => {
       standingInstructions: "",
     });
 
-    expect(
-      profileRows().map((row) => row.querySelector(".settings-card-title")?.textContent),
-    ).toEqual(["Beta", "Alpha"]);
-    expect(rowByName("Beta").querySelector<HTMLElement>(".agent-profile-meta")?.textContent).toBe(
-      "grok · grok-4 · ask · no thinking",
+    expect(profileRows().map((row) => row.querySelector(".profile-name")?.textContent)).toEqual([
+      "Beta",
+      "Alpha",
+    ]);
+    expect(rowByName("Beta").querySelector<HTMLElement>(".profile-meta")?.textContent).toBe(
+      "grok · grok-4 · ask",
     );
     // The edges are where a reorder bug would show: the first row cannot move
     // up and the last cannot move down.
@@ -420,9 +435,10 @@ describe("Settings agents panel", () => {
       profiles: [alpha, beta],
       standingInstructions: "",
     });
-    expect(
-      profileRows().map((row) => row.querySelector(".settings-card-title")?.textContent),
-    ).toEqual(["Alpha", "Beta"]);
+    expect(profileRows().map((row) => row.querySelector(".profile-name")?.textContent)).toEqual([
+      "Alpha",
+      "Beta",
+    ]);
   });
 
   it("deletes only the armed profile, and only after the inline confirm", async () => {
@@ -450,9 +466,9 @@ describe("Settings agents panel", () => {
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
     expect(sent?.profiles.map((profile) => profile.name)).toEqual(["Coder"]);
-    expect(
-      profileRows().map((row) => row.querySelector(".settings-card-title")?.textContent),
-    ).toEqual(["Coder"]);
+    expect(profileRows().map((row) => row.querySelector(".profile-name")?.textContent)).toEqual([
+      "Coder",
+    ]);
   });
 
   it("saves a rename and note while every other field travels untouched", async () => {
@@ -922,6 +938,63 @@ describe("Settings agents panel", () => {
     });
   });
 
+  it("carries an older setting's denials through a save untouched", async () => {
+    const guarded = makeProfile({
+      toolOverlay: ["devboule_send_message", "devboule_create_agent", "devboule_list_profiles"],
+    });
+    await renderAgentsPanel({ profiles: [guarded], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    // One honest line, one action — and no per-tool control anywhere.
+    expect(container.textContent).toContain(
+      "This profile blocks some tools from an older setting.",
+    );
+    expect(container.textContent).not.toContain("Deny a tool by name");
+    expect(container.textContent).not.toContain("Add denial");
+    expect(container.textContent).not.toContain("Remove denial");
+    expect(container.textContent).not.toContain("Other stored tool denials");
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [guarded],
+      standingInstructions: "",
+    });
+  });
+
+  it("Allow all tools clears only the non-peer denials", async () => {
+    const guarded = makeProfile({
+      toolOverlay: ["devboule_send_message", "devboule_create_agent", "devboule_list_profiles"],
+    });
+    await renderAgentsPanel({ profiles: [guarded], standingInstructions: "" });
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [{ ...guarded, toolOverlay: ["devboule_send_message", "devboule_create_agent"] }],
+        standingInstructions: "",
+      },
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    await act(async () => dialogButton("Allow all tools").click());
+    await act(async () => undefined);
+    expect(container.textContent).not.toContain(
+      "This profile blocks some tools from an older setting.",
+    );
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [{ ...guarded, toolOverlay: ["devboule_send_message", "devboule_create_agent"] }],
+      standingInstructions: "",
+    });
+  });
+
   it("shows the tile, the thinking meta and the spawn prompt on the row", async () => {
     await renderAgentsPanel({
       profiles: [
@@ -943,13 +1016,11 @@ describe("Settings agents panel", () => {
     );
     expect(coder.querySelector(".profile-spawn")?.textContent).toContain("Work in small steps.");
 
-    // No icon, no thinking, no spawn prompt: the letter tile and the named
-    // absences, never a blank line.
+    // No icon, no thinking option, no spawn prompt: the letter tile, a meta
+    // line that claims nothing about thinking, and the named absence.
     const plain = rowByName("Plain");
     expect(plain.querySelector(".profile-tile")?.textContent).toBe("P");
-    expect(plain.querySelector(".profile-meta")?.textContent).toBe(
-      "grok · grok-4 · ask · no thinking",
-    );
+    expect(plain.querySelector(".profile-meta")?.textContent).toBe("grok · grok-4 · ask");
     expect(plain.querySelector(".profile-spawn")?.textContent).toContain("No spawn prompt");
   });
 
@@ -966,18 +1037,23 @@ describe("Settings agents panel", () => {
       "button[aria-label='Move Alpha down']",
     );
     expect(firstUp?.disabled).toBe(true);
-    expect(firstUp?.classList.contains("is-dim")).toBe(true);
+    expect(firstUp?.classList.contains("profile-is-dim")).toBe(true);
     expect(lastDown?.disabled).toBe(true);
-    expect(lastDown?.classList.contains("is-dim")).toBe(true);
+    expect(lastDown?.classList.contains("profile-is-dim")).toBe(true);
     const liveDown = rowByName("Beta").querySelector<HTMLButtonElement>(
       "button[aria-label='Move Beta down']",
     );
     expect(liveDown?.disabled).toBe(false);
-    expect(liveDown?.classList.contains("is-dim")).toBe(false);
+    expect(liveDown?.classList.contains("profile-is-dim")).toBe(false);
   });
 
   it("opens one dialog for creating and one for editing, with the full spawn text", async () => {
-    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    const prompt =
+      "First line of the standing orders. Second line with the details. Third line nobody clamps.";
+    await renderAgentsPanel({
+      profiles: [makeProfile({ spawnPrompt: prompt })],
+      standingInstructions: "",
+    });
 
     await act(async () => sectionButton("New profile").click());
     await act(async () => undefined);
@@ -995,6 +1071,7 @@ describe("Settings agents panel", () => {
       '.edit-card textarea[aria-label="Profile spawn prompt"]',
     );
     if (!spawnField) throw new Error("dialog spawn prompt field did not render");
+    expect(spawnField.value).toBe(prompt);
   });
 
   it("returns focus to the row's pencil when the dialog closes", async () => {
@@ -1035,6 +1112,120 @@ describe("Settings agents panel", () => {
     await act(async () => dialogButton("Discard").click());
     await act(async () => undefined);
     expect(container.querySelector(".edit-scrim")).toBeNull();
+  });
+
+  it("shows a refused save inside the dialog card, next to Save", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const nameField = container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Profile name"]',
+    );
+    if (!nameField) throw new Error("dialog name field did not render");
+    await typeText(nameField, "🦄".repeat(61));
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    // The dialog stays open, and the sentence is inside the card — not
+    // painted behind the scrim at the top of the pane.
+    expect(container.querySelector(".edit-scrim")).not.toBeNull();
+    const cardAlert = container.querySelector('.edit-card [role="alert"]');
+    expect(cardAlert?.textContent).toContain("61 characters");
+    expect(container.querySelector('.agent-profiles > [role="alert"]')).toBeNull();
+  });
+
+  it("holds the dialog's exits while its save is in flight", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [makeProfile({ name: "Scout" })], standingInstructions: "" },
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const nameField = container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Profile name"]',
+    );
+    if (!nameField) throw new Error("dialog name field did not render");
+    await typeText(nameField, "Scout");
+
+    let resolveSet: (() => void) | undefined;
+    vi.mocked(agentProfilesSet).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSet = resolve;
+        }),
+    );
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    // In flight: Escape arms nothing, Cancel is dead, the card stays.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.textContent).not.toContain("Discard unsaved changes?");
+    expect(container.querySelector(".edit-scrim")).not.toBeNull();
+    const cancel = dialogButton("Cancel");
+    expect(cancel.disabled).toBe(true);
+
+    await act(async () => {
+      resolveSet?.();
+    });
+    await act(async () => undefined);
+    // Confirmation closes the dialog the save already paid for.
+    expect(container.querySelector(".edit-scrim")).toBeNull();
+  });
+
+  it("lands delete focus on the next row's pencil, the previous at the end", async () => {
+    await renderAgentsPanel({
+      profiles: [
+        makeProfile({ id: "a", name: "Alpha" }),
+        makeProfile({ id: "b", name: "Beta" }),
+        makeProfile({ id: "c", name: "Coder" }),
+      ],
+      standingInstructions: "",
+    });
+    vi.mocked(agentProfilesGet).mockResolvedValue({
+      document: {
+        profiles: [makeProfile({ id: "b", name: "Beta" })],
+        standingInstructions: "",
+      },
+    });
+
+    await act(async () => rowButton("Alpha", "Delete").click());
+    await act(async () => undefined);
+    await act(async () => sectionButton("Delete now").click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Edit Beta");
+  });
+
+  it("lands delete focus on the list when nothing is left, and on the trash when refused", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    vi.mocked(agentProfilesSet).mockRejectedValueOnce({
+      code: "io",
+      message: "profile file unwritable",
+    });
+
+    await act(async () => rowButton("Explorer", "Delete").click());
+    await act(async () => undefined);
+    await act(async () => sectionButton("Delete now").click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    // Refused: the row is back, focus on the trash that armed it.
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Delete Explorer");
+
+    vi.mocked(agentProfilesSet).mockImplementation(async () => undefined);
+    vi.mocked(agentProfilesGet).mockResolvedValue({
+      document: { profiles: [], standingInstructions: "" },
+    });
+    await act(async () => rowButton("Explorer", "Delete").click());
+    await act(async () => undefined);
+    await act(async () => sectionButton("Delete now").click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    // Confirmed with nothing left: the list itself holds focus.
+    expect(document.activeElement?.classList.contains("agent-profile-list")).toBe(true);
   });
 
   it("holds the row's agents tick while that profile's dialog is open", async () => {
@@ -1235,9 +1426,7 @@ describe("Settings agents panel", () => {
       "Maps the work before anyone builds.",
     );
     // The row under it is exactly what the human was seeing before.
-    expect(rowByName("Explorer").querySelector(".settings-card-title")?.textContent).toBe(
-      "Explorer",
-    );
+    expect(rowByName("Explorer").querySelector(".profile-name")?.textContent).toBe("Explorer");
 
     // The retry sends the same draft, and confirmation — never submission —
     // closes the editor.
@@ -1301,9 +1490,7 @@ describe("Settings agents panel", () => {
     expect(editor?.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(
       "Maps the work before anyone builds.",
     );
-    expect(rowByName("Explorer").querySelector(".settings-card-title")?.textContent).toBe(
-      "Explorer",
-    );
+    expect(rowByName("Explorer").querySelector(".profile-name")?.textContent).toBe("Explorer");
   });
 
   it("keeps the editor's draft across a confirmed write from another row", async () => {
@@ -1909,7 +2096,7 @@ describe("Settings agents panel — new profile form", () => {
    */
   async function openRowEditor(name: string): Promise<HTMLElement> {
     const row = Array.from(container.querySelectorAll<HTMLElement>(".agent-profile-row")).find(
-      (candidate) => candidate.textContent?.includes(name),
+      (candidate) => candidate.querySelector(".profile-name")?.textContent === name,
     );
     if (!row) throw new Error(`profile row ${name} did not render`);
     const edit = row.querySelector<HTMLButtonElement>(`button[aria-label="Edit ${name}"]`);
@@ -1974,8 +2161,10 @@ describe("Settings agents panel — new profile form", () => {
   }
 
   function rowTick(name: string): HTMLInputElement {
-    const row = rowTicks().find((candidate) =>
-      candidate.closest(".agent-profile-row")?.textContent?.includes(name),
+    const row = rowTicks().find(
+      (candidate) =>
+        candidate.closest(".agent-profile-row")?.querySelector(".profile-name")?.textContent ===
+        name,
     );
     if (!row) throw new Error(`tick for ${name} did not render`);
     return row;
@@ -2059,6 +2248,12 @@ describe("Settings agents panel — new profile form", () => {
     vi.mocked(agentProfilesSet).mockReset();
     vi.mocked(agentProfilesSet).mockImplementation(async () => undefined);
     vi.mocked(providerVocabularyGet).mockReset();
+    // Drained like the write above: a queued read-back must never leak
+    // into the next test's initial load.
+    vi.mocked(agentProfilesGet).mockReset();
+    vi.mocked(agentProfilesGet).mockImplementation(async () => ({
+      document: { profiles: [], standingInstructions: "" },
+    }));
   });
 
   it("saves a new profile with enabledForAgents false and an empty id at the end of the list", async () => {
@@ -3092,7 +3287,7 @@ describe("Settings agents panel — new profile form", () => {
 
     function agentRow(name: string): HTMLElement {
       const row = Array.from(container.querySelectorAll<HTMLElement>(".agent-profile-row")).find(
-        (candidate) => candidate.textContent?.includes(name),
+        (candidate) => candidate.querySelector(".profile-name")?.textContent === name,
       );
       if (!row) throw new Error(`profile row ${name} did not render`);
       return row;
@@ -3268,6 +3463,17 @@ describe("Settings agents panel — new profile form", () => {
     await openEditorOn("Explorer");
     await collectScenario("editor open");
 
+    // 15b. The discard check armed: Escape on a dirty dialog.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    const discardName = container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!discardName) throw new Error("editor name field did not render");
+    await typeText(discardName, "Scout");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await collectScenario("discard armed");
+
     // 16. The name-cap refusal.
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
     await openEditorOn("Explorer");
@@ -3438,14 +3644,14 @@ describe("Settings agents panel — new profile form", () => {
     // the one feature-list sentence (the provider answered and offered
     // nothing; the read-only rows and their "saved but not delivered"
     // sentence went with the D4 prune, and the ACP cold start renders a
-    // role=status ask that the in-flight ask below already collects),
-    // the overlay add
-    // control's own sentence, the three cap refusals, the model/mode
+    // role=status ask that the in-flight ask below already collects), the
+    // three cap refusals (the per-tool add control went with the owner
+    // rule, and its sentence with it), the model/mode
     // refusals, the two profile-cap sentences, the two catalog sentences,
     // the idle-close field's own hint and the off toggle's note, the shell page
     // intro (scenario 24 collects it through the surface; the title stays out), the tick notes (including the
     // open-dialog clause on the row tick), the no-spawn-prompt sentence on
-    // rows without one, and the standing
+    // rows without one, the discard check's sentence, and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry), and the standing box's keep-it-short
     // hint under its textarea. A new sentence that does not come

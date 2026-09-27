@@ -54,6 +54,13 @@
   font-size: 13px;
 }
 
+.agent-profile-main {
+  display: grid;
+  flex: 1 1 260px;
+  gap: 3px;
+  min-width: 0;
+}
+
 /* The row's type, in the spec's sizes and never mono. */
 .profile-name {
   color: var(--ink);
@@ -65,12 +72,10 @@
   font-size: 12px;
 }
 
-/* The spawn prompt on the row: two lines, the rest lives in the dialog. */
+/* The spawn prompt on the row: the pen beside the first line, the text
+   clamped to two lines inside its own block. */
 .profile-spawn {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  display: flex;
   gap: 6px;
   margin-top: 5px;
   color: var(--ink-soft);
@@ -78,11 +83,18 @@
   line-height: 1.45;
 }
 
+.profile-spawn-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .profile-spawn-pen {
   flex: none;
   width: 12px;
   height: 12px;
-  margin-top: 3px;
+  margin-top: 2px;
   color: var(--tone-unattended);
   fill: none;
   stroke: currentColor;
@@ -134,6 +146,12 @@
   stroke-linejoin: round;
 }
 
+.profile-icon-btn:disabled {
+  color: var(--silence);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .profile-icon-btn-trash {
   color: var(--danger);
 }
@@ -142,7 +160,7 @@
   color: var(--danger);
 }
 
-.is-dim {
+.profile-is-dim {
   opacity: 0.4;
 }
 
@@ -161,6 +179,7 @@
   max-width: calc(100vw - 48px);
   max-height: calc(100vh - 48px);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px;
   background: var(--panel-card);
   border: 1px solid var(--line-strong);
@@ -169,14 +188,61 @@
 }
 
 .edit-title {
+  margin: 0;
   color: var(--ink);
   font-size: 15px;
   font-weight: 500;
 }
 
+.edit-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.profile-dialog-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.profile-dialog-close:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.profile-dialog-close:disabled {
+  color: var(--silence);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .edit-card .agent-inline-editor {
   padding: 0;
   border: none;
+}
+
+/* The legacy-denials line: one quiet sentence, one action. */
+.agent-profile-legacy-denials {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-profile-legacy-denials .device-field-hint {
+  margin: 0;
 }
 
 .agent-profile-note {

@@ -4,16 +4,15 @@ import { rustTrim } from "../AgentProfileDraft";
 type MetaSource = Pick<AgentProfile, "provider" | "model" | "modeId" | "thinkingOptionId">;
 
 /**
- * The profile row's meta line, in the spec's order: provider, model, mode,
- * thinking. A stored thinking option reads as "<id> thinking"; a profile
- * without one reads as "no thinking" — the row must not go quiet on the
- * fourth axis just because the store holds nothing for it.
+ * The profile row's meta line: provider, model, mode, and the thinking
+ * option — but only when the profile names one. An unset thinking option
+ * means the daemon sends no effort and the child runs on the provider's own
+ * default, so the row says nothing rather than claiming "no thinking".
  */
 export function profileMetaText(profile: MetaSource): string {
   const thinking = rustTrim(profile.thinkingOptionId ?? "");
-  return `${profile.provider} · ${profile.model} · ${profile.modeId} · ${
-    thinking === "" ? "no thinking" : `${thinking} thinking`
-  }`;
+  const base = `${profile.provider} · ${profile.model} · ${profile.modeId}`;
+  return thinking === "" ? base : `${base} · ${thinking} thinking`;
 }
 
 type TileSource = Pick<AgentProfile, "name" | "icon">;

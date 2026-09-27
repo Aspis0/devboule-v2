@@ -108,6 +108,7 @@ export function AgentProfileForm({
   onSeedChange,
   onDirty,
   hideHeading = false,
+  formError = null,
   onCancel,
 }: {
   /** "create" opens with empty fields; "edit" seeds from the stored row. */
@@ -139,6 +140,12 @@ export function AgentProfileForm({
    * its own heading rather than naming the profile twice.
    */
   hideHeading?: boolean;
+  /**
+   * The panel's error, if the failed write belongs to this dialog: refusal
+   * sentences render here, above the buttons, instead of behind the scrim.
+   * Null renders nothing — the card must not hold an empty alert.
+   */
+  formError?: ErrorSentence | null;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(seed.name);
@@ -622,6 +629,15 @@ export function AgentProfileForm({
           with.
         </p>
       ) : null}
+      {formError === null ? null : (
+        <p role="alert" className="device-error">
+          <ErrorText
+            sentence={formError.sentence}
+            detail={formError.detail}
+            id="settings-profile-dialog-error"
+          />
+        </p>
+      )}
       <div className="device-actions">
         <button
           type="button"
@@ -631,7 +647,7 @@ export function AgentProfileForm({
         >
           {mode === "create" ? "Create profile" : "Save"}
         </button>
-        <button type="button" className="settings-device-action" onClick={onCancel}>
+        <button type="button" className="settings-device-action" disabled={busy} onClick={onCancel}>
           Cancel
         </button>
       </div>

@@ -1,17 +1,13 @@
 /**
- * The profile form's tool-overlay editor: the peer-restriction tick, the
- * stored denials beyond the peer tools, and the add control. It edits one
- * list — the profile's whole overlay, carried verbatim — so an ordinary edit
- * can never drop a restriction that shares the list with something else. The
- * daemon serves a fixed set of tool names and refuses the save naming any
- * other; no daemon-published list of them exists for the app to offer, so
- * the add control is free text and says so.
+ * The profile form's tool-overlay control: the peer-restriction tick, and one
+ * honest line for denials an older setting left behind. There is no per-tool
+ * choice here — the owner ruled it out — so stored denials beyond the peer
+ * tools are shown, never edited: the tick adds or removes only the peer pair
+ * inside the stored list, and "Allow all tools" drops only the non-peer
+ * entries. The draft always carries the whole list, so a save writes back
+ * exactly what is stored and can never silently drop a restriction.
  */
-import { useState } from "react";
 import { PEER_TOOLS } from "./profileOverlay";
-import { rustTrim, utf8Bytes } from "./AgentProfileDraft";
-
-const MAX_TOOL_OVERLAY_NAME_BYTES = 128;
 
 export function AgentProfileOverlayEditor({
   overlay,
@@ -24,8 +20,6 @@ export function AgentProfileOverlayEditor({
   /** Every change, as the next whole overlay. */
   onChange: (overlay: string[]) => void;
 }) {
-  const [tool, setTool] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const restricted = PEER_TOOLS.every((peer) => overlay.includes(peer));
   const extras = overlay.filter((name) => !PEER_TOOLS.includes(name));
 
@@ -33,26 +27,11 @@ export function AgentProfileOverlayEditor({
     const next = on
       ? [...overlay, ...PEER_TOOLS.filter((peer) => !overlay.includes(peer))]
       : overlay.filter((name) => !PEER_TOOLS.includes(name));
-    setError(null);
     onChange(next);
   }
 
-  function addDenial() {
-    const name = rustTrim(tool);
-    if (name === "" || overlay.includes(name) || PEER_TOOLS.includes(name)) {
-      setTool("");
-      return;
-    }
-    const bytes = utf8Bytes(name);
-    if (bytes > MAX_TOOL_OVERLAY_NAME_BYTES) {
-      setError(
-        `A denied tool name is ${bytes} bytes, over the ${MAX_TOOL_OVERLAY_NAME_BYTES}-byte cap. Nothing was added.`,
-      );
-      return;
-    }
-    setError(null);
-    onChange([...overlay, name]);
-    setTool("");
+  function allowAll() {
+    onChange(overlay.filter((name) => PEER_TOOLS.includes(name)));
   }
 
   return (
@@ -74,52 +53,20 @@ export function AgentProfileOverlayEditor({
         </span>
       </label>
       {extras.length > 0 ? (
-        <div className="device-field">
-          <span className="settings-subheading">Other stored tool denials</span>
-          {extras.map((name) => (
-            <div className="agent-profile-create-row" key={name}>
-              <span className="device-copy">{name}</span>
-              <button
-                type="button"
-                className="settings-device-action"
-                disabled={busy}
-                aria-label={`Remove denied tool ${name}`}
-                onClick={() => onChange(overlay.filter((kept) => kept !== name))}
-              >
-                Remove denial
-              </button>
-            </div>
-          ))}
+        <div className="agent-profile-legacy-denials">
+          <span className="device-field-hint">
+            This profile blocks some tools from an older setting.
+          </span>
+          <button
+            type="button"
+            className="settings-device-action"
+            disabled={busy}
+            onClick={allowAll}
+          >
+            Allow all tools
+          </button>
         </div>
       ) : null}
-      <div className="agent-profile-create-row">
-        <label className="device-field">
-          Deny a tool by name
-          <input
-            aria-label="New denied tool name"
-            value={tool}
-            disabled={busy}
-            onChange={(event) => setTool(event.target.value)}
-          />
-          <span className="device-field-hint">
-            The daemon serves a fixed set of tools and refuses the save naming any other; its
-            refusal names the tool. No list of the served names is published here.
-          </span>
-          {error === null ? null : (
-            <span className="device-field-hint" role="alert">
-              {error}
-            </span>
-          )}
-        </label>
-        <button
-          type="button"
-          className="settings-device-action"
-          disabled={busy || rustTrim(tool) === ""}
-          onClick={addDenial}
-        >
-          Add denial
-        </button>
-      </div>
     </>
   );
 }
