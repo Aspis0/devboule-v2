@@ -44,6 +44,15 @@ fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
 }
 
+fn canonical_plain_path(path: &Path) -> String {
+    let canonical = std::fs::canonicalize(path).expect("canonical path");
+    let canonical = canonical.to_string_lossy();
+    canonical
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canonical)
+        .to_string()
+}
+
 /// Point the daemons these tests spawn at the **file** secret store, rooted in
 /// that daemon's own temp runtime dir, so the identity it writes dies with the
 /// directory.
@@ -559,11 +568,8 @@ fn acp_session_new_carries_a_plain_cwd() {
         .as_str()
         .expect("session/new carries a cwd")
         .to_string();
-    assert_eq!(
-        cwd,
-        dir.to_string_lossy(),
-        "session/new must carry the plain cwd"
-    );
+    let expected_cwd = canonical_plain_path(&dir);
+    assert_eq!(cwd, expected_cwd, "session/new must carry the plain cwd");
     test.client
         .session_close(&session.id)
         .expect("close ACP session");

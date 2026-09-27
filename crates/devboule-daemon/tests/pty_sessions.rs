@@ -3368,7 +3368,12 @@ fn a_terminal_in_a_workspace_starts_in_a_plain_path() {
     let session = client
         .session_create(Some(workspace.id.clone()), SessionKind::Terminal, None)
         .expect("create terminal in workspace");
-    let plain = dir.to_string_lossy().to_string();
+    let canonical = std::fs::canonicalize(&dir).expect("canonical project dir");
+    let canonical = canonical.to_string_lossy();
+    let plain = canonical
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canonical)
+        .to_string();
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
