@@ -709,10 +709,16 @@ pub struct SessionRegistry {
     /// lock and never after it, so a count and the reservation it answers
     /// with cannot be split by another create.
     terminal_slots: Arc<Mutex<HashMap<String, usize>>>,
-    /// Write identities for display-name updates, one counter per session.
-    /// A rollback restores only its own epoch (see `rollback_display_name`);
-    /// the table is taken after `inner`, never before it, and never across
-    /// the journal write.
+    /// Write identities for display-name updates. The stamp is one global
+    /// monotonic counter — never reset, not even when a session id is
+    /// re-registered — so a stale rollback can never match a new
+    /// incarnation's epoch. The table holds the last stamp per live
+    /// session and is reaped everywhere the session leaves the map. Lock
+    /// order: the table is taken after `inner`, never before it, and
+    /// never across the journal write; the counter itself is lock-free.
+    /// Poison on either half means skip (conservative): the record keeps
+    /// its landed value and a missed reap retries at the next removal.
+    display_name_epoch: Arc<AtomicU64>,
     display_name_epochs: Arc<Mutex<HashMap<String, u64>>>,
     #[cfg(test)]
     journal_list_calls: Arc<AtomicU64>,
@@ -816,6 +822,7 @@ impl SessionRegistry {
             message_brakes: Arc::new(Mutex::new(MessageBrakeTable::default())),
             creations: Arc::new(Mutex::new(AgentCreationTable::default())),
             terminal_slots: Arc::new(Mutex::new(HashMap::new())),
+            display_name_epoch: Arc::new(AtomicU64::new(0)),
             display_name_epochs: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             journal_list_calls: Arc::new(AtomicU64::new(0)),
@@ -3379,7 +3386,10 @@ impl SessionRegistry {
                 return Ok(false);
             }
             let previous = session.metadata.display_name.replace(name.to_string());
-            let writer_epoch = self.next_display_name_epoch_locked(session_id);
+            // The stamp and the record move under `inner` together, so no
+            // two writers share an identity.
+            let writer_epoch = self.display_name_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+            self.set_display_name_epoch_locked(session_id, writer_epoch);
             (previous, writer_epoch)
         };
         let changed = previous.as_deref() != Some(name);
@@ -3395,18 +3405,12 @@ impl SessionRegistry {
         Ok(changed)
     }
 
-    /// The next display-name write identity for `session_id`. Called with
-    /// `inner` held: the epoch and the record move under one lock, so no
-    /// two writers share an identity and a rollback can tell its own write
-    /// from a newer one.
-    fn next_display_name_epoch_locked(&self, session_id: &str) -> u64 {
-        let mut epochs = self
-            .display_name_epochs
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let epoch = epochs.entry(session_id.to_string()).or_insert(0);
-        *epoch += 1;
-        *epoch
+    /// Record a display-name write's identity. Called with `inner` held:
+    /// the stamp and the record move under one lock.
+    fn set_display_name_epoch_locked(&self, session_id: &str, writer_epoch: u64) {
+        if let Ok(mut epochs) = self.display_name_epochs.lock() {
+            epochs.insert(session_id.to_string(), writer_epoch);
+        }
     }
 
     /// Drop a departed session's display-name write identity. Called where

@@ -725,6 +725,7 @@ pub(super) fn finish_reader_session(
     else {
         return false;
     };
+    registry.forget_display_name_epoch(id);
     let mut session = *session;
     drop(map);
     session.reader_handle = None;

@@ -243,6 +243,9 @@ impl SessionRegistry {
             );
             (old_entry, had_live_slot)
         };
+        if old_entry.is_some() {
+            self.forget_display_name_epoch(session_id);
+        }
         if let Some(old_entry) = old_entry {
             match old_entry {
                 RegistryEntry::Live(session) | RegistryEntry::Configuring(session) => {

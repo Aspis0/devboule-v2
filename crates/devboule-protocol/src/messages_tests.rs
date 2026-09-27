@@ -2914,10 +2914,10 @@ fn a_derived_title_is_the_first_non_empty_line_collapsed_and_clamped() {
     assert_eq!(derived.chars().count(), crate::MAX_DISPLAY_NAME_CHARS);
 }
 
-/// Sanitising restores the person's words, so pasted text with soft hyphens
-/// or zero-width spaces still titles — stripped to the word underneath.
-/// An explicit rename refuses the same characters outright: refusing user
-/// input and deriving from it are different doors.
+/// Sanitising restores the person's words: invisible formatting is
+/// stripped, controls decline. An explicit rename refuses the same
+/// characters outright: refusing user input and deriving from it are
+/// different doors.
 #[test]
 fn a_derived_title_strips_invisible_formatting_instead_of_declining() {
     // A line hyphenated across a source line break, as pasted from a
@@ -2936,11 +2936,10 @@ fn a_derived_title_strips_invisible_formatting_instead_of_declining() {
         Some("worker".to_string()),
         "a bidi override is invisible: dropping it restores the word"
     );
-    // Controls strip the same way; what is left still has to be a line.
-    assert_eq!(
-        derive_session_title("fix\u{7}the bug"),
-        Some("fixthe bug".to_string())
-    );
+    // Controls decline: stripping one would fuse two words into a title
+    // the person never typed, so the slot stays unspent for the next prompt.
+    assert_eq!(derive_session_title("fix\u{7}the bug"), None);
+    assert_eq!(derive_session_title("a\u{1b}[2Jb first line"), None);
     assert_eq!(derive_session_title("\u{200b}"), None);
     // Separators are the exception: the collapse turns them into spaces
     // before the check runs — the same neutralisation Paseo's `\s` does —
@@ -2963,10 +2962,30 @@ fn a_derived_title_strips_invisible_formatting_instead_of_declining() {
     );
 }
 
+/// Joiners survive the sanitiser: stripping U+200D would break every ZWJ
+/// emoji sequence, and stripping U+200C would join words Persian and Indic
+/// scripts mean to keep apart. Both are invisible, neither spoofs.
+#[test]
+fn a_derived_title_keeps_joiners_inside_a_grapheme() {
+    // Woman astronaut: base, skin-tone modifier, joiner, rocket — one
+    // cluster that must arrive whole.
+    let astronaut = "\u{1f469}\u{1f3fd}\u{200d}\u{1f680}";
+    assert_eq!(
+        derive_session_title(&format!("launch {astronaut} today")),
+        Some(format!("launch {astronaut} today"))
+    );
+    // ZWNJ keeps two Persian words apart: dropping it would join them.
+    let zwnj_word = "\u{0645}\u{06cc}\u{200c}\u{062e}\u{0648}\u{0627}\u{0647}\u{0645}";
+    assert_eq!(
+        derive_session_title(&format!("{zwnj_word} first")),
+        Some(format!("{zwnj_word} first"))
+    );
+}
+
 /// The clamp counts grapheme clusters, never splitting one: a combining mark
 /// stays with its base, and a regional-indicator pair is kept whole or not
-/// at all. (ZWJ sequences never reach the clamp: the sanitiser strips the
-/// joiner as invisible formatting first.)
+/// at all. Joiners survive the sanitiser above, so a ZWJ sequence reaches
+/// the clamp as one cluster.
 #[test]
 fn a_derived_title_never_splits_a_grapheme_cluster() {
     // e + combining acute, 70 of them: 70 characters but 70 clusters.

@@ -935,7 +935,7 @@ pub enum ClientMessage {
 /// Paseo, which allows 200 there and clamps only the derived title: a tab
 /// strip is not a profile page, and the surfaces that render this name are
 /// sized for the derived cap. Deriving sanitises and clamps instead of
-/// refusing (see [`derive_session_title`)).
+/// refusing (see [`derive_session_title`]).
 ///
 /// Refusing an empty name instead of treating it as absent is deliberate:
 /// `None` is how a caller says "no name", and a caller that sent `""` (or only
@@ -969,15 +969,22 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 /// shares its cap.
 ///
 /// `None` when the text holds no line worth naming, or when nothing
-/// nameable survives sanitising. Separators never reach the check: the
-/// collapse turns them into spaces first, the same neutralisation Paseo's
-/// `\s` does. Invisible formatting and controls are *stripped*, not
-/// declined — dropping a soft hyphen or a bidi override restores the word
-/// the person typed, which is what a pasted paragraph needs — while an
-/// explicit rename refuses the same characters outright: refusing user
-/// input and deriving from it are different doors (see
-/// [`validate_display_name`]), and the rule is refuse on explicit rename,
-/// sanitise and clamp on derivation.
+/// nameable survives sanitising. The first line is declined outright when
+/// it carries a non-whitespace control: stripping one would fuse two words
+/// into a title the person never typed. Separators never reach either
+/// check: the collapse turns them into spaces first, the same
+/// neutralisation Paseo's `\s` does. Invisible formatting is *stripped* —
+/// dropping a soft hyphen or a bidi override restores the word the person
+/// typed, which is what a pasted paragraph needs — except U+200C/U+200D,
+/// which stay: a joiner makes two scalars render as one cluster but never
+/// as a different string, so stripping it would corrupt emoji sequences
+/// and join Persian words the script keeps apart. An explicit rename
+/// refuses the same characters outright: refusing user input and deriving
+/// from it are different doors (see [`validate_display_name`]), and the
+/// rule is refuse on explicit rename, sanitise and clamp on derivation.
+/// A derived title may therefore hold U+200C/U+200D the validator refuses:
+/// the rename door is stricter than the reading door on purpose, and the
+/// store path never re-validates a derived title.
 /// Callers hand this function the person's — or the creator agent's — own
 /// text, never the daemon-composed first prompt (standing instructions,
 /// spawn prompt, preamble), which is why the send path derives from the raw
@@ -994,10 +1001,20 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 /// it is about, and Paseo clamps the same end.
 pub fn derive_session_title(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    if line
+        .chars()
+        .any(|point| point.is_control() && !point.is_whitespace())
+    {
+        return None;
+    }
     let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
     let clean: String = collapsed
         .chars()
-        .filter(|point| !point.is_control() && !crate::text_safety::is_invisible_format(*point))
+        .filter(|point| {
+            !crate::text_safety::is_invisible_format(*point)
+                || *point == '\u{200c}'
+                || *point == '\u{200d}'
+        })
         .collect();
     let clean = clean.trim();
     if clean.is_empty() {
@@ -1013,7 +1030,7 @@ pub fn derive_session_title(text: &str) -> Option<String> {
 /// space the cut may leave behind.
 ///
 /// Length only: callers pass text whose characters already satisfy the rule
-/// (derived titles decline the unsafe ones above; internal composers build
+/// (derived titles strip the unsafe ones above; internal composers build
 /// from validated names plus ASCII suffixes), which is why this clamps
 /// rather than validates.
 pub fn clamp_display_name(name: &str) -> String {

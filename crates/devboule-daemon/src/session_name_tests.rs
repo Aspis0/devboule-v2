@@ -809,3 +809,78 @@ fn a_closed_session_leaves_no_write_identity_behind() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_ended_child_leaves_no_write_identity_behind() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("name-child-end", "c1");
+    let id = "s.name.42";
+    let runtime = insert_live_agent_with_writer(
+        &registry,
+        id,
+        owner.clone(),
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    birth_row(&journal, id, &owner);
+    let conn = ConnHandle::new(1);
+    registry
+        .set_display_name(id, &owner, "worker one", &conn)
+        .expect("the rename lands");
+    assert_eq!(registry.display_name_epoch_count(), 1);
+
+    // The common end: the provider exited on its own and the reader road
+    // takes the live row out of the map.
+    assert!(
+        super::session_spawn::finish_reader_session(&registry, id, &runtime),
+        "the ended child leaves the map"
+    );
+    assert_eq!(
+        registry.display_name_epoch_count(),
+        0,
+        "an ended delegated child leaks no identity"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_reregistered_id_never_matches_a_stale_rollback() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("name-reincarnation", "c1");
+    let id = "s.name.43";
+    insert_live_agent(&registry, id, owner.clone());
+    birth_row(&journal, id, &owner);
+    let conn = ConnHandle::new(1);
+    registry
+        .set_display_name(id, &owner, "first", &conn)
+        .expect("the first incarnation's rename lands");
+    registry
+        .close(id, &owner, &conn.conn_peer)
+        .expect("the close lands");
+
+    // The same id comes back as a new incarnation: its writes stamp from
+    // the global counter, which never resets, so the first incarnation's
+    // epoch can never match again.
+    insert_live_agent(&registry, id, owner.clone());
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            id.to_string(),
+            owner.user.clone(),
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("birth row");
+    registry
+        .set_display_name(id, &owner, "second", &conn)
+        .expect("the second incarnation's rename lands");
+
+    registry.rollback_display_name(id, &owner, &conn.conn_peer, Some("first".to_string()), 1);
+    assert_eq!(
+        live_display_name(&registry, id).as_deref(),
+        Some("second"),
+        "a stale incarnation's rollback restores nothing"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

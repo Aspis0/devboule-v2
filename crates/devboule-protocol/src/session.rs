@@ -1571,7 +1571,9 @@ impl UserMessageKind {
     /// someone's own words; a2a envelopes and daemon notices never qualify,
     /// and neither does anything the send path composed around the text
     /// (standing instructions, spawn prompt, preamble), which is why the
-    /// hook reads the raw text beside the composed one.
+    /// hook reads the raw text beside the composed one. `Unknown` rows —
+    /// every ACP `user_message_chunk` — never title either, so an imported
+    /// ACP session keeps its fallback until its next prompt.
     pub fn titles_from_raw_text(self) -> bool {
         matches!(self, Self::Composer | Self::Creation)
     }
