@@ -842,6 +842,20 @@ export function AgentProfilesPanel() {
       ? (document.profiles.find((profile) => profile.id === dialog.id) ?? null)
       : null;
 
+  // The one New-profile action, shared by the create row and the empty
+  // state: one button on the page, beside whichever line it belongs to.
+  const newProfileButton = (
+    <button
+      type="button"
+      className="settings-device-action"
+      aria-haspopup="dialog"
+      disabled={busy || loading || profiles.length >= MAX_PROFILES}
+      onClick={(event) => openCreateDialog(event.currentTarget)}
+    >
+      New profile
+    </button>
+  );
+
   return (
     <div id="settings-panel-agents">
       {/* Beside the profiles, on purpose: the switch and the profiles it
@@ -851,7 +865,6 @@ export function AgentProfilesPanel() {
           behind is hidden from assistive tech, and the trap only holds the
           keyboard. The dialog renders below, outside the inert subtree. */}
       <div inert={dialog !== null}>
-        <DelegationSetting />
         <div className="settings-stack settings-stack-spaced agent-profiles">
           {/* The error renders here only with no dialog open: an open dialog
             carries it inside its own card, above the buttons, instead of
@@ -922,7 +935,15 @@ export function AgentProfilesPanel() {
               agent, not for yourself.
             </p>
           ) : null}
-          {document !== null ? (
+          {document !== null && profiles.length === 0 ? (
+            <div className="agent-profile-empty">
+              <span className="device-copy">
+                No profiles yet — create the first kind of agent to start.
+              </span>
+              {newProfileButton}
+            </div>
+          ) : null}
+          {document !== null && profiles.length > 0 ? (
             <div className="agent-profile-create-row">
               {/* The store's cap, mirrored: at the cap the form is not offered,
                 and the sentence says why before the human types anything. */}
@@ -932,15 +953,7 @@ export function AgentProfilesPanel() {
                   one before creating another.
                 </p>
               ) : null}
-              <button
-                type="button"
-                className="settings-device-action"
-                aria-haspopup="dialog"
-                disabled={busy || loading || profiles.length >= MAX_PROFILES}
-                onClick={(event) => openCreateDialog(event.currentTarget)}
-              >
-                New profile
-              </button>
+              {newProfileButton}
             </div>
           ) : null}
           <ol
@@ -972,6 +985,9 @@ export function AgentProfilesPanel() {
             ))}
           </ol>
         </div>
+        {/* Last on the page, after the list it governs: same switch, same
+            copy, only the position moved — and the box-top gap with it. */}
+        <DelegationSetting />
       </div>
       {dialog !== null &&
       document !== null &&

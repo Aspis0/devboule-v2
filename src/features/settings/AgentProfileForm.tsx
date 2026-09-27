@@ -175,6 +175,7 @@ export function AgentProfileForm({
   // wiring points at. One useId per mount, so a create form and an edit form
   // open side by side cannot collide.
   const describedById = useId();
+  const iconHintId = `${describedById}-icon-hint`;
   const spawnHintId = `${describedById}-spawn-hint`;
   const spawnCounterId = `${describedById}-spawn-count`;
   const noteCounterId = `${describedById}-note-count`;
@@ -392,6 +393,7 @@ export function AgentProfileForm({
         Icon
         <input
           aria-label="Profile icon"
+          aria-describedby={iconHintId}
           value={icon}
           disabled={busy}
           onChange={(event) => {
@@ -399,6 +401,10 @@ export function AgentProfileForm({
             userChanged({ icon: event.target.value });
           }}
         />
+        <span className="device-field-hint" id={iconHintId}>
+          One short glyph — an emoji or letter — for the row's tile; empty shows the name's first
+          letter.
+        </span>
       </label>
       <label className="device-field">
         Note — what a creating agent reads to choose this profile. Write it for the agent.
@@ -657,7 +663,7 @@ export function AgentProfileForm({
           />
         </p>
       )}
-      <div className="device-actions">
+      <div className="device-actions profile-form-actions">
         <button
           type="button"
           className="settings-device-action"

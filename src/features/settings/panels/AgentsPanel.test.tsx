@@ -1047,6 +1047,41 @@ describe("Settings agents panel", () => {
     expect(liveDown?.classList.contains("profile-is-dim")).toBe(false);
   });
 
+  it("orders the page: behaviour card, profile list, delegation last", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    const panel = container.querySelector("#settings-panel-agents");
+    if (!panel) throw new Error("agents panel did not render");
+    const order = Array.from(
+      panel.querySelectorAll(
+        ".agent-standing, .agent-profile-list, .agent-delegation, .agent-delegation-unavailable",
+      ),
+    );
+    expect(order.map((el) => el.className)).toEqual([
+      expect.stringContaining("agent-standing"),
+      expect.stringContaining("agent-profile-list"),
+      expect.stringMatching(/agent-delegation(-unavailable)?/),
+    ]);
+  });
+
+  it("shows one empty-state line with the New profile action when no profile exists", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+
+    expect(profileRows()).toHaveLength(0);
+    const empty = container.querySelector(".agent-profile-empty");
+    if (!empty) throw new Error("empty state did not render");
+    expect(empty.textContent).toContain("No profiles yet");
+    const action = empty.querySelector<HTMLButtonElement>("button");
+    expect(action?.textContent).toBe("New profile");
+    expect(action?.disabled).toBe(false);
+    // One New profile action on the page, beside the line — not a second
+    // one below it.
+    const actions = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).filter(
+      (candidate) => candidate.textContent === "New profile",
+    );
+    expect(actions).toHaveLength(1);
+  });
+
   it("opens one dialog for creating and one for editing, with the full spawn text", async () => {
     const prompt =
       "First line of the standing orders. Second line with the details. Third line nobody clamps.";
@@ -1133,6 +1168,15 @@ describe("Settings agents panel", () => {
     const cardAlert = container.querySelector('.edit-card [role="alert"]');
     expect(cardAlert?.textContent).toContain("61 characters");
     expect(container.querySelector('.agent-profiles > [role="alert"]')).toBeNull();
+  });
+
+  it("hints what the Icon field takes", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const hint = container.querySelector('.edit-card [id$="-icon-hint"]');
+    if (!hint) throw new Error("icon hint did not render");
+    expect(hint.textContent).toContain("first letter");
   });
 
   it("lands mid-save close focus on the list, and re-owns the pencil on settle", async () => {
@@ -2249,8 +2293,12 @@ describe("Settings agents panel — new profile form", () => {
   }
 
   async function openForm() {
+    // The button lives beside the empty-state line on an empty store and
+    // in the create row otherwise: one action, two possible neighbours.
     const button = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".agent-profile-create-row button"),
+      container.querySelectorAll<HTMLButtonElement>(
+        ".agent-profile-create-row button, .agent-profile-empty button",
+      ),
     ).find((candidate) => candidate.textContent === "New profile");
     if (!button) throw new Error("New profile button did not render");
     await act(async () => button.click());
@@ -3829,7 +3877,7 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Fifty-two: the delegation section's one sentence on this panel (an
+    // Fifty-four: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
@@ -3848,13 +3896,14 @@ describe("Settings agents panel — new profile form", () => {
     // intro (scenario 24 collects it through the surface; the title stays out), the tick notes (including the
     // open-dialog clause on the row tick), the no-spawn-prompt sentence on
     // rows without one, the discard check's sentence, the legacy-denials
-    // line, the save-in-flight sentence, and the standing
+    // line, the save-in-flight sentence, the icon field's hint, the
+    // empty-list line, and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry), and the standing box's keep-it-short
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(52);
+    expect(sentences).toHaveLength(54);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

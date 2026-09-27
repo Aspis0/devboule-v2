@@ -29,6 +29,19 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
+describe("theme roots (real stylesheet, static)", () => {
+  const { rulesFor } = assembleCssProof([read("src/styles/tokens.css")]);
+
+  it("pins color-scheme on both theme roots", () => {
+    // Native controls (the dialog's selects, checkboxes, scrollbars) take
+    // their light/dark rendering from here; without it the dark theme
+    // renders white OS controls. Static by necessity: happy-dom computes
+    // no color-scheme.
+    expect(rulesFor(":root")).toContain("color-scheme: light");
+    expect(rulesFor('[data-theme="dark"]')).toContain("color-scheme: dark");
+  });
+});
+
 describe("agent profile rows and dialog (real stylesheets, no app launch)", () => {
   const { inject, rulesFor, token } = assembleCssProof([
     read("src/styles/tokens.css"),
@@ -147,5 +160,34 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
     expect(style.width).toBe("480px");
     expect(style.borderRadius).toBe("14px");
     expect(style.overflowY).toBe("auto");
+  });
+
+  it("clears the shared label's top margin inside the delegation box", () => {
+    // Descendant selectors never inject, so this is a source check, stated
+    // as one: the 26 px `.settings-subheading` margin would otherwise paint
+    // ~40 px of empty box-top (12 px padding + 26 px margin, grid keeps both).
+    const { rulesFor: boxRules } = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/settings/profiles.css"),
+      read("src/features/settings/settings.css"),
+    ]);
+    expect(boxRules(".agent-delegation > :first-child")).toContain("margin-top: 0");
+  });
+
+  it("gives the card the app's thin scrollbars, not the native bar", () => {
+    inject([".edit-card"]);
+    const style = getComputedStyle(box("edit-card"));
+    expect(style.scrollbarWidth).toBe("thin");
+    expect(style.scrollbarColor).not.toBe("");
+  });
+
+  it("pins the form's actions to the card's bottom edge", () => {
+    inject([".profile-form-actions"]);
+    const actions = box("profile-form-actions");
+    const style = getComputedStyle(actions);
+    expect(style.position).toBe("sticky");
+    expect(style.bottom).toBe("-16px");
+    expect(style.backgroundColor).toBe(token("--panel-card"));
   });
 });

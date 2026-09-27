@@ -12,6 +12,7 @@
  */
 
 :root {
+  color-scheme: light;
   /* fonts */
   --font-ui: "Inter", system-ui, sans-serif;
   --font-display: "Fraunces", Georgia, serif;
@@ -163,6 +164,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --ground-app: #16120e;
   --ground-center: #1d1814;
   --panel-side: #231d18;
