@@ -5,6 +5,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { useMenuOpen } from "../lib/menuOpen";
 import "./PickerChip.css";
 
 // Moved out of AgentChatSurface unchanged, so Design renders the same control.
@@ -71,6 +72,7 @@ export function PickerChip({
   // means the menu unmounts with the chip in the same render, and its option
   // buttons cannot reach `onSelect` on a gone view.
   const open = openRequested && !disabled;
+  useMenuOpen(open, () => setOpenRequested(false));
 
   useEffect(() => {
     if (!open) return;

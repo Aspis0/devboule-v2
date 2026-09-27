@@ -261,6 +261,7 @@ export const FilesSurface = memo(function FilesSurface({
           onToggle={toggle}
           menuPath={menuPath}
           onToggleMenu={toggleMenu}
+          onCloseMenu={() => setMenuPath(null)}
           acting={acting}
           renaming={renaming}
           onRenameChange={renameChange}

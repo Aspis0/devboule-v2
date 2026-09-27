@@ -99,8 +99,11 @@ button:focus-visible {
   width: 100vw;
 }
 
-/* No stacking context on this layer: a z-index, transform or opacity under 1
-   here traps every modal the surfaces render under the crescent band. */
+/* No stacking context on this layer: transform (at any value, even
+   translateY(0)), a z-index on a positioned box, opacity under 1, filter,
+   backdrop-filter, contain, isolation, will-change, perspective or
+   mix-blend-mode here would trap the modals the surfaces render under the
+   crescent band. */
 .page-layer {
   position: relative;
   display: flex;
@@ -322,6 +325,12 @@ button:focus-visible {
   cursor: pointer;
   pointer-events: auto;
   background: transparent;
+}
+
+/* A modal is up: the line looks unavailable rather than broken. */
+.crescent-sliver-blocked {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .crescent-sliver::after {

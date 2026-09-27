@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useMenuOpen } from "../../../lib/menuOpen";
 
 /**
  * One row's kebab: Update (only when the row can update), Log in (only
@@ -27,6 +28,7 @@ export function ProviderKebab({
   const [copyNote, setCopyNote] = useState<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  useMenuOpen(open, () => close(false));
 
   useEffect(() => {
     if (open) {

@@ -13,31 +13,43 @@ import {
 } from "react";
 import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "./menuNav";
+import { useMenuOpen } from "../../../lib/menuOpen";
 import type { TabMenuEntry } from "./tabCloseMenu";
 
 interface SessionTabMenuProps {
+  /** The menu is up; the owner owns the open state and says so. */
+  open: boolean;
   anchorRef: RefObject<HTMLElement | null>;
   entries: TabMenuEntry[];
   onEntry: (key: TabMenuEntry["key"]) => void;
   onClose: () => void;
 }
 
-export function SessionTabMenu({ anchorRef, entries, onEntry, onClose }: SessionTabMenuProps) {
+export function SessionTabMenu({
+  open,
+  anchorRef,
+  entries,
+  onEntry,
+  onClose,
+}: SessionTabMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  useMenuOpen(open, onClose);
 
   // Focus the first entry that can act: a disabled item takes no focus, and
   // the first entry IS disabled on the first tab — so the scan skips it and
   // the menu always opens with an enabled entry focused.
   useEffect(() => {
+    if (!open) return;
     const first = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
       (button) => !button.disabled,
     );
     first?.focus({ preventScroll: true });
-  }, []);
+  }, [open]);
 
   // Outside press closes, and the anchor counts as outside here: the tab's
   // own click should clear the selection and select, not keep a menu open.
   useEffect(() => {
+    if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Node)) return;
       if (rootRef.current?.contains(event.target)) return;
@@ -45,7 +57,7 @@ export function SessionTabMenu({ anchorRef, entries, onEntry, onClose }: Session
     };
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [onClose]);
+  }, [onClose, open]);
 
   // Open over a viewport that then moved is stale: close it, as the "+" menu
   // does — handing focus back to the anchor only when the menu had it, so a
@@ -57,9 +69,12 @@ export function SessionTabMenu({ anchorRef, entries, onEntry, onClose }: Session
     onClose();
   }, [anchorRef, onClose]);
   useEffect(() => {
+    if (!open) return;
     window.addEventListener("resize", dismissOnResize);
     return () => window.removeEventListener("resize", dismissOnResize);
-  }, [dismissOnResize]);
+  }, [dismissOnResize, open]);
+
+  if (!open) return null;
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {

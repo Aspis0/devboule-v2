@@ -25,6 +25,7 @@ import type {
   SectionNote,
 } from "./designHost";
 import { ErrorText } from "../../components/ErrorText";
+import { useMenuOpen } from "../../lib/menuOpen";
 import { artifactSrcDoc } from "./artifactCsp";
 import { artifactSlideNotice, readArtifactSlideShape } from "./artifactSlides";
 import { ArtifactCopyControl } from "./ArtifactCopyControl";
@@ -463,6 +464,8 @@ interface AssistantProps extends DesignSkillViewProps {
 }
 
 interface DesignCraftSheetProps extends DesignSkillViewProps {
+  /** The sheet is up; the parent owns the open state and says so. */
+  open: boolean;
   readOnly: boolean;
   onClose: () => void;
   onSkillToggle: (slug: string) => void;
@@ -521,6 +524,7 @@ function renderCraftBody(body: string) {
     ));
 }
 
+// Exported for the modal-contract walking test in src/app/modals-over-crescent.test.tsx.
 export const DesignSkillModeControl = memo(function DesignSkillModeControl({
   skillSelection,
   onSkillModeChange,
@@ -668,6 +672,7 @@ export const DesignSkillModeControl = memo(function DesignSkillModeControl({
   );
 });
 
+// Exported for the modal-contract walking test in src/app/modals-over-crescent.test.tsx.
 export const DesignCraftSheet = memo(function DesignCraftSheet({
   skillIndex,
   skillSelection,
@@ -679,6 +684,7 @@ export const DesignCraftSheet = memo(function DesignCraftSheet({
   resolvedSkillSlugSet,
   automaticBaselineSlugSet,
   droppedSkillSlugSet,
+  open,
   readOnly,
   onClose,
   onSkillToggle,
@@ -686,11 +692,20 @@ export const DesignCraftSheet = memo(function DesignCraftSheet({
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
   const modeCopy = SKILL_MODE_LABELS[skillSelection.mode];
 
-  useModalOpen();
+  useModalOpen(open);
+
+  // The sheet is always mounted; a fresh open must not inherit the last
+  // one's expanded section. Adjusted during render, before paint.
+  const [wasOpen, setWasOpen] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setExpandedSlug(null);
+  }
 
   // The sheet's Escape lives here with it, like the picker's and the
   // popover's: the parent owns the open state, the sheet owns its dismissal.
   useEffect(() => {
+    if (!open) return;
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -698,7 +713,7 @@ export const DesignCraftSheet = memo(function DesignCraftSheet({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [open, onClose]);
   const manualLimitReached =
     skillSelection.mode === "manual" && selectedSkillSlugs.length >= MAX_AUTOMATIC_SKILL_SECTIONS;
   const includedSkillCount = hasResolvedComposition
@@ -716,6 +731,8 @@ export const DesignCraftSheet = memo(function DesignCraftSheet({
   const budgetValue = hasResolvedComposition
     ? `${skillBlock.totalChars.toLocaleString()} / ${skillBlock.ceiling.toLocaleString()} characters`
     : `up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections · ${skillBlock.ceiling.toLocaleString()}-character budget`;
+
+  if (!open) return null;
 
   return (
     <div className="design-craft-overlay">
@@ -958,6 +975,7 @@ function promptForMessage(
   return previousMessage?.role === "user" ? previousMessage.text : (message.instruction ?? null);
 }
 
+// Exported for the modal-contract walking test in src/app/modals-over-crescent.test.tsx.
 export const DesignToolbar = memo(function DesignToolbar({
   folderControl,
   grounded,
@@ -3016,6 +3034,10 @@ const DesignAssistant = memo(function DesignAssistant({
     }
     setProviderPickerOpen(false);
   }, [cancelConsent, consentProvider]);
+
+  // The provider choice (and its consent gate) dismisses when the band
+  // opens, like every other menu: the band is the outside press.
+  useMenuOpen(providerPickerOpen && !providerButtonDisabled, dismissProviderPicker);
 
   useEffect(() => {
     if (consentProvider !== null) {
@@ -5555,23 +5577,24 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         </div>
       ) : null}
 
-      {craftSheetMode !== null ? (
-        <DesignCraftSheet
-          skillIndex={skillIndex}
-          skillSelection={skillSelection}
-          selectedSkillSlugs={selectedSkillSlugs}
-          resolvedSkillSlugs={resolvedSkillSlugs}
-          appliedSkillSlugs={appliedSkillSlugs}
-          hasResolvedComposition={hasResolvedComposition}
-          skillBlock={skillBlock}
-          resolvedSkillSlugSet={resolvedSkillSlugSet}
-          automaticBaselineSlugSet={automaticBaselineSlugSet}
-          droppedSkillSlugSet={droppedSkillSlugSet}
-          readOnly={craftSheetMode === "readonly"}
-          onClose={closeCraftSheet}
-          onSkillToggle={handleSkillToggle}
-        />
-      ) : null}
+      <DesignCraftSheet
+        // Mounted only while open today; the boolean makes the registration
+        // honest either way.
+        open={craftSheetMode !== null}
+        skillIndex={skillIndex}
+        skillSelection={skillSelection}
+        selectedSkillSlugs={selectedSkillSlugs}
+        resolvedSkillSlugs={resolvedSkillSlugs}
+        appliedSkillSlugs={appliedSkillSlugs}
+        hasResolvedComposition={hasResolvedComposition}
+        skillBlock={skillBlock}
+        resolvedSkillSlugSet={resolvedSkillSlugSet}
+        automaticBaselineSlugSet={automaticBaselineSlugSet}
+        droppedSkillSlugSet={droppedSkillSlugSet}
+        readOnly={craftSheetMode === "readonly"}
+        onClose={closeCraftSheet}
+        onSkillToggle={handleSkillToggle}
+      />
 
       <div className="design-main">
         <div className="design-workspace">

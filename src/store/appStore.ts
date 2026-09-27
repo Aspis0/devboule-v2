@@ -11,6 +11,8 @@ import type {
 import type { PluginInventory } from "../types/ipc";
 import type { SurfaceKey } from "../types/surface";
 
+let nextModalToken = 0;
+
 export interface DesignArtifact {
   html?: string;
   error?: string;
@@ -108,12 +110,14 @@ interface AppState {
   selectSurface: (surface: SurfaceKey) => void;
 
   /**
-   * How many modals are open. The shell reads it to keep the crescent from
-   * opening over a modal and the surface from switching under one — a switch
-   * would unmount the modal with whatever the user had not yet answered.
+   * The tokens of the modals that are up. The shell reads its size to keep
+   * the crescent from opening over a modal and the surface from switching
+   * under one — a switch would unmount the modal with whatever the user had
+   * not yet answered. A set, not a counter: a release removes only its own
+   * token, so a double release or a leaked mount cannot brick the shell.
    */
-  modalOpenCount: number;
-  /** Register a modal as open; the returned release gives the count back. */
+  modalOpenTokens: Set<string>;
+  /** Register a modal as open; the returned release gives its token back. */
   openModal: () => () => void;
 
   installedSkills: InstalledSkill[];
@@ -169,14 +173,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectSurface: (activeSurface) => {
     // A modal holds the app's attention: switching the surface under it would
     // unmount it mid-answer.
-    if (get().modalOpenCount > 0) return;
+    if (get().modalOpenTokens.size > 0) return;
     set({ activeSurface });
   },
-  modalOpenCount: 0,
+  modalOpenTokens: new Set(),
   openModal: () => {
-    set((state) => ({ modalOpenCount: state.modalOpenCount + 1 }));
+    nextModalToken += 1;
+    const token = `modal-${nextModalToken}`;
+    set((state) => {
+      const next = new Set(state.modalOpenTokens);
+      next.add(token);
+      return { modalOpenTokens: next };
+    });
     return () => {
-      set((state) => ({ modalOpenCount: Math.max(0, state.modalOpenCount - 1) }));
+      set((state) => {
+        if (!state.modalOpenTokens.has(token)) return state;
+        const next = new Set(state.modalOpenTokens);
+        next.delete(token);
+        return { modalOpenTokens: next };
+      });
     };
   },
 

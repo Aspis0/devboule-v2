@@ -15,6 +15,7 @@ import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
+import { useMenuOpen } from "../../lib/menuOpen";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
@@ -777,6 +778,10 @@ export function Workspace({
     if (consentProvider !== null) consentCancel();
     dismissProviderPicker();
   }, [consentCancel, consentProvider, dismissProviderPicker]);
+  // The provider choice (and its consent gate) dismisses when the band
+  // opens, like every other menu: the flow is transient and the band is
+  // the outside press.
+  useMenuOpen(providerPicker !== null || consentProvider !== null, dismissPickerFlow);
   // The empty picker's one action. Settings opens on its Providers tab, where
   // the install guidance lives; dismissing first ends the choice so the
   // navigate-away can never leave a flow running under the user left behind.

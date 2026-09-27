@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useMenuOpen } from "../../lib/menuOpen";
 
 /** A command the daemon published: the name that goes into the text, and the
  * words that sell it. */
@@ -13,6 +14,10 @@ export interface WorkspaceCommand {
 const NO_COMMANDS_TEXT = "No commands found";
 
 interface WorkspaceCommandMenuProps {
+  /** The menu is up; the owner owns the open state and says so. */
+  open: boolean;
+  /** Dismiss the menu — the band opening is the outside press. */
+  onClose: () => void;
   /** The listbox's own id: the composer's combobox points aria-controls at it. */
   listId: string;
   /** The filter's matches, in the order the daemon gave them. */
@@ -25,6 +30,8 @@ interface WorkspaceCommandMenuProps {
 }
 
 export function WorkspaceCommandMenu({
+  open,
+  onClose,
   listId,
   commands,
   activeIndex,
@@ -33,10 +40,12 @@ export function WorkspaceCommandMenu({
 }: WorkspaceCommandMenuProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const activeRowRef = useRef<HTMLButtonElement>(null);
+  useMenuOpen(open, onClose);
 
   // Paseo works this offset out inside its own list; a bare scrollIntoView
   // would walk every scrollable ancestor — transcript and page included.
   useEffect(() => {
+    if (!open) return;
     const row = activeRowRef.current;
     const list = listRef.current;
     if (row === null || list === null) return;
@@ -46,7 +55,9 @@ export function WorkspaceCommandMenu({
     const viewBottom = viewTop + list.clientHeight;
     if (rowTop < viewTop) list.scrollTop = rowTop;
     else if (rowBottom > viewBottom) list.scrollTop = rowBottom - viewBottom;
-  }, [activeIndex, commands.length]);
+  }, [activeIndex, commands.length, open]);
+
+  if (!open) return null;
 
   return (
     <div

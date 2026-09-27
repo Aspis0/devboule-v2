@@ -197,16 +197,15 @@ export function SessionStrip({
         >
           +
         </button>
-        {newTab.open ? (
-          <WorkspaceNewTabMenu
-            triggerRef={addButtonRef}
-            creating={newTab.creating}
-            workspaceSelected={newTab.workspaceSelected}
-            onAgent={newTab.onAgent}
-            onTerminal={newTab.onTerminal}
-            onClose={newTab.onCloseMenu}
-          />
-        ) : null}
+        <WorkspaceNewTabMenu
+          open={newTab.open}
+          triggerRef={addButtonRef}
+          creating={newTab.creating}
+          workspaceSelected={newTab.workspaceSelected}
+          onAgent={newTab.onAgent}
+          onTerminal={newTab.onTerminal}
+          onClose={newTab.onCloseMenu}
+        />
         {providerMenu}
       </div>
       <span className="workspace-tabs-spacer" />
@@ -214,24 +213,22 @@ export function SessionStrip({
       <div className="workspace-sr-only" role="status" aria-live="polite">
         {tabSelection.announcement}
       </div>
-      {tabClose.menu !== null ? (
-        <SessionTabMenu
-          anchorRef={tabClose.anchorRef}
-          entries={tabClose.menu.entries}
-          onEntry={tabClose.activateEntry}
-          onClose={tabClose.closeMenu}
-        />
-      ) : null}
-      {tabClose.confirm !== null ? (
-        <CloseConfirm
-          anchorRef={tabClose.anchorRef}
-          title={tabClose.confirm.title}
-          message={tabClose.confirm.message}
-          confirmLabel={tabClose.confirm.confirmLabel}
-          onConfirm={tabClose.confirmClose}
-          onCancel={tabClose.cancelClose}
-        />
-      ) : null}
+      <SessionTabMenu
+        open={tabClose.menu !== null}
+        anchorRef={tabClose.anchorRef}
+        entries={tabClose.menu?.entries ?? []}
+        onEntry={tabClose.activateEntry}
+        onClose={tabClose.closeMenu}
+      />
+      <CloseConfirm
+        open={tabClose.confirm !== null}
+        anchorRef={tabClose.anchorRef}
+        title={tabClose.confirm?.title ?? ""}
+        message={tabClose.confirm?.message ?? ""}
+        confirmLabel={tabClose.confirm?.confirmLabel ?? ""}
+        onConfirm={tabClose.confirmClose}
+        onCancel={tabClose.cancelClose}
+      />
     </div>
   );
 }

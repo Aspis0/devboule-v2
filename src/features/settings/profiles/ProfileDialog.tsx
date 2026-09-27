@@ -28,18 +28,21 @@ function focusableIn(container: HTMLElement): HTMLElement[] {
  * and still settles it, landing the refusal (if any) in the pane behind.
  */
 export function ProfileDialog({
+  open,
   title,
   busy,
   onClose,
   children,
 }: {
+  /** The dialog is up; the parent owns the open state and says so. */
+  open: boolean;
   title: string;
   /** True while the panel's write is in flight: every exit goes dead. */
   busy: boolean;
   onClose: () => void;
   children: (api: { requestClose: () => void; markDirty: () => void }) => ReactNode;
 }) {
-  useModalOpen();
+  useModalOpen(open);
 
   const titleId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
@@ -57,6 +60,19 @@ export function ProfileDialog({
     else onClose();
   }, [busy, dirty, onClose]);
 
+  // The dialog is always mounted; a fresh open must not inherit the last
+  // one's arms — a discard confirm from a closed session must not greet
+  // the next. Adjusted during render, so the reset lands before paint.
+  const [wasOpen, setWasOpen] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setDiscardArmed(false);
+      setLeavingArmed(false);
+      setDirty(false);
+    }
+  }
+
   useEffect(() => {
     const card = cardRef.current;
     if (card === null) return;
@@ -69,6 +85,7 @@ export function ProfileDialog({
   }, []);
 
   useEffect(() => {
+    if (!open) return;
     const card = cardRef.current;
     if (card === null) return;
 
@@ -101,7 +118,7 @@ export function ProfileDialog({
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [requestClose]);
+  }, [open, requestClose]);
 
   // Arming either confirm moves focus into it and names it: it appears
   // above the form on a keypress the human may not have meant, so the thing
@@ -127,6 +144,8 @@ export function ProfileDialog({
     // card rather than dropping it to the body with the modal still open.
     if (confirmRef.current?.contains(document.activeElement)) cardRef.current?.focus();
   }, [busy, leavingArmed]);
+
+  if (!open) return null;
 
   const body = children({ requestClose, markDirty });
 

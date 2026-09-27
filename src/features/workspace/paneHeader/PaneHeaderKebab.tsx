@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useMenuOpen } from "../../../lib/menuOpen";
 import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "../strip/menuNav";
 import type { TabMenuEntry } from "../strip/tabCloseMenu";
@@ -7,6 +8,7 @@ import { middleTruncate, type PaneHeaderMenu } from "./paneHeaderMenu";
 export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
   const [open, setOpen] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  useMenuOpen(open, closeToKebab);
   const kebabRef = useRef<HTMLButtonElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);

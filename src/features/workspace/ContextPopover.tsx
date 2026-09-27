@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { useModalOpen } from "../../lib/modalOpen";
 import type { PlanUsage } from "../../types/ipc";
 import {
   formatContextTokens,
@@ -77,6 +78,8 @@ export function placeContextPopover(
 }
 
 export interface ContextPopoverProps {
+  /** The popover is up; the parent owns the open state and says so. */
+  open: boolean;
   /** The meter's button: the panel is centred above it, and a press inside
       it does not count as an outside click. */
   anchorRef: RefObject<HTMLElement | null>;
@@ -202,12 +205,21 @@ function planBody(plan: PlanUsage, nowMs: number): ReactNode {
  * never inherits a clipping ancestor, and the placement arithmetic lives in
  * {@link placeContextPopover}.
  */
-export function ContextPopover({ anchorRef, onClose, numbers, live, plan }: ContextPopoverProps) {
+export function ContextPopover({
+  open,
+  anchorRef,
+  onClose,
+  numbers,
+  live,
+  plan,
+}: ContextPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const [placement, setPlacement] = useState<PopoverPlacement | null>(null);
   // The countdown must keep counting while the popover sits open; a render
   // that never happens would freeze "resets in" at whatever it said on open.
   const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useModalOpen(open);
 
   const update = useCallback(() => {
     const anchor = anchorRef.current;
@@ -230,12 +242,15 @@ export function ContextPopover({ anchorRef, onClose, numbers, live, plan }: Cont
 
   // Measure before paint so the panel never flashes at an unplaced position,
   // and again whenever its own content (a plan frame, a ticking countdown)
-  // can change its height under a fixed top.
+  // can change its height under a fixed top. Gated on open: the popover is
+  // always mounted, and the popover element only exists while it is.
   useLayoutEffect(() => {
+    if (!open) return;
     update();
-  }, [update, numbers, plan, nowMs]);
+  }, [update, numbers, plan, nowMs, open]);
 
   useEffect(() => {
+    if (!open) return;
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -270,12 +285,15 @@ export function ContextPopover({ anchorRef, onClose, numbers, live, plan }: Cont
       window.removeEventListener("resize", onViewport);
       observer?.disconnect();
     };
-  }, [anchorRef, onClose, update]);
+  }, [anchorRef, onClose, open, update]);
 
   useEffect(() => {
+    if (!open) return;
     const timer = globalThis.setInterval(() => setNowMs(Date.now()), 30_000);
     return () => globalThis.clearInterval(timer);
-  }, []);
+  }, [open]);
+
+  if (!open) return null;
 
   const style: CSSProperties =
     placement === null

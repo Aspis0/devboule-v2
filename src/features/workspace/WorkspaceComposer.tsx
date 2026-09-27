@@ -237,15 +237,15 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   return (
     <div className="workspace-composer-wrap">
       {queuedTrack}
-      {commandMenuVisible ? (
-        <WorkspaceCommandMenu
-          listId={menuId}
-          commands={commandMatches}
-          activeIndex={activeRow}
-          activeOptionId={activeOptionId}
-          onSelect={selectCommand}
-        />
-      ) : null}
+      <WorkspaceCommandMenu
+        open={commandMenuVisible}
+        onClose={() => setMenuDismissed(true)}
+        listId={menuId}
+        commands={commandMatches}
+        activeIndex={activeRow}
+        activeOptionId={activeOptionId}
+        onSelect={selectCommand}
+      />
       <div className="workspace-composer">
         <textarea
           ref={(element) => {

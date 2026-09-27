@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { chooseAndInstall } from "../features/plugins/install";
 import { pluginState } from "../lib/plugins";
+import { closeOpenMenus } from "../lib/menuOpen";
 import { useAppStore } from "../store/appStore";
 import { ErrorText } from "../components/ErrorText";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
@@ -53,7 +54,7 @@ const GLYPH: Record<Exclude<PointOffer, "open" | "installing">, string> = {
 export function Shell({ activeSurface, children }: ShellProps) {
   const selectSurface = useAppStore((state) => state.selectSurface);
   // A modal holds the app's attention: the band must not open over one.
-  const modalOpen = useAppStore((state) => state.modalOpenCount > 0);
+  const modalOpen = useAppStore((state) => state.modalOpenTokens.size > 0);
   const plugins = useAppStore((state) => state.plugins);
   const installing = useAppStore((state) => state.installing);
   const installError = useAppStore((state) => state.installError);
@@ -83,6 +84,15 @@ export function Shell({ activeSurface, children }: ShellProps) {
     visibleKeysRef.current = crescentLayout.visibleKeys;
   }, [navOpen, crescentLayout.visibleKeys]);
 
+  // A modal opening under an open band would leave the page shifted and
+  // dimmed behind it; the band gives the modal the stage. The modal
+  // opening is an open menu's outside press too.
+  useEffect(() => {
+    if (!modalOpen) return;
+    closeOpenMenus();
+    if (navOpen) closeNav();
+  }, [modalOpen, navOpen]);
+
   // Asked once, on the way in: the crescent has to know whether Polis is
   // something to open or something to add before it is first drawn.
   useEffect(() => {
@@ -101,6 +111,16 @@ export function Shell({ activeSurface, children }: ShellProps) {
     if (navigation !== null && active instanceof HTMLElement && navigation.contains(active)) {
       active.blur();
     }
+  }
+
+  // One door into the nav: a modal holds the attention, so the band stays
+  // shut over one; and the band opening is every open menu's outside press —
+  // a picker left standing while the page slides out from under it is a
+  // menu the user can no longer see.
+  function openNav(): void {
+    if (modalOpen) return;
+    closeOpenMenus();
+    setNavOpen(true);
   }
 
   function pageBy(delta: -1 | 1) {
@@ -130,6 +150,9 @@ export function Shell({ activeSurface, children }: ShellProps) {
       }
       return;
     }
+    // A modal holds the attention: the band's paging keys are not the app's
+    // while one is up.
+    if (modalOpen) return;
     if (!navOpen) return;
     if (
       event.target instanceof Element &&
@@ -202,36 +225,34 @@ export function Shell({ activeSurface, children }: ShellProps) {
         {children}
       </div>
 
-      <div className="page-dim" style={{ opacity: pageShade }} aria-hidden="true" />
+      <div className="page-dim" style={{ opacity: pageShade }} />
 
       <div className="crescent-shell" role="navigation" aria-label="Devboule surfaces">
         <button
           type="button"
           ref={triggerRef}
-          className="crescent-sliver"
+          className={modalOpen ? "crescent-sliver crescent-sliver-blocked" : "crescent-sliver"}
           aria-label="Reveal navigation"
           aria-expanded={navOpen}
           aria-controls="devboule-crescent-navigation"
-          onPointerEnter={() => {
-            if (!modalOpen) setNavOpen(true);
-          }}
+          onPointerEnter={openNav}
           // A click on the line opens the nav or keeps whatever the hover just
           // opened open — it never toggles shut (the owner's measured defect).
-          onClick={() => {
-            if (!modalOpen) setNavOpen(true);
-          }}
+          onClick={openNav}
           onFocus={() => {
             if (suppressTriggerFocusRef.current) {
               suppressTriggerFocusRef.current = false;
               return;
             }
-            if (modalOpen) return;
-            setNavOpen(true);
+            openNav();
           }}
           onKeyDown={(event) => {
+            // A modal holds the attention: the line hands the key to the
+            // focused control instead of swallowing it.
+            if (modalOpen) return;
             if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown") {
               event.preventDefault();
-              if (!modalOpen) setNavOpen(true);
+              setNavOpen(true);
             }
           }}
         />
@@ -245,7 +266,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
           // navigation. inert removes the whole landmark from the
           // accessibility tree until the nav is actually shown.
           inert={!navOpen}
-          onPointerEnter={() => setNavOpen(true)}
+          onPointerEnter={openNav}
           onPointerLeave={(event) => {
             if (event.clientY > 150) {
               closeNav();
@@ -343,7 +364,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
                     triggerRef.current?.focus();
                   }
                 }}
-                onFocus={() => setNavOpen(true)}
+                onFocus={openNav}
                 tabIndex={navOpen ? 0 : -1}
                 aria-current={isActive ? "page" : undefined}
               >

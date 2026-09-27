@@ -1,5 +1,6 @@
 import { memo, useMemo, type ReactNode } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
+import { useMenuOpen } from "../../lib/menuOpen";
 import { ErrorText } from "../../components/ErrorText";
 import { formatSize } from "./FilesPreview";
 import { sortFileEntries } from "./filesSort";
@@ -22,6 +23,8 @@ interface FilesTreeViewProps {
   onToggle: (path: string) => void;
   menuPath: string | null;
   onToggleMenu: (path: string) => void;
+  /** Dismiss the open row menu — the band opening is the outside press. */
+  onCloseMenu: () => void;
   acting: boolean;
   renaming: FilesRenaming | null;
   onRenameChange: (value: string) => void;
@@ -401,6 +404,7 @@ function FolderGroup({
   onToggle,
   menuPath,
   onToggleMenu,
+  onCloseMenu,
   acting,
   renaming,
   onRenameChange,
@@ -497,6 +501,7 @@ function FolderGroup({
                       onToggle={onToggle}
                       menuPath={menuPath}
                       onToggleMenu={onToggleMenu}
+                      onCloseMenu={onCloseMenu}
                       acting={acting}
                       renaming={renaming}
                       onRenameChange={onRenameChange}
@@ -560,6 +565,7 @@ export const FilesTreeView = memo(function FilesTreeView({
   onToggle,
   menuPath,
   onToggleMenu,
+  onCloseMenu,
   acting,
   renaming,
   onRenameChange,
@@ -571,6 +577,7 @@ export const FilesTreeView = memo(function FilesTreeView({
   onOpenFile,
   workspaceId,
 }: FilesTreeViewProps) {
+  useMenuOpen(menuPath !== null, onCloseMenu);
   return (
     <ul id={listId} className="workspace-files-tree">
       <FolderGroup
@@ -583,6 +590,7 @@ export const FilesTreeView = memo(function FilesTreeView({
         selection={selection}
         onSelect={onSelect}
         onToggle={onToggle}
+        onCloseMenu={onCloseMenu}
         menuPath={menuPath}
         onToggleMenu={onToggleMenu}
         acting={acting}

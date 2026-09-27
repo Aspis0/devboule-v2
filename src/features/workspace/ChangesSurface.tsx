@@ -456,6 +456,7 @@ export const ChangesSurface = memo(function ChangesSurface({
                   onDiscard={runDiscard}
                   menuPath={menuPath}
                   onToggleMenu={toggleMenu}
+                  onCloseMenu={() => setMenuPath(null)}
                   acting={acting}
                   onOpenFile={onOpenFile}
                 />

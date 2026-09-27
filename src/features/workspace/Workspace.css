@@ -1284,7 +1284,9 @@
    top and width are set there, so only the look lives here. */
 .workspace-context-popover {
   position: fixed;
-  z-index: 40;
+  /* Above the crescent band (40): a tie won by DOM order is a tie that a
+     later mount order can lose. */
+  z-index: 50;
   width: 300px;
   padding: 12px;
   color: var(--ink);

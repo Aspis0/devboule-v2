@@ -11,8 +11,11 @@ import {
   type RefObject,
 } from "react";
 import { AnchoredPopover } from "../popoverPlace";
+import { useModalOpen } from "../../../lib/modalOpen";
 
 interface CloseConfirmProps {
+  /** The ask is up; the parent owns the state and says so. */
+  open: boolean;
   anchorRef: RefObject<HTMLElement | null>;
   title: string;
   message: string;
@@ -22,6 +25,7 @@ interface CloseConfirmProps {
 }
 
 export function CloseConfirm({
+  open,
   anchorRef,
   title,
   message,
@@ -33,12 +37,16 @@ export function CloseConfirm({
   const titleId = useId();
   const messageId = useId();
 
-  useEffect(() => {
-    const primary = rootRef.current?.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    primary?.focus({ preventScroll: true });
-  }, []);
+  useModalOpen(open);
 
   useEffect(() => {
+    if (!open) return;
+    const primary = rootRef.current?.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    primary?.focus({ preventScroll: true });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Node)) return;
       if (rootRef.current?.contains(event.target)) return;
@@ -46,16 +54,19 @@ export function CloseConfirm({
     };
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [onCancel]);
+  }, [onCancel, open]);
 
   // Open over a viewport that then moved is stale: close it. Cancelling is
   // the whole act — nothing was fired — and the flow's focus restore takes
   // it from here, back to the tab the ask came from.
   useEffect(() => {
+    if (!open) return;
     const onResize = () => onCancel();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [onCancel]);
+  }, [onCancel, open]);
+
+  if (!open) return null;
 
   const cycleFocus = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
     const focusable = [

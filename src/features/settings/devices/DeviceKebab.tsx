@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useMenuOpen } from "../../../lib/menuOpen";
 import { AnchoredPopover } from "../../workspace/popoverPlace";
 import { moveMenuFocus } from "../../workspace/strip/menuNav";
 
@@ -31,6 +32,7 @@ export function DeviceKebab({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const label = `Actions for ${displayName}`;
+  useMenuOpen(open, () => close(false));
 
   useEffect(() => {
     if (!open) return;

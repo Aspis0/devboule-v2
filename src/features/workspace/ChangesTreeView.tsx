@@ -1,5 +1,6 @@
 import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import type { WorkspaceGitRow } from "../../types/ipc";
+import { useMenuOpen } from "../../lib/menuOpen";
 import { buildChangesTree, type ChangesTreeFolder, type ChangesTreeNode } from "./changesTree";
 
 /**
@@ -15,8 +16,6 @@ import { buildChangesTree, type ChangesTreeFolder, type ChangesTreeNode } from "
  */
 interface ChangesTreeViewProps {
   rows: WorkspaceGitRow[];
-  /** True when the reply carries a caveat: every folder sum below is a
-   * floor, capped rows or not (the branch total says the same). */
   inexact: boolean;
   selection: string | null;
   onSelect: (path: string) => void;
@@ -25,6 +24,8 @@ interface ChangesTreeViewProps {
   onDiscard: (paths: string[]) => void;
   menuPath: string | null;
   onToggleMenu: (path: string) => void;
+  /** Dismiss the open row menu — the band opening is the outside press. */
+  onCloseMenu: () => void;
   acting: boolean;
   /** Slice 8's hand-off: open the selected file as a diff tab. Absent until
    * then, and the pencil with it — a control with no destination is a lie. */
@@ -284,10 +285,12 @@ export const ChangesTreeView = memo(function ChangesTreeView({
   onDiscard,
   menuPath,
   onToggleMenu,
+  onCloseMenu,
   acting,
   onOpenFile,
   workspaceId,
 }: ChangesTreeViewProps) {
+  useMenuOpen(menuPath !== null, onCloseMenu);
   const nodes = useMemo(() => buildChangesTree(rows, inexact), [rows, inexact]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 

@@ -27,6 +27,7 @@ function Harness({ creating, workspaceSelected, onClose, onAgent, onTerminal }: 
         +
       </button>
       <WorkspaceNewTabMenu
+        open
         triggerRef={triggerRef}
         creating={creating}
         workspaceSelected={workspaceSelected}

@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { Project, Workspace } from "../../types/ipc";
+import { useMenuOpen } from "../../lib/menuOpen";
 import { ErrorText } from "../../components/ErrorText";
 import type { ErrorSentence } from "../../lib/errorSentence";
 
@@ -66,6 +67,8 @@ export const DesignFolderControl = memo(function DesignFolderControl({
     setOpen(false);
     queueMicrotask(() => triggerRef.current?.focus());
   }, []);
+
+  useMenuOpen(open, close);
 
   useEffect(() => {
     if (!open) return;

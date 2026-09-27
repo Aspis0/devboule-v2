@@ -992,57 +992,67 @@ export function AgentProfilesPanel() {
             copy, only the position moved — and the box-top gap with it. */}
         <DelegationSetting />
       </div>
-      {dialog !== null &&
-      document !== null &&
-      (dialog.mode === "create" || dialogTarget !== null) ? (
-        <ProfileDialog
-          title={dialog.mode === "create" ? "New profile" : `Edit profile — ${dialogTarget?.name}`}
-          busy={busy}
-          onClose={closeDialog}
-        >
-          {({ requestClose, markDirty }) =>
-            dialog.mode === "create" ? (
-              <AgentProfileForm
-                mode="create"
-                hideHeading
-                seed={EMPTY_PROFILE_FORM_SEED}
-                providers={installedProviders}
-                catalogLoading={catalog === null && catalogError === null}
-                catalogError={catalogError}
-                vocabularySupported={providerVocabularySupported}
-                busy={busy}
-                onCreate={createProfile}
-                onDirty={markDirty}
-                formError={error}
-                onCancel={requestClose}
-              />
-            ) : (
-              <AgentProfileForm
-                mode="edit"
-                hideHeading
-                seed={
-                  editorDraft?.id === dialog.id
-                    ? editorDraft
-                    : dialogTarget !== null
-                      ? seedFromProfile(dialogTarget)
-                      : EMPTY_PROFILE_FORM_SEED
-                }
-                providers={installedProviders}
-                catalogLoading={catalog === null && catalogError === null}
-                catalogError={catalogError}
-                vocabularySupported={providerVocabularySupported}
-                busy={busy}
-                onCreate={createProfile}
-                onSaveSeed={(draft) => saveProfileFields(dialog.id, draft)}
-                onSeedChange={(draft) => setEditorDraft({ id: dialog.id, ...draft })}
-                onDirty={markDirty}
-                formError={error}
-                onCancel={requestClose}
-              />
-            )
-          }
-        </ProfileDialog>
-      ) : null}
+      {/* Always mounted, so the dialog's registration follows the open
+          boolean instead of the mount: a refactor cannot leave it mounted
+          while closed. */}
+      <ProfileDialog
+        open={
+          dialog !== null &&
+          document !== null &&
+          (dialog.mode === "create" || dialogTarget !== null)
+        }
+        title={
+          dialog === null
+            ? "Profiles"
+            : dialog.mode === "create"
+              ? "New profile"
+              : `Edit profile — ${dialogTarget?.name}`
+        }
+        busy={busy}
+        onClose={closeDialog}
+      >
+        {({ requestClose, markDirty }) =>
+          dialog === null ? null : dialog.mode === "create" ? (
+            <AgentProfileForm
+              mode="create"
+              hideHeading
+              seed={EMPTY_PROFILE_FORM_SEED}
+              providers={installedProviders}
+              catalogLoading={catalog === null && catalogError === null}
+              catalogError={catalogError}
+              vocabularySupported={providerVocabularySupported}
+              busy={busy}
+              onCreate={createProfile}
+              onDirty={markDirty}
+              formError={error}
+              onCancel={requestClose}
+            />
+          ) : (
+            <AgentProfileForm
+              mode="edit"
+              hideHeading
+              seed={
+                editorDraft?.id === dialog.id
+                  ? editorDraft
+                  : dialogTarget !== null
+                    ? seedFromProfile(dialogTarget)
+                    : EMPTY_PROFILE_FORM_SEED
+              }
+              providers={installedProviders}
+              catalogLoading={catalog === null && catalogError === null}
+              catalogError={catalogError}
+              vocabularySupported={providerVocabularySupported}
+              busy={busy}
+              onCreate={createProfile}
+              onSaveSeed={(draft) => saveProfileFields(dialog.id, draft)}
+              onSeedChange={(draft) => setEditorDraft({ id: dialog.id, ...draft })}
+              onDirty={markDirty}
+              formError={error}
+              onCancel={requestClose}
+            />
+          )
+        }
+      </ProfileDialog>
     </div>
   );
 }

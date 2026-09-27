@@ -16,8 +16,11 @@ import {
 } from "react";
 import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "./menuNav";
+import { useMenuOpen } from "../../../lib/menuOpen";
 
 interface WorkspaceNewTabMenuProps {
+  /** The menu is up; the owner owns the open state and says so. */
+  open: boolean;
   /** The "+" button the menu hangs from: Escape hands focus back to it, and a press on it is not an outside click. */
   triggerRef: RefObject<HTMLButtonElement | null>;
   /** A session create is in flight: every entry waits, the controller would drop the create. */
@@ -72,6 +75,7 @@ const TERMINAL_GLYPH = (
 );
 
 export function WorkspaceNewTabMenu({
+  open,
   triggerRef,
   creating,
   workspaceSelected,
@@ -80,16 +84,19 @@ export function WorkspaceNewTabMenu({
   onClose,
 }: WorkspaceNewTabMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  useMenuOpen(open, onClose);
 
   const firstEntryRef = useRef<HTMLButtonElement>(null);
   // The first entry takes focus WITHOUT scrolling: the portal sits at the
   // end of document.body, and the scroll a bare focus causes live fired the
   // popover's own dismissal as it opened (measured over CDP, 64 ms).
   useEffect(() => {
+    if (!open) return;
     firstEntryRef.current?.focus({ preventScroll: true });
-  }, []);
+  }, [open]);
 
   useEffect(() => {
+    if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Node)) return;
       if (rootRef.current?.contains(event.target)) return;
@@ -100,7 +107,7 @@ export function WorkspaceNewTabMenu({
     return () => {
       window.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [onClose, triggerRef]);
+  }, [onClose, open, triggerRef]);
 
   // One close for every dismissal that must hand focus back when it was
   // inside the menu: resize (below), and the portal lifecycle (an ancestor
@@ -117,11 +124,14 @@ export function WorkspaceNewTabMenu({
   // inside the menu that is about to unmount — a resize must not steal it
   // from wherever the user put it.
   useEffect(() => {
+    if (!open) return;
     window.addEventListener("resize", closeMenu);
     return () => {
       window.removeEventListener("resize", closeMenu);
     };
-  }, [closeMenu]);
+  }, [closeMenu, open]);
+
+  if (!open) return null;
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {

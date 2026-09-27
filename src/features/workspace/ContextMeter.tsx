@@ -116,15 +116,14 @@ export function ContextMeter({ usage, manifest, running }: ContextMeterProps) {
         </svg>
         {label !== null ? <span className="workspace-context-meter-text">{label}</span> : null}
       </button>
-      {open ? (
-        <ContextPopover
-          anchorRef={buttonRef}
-          onClose={close}
-          numbers={numbers}
-          live={usage?.live ?? false}
-          plan={plan}
-        />
-      ) : null}
+      <ContextPopover
+        open={open}
+        anchorRef={buttonRef}
+        onClose={close}
+        numbers={numbers}
+        live={usage?.live ?? false}
+        plan={plan}
+      />
     </span>
   );
 }

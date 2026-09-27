@@ -10,6 +10,7 @@ import {
 import type { SidePanelEntry } from "../sidePanelRegistry";
 import { PanelIcon } from "./PanelIcon";
 import { usePanelTabsKeyboard } from "./usePanelTabsKeyboard";
+import { useMenuOpen } from "../../../lib/menuOpen";
 import { moveMenuFocus } from "../strip/menuNav";
 
 /** The panel body's id, shared with the tabs' aria-controls. */
@@ -85,6 +86,8 @@ export function SidePanelTabs({
     }
     setMenuOpen(false);
   }, []);
+
+  useMenuOpen(menuOpen, closeMenu);
 
   useEffect(() => {
     if (!menuOpen) return undefined;

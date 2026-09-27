@@ -14,7 +14,7 @@ describe("ProfileDialog", () => {
 
   function renderDialogBody(onClose: () => void, withDirtyButton: boolean, busy: boolean) {
     return (
-      <ProfileDialog title="Edit profile — Coder" busy={busy} onClose={onClose}>
+      <ProfileDialog open title="Edit profile — Coder" busy={busy} onClose={onClose}>
         {({ requestClose, markDirty }) => (
           <>
             <input aria-label="First field" />
