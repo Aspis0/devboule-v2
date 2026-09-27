@@ -73,11 +73,13 @@ export interface TerminalSessionDeps {
   onPermissionResolved?: (resolution: PermissionResolved) => void;
   /**
    * Lines handed to this tab before it existed (a provider install/login).
-   * Taken here — once the PTY is attached and the snapshot released — and
-   * never by a disposed instance, so a StrictMode double-mount or a tab
-   * switch cannot consume what the surviving instance still needs. The
-   * lines arrive raw; this controller terminates each with the same `\r`
-   * xterm's own Enter takes (`handleViewData` ← `onData`).
+   * Taken in `flushPendingInput` and only there — take implies a live
+   * instance holding a subscription in the same synchronous run, so a
+   * StrictMode double-mount or a tab switch can never strand taken lines
+   * on a dying instance. The lines arrive raw; this controller terminates
+   * each with `\r`, the byte xterm.js itself produces for Enter on the
+   * live keyboard path (`createTerminalView` hands `onData` to
+   * `handleViewData`).
    */
   consumeInitialInput?: () => readonly string[] | null;
   /** Fired when initial input was taken and queued to type: the host can
@@ -124,6 +126,7 @@ export class TerminalSession {
   private snapshotAsOfSeq: number | null = null;
   private backendTeardown: "detach" | "close" | null = null;
   private backendTeardownSent = false;
+  private initialTakeDone = false;
 
   private readonly pendingOutput: Array<{ seq: number; data: string }> = [];
   private readonly pendingSnapshotEvents: TerminalEvent[] = [];
@@ -613,29 +616,35 @@ export class TerminalSession {
   }
 
   private releasePendingInput(): void {
-    // The take is atomic with this queueing: a dispose between take and
-    // send is impossible in one synchronous run, and a disposed instance
-    // never reaches here (`releaseSnapshotEvents` guards it) — so the
-    // lines are either queued on this live instance or still waiting for
-    // the next one. User bytes first: they were typed first.
-    // The release can run while the attach is still in flight (the daemon
-    // may emit the snapshot re-entrantly), when `subscriptionId` is still
-    // null and `sendToPty` would drop the bytes after consuming them. So
-    // this only queues; `flushPendingInput` sends once a subscription
-    // exists — at release time, and again after the attach confirms.
+    // Only queues: the take happens in `flushPendingInput`, where a live
+    // subscription is proven. Taking here would lose the lines when a
+    // dispose lands between take and send (StrictMode unmounts the first
+    // instance mid-chain) — taken-but-unsent is unrecoverable, while
+    // untaken lines wait for the surviving instance. User bytes first:
+    // they were typed first.
     const queued = this.pendingInput.splice(0);
-    const initial = this.deps.consumeInitialInput?.() ?? null;
-    this.pendingInput.push(
-      ...queued,
-      ...(initial === null ? [] : initial.map((line) => `${line}\r`)),
-    );
-    if (initial !== null) this.deps.onInitialInputTaken?.();
+    this.pendingInput.push(...queued);
     this.flushPendingInput();
   }
 
-  /** Send whatever is queued, if this instance holds a subscription. */
+  /**
+   * Send whatever is queued, if this instance is live and holds a
+   * subscription. The one-shot take happens here and only here: take
+   * implies subscribed-plus-live in the same synchronous run, so the sends
+   * below cannot strand. Called at release time and again after the attach
+   * confirms (the release can run re-entrantly mid-attach, when no
+   * subscription exists yet).
+   */
   private flushPendingInput(): void {
-    if (this.subscriptionId === null) return;
+    if (this.disposed || this.exited || this.subscriptionId === null) return;
+    if (!this.initialTakeDone) {
+      this.initialTakeDone = true;
+      const initial = this.deps.consumeInitialInput?.() ?? null;
+      if (initial !== null) {
+        this.pendingInput.push(...initial.map((line) => `${line}\r`));
+        this.deps.onInitialInputTaken?.();
+      }
+    }
     const input = this.pendingInput.splice(0);
     for (const data of input) void this.sendToPty(data);
   }

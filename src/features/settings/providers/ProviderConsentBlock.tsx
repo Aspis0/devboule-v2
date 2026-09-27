@@ -1,17 +1,18 @@
 import { useEffect, useRef } from "react";
+import { CopyableLines, type CopyableLine } from "./CopyableLines";
 
 /**
  * The consent card shared by installed rows and available rows: the exact
- * lines, the warning, Cancel / Confirm. One line per div so a terminal
- * install shows its install line and its login line separately — Windows
- * PowerShell 5.1 cannot parse `&&`, so what the card shows is what gets
- * typed, one line plus Enter at a time. Focus lands on Confirm while the
- * card lives; Escape cancels.
+ * lines, the warning, Cancel / Confirm. What the card shows is what gets
+ * typed, one line plus Enter at a time. When the terminal shell is unknown
+ * the card shows copyable lines instead and Confirm opens the tab untyped.
+ * Focus lands on Confirm while the card lives; Escape cancels.
  */
 export function ProviderConsentBlock({
   providerId,
   verb,
   lines,
+  copyLines,
   notice,
   onConfirm,
   onCancel,
@@ -20,6 +21,11 @@ export function ProviderConsentBlock({
   verb: "update" | "install" | "login";
   /** Shown verbatim, in order. */
   lines: readonly string[];
+  /**
+   * Exact lines to copy instead of auto-typing (unknown terminal shell).
+   * Rendered with a Copy button each; Confirm then opens the tab untyped.
+   */
+  copyLines?: ReadonlyArray<CopyableLine> | null;
   /** The warning under the lines; null when the lines speak for themselves. */
   notice: string | null;
   onConfirm: () => void;
@@ -50,6 +56,7 @@ export function ProviderConsentBlock({
           {line}
         </div>
       ))}
+      {copyLines !== null && copyLines !== undefined ? <CopyableLines lines={copyLines} /> : null}
       {notice !== null ? <p className="provider-consent-notice">{notice}</p> : null}
       <div className="provider-consent-actions">
         <button

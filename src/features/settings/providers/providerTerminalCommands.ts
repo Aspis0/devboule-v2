@@ -10,30 +10,15 @@ import type { ProviderInfo } from "../../../types/ipc";
  * Unknown ids get install-only or nothing, never a guessed command.
  */
 
-/** Which shell the terminal tab runs: the daemon spawns PowerShell on
- * Windows (`pwsh` else `powershell`, always `-NoLogo -NoProfile`) and
- * `$SHELL` (or `/bin/sh`) elsewhere (`shell_command.rs`). */
-export type ProviderShell = "powershell" | "posix";
-
-/** The smallest surface that decides the line shape. */
-interface NavigatorLike {
-  userAgent?: string;
-  platform?: string;
-  userAgentData?: { platform?: string } | undefined;
-}
-
 /**
- * PowerShell on Windows, POSIX elsewhere. Wrong only when the daemon's
- * `DEVBOULE_SHELL` override points elsewhere — and the consent still shows
- * the exact line before anything runs, so a mismatch is visible, not silent.
- * `navigator.platform` reports "Win32" even on 64-bit Windows, hence the
- * second spelling.
+ * Which shell the terminal tab runs. The daemon spawns PowerShell on
+ * Windows (`pwsh` else `powershell`, always `-NoLogo -NoProfile`) and
+ * `$SHELL` (or `/bin/sh`) elsewhere (`shell_command.rs`) — and reports its
+ * own OS in `daemon_diagnostics().environment.osVersion`, which is the only
+ * source this table trusts. Never sniffed from `navigator`: client OS and
+ * daemon OS can differ, and a wrong guess is a silent total failure.
  */
-export function detectTerminalShell(nav: NavigatorLike = globalThis.navigator): ProviderShell {
-  const haystack =
-    `${nav.userAgentData?.platform ?? ""} ${nav.userAgent ?? ""} ${nav.platform ?? ""}`.toLowerCase();
-  return /windows|win32|win64/.test(haystack) ? "powershell" : "posix";
-}
+export type ProviderShell = "powershell" | "posix";
 
 /**
  * Strict allowlist for the registry-supplied package segment. Lowercase
@@ -47,6 +32,11 @@ const NPM_PACKAGE_MAX_LENGTH = 214;
 function validatedPackage(npmPackage: string | null | undefined): string | null {
   if (!npmPackage || npmPackage.length > NPM_PACKAGE_MAX_LENGTH) return null;
   return NPM_PACKAGE_PATTERN.test(npmPackage) ? npmPackage : null;
+}
+
+/** The validated install package, or null when no safe line exists. */
+export function providerInstallPackage(provider: ProviderInfo): string | null {
+  return validatedPackage(provider.npmPackage);
 }
 
 /** Per-id install args beyond `npm install -g`: pi's documented
@@ -110,10 +100,15 @@ export interface ProviderTerminalPlan {
 
 /**
  * One gated line: the login half runs only if the install succeeded.
- * PowerShell has no `&&`, so `; if ($LASTEXITCODE -eq 0) { … }` (valid in
- * 5.1 and 7); POSIX chains with `&&`. Typing both halves up front is what
- * lets npm's foreground keep the login bytes out of its stdin — the shell
- * holds the second half until the first exits 0.
+ * PowerShell has no `&&`, so `; if (…) { … }` (valid in 5.1 and 7);
+ * POSIX chains with `&&`. Typing both halves up front is what lets npm's
+ * foreground keep the login bytes out of its stdin — the shell holds the
+ * second half until the first passes the gate. Both halves are needed:
+ * `$?` is $false when the command was never found (a missing npm leaves
+ * `$LASTEXITCODE` untouched at its previous value — measured stale-0 after
+ * a success, so the exit-code half alone would run the login anyway),
+ * while `$LASTEXITCODE -eq 0` is $false when npm ran and failed. Not-found
+ * vs ran-and-failed: each half sees what the other cannot.
  */
 function gatedInstallLine(
   install: string,
@@ -122,26 +117,40 @@ function gatedInstallLine(
 ): string {
   if (loginLines.length === 0) return install;
   if (shell === "powershell") {
-    return `${install}; if ($LASTEXITCODE -eq 0) { ${loginLines.join("; ")} }`;
+    return `${install}; if ($? -and $LASTEXITCODE -eq 0) { ${loginLines.join("; ")} }`;
   }
   return `${install} && ${loginLines.join(" && ")}`;
 }
 
-export function providerTerminalPlan(
+/** Labels for the copy fallback, when the shell is unknown and both lines show. */
+export const SHELL_LABELS: Record<ProviderShell, string> = {
+  powershell: "Windows PowerShell",
+  posix: "POSIX shells",
+};
+
+/**
+ * The install as one gated line for a known shell. Login lines are static
+ * words (safe in any shell); only the gate is shell-shaped.
+ */
+export function providerInstallPlan(
   provider: ProviderInfo,
-  verb: "install" | "login",
   shell: ProviderShell,
 ): ProviderTerminalPlan | null {
-  if (verb === "login") {
-    const login = providerLogin(provider.id);
-    if (!login) return null;
-    return { lines: [...login.lines], note: login.note };
-  }
-  const pkg = validatedPackage(provider.npmPackage);
+  const pkg = providerInstallPackage(provider);
   if (!pkg) return null;
   const extra = installExtraArgs(provider.id);
   const install = `npm install -g${extra ? ` ${extra}` : ""} ${pkg}@latest`;
   const login = providerLogin(provider.id);
   if (login) return { lines: [gatedInstallLine(install, login.lines, shell)], note: login.note };
   return { lines: [install], note: providerNoLoginNote(provider.id) };
+}
+
+/**
+ * The login alone. No shell in the shape: every documented login line is
+ * plain words, so an unknown shell never blocks it.
+ */
+export function providerLoginPlan(provider: ProviderInfo): ProviderTerminalPlan | null {
+  const login = providerLogin(provider.id);
+  if (!login) return null;
+  return { lines: [...login.lines], note: login.note };
 }

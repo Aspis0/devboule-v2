@@ -1071,7 +1071,7 @@ describe("TerminalSession initial input", () => {
       .map(([, args]) => args);
   }
 
-  it("takes at snapshot release, never before, terminated as xterm Enter", async () => {
+  it("takes once at the first live flush, terminated as xterm Enter", async () => {
     const takes = { count: 0 };
     const sent = vi.fn();
     const harness = makeHarness({
@@ -1079,13 +1079,9 @@ describe("TerminalSession initial input", () => {
       consumeInitialInput: taker(["npm install -g @openai/codex@latest"], takes),
       onInitialInputTaken: sent,
     });
+    // The attach confirmed during start, so the post-attach flush is live
+    // and subscribed: the take happens here, not at snapshot release.
     await harness.session.start();
-    harness.invoke.mockClear();
-
-    expect(takes.count).toBe(0);
-    expect(sends(harness)).toEqual([]);
-
-    harness.completeSnapshot();
 
     expect(takes.count).toBe(1);
     expect(sends(harness)).toEqual([
@@ -1096,39 +1092,76 @@ describe("TerminalSession initial input", () => {
       },
     ]);
     expect(sent).toHaveBeenCalledTimes(1);
+
+    harness.completeSnapshot();
+    expect(takes.count).toBe(1);
   });
 
-  it("a disposed instance never consumes, so the surviving one still can", async () => {
+  it("a disposed instance never takes, so the surviving one still can", async () => {
     const takes = { count: 0 };
     const harness = makeHarness({
-      deferSnapshot: true,
+      deferAttach: true,
       consumeInitialInput: taker(["codex login"], takes),
     });
-    await harness.session.start();
-    harness.invoke.mockClear();
-
+    const starting = harness.session.start();
+    await harness.attachStarted;
+    // Disposed before the attach confirms: no flush ever runs live.
     harness.session.dispose();
-    harness.completeSnapshot();
+    harness.resolveAttach();
+    await starting;
 
     expect(takes.count).toBe(0);
     expect(sends(harness)).toEqual([]);
   });
 
-  it("flushes user bytes typed during the snapshot before the initial lines", async () => {
+  it("never takes when disposed between a re-entrant release and the flush", async () => {
+    const takes = { count: 0 };
+    const harness = makeHarness({
+      deferAttach: true,
+      consumeInitialInput: taker(["codex login"], takes),
+    });
+    const starting = harness.session.start();
+    await harness.attachStarted;
+    // The snapshot arrives re-entrantly while the attach is still in
+    // flight: release queues with no subscription, taking nothing.
+    harness.emit({
+      type: "snapshot",
+      asOfSeq: 0,
+      cols: 80,
+      rows: 24,
+      data: "",
+      cursor: { row: 0, col: 0, visible: true, shape: "block", blinking: false },
+      alternateScreen: false,
+      bracketedPaste: false,
+      lineWrap: true,
+    });
+    // …and the dispose lands before the attach confirms, so the
+    // post-attach flush never runs either. Taken-but-unsent would be
+    // unrecoverable; untaken lines wait for the next instance.
+    harness.session.dispose();
+    harness.resolveAttach();
+    await starting;
+
+    expect(takes.count).toBe(0);
+    expect(sends(harness)).toEqual([]);
+  });
+
+  it("sends in typed order across the post-attach and release flushes", async () => {
     const takes = { count: 0 };
     const harness = makeHarness({
       deferSnapshot: true,
       consumeInitialInput: taker(["codex login"], takes),
     });
+    // Initial lines go at the post-attach flush, while the snapshot is
+    // still deferred…
     await harness.session.start();
-    harness.invoke.mockClear();
-
-    harness.emitInput("typed first");
+    // …and user bytes typed during the snapshot follow at release.
+    harness.emitInput("typed during snapshot");
     harness.completeSnapshot();
 
     expect(sends(harness)).toEqual([
-      { id: "session-1", subscriptionId: 17, text: "typed first" },
       { id: "session-1", subscriptionId: 17, text: "codex login\r" },
+      { id: "session-1", subscriptionId: 17, text: "typed during snapshot" },
     ]);
   });
 

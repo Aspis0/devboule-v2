@@ -4,7 +4,7 @@ import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { useAppStore } from "../../../store/appStore";
 import { sharedSessionController } from "../../workspace/workspaceSessions";
-import { requestTerminalInput } from "../../terminal/pendingTerminalInput";
+import { hasTerminalInput, requestTerminalInput } from "../../terminal/pendingTerminalInput";
 import { useSettingsDaemon } from "../settingsDaemon";
 import { TOOL_POLICY_CAPABILITY, logTail, toolPolicyFor } from "../providerStatus";
 import { ProviderConsentBlock } from "../providers/ProviderConsentBlock";
@@ -14,20 +14,32 @@ import {
   type ModelCountCache,
 } from "../providers/ProviderModelCount";
 import {
-  detectTerminalShell,
+  SHELL_LABELS,
+  providerInstallPackage,
+  providerInstallPlan,
   providerLogin,
+  providerLoginPlan,
   providerNoLoginNote,
-  providerTerminalPlan,
+  type ProviderShell,
 } from "../providers/providerTerminalCommands";
+import { SHELL_QUERY_LOADING, fetchTerminalShell } from "../providers/terminalShell";
 import { getLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
 import {
+  TERMINAL_TAKE_TIMEOUT_MS,
   clearTerminalRun,
   clearTerminalRuns,
   recordTerminalRun,
+  terminalRunDisplay,
   terminalRuns,
+  type ProviderTerminalRun,
 } from "../providers/providerTerminalRuns";
+import { CopyableLines, type CopyableLine } from "../providers/CopyableLines";
 import { ProviderNpmFailure } from "../providers/ProviderNpmFailure";
-import { ProviderRow, ProviderVersionLine } from "../providers/ProviderRow";
+import {
+  ProviderRow,
+  ProviderVersionLine,
+  type ProviderRowConsent,
+} from "../providers/ProviderRow";
 import { useToolPolicies } from "../providers/useToolPolicies";
 import "../providers.css";
 
@@ -52,7 +64,10 @@ const TERMINAL_LEAD = "Confirm opens a terminal tab and types this line, then ta
 const NPM_MISSING =
   "If the tab says npm is not recognized, install Node.js/npm and try again — the tab starts without your shell profile.";
 const NO_WORKSPACE_INSTALL =
-  "No workspace is open, so this installs in the background instead of a terminal tab.";
+  "No workspace is open, so this installs in the background with no login step — open a workspace afterwards, then use Log in on the installed row.";
+// Shown when the shell cannot be confirmed: the page must not auto-type.
+const SHELL_UNKNOWN =
+  "The terminal's shell could not be confirmed — copy the line for your shell. Confirm opens the tab for you to paste into.";
 
 /**
  * The row line after a terminal handoff, until a successful Refresh or
@@ -91,12 +106,26 @@ export function ProvidersPanel() {
     detail: string | null;
   } | null>(null);
   const [consent, setConsent] = useState<ProviderConsent | null>(null);
+  // Which shell new tabs run, from the daemon's own OS report. Fetched on
+  // consent open (install only — login lines are shell-independent); the
+  // consent waits for it, and an unknown shell means copy, never type.
+  const [shellQuery, setShellQuery] = useState<
+    | { status: "idle" }
+    | { status: "loading" }
+    | { status: "ready"; shell: ProviderShell }
+    | { status: "unknown" }
+  >({ status: "idle" });
+  // A consent closed or replaced while its shell fetch is in flight must
+  // not apply the stale answer to whatever opened next.
+  const shellQuerySeq = useRef(0);
   // A terminal tab the daemon would not start: panel-level, because the
-  // row that asked may belong to either section and the shared roster owns
-  // the daemon's own words (Settings cannot see them).
+  // row that asked may belong to either section. The daemon's own reason
+  // comes back through the same shared-controller store the creating lock
+  // is read from — never invented here.
   const [terminalError, setTerminalError] = useState<{
     providerId: string;
     text: string;
+    detail: string | null;
   } | null>(null);
   const terminalErrorDismissRef = useRef<HTMLButtonElement | null>(null);
   // The handoff notes live in the module store (the surface remounts on
@@ -145,6 +174,19 @@ export function ProvidersPanel() {
     if (terminalError !== null) terminalErrorDismissRef.current?.focus();
   }, [terminalError]);
 
+  // Flip a handoff note to "nothing was typed" once its take bound passes.
+  // Runs on every render by design: the timer only matters while this panel
+  // is mounted with a fresh, still-waiting run, and any render re-arms it.
+  useEffect(() => {
+    const remaining = terminalRuns()
+      .filter((run) => run.typed && hasTerminalInput(run.sessionId))
+      .map((run) => run.atMs + TERMINAL_TAKE_TIMEOUT_MS - Date.now())
+      .filter((ms) => ms > 0);
+    if (remaining.length === 0) return;
+    const timer = setTimeout(() => setRunsEpoch((epoch) => epoch + 1), Math.min(...remaining));
+    return () => clearTimeout(timer);
+  });
+
   useEffect(() => {
     consentInFlightRef.current = false;
     if (consent === null) {
@@ -161,7 +203,6 @@ export function ProvidersPanel() {
   // is that a terminal without one starts in the daemon's directory, so
   // without one this page offers no tab at all (headless install instead).
   const terminalWorkspaceId = getLastSelectedWorkspaceId();
-  const terminalShell = detectTerminalShell();
   const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
   const vocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
 
@@ -249,6 +290,8 @@ export function ProvidersPanel() {
       });
   }
 
+  // A terminal tab the person can paste into needs no shell answer; an
+  // install typed for them does. Fetch only for that case.
   function openConsent(
     provider: ProviderInfo,
     verb: "update" | "install" | "login",
@@ -257,23 +300,50 @@ export function ProvidersPanel() {
     if (npmRun !== null) return;
     consentRestoreRef.current = trigger;
     setConsent({ provider, verb });
+    if (verb === "install" && terminalWorkspaceId !== null) {
+      const seq = ++shellQuerySeq.current;
+      setShellQuery({ status: "loading" });
+      void fetchTerminalShell().then((shell) => {
+        if (seq !== shellQuerySeq.current) return;
+        setShellQuery(shell === null ? { status: "unknown" } : { status: "ready", shell });
+      });
+    } else {
+      setShellQuery({ status: "idle" });
+    }
   }
 
   function confirmConsent() {
     if (consent === null || consentInFlightRef.current) return;
     consentInFlightRef.current = true;
-    // Terminal handoff when a workspace can host the tab; headless daemon
-    // npm otherwise (update always, install when no workspace is open —
-    // the daemon needs no cwd). A login without a workspace has no entry
+    // Terminal handoff when a workspace can host the tab and — for an
+    // install — the shell is known (loading Confirm is disabled, so
+    // reaching here mid-fetch is a dead branch). Headless daemon npm
+    // otherwise (update always, install when no workspace is open — the
+    // daemon needs no cwd). A login without a workspace has no entry
     // points, so reaching here with one is a dead branch, never a send.
-    if (consent.verb !== "update" && terminalWorkspaceId !== null) {
-      const { provider, verb } = consent;
+    if (consent.verb === "install" && terminalWorkspaceId !== null) {
+      const { provider } = consent;
+      if (shellQuery.status === "loading" || shellQuery.status === "idle") return;
+      // Without a confirmed shell the tab opens untyped: the person
+      // pastes the copied line themselves (copy-mode consent above).
+      const handoff =
+        shellQuery.status === "ready"
+          ? { shell: shellQuery.shell, typed: true }
+          : { shell: null, typed: false };
       setConsent(null);
-      confirmTerminal(provider, verb, terminalWorkspaceId);
+      confirmTerminal(provider, "install", terminalWorkspaceId, handoff);
       return;
     }
     if (consent.verb === "login") {
+      // Login lines are static words with no shell syntax, so an unknown
+      // shell never blocks them — only a missing workspace does.
+      if (terminalWorkspaceId === null) {
+        setConsent(null);
+        return;
+      }
+      const { provider } = consent;
       setConsent(null);
+      confirmTerminal(provider, "login", terminalWorkspaceId, { shell: null, typed: true });
       return;
     }
     const { provider } = consent;
@@ -320,17 +390,29 @@ export function ProvidersPanel() {
    * Install and login run in a terminal tab under the current workspace —
    * never in the daemon's directory (the "+" menu refuses that create,
    * and so does this page). The login is interactive (browser, TUI),
-   * which the headless npm road cannot do.
+   * which the headless npm road cannot do. An untyped handoff (unknown
+   * shell) opens the tab and records both lines for the paste note.
    */
-  function confirmTerminal(provider: ProviderInfo, verb: "install" | "login", workspaceId: string) {
-    const plan = providerTerminalPlan(provider, verb, terminalShell);
-    if (plan === null) return;
+  function confirmTerminal(
+    provider: ProviderInfo,
+    verb: "install" | "login",
+    workspaceId: string,
+    handoff: { shell: ProviderShell | null; typed: boolean },
+  ) {
+    const plan =
+      verb === "install" && handoff.shell !== null
+        ? providerInstallPlan(provider, handoff.shell)
+        : verb === "login"
+          ? providerLoginPlan(provider)
+          : null;
+    if (handoff.typed && plan === null) return;
     // The controller drops a create while one is in flight without asking
     // the daemon: say that plainly, never the daemon-refusal sentence.
     if (sharedSessionController().getState().creating) {
       setTerminalError({
         providerId: provider.id,
         text: "A terminal is already starting — wait a moment and try again.",
+        detail: null,
       });
       return;
     }
@@ -338,14 +420,31 @@ export function ProvidersPanel() {
       .create("terminal", null, workspaceId)
       .then((session) => {
         if (session === null) {
+          // A genuine refusal: the controller published the daemon's own
+          // words on the same store — read them, never invent them.
+          const refusal = sharedSessionController().getState().error;
           setTerminalError({
             providerId: provider.id,
-            text: "Could not open a terminal tab. The daemon did not start one — try again.",
+            text: refusal
+              ? `${provider.id}: ${refusal.sentence}`
+              : "Could not open a terminal tab. The daemon did not start one — try again.",
+            detail: refusal?.detail ?? null,
           });
           return;
         }
-        requestTerminalInput(session.id, plan.lines);
-        recordTerminalRun(provider.id, verb);
+        // Copy-mode lines for the paste note, when the tab opens untyped.
+        const copyLines =
+          !handoff.typed && verb === "install" ? (copyPlanLines(provider) ?? []) : [];
+        if (handoff.typed && plan !== null) requestTerminalInput(session.id, plan.lines);
+        recordTerminalRun(
+          provider.id,
+          verb,
+          handoff.typed && plan !== null
+            ? plan.lines.map((text) => ({ label: null, text }))
+            : copyLines,
+          session.id,
+          { typed: handoff.typed },
+        );
         setRunsEpoch((epoch) => epoch + 1);
         setTerminalError(null);
         // create() already selected the tab; the surface switch remounts
@@ -356,48 +455,115 @@ export function ProvidersPanel() {
       });
   }
 
+  /** Both shell variants for the paste note, labeled. Null when no plan
+   * exists for either — unreachable (the Install button needs a package),
+   * but the note must never show half a fallback. */
+  function copyPlanLines(provider: ProviderInfo): CopyableLine[] | null {
+    const powershell = providerInstallPlan(provider, "powershell");
+    const posix = providerInstallPlan(provider, "posix");
+    const powershellLine = powershell?.lines[0];
+    const posixLine = posix?.lines[0];
+    if (powershellLine === undefined || posixLine === undefined) return null;
+    return [
+      { label: SHELL_LABELS.powershell, text: powershellLine },
+      { label: SHELL_LABELS.posix, text: posixLine },
+    ];
+  }
+
+  /** The install note behind a terminal or copy consent: the login note
+   * when the provider documents one, else the no-login explanation. */
+  function installNote(provider: ProviderInfo): string | null {
+    return providerLoginPlan(provider)?.note ?? providerNoLoginNote(provider.id);
+  }
+
   const unreadableDirs = catalog?.unreadableDirs ?? 0;
   // The headless road's one line (update always; install when no workspace
   // can host a tab — the daemon allowlists the package by id, so even a
-  // line our own pattern refused stays safe here). Terminal install and
-  // login show their gated plan through consentPlan below.
-  const npmCommand =
-    consent !== null &&
-    (consent.verb === "update" || (consent.verb === "install" && terminalWorkspaceId === null)) &&
-    consent.provider.npmPackage
-      ? `npm install -g ${consent.provider.npmPackage}@latest`
-      : null;
-  const consentPlan =
-    consent !== null && consent.verb !== "update" && terminalWorkspaceId !== null
-      ? providerTerminalPlan(consent.provider, consent.verb, terminalShell)
-      : null;
-  // Update keeps its global-npm warning verbatim; a terminal handoff names
-  // the tab first, then the npm change the install line makes, then the
-  // profile caveat the PTY reintroduces.
-  const consentNotice =
-    consent === null
+  // line our own pattern refused stays safe here).
+  function headlessLine(provider: ProviderInfo): string | null {
+    return provider.npmPackage ? `npm install -g ${provider.npmPackage}@latest` : null;
+  }
+  /**
+   * What the open consent shows for this row: the headless line, the gated
+   * terminal line, both copy lines when the shell is unknown, or the
+   * waiting marker while the shell report is in flight. Null renders
+   * nothing (unreachable: entry points already checked the same facts).
+   */
+  function consentView(
+    provider: ProviderInfo,
+    verb: "update" | "install" | "login",
+  ): ProviderRowConsent | "waiting" | null {
+    if (verb === "update") {
+      const line = headlessLine(provider);
+      // Update keeps its global-npm warning verbatim.
+      return line === null ? null : { verb, lines: [line], copyLines: null, notice: NPM_WARNING };
+    }
+    if (verb === "login") {
+      // Login lines are static words with no shell syntax: no fetch, and
+      // an unknown shell never blocks them.
+      const plan = providerLoginPlan(provider);
+      return plan === null
+        ? null
+        : {
+            verb,
+            lines: plan.lines,
+            copyLines: null,
+            notice: plan.note ? `${TERMINAL_LEAD} ${plan.note}` : TERMINAL_LEAD,
+          };
+    }
+    if (terminalWorkspaceId === null) {
+      const line = headlessLine(provider);
+      return line === null
+        ? null
+        : {
+            verb,
+            lines: [line],
+            copyLines: null,
+            notice: `${NO_WORKSPACE_INSTALL} ${NPM_WARNING}`,
+          };
+    }
+    if (shellQuery.status === "loading" || shellQuery.status === "idle") return "waiting";
+    const note = installNote(provider);
+    if (shellQuery.status === "unknown") {
+      const entries = copyPlanLines(provider);
+      // A terminal handoff names the tab first, then the npm change the
+      // pasted line makes, then the profile caveat the PTY reintroduces.
+      return entries === null
+        ? null
+        : {
+            verb,
+            lines: [],
+            copyLines: entries,
+            notice: `${SHELL_UNKNOWN} ${NPM_WARNING} ${NPM_MISSING}${note ? ` ${note}` : ""}`,
+          };
+    }
+    const plan = providerInstallPlan(provider, shellQuery.shell);
+    return plan === null
       ? null
-      : consent.verb === "update"
-        ? NPM_WARNING
-        : terminalWorkspaceId === null
-          ? consent.verb === "install"
-            ? `${NO_WORKSPACE_INSTALL} ${NPM_WARNING}`
-            : null
-          : consentPlan === null
-            ? null
-            : consent.verb === "install"
-              ? `${TERMINAL_LEAD} ${NPM_WARNING} ${NPM_MISSING}${consentPlan.note ? ` ${consentPlan.note}` : ""}`
-              : consentPlan.note
-                ? `${TERMINAL_LEAD} ${consentPlan.note}`
-                : TERMINAL_LEAD;
-  const consentLines =
-    consent === null
-      ? null
-      : consent.verb === "update" || (consent.verb === "install" && terminalWorkspaceId === null)
-        ? npmCommand !== null
-          ? [npmCommand]
-          : null
-        : (consentPlan?.lines ?? null);
+      : {
+          verb,
+          lines: plan.lines,
+          copyLines: null,
+          notice: `${TERMINAL_LEAD} ${NPM_WARNING} ${NPM_MISSING}${note ? ` ${note}` : ""}`,
+        };
+  }
+  /**
+   * What a recorded run says on its row: the handoff while fresh and
+   * taken, the paste fallback when the tab opened untyped or never picked
+   * the lines up past the take bound. Never "installing": nothing here
+   * observes the install.
+   */
+  function runNotice(run: ProviderTerminalRun): { text: string; lines: CopyableLine[] } {
+    const display = terminalRunDisplay(run);
+    if (display === "paste")
+      return { text: "Terminal tab opened — paste the copied line there.", lines: run.lines };
+    if (display === "expired")
+      return {
+        text: "Nothing was typed in the terminal tab — copy the line and paste it there.",
+        lines: run.lines,
+      };
+    return { text: terminalRunNotice(run.verb), lines: [] };
+  }
 
   function renderInstalledRow(provider: ProviderInfo, viaNpx: boolean) {
     const withTools = toolPolicySupported && (provider.tools ?? []).length > 0;
@@ -416,12 +582,9 @@ export function ProvidersPanel() {
         toolsDisabled={toolStore.policies === null}
         vocabularySupported={vocabularySupported}
         modelCache={modelCache}
-        consentOpen={consent?.provider.id === provider.id}
-        consentLines={consent?.provider.id === provider.id ? consentLines : null}
-        consentNotice={consent?.provider.id === provider.id ? consentNotice : null}
-        consentVerb={consent?.provider.id === provider.id ? consent.verb : null}
+        consent={consent?.provider.id === provider.id ? consentView(provider, consent.verb) : null}
         npmFailure={npmFailure?.providerId === provider.id ? npmFailure : null}
-        terminalNotice={runHereNotice !== null ? terminalRunNotice(runHereNotice.verb) : null}
+        terminalNotice={runHereNotice !== null ? runNotice(runHereNotice) : null}
         onDismissNotice={() => {
           clearTerminalRun(provider.id);
           setRunsEpoch((epoch) => epoch + 1);
@@ -470,8 +633,16 @@ export function ProvidersPanel() {
       ) : null}
       {terminalError ? (
         <div role="alert" className="provider-card-block provider-update-error">
-          <span>
+          <span
+            title={terminalError.detail ?? undefined}
+            aria-describedby={terminalError.detail ? "settings-terminal-error-detail" : undefined}
+          >
             {terminalError.providerId}: {terminalError.text}
+            {terminalError.detail ? (
+              <span id="settings-terminal-error-detail" className="error-detail-sr-only">
+                {terminalError.detail}
+              </span>
+            ) : null}
           </span>
           <button
             ref={terminalErrorDismissRef}
@@ -542,8 +713,12 @@ export function ProvidersPanel() {
                     const availableNotice =
                       terminalRuns().find((run) => run.providerId === provider.id) ?? null;
                     // Install is offered only when a safe line exists: the
-                    // plan refuses packages outside the strict name shape.
-                    const installPlan = providerTerminalPlan(provider, "install", terminalShell);
+                    // package check refuses names outside the strict shape.
+                    // The shell it will be typed for is resolved at open.
+                    const installable = providerInstallPackage(provider) !== null;
+                    const noticeView = availableNotice !== null ? runNotice(availableNotice) : null;
+                    const consentHereView =
+                      consentHere && consent !== null ? consentView(provider, consent.verb) : null;
                     return (
                       <div
                         className="prov-available-row"
@@ -560,9 +735,12 @@ export function ProvidersPanel() {
                           ) : null}
                           <ProviderVersionLine provider={provider} />
                         </span>
-                        {availableNotice !== null ? (
+                        {noticeView !== null ? (
                           <span className="provider-card-block prov-terminal-note" role="status">
-                            {terminalRunNotice(availableNotice.verb)}
+                            {noticeView.text}
+                            {noticeView.lines.length > 0 ? (
+                              <CopyableLines lines={noticeView.lines} />
+                            ) : null}
                             <button
                               type="button"
                               className="provider-refresh provider-update-error-dismiss"
@@ -578,7 +756,7 @@ export function ProvidersPanel() {
                           <span className="prov-busy" role="status">
                             {npmRun.verb === "install" ? "Installing…" : "Updating…"}
                           </span>
-                        ) : installPlan !== null ? (
+                        ) : installable ? (
                           <button
                             className="provider-refresh provider-install"
                             type="button"
@@ -590,12 +768,30 @@ export function ProvidersPanel() {
                             Install
                           </button>
                         ) : null}
-                        {consentHere && consentLines !== null && consent !== null ? (
+                        {consentHereView === "waiting" ? (
+                          <div
+                            className="provider-card-block provider-consent"
+                            role="group"
+                            aria-label={`Confirm install for ${provider.id}`}
+                          >
+                            <p className="provider-consent-notice">{SHELL_QUERY_LOADING}</p>
+                            <div className="provider-consent-actions">
+                              <button
+                                type="button"
+                                className="provider-refresh provider-consent-cancel"
+                                onClick={() => setConsent(null)}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : consentHereView !== null ? (
                           <ProviderConsentBlock
                             providerId={provider.id}
-                            verb={consent.verb}
-                            lines={consentLines}
-                            notice={consentNotice}
+                            verb={consentHereView.verb}
+                            lines={consentHereView.lines}
+                            copyLines={consentHereView.copyLines}
+                            notice={consentHereView.notice}
                             onConfirm={confirmConsent}
                             onCancel={() => setConsent(null)}
                           />

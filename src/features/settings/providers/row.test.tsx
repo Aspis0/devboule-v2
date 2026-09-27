@@ -49,10 +49,7 @@ describe("ProviderRow", () => {
       toolsDisabled: false,
       vocabularySupported: true,
       modelCache: cache,
-      consentOpen: false,
-      consentLines: null,
-      consentNotice: null,
-      consentVerb: null,
+      consent: null,
       npmFailure: null,
       terminalNotice: null,
       onDismissNotice: () => {},
@@ -272,10 +269,12 @@ describe("ProviderRow", () => {
             npmPackage: "@vibe/grok-cli",
           })}
           onCancelConsent={onCancelConsent}
-          consentOpen
-          consentLines={["npm install -g @vibe/grok-cli@latest"]}
-          consentNotice={null}
-          consentVerb="update"
+          consent={{
+            verb: "update",
+            lines: ["npm install -g @vibe/grok-cli@latest"],
+            copyLines: null,
+            notice: null,
+          }}
         />,
       ),
     );
@@ -296,10 +295,12 @@ describe("ProviderRow", () => {
         npmPackage: "@vibe/grok-cli",
       }),
       onOpenUpdate,
-      consentOpen: true,
-      consentLines: ["npm install -g @vibe/grok-cli@latest"],
-      consentNotice: null,
-      consentVerb: "update",
+      consent: {
+        verb: "update",
+        lines: ["npm install -g @vibe/grok-cli@latest"],
+        copyLines: null,
+        notice: null,
+      },
       onConfirmConsent,
     });
     expect(onOpenUpdate).not.toHaveBeenCalled();
@@ -387,23 +388,28 @@ describe("ProviderRow", () => {
 
   it("renders every consent line verbatim with its notice", async () => {
     await renderRow({
-      consentOpen: true,
-      consentLines: ["npm install -g @openai/codex@latest", "codex login"],
-      consentNotice: "Confirm opens a terminal tab.",
-      consentVerb: "install",
+      consent: {
+        verb: "install",
+        lines: ["npm install -g @openai/codex@latest && codex login"],
+        copyLines: null,
+        notice: "Confirm opens a terminal tab.",
+      },
       onConfirmConsent: () => {},
     });
     const lines = Array.from(container.querySelectorAll(".provider-consent-command")).map(
       (node) => node.textContent,
     );
-    expect(lines).toEqual(["npm install -g @openai/codex@latest", "codex login"]);
+    expect(lines).toEqual(["npm install -g @openai/codex@latest && codex login"]);
     expect(container.textContent).toContain("Confirm opens a terminal tab.");
   });
 
   it("opens collapsed details for a terminal handoff, with Dismiss", async () => {
     const onDismissNotice = vi.fn();
     await renderRow({
-      terminalNotice: "Install and login sent to a terminal tab — finish them there.",
+      terminalNotice: {
+        text: "Install and login sent to a terminal tab — finish them there.",
+        lines: [],
+      },
       onDismissNotice,
     });
     expect(chevron().getAttribute("aria-expanded")).toBe("true");
@@ -416,6 +422,43 @@ describe("ProviderRow", () => {
     if (!dismiss) throw new Error("notice Dismiss did not render");
     await act(async () => dismiss.click());
     expect(onDismissNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the never-typed lines to copy inside the notice", async () => {
+    const writes: string[] = [];
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: {
+        writeText: vi.fn(async (text: string) => {
+          writes.push(text);
+        }),
+      },
+    });
+    try {
+      await renderRow({
+        terminalNotice: {
+          text: "Nothing was typed in the terminal tab.",
+          lines: [{ label: null, text: "codex login" }],
+        },
+        onDismissNotice: () => {},
+      });
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("codex login");
+      const copy = container.querySelector<HTMLButtonElement>(".provider-copy-button");
+      if (!copy) throw new Error("copy did not render");
+      await act(async () => copy.click());
+      expect(writes).toEqual(["codex login"]);
+      expect(copy.textContent).toBe("Copied");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the shell check while waiting, with Cancel and no Confirm", async () => {
+    await renderRow({ consent: "waiting" });
+    expect(container.textContent).toContain("Checking which shell");
+    expect(container.querySelector(".provider-consent-confirm")).toBeNull();
+    const cancel = container.querySelector<HTMLButtonElement>(".provider-consent-cancel");
+    if (!cancel) throw new Error("waiting Cancel did not render");
   });
 
   it("shows the login hint instead of the button once details open", async () => {

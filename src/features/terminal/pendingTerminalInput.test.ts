@@ -1,7 +1,7 @@
 // Lines a fresh terminal tab types on open, keyed by session: one run
 // per tab, consumed once, never shared across tabs.
 import { describe, expect, it } from "vitest";
-import { requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
+import { hasTerminalInput, requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
 
 describe("pendingTerminalInput", () => {
   it("hands the lines to the first taker only", () => {
@@ -25,6 +25,15 @@ describe("pendingTerminalInput", () => {
     requestTerminalInput("session-1", ["old"]);
     requestTerminalInput("session-1", ["new"]);
     expect(takeTerminalInput("session-1")).toEqual(["new"]);
+  });
+
+  it("peeks without consuming, so the page can tell typed from waiting", () => {
+    expect(hasTerminalInput("session-1")).toBe(false);
+    requestTerminalInput("session-1", ["a"]);
+    expect(hasTerminalInput("session-1")).toBe(true);
+    expect(hasTerminalInput("session-1")).toBe(true);
+    takeTerminalInput("session-1");
+    expect(hasTerminalInput("session-1")).toBe(false);
   });
 
   it("evicts the oldest handoff past the bound, never unbounded", () => {

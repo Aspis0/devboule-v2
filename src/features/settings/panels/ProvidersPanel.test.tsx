@@ -28,6 +28,9 @@ vi.mock("../../../lib/tauri", async (importOriginal) => {
     providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providersRefresh: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providerUpdate: vi.fn(async () => ({ ok: true, exitCode: 0, log: "" })),
+    daemonDiagnostics: vi.fn(async () => ({
+      environment: { osVersion: "Windows 10.0.26200 (x86_64)" },
+    })),
     toolPolicyGet: vi.fn(async () => ({ policies: [] })),
     toolPolicySet: vi.fn(async () => undefined),
     // No default answer: a vocabulary query only ever leaves the app for an
@@ -37,6 +40,7 @@ vi.mock("../../../lib/tauri", async (importOriginal) => {
 });
 
 import {
+  daemonDiagnostics,
   daemonStatus,
   providerUpdate,
   providerVocabularyGet,
@@ -45,7 +49,12 @@ import {
   toolPolicyGet,
   toolPolicySet,
 } from "../../../lib/tauri";
-const sessionMocks = vi.hoisted(() => ({ create: vi.fn(), creating: false }));
+import { resetTerminalShellForTests } from "../providers/terminalShell";
+const sessionMocks = vi.hoisted(() => ({
+  create: vi.fn(),
+  creating: false,
+  error: null as null | { sentence: string; detail: string | null; workspaceId: string | null },
+}));
 
 vi.mock("../../workspace/workspaceSessions", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../workspace/workspaceSessions")>();
@@ -53,13 +62,17 @@ vi.mock("../../workspace/workspaceSessions", async (importOriginal) => {
     ...actual,
     sharedSessionController: () => ({
       create: sessionMocks.create,
-      getState: () => ({ creating: sessionMocks.creating }),
+      getState: () => ({ creating: sessionMocks.creating, error: sessionMocks.error }),
     }),
   };
 });
 
-import { takeTerminalInput } from "../../terminal/pendingTerminalInput";
-import { clearTerminalRuns, terminalRuns } from "../providers/providerTerminalRuns";
+import { requestTerminalInput, takeTerminalInput } from "../../terminal/pendingTerminalInput";
+import {
+  clearTerminalRuns,
+  recordTerminalRun,
+  terminalRuns,
+} from "../providers/providerTerminalRuns";
 import { setLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
 import { useAppStore } from "../../../store/appStore";
 import type {
@@ -939,6 +952,8 @@ describe("provider update and install", () => {
   it("installs a not-installed row through a terminal tab, never headless npm", async () => {
     sessionMocks.create.mockResolvedValueOnce({ id: "term-1" } as Session);
     sessionMocks.creating = false;
+    sessionMocks.error = null;
+    resetTerminalShellForTests();
     setLastSelectedWorkspaceId("w1");
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [
@@ -968,7 +983,7 @@ describe("provider update and install", () => {
     expect(providerUpdate).not.toHaveBeenCalled();
     expect(sessionMocks.create).toHaveBeenCalledWith("terminal", null, "w1");
     expect(takeTerminalInput("term-1")).toEqual([
-      "npm install -g @openai/codex@latest; if ($LASTEXITCODE -eq 0) { codex login }",
+      "npm install -g @openai/codex@latest; if ($? -and $LASTEXITCODE -eq 0) { codex login }",
     ]);
     expect(useAppStore.getState().activeSurface).toBe("workspace");
     setLastSelectedWorkspaceId(null);
@@ -1271,13 +1286,25 @@ describe("terminal install and login", () => {
   let container: HTMLDivElement;
   let root: Root;
 
+  const WINDOWS_OS = "Windows 10.0.26200 (x86_64)";
+  const POSIX_OS = "linux (x86_64)";
+  const POWERSHELL_LINE =
+    "npm install -g @openai/codex@latest; if ($? -and $LASTEXITCODE -eq 0) { codex login }";
+  const POSIX_LINE = "npm install -g @openai/codex@latest && codex login";
+
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     clearTerminalRuns();
+    resetTerminalShellForTests();
     sessionMocks.create.mockReset();
     sessionMocks.create.mockResolvedValue({ id: "term-1" } as Session);
     sessionMocks.creating = false;
+    sessionMocks.error = null;
+    vi.mocked(daemonDiagnostics).mockReset();
+    vi.mocked(daemonDiagnostics).mockResolvedValue({
+      environment: { osVersion: WINDOWS_OS },
+    } as never);
     setLastSelectedWorkspaceId("w1");
     useAppStore.getState().selectSurface("settings");
   });
@@ -1287,6 +1314,7 @@ describe("terminal install and login", () => {
     container.remove();
     vi.clearAllMocks();
     clearTerminalRuns();
+    resetTerminalShellForTests();
     setLastSelectedWorkspaceId(null);
     useAppStore.getState().selectSurface("workspace");
   });
@@ -1331,19 +1359,22 @@ describe("terminal install and login", () => {
     const install = container.querySelector<HTMLButtonElement>(".provider-install");
     if (!install) throw new Error("Install did not render");
     await act(async () => install.click());
+    // The shell report resolves between open and assert.
+    await act(async () => undefined);
   }
 
-  it("shows the one gated line in consent and types exactly that line", async () => {
+  function noteText(): string {
+    return container.querySelector('[role="status"]')?.textContent ?? "";
+  }
+
+  it("shows the PowerShell gated line in consent and types exactly that line", async () => {
     listOnce([available()]);
     await renderPanel();
     await openInstall();
 
-    // One line, and the consent is the contract: what the person saw is
-    // what the tab receives — read back through the take, not the plan.
-    expect(consentLines()).toHaveLength(1);
-    const [shown] = consentLines();
-    expect(shown).toContain("npm install -g @openai/codex@latest");
-    expect(shown).toContain("codex login");
+    // The consent is the contract: what the person saw is what the tab
+    // receives — read back through the take, not the plan.
+    expect(consentLines()).toEqual([POWERSHELL_LINE]);
     expect(container.textContent).toContain("terminal tab");
     expect(container.textContent).toContain("without your shell profile");
     expect(providerUpdate).not.toHaveBeenCalled();
@@ -1352,12 +1383,86 @@ describe("terminal install and login", () => {
     expect(providerUpdate).not.toHaveBeenCalled();
     expect(sessionMocks.create).toHaveBeenCalledTimes(1);
     expect(sessionMocks.create).toHaveBeenCalledWith("terminal", null, "w1");
-    expect(takeTerminalInput("term-1")).toEqual([shown]);
+    expect(takeTerminalInput("term-1")).toEqual([POWERSHELL_LINE]);
     expect(useAppStore.getState().activeSurface).toBe("workspace");
-    expect(terminalRuns()).toEqual([{ providerId: "codex", verb: "install" }]);
-    expect(container.querySelector('[role="status"]')?.textContent).toContain(
-      "Install and login sent to a terminal tab — finish them there.",
-    );
+    expect(terminalRuns().map((run) => ({ providerId: run.providerId, verb: run.verb }))).toEqual([
+      { providerId: "codex", verb: "install" },
+    ]);
+    expect(noteText()).toContain("Install and login sent to a terminal tab — finish them there.");
+  });
+
+  it("shows the POSIX line when the daemon reports a POSIX OS", async () => {
+    vi.mocked(daemonDiagnostics).mockReset();
+    vi.mocked(daemonDiagnostics).mockResolvedValue({
+      environment: { osVersion: POSIX_OS },
+    } as never);
+    listOnce([available()]);
+    await renderPanel();
+    await openInstall();
+
+    expect(consentLines()).toEqual([POSIX_LINE]);
+    await confirm();
+    expect(takeTerminalInput("term-1")).toEqual([POSIX_LINE]);
+  });
+
+  it("waits for the shell report with no Confirm, and Cancel runs nothing", async () => {
+    vi.mocked(daemonDiagnostics).mockReset();
+    vi.mocked(daemonDiagnostics).mockReturnValueOnce(new Promise(() => {}) as never);
+    listOnce([available()]);
+    await renderPanel();
+    await openInstall();
+
+    expect(container.textContent).toContain("Checking which shell");
+    expect(container.querySelector(".provider-consent-confirm")).toBeNull();
+    const cancel = container.querySelector<HTMLButtonElement>(".provider-consent-cancel");
+    if (!cancel) throw new Error("waiting Cancel did not render");
+    await act(async () => cancel.click());
+    await act(async () => undefined);
+    expect(sessionMocks.create).not.toHaveBeenCalled();
+    expect(providerUpdate).not.toHaveBeenCalled();
+    expect(terminalRuns()).toEqual([]);
+  });
+
+  it("copies instead of typing when the shell cannot be confirmed", async () => {
+    const writes: string[] = [];
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: {
+        writeText: vi.fn(async (text: string) => {
+          writes.push(text);
+        }),
+      },
+    });
+    try {
+      vi.mocked(daemonDiagnostics).mockReset();
+      vi.mocked(daemonDiagnostics).mockRejectedValueOnce(new Error("daemon unreachable"));
+      listOnce([available()]);
+      await renderPanel();
+      await openInstall();
+
+      expect(container.textContent).toContain("could not be confirmed");
+      expect(consentLines()).toEqual([POWERSHELL_LINE, POSIX_LINE]);
+      const labels = Array.from(container.querySelectorAll(".provider-copy-label")).map(
+        (node) => node.textContent,
+      );
+      expect(labels).toEqual(["Windows PowerShell", "POSIX shells"]);
+      const copies = Array.from(
+        container.querySelectorAll<HTMLButtonElement>(".provider-copy-button"),
+      );
+      expect(copies).toHaveLength(2);
+      await act(async () => copies[0]?.click());
+      expect(writes).toEqual([POWERSHELL_LINE]);
+      expect(copies[0]?.textContent).toBe("Copied");
+
+      await confirm();
+      // The tab opens untyped: nothing was requested for it.
+      expect(sessionMocks.create).toHaveBeenCalledWith("terminal", null, "w1");
+      expect(takeTerminalInput("term-1")).toBeNull();
+      expect(noteText()).toContain("paste the copied line");
+      expect(noteText()).toContain(POSIX_LINE);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("runs nothing until Confirm, and Cancel runs nothing at all", async () => {
@@ -1416,10 +1521,10 @@ describe("terminal install and login", () => {
 
     expect(useAppStore.getState().activeSurface).toBe("design");
     expect(takeTerminalInput("term-9")).toHaveLength(1);
-    expect(terminalRuns()).toEqual([{ providerId: "codex", verb: "install" }]);
+    expect(terminalRuns().map((run) => run.providerId)).toEqual(["codex"]);
   });
 
-  it("installs headlessly when no workspace is open, and says so", async () => {
+  it("installs headlessly when no workspace is open, with no login step", async () => {
     setLastSelectedWorkspaceId(null);
     listOnce([available()]);
     await renderPanel();
@@ -1427,12 +1532,13 @@ describe("terminal install and login", () => {
 
     expect(consentLines()).toEqual(["npm install -g @openai/codex@latest"]);
     expect(container.textContent).toContain("No workspace is open");
+    expect(container.textContent).toContain("no login step");
+    expect(container.textContent).toContain("Log in on the installed row");
     expect(container.textContent).not.toContain("opens a terminal tab");
 
     await confirm();
     expect(sessionMocks.create).not.toHaveBeenCalled();
     expect(providerUpdate).toHaveBeenCalledWith("codex");
-    // The headless road refetches as proof, exactly like an update.
     expect(vi.mocked(providersList).mock.calls.length).toBeGreaterThan(1);
     expect(useAppStore.getState().activeSurface).toBe("settings");
   });
@@ -1457,14 +1563,14 @@ describe("terminal install and login", () => {
     if (!login) throw new Error("Log in item did not render");
     await act(async () => login.click());
     await act(async () => undefined);
+    // Login lines carry no shell syntax: no shell fetch gates them.
+    expect(daemonDiagnostics).not.toHaveBeenCalled();
     expect(consentLines()).toEqual(["claude auth login"]);
 
     await confirm();
     expect(sessionMocks.create).toHaveBeenCalledWith("terminal", null, "w1");
     expect(takeTerminalInput("term-1")).toEqual(["claude auth login"]);
-    expect(container.querySelector('[role="status"]')?.textContent).toContain(
-      "Login sent to a terminal tab — finish it there.",
-    );
+    expect(noteText()).toContain("Login sent to a terminal tab — finish it there.");
   });
 
   it("names the open workspace instead of Log in where none is known", async () => {
@@ -1517,9 +1623,14 @@ describe("terminal install and login", () => {
     expect(container.textContent).toMatch(/no login command/i);
   });
 
-  it("shows a dismissible alert and stays put when no terminal starts", async () => {
+  it("shows the daemon's own reason when the create is refused", async () => {
     sessionMocks.create.mockReset();
     sessionMocks.create.mockResolvedValue(null);
+    sessionMocks.error = {
+      sentence: "The workspace is unavailable.",
+      detail: "it does not exist",
+      workspaceId: "w1",
+    };
     listOnce([available()]);
     await renderPanel();
     await openInstall();
@@ -1528,7 +1639,8 @@ describe("terminal install and login", () => {
     const alert = container.querySelector('[role="alert"]');
     if (!alert) throw new Error("terminal alert did not render");
     expect(alert.textContent).toContain("codex");
-    expect(alert.textContent).toContain("Could not open a terminal tab.");
+    expect(alert.textContent).toContain("The workspace is unavailable.");
+    expect(alert.textContent).toContain("it does not exist");
     expect(providerUpdate).not.toHaveBeenCalled();
     expect(takeTerminalInput("term-1")).toBeNull();
     expect(useAppStore.getState().activeSurface).toBe("settings");
@@ -1542,6 +1654,40 @@ describe("terminal install and login", () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  function recordStaleRun(atMs: number) {
+    recordTerminalRun("codex", "install", [{ label: null, text: POSIX_LINE }], "term-1", { atMs });
+  }
+
+  it("says plainly that nothing was typed past the take bound", async () => {
+    requestTerminalInput("term-1", [POSIX_LINE]);
+    recordStaleRun(Date.now() - 60_000);
+    listOnce([available()]);
+    await renderPanel();
+
+    expect(noteText()).toContain("Nothing was typed");
+    expect(noteText()).toContain(POSIX_LINE);
+    const copy = container.querySelector<HTMLButtonElement>(".provider-copy-button");
+    if (!copy) throw new Error("copy did not render");
+    await act(async () => copy.click());
+  });
+
+  it("flips a fresh handoff to never-typed once the bound passes", async () => {
+    vi.useFakeTimers();
+    try {
+      recordStaleRun(Date.now());
+      requestTerminalInput("term-1", [POSIX_LINE]);
+      listOnce([available()]);
+      await renderPanel();
+      expect(noteText()).toContain("sent to a terminal tab");
+      await act(async () => {
+        vi.advanceTimersByTime(10_001);
+      });
+      expect(noteText()).toContain("Nothing was typed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the handoff note through a failed refresh, clears it on success", async () => {
     listOnce([available()]);
     await renderPanel();
@@ -1552,18 +1698,16 @@ describe("terminal install and login", () => {
     await act(async () => root.unmount());
     listOnce([available()]);
     await renderPanel();
-    const note = () => container.querySelector('[role="status"]')?.textContent ?? "";
-    expect(note()).toContain("sent to a terminal tab");
+    expect(noteText()).toContain("sent to a terminal tab");
 
     vi.mocked(providersRefresh).mockRejectedValueOnce({ code: "io", message: "pipe is gone" });
     const refresh = container.querySelectorAll<HTMLButtonElement>(".provider-refresh")[0];
     if (!refresh) throw new Error("Refresh did not render");
     await act(async () => refresh.click());
     await act(async () => undefined);
-    expect(note()).toContain("sent to a terminal tab");
+    expect(noteText()).toContain("sent to a terminal tab");
     expect(terminalRuns()).toHaveLength(1);
 
-    listOnce([available()]);
     vi.mocked(providersRefresh).mockResolvedValueOnce({ providers: [], unreadableDirs: 0 });
     await act(async () => refresh.click());
     await act(async () => undefined);

@@ -295,6 +295,27 @@
   font-size: 12px;
 }
 
+/* Exact lines to copy: the line itself keeps the consent's mono code
+   class; labels and layout stay plain text. */
+.provider-copy-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+.provider-copy-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-copy-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .prov-available-row {
   display: flex;
   flex-wrap: wrap;

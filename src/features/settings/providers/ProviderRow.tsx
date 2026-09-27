@@ -7,6 +7,8 @@ import { ProviderKebab } from "./ProviderKebab";
 import { ProviderModelCount, type ModelCountCache } from "./ProviderModelCount";
 import { ProviderToolsSwitch } from "./ProviderToolsSwitch";
 import { ProviderConsentBlock } from "./ProviderConsentBlock";
+import { CopyableLines, type CopyableLine } from "./CopyableLines";
+import { SHELL_QUERY_LOADING } from "./terminalShell";
 import { ProviderNpmFailure, ProviderWriteError } from "./ProviderNpmFailure";
 
 /** Muted version line for the expanded details; renders nothing without data. */
@@ -34,6 +36,17 @@ function protocolLabel(protocol: string): string {
   return protocol;
 }
 
+/** What an open consent shows: verbatim lines, copy lines, or nothing. */
+export interface ProviderRowConsent {
+  verb: "update" | "install" | "login";
+  /** The exact lines, shown verbatim in type order. */
+  lines: readonly string[];
+  /** Exact lines to copy instead of auto-typing (unknown shell). */
+  copyLines: ReadonlyArray<CopyableLine> | null;
+  /** The warning under the lines; null when the lines stand alone. */
+  notice: string | null;
+}
+
 export interface ProviderRowProps {
   provider: ProviderInfo;
   /**
@@ -46,15 +59,18 @@ export interface ProviderRowProps {
   toolsDisabled: boolean;
   vocabularySupported: boolean;
   modelCache: ModelCountCache;
-  consentOpen: boolean;
-  /** The exact lines the consent shows, in type order; null when no consent. */
-  consentLines: readonly string[] | null;
-  /** The warning under the consent lines; null when the lines stand alone. */
-  consentNotice: string | null;
-  consentVerb: "update" | "install" | "login" | null;
+  /**
+   * The open consent for this row, or "waiting" while the shell report is
+   * in flight. Null renders nothing.
+   */
+  consent: ProviderRowConsent | "waiting" | null;
   npmFailure: { text: string; detail: string | null } | null;
-  /** A terminal handoff waiting on this row, shown until Refresh or dismiss. */
-  terminalNotice: string | null;
+  /**
+   * A terminal handoff waiting on this row, shown until Refresh or dismiss.
+   * Lines are empty for a plain handoff and carry the exact lines to copy
+   * when nothing was typed (expired take, or a tab opened untyped).
+   */
+  terminalNotice: { text: string; lines: ReadonlyArray<CopyableLine> } | null;
   onDismissNotice: () => void;
   writeError: ErrorSentence | null;
   onDismissWriteError: () => void;
@@ -94,10 +110,7 @@ export function ProviderRow({
   toolsDisabled,
   vocabularySupported,
   modelCache,
-  consentOpen,
-  consentLines,
-  consentNotice,
-  consentVerb,
+  consent,
   npmFailure,
   terminalNotice,
   onDismissNotice,
@@ -129,7 +142,7 @@ export function ProviderRow({
   // of opening it invisibly.
   useEffect(() => {
     if (
-      consentOpen ||
+      consent !== null ||
       npmFailure !== null ||
       writeError !== null ||
       busyVerb !== null ||
@@ -137,7 +150,7 @@ export function ProviderRow({
     ) {
       setExpanded(true);
     }
-  }, [consentOpen, npmFailure, writeError, busyVerb, terminalNotice]);
+  }, [consent, npmFailure, writeError, busyVerb, terminalNotice]);
   const status = providerRowStatus(provider);
   const canUpdate = providerCanUpdate(provider) && !actionsDisabled;
   // A login consent types into a terminal tab, independent of the daemon's
@@ -282,19 +295,40 @@ export function ProviderRow({
               <span className="prov-terminal-note">{loginHint}</span>
             </div>
           ) : null}
-          {consentOpen && consentLines !== null && consentVerb !== null ? (
+          {consent === "waiting" ? (
+            <div
+              className="provider-card-block provider-consent"
+              role="group"
+              aria-label={`Confirm install for ${provider.id}`}
+            >
+              <p className="provider-consent-notice">{SHELL_QUERY_LOADING}</p>
+              <div className="provider-consent-actions">
+                <button
+                  type="button"
+                  className="provider-refresh provider-consent-cancel"
+                  onClick={cancelConsent}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : consent !== null ? (
             <ProviderConsentBlock
               providerId={provider.id}
-              verb={consentVerb}
-              lines={consentLines}
-              notice={consentNotice}
+              verb={consent.verb}
+              lines={consent.lines}
+              copyLines={consent.copyLines}
+              notice={consent.notice}
               onConfirm={onConfirmConsent}
               onCancel={cancelConsent}
             />
           ) : null}
           {terminalNotice !== null ? (
             <div className="prov-detail-line" role="status">
-              <span className="prov-terminal-note">{terminalNotice}</span>
+              <span className="prov-terminal-note">{terminalNotice.text}</span>
+              {terminalNotice.lines.length > 0 ? (
+                <CopyableLines lines={terminalNotice.lines} />
+              ) : null}
               <button
                 type="button"
                 className="provider-refresh provider-update-error-dismiss"

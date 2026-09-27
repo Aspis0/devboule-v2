@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bannerText, TerminalSurface } from "./TerminalSurface";
-import { requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
+import { hasTerminalInput, requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
 
 const coreMocks = vi.hoisted(() => {
   const snapshotEvent = {
@@ -377,19 +377,30 @@ describe("TerminalSurface observer wiring", () => {
     ).toBe(false);
   });
 
+  function sessionSends(): unknown[] {
+    return vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "session_send")
+      .map(([, args]) => args);
+  }
+
+  async function waitForSends(count: number): Promise<void> {
+    // The attach chain is async; a fixed sleep flakes under load while a
+    // missing send must still fail — poll for the sends, bound the wait.
+    await vi.waitFor(() => {
+      expect(sessionSends()).toHaveLength(count);
+    });
+  }
+
   it("types a requested line once, terminated as xterm Enter", async () => {
     requestTerminalInput("session-1", ["npm install -g @openai/codex@latest"]);
     root = createRoot(container);
     await act(async () => {
       root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
     });
-    await act(async () => flush(400));
+    await waitForSends(1);
 
-    const sends = vi
-      .mocked(invoke)
-      .mock.calls.filter(([command]) => command === "session_send")
-      .map(([, args]) => args);
-    expect(sends).toEqual([
+    expect(sessionSends()).toEqual([
       {
         id: "session-1",
         subscriptionId: 17,
@@ -409,14 +420,10 @@ describe("TerminalSurface observer wiring", () => {
         </StrictMode>,
       );
     });
-    await act(async () => flush(400));
+    await waitForSends(1);
 
-    const sends = vi
-      .mocked(invoke)
-      .mock.calls.filter(([command]) => command === "session_send")
-      .map(([, args]) => args);
     // The disposed first instance must never consume what the survivor needs.
-    expect(sends).toEqual([
+    expect(sessionSends()).toEqual([
       {
         id: "session-1",
         subscriptionId: 17,
@@ -426,14 +433,14 @@ describe("TerminalSurface observer wiring", () => {
     expect(takeTerminalInput("session-1")).toBeNull();
   });
 
-  it("keeps the lines across a tab switch mid-snapshot and types them once", async () => {
+  it("keeps the lines across a tab switch before attach confirms", async () => {
     requestTerminalInput("session-1", ["codex login"]);
-    // The first mount attaches but its snapshot never arrives — the tab
-    // switch disposes it mid-snapshot, before any take could happen.
-    vi.mocked(invoke).mockImplementationOnce(async (command: string) => {
-      if (command === "sessions_list") return [];
-      if (command === "session_attach") return 17;
-      return undefined;
+    // The first mount's attach never confirms — the tab switch disposes it
+    // with no flush ever running live, so nothing is taken.
+    vi.mocked(invoke).mockImplementationOnce((command: string) => {
+      if (command === "sessions_list") return Promise.resolve([]);
+      if (command === "session_attach") return new Promise(() => {});
+      return Promise.resolve(undefined);
     });
     root = createRoot(container);
     await act(async () => {
@@ -443,19 +450,19 @@ describe("TerminalSurface observer wiring", () => {
     expect(
       vi.mocked(invoke).mock.calls.filter(([command]) => command === "session_send"),
     ).toHaveLength(0);
+    // Peek, never take: the assertion itself must not consume the handoff.
+    expect(hasTerminalInput("session-1")).toBe(true);
 
     await act(async () => root?.unmount());
     root = createRoot(container);
     await act(async () => {
       root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
     });
-    await act(async () => flush(400));
+    await waitForSends(1);
 
-    const sends = vi
-      .mocked(invoke)
-      .mock.calls.filter(([command]) => command === "session_send")
-      .map(([, args]) => args);
-    expect(sends).toEqual([{ id: "session-1", subscriptionId: 17, text: "codex login\r" }]);
+    expect(sessionSends()).toEqual([
+      { id: "session-1", subscriptionId: 17, text: "codex login\r" },
+    ]);
     expect(takeTerminalInput("session-1")).toBeNull();
   });
 
@@ -465,7 +472,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => {
       root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
     });
-    await act(async () => flush(400));
+    await waitForSends(1);
 
     expect(container.querySelector(".xterm-helper-textarea")).not.toBeNull();
     expect(document.activeElement).toBe(container.querySelector(".xterm-helper-textarea"));

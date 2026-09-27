@@ -25,3 +25,9 @@ export function takeTerminalInput(sessionId: string): string[] | null {
   pending.delete(sessionId);
   return [...lines];
 }
+
+/** Whether lines are still waiting for this tab — a non-consuming check so
+ * the page can tell "typed" from "never picked up". */
+export function hasTerminalInput(sessionId: string): boolean {
+  return pending.has(sessionId);
+}

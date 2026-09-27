@@ -1,12 +1,16 @@
 // The fixed per-provider terminal lines: a validated package plus static
-// parts only, one gated line per shell, unknown ids never guessed.
+// parts only, one gated line per shell, unknown ids never guessed. The
+// install plan takes the shell; the login plan takes none (static words,
+// safe in any shell).
 import { describe, expect, it } from "vitest";
 import type { ProviderInfo } from "../../../types/ipc";
 import {
-  detectTerminalShell,
+  SHELL_LABELS,
+  providerInstallPackage,
+  providerInstallPlan,
   providerLogin,
+  providerLoginPlan,
   providerNoLoginNote,
-  providerTerminalPlan,
 } from "./providerTerminalCommands";
 
 function providerWith(overrides: Partial<ProviderInfo>): ProviderInfo {
@@ -19,19 +23,13 @@ function providerWith(overrides: Partial<ProviderInfo>): ProviderInfo {
   };
 }
 
-describe("detectTerminalShell", () => {
-  it("reads PowerShell on Windows, POSIX elsewhere", () => {
-    expect(detectTerminalShell({ userAgentData: { platform: "Windows" } })).toBe("powershell");
-    expect(
-      detectTerminalShell({
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-      }),
-    ).toBe("powershell");
-    expect(detectTerminalShell({ platform: "Win32" })).toBe("powershell");
-    expect(detectTerminalShell({ userAgentData: { platform: "macOS" } })).toBe("posix");
-    expect(detectTerminalShell({ userAgent: "Mozilla/5.0 (X11; Linux x86_64)" })).toBe("posix");
-    expect(detectTerminalShell({})).toBe("posix");
+describe("providerInstallPackage", () => {
+  it("returns the validated package and refuses the rest", () => {
+    expect(providerInstallPackage(providerWith({ npmPackage: "@openai/codex" }))).toBe(
+      "@openai/codex",
+    );
+    expect(providerInstallPackage(providerWith({ npmPackage: null }))).toBeNull();
+    expect(providerInstallPackage(providerWith({ npmPackage: "x; calc" }))).toBeNull();
   });
 });
 
@@ -80,32 +78,36 @@ describe("providerNoLoginNote", () => {
   });
 });
 
-describe("providerTerminalPlan", () => {
-  it("gates the login on the install for PowerShell, in one line", () => {
-    const plan = providerTerminalPlan(
+describe("SHELL_LABELS", () => {
+  it("names both shells for the copy fallback", () => {
+    expect(SHELL_LABELS.powershell).toMatch(/powerShell/i);
+    expect(SHELL_LABELS.posix).toMatch(/posix/i);
+  });
+});
+
+describe("providerInstallPlan", () => {
+  it("gates the login on both halves for PowerShell, in one line", () => {
+    const plan = providerInstallPlan(
       providerWith({ id: "codex", npmPackage: "@openai/codex" }),
-      "install",
       "powershell",
     );
     expect(plan?.lines).toEqual([
-      "npm install -g @openai/codex@latest; if ($LASTEXITCODE -eq 0) { codex login }",
+      "npm install -g @openai/codex@latest; if ($? -and $LASTEXITCODE -eq 0) { codex login }",
     ]);
     expect(plan?.note).toBeNull();
   });
 
   it("chains with && for a POSIX shell", () => {
-    const plan = providerTerminalPlan(
+    const plan = providerInstallPlan(
       providerWith({ id: "codex", npmPackage: "@openai/codex" }),
-      "install",
       "posix",
     );
     expect(plan?.lines).toEqual(["npm install -g @openai/codex@latest && codex login"]);
   });
 
   it("keeps pi's documented supply-chain form", () => {
-    const plan = providerTerminalPlan(
+    const plan = providerInstallPlan(
       providerWith({ id: "pi", npmPackage: "@earendil-works/pi-coding-agent" }),
-      "install",
       "posix",
     );
     expect(plan?.lines).toEqual([
@@ -115,9 +117,8 @@ describe("providerTerminalPlan", () => {
   });
 
   it("installs only, with the generic note, when nothing is documented", () => {
-    const plan = providerTerminalPlan(
+    const plan = providerInstallPlan(
       providerWith({ id: "something-new", npmPackage: "@example/new-cli" }),
-      "install",
       "posix",
     );
     expect(plan?.lines).toEqual(["npm install -g @example/new-cli@latest"]);
@@ -139,7 +140,7 @@ describe("providerTerminalPlan", () => {
       `${"a".repeat(215)}`,
     ]) {
       expect(
-        providerTerminalPlan(providerWith({ id: "codex", npmPackage }), "install", "posix"),
+        providerInstallPlan(providerWith({ id: "codex", npmPackage }), "posix"),
         npmPackage,
       ).toBeNull();
     }
@@ -154,30 +155,31 @@ describe("providerTerminalPlan", () => {
       "a.b~c-d_e",
     ]) {
       expect(
-        providerTerminalPlan(providerWith({ id: "codex", npmPackage }), "install", "posix"),
+        providerInstallPlan(providerWith({ id: "codex", npmPackage }), "posix"),
         npmPackage,
       ).not.toBeNull();
     }
   });
 
-  it("logs in with only the login lines, either shell", () => {
-    for (const shell of ["powershell", "posix"] as const) {
-      const plan = providerTerminalPlan(providerWith({ id: "grok" }), "login", shell);
-      expect(plan?.lines).toEqual(["grok login"]);
-    }
+  it("refuses an install with no usable package", () => {
+    expect(
+      providerInstallPlan(providerWith({ id: "claude", npmPackage: null }), "posix"),
+    ).toBeNull();
+    expect(
+      providerInstallPlan(providerWith({ id: "claude", npmPackage: "x; calc" }), "posix"),
+    ).toBeNull();
+  });
+});
+
+describe("providerLoginPlan", () => {
+  it("logs in with only the login lines — no shell in the shape", () => {
+    const plan = providerLoginPlan(providerWith({ id: "grok" }));
+    expect(plan?.lines).toEqual(["grok login"]);
+    expect(plan?.note).toBeNull();
   });
 
-  it("refuses a login with no login lines, and an install with no usable package", () => {
-    expect(providerTerminalPlan(providerWith({ id: "pi" }), "login", "posix")).toBeNull();
-    expect(
-      providerTerminalPlan(providerWith({ id: "claude", npmPackage: null }), "install", "posix"),
-    ).toBeNull();
-    expect(
-      providerTerminalPlan(
-        providerWith({ id: "claude", npmPackage: "x; calc" }),
-        "install",
-        "posix",
-      ),
-    ).toBeNull();
+  it("refuses a login with no login lines", () => {
+    expect(providerLoginPlan(providerWith({ id: "pi" }))).toBeNull();
+    expect(providerLoginPlan(providerWith({ id: "something-new" }))).toBeNull();
   });
 });
