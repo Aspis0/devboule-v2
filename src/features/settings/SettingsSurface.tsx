@@ -7,6 +7,7 @@ import { OraclePanel } from "../oracle/OraclePanel";
 import { AppearanceSection } from "./AppearanceSection";
 import { CloseBehaviorSetting } from "./CloseBehaviorSetting";
 import { SendBehaviorSetting } from "./SendBehaviorSetting";
+import { NotificationsSection } from "./NotificationsSection";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { ProvidersPanel } from "./panels/ProvidersPanel";
 import { AgentProfilesPanel } from "./panels/AgentsPanel";
@@ -110,6 +111,8 @@ export function SettingsSurface() {
         return <CloseBehaviorSetting />;
       case "editing":
         return <SendBehaviorSetting />;
+      case "notifications":
+        return <NotificationsSection />;
       case "diagnostics":
         return (
           <>

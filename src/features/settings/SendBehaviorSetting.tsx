@@ -33,27 +33,31 @@ export function SendBehaviorSetting() {
   const behavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
 
   return (
-    <div className="settings-card settings-value-row send-behavior">
-      <span className="settings-card-copy">
-        <span className="settings-card-title">Default send</span>
-        <span className="send-behavior-options" role="radiogroup" aria-label="Default send">
-          {OPTIONS.map((option) => (
-            <label className="send-behavior-option" key={option.value}>
-              <input
-                type="radio"
-                name="send-behavior"
-                value={option.value}
-                checked={behavior === option.value}
-                onChange={() => setSendBehavior(option.value)}
-              />
-              <span>
-                <span>{option.label}</span>
-                <span className="send-behavior-note">{option.description}</span>
-              </span>
-            </label>
-          ))}
-        </span>
-      </span>
+    <div className="machine-card send-behavior">
+      <div className="machine-head">
+        <span className="machine-row-title">Default send</span>
+      </div>
+      <div
+        className="machine-choices send-behavior-options"
+        role="radiogroup"
+        aria-label="Default send"
+      >
+        {OPTIONS.map((option) => (
+          <label className="machine-choice send-behavior-option" key={option.value}>
+            <input
+              type="radio"
+              name="send-behavior"
+              value={option.value}
+              checked={behavior === option.value}
+              onChange={() => setSendBehavior(option.value)}
+            />
+            <span className="machine-row-copy">
+              <span className="machine-row-title">{option.label}</span>
+              <span className="machine-row-desc send-behavior-note">{option.description}</span>
+            </span>
+          </label>
+        ))}
+      </div>
     </div>
   );
 }

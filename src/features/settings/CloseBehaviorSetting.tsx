@@ -8,11 +8,11 @@ import {
 } from "./closeBehaviorChoice";
 import "./general.css";
 
-const CHOICE_LABELS: Record<CloseBehaviorChoice, string> = {
-  ask: "Ask every time",
-  tray: "Keep running in the tray",
-  quit: "Quit Devboule",
-};
+const CHOICES: readonly { value: CloseBehaviorChoice; label: string }[] = [
+  { value: "ask", label: "Ask every time" },
+  { value: "tray", label: "Keep running in the tray" },
+  { value: "quit", label: "Quit Devboule" },
+];
 
 /**
  * The "When I close the window" choice. Stored through the surface-settings
@@ -74,30 +74,37 @@ export function CloseBehaviorSetting() {
   );
 
   return (
-    <div className="settings-card settings-value-row" aria-label="When I close the window">
-      <span className="settings-card-copy">
-        <span className="settings-card-title">When I close the window</span>
-        <span className="settings-card-meta">
-          Devboule can keep running in the notification area so agents and paired devices stay
-          connected.
+    <div className="machine-card" aria-label="When I close the window">
+      <div className="machine-row">
+        <span className="machine-row-copy">
+          <span className="machine-row-title">When I close the window</span>
+          <span className="machine-row-desc">
+            Devboule can keep running in the notification area so agents and paired devices stay
+            connected.
+          </span>
         </span>
-      </span>
-      <select
-        aria-label="When I close the window"
-        className="retention-limit-input"
-        value={choice}
-        onChange={(event) => handleChange(event.currentTarget.value as CloseBehaviorChoice)}
-      >
-        {(Object.keys(CHOICE_LABELS) as CloseBehaviorChoice[]).map((key) => (
-          <option key={key} value={key}>
-            {CHOICE_LABELS[key]}
-          </option>
-        ))}
-      </select>
+        <div className="machine-segment" role="radiogroup" aria-label="When I close the window">
+          {CHOICES.map((option) => (
+            <label
+              className={`machine-segment-option${choice === option.value ? " machine-segment-option-checked" : ""}`}
+              key={option.value}
+            >
+              <input
+                type="radio"
+                name="close-behavior"
+                value={option.value}
+                checked={choice === option.value}
+                onChange={() => handleChange(option.value)}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
       {error !== null && (
-        <span role="alert" className="settings-card-meta">
+        <p role="alert" className="machine-error">
           {error}
-        </span>
+        </p>
       )}
     </div>
   );

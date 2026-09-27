@@ -162,10 +162,10 @@ describe("the Appearance row", () => {
 
 describe("the Appearance radios (static CSS contract)", () => {
   const css = readFileSync(resolve(import.meta.dirname, "general.css"), "utf8");
-  const block = /\.appearance-option input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const block = /\.machine-choice input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
 
   it("draw in the accent, not the OS default", () => {
-    expect(block, "an .appearance-option input rule is missing").not.toBe("");
+    expect(block, "a .machine-choice input rule is missing").not.toBe("");
     expect(block).toContain("accent-color: var(--accent)");
   });
 });

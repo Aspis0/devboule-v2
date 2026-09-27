@@ -524,8 +524,9 @@ describe("Settings menu shell", () => {
     ["projects", "Projects", "#settings-panel-projects"],
     ["paired", "Paired devices", "#settings-panel-devices"],
     ["diagnostics", "Diagnostics", "#settings-panel-diagnostics"],
-    ["layout", "Layout", ".settings-card"],
-    ["editing", "Editing", ".settings-card"],
+    ["layout", "Layout", ".machine-card"],
+    ["editing", "Editing", ".machine-card"],
+    ["notifications", "Notifications", ".machine-card"],
   ])("mounts the %s panel", async (_id, label, selector) => {
     await renderShell();
     await act(async () => openPage(label).click());

@@ -42,13 +42,13 @@ afterEach(async () => {
 });
 
 describe("SendBehaviorSetting", () => {
-  it("offers Queue and Steer in the Editing page's row form, Queue checked by default", async () => {
+  it("offers Queue and Steer in the Editing page's card, Queue checked by default", async () => {
     await renderSetting();
-    // The row every other Editing setting uses — not the page-heading class a
-    // page-level title wears (review F17).
-    const row = container.querySelector(".settings-card.settings-value-row");
-    expect(row).not.toBeNull();
-    expect(row?.textContent).toContain("Default send");
+    // The card every other This-machine setting uses — not the page-heading
+    // class a page-level title wears (review F17).
+    const card = container.querySelector(".machine-card.send-behavior");
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("Default send");
     expect(container.querySelector("h2")).toBeNull();
     expect(radios()).toHaveLength(2);
     expect(radioFor("queue").checked).toBe(true);

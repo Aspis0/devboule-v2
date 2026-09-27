@@ -61,9 +61,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "notifications",
         label: "Notifications",
-        intro: "Sounds and toasts for things that need attention.",
-        unavailable: true,
-        note: "Attention toasts already appear, but they have no control yet.",
+        intro: "Toasts for sessions that need attention, and what those toasts may quote.",
       },
       {
         id: "diagnostics",

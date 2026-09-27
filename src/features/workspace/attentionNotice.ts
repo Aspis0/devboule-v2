@@ -1,4 +1,5 @@
 import type { Attention, AttentionReason } from "../../types/ipc";
+import { getShowMessagePreviews, getShowNotifications } from "../../lib/notificationPrefs";
 import { lookedAtSessionId } from "./presence";
 
 /**
@@ -394,6 +395,10 @@ export function fireAttentionToast(
   attention: Attention,
   deps?: Partial<ToastDeps>,
 ): void {
+  // The Notifications page's master switch, read at fire time: a silenced
+  // raise is not offered, judged, or recorded, so it stays due and the next
+  // publication of it announces once the switch is back on.
+  if (!getShowNotifications()) return;
   // Offered, then marked as in flight — the mark is not a claim of having been
   // announced, and a publication the gate holds back gives it back below.
   if (!raiseIsOfferable(sessionId, attention)) return;
@@ -425,7 +430,9 @@ export function fireAttentionToast(
     // same test.
     if (!raiseIsOfferable(sessionId, attention)) return;
     lastFired.set(sessionId, attention);
-    const held = heldContentProvider?.(sessionId);
+    // The previews switch, read at the same moment as the wording: off hands
+    // the toast no held content, so it names the session and the reason only.
+    const held = getShowMessagePreviews() ? heldContentProvider?.(sessionId) : undefined;
     const content = toastContent(title, attention.reason, held);
     try {
       await send(content);

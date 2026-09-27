@@ -1,101 +1,192 @@
-/* This-machine components: appearance, the window-close choice, and the
-   default send choice. R17-4 owns this file; the transcript-history rules
-   live in diagnostics.css because that section renders on the Diagnostics page. */
-/* Appearance (theme choice) — new tokens only; Settings' own redesign is a
-   later slice, so these rows use the shell's type and line tokens. */
-.appearance-section {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--space-8);
-  margin-bottom: var(--space-16);
+/* This-machine pages: Appearance, Layout, Editing, Notifications. R17-4 owns
+   this file; the transcript-history rules live in diagnostics.css because
+   that section renders on the Diagnostics page.
+   Geometry-critical declarations stay on bare classes: the card-geometry
+   test reads them through cssProof, which models bare selectors only.
+   Every face on these pages is the UI sans: no mono anywhere on this sheet
+   (the Layout row used to read through the mono retention input). */
+
+/* The one card: max-w 720, r12, the panel face. Sections inside the settings
+   content column sit outside the shell's `> section` rhythm rule, so the
+   bottom margin is restated here. */
+.machine-card {
+  max-width: 720px;
+  margin-bottom: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-card);
 }
 
-.appearance-heading {
+/* A row: copy on the left, the control on the right. */
+.machine-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.machine-row + .machine-row {
+  border-top: 1px solid var(--line);
+}
+
+.machine-row-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.machine-row-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.machine-row-desc {
   margin: 0;
   color: var(--muted);
-  font-size: var(--type-meta);
-  font-weight: var(--weight-label);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
-.appearance-options {
-  display: flex;
-  width: 100%;
-  flex-direction: column;
-}
-
-.appearance-option {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-8);
-  min-height: var(--control-menu);
-  padding: var(--space-4) var(--space-8);
+/* The switch: 34x20, on in the accent — the skeleton's toggle, not the
+   providers' wider row switch. The knob is a drawn span, so the button
+   carries the role and the checkedness. */
+.machine-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex: none;
+  padding: 0;
+  background: var(--line-strong);
+  border: none;
+  border-radius: 999px;
   cursor: pointer;
-  border-radius: var(--radius-7);
 }
 
-.appearance-option:hover {
+.machine-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--panel-card);
+}
+
+.machine-switch-on {
+  background: var(--accent);
+}
+
+.machine-switch-on .machine-switch-knob {
+  right: 2px;
+  left: auto;
+}
+
+.machine-switch:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.machine-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The Layout choice: a segmented control, not a select. Three short
+   mutually exclusive options fit the card side by side, every alternative
+   stays visible, and one click changes it — a select would hide the
+   alternatives behind a second interaction. Native radios underneath give
+   arrow-key travel and screen-reader naming for free. */
+.machine-segment {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+}
+
+.machine-segment-option {
+  display: flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.machine-segment-option:hover {
   background: var(--fill-hover);
 }
 
-.appearance-option-copy {
+.machine-segment-option-checked {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.machine-segment-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.machine-segment-option input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Choice lists whose options carry their own description lines (theme,
+   default send): the radio anchors the text it selects, so the control
+   stays left of its copy — the same posture as the delegation row. */
+.machine-choices {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
 }
 
-.appearance-option-label {
-  font-size: var(--type-small);
-  color: var(--ink);
-}
-
-.appearance-option-hint {
-  font-size: var(--type-meta);
-  color: var(--muted);
-}
-
-/* The radios take the accent, not the OS default blue, in both themes. */
-.appearance-option input {
-  accent-color: var(--accent);
-}
-
-.appearance-persist-note {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--type-meta);
-}
-
-/* Default send: what Enter does while the agent runs (Editing page). */
-
-.send-behavior {
-  margin-bottom: 18px;
-}
-
-.send-behavior-options {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.send-behavior-option {
+.machine-choice {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  background: var(--surface-muted);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  gap: 10px;
+  padding: 10px 14px;
   cursor: pointer;
 }
 
-.send-behavior-option > span {
-  display: grid;
-  gap: 2px;
+.machine-choice + .machine-choice {
+  border-top: 1px solid var(--line);
+}
+
+.machine-choice:hover {
+  background: var(--fill-hover);
+}
+
+/* The card head a choice list sits under: title only, no control. */
+.machine-head {
+  padding: 12px 14px 4px;
+}
+
+.machine-choice input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.machine-error {
+  margin: 0;
+  padding: 0 14px 12px;
+  color: var(--danger);
   font-size: 12px;
 }
 
-.send-behavior-note {
-  color: var(--silence);
-  font-size: 11px;
+.machine-note {
+  margin: 0;
+  padding: 0 14px 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
