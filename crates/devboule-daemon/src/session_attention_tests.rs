@@ -285,3 +285,213 @@ fn answering_permission_acknowledges_attention() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+fn snapshot_attention(
+    registry: &SessionRegistry,
+    owner: &OwnerId,
+    session_id: &str,
+) -> Option<devboule_protocol::Attention> {
+    registry
+        .state_snapshots(owner)
+        .into_iter()
+        .find(|snapshot| snapshot.id == session_id)
+        .and_then(|snapshot| snapshot.attention)
+}
+
+#[test]
+fn cancelling_a_parked_card_clears_permission_attention() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-withdraw-attention", "process-withdraw-attention");
+    let session_id = "s.withdraw-attention.1";
+    let runtime = insert_live_agent(&registry, session_id, owner.clone());
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("session row");
+    let conn = ConnHandle::new(11);
+    registry
+        .attach(session_id, None, &conn, &owner, true)
+        .expect("attach");
+    let request = permission_broker::permission("withdraw-attention-card");
+    runtime.publish_agent_event(request.clone(), None);
+    let broker = runtime.permission_broker().expect("permission broker");
+    broker
+        .register(21, request, &runtime)
+        .expect("permission request");
+    assert_eq!(
+        runtime.attention().expect("permission attention").reason,
+        devboule_protocol::AttentionReason::Permission
+    );
+
+    broker.cancel_pending();
+
+    assert!(
+        runtime.attention().is_none(),
+        "withdrawing the last card clears permission attention"
+    );
+    assert!(
+        snapshot_attention(&registry, &owner, session_id).is_none(),
+        "the next roster snapshot carries no attention"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn withdrawing_one_of_two_cards_keeps_permission_attention() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-two-cards", "process-two-cards");
+    let session_id = "s.two-cards.1";
+    let runtime = insert_live_agent(&registry, session_id, owner.clone());
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("session row");
+    let conn = ConnHandle::new(12);
+    registry
+        .attach(session_id, None, &conn, &owner, true)
+        .expect("attach");
+    let broker = runtime.permission_broker().expect("permission broker");
+    let first = permission_broker::permission("two-cards-first");
+    runtime.publish_agent_event(first.clone(), None);
+    let pending_first = broker.register(22, first, &runtime).expect("first card");
+    let second = permission_broker::permission("two-cards-second");
+    runtime.publish_agent_event(second.clone(), None);
+    broker.register(23, second, &runtime).expect("second card");
+    assert_eq!(
+        runtime.attention().expect("permission attention").reason,
+        devboule_protocol::AttentionReason::Permission
+    );
+
+    assert!(broker.cancel("two-cards-first", &pending_first, "cancelled"));
+
+    assert_eq!(
+        runtime
+            .attention()
+            .expect("attention outlives one withdrawal")
+            .reason,
+        devboule_protocol::AttentionReason::Permission
+    );
+    broker.cancel_pending();
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn withdrawing_a_card_keeps_a_non_permission_attention() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-error-stays", "process-error-stays");
+    let session_id = "s.error-stays.1";
+    let runtime = insert_live_agent(&registry, session_id, owner.clone());
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("session row");
+    let conn = ConnHandle::new(13);
+    registry
+        .attach(session_id, None, &conn, &owner, true)
+        .expect("attach");
+    let request = permission_broker::permission("error-stays-card");
+    runtime.publish_agent_event(request.clone(), None);
+    let broker = runtime.permission_broker().expect("permission broker");
+    broker
+        .register(24, request, &runtime)
+        .expect("permission request");
+    assert!(runtime.clear_attention());
+    runtime.publish_agent_event(
+        SessionEvent::AgentError {
+            message: "attention error".to_string(),
+        },
+        None,
+    );
+    assert_eq!(
+        runtime.attention().expect("error attention").reason,
+        devboule_protocol::AttentionReason::Error
+    );
+
+    broker.cancel_pending();
+
+    assert_eq!(
+        runtime.attention().expect("error survives").reason,
+        devboule_protocol::AttentionReason::Error
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-mcp-withdraw", "process-mcp-withdraw");
+    let session_id = "s.mcp-withdraw.1";
+    let runtime = insert_live_agent(&registry, session_id, owner.clone());
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("session row");
+    let broker = runtime.permission_broker().expect("permission broker");
+    let request_id = serde_json::json!(7);
+    let cancel_id = request_id.clone();
+    let (token_tx, token_rx) = std::sync::mpsc::channel();
+    let host_broker = Arc::clone(&broker);
+    let host_runtime = Arc::clone(&runtime);
+    let waiter = std::thread::spawn(move || {
+        let _scope = crate::mcp_broker::McpCallScope::enter_for_test(session_id, &request_id);
+        let token = crate::mcp_broker::current_mcp_call()
+            .expect("active call")
+            .2;
+        token_tx.send(Arc::clone(&token)).expect("token send");
+        host_broker.request_host_permission(
+            permission_broker::permission("mcp-withdraw-card"),
+            &host_runtime,
+        )
+    });
+    let token = token_rx.recv().expect("call token");
+    let mut spins = 0;
+    while broker.pending_len() == 0 && spins < 1000 {
+        std::thread::sleep(Duration::from_millis(1));
+        spins += 1;
+    }
+    assert_eq!(broker.pending_len(), 1, "the host card is parked");
+    assert_eq!(
+        runtime.attention().expect("permission attention").reason,
+        devboule_protocol::AttentionReason::Permission
+    );
+
+    assert!(broker.cancel_mcp_call(&runtime.session_id, &cancel_id, &token));
+
+    assert_eq!(
+        waiter.join().expect("host waiter"),
+        permission_broker::HostDecision::Cancelled
+    );
+    assert!(
+        runtime.attention().is_none(),
+        "mcp cancel clears permission attention"
+    );
+    assert!(
+        snapshot_attention(&registry, &owner, "s.mcp-withdraw.1").is_none(),
+        "the next roster snapshot carries no attention"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}

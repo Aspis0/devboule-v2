@@ -2025,6 +2025,16 @@ impl SessionRuntime {
             );
         }
         notify_observers(&stream);
+        drop(stream);
+        // A withdrawal parks no answer: with no card left, a standing
+        // permission attention would ride every later push unchanged.
+        if !self.permission_pending()
+            && self
+                .attention()
+                .is_some_and(|attention| attention.reason == AttentionReason::Permission)
+        {
+            self.clear_attention();
+        }
     }
 
     /// Whether this session's journal already holds a decision for this
