@@ -52,6 +52,8 @@ const GLYPH: Record<Exclude<PointOffer, "open" | "installing">, string> = {
 
 export function Shell({ activeSurface, children }: ShellProps) {
   const selectSurface = useAppStore((state) => state.selectSurface);
+  // A modal holds the app's attention: the band must not open over one.
+  const modalOpen = useAppStore((state) => state.modalOpenCount > 0);
   const plugins = useAppStore((state) => state.plugins);
   const installing = useAppStore((state) => state.installing);
   const installError = useAppStore((state) => state.installError);
@@ -70,7 +72,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
   const navOpenRef = useRef(navOpen);
   const visibleKeysRef = useRef<string[]>([]);
   const pageShift = navOpen ? "34px" : "0px";
-  const pageDim = navOpen ? 0.34 : 1;
+  const pageShade = navOpen ? 0.66 : 0;
   const crescentLayout = useMemo(
     () => layoutCrescent(SURFACE_KEYS, CRESCENT_VISIBLE_COUNT, surfaceOffset),
     [surfaceOffset],
@@ -196,12 +198,11 @@ export function Shell({ activeSurface, children }: ShellProps) {
       onPointerLeave={closeNav}
       onKeyDown={handleKeyDown}
     >
-      <div
-        className="page-layer"
-        style={{ transform: `translateY(${pageShift})`, opacity: pageDim }}
-      >
+      <div className="page-layer" style={{ marginTop: pageShift }}>
         {children}
       </div>
+
+      <div className="page-dim" style={{ opacity: pageShade }} aria-hidden="true" />
 
       <div className="crescent-shell" role="navigation" aria-label="Devboule surfaces">
         <button
@@ -211,21 +212,26 @@ export function Shell({ activeSurface, children }: ShellProps) {
           aria-label="Reveal navigation"
           aria-expanded={navOpen}
           aria-controls="devboule-crescent-navigation"
-          onPointerEnter={() => setNavOpen(true)}
+          onPointerEnter={() => {
+            if (!modalOpen) setNavOpen(true);
+          }}
           // A click on the line opens the nav or keeps whatever the hover just
           // opened open — it never toggles shut (the owner's measured defect).
-          onClick={() => setNavOpen(true)}
+          onClick={() => {
+            if (!modalOpen) setNavOpen(true);
+          }}
           onFocus={() => {
             if (suppressTriggerFocusRef.current) {
               suppressTriggerFocusRef.current = false;
               return;
             }
+            if (modalOpen) return;
             setNavOpen(true);
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown") {
               event.preventDefault();
-              setNavOpen(true);
+              if (!modalOpen) setNavOpen(true);
             }
           }}
         />

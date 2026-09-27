@@ -115,6 +115,7 @@ import {
   noteHumanOpenedHistory,
 } from "./delegatedDesignMirror";
 import { buildSkillBlock } from "./skillLoader";
+import { useModalOpen } from "../../lib/modalOpen";
 import { useProviderConsent } from "../workspace/useProviderConsent";
 import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
 import { journalLossCopy } from "../workspace/journalLoss";
@@ -520,7 +521,7 @@ function renderCraftBody(body: string) {
     ));
 }
 
-const DesignSkillModeControl = memo(function DesignSkillModeControl({
+export const DesignSkillModeControl = memo(function DesignSkillModeControl({
   skillSelection,
   onSkillModeChange,
   onCraftOpen,
@@ -536,6 +537,8 @@ const DesignSkillModeControl = memo(function DesignSkillModeControl({
   const popoverRef = useRef<HTMLDivElement>(null);
   const selectedModeRef = useRef<HTMLButtonElement>(null);
   const activeCopy = SKILL_MODE_LABELS[skillSelection.mode];
+
+  useModalOpen(open);
 
   const closePopover = useCallback(() => {
     setOpen(false);
@@ -665,7 +668,7 @@ const DesignSkillModeControl = memo(function DesignSkillModeControl({
   );
 });
 
-const DesignCraftSheet = memo(function DesignCraftSheet({
+export const DesignCraftSheet = memo(function DesignCraftSheet({
   skillIndex,
   skillSelection,
   selectedSkillSlugs,
@@ -682,6 +685,20 @@ const DesignCraftSheet = memo(function DesignCraftSheet({
 }: DesignCraftSheetProps) {
   const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
   const modeCopy = SKILL_MODE_LABELS[skillSelection.mode];
+
+  useModalOpen();
+
+  // The sheet's Escape lives here with it, like the picker's and the
+  // popover's: the parent owns the open state, the sheet owns its dismissal.
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   const manualLimitReached =
     skillSelection.mode === "manual" && selectedSkillSlugs.length >= MAX_AUTOMATIC_SKILL_SECTIONS;
   const includedSkillCount = hasResolvedComposition
@@ -941,7 +958,7 @@ function promptForMessage(
   return previousMessage?.role === "user" ? previousMessage.text : (message.instruction ?? null);
 }
 
-const DesignToolbar = memo(function DesignToolbar({
+export const DesignToolbar = memo(function DesignToolbar({
   folderControl,
   grounded,
   outputMode,
@@ -966,6 +983,8 @@ const DesignToolbar = memo(function DesignToolbar({
   const historyMenuRef = useRef<HTMLDivElement>(null);
   const historyTriggerRef = useRef<HTMLButtonElement>(null);
   const historyPopoverRef = useRef<HTMLDivElement>(null);
+
+  useModalOpen(historyOpen);
 
   const closeHistory = useCallback(() => {
     setHistoryOpen(false);
@@ -4256,17 +4275,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const openManualCraftSheet = useCallback(() => setCraftSheetMode("manual"), []);
   const openCraftReadOnlySheet = useCallback(() => setCraftSheetMode("readonly"), []);
   const closeCraftSheet = useCallback(() => setCraftSheetMode(null), []);
-
-  useEffect(() => {
-    if (craftSheetMode === null) return;
-    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      closeCraftSheet();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeCraftSheet, craftSheetMode]);
 
   const resolvedSkillSlugs =
     appliedSkillSlugs !== null

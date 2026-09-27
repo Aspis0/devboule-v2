@@ -99,17 +99,27 @@ button:focus-visible {
   width: 100vw;
 }
 
+/* No stacking context on this layer: a z-index, transform or opacity under 1
+   here traps every modal the surfaces render under the crescent band. */
 .page-layer {
   position: relative;
-  z-index: 1;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   padding: var(--app-pad);
-  transition:
-    transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
-    opacity 0.3s ease;
+  transition: margin-top 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
+}
+
+/* The nav-open shade over the page. Off the page layer because the layer's
+   own opacity would dim an open modal along with the page. */
+.page-dim {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  background: var(--ground-app);
+  transition: opacity 0.3s ease;
 }
 
 .surface-loading {

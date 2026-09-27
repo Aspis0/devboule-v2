@@ -13,10 +13,7 @@
 }
 
 .app-shell-design .page-layer {
-  transition:
-    transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
-    opacity 0.3s ease,
-    height 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
+  transition: height 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
 }
 
 .app-shell-design:has(.crescent-nav-open) .page-layer {
@@ -25,7 +22,8 @@
 
 .design-toolbar {
   position: relative;
-  z-index: 4;
+  /* No z-index: a stacking context on the toolbar traps the history popover
+     under the crescent band. */
   display: flex;
   flex: none;
   align-items: center;
@@ -292,7 +290,8 @@
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  z-index: 6;
+  /* Above the crescent band, which sits at z-index 40. */
+  z-index: 50;
   width: min(360px, calc(100vw - 28px));
   max-height: min(calc((100vh - var(--crescent-band)) * 0.6), 430px);
   overflow-y: auto;
@@ -1530,7 +1529,8 @@
   position: absolute;
   top: 58px;
   right: 14px;
-  z-index: 20;
+  /* Above the crescent band, which sits at z-index 40. */
+  z-index: 50;
   width: min(748px, calc(100% - 28px));
   pointer-events: none;
 }
@@ -2101,7 +2101,8 @@
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
-  z-index: 5;
+  /* Above the crescent band, which sits at z-index 40. */
+  z-index: 50;
   display: grid;
   min-width: 230px;
   max-width: 320px;

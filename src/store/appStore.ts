@@ -107,6 +107,15 @@ interface AppState {
   activeSurface: SurfaceKey;
   selectSurface: (surface: SurfaceKey) => void;
 
+  /**
+   * How many modals are open. The shell reads it to keep the crescent from
+   * opening over a modal and the surface from switching under one — a switch
+   * would unmount the modal with whatever the user had not yet answered.
+   */
+  modalOpenCount: number;
+  /** Register a modal as open; the returned release gives the count back. */
+  openModal: () => () => void;
+
   installedSkills: InstalledSkill[];
   installSkill: (skill: InstalledSkill) => void;
 
@@ -155,9 +164,21 @@ interface AppState {
  * the crescent still offering a `+` for something the surface already shows as
  * installed — so there is one, here.
  */
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   activeSurface: "workspace",
-  selectSurface: (activeSurface) => set({ activeSurface }),
+  selectSurface: (activeSurface) => {
+    // A modal holds the app's attention: switching the surface under it would
+    // unmount it mid-answer.
+    if (get().modalOpenCount > 0) return;
+    set({ activeSurface });
+  },
+  modalOpenCount: 0,
+  openModal: () => {
+    set((state) => ({ modalOpenCount: state.modalOpenCount + 1 }));
+    return () => {
+      set((state) => ({ modalOpenCount: Math.max(0, state.modalOpenCount - 1) }));
+    };
+  },
 
   designSession: emptyDesignSession(),
   setDesignHost: (host) =>

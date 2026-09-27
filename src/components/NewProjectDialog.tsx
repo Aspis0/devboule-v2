@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { projectAdd } from "../lib/tauri";
+import { useModalOpen } from "../lib/modalOpen";
 import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import { ErrorText } from "./ErrorText";
 import type { Project } from "../types/ipc";
@@ -34,6 +35,8 @@ export const NewProjectDialog = memo(function NewProjectDialog({
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
+
+  useModalOpen(isOpen);
 
   useEffect(() => {
     if (!isOpen) return;

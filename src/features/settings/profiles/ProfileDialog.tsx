@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useModalOpen } from "../../../lib/modalOpen";
 
 function focusableIn(container: HTMLElement): HTMLElement[] {
   return Array.from(
@@ -38,6 +39,8 @@ export function ProfileDialog({
   onClose: () => void;
   children: (api: { requestClose: () => void; markDirty: () => void }) => ReactNode;
 }) {
+  useModalOpen();
+
   const titleId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
   const confirmRef = useRef<HTMLDivElement>(null);
