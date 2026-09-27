@@ -63,6 +63,8 @@
   --tone-attention: #b8862e;
   --tone-unattended: #6b5b95;
   --tone-recovered: #8a8172;
+  /* The recovered ring both dot families share, so the two cannot drift. */
+  --ring-recovered: 1.5px solid var(--tone-recovered);
 
   /* red is failure and destroy, nothing else */
   --danger: #a83040;

@@ -188,3 +188,31 @@ describe("chipDisplay", () => {
     expect(display.tooltip).toContain("Needs your approval");
   });
 });
+
+describe("chip pulse follows the turn, not the process", () => {
+  it("pulses a working turn on the live tone", () => {
+    const display = chipDisplay(base({ activity: "working" }));
+    expect(display.dot).toBe("live");
+    expect(display.pulse).toBe(true);
+  });
+
+  it("stills an attached but idle session on the live tone", () => {
+    const display = chipDisplay(base({ activity: "idle" }));
+    expect(display.dot).toBe("live");
+    expect(display.pulse).toBe(false);
+  });
+
+  it("stills a blocked turn the same way", () => {
+    const display = chipDisplay(base({ activity: "blocked" }));
+    expect(display.dot).toBe("live");
+    expect(display.pulse).toBe(false);
+  });
+
+  it("keeps today's pulse while the roster says nothing either way", () => {
+    // Absent is not idle: a journal row or a skewed push has no runtime to
+    // report, so it keeps the mapping's own pulse.
+    const display = chipDisplay(base({ activity: undefined }));
+    expect(display.dot).toBe("live");
+    expect(display.pulse).toBe(true);
+  });
+});

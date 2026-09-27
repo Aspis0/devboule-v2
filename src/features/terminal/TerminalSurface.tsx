@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import type { PermissionRequest, PermissionResolved, SessionState } from "../../types/ipc";
+import type {
+  AgentActivityState,
+  Attention,
+  PermissionRequest,
+  PermissionResolved,
+  SessionState,
+} from "../../types/ipc";
 import { takeTerminalInput } from "./pendingTerminalInput";
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
@@ -39,6 +45,9 @@ interface TerminalSurfaceProps {
   onAutoFocusTaken?: () => void;
   /** The kebab's close-group wiring, from the tab-close flow. Absent until the workspace passes it. */
   headerMenuSeam?: HeaderMenuSeam;
+  /** The roster's turn status and pending ask, painted by the header. Absent until the workspace passes them. */
+  activity?: AgentActivityState;
+  attention?: Attention;
   /**
    * Closes this pane's tab — the action the ended banner's sentence names.
    * Present in Workspace; absent only in tests that never show that banner.
@@ -132,6 +141,8 @@ export const TerminalSurface = memo(function TerminalSurface({
   onAutoFocusTaken,
   onCloseTab,
   headerMenuSeam,
+  activity,
+  attention,
 }: TerminalSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
@@ -277,7 +288,15 @@ export const TerminalSurface = memo(function TerminalSurface({
       <PaneHeader
         kind="terminal"
         title={title ?? "Terminal"}
-        display={headerDisplay(observedState, null, null)}
+        display={headerDisplay(
+          observedState,
+          null,
+          // The terminal's own failure reads through the shared word: an
+          // error banner over a live row must not say Running.
+          banner?.kind === "error" ? "error" : null,
+          activity,
+          attention,
+        )}
         menu={headerMenu(cwd, headerMenuSeam)}
         trailingSlot={
           <>

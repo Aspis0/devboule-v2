@@ -95,7 +95,7 @@ describe("the session strip", () => {
       [".strip-dot-live", "background: var(--green);"],
       [".strip-dot-attention", "background: var(--tone-attention);"],
       [".strip-dot-unattended", "background: var(--tone-unattended);"],
-      [".strip-dot-recovered", "outline: 1.5px solid var(--tone-recovered);"],
+      [".strip-dot-recovered", "outline: var(--ring-recovered);"],
       [".strip-dot-idle", "background: var(--border-strong);"],
       [".strip-dot-ended,\n.strip-dot-unknown", "background: var(--terracotta);"],
     ];

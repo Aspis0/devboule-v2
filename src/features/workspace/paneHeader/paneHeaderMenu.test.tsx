@@ -18,7 +18,13 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-const DISPLAY = { word: "Running", tone: "green", pulse: true, tooltip: "Running" } as const;
+const DISPLAY = {
+  word: "Running",
+  detail: null,
+  tone: "green",
+  pulse: true,
+  tooltip: "Running",
+} as const;
 
 function renderHeader() {
   const host = document.createElement("div");

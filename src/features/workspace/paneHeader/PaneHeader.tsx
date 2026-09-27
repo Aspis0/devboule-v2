@@ -23,6 +23,7 @@ export function PaneHeader({
   trailingSlot,
 }: PaneHeaderProps) {
   const agent = kind === "agent";
+  const text = display.detail === null ? display.word : `${display.word} · ${display.detail}`;
   return (
     <div className={agent ? "workspace-agent-toolbar" : "workspace-terminal-toolbar"}>
       <span
@@ -31,12 +32,22 @@ export function PaneHeader({
       <span className={agent ? "workspace-agent-title" : "workspace-terminal-title"}>{title}</span>
       {agent ? subagentSlot : null}
       {agent ? (
-        <span className="workspace-agent-status" role="status" title={display.tooltip}>
-          {display.word}
+        <span
+          className="workspace-agent-status"
+          role="status"
+          title={display.tooltip}
+          aria-label={display.tooltip}
+        >
+          {text}
         </span>
       ) : (
-        <span className="workspace-terminal-status" title={display.tooltip}>
-          {display.word}
+        <span
+          className="workspace-terminal-status"
+          role="status"
+          title={display.tooltip}
+          aria-label={display.tooltip}
+        >
+          {text}
         </span>
       )}
       {agent ? null : trailingSlot}

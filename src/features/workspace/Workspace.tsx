@@ -1253,6 +1253,8 @@ export function Workspace({
                 cwd={paneSession.cwd}
                 observedState={paneSession.state}
                 elapsedMs={paneSession.elapsedMs}
+                activity={paneSession.activity}
+                attention={paneSession.attention}
                 daemonState={daemon.state}
                 sessionRoster={sessions}
                 headerMenuSeam={{
@@ -1296,6 +1298,8 @@ export function Workspace({
                 sessionId={paneSession.id}
                 observedState={paneSession.state}
                 cwd={paneSession.cwd}
+                activity={paneSession.activity}
+                attention={paneSession.attention}
                 autoFocus={terminalAutoFocus}
                 autoFocusGuard={mayTakeTerminalFocus}
                 onAutoFocusTaken={takeTerminalFocus}

@@ -133,7 +133,7 @@
 
 .strip-dot-recovered {
   background: transparent;
-  outline: 1.5px solid var(--tone-recovered);
+  outline: var(--ring-recovered);
   outline-offset: -1px;
 }
 

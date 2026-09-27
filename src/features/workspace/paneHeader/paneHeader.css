@@ -98,11 +98,15 @@
   height: 6px;
 }
 
-/* The recovered ring, never a fill — the strip's own recovered dot. */
+/* The recovered ring, never a fill — the same token as the strip's ring. */
 .workspace-dot-recovered {
   background: transparent;
-  outline: 1.5px solid var(--tone-recovered);
+  outline: var(--ring-recovered);
   outline-offset: -1px;
+}
+
+.workspace-dot-attention {
+  background: var(--tone-attention);
 }
 
 /* Descendant selectors on purpose: see the terminal title above. */

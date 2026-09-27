@@ -2168,8 +2168,13 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Quiet");
-    expect(container.querySelector('[role="status"]')?.getAttribute("title")).toContain("12 s");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Quiet · 12 s");
+    expect(container.querySelector('[role="status"]')?.getAttribute("title")).toContain(
+      "Quiet 12 s — no output for 12 seconds, may still be working.",
+    );
+    expect(container.querySelector('[role="status"]')?.getAttribute("aria-label")).toContain(
+      "Quiet 12 s — no output for 12 seconds, may still be working.",
+    );
   });
 
   it("shows the Stop button only while the turn is running and interrupts on click", async () => {

@@ -22,6 +22,8 @@ import {
 } from "../../lib/tauri";
 import type {
   ActiveTurnBehavior,
+  AgentActivityState,
+  Attention,
   DaemonConnectionState,
   PermissionRequest,
   PermissionResolved,
@@ -110,6 +112,9 @@ interface AgentChatSurfaceProps {
   auxiliary?: ReactNode;
   /** The kebab's close-group wiring, from the tab-close flow. Absent until the workspace passes it. */
   headerMenuSeam?: HeaderMenuSeam;
+  /** The roster's turn status and pending ask, painted by the header. Absent until the workspace passes them. */
+  activity?: AgentActivityState;
+  attention?: Attention;
   observedState?: SessionState | null;
   elapsedMs?: number | null;
   /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
@@ -732,6 +737,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   id,
   auxiliary,
   headerMenuSeam,
+  activity,
+  attention,
   observedState = null,
   elapsedMs = null,
   daemonState,
@@ -959,7 +966,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // failure, not a guarantee: sends may be slow, and a failure is recorded
   // as a turn-level note.
   const daemonGone = daemonState === "disconnected" || daemonState === "connecting";
-  const header = headerDisplay(observedState, elapsedMs, state.status);
+  const header = headerDisplay(observedState, elapsedMs, state.status, activity, attention);
   // The workspace's reopen bar describes this recovered attach state once —
   // while it is shown (a recovered row always shows it), the controller's own
   // attach-state ERROR entry and the composer footer would be second and third

@@ -35,9 +35,16 @@ afterEach(async () => {
   removeCssProof();
 });
 
-const RUNNING: HeaderDisplay = { word: "Running", tone: "green", pulse: true, tooltip: "Running" };
+const RUNNING: HeaderDisplay = {
+  word: "Running",
+  detail: null,
+  tone: "green",
+  pulse: true,
+  tooltip: "Running",
+};
 const QUIET: HeaderDisplay = {
   word: "Quiet",
+  detail: null,
   tone: "border",
   pulse: false,
   tooltip: "Quiet — no output, may still be working.",
