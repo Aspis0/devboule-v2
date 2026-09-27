@@ -106,6 +106,8 @@ export function AgentProfileForm({
   onCreate,
   onSaveSeed,
   onSeedChange,
+  onDirty,
+  hideHeading = false,
   onCancel,
 }: {
   /** "create" opens with empty fields; "edit" seeds from the stored row. */
@@ -126,6 +128,17 @@ export function AgentProfileForm({
   onSaveSeed?: (seed: ProfileFormSeed) => void;
   /** Edit mode's every keystroke, reported up so the draft survives the row. */
   onSeedChange?: (seed: ProfileFormSeed) => void;
+  /**
+   * One call per human edit — never for the form's own reports (the offered
+   * list landing, a settled model). The dialog's dirty check reads only
+   * this, so auto-defaults never arm it.
+   */
+  onDirty?: () => void;
+  /**
+   * True inside the dialog: the shell renders the title, so the form skips
+   * its own heading rather than naming the profile twice.
+   */
+  hideHeading?: boolean;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(seed.name);
@@ -178,6 +191,13 @@ export function AgentProfileForm({
       enabledForAgents,
       idleCloseMinutes: idleOff ? 0 : idleMinutesOf(idleMinutes),
     };
+  }
+  // One call for a human edit: the draft goes up exactly as before, and the
+  // dialog's dirty check arms. The form's own reports (the offered list, a
+  // settled model) keep calling onSeedChange directly and never touch this.
+  function userChanged(patch: Partial<ProfileFormSeed>) {
+    onSeedChange?.({ ...currentSeed(), ...patch });
+    onDirty?.();
   }
   // Provider-specific fields, cached by provider while the form is open:
   // switching away clears them (the new provider's vocabulary is its own),
@@ -308,7 +328,7 @@ export function AgentProfileForm({
     settleModel(restored.model, false);
     setModeId(restored.modeId);
     setThinkingOptionId(restored.thinkingOptionId);
-    onSeedChange?.({ ...currentSeed(), provider: next, ...restored });
+    userChanged({ provider: next, ...restored });
   }
 
   function submit() {
@@ -325,9 +345,11 @@ export function AgentProfileForm({
         mode === "create" ? "agent-inline-editor agent-profile-create" : "agent-inline-editor"
       }
     >
-      <span className="settings-subheading">
-        {mode === "create" ? "New profile" : "Edit profile"}
-      </span>
+      {hideHeading ? null : (
+        <span className="settings-subheading">
+          {mode === "create" ? "New profile" : "Edit profile"}
+        </span>
+      )}
       <label className="device-field">
         Name
         <input
@@ -336,7 +358,7 @@ export function AgentProfileForm({
           disabled={busy}
           onChange={(event) => {
             setName(event.target.value);
-            onSeedChange?.({ ...currentSeed(), name: event.target.value });
+            userChanged({ name: event.target.value });
           }}
         />
       </label>
@@ -348,7 +370,7 @@ export function AgentProfileForm({
           disabled={busy}
           onChange={(event) => {
             setIcon(event.target.value);
-            onSeedChange?.({ ...currentSeed(), icon: event.target.value });
+            userChanged({ icon: event.target.value });
           }}
         />
       </label>
@@ -361,7 +383,7 @@ export function AgentProfileForm({
           rows={3}
           onChange={(event) => {
             setNote(event.target.value);
-            onSeedChange?.({ ...currentSeed(), note: event.target.value });
+            userChanged({ note: event.target.value });
           }}
         />
         <span className="agent-byte-counter" id={noteCounterId} aria-live="polite">
@@ -378,7 +400,7 @@ export function AgentProfileForm({
           rows={3}
           onChange={(event) => {
             setSpawnPrompt(event.target.value);
-            onSeedChange?.({ ...currentSeed(), spawnPrompt: event.target.value });
+            userChanged({ spawnPrompt: event.target.value });
           }}
         />
         <span className="agent-byte-counter" id={spawnCounterId} aria-live="polite">
@@ -457,7 +479,7 @@ export function AgentProfileForm({
             items={[...modelsView.items, ...storedModelOption]}
             onChange={(next) => {
               setModel(next);
-              onSeedChange?.({ ...currentSeed(), model: next });
+              userChanged({ model: next });
             }}
             onSettle={settleModel}
           />
@@ -477,7 +499,7 @@ export function AgentProfileForm({
             items={[...modesView.items, ...storedModeOption]}
             onChange={(next) => {
               setModeId(next);
-              onSeedChange?.({ ...currentSeed(), modeId: next });
+              userChanged({ modeId: next });
             }}
           />
           <label className="device-field">
@@ -489,7 +511,7 @@ export function AgentProfileForm({
               disabled={busy}
               onChange={(event) => {
                 setThinkingOptionId(event.target.value);
-                onSeedChange?.({ ...currentSeed(), thinkingOptionId: event.target.value });
+                userChanged({ thinkingOptionId: event.target.value });
               }}
             />
             <span className="device-field-hint" id={thinkingHintId}>
@@ -512,7 +534,7 @@ export function AgentProfileForm({
         busy={busy}
         onChange={(next) => {
           setFeatures(next);
-          onSeedChange?.({ ...currentSeed(), features: next });
+          userChanged({ features: next });
         }}
       />
       <label className="agent-profile-tick">
@@ -523,7 +545,7 @@ export function AgentProfileForm({
           disabled={busy}
           onChange={(event) => {
             setEnabledForAgents(event.target.checked);
-            onSeedChange?.({ ...currentSeed(), enabledForAgents: event.target.checked });
+            userChanged({ enabledForAgents: event.target.checked });
           }}
         />
         <span>
@@ -553,8 +575,7 @@ export function AgentProfileForm({
             // that parses to no number keeps its own characters: the save
             // refuses it, and the refusal must name what the human sees.
             setIdleMinutes(minutes !== null && Number.isFinite(minutes) ? String(minutes) : raw);
-            onSeedChange?.({
-              ...currentSeed(),
+            userChanged({
               idleCloseMinutes: idleOff ? 0 : minutes,
             });
           }}
@@ -575,8 +596,7 @@ export function AgentProfileForm({
           onChange={(event) => {
             const off = event.target.checked;
             setIdleOff(off);
-            onSeedChange?.({
-              ...currentSeed(),
+            userChanged({
               idleCloseMinutes: off ? 0 : idleMinutesOf(idleMinutes),
             });
           }}
@@ -593,7 +613,7 @@ export function AgentProfileForm({
         busy={busy}
         onChange={(next) => {
           setOverlay(next);
-          onSeedChange?.({ ...currentSeed(), overlay: next });
+          userChanged({ overlay: next });
         }}
       />
       {mode === "edit" ? (

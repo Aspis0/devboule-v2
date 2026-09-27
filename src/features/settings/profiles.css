@@ -31,34 +31,152 @@
 .agent-profile-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 13px;
-  padding: 11px 13px;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 12px;
 }
 
-.agent-profile-order {
+/* The row's 28 px glyph tile: the stored icon, or the name's first letter. */
+.profile-tile {
   display: grid;
-  gap: 4px;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--ink-soft);
+  background: var(--fill-tool);
+  border-radius: 8px;
+  font-size: 13px;
 }
 
-.agent-profile-order .settings-device-action {
-  height: 22px;
-  padding: 0 8px;
+/* The row's type, in the spec's sizes and never mono. */
+.profile-name {
+  color: var(--ink);
+  font-size: 14px;
 }
 
-.agent-profile-main {
-  display: grid;
-  flex: 1 1 260px;
-  gap: 3px;
-}
-
-.agent-profile-meta {
+.profile-meta {
   color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: 12px;
+}
+
+/* The spawn prompt on the row: two lines, the rest lives in the dialog. */
+.profile-spawn {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  gap: 6px;
+  margin-top: 5px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.profile-spawn-pen {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 3px;
+  color: var(--tone-unattended);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.profile-spawn-empty {
+  display: block;
+  color: var(--silence);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.profile-row-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.profile-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.profile-icon-btn:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.profile-icon-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.profile-icon-btn-trash {
+  color: var(--danger);
+}
+
+.profile-icon-btn-trash:hover {
+  color: var(--danger);
+}
+
+.is-dim {
+  opacity: 0.4;
+}
+
+/* The profile dialog: scrim over the window, 480 px card. */
+.edit-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: var(--scrim);
+}
+
+.edit-card {
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--panel-card);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: var(--shadow-pop);
+}
+
+.edit-title {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.edit-card .agent-inline-editor {
+  padding: 0;
+  border: none;
 }
 
 .agent-profile-note {
@@ -117,7 +235,6 @@
 
 .agent-byte-counter {
   color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
   font-size: 10px;
 }
 

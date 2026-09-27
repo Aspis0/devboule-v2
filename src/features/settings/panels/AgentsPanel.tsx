@@ -8,8 +8,9 @@ import {
   useDelegationState,
   type DelegationController,
 } from "../../../lib/delegation";
-import { overlayDenialsDescription } from "../profileOverlay";
 import { AgentProfileForm } from "../AgentProfileForm";
+import { ProfileDialog } from "../profiles/ProfileDialog";
+import { ProfileRow } from "../profiles/ProfileRow";
 import {
   EMPTY_PROFILE_FORM_SEED,
   type ProfileFormSeed,
@@ -281,15 +282,16 @@ export function DelegationSetting({
  * - One tick per row, “agents may create this”. The tick is the consent: an
  *   unticked profile is the human's own and stays invisible to agents.
  * - The note, called out on the row as what a creating agent reads.
+ * - The spawn prompt, visible on the row and edited in the dialog.
  * - The standing instructions, one document with the profiles, capped and
  *   refused over the cap — never truncated.
  * - An empty state that reads as the off switch: nothing ticked means agents
  *   create nothing at all.
- * - The profile form ([`AgentProfileForm`]), shared by creating and editing,
- *   which asks the daemon what a provider offers instead of inventing
- *   vocabulary, and falls back to free text — naming its own reason — when
- *   the daemon predates the query. It saves through the same `persist` path
- *   as every other write here.
+ * - The profile dialog ([`ProfileDialog`] around [`AgentProfileForm`]),
+ *   shared by creating and editing, which asks the daemon what a provider
+ *   offers instead of inventing vocabulary, and falls back to free text —
+ *   naming its own reason — when the daemon predates the query. It saves
+ *   through the same `persist` path as every other write here.
  *
  * The provider catalog for the form's picker comes through the same
  * `providersList` path `ProvidersPanel` uses. The two panels never mount
@@ -315,8 +317,16 @@ export function AgentProfilesPanel() {
   // for the one thing the sequence number cannot say: that a write was
   // already in flight when a fetch started.
   const writesInFlightRef = useRef(0);
-  // Which row's editor / delete confirm is open. One of each, panel-wide.
-  const [editingId, setEditingId] = useState<string | null>(null);
+  // Which dialog is open, panel-wide: at most one. The create dialog drafts
+  // from the empty seed; the edit dialog drafts from its row (see
+  // `editorDraft` below). The inline editors are gone — both modes share
+  // the scrim dialog.
+  const [dialog, setDialog] = useState<{ mode: "create" } | { mode: "edit"; id: string } | null>(
+    null,
+  );
+  // Who opened the dialog: closing it returns focus there — the row's
+  // pencil, or the New-profile button for a creation.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const [deleteArmedId, setDeleteArmedId] = useState<string | null>(null);
   // The open editor's unsaved draft, keyed to its row. It lives HERE, not in
   // the editor's own state, because the row the editor is rendered in can be
@@ -326,9 +336,9 @@ export function AgentProfilesPanel() {
   // exactly as to the standing draft below: no write that did not carry the
   // text may release it.
   const [editorDraft, setEditorDraft] = useState<(ProfileFormSeed & { id: string }) | null>(null);
-  // The new-profile form is open. Rendered closed by default; each open is a
-  // fresh mount, so no stale draft survives a Cancel.
-  const [creating, setCreating] = useState(false);
+  // The new-profile form is a dialog now, not a toggle: `dialog` above owns
+  // it. Each open mounts the form fresh, so no stale draft survives a
+  // Cancel.
   // The provider catalog behind the form's picker, fetched once per mount.
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<ErrorSentence | null>(null);
@@ -521,12 +531,34 @@ export function AgentProfilesPanel() {
     setLoadNonce((nonce) => nonce + 1);
   }
 
-  // Closing the editor is the human abandoning it: the draft goes with the
-  // editor (rule 3). A write — even one that removes the editor's row and
-  // then reverts — must never reach this.
-  function closeEditor() {
-    setEditingId(null);
+  // Closing the dialog is the human abandoning it: the draft goes with the
+  // form (rule 3). A write — even one that removes the dialog's row and
+  // then reverts — must never reach this. Focus returns to whoever opened
+  // the dialog, so keyboard hands land back on the row's pencil.
+  function closeDialog() {
+    setDialog(null);
     setEditorDraft(null);
+    const opener = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (opener !== null && opener.isConnected) opener.focus();
+  }
+
+  function openCreateDialog(opener: HTMLElement) {
+    returnFocusRef.current = opener;
+    setDeleteArmedId(null);
+    setDialog({ mode: "create" });
+  }
+
+  function openEditDialog(id: string, opener: HTMLElement) {
+    const current = documentRef.current;
+    const row = current?.profiles.find((profile) => profile.id === id);
+    // Opening a dialog is a fresh draft (rule 3): the panel drops any draft
+    // left from a previous session and seeds this one from the stored row.
+    // Closing one is the human abandoning it.
+    if (row !== undefined) setEditorDraft({ id, ...seedFromProfile(row) });
+    returnFocusRef.current = opener;
+    setDeleteArmedId(null);
+    setDialog({ mode: "edit", id });
   }
 
   function toggleEnabled(id: string, next: boolean) {
@@ -634,7 +666,7 @@ export function AgentProfilesPanel() {
     // (The draft lives in `editorDraft` above the write plane, so this holds
     // even for a refusal of a write that removed the editor's row: rule 3.)
     void persist(updated).then((confirmed) => {
-      if (confirmed) closeEditor();
+      if (confirmed) closeDialog();
     });
   }
 
@@ -711,7 +743,7 @@ export function AgentProfilesPanel() {
     // reports a refusal, and the form must still be on screen when it does —
     // the draft stays in its fields under the error, ready to retry.
     void persist(updated).then((confirmed) => {
-      if (confirmed) setCreating(false);
+      if (confirmed) closeDialog();
     });
   }
 
@@ -738,6 +770,11 @@ export function AgentProfilesPanel() {
     });
   }
 
+  const dialogTarget =
+    dialog !== null && dialog.mode === "edit" && document !== null
+      ? (document.profiles.find((profile) => profile.id === dialog.id) ?? null)
+      : null;
+
   return (
     <div id="settings-panel-agents">
       {/* Beside the profiles, on purpose: the switch and the profiles it
@@ -756,196 +793,10 @@ export function AgentProfilesPanel() {
             Retry
           </button>
         ) : null}
-        {document !== null && profiles.every((profile) => !profile.enabledForAgents) ? (
-          <div className="agent-profiles-off" role="status">
-            <p>
-              No profile is ticked, so agents cannot start agents — every creation attempt is
-              refused.
-            </p>
-            <p>Tick “agents may create this” on a profile to let agents start that kind.</p>
-          </div>
-        ) : null}
-        {document !== null ? (
-          <p className="device-copy agent-profiles-intro">
-            The note is what a creating agent reads to choose between profiles — write it for the
-            agent, not for yourself.
-          </p>
-        ) : null}
-        {document !== null ? (
-          <div className="agent-profile-create-row">
-            {/* The store's cap, mirrored: at the cap the form is not offered,
-                and the sentence says why before the human types anything. */}
-            {profiles.length >= MAX_PROFILES ? (
-              <p className="device-field-hint" role="status">
-                The store holds the maximum of {MAX_PROFILES} profiles the daemon allows: delete one
-                before creating another.
-              </p>
-            ) : null}
-            <button
-              type="button"
-              className="settings-device-action"
-              aria-expanded={creating}
-              disabled={busy || loading || profiles.length >= MAX_PROFILES}
-              onClick={() => setCreating((open) => !open)}
-            >
-              {creating ? "Close the new-profile form" : "New profile"}
-            </button>
-          </div>
-        ) : null}
-        {creating && document !== null ? (
-          <AgentProfileForm
-            mode="create"
-            seed={EMPTY_PROFILE_FORM_SEED}
-            providers={installedProviders}
-            catalogLoading={catalog === null && catalogError === null}
-            catalogError={catalogError}
-            vocabularySupported={providerVocabularySupported}
-            busy={busy}
-            onCreate={createProfile}
-            onCancel={() => setCreating(false)}
-          />
-        ) : null}
-        <ol className="agent-profile-list">
-          {profiles.map((profile, index) => {
-            const editing = editingId === profile.id;
-            const deleteArmed = deleteArmedId === profile.id;
-            return (
-              <li className="agent-profile-row" key={profile.id}>
-                <div className="agent-profile-order">
-                  <button
-                    type="button"
-                    className="settings-device-action"
-                    aria-label={`Move ${profile.name} up`}
-                    disabled={busy || loading || index === 0}
-                    onClick={() => move(profile.id, -1)}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-device-action"
-                    aria-label={`Move ${profile.name} down`}
-                    disabled={busy || loading || index === profiles.length - 1}
-                    onClick={() => move(profile.id, 1)}
-                  >
-                    ↓
-                  </button>
-                </div>
-                <div className="agent-profile-main">
-                  <span className="settings-card-title">{profile.name}</span>
-                  <span className="agent-profile-meta">
-                    {profile.provider} · {profile.model} · mode {profile.modeId}
-                  </span>
-                  {/* The overlay is the human's saved deny list: shown here, editable in
-                      neither mode of the form, travelling verbatim on every save. */}
-                  {overlayDenialsDescription(profile.toolOverlay) === null ? null : (
-                    <span className="agent-profile-note">
-                      {overlayDenialsDescription(profile.toolOverlay)}
-                    </span>
-                  )}
-                  {profile.note ? (
-                    <span className="agent-profile-note">
-                      <span className="agent-profile-note-label">When to use: </span>
-                      {profile.note}
-                    </span>
-                  ) : (
-                    <span className="agent-profile-note agent-profile-note-empty">
-                      No note — agents choosing between profiles will be choosing blind on this one.
-                    </span>
-                  )}
-                </div>
-                <label className="agent-profile-tick">
-                  <input
-                    type="checkbox"
-                    checked={profile.enabledForAgents}
-                    disabled={busy || loading || editing}
-                    onChange={(event) => toggleEnabled(profile.id, event.target.checked)}
-                  />
-                  <span>
-                    <span>Agents may create this</span>
-                    <span className="agent-profile-tick-note">
-                      {editing
-                        ? "The open editor holds this setting; save or close it, then use this tick. If this profile answers its own permission cards, its children run unattended."
-                        : "Lets an agent start this kind of agent. If this profile answers its own permission cards, its children run unattended."}
-                    </span>
-                  </span>
-                </label>
-                <div className="device-actions">
-                  <button
-                    type="button"
-                    className="settings-device-action"
-                    disabled={busy || loading}
-                    onClick={() => {
-                      // Opening an editor is a fresh draft (rule 3): the
-                      // panel drops any draft left from a previous editing
-                      // session and seeds this one from the stored row.
-                      // Closing one is the human abandoning it.
-                      if (editing) closeEditor();
-                      else {
-                        setEditingId(profile.id);
-                        setEditorDraft({ id: profile.id, ...seedFromProfile(profile) });
-                      }
-                      setDeleteArmedId(null);
-                    }}
-                  >
-                    {editing ? "Close editor" : "Edit"}
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-device-action"
-                    disabled={busy || loading}
-                    onClick={() => setDeleteArmedId(deleteArmed ? null : profile.id)}
-                  >
-                    Delete
-                  </button>
-                </div>
-                {editing ? (
-                  <AgentProfileForm
-                    mode="edit"
-                    seed={editorDraft?.id === profile.id ? editorDraft : seedFromProfile(profile)}
-                    providers={installedProviders}
-                    catalogLoading={catalog === null && catalogError === null}
-                    catalogError={catalogError}
-                    vocabularySupported={providerVocabularySupported}
-                    busy={busy}
-                    onCreate={createProfile}
-                    onSaveSeed={(draft) => saveProfileFields(profile.id, draft)}
-                    onSeedChange={(draft) => setEditorDraft({ id: profile.id, ...draft })}
-                    onCancel={closeEditor}
-                  />
-                ) : null}
-                {deleteArmed ? (
-                  <div className="device-inline-confirm">
-                    <p className="device-copy">
-                      Deletes this profile. Agents are no longer offered it, and a creation naming
-                      it is refused.
-                    </p>
-                    <div className="device-actions">
-                      <button
-                        type="button"
-                        className="settings-device-action"
-                        disabled={busy || loading}
-                        onClick={() => remove(profile.id)}
-                      >
-                        Delete now
-                      </button>
-                      <button
-                        type="button"
-                        className="settings-device-action"
-                        onClick={() => setDeleteArmedId(null)}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </li>
-            );
-          })}
-        </ol>
-        {/* Rendered from the first paint, locked while the fetch runs: the
-            standing instructions are half of the same document, so the box
-            must exist — disabled — before the store answers. */}
+        {/* The behaviour card: standing instructions only. Rendered from the
+            first paint, locked while the fetch runs: they are half of the
+            same document, so the box must exist — disabled — before the
+            store answers. */}
         <div className="agent-standing">
           <span className="settings-subheading">Standing instructions</span>
           <p className="device-copy">
@@ -978,6 +829,115 @@ export function AgentProfilesPanel() {
             </button>
           </div>
         </div>
+        {document !== null && profiles.every((profile) => !profile.enabledForAgents) ? (
+          <div className="agent-profiles-off" role="status">
+            <p>
+              No profile is ticked, so agents cannot start agents — every creation attempt is
+              refused.
+            </p>
+            <p>Tick “agents may create this” on a profile to let agents start that kind.</p>
+          </div>
+        ) : null}
+        {document !== null ? (
+          <p className="device-copy agent-profiles-intro">
+            The note is what a creating agent reads to choose between profiles — write it for the
+            agent, not for yourself.
+          </p>
+        ) : null}
+        {document !== null ? (
+          <div className="agent-profile-create-row">
+            {/* The store's cap, mirrored: at the cap the form is not offered,
+                and the sentence says why before the human types anything. */}
+            {profiles.length >= MAX_PROFILES ? (
+              <p className="device-field-hint" role="status">
+                The store holds the maximum of {MAX_PROFILES} profiles the daemon allows: delete one
+                before creating another.
+              </p>
+            ) : null}
+            <button
+              type="button"
+              className="settings-device-action"
+              aria-haspopup="dialog"
+              disabled={busy || loading || profiles.length >= MAX_PROFILES}
+              onClick={(event) => openCreateDialog(event.currentTarget)}
+            >
+              New profile
+            </button>
+          </div>
+        ) : null}
+        <ol className="agent-profile-list">
+          {profiles.map((profile, index) => (
+            <li className="agent-profile-row" key={profile.id}>
+              <ProfileRow
+                profile={profile}
+                isFirst={index === 0}
+                isLast={index === profiles.length - 1}
+                busy={busy}
+                loading={loading}
+                dialogHoldsTick={
+                  dialog !== null && dialog.mode === "edit" && dialog.id === profile.id
+                }
+                deleteArmed={deleteArmedId === profile.id}
+                onMove={move}
+                onToggle={toggleEnabled}
+                onEdit={openEditDialog}
+                onDeleteArm={(id) => setDeleteArmedId(id)}
+                onDeleteCancel={() => setDeleteArmedId(null)}
+                onDeleteConfirm={remove}
+              />
+            </li>
+          ))}
+        </ol>
+        {dialog !== null &&
+        document !== null &&
+        (dialog.mode === "create" || dialogTarget !== null) ? (
+          <ProfileDialog
+            title={
+              dialog.mode === "create" ? "New profile" : `Edit profile — ${dialogTarget?.name}`
+            }
+            onClose={closeDialog}
+          >
+            {({ requestClose, markDirty }) =>
+              dialog.mode === "create" ? (
+                <AgentProfileForm
+                  mode="create"
+                  hideHeading
+                  seed={EMPTY_PROFILE_FORM_SEED}
+                  providers={installedProviders}
+                  catalogLoading={catalog === null && catalogError === null}
+                  catalogError={catalogError}
+                  vocabularySupported={providerVocabularySupported}
+                  busy={busy}
+                  onCreate={createProfile}
+                  onDirty={markDirty}
+                  onCancel={requestClose}
+                />
+              ) : (
+                <AgentProfileForm
+                  mode="edit"
+                  hideHeading
+                  seed={
+                    editorDraft?.id === dialog.id
+                      ? editorDraft
+                      : dialogTarget !== null
+                        ? seedFromProfile(dialogTarget)
+                        : EMPTY_PROFILE_FORM_SEED
+                  }
+                  providers={installedProviders}
+                  catalogLoading={catalog === null && catalogError === null}
+                  catalogError={catalogError}
+                  vocabularySupported={providerVocabularySupported}
+                  busy={busy}
+                  onCreate={createProfile}
+                  onSaveSeed={(draft) => saveProfileFields(dialog.id, draft)}
+                  onSeedChange={(draft) => setEditorDraft({ id: dialog.id, ...draft })}
+                  onDirty={markDirty}
+                  onCancel={requestClose}
+                />
+              )
+            }
+          </ProfileDialog>
+        ) : null}
       </div>
     </div>
   );

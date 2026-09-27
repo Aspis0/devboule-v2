@@ -204,7 +204,10 @@ describe("Settings agents panel", () => {
   }
 
   function rowButton(name: string, text: string): HTMLButtonElement {
-    const button = Array.from(rowByName(name).querySelectorAll<HTMLButtonElement>("button")).find(
+    const row = rowByName(name);
+    const byLabel = row.querySelector<HTMLButtonElement>(`button[aria-label="${text} ${name}"]`);
+    if (byLabel) return byLabel;
+    const button = Array.from(row.querySelectorAll<HTMLButtonElement>("button")).find(
       (candidate) => candidate.textContent === text,
     );
     if (!button) throw new Error(`button ${text} on ${name} did not render`);
@@ -216,6 +219,15 @@ describe("Settings agents panel", () => {
       container.querySelectorAll<HTMLButtonElement>(".agent-profiles button"),
     ).find((candidate) => candidate.textContent === text);
     if (!button) throw new Error(`button ${text} did not render`);
+    return button;
+  }
+
+  /** A button inside the open profile dialog, by its text. */
+  function dialogButton(text: string): HTMLButtonElement {
+    const button = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((candidate) => candidate.textContent === text);
+    if (!button) throw new Error(`dialog button ${text} did not render`);
     return button;
   }
 
@@ -299,7 +311,7 @@ describe("Settings agents panel", () => {
       profileRows().map((row) => row.querySelector(".settings-card-title")?.textContent),
     ).toEqual(["Beta", "Alpha"]);
     expect(rowByName("Beta").querySelector<HTMLElement>(".agent-profile-meta")?.textContent).toBe(
-      "grok · grok-4 · mode ask",
+      "grok · grok-4 · ask · no thinking",
     );
     // The edges are where a reorder bug would show: the first row cannot move
     // up and the last cannot move down.
@@ -910,7 +922,122 @@ describe("Settings agents panel", () => {
     });
   });
 
-  it("holds the row's agents tick while that profile's editor is open", async () => {
+  it("shows the tile, the thinking meta and the spawn prompt on the row", async () => {
+    await renderAgentsPanel({
+      profiles: [
+        makeProfile({
+          name: "Coder",
+          icon: "✦",
+          thinkingOptionId: "high",
+          spawnPrompt: "Work in small steps. Run the tests after every change.",
+        }),
+        makeProfile({ id: "profile-2", name: "Plain" }),
+      ],
+      standingInstructions: "",
+    });
+
+    const coder = rowByName("Coder");
+    expect(coder.querySelector(".profile-tile")?.textContent).toBe("✦");
+    expect(coder.querySelector(".profile-meta")?.textContent).toBe(
+      "grok · grok-4 · ask · high thinking",
+    );
+    expect(coder.querySelector(".profile-spawn")?.textContent).toContain("Work in small steps.");
+
+    // No icon, no thinking, no spawn prompt: the letter tile and the named
+    // absences, never a blank line.
+    const plain = rowByName("Plain");
+    expect(plain.querySelector(".profile-tile")?.textContent).toBe("P");
+    expect(plain.querySelector(".profile-meta")?.textContent).toBe(
+      "grok · grok-4 · ask · no thinking",
+    );
+    expect(plain.querySelector(".profile-spawn")?.textContent).toContain("No spawn prompt");
+  });
+
+  it("dims the dead reorder ends", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "b", name: "Beta" }), makeProfile({ id: "a", name: "Alpha" })],
+      standingInstructions: "",
+    });
+
+    const firstUp = rowByName("Beta").querySelector<HTMLButtonElement>(
+      "button[aria-label='Move Beta up']",
+    );
+    const lastDown = rowByName("Alpha").querySelector<HTMLButtonElement>(
+      "button[aria-label='Move Alpha down']",
+    );
+    expect(firstUp?.disabled).toBe(true);
+    expect(firstUp?.classList.contains("is-dim")).toBe(true);
+    expect(lastDown?.disabled).toBe(true);
+    expect(lastDown?.classList.contains("is-dim")).toBe(true);
+    const liveDown = rowByName("Beta").querySelector<HTMLButtonElement>(
+      "button[aria-label='Move Beta down']",
+    );
+    expect(liveDown?.disabled).toBe(false);
+    expect(liveDown?.classList.contains("is-dim")).toBe(false);
+  });
+
+  it("opens one dialog for creating and one for editing, with the full spawn text", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => sectionButton("New profile").click());
+    await act(async () => undefined);
+    expect(container.querySelector(".edit-scrim")).not.toBeNull();
+    expect(container.querySelector(".edit-title")?.textContent).toBe("New profile");
+    await act(async () => dialogButton("Cancel").click());
+    await act(async () => undefined);
+    expect(container.querySelector(".edit-scrim")).toBeNull();
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    expect(container.querySelector(".edit-title")?.textContent).toBe("Edit profile — Explorer");
+    // The row clamps to two lines; the dialog carries the whole text.
+    const spawnField = container.querySelector<HTMLTextAreaElement>(
+      '.edit-card textarea[aria-label="Profile spawn prompt"]',
+    );
+    if (!spawnField) throw new Error("dialog spawn prompt field did not render");
+  });
+
+  it("returns focus to the row's pencil when the dialog closes", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    const pencil = rowByName("Explorer").querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit Explorer"]',
+    );
+    if (!pencil) throw new Error("row pencil did not render");
+    pencil.focus();
+    await act(async () => pencil.click());
+    await act(async () => undefined);
+    expect(container.querySelector(".edit-scrim")).not.toBeNull();
+
+    await act(async () => dialogButton("Cancel").click());
+    await act(async () => undefined);
+    expect(container.querySelector(".edit-scrim")).toBeNull();
+    expect(document.activeElement).toBe(pencil);
+  });
+
+  it("holds the panel dialog's Escape behind the discard check when dirty", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const nameField = container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Profile name"]',
+    );
+    if (!nameField) throw new Error("dialog name field did not render");
+    await typeText(nameField, "Scout");
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector(".edit-scrim")).not.toBeNull();
+    expect(container.textContent).toContain("Discard unsaved changes?");
+
+    await act(async () => dialogButton("Discard").click());
+    await act(async () => undefined);
+    expect(container.querySelector(".edit-scrim")).toBeNull();
+  });
+
+  it("holds the row's agents tick while that profile's dialog is open", async () => {
     await renderAgentsPanel({
       profiles: [makeProfile({ enabledForAgents: true })],
       standingInstructions: "",
@@ -924,9 +1051,9 @@ describe("Settings agents panel", () => {
     if (!rowTick) throw new Error("row tick did not render");
     expect(rowTick.disabled).toBe(true);
     // The reason is on the screen, not a silent lock.
-    expect(container.textContent).toContain("The open editor holds this setting");
+    expect(container.textContent).toContain("The open dialog holds this setting");
 
-    await act(async () => rowButton("Explorer", "Close editor").click());
+    await act(async () => dialogButton("Cancel").click());
     await act(async () => undefined);
     rowTick = container.querySelector<HTMLInputElement>(
       '.agent-profile-row input[type="checkbox"]',
@@ -1785,9 +1912,7 @@ describe("Settings agents panel — new profile form", () => {
       (candidate) => candidate.textContent?.includes(name),
     );
     if (!row) throw new Error(`profile row ${name} did not render`);
-    const edit = Array.from(row.querySelectorAll<HTMLButtonElement>("button")).find(
-      (candidate) => candidate.textContent === "Edit",
-    );
+    const edit = row.querySelector<HTMLButtonElement>(`button[aria-label="Edit ${name}"]`);
     if (!edit) throw new Error(`Edit button on ${name} did not render`);
     await act(async () => edit.click());
     await act(async () => undefined);
@@ -2923,6 +3048,7 @@ describe("Settings agents panel — new profile form", () => {
       ".agent-profile-tick-note",
       ".agent-profiles-off p",
       ".agent-profile-note-empty",
+      ".profile-spawn-empty",
       ".agent-standing .agent-byte-counter",
       "[role='alert']",
       "[role='status']",
@@ -2973,8 +3099,8 @@ describe("Settings agents panel — new profile form", () => {
     }
 
     async function openEditorOn(name: string) {
-      const edit = Array.from(agentRow(name).querySelectorAll<HTMLButtonElement>("button")).find(
-        (candidate) => candidate.textContent === "Edit",
+      const edit = agentRow(name).querySelector<HTMLButtonElement>(
+        `button[aria-label="Edit ${name}"]`,
       );
       if (!edit) throw new Error(`Edit button on ${name} did not render`);
       await act(async () => edit.click());
@@ -3129,7 +3255,11 @@ describe("Settings agents panel — new profile form", () => {
 
     // 14. A delete armed: the inline confirm's copy.
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
-    await act(async () => agentsSectionButton("Delete").click());
+    const trash = container.querySelector<HTMLButtonElement>(
+      '.agent-profile-row button[aria-label="Delete Explorer"]',
+    );
+    if (!trash) throw new Error("row trash button did not render");
+    await act(async () => trash.click());
     await act(async () => undefined);
     await collectScenario("delete armed");
 
@@ -3297,7 +3427,7 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Forty-nine: the delegation section's one sentence on this panel (an
+    // Fifty: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
@@ -3314,13 +3444,14 @@ describe("Settings agents panel — new profile form", () => {
     // refusals, the two profile-cap sentences, the two catalog sentences,
     // the idle-close field's own hint and the off toggle's note, the shell page
     // intro (scenario 24 collects it through the surface; the title stays out), the tick notes (including the
-    // open-editor clause on the row tick), and the standing
+    // open-dialog clause on the row tick), the no-spawn-prompt sentence on
+    // rows without one, and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry), and the standing box's keep-it-short
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(49);
+    expect(sentences).toHaveLength(50);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;
