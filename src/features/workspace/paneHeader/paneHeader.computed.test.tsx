@@ -53,8 +53,7 @@ async function renderAgentHeader(): Promise<{ token: (name: string) => string | 
       <PaneHeader
         kind="agent"
         title="Claude"
-        statusWord="Working…"
-        dotTone="green"
+        display={{ word: "Running", tone: "green", pulse: true, tooltip: "Running" }}
         menu={agentHeaderMenu("C:\\x", undefined)}
       />,
     );

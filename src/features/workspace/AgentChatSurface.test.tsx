@@ -348,7 +348,7 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Live");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Running");
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -359,7 +359,7 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Live");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Running");
     const textarea = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Message the agent"]',
     );
@@ -477,7 +477,7 @@ describe("AgentChatSurface", () => {
     });
 
     expect(container.textContent).toContain("DEVBOULE");
-    expect(container.querySelector(".workspace-agent-status")?.textContent).toBe("Live");
+    expect(container.querySelector(".workspace-agent-status")?.textContent).toBe("Running");
     expect(container.querySelector(".workspace-chat-typing")).toBeNull();
 
     const conversation = container.querySelector(".workspace-conversation");
@@ -1365,7 +1365,7 @@ describe("AgentChatSurface", () => {
     expect(selected).toHaveLength(0);
   });
 
-  it("shows Finished from an ended sessions_watch snapshot, not Ready", async () => {
+  it("shows Stopped from an ended sessions_watch snapshot, not Ready", async () => {
     const ended: SessionState = {
       type: "ended",
       generation: 1,
@@ -1386,9 +1386,9 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Finished");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Stopped");
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Ready");
-    expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Stopped");
+    expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Finished");
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -1436,7 +1436,7 @@ describe("AgentChatSurface", () => {
 
     expect(container.textContent).toContain("what did we decide");
     expect(container.textContent).toContain("we decided to ship it");
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Finished");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Recovered");
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -1572,7 +1572,7 @@ describe("AgentChatSurface", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(false);
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Live");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Running");
     expect(container.querySelector(".workspace-composer-hint")).toBeNull();
     expect(container.querySelector('[data-testid="model-chip"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="effort-chip"]')).not.toBeNull();
@@ -2152,7 +2152,7 @@ describe("AgentChatSurface", () => {
     expect(banners[0]?.textContent).toContain("at least 61 KB");
   });
 
-  it("shows Silent for N from a silent sessions_watch snapshot", async () => {
+  it("shows Quiet from a silent sessions_watch snapshot, with the elapsed detail in the tooltip", async () => {
     const silent: SessionState = { type: "silent", generation: 1 };
     root = createRoot(container);
     await act(async () => {
@@ -2168,7 +2168,8 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Silent for 12 seconds");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Quiet");
+    expect(container.querySelector('[role="status"]')?.getAttribute("title")).toContain("12 s");
   });
 
   it("shows the Stop button only while the turn is running and interrupts on click", async () => {

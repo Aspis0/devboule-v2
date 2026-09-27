@@ -1,4 +1,4 @@
-import type { Session } from "../../../types/ipc";
+import type { Session, SessionState } from "../../../types/ipc";
 import { sessionDelegationBadges, UNATTENDED_BADGE_LABEL } from "../workspaceSessions";
 
 /** The chip's dot, in the spec's states. `idle` is silence, `ended` a stop. */
@@ -40,29 +40,51 @@ function quietLong(elapsedMs: number): string {
   return `${seconds} second${seconds === 1 ? "" : "s"}`;
 }
 
-function stateLine(session: Session): { dot: ChipDot; pulse: boolean; line: string } {
-  const { state } = session;
+/** One roster state in the spec's words: the dot, its pulse, the single
+ * status word, and the long line. The chip never renders the word (only
+ * "Needs your approval" ever paints); the pane header does. */
+export interface RosterStateDisplay {
+  dot: ChipDot;
+  pulse: boolean;
+  word: string;
+  line: string;
+}
+
+export function rosterStateDisplay(
+  state: SessionState | null | undefined,
+  elapsedMs: number | null | undefined,
+): RosterStateDisplay {
   if (typeof state !== "object" || state === null || !("type" in state)) {
-    return { dot: "unknown", pulse: false, line: "Status unknown" };
+    return { dot: "unknown", pulse: false, word: "Unknown", line: "Status unknown" };
   }
   switch (state.type) {
     case "live":
-      return { dot: "live", pulse: true, line: "Running" };
+      return { dot: "live", pulse: true, word: "Running", line: "Running" };
     case "silent":
-      return typeof session.elapsedMs === "number"
+      return typeof elapsedMs === "number"
         ? {
             dot: "idle",
             pulse: false,
-            line: `Quiet ${quietShort(session.elapsedMs)} — no output for ${quietLong(session.elapsedMs)}, may still be working.`,
+            word: "Quiet",
+            line: `Quiet ${quietShort(elapsedMs)} — no output for ${quietLong(elapsedMs)}, may still be working.`,
           }
-        : { dot: "idle", pulse: false, line: "Quiet — no output, may still be working." };
+        : {
+            dot: "idle",
+            pulse: false,
+            word: "Quiet",
+            line: "Quiet — no output, may still be working.",
+          };
     case "recovered":
-      return { dot: "recovered", pulse: false, line: recoveredLine(state) };
+      return { dot: "recovered", pulse: false, word: "Recovered", line: recoveredLine(state) };
     case "ended":
-      return { dot: "ended", pulse: false, line: endedLine(state) };
+      return { dot: "ended", pulse: false, word: "Stopped", line: endedLine(state) };
     default:
-      return { dot: "unknown", pulse: false, line: "Status unknown" };
+      return { dot: "unknown", pulse: false, word: "Unknown", line: "Status unknown" };
   }
+}
+
+function stateLine(session: Session): RosterStateDisplay {
+  return rosterStateDisplay(session.state, session.elapsedMs);
 }
 
 function integrityTail(state: { integrity?: unknown }, stopped: string): string {

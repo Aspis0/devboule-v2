@@ -29,7 +29,12 @@ async function openMenu(menu: PaneHeaderMenu) {
   const { host, root } = renderHeader();
   await act(async () => {
     root.render(
-      <PaneHeader kind="agent" title="Claude" statusWord="Working…" dotTone="green" menu={menu} />,
+      <PaneHeader
+        kind="agent"
+        title="Claude"
+        display={{ word: "Running", tone: "green", pulse: true, tooltip: "Running" }}
+        menu={menu}
+      />,
     );
   });
   const kebab = host.querySelector<HTMLButtonElement>(".pane-header-kebab");

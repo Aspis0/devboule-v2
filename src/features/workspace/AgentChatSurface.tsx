@@ -53,7 +53,7 @@ import {
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
 import { PaneHeader } from "./paneHeader/PaneHeader";
-import { paneHeaderStatus, headerPulseActive } from "./paneHeader/paneHeaderStatus";
+import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 import { agentHeaderMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import {
   INTERRUPTED_TOOL_CLASS,
@@ -959,7 +959,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // failure, not a guarantee: sends may be slow, and a failure is recorded
   // as a turn-level note.
   const daemonGone = daemonState === "disconnected" || daemonState === "connecting";
-  const { copy: statusLabel, tone: statusDot } = paneHeaderStatus(observedState, elapsedMs, state);
+  const header = headerDisplay(observedState, elapsedMs, state.status);
   // The workspace's reopen bar describes this recovered attach state once —
   // while it is shown (a recovered row always shows it), the controller's own
   // attach-state ERROR entry and the composer footer would be second and third
@@ -1012,9 +1012,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       <PaneHeader
         kind="agent"
         title={title || "Agent"}
-        statusWord={statusLabel}
-        dotTone={statusDot}
-        pulsing={headerPulseActive(state.streaming, observedState)}
+        display={header}
         menu={agentHeaderMenu(cwd, headerMenuSeam)}
         subagentSlot={
           state.subagents.length > 0 ? (

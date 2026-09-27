@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { AgentSessionState, AgentStatus } from "../../../lib/agentSession";
-import type { SessionState } from "../../../types/ipc";
-import { paneHeaderStatus, headerPulseActive } from "./paneHeaderStatus";
-
-function agentWith(status: AgentStatus): AgentSessionState {
-  return { status } as AgentSessionState;
-}
+import type { Session, SessionState } from "../../../types/ipc";
+import { chipDisplay, rosterStateDisplay } from "../strip/stripDisplay";
+import { headerDisplay } from "./paneHeaderStatus";
 
 const LIVE: SessionState = { type: "live", generation: 1 };
 const SILENT: SessionState = { type: "silent", generation: 1 };
@@ -21,93 +17,110 @@ const RECOVERED: SessionState = {
   integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
 };
 
-describe("paneHeaderStatus", () => {
-  it("reads Finished in the ended tone for an ended session", () => {
-    expect(paneHeaderStatus(ENDED, 4600, agentWith("running"))).toEqual({
-      copy: "Finished",
-      tone: "terracotta",
-    });
-  });
+function cleanRow(state: SessionState, elapsedMs: number | null): Session {
+  return { state, elapsedMs } as unknown as Session;
+}
 
-  it("reads Finished in the ended tone for a recovered session", () => {
-    expect(paneHeaderStatus(RECOVERED, null, agentWith("idle"))).toEqual({
-      copy: "Finished",
-      tone: "terracotta",
-    });
-  });
-
-  it("reads Silent for N from the elapsed time", () => {
-    expect(paneHeaderStatus(SILENT, 240_000, agentWith("idle"))).toEqual({
-      copy: "Silent for 4 minutes",
-      tone: "border",
-    });
-    expect(paneHeaderStatus(SILENT, 12_000, agentWith("idle"))).toEqual({
-      copy: "Silent for 12 seconds",
-      tone: "border",
-    });
-  });
-
-  it("reads bare Silent when no elapsed time is known", () => {
-    expect(paneHeaderStatus(SILENT, null, agentWith("idle"))).toEqual({
-      copy: "Silent",
-      tone: "border",
-    });
-  });
-
-  it("uses the singular for one minute and one second", () => {
-    expect(paneHeaderStatus(SILENT, 60_000, agentWith("idle")).copy).toBe("Silent for 1 minute");
-    expect(paneHeaderStatus(SILENT, 1_000, agentWith("idle")).copy).toBe("Silent for 1 second");
-  });
-
-  it("reads Needs attention for a failed agent", () => {
-    expect(paneHeaderStatus(LIVE, 0, agentWith("error"))).toEqual({
-      copy: "Needs attention",
-      tone: "terracotta",
-    });
-  });
-
-  it("reads Finished for a closed agent", () => {
-    expect(paneHeaderStatus(LIVE, 0, agentWith("closed"))).toEqual({
-      copy: "Finished",
-      tone: "terracotta",
-    });
-  });
-
-  it("reads Working while the agent runs", () => {
-    expect(paneHeaderStatus(LIVE, 0, agentWith("running"))).toEqual({
-      copy: "Working…",
+describe("headerDisplay", () => {
+  it("reads Running with a live pulse for a live session", () => {
+    expect(headerDisplay(LIVE, 0, "idle")).toEqual({
+      word: "Running",
       tone: "green",
+      pulse: true,
+      tooltip: "Running",
     });
+    expect(headerDisplay(LIVE, 0, "running").pulse).toBe(true);
   });
 
-  it("reads Live for a live session with no turn running", () => {
-    expect(paneHeaderStatus(LIVE, 0, agentWith("idle"))).toEqual({
-      copy: "Live",
-      tone: "green",
+  it("reads one word, Quiet, for a silent session and keeps the detail in the tooltip", () => {
+    expect(headerDisplay(SILENT, 240_000, "idle")).toEqual({
+      word: "Quiet",
+      tone: "border",
+      pulse: false,
+      tooltip: "Quiet 4 m — no output for 4 minutes, may still be working.",
     });
+    expect(headerDisplay(SILENT, null, "idle").word).toBe("Quiet");
+    expect(headerDisplay(SILENT, 12_000, "idle").tooltip).toContain("12 s");
+  });
+
+  it("reads Recovered on its own ring tone, never like an ended session", () => {
+    const recovered = headerDisplay(RECOVERED, null, "idle");
+    const ended = headerDisplay(ENDED, 4600, "running");
+    expect(recovered.word).toBe("Recovered");
+    expect(recovered.tone).toBe("recovered");
+    expect(recovered.pulse).toBe(false);
+    expect(recovered.tooltip).toContain("Recovered");
+    expect(ended.word).toBe("Stopped");
+    expect(ended.tone).toBe("terracotta");
+    expect(ended.word).not.toBe(recovered.word);
+    expect(ended.tone).not.toBe(recovered.tone);
+  });
+
+  it("never hides a failed turn behind a quiet wire", () => {
+    expect(headerDisplay(SILENT, 240_000, "error")).toEqual({
+      word: "Failed",
+      tone: "terracotta",
+      pulse: false,
+      tooltip: "Failed",
+    });
+    expect(headerDisplay(LIVE, 0, "error").word).toBe("Failed");
+  });
+
+  it("reads Stopped for a closed controller even before the roster ends", () => {
+    expect(headerDisplay(LIVE, 0, "closed").word).toBe("Stopped");
+  });
+
+  it("reads Connecting while there is no row to read", () => {
+    expect(headerDisplay(null, null, "idle")).toEqual({
+      word: "Connecting",
+      tone: "border",
+      pulse: false,
+      tooltip: "Connecting",
+    });
+    expect(headerDisplay(null, null, "initializing").word).toBe("Connecting");
   });
 
   it("never reads an unknown state as a healthy word", () => {
-    const unknown = paneHeaderStatus(null, null, agentWith("idle"));
-    expect(unknown).toEqual({ copy: "Connecting…", tone: "border" });
-    expect(unknown.copy).not.toBe("Live");
-    expect(unknown.copy).not.toBe("Working…");
+    const unknown = headerDisplay(null, null, "idle");
+    expect(unknown.word).not.toBe("Running");
     expect(unknown.tone).not.toBe("green");
+    expect(unknown.pulse).toBe(false);
   });
 });
 
-describe("headerPulseActive", () => {
-  it("pulses exactly while the typing row shows: streaming with a live process", () => {
-    expect(headerPulseActive(true, LIVE)).toBe(true);
-    expect(headerPulseActive(true, SILENT)).toBe(true);
-    // No roster row yet is not "process gone": like the typing row, the dot
-    // follows the controller's streaming flag, not the roster's presence.
-    expect(headerPulseActive(true, null)).toBe(true);
+describe("the strip and the header agree for every roster state", () => {
+  const cases: Array<{ state: SessionState; elapsedMs: number | null }> = [
+    { state: LIVE, elapsedMs: 0 },
+    { state: SILENT, elapsedMs: 240_000 },
+    { state: SILENT, elapsedMs: null },
+    { state: RECOVERED, elapsedMs: null },
+    { state: ENDED, elapsedMs: 4600 },
+  ];
+
+  it("shares one word and one pulse per state", () => {
+    for (const { state, elapsedMs } of cases) {
+      const shared = rosterStateDisplay(state, elapsedMs);
+      const header = headerDisplay(state, elapsedMs, "idle");
+      expect(header.word).toBe(shared.word);
+      expect(header.pulse).toBe(shared.pulse);
+    }
   });
 
-  it("stays static when nothing streams or the process is gone", () => {
-    expect(headerPulseActive(false, LIVE)).toBe(false);
-    expect(headerPulseActive(true, ENDED)).toBe(false);
-    expect(headerPulseActive(true, RECOVERED)).toBe(false);
+  it("matches the chip's own dot and pulse on a clean row", () => {
+    const toneFor = { live: "green", idle: "border", recovered: "recovered", ended: "terracotta" };
+    for (const { state, elapsedMs } of cases) {
+      const chip = chipDisplay(cleanRow(state, elapsedMs));
+      const header = headerDisplay(state, elapsedMs, "idle");
+      expect(header.tone).toBe(toneFor[chip.dot as keyof typeof toneFor]);
+      expect(header.pulse).toBe(chip.pulse);
+      expect(chip.words).toBeNull();
+    }
+  });
+
+  it("pins the vocabulary both surfaces speak", () => {
+    expect(headerDisplay(LIVE, 0, "idle").word).toBe("Running");
+    expect(headerDisplay(SILENT, 0, "idle").word).toBe("Quiet");
+    expect(headerDisplay(RECOVERED, null, "idle").word).toBe("Recovered");
+    expect(headerDisplay(ENDED, null, "idle").word).toBe("Stopped");
   });
 });

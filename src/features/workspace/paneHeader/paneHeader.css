@@ -99,6 +99,13 @@
   height: 6px;
 }
 
+/* The recovered ring, never a fill — the strip's own recovered dot. */
+.workspace-dot-recovered {
+  background: transparent;
+  outline: 1.5px solid var(--tone-recovered);
+  outline-offset: -1px;
+}
+
 /* Descendant selectors on purpose: see the terminal title above. */
 .workspace-agent-toolbar .workspace-agent-title {
   flex: 1 1 160px;

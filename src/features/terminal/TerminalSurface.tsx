@@ -6,8 +6,8 @@ import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
 import { PaneHeader } from "../workspace/paneHeader/PaneHeader";
+import { headerDisplay } from "../workspace/paneHeader/paneHeaderStatus";
 import { terminalHeaderMenu, type HeaderMenuSeam } from "../workspace/paneHeader/paneHeaderMenu";
-import { sessionDotTone } from "../workspace/workspaceSessions";
 
 interface TerminalSurfaceProps {
   workspaceId: string | null;
@@ -274,13 +274,10 @@ export const TerminalSurface = memo(function TerminalSurface({
 
   return (
     <div id={id} className="workspace-terminal-shell" role="tabpanel" aria-label="Terminal output">
-      {/* The tab chip's own tone function: an ended or recovered session is
-          never green (E1.1, live finding 1). */}
       <PaneHeader
         kind="terminal"
         title={title ?? "Terminal"}
-        statusWord={ended ? "" : (message ?? "Connected to the local shell")}
-        dotTone={sessionDotTone(observedState)}
+        display={headerDisplay(observedState, null, null)}
         menu={terminalHeaderMenu(cwd, onCloseTab, headerMenuSeam)}
         trailingSlot={
           <>
