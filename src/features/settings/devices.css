@@ -1,9 +1,8 @@
 /* Devices page: this device, the pairing flows, and the paired list. R17-3 owns this file.
    Geometry-critical declarations stay on bare classes: the devices geometry
    test reads them through cssProof, which models bare selectors only.
-   The `device-*` rules at the bottom are shared: R17-2's ProfileRow and the
-   Agents panel render those classes without importing this sheet (the
-   settings chunk carries every page's CSS), so they must not move. */
+   The shared `device-*` form rules live in the shell sheet (`settings.css`),
+   which the surface always loads; this file declares none of them. */
 
 /* Same vertical rhythm as the shell's `.settings-main-inner > section`:
    our sections sit inside #settings-panel-devices, so the shell rule
@@ -18,6 +17,15 @@
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel-card);
+}
+
+/* The shell's action pill fills `--surface`, which resolves to this card's
+   own ground: without this scope the buttons are fill-on-fill. `--panel-side`
+   is the Profiles rows' fill, declared in both themes (`--surface-muted`
+   has no dark declaration and would compute to transparent there). */
+#settings-panel-devices .settings-device-action {
+  background: var(--panel-side);
+  border-color: var(--line-strong);
 }
 
 /* A form card: this device, pair a device. */
@@ -55,8 +63,8 @@
 
 .dev-card-title {
   margin: 0;
-  color: var(--ink);
-  font-size: 14px;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -93,6 +101,9 @@
 
 .dev-name {
   overflow: hidden;
+  /* A flex item defaults to min-width: auto, which pins it at its full
+     nowrap text width and keeps the ellipsis from ever engaging. */
+  min-width: 0;
   font-size: 14px;
   color: var(--ink);
   text-overflow: ellipsis;
@@ -186,11 +197,10 @@
   outline-offset: 1px;
 }
 
-.dev-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 10;
+/* The row menu renders through the house portal (fixed off the anchor,
+   flipped above it when the space below is smaller), so it carries no
+   absolute offsets of its own: the popover sets position inline. */
+.dev-menu-pop {
   display: flex;
   flex-direction: column;
   min-width: 140px;
@@ -251,6 +261,12 @@
 .dev-pair-form {
   display: grid;
   gap: 8px;
+}
+
+/* The pairing address and code are typed verbatim, character by character:
+   the one mono input face on any settings page. */
+.dev-typed-input {
+  font-family: "JetBrains Mono", monospace;
 }
 
 .dev-role-choice {
@@ -323,6 +339,7 @@
 
 .dev-revoked {
   margin: 0 14px 8px;
+  padding-left: 24px;
   color: var(--silence);
   font-size: 11px;
 }
@@ -337,57 +354,4 @@
   align-items: baseline;
   gap: 9px;
   padding: 5px 0;
-}
-
-/* Shared with the Profiles page and the Agents panel: those files render
-   these classes without importing this sheet, so every rule below stays
-   exactly where it is. */
-.device-copy {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 11.5px;
-  line-height: 1.55;
-}
-
-.device-field {
-  display: grid;
-  gap: 3px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.device-field input {
-  padding: 5px 8px;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11.5px;
-}
-
-.device-field-hint {
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.device-error {
-  margin: 0;
-  color: var(--danger-deep);
-  font-size: 11px;
-}
-
-.device-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.device-inline-confirm {
-  display: grid;
-  gap: 6px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
 }

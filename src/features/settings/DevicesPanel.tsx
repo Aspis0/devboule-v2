@@ -257,6 +257,14 @@ function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCa
   // half-answered revoke on one device is not shown as armed on another.
   const [armed, setArmed] = useState<"revoke" | "lost" | null>(null);
   const held = heldCap(row, caps);
+  // The armed confirm renders at the bottom of a tall row, past the
+  // capability switches, while the kebab that armed it sits at the top:
+  // focus moves to the confirm and its `role="alert"` announces what
+  // the menu just armed, so forward Tab is not the only route there.
+  const confirmRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (armed !== null) confirmRef.current?.focus();
+  }, [armed]);
   return (
     <div className="dev-row-wrap">
       <div className="dev-row">
@@ -313,7 +321,7 @@ function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCa
           </p>
         )}
         {armed === null ? null : (
-          <div className="device-inline-confirm">
+          <div className="device-inline-confirm" role="alert" ref={confirmRef} tabIndex={-1}>
             <p className="device-copy">
               {armed === "lost"
                 ? "Revokes this device now, closes its connections, and records it in the audit log."
@@ -851,6 +859,7 @@ export function DevicesPanel() {
               <span>Address</span>
               <input
                 type="text"
+                className="dev-typed-input"
                 value={enterAddress}
                 placeholder={`100.64.0.1:${DEFAULT_PEER_PORT}`}
                 autoComplete="off"
@@ -866,6 +875,7 @@ export function DevicesPanel() {
               <span>Code</span>
               <input
                 type="text"
+                className="dev-typed-input"
                 value={enterCode}
                 aria-label="pairing code"
                 placeholder="XXXX XXXX"

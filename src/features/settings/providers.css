@@ -83,6 +83,9 @@
 
 .prov-name {
   overflow: hidden;
+  /* A flex item defaults to min-width: auto, which pins it at its full
+     nowrap text width and keeps the ellipsis from ever engaging. */
+  min-width: 0;
   font-size: 14px;
   color: var(--ink);
   text-overflow: ellipsis;

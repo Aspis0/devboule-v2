@@ -171,6 +171,16 @@ describe("devices panel", () => {
     });
   }
 
+  function menuItemByText(text: string): HTMLButtonElement {
+    // The row menu renders through a portal on document.body, outside the
+    // panel root, so its items are found on the document, not the container.
+    const found = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => (item.textContent ?? "").trim() === text);
+    if (found === undefined) throw new Error(`menu item did not render: ${text}`);
+    return found;
+  }
+
   function codeInput(): HTMLInputElement {
     const field = container.querySelector<HTMLInputElement>('input[aria-label="pairing code"]');
     if (field === null) throw new Error("code field did not render");
@@ -842,7 +852,7 @@ describe("devices panel", () => {
     await openRowKebab();
 
     await act(async () => {
-      buttonByText("Revoke").click();
+      menuItemByText("Revoke").click();
       await Promise.resolve();
     });
     expect(peerRevoke).not.toHaveBeenCalled();
@@ -863,7 +873,7 @@ describe("devices panel", () => {
     await openRowKebab();
 
     await act(async () => {
-      buttonByText("Lost or stolen device").click();
+      menuItemByText("Lost or stolen device").click();
       await Promise.resolve();
     });
 
@@ -1013,6 +1023,43 @@ describe("devices panel", () => {
     expect(container.textContent).not.toContain("Xiaomi 14");
   });
 
+  it("does not resurrect a peer the poll dropped while a capability write was in flight", async () => {
+    // The brief's named scenario: the toggle's write leaves after the
+    // poll that removed its row. The late answer maps over the list the
+    // poll left behind, so the row stays gone and no error claims the
+    // write failed — it succeeded against a row that is no longer listed.
+    vi.useFakeTimers();
+    let resolveWrite: ((peer: PeerRow) => void) | undefined;
+    vi.mocked(devicesList)
+      .mockResolvedValueOnce(replyWith({ peers: [CLIENT_PEER] }))
+      .mockResolvedValue(replyWith({ peers: [] }));
+    vi.mocked(peerSetCaps).mockImplementationOnce(
+      () =>
+        new Promise<PeerRow>((resolve) => {
+          resolveWrite = resolve;
+        }),
+    );
+    await renderPanel();
+
+    await act(async () => {
+      checkboxByLabel("send").click();
+      await Promise.resolve();
+    });
+    expect(checkboxByLabel("send").checked).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(container.textContent).not.toContain("Xiaomi 14");
+
+    await act(async () => {
+      resolveWrite?.({ ...CLIENT_PEER, caps: ["view", "send"] });
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("Xiaomi 14");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("clears the waiting card once the far side's row arrives", async () => {
     vi.useFakeTimers();
     vi.mocked(pairingComplete).mockResolvedValue({ type: "pairing_pending", peer: PENDING });
@@ -1097,6 +1144,70 @@ describe("devices panel", () => {
     expect(headingText()).toBe("Pair a device");
   });
 
+  it("moves focus into the armed revoke confirm and announces it", async () => {
+    // Arming from the kebab leaves focus on the trigger at the top of the
+    // row while the destructive act renders at the bottom, past six
+    // checkboxes: the confirm takes focus and announces itself, so the
+    // person knows what the menu just armed.
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
+    await renderPanel();
+    await openRowKebab();
+
+    await act(async () => {
+      menuItemByText("Revoke").click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const confirm = container.querySelector(".device-inline-confirm");
+    if (confirm === null) throw new Error("revoke confirm did not render");
+    expect(confirm.getAttribute("role")).toBe("alert");
+    expect(confirm.contains(document.activeElement)).toBe(true);
+  });
+
+  it("moves focus into the armed lost-device confirm too", async () => {
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
+    await renderPanel();
+    await openRowKebab();
+
+    await act(async () => {
+      menuItemByText("Lost or stolen device").click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const confirm = container.querySelector(".device-inline-confirm");
+    if (confirm === null) throw new Error("revoke confirm did not render");
+    expect(confirm.textContent).toContain("closes its connections");
+    expect(confirm.contains(document.activeElement)).toBe(true);
+  });
+
+  it("arms the confirm on one row only when two are paired", async () => {
+    // The armed state is local to the row: arming the first row's revoke
+    // must not show a confirm on the second row.
+    const second: PeerRow = {
+      ...CLIENT_PEER,
+      deviceId: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+      displayName: "TABLET-V477JRIG",
+    };
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER, second] }));
+    await renderPanel();
+    await openRowKebab();
+
+    await act(async () => {
+      menuItemByText("Revoke").click();
+      await Promise.resolve();
+    });
+
+    const confirms = container.querySelectorAll(".device-inline-confirm");
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0]?.textContent).toContain("Revoking stops this device reaching this one.");
+  });
+
   it("moves focus off a revoked row", async () => {
     vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
     vi.mocked(peerRevoke).mockResolvedValue({ ...CLIENT_PEER, revokedAt: NOW });
@@ -1104,7 +1215,7 @@ describe("devices panel", () => {
     await openRowKebab();
 
     await act(async () => {
-      buttonByText("Revoke").click();
+      menuItemByText("Revoke").click();
       await Promise.resolve();
     });
     const confirm = buttonByText("Revoke now");

@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 
 // The Devices card language against the real stylesheets in bundle order.
+// The assembly is tokens, global, devices.css, settings.css — the sheets
+// that carry every `dev-` rule (no other settings sheet declares one, and
+// the test below fails if a later slice adds one elsewhere). It is not the
+// whole chunk: providers, profiles, general and diagnostics sheets also
+// load, so a same-named rule there would still win a real cascade.
 // Scope, stated plainly: cssProof models bare single-class selectors in the
 // light theme only (see its header) — this suite proves the rules exist with
 // the spec's values, not the rendered cascade. Anything it cannot see
@@ -24,23 +29,175 @@ function box(className: string): HTMLElement {
   return el;
 }
 
-/** Every selector in the sheet whose rule sets a monospace family. */
+/** Every selector in the sheet whose rule sets a monospace family,
+ * including rules nested inside `@`-blocks (a responsive tweak must not
+ * smuggle a mono face past the allowlist). */
 function monoSelectors(css: string): string[] {
   const found: string[] = [];
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  for (const block of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const selector = block[1] ?? "";
-    const body = block[2] ?? "";
-    if (/JetBrains Mono|monospace/i.test(body)) {
-      for (const part of selector.split(",")) found.push(part.trim().replace(/\s+/g, " "));
+  const scan = (source: string): void => {
+    let index = 0;
+    while (index < source.length) {
+      const open = source.indexOf("{", index);
+      if (open < 0) return;
+      const selector = source.slice(index, open);
+      let depth = 1;
+      let cursor = open + 1;
+      while (depth > 0 && cursor < source.length) {
+        if (source[cursor] === "{") depth += 1;
+        if (source[cursor] === "}") depth -= 1;
+        cursor += 1;
+      }
+      const body = source.slice(open + 1, cursor - 1);
+      if (selector.trim().startsWith("@")) scan(body);
+      else if (/JetBrains Mono|monospace/i.test(body)) {
+        for (const part of selector.split(",")) found.push(part.trim().replace(/\s+/g, " "));
+      }
+      index = cursor;
     }
-  }
+  };
+  scan(stripped);
   return found;
 }
 
 afterEach(() => {
   removeCssProof();
   document.body.innerHTML = "";
+});
+
+describe("shared form rules live in the shell sheet (real stylesheets)", () => {
+  // Eight components (ProfileRow, ProfileDialog, AgentProfileForm,
+  // AgentProfileFeatures, AgentProfileOverlay, AgentProfileVocabulary,
+  // AgentsPanel, ProviderNpmFailure) render `device-*` classes without
+  // importing any stylesheet: the rules live in `settings.css`, which the
+  // shell always loads, so no page chunk can strand them. These tests prove
+  // the geometry through the cascade, not through a substring match.
+  const shell = assembleCssProof([
+    read("src/styles/tokens.css"),
+    read("src/styles/global.css"),
+    read("src/features/settings/settings.css"),
+  ]);
+
+  function fieldInput(): HTMLInputElement {
+    const label = document.createElement("label");
+    label.className = "device-field";
+    const input = document.createElement("input");
+    label.appendChild(input);
+    document.body.appendChild(label);
+    return input;
+  }
+
+  it("gives the shared inline confirm its box", () => {
+    shell.inject([".device-inline-confirm"]);
+    const style = getComputedStyle(box("device-inline-confirm"));
+    expect(style.display).toBe("grid");
+    expect(style.paddingTop).toBe("8px");
+    expect(style.paddingLeft).toBe("10px");
+    expect(style.borderRadius).toBe("10px");
+    // The border must exist and match the shell's own action button —
+    // compared resolved, so no hex is duplicated into this file.
+    const borderColor = (body: string): string => {
+      const found = body.match(/1px solid ([^;]+);/);
+      if (found === null) throw new Error("no 1px solid border");
+      return found[1]!.trim();
+    };
+    expect(borderColor(shell.rulesFor(".device-inline-confirm"))).toBe(
+      borderColor(shell.rulesFor(".settings-device-action")),
+    );
+  });
+
+  it("gives the shared field inputs their box, with no mono face", () => {
+    shell.inject([".device-field", ".device-field input"]);
+    const style = getComputedStyle(fieldInput());
+    expect(style.fontSize).toBe("11.5px");
+    expect(style.borderRadius).toBe("8px");
+    expect(style.fontFamily).not.toMatch(/monospace|JetBrains/i);
+    expect(shell.rulesFor(".device-field input")).not.toMatch(/monospace|JetBrains/i);
+  });
+
+  it("leaves the shared rules to the shell sheet alone", () => {
+    // Single owner: if these selectors ever drift back into the page
+    // sheet, two sources style the same classes and the shell proof
+    // above stops describing the bundle.
+    const css = read("src/features/settings/devices.css");
+    for (const selector of [
+      ".device-copy",
+      ".device-field",
+      ".device-field-hint",
+      ".device-error",
+      ".device-actions",
+      ".device-inline-confirm",
+    ]) {
+      expect(css, selector).not.toContain(`${selector} {`);
+    }
+  });
+});
+
+describe("settings row names at a 64-character maximum (real stylesheets)", () => {
+  // The daemon accepts a 64-character display name
+  // (`MAX_DISPLAY_NAME_CHARS`), so the name column must give way before
+  // the status and the kebab do. cssProof has no layout engine: what it
+  // pins is the mechanism — a zero flex minimum on the name, without which
+  // `white-space: nowrap` pins the item at its full text width and the
+  // ellipsis never engages. Whether 64 real characters overflow 720 px
+  // needs a browser and is listed in the slice report.
+  const proof = assembleCssProof([
+    read("src/styles/tokens.css"),
+    read("src/styles/global.css"),
+    read("src/features/settings/devices.css"),
+    read("src/features/settings/settings.css"),
+  ]);
+
+  function deviceRowWithName(text: string): HTMLElement {
+    const card = box("dev-card");
+    card.style.width = "720px";
+    const row = document.createElement("div");
+    row.className = "dev-row";
+    const name = document.createElement("span");
+    name.className = "dev-name";
+    name.textContent = text;
+    const status = document.createElement("span");
+    status.className = "dev-status";
+    status.textContent = "online";
+    row.append(name, status);
+    card.appendChild(row);
+    return name;
+  }
+
+  it("lets the devices name shrink so the ellipsis can engage", () => {
+    proof.inject([".dev-card", ".dev-row", ".dev-name", ".dev-status"]);
+    const name = deviceRowWithName("x".repeat(64));
+    const style = getComputedStyle(name);
+    expect(style.minWidth).toBe("0");
+    expect(style.overflow).toBe("hidden");
+    expect(style.textOverflow).toBe("ellipsis");
+    expect(style.whiteSpace).toBe("nowrap");
+    expect(getComputedStyle(name.parentElement!).display).toBe("flex");
+  });
+
+  it("lets the providers name shrink the same way", () => {
+    // The same defect R17-1 shipped in `.prov-name`: fixed house-wide so
+    // the next page does not ship it again.
+    const providerProof = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/settings/providers.css"),
+      read("src/features/settings/settings.css"),
+    ]);
+    providerProof.inject([".prov-row", ".prov-name", ".prov-status"]);
+    const row = document.createElement("div");
+    row.className = "prov-row";
+    const name = document.createElement("span");
+    name.className = "prov-name";
+    name.textContent = "x".repeat(64);
+    row.appendChild(name);
+    document.body.appendChild(row);
+    const style = getComputedStyle(name);
+    expect(style.minWidth).toBe("0");
+    expect(style.overflow).toBe("hidden");
+    expect(style.textOverflow).toBe("ellipsis");
+    expect(getComputedStyle(row).display).toBe("flex");
+  });
 });
 
 describe("devices card geometry (real stylesheets, no app launch)", () => {
@@ -62,6 +219,8 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     expect(style.maxWidth).toBe("720px");
     expect(style.borderRadius).toBe("12px");
     expect(proof.rulesFor(".dev-card")).toContain(proof.token("--panel-card"));
+    // Not a containment proof (neither element is inside the other): it
+    // fails loudly if the column's 720 ever moves away from the cards'.
     const column = getComputedStyle(box("settings-main-inner")).maxWidth;
     expect(style.maxWidth).toBe(column);
   });
@@ -101,37 +260,126 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(kebab).height).toBe("26px");
   });
 
-  it("declares no page-level section label: the shell owns .settings-subheading", () => {
-    expect(read("src/features/settings/devices.css")).not.toContain(".dev-section-label");
-    expect(read("src/features/settings/devices.css")).not.toContain(".settings-subheading");
+  it("owns every dev- rule: no other settings sheet declares one", () => {
+    // What makes the four-sheet assembly above sound. A `dev-*` selector
+    // in providers, profiles, general or diagnostics would join the real
+    // cascade invisibly to every other test in this file.
+    for (const sheet of [
+      "src/features/settings/providers.css",
+      "src/features/settings/profiles.css",
+      "src/features/settings/general.css",
+      "src/features/settings/diagnostics.css",
+    ]) {
+      const selectors = read(sheet)
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .match(/\.[a-z][a-z0-9-]*/g);
+      expect(selectors?.filter((s) => s.startsWith(".dev-")) ?? [], sheet).toEqual([]);
+    }
   });
 
   it("keeps mono type to code, never UI words", () => {
     // The pairing code is typed off a screen, the fingerprint is read aloud
     // in fours, and the two pairing inputs are typed verbatim: every kept
-    // mono face is characters the person reads one by one. (`.device-field`
-    // keeps its name: the rule is shared with the Agents panel's forms.)
-    // The role chip and every meta line are UI words and stay sans.
+    // mono face is characters the person reads one by one. The role chip
+    // and every meta line are UI words and stay sans — and so do the Agents
+    // page's Name and Icon fields, which share the `.device-field` rule:
+    // their mono comes from nowhere after this slice.
     const css = read("src/features/settings/devices.css");
-    const allowed = new Set([".dev-pair-code", ".dev-fingerprint", ".device-field input"]);
+    const allowed = new Set([".dev-pair-code", ".dev-fingerprint", ".dev-typed-input"]);
     const seen = monoSelectors(css);
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.filter((selector) => !allowed.has(selector))).toEqual([]);
   });
 
-  it("keeps the shared confirm rules the Profiles page reuses", () => {
-    // `ProfileRow` (R17-2) renders `device-actions`, `device-inline-confirm`
-    // and `device-copy` without importing this sheet: the settings chunk
-    // carries every page's CSS, so these rules live here and must not move.
-    const css = read("src/features/settings/devices.css");
-    for (const selector of [
-      ".device-actions",
-      ".device-inline-confirm",
-      ".device-copy",
-      ".device-field",
-      ".device-error",
-    ]) {
-      expect(css, selector).toContain(`${selector} {`);
+  it("leaves the shared field rule without a mono face", () => {
+    // `.device-field input` styles the Agents page's Name and Icon fields
+    // too — neither is read one character at a time, so the shared rule
+    // carries padding and border only. The pairing inputs take their mono
+    // from their own class.
+    expect(proof.rulesFor(".device-field input")).not.toMatch(/monospace|JetBrains/i);
+    expect(proof.rulesFor(".dev-typed-input")).toMatch(/monospace/);
+  });
+
+  it("lifts the action buttons off the card ground", () => {
+    // `.settings-device-action` fills `--surface`, which resolves to
+    // `--panel-card` — the card ground itself. Without the scoped override
+    // below, every button on this page is fill-on-fill (1.00 : 1). The two
+    // buttons are real elements in a real `#settings-panel-devices`
+    // ancestor, so the ID-scoped override wins by specificity, not order.
+    proof.inject([".settings-device-action", "#settings-panel-devices .settings-device-action"]);
+    const panel = document.createElement("div");
+    panel.id = "settings-panel-devices";
+    const onCard = document.createElement("button");
+    onCard.className = "settings-device-action";
+    panel.appendChild(onCard);
+    document.body.appendChild(panel);
+    const offCard = document.createElement("button");
+    offCard.className = "settings-device-action";
+    document.body.appendChild(offCard);
+    expect(getComputedStyle(onCard).backgroundColor).not.toBe(
+      getComputedStyle(offCard).backgroundColor,
+    );
+  });
+
+  it("keeps the button fill distinct from the card ground in both themes", () => {
+    // Premise guard for the override above: it fills `--panel-side`, which
+    // must resolve away from `--panel-card` light and dark. (Not
+    // `--surface-muted`: that alias has no dark declaration anywhere in
+    // the token sheet, so it would compute to transparent there.) Values
+    // come from the token sheet, not from constants in this file.
+    const tokens = read("src/styles/tokens.css");
+    const themeValue = (body: string, token: string): string => {
+      const found = body.match(new RegExp(`${token}:\\s*([^;]+);`));
+      if (found === null) throw new Error(`${token} not found`);
+      let value = found[1]!.trim();
+      for (let pass = 0; pass < 3; pass += 1) {
+        const ref = value.match(/^var\((--[a-z-]+)\)$/);
+        if (ref === null) return value;
+        const next = body.match(new RegExp(`${ref[1]}:\\s*([^;]+);`));
+        if (next === null) throw new Error(`unresolved ${value}`);
+        value = next[1]!.trim();
+      }
+      return value;
+    };
+    const block = (selector: string): string => {
+      // Tokens are declared across several same-selector blocks; join them
+      // all so an alias in a later block still resolves.
+      const bodies: string[] = [];
+      const escaped = selector.replace(/[^a-z0-9]/gi, "\\$&");
+      const pattern = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "g");
+      for (const match of tokens.matchAll(pattern)) bodies.push(match[1] ?? "");
+      if (bodies.length === 0) throw new Error(`${selector} block not found`);
+      return bodies.join("\n");
+    };
+    // Light is the `:root` block; dark is `[data-theme="dark"]`.
+    for (const body of [block(":root"), block('[data-theme="dark"]')]) {
+      expect(themeValue(body, "--panel-side")).not.toBe(themeValue(body, "--panel-card"));
     }
+  });
+
+  it("sets card titles at the spec's 12px section-label size", () => {
+    // SPEC-regions: section labels 12/500 muted. The titles sit inside
+    // the card heads (with the intro copy they belong to), so the device's
+    // own 14px name below keeps an emphasis of its own.
+    proof.inject([".dev-card-title"]);
+    expect(getComputedStyle(box("dev-card-title")).fontSize).toBe("12px");
+  });
+
+  it("keeps the first card on the shell's 18px rhythm", () => {
+    // Our sections sit inside #settings-panel-devices, out of reach of
+    // the shell's `.settings-main-inner > section` rule, so the reference
+    // is restated here. `rulesFor` matches the exact selector, combinator
+    // included — cssProof cannot inject it, but it can read it.
+    expect(proof.rulesFor("#settings-panel-devices > section")).toContain("margin-bottom: 18px");
+  });
+
+  it("lays revoked rows out as rows, aligned under the paired names", () => {
+    // The revoked list carries no glyph, so its names align under the
+    // paired names (38px: 14 pad + 14 glyph + 10 gap) with padding, and
+    // the row itself is flex like every other device row.
+    proof.inject([".dev-revoked", ".dev-revoked-row"]);
+    const row = box("dev-revoked-row");
+    expect(getComputedStyle(row).display).toBe("flex");
+    expect(proof.rulesFor(".dev-revoked")).toContain("padding-left: 24px");
   });
 });

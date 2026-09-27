@@ -423,3 +423,57 @@
   cursor: not-allowed;
   opacity: 0.55;
 }
+
+/* Shared form rules. Eight components render these classes without importing
+   any stylesheet of their own (the Profiles rows, the Agents panel and its
+   forms, the provider npm failure), so the rules live here, on the shell
+   sheet the surface always loads — never in a page sheet a later split
+   could leave out of a chunk. Single owner: no page sheet declares these. */
+.device-copy {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.device-field {
+  display: grid;
+  gap: 3px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.device-field input {
+  padding: 5px 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11.5px;
+}
+
+.device-field-hint {
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.device-error {
+  margin: 0;
+  color: var(--danger-deep);
+  font-size: 11px;
+}
+
+.device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-inline-confirm {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}

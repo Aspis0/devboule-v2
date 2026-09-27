@@ -1,10 +1,19 @@
 import { useEffect, useRef, useState } from "react";
+import { AnchoredPopover } from "../../workspace/popoverPlace";
+import { moveMenuFocus } from "../../workspace/strip/menuNav";
 
 /**
  * One paired row's kebab: Revoke and Lost-or-stolen arming. Choosing an item
  * only arms the row's inline confirm — the sentences and the second click
- * live there, unchanged. Focus returns to the button on close, so arming
- * never strands keyboard travel on the unmounted menu.
+ * live there, unchanged.
+ *
+ * The menu renders through the house portal (`AnchoredPopover`: fixed off
+ * the anchor's rectangle, flipped above it when the space below is smaller,
+ * dismissed when the anchor's world moves), so the settings scroll container
+ * cannot clip the lost-or-stolen item on the last rows. Keyboard travel is
+ * the house model (`moveMenuFocus`), not a fourth copy of it. Focus stays on
+ * the trigger on open — neither destructive item autofocuses — and returns
+ * to it on close, so arming never strands keyboard travel.
  */
 export function DeviceKebab({
   displayName,
@@ -24,18 +33,14 @@ export function DeviceKebab({
   const label = `Actions for ${displayName}`;
 
   useEffect(() => {
-    if (open) {
-      menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
-    }
-  }, [open]);
-
-  useEffect(() => {
     if (!open) return;
     // One menu at a time: every kebab closes itself when another opens.
     // The opener dispatches BEFORE setting its own state, so its own
     // listener fires while still closed (a no-op) and only the others shut.
     const closeOthers = () => setOpen(false);
     window.addEventListener("dev-kebab-open", closeOthers);
+    // The portal is a body child, so "outside" is everything but the menu
+    // root and the trigger — a press inside the portal counts as inside.
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (
@@ -68,27 +73,26 @@ export function DeviceKebab({
   }
 
   function onMenuKeyDown(event: React.KeyboardEvent) {
-    const items = Array.from(
-      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [],
-    );
-    if (items.length === 0) return;
-    const index = items.indexOf(document.activeElement as HTMLButtonElement);
     if (event.key === "Escape") {
       event.preventDefault();
       close(true);
-    } else if (event.key === "ArrowDown") {
-      event.preventDefault();
-      items[(index + 1) % items.length]?.focus();
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      items[(index - 1 + items.length) % items.length]?.focus();
-    } else if (event.key === "Home") {
-      event.preventDefault();
-      items[0]?.focus();
-    } else if (event.key === "End") {
-      event.preventDefault();
-      items[items.length - 1]?.focus();
+      return;
     }
+    moveMenuFocus(menuRef.current, event);
+  }
+
+  function onTriggerKeyDown(event: React.KeyboardEvent) {
+    if (event.key === "Escape") {
+      if (open) {
+        event.preventDefault();
+        close(true);
+      }
+      return;
+    }
+    // Arrows enter the open menu from the trigger: focus never starts
+    // inside it, so `moveMenuFocus` lands on the first (ArrowDown) or
+    // last (ArrowUp) enabled item.
+    if (open) moveMenuFocus(menuRef.current, event);
   }
 
   // Focus leaving the menu closes it: Tab order then moves on naturally,
@@ -110,15 +114,18 @@ export function DeviceKebab({
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={toggle}
+        onKeyDown={onTriggerKeyDown}
       >
         <span aria-hidden="true">⋮</span>
       </button>
       {open ? (
-        <div
-          ref={menuRef}
+        <AnchoredPopover
+          anchorRef={buttonRef}
+          containerRef={menuRef}
+          onDismiss={() => close(false)}
+          className="dev-menu-pop"
           role="menu"
           aria-label={label}
-          className="dev-menu"
           onKeyDown={onMenuKeyDown}
           onBlur={onMenuBlur}
         >
@@ -144,7 +151,7 @@ export function DeviceKebab({
           >
             Lost or stolen device
           </button>
-        </div>
+        </AnchoredPopover>
       ) : null}
     </span>
   );
