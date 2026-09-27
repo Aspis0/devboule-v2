@@ -3250,7 +3250,7 @@ describe("Workspace sessions", () => {
     expect(tab?.title).toContain("from Xiaomi 14");
   });
 
-  it("keeps the peer badge on a tab whose peer origin names no device", async () => {
+  it("names another device in the tooltip when the peer origin names no device", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       {
         ...terminal("peer-guard-session", "remote shell"),
@@ -3268,12 +3268,13 @@ describe("Workspace sessions", () => {
       return found;
     });
     expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
-    // Still the peer line, not the one an absent origin gets: a peer whose
-    // device is unknown is still a named peer.
-    expect(tab.title).toContain("from unknown");
+    // Still the peer line, not the one an absent origin gets — and never a
+    // raw id: a peer whose device is unknown reads as another device.
+    expect(tab.title).toContain("from another device");
+    expect(tab.title).not.toContain("device-phone");
   });
 
-  it("falls back to the device id for a device the list does not know", async () => {
+  it("names another device for a device the list does not know", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       {
         ...terminal("peer-session", "remote shell"),
@@ -3289,9 +3290,12 @@ describe("Workspace sessions", () => {
     // there exactly when the devices read has been applied.
     await vi.waitFor(() => {
       expect(container.querySelector(".workspace-session-tab")?.getAttribute("title")).toContain(
-        "from device-unseen",
+        "from another device",
       );
     });
+    expect(container.querySelector(".workspace-session-tab")?.getAttribute("title")).not.toContain(
+      "device-unseen",
+    );
     expect(
       container.querySelector(".workspace-session-tab .workspace-session-origin-badge"),
     ).toBeNull();

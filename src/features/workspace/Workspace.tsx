@@ -959,6 +959,15 @@ export function Workspace({
   // action into a steer while one is open (queueing would strand the message).
   const hasPendingPermission =
     selectedPermission !== null && selectedPermission.resolution === undefined;
+  // The creator lookup the strip's tooltips resolve against: one map per
+  // roster, so a chip never scans the roster for its own row.
+  const creatorById = useMemo(() => new Map(sessions.map((row) => [row.id, row])), [sessions]);
+  // Stable across renders of the same roster, so the strip's per-row memo
+  // below only recomputes when its inputs change.
+  const resolveCreator = useCallback(
+    (session: Session) => sessionCreatorTooltip(session, creatorById),
+    [creatorById],
+  );
   // The strip's status slot carries progress and the count, never an error
   // text: a failure has its own one line (the spec's inline error line), so
   // the slot never becomes its second, third and fourth surface.
@@ -1138,7 +1147,7 @@ export function Workspace({
           }}
           providerMenu={providerAnchor?.kind === "strip" ? providerMenu : null}
           peerNames={peerNames}
-          resolveCreator={(session) => sessionCreatorTooltip(session, sessions)}
+          resolveCreator={resolveCreator}
           takeBackAvailable={takeBackAvailable}
           onTakeBack={takeBack}
           statusText={sessionStatusText}

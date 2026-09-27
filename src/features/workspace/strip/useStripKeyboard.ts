@@ -24,7 +24,6 @@ export function useStripKeyboard({
   onChipKeyDown: (id: string, event: ReactKeyboardEvent<HTMLElement>) => void;
 } {
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  const activeId = focusedId ?? selectedSessionId;
   // The roving stop follows outside selection (a click, a close's
   // successor): the adjust-state-when-a-prop-changes form the tab
   // selection hook uses, since arrows always select as they move.
@@ -33,6 +32,13 @@ export function useStripKeyboard({
     setFollowedSelection(selectedSessionId);
     setFocusedId(selectedSessionId);
   }
+  // For the commit between the selected row leaving the list and the
+  // selection reconciling after it, neither id is in the strip: the stop
+  // falls back to the first tab so Tab never skips the whole strip.
+  // Zero tabs is correctly no tab stop.
+  const activeId = sessions.some((session) => session.id === (focusedId ?? selectedSessionId))
+    ? (focusedId ?? selectedSessionId)
+    : (sessions[0]?.id ?? null);
 
   const focusChip = useCallback((id: string) => {
     setFocusedId(id);
@@ -98,21 +104,30 @@ export function useStripKeyboard({
     const onKey = (event: KeyboardEvent) => {
       if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
       if (event.key !== "[" && event.key !== "]") return;
+      // The chord is text or composition inside a field: switching tabs
+      // would yank the caret out from under the user. Terminals, menus
+      // and dialogs own their keys the same way.
+      if (event.isComposing) return;
       const target = event.target;
-      // Alt chords are terminal input; menus and dialogs own their keys.
-      if (
-        target instanceof HTMLElement &&
-        (target.closest(".workspace-terminal-shell") !== null ||
-          target.closest('[role="menu"], [role="dialog"], [role="listbox"]') !== null)
-      ) {
-        return;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          target.isContentEditable ||
+          target.closest(".workspace-terminal-shell") !== null ||
+          target.closest('[role="menu"], [role="dialog"], [role="listbox"]') !== null
+        ) {
+          return;
+        }
       }
+      if (sessions.length === 0) return;
       event.preventDefault();
       const current =
         selectedSessionId !== null
           ? sessions.findIndex((session) => session.id === selectedSessionId)
           : -1;
-      if (sessions.length === 0) return;
       const next =
         sessions[
           (current === -1

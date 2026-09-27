@@ -125,7 +125,6 @@
 
 .workspace-icon-button,
 .workspace-project-add,
-.workspace-session-add,
 .workspace-browser-reload {
   display: grid;
   flex: none;

@@ -194,26 +194,6 @@ export function peerDeviceNames(peers: readonly PeerRow[]): Map<string, string> 
   return new Map(peers.map((peer) => [peer.deviceId, peer.displayName]));
 }
 
-/**
- * The display name for each session the roster knows, keyed by session id. This
- * is the session-side twin of `peerDeviceNames`, and it exists for the same
- * reason: a `createdBy` is a session id and nothing more, so the badge that
- * names a child's creator has to resolve it against rows the app already holds.
- *
- * A session with no display name is left out rather than mapped to its title:
- * the map answers one question — has the roster named this session? — and a
- * title is not a name the daemon wrote. An id missing from the map is a
- * question the caller answers with the id itself, never with silence.
- */
-export function sessionDisplayNames(sessions: readonly Session[]): Map<string, string> {
-  return new Map(
-    sessions.flatMap((session) => {
-      const name = session.displayName?.trim();
-      return name ? [[session.id, name] as const] : [];
-    }),
-  );
-}
-
 /** The badge for a session whose origin the daemon did not send at all. */
 const UNKNOWN_ORIGIN_BADGE = "origin unknown";
 
@@ -236,11 +216,11 @@ export function sessionOriginUnknown(session: Pick<Session, "origin">): boolean 
  *
  * The device is named, never guessed: the daemon stamps only the device id on
  * the origin, and the name comes from the devices list the workspace holds. An
- * id the list does not know yet falls back to the id itself, which is still a
- * true statement about where the session came from. A peer origin that names no
- * device reads `from unknown` — the card's word for a field the daemon did not
- * send — rather than yielding no badge: the session still came from a peer, and
- * silence is the one reading the tab may not give.
+ * id the list does not know yet reads `from another device` — the raw id is
+ * not a name, and the tooltip is now the only place the origin is shown. A
+ * peer origin that names no device reads the same way rather than yielding
+ * no badge: the session still came from a peer, and silence is the one
+ * reading the tab may not give.
  *
  * An absent origin is a third state, not a local one: the tab says `origin
  * unknown` rather than staying silent, which would read as a local session. It
@@ -259,32 +239,7 @@ export function sessionOriginBadge(
   if (origin?.kind !== "peer") return UNKNOWN_ORIGIN_BADGE;
   const { deviceId } = origin;
   const name = deviceId === undefined ? undefined : deviceNames.get(deviceId);
-  const device = name ?? (deviceId === undefined ? "unknown" : deviceId);
-  return `from ${device}`;
-}
-
-/**
- * The tab badge for a session an agent created, or null for one a person
- * started (`createdBy` absent — which is also every row written before the
- * daemon kept the field).
- *
- * The creator is a session id, so it is resolved against the roster's own
- * display names: a child of a named session reads `created by <that name>`. An
- * id no row has named yet — the creator is not in the roster at all, or it has
- * no display name of its own — falls back to the same short id prefix the
- * title fallback uses, because the child does have a creator and saying so is
- * still true.
- */
-export function sessionCreatorBadge(
-  session: Pick<Session, "createdBy">,
-  creatorNames: ReadonlyMap<string, string>,
-): string | null {
-  const createdBy = session.createdBy?.trim();
-  if (!createdBy) return null;
-  const name = creatorNames.get(createdBy);
-  // The id fallback bounds by grapheme clusters, like the permission card's
-  // answerer head — a unit-based slice halves an astral scalar (re-audit F12).
-  return `created by ${name ?? boundByGraphemes(createdBy, 8)}`;
+  return name === undefined ? "from another device" : `from ${name}`;
 }
 
 /**
@@ -292,18 +247,21 @@ export function sessionCreatorBadge(
  *
  * The chip no longer carries the creator badge; the tooltip does, and it
  * names the creator by the title the roster shows for it — never the raw
- * session id. A creator the roster no longer holds reads "created by an
- * agent": the child does have a creator, and the id is not a name.
+ * session id, on any branch. A creator the roster no longer holds, or one
+ * whose row has no name at all, reads "created by an agent": the child
+ * does have a creator, and the id is not a name. The roster arrives as a
+ * map so the strip resolves it per chip without scanning per row.
  */
 export function sessionCreatorTooltip(
   session: Pick<Session, "createdBy">,
-  roster: readonly Pick<Session, "id" | "title" | "kind" | "displayName">[],
+  rosterById: ReadonlyMap<string, Pick<Session, "id" | "title" | "kind" | "displayName">>,
 ): string | null {
   const createdBy = session.createdBy?.trim();
   if (!createdBy) return null;
-  const creator = roster.find((row) => row.id === createdBy);
-  if (creator === undefined) return "created by an agent";
-  return `created by ${sessionTitle(creator)}`;
+  const creator = rosterById.get(createdBy);
+  const name = creator?.displayName?.trim() || creator?.title.trim();
+  if (!name) return "created by an agent";
+  return `created by ${name}`;
 }
 
 /** What a row's delegation pill says, and how loudly. */

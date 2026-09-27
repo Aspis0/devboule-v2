@@ -140,7 +140,32 @@ describe("chipDisplay", () => {
       base({ unattended: "yes", attention: { reason: "permission", atMs: 7 } }),
     );
     expect(display.dot).toBe("attention");
+    expect(display.tooltip).toContain("Running");
     expect(display.tooltip).toContain("Needs your approval");
     expect(display.tooltip).toContain("auto-accepting");
+  });
+
+  it("treats a null attention like an absent one instead of throwing", () => {
+    const display = chipDisplay(base({ attention: null as unknown as Session["attention"] }));
+    expect(display.dot).toBe("live");
+    expect(display.words).toBeNull();
+    expect(display.tooltip).toContain("Running");
+  });
+
+  it("keeps the state line when attention is set", () => {
+    const display = chipDisplay(
+      base({
+        state: {
+          type: "recovered",
+          generation: 1,
+          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+        },
+        attention: { reason: "permission", atMs: 7 },
+      }),
+    );
+    expect(display.dot).toBe("attention");
+    expect(display.words).toBe("Needs your approval");
+    expect(display.tooltip).toContain("Recovered");
+    expect(display.tooltip).toContain("Needs your approval");
   });
 });

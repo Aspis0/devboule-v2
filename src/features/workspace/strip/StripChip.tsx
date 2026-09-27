@@ -21,6 +21,8 @@ export interface StripChipProps {
   multiselected: boolean;
   tabIndex: 0 | -1;
   display: ChipDisplay;
+  /** First line of the tooltip: the state words a screen reader hears. */
+  stateWords: string;
   tooltip: string;
   menuOpen: boolean;
   takeBack: boolean;
@@ -40,6 +42,7 @@ export function StripChip({
   multiselected,
   tabIndex,
   display,
+  stateWords,
   tooltip,
   menuOpen,
   takeBack,
@@ -63,6 +66,7 @@ export function StripChip({
         aria-expanded={menuOpen}
         tabIndex={tabIndex}
         title={tooltip}
+        aria-keyshortcuts="Delete"
         className={`workspace-session-tab${selected ? " workspace-session-tab-selected" : ""}${multiselected ? " workspace-session-tab-multiselected" : ""}`}
         onClick={onTabClick}
         onAuxClick={onTabAuxClick}
@@ -75,7 +79,11 @@ export function StripChip({
         <span className="workspace-tab-label">{title}</span>
         {display.words !== null ? (
           <span className="workspace-tab-attention">{display.words}</span>
-        ) : null}
+        ) : (
+          // The states that lost their painted words keep them here: heard,
+          // never seen, so the accessible name still carries the state.
+          <span className="workspace-sr-only">{stateWords}</span>
+        )}
       </button>
       <span className="workspace-session-chip">
         <button

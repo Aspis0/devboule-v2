@@ -1,4 +1,5 @@
 import {
+  useMemo,
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -66,7 +67,7 @@ export function SessionStrip({
 }: SessionStripProps) {
   const scrollportRef = useRef<HTMLDivElement>(null);
   useSelectedTabVisible(scrollportRef, selectedSessionId, sessions);
-  const fade = useStripFade(scrollportRef);
+  const fade = useStripFade(scrollportRef, sessions);
   const keyboard = useStripKeyboard({
     sessions,
     selectedSessionId,
@@ -83,6 +84,30 @@ export function SessionStrip({
     keyboard.onChipKeyDown(session.id, event);
   };
 
+  // One derivation per row, recomputed only when the roster, the names, or
+  // the take-back switch change — a keystroke or daemon tick that leaves
+  // them alone reuses the same dot, words and tooltip objects.
+  const chips = useMemo(
+    () =>
+      sessions.map((session) => {
+        const display = chipDisplay(session);
+        const tooltip = [
+          display.tooltip,
+          sessionOriginBadge(session, peerNames) ?? undefined,
+          resolveCreator(session) ?? undefined,
+        ]
+          .filter((line) => line !== undefined)
+          .join("\n");
+        return {
+          session,
+          display,
+          tooltip,
+          takeBack: takeBackAvailable && sessionDelegationTakeBack(session),
+        };
+      }),
+    [sessions, peerNames, resolveCreator, takeBackAvailable],
+  );
+
   return (
     <div className="workspace-session-tabs">
       {/* The row of tabs scrolls; the add button below it stays outside
@@ -95,15 +120,7 @@ export function SessionStrip({
         data-fade-left={fade.left ? "true" : "false"}
         data-fade-right={fade.right ? "true" : "false"}
       >
-        {sessions.map((session) => {
-          const display = chipDisplay(session);
-          const tooltip = [
-            display.tooltip,
-            sessionOriginBadge(session, peerNames) ?? undefined,
-            resolveCreator(session) ?? undefined,
-          ]
-            .filter((line) => line !== undefined)
-            .join("\n");
+        {chips.map(({ session, display, tooltip, takeBack }) => {
           const onRowContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
             event.preventDefault();
             tabClose.openMenu(session.id);
@@ -116,9 +133,10 @@ export function SessionStrip({
               multiselected={tabSelection.selection.has(session.id)}
               tabIndex={keyboard.tabIndexFor(session.id)}
               display={display}
+              stateWords={display.tooltip.split("\n")[0] ?? display.tooltip}
               tooltip={tooltip}
               menuOpen={tabClose.menu?.sessionId === session.id}
-              takeBack={takeBackAvailable && sessionDelegationTakeBack(session)}
+              takeBack={takeBack}
               onTakeBack={onTakeBack}
               onTabClick={(event) => tabSelection.handleTabClick(session, event)}
               onTabAuxClick={(event) => {

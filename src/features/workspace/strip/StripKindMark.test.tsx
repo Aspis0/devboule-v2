@@ -30,6 +30,13 @@ describe("StripKindMark", () => {
     );
   });
 
+  it("draws the generic agent mark as a slashed circle, not a dashed one", () => {
+    const html = renderToStaticMarkup(<StripKindMark kind="acp" />);
+    expect(html).toContain('data-mark="agent"');
+    expect(html).toContain("M3.8 10.2L10.2 3.8");
+    expect(html).not.toContain("stroke-dasharray");
+  });
+
   it("stays out of the accessible name", () => {
     expect(renderToStaticMarkup(<StripKindMark kind="claude" />)).toContain('aria-hidden="true"');
   });

@@ -50,7 +50,8 @@ function mark(kind: SessionKind) {
     default:
       return (
         <g data-mark="agent" {...STROKE}>
-          <circle cx="7" cy="7" r="4.5" strokeDasharray="2 1.6" />
+          <circle cx="7" cy="7" r="4.5" />
+          <path d="M3.8 10.2L10.2 3.8" />
           <circle cx="7" cy="7" r="1.2" fill="currentColor" stroke="none" />
         </g>
       );

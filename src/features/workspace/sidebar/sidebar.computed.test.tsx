@@ -1,65 +1,24 @@
 // @vitest-environment happy-dom
 
 // Styling proof for the sidebar slice without launching the app. The REAL
-// stylesheets are parsed here (comments stripped, brace-matched, @-blocks
-// skipped), the rules the sidebar depends on are extracted from them, their
-// tokens are resolved to the light values, and those exact rules are injected
-// into the document so the computed styles of the rendered chrome can be
-// asserted. A rule swallowed by a malformed comment (the live defect) or a
-// selector that never matches the markup fails these assertions.
+// stylesheets are assembled in cssProof.ts (comments stripped, brace-matched,
+// @-blocks skipped), the rules the sidebar depends on are extracted from
+// them, their tokens are resolved to the light values, and those exact rules
+// are injected into the document so the computed styles of the rendered
+// chrome can be asserted. A rule swallowed by a malformed comment (the live
+// defect) or a selector that never matches the markup fails these
+// assertions. The strip's own proof lives in strip/strip.computed.test.tsx.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { beforeEachHarness, renderWorkspace, unmountWorkspace } from "../bulkCloseHarness";
+import { assembleCssProof, removeCssProof } from "../cssProof";
 
 const rootDir = resolve(import.meta.dirname, "../../../..");
 
 function read(path: string): string {
   return readFileSync(resolve(rootDir, path), "utf8");
-}
-
-const withoutComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, "");
-
-interface CssRule {
-  selector: string;
-  body: string;
-}
-
-// Walks the sheet with brace matching; @-blocks (media/keyframes/fonts) are
-// skipped whole.
-function parseRules(css: string): CssRule[] {
-  const rules: CssRule[] = [];
-  let index = 0;
-  while (index < css.length) {
-    const open = css.indexOf("{", index);
-    if (open < 0) break;
-    const selector = css.slice(index, open).trim();
-    const close = css.indexOf("}", open);
-    if (close < 0) break;
-    const body = css.slice(open + 1, close);
-    if (selector.startsWith("@")) {
-      let depth = 1;
-      let cursor = open + 1;
-      while (depth > 0 && cursor < css.length) {
-        if (css[cursor] === "{") depth += 1;
-        if (css[cursor] === "}") depth -= 1;
-        cursor += 1;
-      }
-      index = cursor;
-      continue;
-    }
-    rules.push({ selector: selector.replace(/\s+/g, " "), body });
-    index = close + 1;
-  }
-  return rules;
-}
-
-function selectorMatches(ruleSelector: string, target: string): boolean {
-  return ruleSelector
-    .split(",")
-    .map((part) => part.trim())
-    .some((part) => part === target);
 }
 
 beforeEach(() => {
@@ -68,59 +27,20 @@ beforeEach(() => {
 
 afterEach(async () => {
   await unmountWorkspace();
-  document.querySelectorAll("style[data-sidebar-proof]").forEach((el) => el.remove());
+  removeCssProof();
 });
 
 describe("sidebar computed styles (real stylesheets, no app launch)", () => {
   // Sheet order matches the bundle: tokens, global, strip (pulled in by
   // SessionStrip, which Workspace imports before its own CSS), workspace,
   // sidebar.
-  const stripped = [
-    withoutComments(read("src/styles/tokens.css")),
-    withoutComments(read("src/styles/global.css")),
-    withoutComments(read("src/features/workspace/strip/strip.css")),
-    withoutComments(read("src/features/workspace/Workspace.css")),
-    withoutComments(read("src/features/workspace/sidebar/sidebar.css")),
-  ];
-
-  // Light-theme custom properties, for resolving var() before injection.
-  const tokens = new Map<string, string>();
-  for (const sheet of stripped) {
-    for (const block of sheet.matchAll(/:root\s*\{([^}]*)\}/g)) {
-      for (const m of block[1]!.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
-        tokens.set(`--${m[1]!.trim()}`, m[2]!.trim());
-      }
-    }
-  }
-  const resolveVars = (css: string): string => {
-    let current = css;
-    for (let pass = 0; pass < 4; pass += 1) {
-      current = current.replace(
-        /var\((--[a-zA-Z0-9-]+)\)/g,
-        (whole: string, name: string) => tokens.get(name) ?? whole,
-      );
-    }
-    return current;
-  };
-
-  const allRules = parseRules(resolveVars(stripped.join("\n")));
-
-  function rulesFor(target: string): string {
-    return allRules
-      .filter((rule) => selectorMatches(rule.selector, target))
-      .map((rule) => rule.body)
-      .join("\n");
-  }
-
-  function inject(targets: readonly string[]): void {
-    const picked = allRules.filter((rule) =>
-      targets.some((target) => selectorMatches(rule.selector, target)),
-    );
-    const style = document.createElement("style");
-    style.setAttribute("data-sidebar-proof", "");
-    style.textContent = picked.map((rule) => `${rule.selector} { ${rule.body} }`).join("\n");
-    document.head.appendChild(style);
-  }
+  const { rulesFor, inject } = assembleCssProof([
+    read("src/styles/tokens.css"),
+    read("src/styles/global.css"),
+    read("src/features/workspace/strip/strip.css"),
+    read("src/features/workspace/Workspace.css"),
+    read("src/features/workspace/sidebar/sidebar.css"),
+  ]);
 
   it("workspace rows are laid out as spec'd: flex, padded 4/8, left-aligned", async () => {
     const body = rulesFor(".workspace-row");
@@ -259,39 +179,6 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     const style = getComputedStyle(handle);
     expect(style.width).toBe("6px");
     expect(style.cursor).toBe("col-resize");
-  });
-
-  it("the tab strip is a flex row again, not a stacked block", async () => {
-    inject([".workspace-session-tabs"]);
-    await renderWorkspace();
-    const strip = document.querySelector<HTMLElement>(".workspace-session-tabs");
-    if (strip === null) throw new Error("session tab strip did not render");
-    const style = getComputedStyle(strip);
-    expect(style.display).toBe("flex");
-    expect(style.height).toBe("36px");
-  });
-
-  it("the tab chip and the add button keep the spec geometry", async () => {
-    inject([".workspace-session-tab", ".workspace-session-add", ".workspace-tab-label"]);
-    await renderWorkspace();
-    const chip = document.querySelector<HTMLElement>(".workspace-session-tab");
-    if (chip === null) throw new Error("session tab did not render");
-    const chipStyle = getComputedStyle(chip);
-    expect(chipStyle.height).toBe("28px");
-    expect(chipStyle.minWidth).toBe("96px");
-    expect(chipStyle.maxWidth).toBe("160px");
-    expect(chipStyle.borderRadius).toBe("6px");
-    expect(chipStyle.paddingTop).toBe("0px");
-    expect(chipStyle.paddingRight).toBe("8px");
-    const label = chip.querySelector<HTMLElement>(".workspace-tab-label");
-    if (label === null) throw new Error("tab label did not render");
-    expect(getComputedStyle(label).overflow).toBe("hidden");
-    const add = document.querySelector<HTMLElement>(".workspace-session-add");
-    if (add === null) throw new Error("session add did not render");
-    const addStyle = getComputedStyle(add);
-    expect(addStyle.width).toBe("28px");
-    expect(addStyle.height).toBe("28px");
-    expect(addStyle.borderRadius).toBe("6px");
   });
 
   it("diff removed lines keep their colour rule", () => {

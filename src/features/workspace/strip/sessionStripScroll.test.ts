@@ -29,8 +29,45 @@ describe("the session strip", () => {
     expect(scroller).toContain("overflow-y: hidden;");
   });
 
-  it("forbids the row from shrinking a tab below its content", () => {
-    expect(ruleBody(".workspace-session-row")).toContain("flex: none;");
+  it("shrinks chips toward the 96 px floor before the strip scrolls", () => {
+    // The row shares a shortfall proportionally and stops at the floor;
+    // past it the scrollport overflows and scrolls instead.
+    const row = ruleBody(".workspace-session-row");
+    expect(row).not.toContain("flex: none;");
+    expect(row).toContain("min-width:");
+    expect(row).toContain("96px");
+    const chip = ruleBody(".workspace-session-tab");
+    expect(chip).toContain("min-width: 96px;");
+    expect(chip).toContain("max-width: 160px;");
+  });
+
+  it("hides the native scrollbar on the scrollport", () => {
+    const scroller = ruleBody(".workspace-session-tabs-scroll");
+    expect(scroller).toContain("scrollbar-width: none;");
+    const webkit = css.match(
+      /\.workspace-session-tabs-scroll::-webkit-scrollbar \{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(webkit).toContain("display: none;");
+  });
+
+  it("fades only the sides that still hide chips", () => {
+    const side = (side: string): string => {
+      const body = css.match(
+        new RegExp(
+          `\\.workspace-session-tabs-scroll\\[data-fade-${side}="true"\\] \\{([\\s\\S]*?)\\n\\}`,
+        ),
+      )?.[1];
+      if (body === undefined) throw new Error(`no fade rule for ${side}`);
+      return body;
+    };
+    for (const fadeSide of ["left", "right"]) {
+      expect(side(fadeSide)).toContain("mask-image:");
+      expect(side(fadeSide)).toContain("36px");
+    }
+    const both = css.match(
+      /\.workspace-session-tabs-scroll\[data-fade-left="true"\]\[data-fade-right="true"\] \{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(both).toContain("mask-image:");
   });
 
   it("keeps the close chip a narrow trailing overlay that hides unclickable", () => {

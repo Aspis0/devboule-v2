@@ -77,14 +77,19 @@ function recoveredLine(state: { integrity?: unknown }): string {
 }
 
 /** The chip's dot, words and tooltip for one roster row. Attention outranks
- * unattended on the dot; the tooltip keeps every true line. */
+ * unattended on the dot; the tooltip keeps every true line, starting with
+ * the state — a recovered session with an ask stays recovered in words. */
 export function chipDisplay(session: Session): ChipDisplay {
   const lines: string[] = [];
-  let dot: ChipDot;
-  let pulse: boolean;
+  // A null on the wire is absence, not attention: serde's default for an
+  // `Option` without `skip_serializing_if`, met on version skew or a peer.
+  const attention = session.attention ?? undefined;
+  const base = stateLine(session);
+  lines.push(base.line);
+  let dot: ChipDot = base.dot;
+  let pulse = base.pulse;
   let words: string | null = null;
 
-  const attention = session.attention;
   if (attention !== undefined) {
     dot = "attention";
     pulse = false;
@@ -98,11 +103,6 @@ export function chipDisplay(session: Session): ChipDisplay {
     } else {
       lines.push("Needs attention");
     }
-  } else {
-    const base = stateLine(session);
-    dot = base.dot;
-    pulse = base.pulse;
-    lines.push(base.line);
   }
 
   const badges = sessionDelegationBadges(session);

@@ -20,10 +20,8 @@ import {
   peerDeviceNames,
   requiresConsent,
   sessionCreateFromProvider,
-  sessionCreatorBadge,
   sessionDelegationBadges,
   sessionDelegationTakeBack,
-  sessionDisplayNames,
   sessionOriginBadge,
   sessionOriginUnknown,
   sessionStateLabel,
@@ -710,23 +708,24 @@ describe("session origin badge", () => {
     expect(sessionOriginUnknown({ origin: { kind: "peer" } })).toBe(false);
   });
 
-  it("keeps the device id when no list has named the device yet", () => {
+  it("names another device when no list has named the device yet", () => {
+    // The raw id is not a name, and the tooltip is now the only place the
+    // origin is shown — so an unnamed peer reads `from another device`.
     expect(
       sessionOriginBadge({ origin: { kind: "peer", deviceId: "device-phone" } }, new Map()),
-    ).toBe("from device-phone");
+    ).toBe("from another device");
   });
 
-  it("calls a peer origin that names no device unknown instead of dropping the badge", () => {
-    // The card reads `Device: unknown` for this guard, so the tab says
-    // `from unknown`: the session still came from a peer, and no badge at all
-    // is the one reading it may not give.
-    expect(sessionOriginBadge({ origin: { kind: "peer" } }, new Map())).toBe("from unknown");
+  it("calls a peer origin that names no device another device instead of dropping the badge", () => {
+    // The session still came from a peer, and no badge at all is the one
+    // reading the tab may not give.
+    expect(sessionOriginBadge({ origin: { kind: "peer" } }, new Map())).toBe("from another device");
     expect(
       sessionOriginBadge(
         { origin: { kind: "peer", role: "daemon" } },
         peerDeviceNames([pairedPhone]),
       ),
-    ).toBe("from unknown");
+    ).toBe("from another device");
   });
 
   it("keeps the name of a revoked device, whose sessions still exist", () => {
@@ -856,43 +855,7 @@ describe("session title", () => {
   });
 });
 
-describe("session identity badges", () => {
-  const child = (createdBy?: string): Session => ({
-    ...liveSession("s.4242.9", "worker"),
-    ...(createdBy === undefined ? {} : { createdBy }),
-  });
-
-  it("names the creator a created session's roster row knows", () => {
-    const names = sessionDisplayNames([
-      { ...liveSession("s.4242.1", "design run"), displayName: "Design runner" },
-      child("s.4242.1"),
-    ]);
-    expect(sessionCreatorBadge(child("s.4242.1"), names)).toBe("created by Design runner");
-    // The map carries only named rows, so the badge's fallback below is reached
-    // for a creator that has a title and no name.
-    expect(names.has("s.4242.2")).toBe(false);
-  });
-
-  it("falls back to the creator's short id prefix when the roster has not named it", () => {
-    expect(sessionCreatorBadge(child("s.4242.1"), new Map())).toBe("created by s.4242.1");
-  });
-
-  it("bounds the creator's id fallback by grapheme clusters, never a halved scalar", () => {
-    // Audit 3 F10: the badge's fallback was bound but untested — nine
-    // rockets pass the 8-unit limit either way, and only the cluster bound
-    // keeps whole glyphs (the unit slice rendered four U+FFFD beside the
-    // creator's name). This is the test that makes the bound's removal red.
-    const astral = "🚀".repeat(9);
-    expect(sessionCreatorBadge(child(astral), new Map())).toBe(`created by ${"🚀".repeat(8)}…`);
-  });
-
-  it("shows no creator badge on a session a person started", () => {
-    // Absent `createdBy` is a human-started session, and also every row written
-    // before the daemon kept the field.
-    expect(sessionCreatorBadge(child(), sessionDisplayNames([liveSession("a")]))).toBeNull();
-    expect(sessionCreatorBadge(child("   "), new Map())).toBeNull();
-  });
-
+describe("session creator carry", () => {
   it("keeps a created session's display name and creator across a roster push", async () => {
     // The push carries neither field, so the controller's carried-over row is
     // the only thing standing between a live child and its own name and badge.
