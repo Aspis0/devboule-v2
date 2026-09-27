@@ -67,6 +67,16 @@ fn pi_status_parser_uses_only_the_status_field() {
 }
 
 #[test]
+fn only_the_pi_classifier_reads_the_captured_stdout() {
+    // One predicate for "this classification reads stdout": the drain
+    // wait and the capture seam both branch on it, so a new stdout-parsing
+    // provider cannot silently get an empty buffer.
+    assert!(reads_stdout("pi"));
+    assert!(!reads_stdout("claude"));
+    assert!(!reads_stdout("codex"));
+}
+
+#[test]
 fn claude_and_codex_use_the_documented_success_exit() {
     assert_eq!(classify_result("claude", Some(0), b"").0, "logged_in");
     assert_eq!(classify_result("claude", Some(1), b"").0, "logged_out");
@@ -205,6 +215,7 @@ fn run_check_classifies_a_pi_status_document_through_the_real_runner() {
         // path, so a temp dir with spaces in it works; a quoted path does
         // not survive the spawn quoting.
         let directory = crate::test_dirs::test_temp_dir("devboule-auth-pi-json");
+        assert_cmd_safe_path(&directory);
         let status_file = directory.join("status.json");
         std::fs::write(
             &status_file,
@@ -224,6 +235,19 @@ fn run_check_classifies_a_pi_status_document_through_the_real_runner() {
             "the child typed the status document into the pipe"
         );
         let _ = std::fs::remove_dir_all(directory);
+    }
+}
+
+/// The fixture's `cd /d <path>` line breaks on cmd metacharacters, so a
+/// hostile %TEMP% must fail loudly, not as an opaque assertion later. Spaces
+/// are fine — `cd /d` takes the rest of the line as the path.
+#[cfg(windows)]
+fn assert_cmd_safe_path(path: &std::path::Path) {
+    let text = path.display().to_string();
+    if text.chars().any(|c| "&|^<>()%\"".contains(c)) {
+        panic!(
+            "the fixture path '{text}' contains a cmd metacharacter; set TEMP to a cmd-safe directory"
+        );
     }
 }
 
@@ -289,27 +313,4 @@ fn fake_agent_at(executable: std::path::PathBuf, prefix_args: Vec<String>) -> In
         spawn_path_env: None,
         launch_directory: None,
     }
-}
-
-#[test]
-fn disabled_provider_skips_the_probe_and_each_enabled_request_reruns_it() {
-    let mut probes = 0;
-    assert_eq!(
-        check_if_enabled(false, || {
-            probes += 1;
-            Some(())
-        }),
-        None
-    );
-    assert_eq!(probes, 0);
-    for _ in 0..2 {
-        assert_eq!(
-            check_if_enabled(true, || {
-                probes += 1;
-                Some(probes)
-            }),
-            Some(probes)
-        );
-    }
-    assert_eq!(probes, 2);
 }

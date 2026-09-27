@@ -28,8 +28,18 @@ static LAST_CAPTURED_OUTPUT: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mute
 
 /// Test-only: the PIDs the job held just before the last terminate, so a
 /// test can check the whole tree against the processes it actually spawned.
+/// `None` when the runner cleared the seam at entry and no terminate
+/// recorded anything — the tree assertions must fail, not read the
+/// previous run's list.
 #[cfg(test)]
-static LAST_JOB_PIDS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+static LAST_JOB_PIDS: std::sync::Mutex<Option<Vec<u32>>> = std::sync::Mutex::new(None);
+
+/// Whether this provider's classification reads the captured stdout. The
+/// drain wait and the capture seam both branch on this one predicate, so a
+/// new stdout-parsing provider cannot silently get an empty buffer.
+fn reads_stdout(provider_id: &str) -> bool {
+    provider_id == "pi"
+}
 
 /// Test-only: serialises the runner tests, which share the two seams
 /// above; without it, parallel tests overwrite each other's observations.
@@ -53,17 +63,17 @@ pub(crate) fn last_job_pids() -> Vec<u32> {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clone()
+        .unwrap_or_default()
 }
 
 /// Test-only: records the job's member PIDs before a terminate, so the
-/// caller can assert the kill against exactly those processes.
+/// caller can assert the kill against exactly those processes. A failed
+/// record stores `None`, never the previous run's PIDs.
 #[cfg(test)]
 fn record_job_pids(job: &crate::process_tree::JobObject) {
-    if let Ok(pids) = job.pids() {
-        *LAST_JOB_PIDS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = pids;
-    }
+    *LAST_JOB_PIDS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = job.pids().ok();
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,17 +149,6 @@ fn pi_default_args() -> Option<Vec<String>> {
     pi_status_args(Some(provider), model)
 }
 
-// The enabled gate now lives above the reuse window in
-// `check_provider_auth`; this helper is exercised by its own test.
-#[cfg(test)]
-pub(crate) fn check_if_enabled<T>(enabled: bool, probe: impl FnOnce() -> Option<T>) -> Option<T> {
-    if enabled {
-        probe()
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn check(agent: &InstalledAgent) -> Option<AuthCheck> {
     // Never launch host provider CLIs or inspect its credential store in tests.
@@ -162,11 +161,6 @@ pub(crate) fn check(agent: &InstalledAgent) -> Option<AuthCheck> {
 #[cfg(test)]
 static TEST_CLAUDE_CHECK_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(test)]
-pub(crate) fn test_check_call_count() -> usize {
-    TEST_CLAUDE_CHECK_CALLS.load(std::sync::atomic::Ordering::SeqCst)
-}
 
 #[cfg(not(test))]
 pub(crate) fn check(agent: &InstalledAgent) -> Option<AuthCheck> {
@@ -265,6 +259,12 @@ fn run_check_with_timeout(
         *LAST_CAPTURED_OUTPUT
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = None;
+        // Cleared at entry too: a failed record_job_pids must leave the
+        // tree assertions with nothing to read, never the previous run's
+        // PIDs.
+        *LAST_JOB_PIDS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
     }
     let exit_status = loop {
         match child.try_wait() {
@@ -291,7 +291,7 @@ fn run_check_with_timeout(
     // their path would let a descendant that outlives the direct child turn
     // a successful exit into a false timeout. pi parses stdout, so it drains
     // with the grace extended by whatever budget is left.
-    let stdout = if agent.id == "pi" {
+    let stdout = if reads_stdout(&agent.id) {
         match output_rx
             .recv_timeout(DRAIN_GRACE.max(deadline.saturating_duration_since(Instant::now())))
         {
@@ -302,7 +302,7 @@ fn run_check_with_timeout(
         Vec::new()
     };
     #[cfg(test)]
-    if agent.id == "pi" {
+    if reads_stdout(&agent.id) {
         *LAST_CAPTURED_OUTPUT
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(stdout.clone());

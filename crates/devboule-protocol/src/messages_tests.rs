@@ -2582,6 +2582,22 @@ fn providers_auth_check_is_an_explicit_read_only_request() {
 }
 
 #[test]
+fn a_legacy_auth_check_frame_without_force_decodes_as_unforced() {
+    // The entire reason `force` carries `#[serde(default)]`: a client from
+    // before the field existed must keep working, and its Refresh must
+    // still get the reuse window rather than an unbounded dial.
+    let legacy = serde_json::json!({"type": "providers_auth_check", "id": 21});
+    let decoded = serde_json::from_value::<ClientMessage>(legacy).expect("legacy frame decodes");
+    assert!(matches!(
+        decoded,
+        ClientMessage::ProvidersAuthCheck {
+            id: 21,
+            force: false
+        }
+    ));
+}
+
+#[test]
 fn providers_refresh_round_trips_with_same_providers_shape() {
     let request = ClientMessage::ProvidersRefresh { id: 12 };
     let encoded = serde_json::to_value(&request).expect("json");

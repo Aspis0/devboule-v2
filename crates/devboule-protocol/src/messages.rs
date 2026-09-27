@@ -1358,7 +1358,10 @@ impl ClientMessage {
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
             | Self::ProvidersList { .. }
-            | Self::ProvidersAuthCheck { .. }
+            // An unforced check is a read; a forced one spawns provider
+            // CLIs in the host's credential context at the requester's
+            // chosen rate, so it is audited like a state-changing request.
+            | Self::ProvidersAuthCheck { force: false, .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
             | Self::SessionAttachmentRead { .. }
@@ -1411,6 +1414,10 @@ impl ClientMessage {
             | Self::WorkspaceFilePreviewUnstage { .. }
             | Self::ProvidersRefresh { .. }
             | Self::ProviderUpdate { .. }
+            // A forced auth check spawns provider CLIs in the host's
+            // credential context; the requester controls how often, so
+            // every round is audited.
+            | Self::ProvidersAuthCheck { force: true, .. }
             | Self::Invoke { .. }
             | Self::PairingStart { .. }
             | Self::PairingComplete { .. }

@@ -112,6 +112,10 @@ pub struct ServerState {
     /// Latest explicit Providers-page auth observation, keyed by provider.
     /// Like last-start health, this relies on the daemon remaining single-user.
     provider_auth_checks: Mutex<HashMap<String, crate::provider_auth::AuthCheck>>,
+    /// When a check actually ran, keyed by provider: the floor that bounds
+    /// forced rounds reads this, never the cache's `checked_at`, so a seeded
+    /// cache cannot suppress a real run.
+    provider_auth_runs: Mutex<HashMap<String, i64>>,
     provider_auth_inflight:
         Mutex<HashMap<String, Arc<std::sync::OnceLock<Option<crate::provider_auth::AuthCheck>>>>>,
     /// Test-only: a per-state replacement for the provider checker, so a
@@ -401,6 +405,7 @@ impl ServerState {
             session_watchers: Mutex::new(HashMap::new()),
             provider_health: Mutex::new(HashMap::new()),
             provider_auth_checks: Mutex::new(HashMap::new()),
+            provider_auth_runs: Mutex::new(HashMap::new()),
             provider_auth_inflight: Mutex::new(HashMap::new()),
             #[cfg(test)]
             auth_probe: Mutex::new(None),
@@ -858,6 +863,13 @@ impl ServerState {
     /// on purpose — a Refresh after it measures again.
     const AUTH_CHECK_REUSE_MS: i64 = 10_000;
 
+    /// A forced check (an explicit Refresh) measures again, but not more
+    /// often than this floor per provider. The reuse window was the only
+    /// brake on how often a round could spawn CLIs; a wire-supplied `force`
+    /// must not remove every brake, so a forced round within the floor of
+    /// the last completed run reuses that run's observation.
+    const AUTH_CHECK_FORCE_FLOOR_MS: i64 = 2_000;
+
     fn fresh_auth_check(&self, provider_id: &str) -> Option<crate::provider_auth::AuthCheck> {
         let cached = self.provider_auth_check(provider_id)?;
         let age = i64::try_from(unix_millis())
@@ -868,6 +880,36 @@ impl ServerState {
         (0..Self::AUTH_CHECK_REUSE_MS)
             .contains(&age)
             .then_some(cached)
+    }
+
+    fn forced_auth_check(&self, provider_id: &str) -> Option<crate::provider_auth::AuthCheck> {
+        let cached = self.provider_auth_check(provider_id)?;
+        let last_run = self.provider_auth_run(provider_id)?;
+        let since = i64::try_from(unix_millis())
+            .unwrap_or(i64::MAX)
+            .saturating_sub(last_run);
+        (0..Self::AUTH_CHECK_FORCE_FLOOR_MS)
+            .contains(&since)
+            .then_some(cached)
+    }
+
+    /// Records that a check actually ran, stamping the floor clock. Only
+    /// called when the probe runs, so a coalesced or reused request does not
+    /// move the floor.
+    fn record_auth_run(&self, provider_id: &str) {
+        let stamped = i64::try_from(unix_millis()).unwrap_or(i64::MAX);
+        self.provider_auth_runs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(provider_id.to_string(), stamped);
+    }
+
+    fn provider_auth_run(&self, provider_id: &str) -> Option<i64> {
+        self.provider_auth_runs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(provider_id)
+            .copied()
     }
 
     pub(crate) fn check_provider_auth(
@@ -888,6 +930,8 @@ impl ServerState {
             if let Some(cached) = self.fresh_auth_check(&agent.id) {
                 return Some(cached);
             }
+        } else if let Some(cached) = self.forced_auth_check(&agent.id) {
+            return Some(cached);
         }
         let (flight, guard) = {
             let mut in_flight = self
@@ -917,12 +961,15 @@ impl ServerState {
         };
         let result = flight
             .get_or_init(|| {
+                self.record_auth_run(&agent.id);
                 #[cfg(test)]
-                if let Some(probe) = probe.as_ref() {
-                    return probe(agent);
-                }
-                crate::provider_auth::check(agent)
-                    .map(|check| self.record_provider_auth_check(&agent.id, check))
+                let observation = match probe.as_ref() {
+                    Some(probe) => probe(agent),
+                    None => crate::provider_auth::check(agent),
+                };
+                #[cfg(not(test))]
+                let observation = crate::provider_auth::check(agent);
+                observation.map(|check| self.record_provider_auth_check(&agent.id, check))
             })
             .clone();
         drop(guard);

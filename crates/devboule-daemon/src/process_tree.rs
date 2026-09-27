@@ -142,6 +142,7 @@ mod platform {
                 number_of_process_ids_in_list: u32,
                 process_id_list: [usize; 1],
             }
+            const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
             let mut buffer = vec![0u8; 4096];
             loop {
                 let mut return_length = 0u32;
@@ -155,7 +156,14 @@ mod platform {
                     )
                 };
                 if ok == 0 {
-                    return Err(io::Error::last_os_error());
+                    let error = io::Error::last_os_error();
+                    // ERROR_INSUFFICIENT_BUFFER: return_length holds the size
+                    // the next read needs. Any other failure is final.
+                    if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER) {
+                        return Err(error);
+                    }
+                    buffer.resize(return_length as usize, 0);
+                    continue;
                 }
                 let list = unsafe { &*(buffer.as_ptr() as *const BasicProcessIdList) };
                 let count = list.number_of_process_ids_in_list as usize;

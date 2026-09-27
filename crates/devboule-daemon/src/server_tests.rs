@@ -804,7 +804,25 @@ fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
             .set(agent.id, false)
             .expect("disable auth-check fixtures");
     }
-    let checks_before = crate::provider_auth::test_check_call_count();
+    // A per-state probe counter, not the global one: the global counter is
+    // shared with every other test in the process, so a concurrent check
+    // would move it and make this assertion a flake. Only Claude is counted —
+    // the catalogue may surface an enabled provider outside KNOWN_AGENTS,
+    // and the guarantee under test is that the switched-off Claude is
+    // never entered. The OFF gate returns before the closure.
+    let probe_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let probe_count = std::sync::Arc::clone(&probe_calls);
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(
+        move |agent: &crate::provider_catalog::InstalledAgent| {
+            if agent.id == "claude" {
+                probe_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Some(canned_auth_check(0))
+        },
+    ));
     state
         .provider_switches
         .set("claude", false)
@@ -825,8 +843,8 @@ fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
         "OFF rows do not expose stale auth cache"
     );
     assert_eq!(
-        crate::provider_auth::test_check_call_count(),
-        checks_before,
+        probe_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
         "OFF rows never enter the process checker"
     );
 }
@@ -1082,6 +1100,30 @@ fn a_forced_auth_check_bypasses_the_window() {
         calls.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "the reuse window is bypassed"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn forced_auth_checks_keep_a_per_provider_floor() {
+    let (path, state) = temp_state("auth-force-floor");
+    let agent = installed_agent("claude");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(counting_auth_probe(&calls));
+    // A loop of forced requests: the first runs, the rest reuse within the
+    // floor. Coalescing still applies — concurrent forced requests share
+    // the one run.
+    for _ in 0..5 {
+        assert!(state.check_provider_auth(&agent, true).is_some());
+    }
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a loop of forced requests spawns one run per floor window"
     );
     drop(state);
     let _ = std::fs::remove_dir_all(path);
@@ -3460,6 +3502,62 @@ fn an_allowed_read_writes_no_audit_row() {
     assert!(
         audit_rows(&path).is_empty(),
         "20 allowed pings must not write an audit row"
+    );
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn a_forced_auth_check_is_audited_but_an_unforced_one_is_not() {
+    let (path, state) = temp_state("peer-auth-check-audit");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let conn = remote_conn_with_caps(PeerRole::Client, Some("S-1-5-21-1"), &[CAP_ADMIN]);
+    // dispatch intercepts the auth check and answers from its worker; the
+    // peer gate has already run and written its row by the time it returns.
+    let forced = dispatch(
+        &state,
+        &owner,
+        ClientMessage::ProvidersAuthCheck {
+            id: 31,
+            force: true,
+        },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    );
+    assert!(forced.is_none(), "the auth check is answered by its worker");
+    drop(state);
+    assert_eq!(
+        audit_rows(&path),
+        vec!["ProvidersAuthCheck:ok"],
+        "a forced check spawns CLIs in the host's credential context and must leave a trace"
+    );
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn an_unforced_auth_check_from_a_peer_writes_no_audit_row() {
+    let (path, state) = temp_state("peer-auth-check-read");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let conn = remote_conn_with_caps(PeerRole::Client, Some("S-1-5-21-1"), &[CAP_ADMIN]);
+    for id in 0..20 {
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProvidersAuthCheck { id, force: false },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        );
+        assert!(reply.is_none(), "the auth check is answered by its worker");
+    }
+    drop(state);
+    assert!(
+        audit_rows(&path).is_empty(),
+        "an unforced check is a read; a loop of them must not fill the trail"
     );
     let _ = std::fs::remove_dir_all(path);
 }
