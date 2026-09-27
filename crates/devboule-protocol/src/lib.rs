@@ -100,17 +100,17 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    validate_display_name, AgentMessageState, AgentProfile, AgentProfilesDocument,
-    AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody, DelegationSource,
-    JournalLimits, JournalRetention, JournalSessionUsage, JournalStats, JournalUsage,
-    PairingSecret, PeerAgent, PeerRole, PeerRosterScope, PeerRow, PendingPairing, PromptAttachment,
-    ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource,
-    SelfInfo, SessionEventEnvelope, StoredAttachment, ToolDescriptor, ToolPolicyEntry,
-    Unreclaimable, VocabularyFeature, VocabularyFeatureControl, VocabularyFeatureOption,
-    VocabularyFeatures, VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource,
-    VocabularyState, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileContentKind,
-    WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind, WorkspaceFileMutation,
-    WorkspaceFilePreview, WorkspaceFilePreviewStatus, WorkspaceGitDiffLine,
+    derive_session_title, validate_display_name, AgentMessageState, AgentProfile,
+    AgentProfilesDocument, AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody,
+    DelegationSource, JournalLimits, JournalRetention, JournalSessionUsage, JournalStats,
+    JournalUsage, PairingSecret, PeerAgent, PeerRole, PeerRosterScope, PeerRow, PendingPairing,
+    PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch,
+    RetentionSource, SelfInfo, SessionEventEnvelope, StoredAttachment, ToolDescriptor,
+    ToolPolicyEntry, Unreclaimable, VocabularyFeature, VocabularyFeatureControl,
+    VocabularyFeatureOption, VocabularyFeatures, VocabularyModels, VocabularyModes,
+    VocabularyOrigin, VocabularySource, VocabularyState, WorkspaceDirectory, WorkspaceFileContent,
+    WorkspaceFileContentKind, WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind,
+    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFilePreviewStatus, WorkspaceGitDiffLine,
     WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus,
     WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
@@ -162,9 +162,9 @@ pub use session::{
 /// `AgentProfilesSet` the moment an app saves a non-default idle timer —
 /// the human's edit lost until the daemon restarts. The handshake has to
 /// separate the two builds before that save exists.
-/// Bumped to 11 for plan permission requests: the plan kind and Markdown body
-/// drive a separate review-and-implement flow, so a 10-speaking app would
-/// mistake the card for an ordinary tool permission.
+/// Version 11 includes plan permission requests and `SessionSetName`: the
+/// plan kind/body have their own review flow, and a rename frame must not be
+/// sent to a daemon that cannot parse it.
 pub const PROTOCOL_VERSION: u32 = 11;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still

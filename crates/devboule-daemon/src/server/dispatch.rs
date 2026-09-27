@@ -287,6 +287,7 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::SessionInterrupt { .. }
         | ClientMessage::SessionSetModel { .. }
         | ClientMessage::SessionSetMode { .. }
+        | ClientMessage::SessionSetName { .. }
         | ClientMessage::SessionPermissionRespond { .. }
         | ClientMessage::SessionsList { .. }
         | ClientMessage::SessionsWatch { .. }

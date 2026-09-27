@@ -1138,6 +1138,18 @@ impl super::SessionRegistry {
             }
         }
         drop(writer);
+        // The auto-title: the first person-authored prompt names an untitled
+        // agent session, so peers see it too and every provider gets it. The
+        // title is derived from the raw text beside the composed one — the
+        // standing instructions, spawn prompt and preamble the daemon added
+        // must never become the name — and only a `Human` or `Agent` prompt
+        // qualifies: the creation's own first send is `Creation`-authored, and
+        // a child that arrived with a title keeps it.
+        if is_agent && matches!(author, UserMessageAuthor::Human | UserMessageAuthor::Agent) {
+            if let Some(title) = devboule_protocol::derive_session_title(raw_text) {
+                self.title_if_unset(session_id, owner, &title, &conn.conn_peer);
+            }
+        }
         // Read at the step that decides the send, after its own `begin_turn`
         // above: true when this send began one or any other turn is running.
         let turn_active = agent_runtime

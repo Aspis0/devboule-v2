@@ -366,6 +366,17 @@ pub(super) fn dispatch_session(
                 .set_mode(&session_id, owner, &mode_id, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
+        ClientMessage::SessionSetName {
+            id,
+            session_id,
+            display_name,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .set_display_name(&session_id, owner, &display_name, conn)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
         ClientMessage::SessionPermissionRespond {
             id,
             session_id,

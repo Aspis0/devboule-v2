@@ -78,11 +78,11 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_attachment_references, validate_attachments,
-    validate_session_id, ActiveTurnBehavior, AgentActivityState, AgentTaskState,
-    AttachmentReference, Cursor, DelegationRunState, DelegationState, ErrorCode, ErrorDetails,
-    FinishArtifact, FinishArtifactPart, FinishArtifactPartMetadata, JournalRetention, JournalStats,
-    OwnerId, PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session, SessionEvent,
-    SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
+    validate_display_name, validate_session_id, ActiveTurnBehavior, AgentActivityState,
+    AgentTaskState, AttachmentReference, Cursor, DelegationRunState, DelegationState, ErrorCode,
+    ErrorDetails, FinishArtifact, FinishArtifactPart, FinishArtifactPartMetadata, JournalRetention,
+    JournalStats, OwnerId, PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session,
+    SessionEvent, SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
     SessionStateSnapshot, StoredAttachment, UnattendedState, UserMessageAuthor, UserMessageKind,
     WireError, Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
 };
@@ -472,6 +472,14 @@ mod session_envelope_card_tests;
 #[cfg(test)]
 #[path = "session_envelope_finish_tests.rs"]
 mod session_envelope_finish_tests;
+/// The rename-and-auto-title tests: the rename lands on the live session and
+/// its journal row and pushes the roster, a refused rename changes nothing,
+/// the first person prompt titles an untitled agent session while the
+/// daemon-composed one never does, an explicit name is never overwritten,
+/// and an untitled session derives its title from its journal.
+#[cfg(test)]
+#[path = "session_name_tests.rs"]
+mod session_name_tests;
 /// The send path's out-of-band door: a prompt the provider answers with a
 /// request of its own is decided before the writer, before the steer branch
 /// and before any turn begins, and a text the provider does not claim still
@@ -2219,6 +2227,13 @@ impl SessionRegistry {
                         "journal could not clear the disown mark for {session_id}: {clear_error}"
                     );
                 }
+                // A resumed session that never earned a name takes one from
+                // its own journal now: the first user message it holds. A
+                // session that already has one keeps it, and a failure here
+                // is cosmetic — the resume stands either way.
+                if record.display_name.is_none() {
+                    self.title_untitled_from_journal(session_id, owner, &journal, &conn.conn_peer);
+                }
             }
             Err(mut error) => {
                 state.session_finished();
@@ -3274,6 +3289,124 @@ impl SessionRegistry {
         } else {
             runtime.set_current_mode_id(mode_id)
         }
+    }
+
+    /// Rename a live session (`SessionSetName`).
+    ///
+    /// The authorization is the one every other session write goes through:
+    /// `peer_entry_mut` answers a foreign owner's session — and a session
+    /// this daemon does not know — with `unauthorized()` (`check_user_owner`,
+    /// the §8b A3 rule `set_mode` cites), so a paired device renames only
+    /// what it may already write. The live record moves first and the journal
+    /// row second, and a row that refuses takes the record back with it: a
+    /// rename the journal does not hold must not outlive a restart in memory.
+    /// A rename that lands pushes the roster, so every client reads the name
+    /// with no further write.
+    pub fn set_display_name(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        display_name: &str,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let name = validate_display_name(display_name)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        self.store_display_name(session_id, owner, &name, &conn.conn_peer, false)
+            .map(|_| ())
+    }
+
+    /// Name an untitled agent session, best effort: the auto-title's half of
+    /// the rename road. A journal write that fails leaves the record as it
+    /// was — the next prompt retries, since the session is still untitled —
+    /// so a landed prompt is never refused for a cosmetic write.
+    pub(crate) fn title_if_unset(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        name: &str,
+        conn_peer: &Option<ConnPeer>,
+    ) -> bool {
+        self.store_display_name(session_id, owner, name, conn_peer, true)
+            .unwrap_or(false)
+    }
+
+    /// Title an untitled session from its journal: the first user message the
+    /// journal holds names it. The daemon-composed echo (standing
+    /// instructions, spawn prompt, preamble) is skipped the same way the
+    /// send path skips it — Paseo's imported-title rule reads the timeline's
+    /// first user message, and the composed text is not the person's words.
+    pub(crate) fn title_untitled_from_journal(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        journal: &Journal,
+        conn_peer: &Option<ConnPeer>,
+    ) -> bool {
+        let Ok(replay) = journal.replay(session_id) else {
+            return false;
+        };
+        for event in &replay.events {
+            let SessionEvent::AgentUserMessage { text, author, .. } = event else {
+                continue;
+            };
+            if !matches!(author, UserMessageAuthor::Human | UserMessageAuthor::Agent) {
+                continue;
+            }
+            if let Some(name) = devboule_protocol::derive_session_title(text) {
+                return self.title_if_unset(session_id, owner, &name, conn_peer);
+            }
+        }
+        false
+    }
+
+    /// The one road the rename and both auto-titles share: the live record
+    /// moves first and the journal row second, and a row that refuses takes
+    /// the record back with it — but only when the record still holds what
+    /// this call wrote, so a concurrent rename is never clobbered by a
+    /// rollback. `only_if_unset` is the auto-title's half: an agent session
+    /// with no name yet. The rename overwrites.
+    fn store_display_name(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        name: &str,
+        conn_peer: &Option<ConnPeer>,
+        only_if_unset: bool,
+    ) -> Result<bool, WireError> {
+        let previous = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, conn_peer)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
+            if only_if_unset
+                && (!session.metadata.kind.is_agent() || session.metadata.display_name.is_some())
+            {
+                return Ok(false);
+            }
+            session.metadata.display_name.replace(name.to_string())
+        };
+        if let Some(journal) = &self.journal {
+            if let Err(error) = journal.set_display_name(session_id, name) {
+                let mut map = self
+                    .inner
+                    .lock()
+                    .map_err(|_| internal("Session state is unavailable."))?;
+                if let Ok(entry) = peer_entry_mut(&mut map, session_id, owner, conn_peer) {
+                    if let Some(session) = entry.as_peer_visible_mut() {
+                        if session.metadata.display_name.as_deref() == Some(name) {
+                            session.metadata.display_name = previous;
+                        }
+                    }
+                }
+                return Err(error.into());
+            }
+        }
+        self.notify_session_transition(owner, session_id);
+        Ok(true)
     }
 
     fn validate_claude_effort(

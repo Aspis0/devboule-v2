@@ -2350,6 +2350,10 @@ fn ownership_paths(
             registry.set_mode(id, owner, "acceptEdits", conn),
         ),
         (
+            "set_display_name",
+            registry.set_display_name(id, owner, "worker", conn),
+        ),
+        (
             "resize",
             registry.resize_with_subscription(id, 1, 80, 24, owner, conn),
         ),
@@ -2582,6 +2586,18 @@ fn every_ownership_path_before_close_runs_on_a_live_session() {
     let mine = test_owner("S-1-5-21-mine", "process-1");
     let id = compose_session_id(&mine.session_token(), "live01").expect("id");
     insert_live(&registry, &id, mine.clone());
+    // The rename row answers about the session only when the journal holds
+    // its birth row — a live session in production always has one, since the
+    // birth journals before spawn.
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            id.clone(),
+            mine.user.clone(),
+            None,
+            SessionKind::Terminal,
+            "Terminal",
+        ))
+        .expect("birth row");
     let conn = remote_conn(PeerRole::Client, Some("S-1-5-21-mine"));
 
     let mut all: Vec<(&'static str, Option<ErrorCode>)> = Vec::new();
@@ -2731,6 +2747,7 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::SessionInterrupt { .. } => Some(&["interrupt"]),
         ClientMessage::SessionSetModel { .. } => Some(&["set_model"]),
         ClientMessage::SessionSetMode { .. } => Some(&["set_mode"]),
+        ClientMessage::SessionSetName { .. } => Some(&["set_display_name"]),
         ClientMessage::SessionResize { .. } => Some(&["resize"]),
         ClientMessage::SessionAttach { .. } => Some(&["attach"]),
         ClientMessage::SessionClaim { .. } => Some(&["claim"]),

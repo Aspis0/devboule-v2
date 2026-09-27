@@ -174,6 +174,7 @@ export type CommandArgs = {
   session_claim: { subscriptionId: SubscriptionId };
   session_set_model: { id: Id; modelId?: string; effort?: string };
   session_set_mode: { id: Id; modeId: string };
+  session_set_name: { id: Id; displayName: string };
   session_permission_respond: {
     id: Id;
     subscriptionId: SubscriptionId;
@@ -287,6 +288,7 @@ type CommandResults = {
   session_claim: void;
   session_set_model: void;
   session_set_mode: void;
+  session_set_name: void;
   session_permission_respond: void;
   session_presence: void;
   session_resize: void;
@@ -436,6 +438,7 @@ export const COMMAND_ARG_KEYS = {
   session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
   session_set_mode: ["id", "modeId"],
+  session_set_name: ["id", "displayName"],
   session_permission_respond: [
     "id",
     "subscriptionId",
@@ -806,6 +809,12 @@ export const sessionSetModel = (id: Id, modelId?: string, effort?: string) =>
   });
 export const sessionSetMode = (id: Id, modeId: string) =>
   invokeTyped("session_set_mode", { id, modeId });
+/**
+ * Rename a session. The daemon validates the name and pushes the roster, so
+ * the strip, header, History and toasts pick the carried name up themselves.
+ */
+export const sessionSetName = (id: Id, displayName: string) =>
+  invokeTyped("session_set_name", { id, displayName });
 export const sessionPermissionRespond = (
   id: Id,
   subscriptionId: SubscriptionId,

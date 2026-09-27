@@ -1501,6 +1501,28 @@ fn session_set_model_round_trips_with_optional_fields() {
 }
 
 #[test]
+fn session_set_name_round_trips_with_camel_case_fields() {
+    let message = ClientMessage::SessionSetName {
+        id: 12,
+        session_id: "s.a.1".to_string(),
+        display_name: "worker one".to_string(),
+    };
+    let value = serde_json::to_value(&message).expect("json");
+    assert_eq!(value["type"], "session_set_name");
+    assert_eq!(value["sessionId"], "s.a.1");
+    assert_eq!(value["displayName"], "worker one");
+    assert!(value.get("display_name").is_none());
+    assert_eq!(message.request_id(), Some(12));
+    assert_eq!(message.name(), "SessionSetName");
+    assert!(message.is_state_changing());
+    assert_eq!(message.idempotency_key(), None);
+    assert_eq!(
+        serde_json::from_value::<ClientMessage>(value).expect("round trip"),
+        message
+    );
+}
+
+#[test]
 fn session_set_mode_round_trips_with_camel_case_fields() {
     let message = ClientMessage::SessionSetMode {
         id: 10,
@@ -2810,6 +2832,70 @@ fn a_display_name_is_trimmed_then_capped_at_sixty_characters() {
     let accented = "è".repeat(crate::MAX_DISPLAY_NAME_CHARS);
     assert!(accented.len() > crate::MAX_DISPLAY_NAME_CHARS);
     assert_eq!(validate_display_name(&accented), Ok(accented));
+}
+
+/// Control characters are refused: a name renders in the tab strip, the pane
+/// header, History rows and attention toasts, and a newline, bell or escape
+/// in it would break the layout or smuggle terminal escapes into a surface.
+/// The refusal names the rule, never the name.
+#[test]
+fn a_display_name_refuses_control_characters() {
+    for name in [
+        "work\u{0}er",
+        "work\u{7}er",
+        "line one\nline two",
+        "a\u{1b}[2Jb",
+    ] {
+        let error = validate_display_name(name).expect_err("control characters");
+        assert!(
+            error.contains("control"),
+            "the sentence names the rule: {error}"
+        );
+        assert!(
+            !error.contains("work") && !error.contains("line"),
+            "the refusal must not echo the name back: {error}"
+        );
+    }
+    assert_eq!(
+        validate_display_name("  worker one  "),
+        Ok("worker one".to_string()),
+        "ordinary inner spacing still passes"
+    );
+}
+
+/// Paseo's rule, daemon-side so every provider and every peer sees the same
+/// title: the first non-empty line of the first prompt, whitespace-collapsed
+/// and clamped to sixty characters. Prompts the daemon composed itself
+/// (standing instructions, spawn prompt, preamble) never reach this function;
+/// the send path only hands it the person's — or the creator agent's — text.
+#[test]
+fn a_derived_title_is_the_first_non_empty_line_collapsed_and_clamped() {
+    assert_eq!(
+        derive_session_title("  Fix the login redirect\nsecond line"),
+        Some("Fix the login redirect".to_string())
+    );
+    assert_eq!(
+        derive_session_title("\n\n   \nFirst real line\nsecond"),
+        Some("First real line".to_string())
+    );
+    assert_eq!(
+        derive_session_title("write   a\t doc  about\u{a0}x"),
+        Some("write a doc about x".to_string()),
+        "runs of whitespace collapse to one space"
+    );
+    let long = format!("{} tail", "w".repeat(70));
+    let derived = derive_session_title(&long).expect("a title");
+    assert_eq!(derived.chars().count(), crate::MAX_DISPLAY_NAME_CHARS);
+    assert!(
+        validate_display_name(&derived).is_ok(),
+        "a derived title always passes validation: {derived:?}"
+    );
+    assert_eq!(derive_session_title(""), None);
+    assert_eq!(derive_session_title("   \n \t "), None);
+    // Sixty accented characters clamp by character, never mid-scalar.
+    let accented = format!("{} tail", "è".repeat(70));
+    let derived = derive_session_title(&accented).expect("a title");
+    assert_eq!(derived.chars().count(), crate::MAX_DISPLAY_NAME_CHARS);
 }
 
 /// The workspace git-status frame and its reply, pinned to the exact words

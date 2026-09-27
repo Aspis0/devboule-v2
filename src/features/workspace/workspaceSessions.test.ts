@@ -979,6 +979,48 @@ describe("session creator carry", () => {
     expect(pushed?.createdBy).toBe("s.4242.1");
     release();
   });
+
+  it("lands a rename the roster push carries on a known row", async () => {
+    // The daemon pushes the roster after a rename with the new name on the
+    // row; the strip, header, History and toasts all read `sessionTitle`,
+    // so landing the carried name here updates them with no further change.
+    const listed: Session = {
+      ...liveSession("s.4242.10", "Agent"),
+      kind: "acp",
+    };
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [listed]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+
+    watched.listener?.([
+      {
+        id: "s.4242.10",
+        workspaceId: null,
+        kind: "acp",
+        title: "Agent",
+        displayName: "worker one",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 5,
+      },
+    ]);
+
+    const renamed = controller.getState().sessions[0];
+    expect(renamed?.displayName).toBe("worker one");
+    expect(sessionTitle(renamed!)).toBe("worker one");
+    release();
+  });
 });
 
 describe("session delegation badges", () => {

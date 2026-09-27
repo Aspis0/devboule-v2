@@ -341,6 +341,20 @@ pub async fn session_set_mode(
     off_main_thread(move || client.session_set_mode(&id, &mode_id)).await
 }
 
+/// Rename a session. The daemon validates the name, stores it on the session
+/// record and the journal row, and pushes the roster — the app's row picks
+/// the carried name up with no further write (`workspaceSessions.ts`).
+#[tauri::command]
+pub async fn session_set_name(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    display_name: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_set_name(&id, &display_name)).await
+}
+
 #[tauri::command]
 pub async fn session_close(
     bridge: State<'_, DaemonBridge>,

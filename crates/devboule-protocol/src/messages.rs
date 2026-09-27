@@ -278,8 +278,9 @@ pub enum ClientMessage {
         /// one. Trimmed, then required to be 1..=[`crate::MAX_DISPLAY_NAME_CHARS`]
         /// characters; an absent field asks for the daemon's fallback title
         /// (recorded nowhere but the `Session.title` the session already had).
-        /// A caller may not rename an existing session through this field: there
-        /// is no rename frame and this is create-only.
+        /// A caller may not rename an existing session through this field:
+        /// it is create-only. Renaming a live session is
+        /// [`ClientMessage::SessionSetName`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         display_name: Option<String>,
         /// Deliberately absent: the creator of a session is the daemon's fact,
@@ -408,6 +409,17 @@ pub enum ClientMessage {
         id: u64,
         session_id: String,
         mode_id: String,
+    },
+    /// Rename a live session. The name follows the same rule as the
+    /// create-time one ([`validate_display_name`]): trimmed, non-empty, at
+    /// most [`crate::MAX_DISPLAY_NAME_CHARS`] characters, no control
+    /// characters. The daemon stores it on the session record and the
+    /// journal row and pushes the roster, so every client sees it. The
+    /// reply is [`DaemonMessage::Ok`].
+    SessionSetName {
+        id: u64,
+        session_id: String,
+        display_name: String,
     },
     SessionPermissionRespond {
         id: u64,
@@ -922,6 +934,9 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("A session display name is required; it was empty.".to_string());
     }
+    if trimmed.chars().any(|point| point.is_control()) {
+        return Err("A session display name must not contain control characters.".to_string());
+    }
     let length = trimmed.chars().count();
     if length > crate::MAX_DISPLAY_NAME_CHARS {
         return Err(format!(
@@ -930,6 +945,39 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+/// Derive an agent session's title from its first prompt.
+///
+/// The rule is Paseo's (`create-agent-title.ts`): the first non-empty line,
+/// whitespace-collapsed, clamped to [`crate::MAX_DISPLAY_NAME_CHARS`]
+/// characters. Sixty, because the title renders where a display name renders
+/// — the tab strip, the pane header, History rows, attention toasts — and
+/// shares its cap. Counted in `char`s, never split mid-scalar, and stripped
+/// of control characters, so the result always passes
+/// [`validate_display_name`].
+///
+/// `None` when the text holds no line worth naming: empty, whitespace-only,
+/// or nothing but control characters. Callers hand this function the
+/// person's — or the creator agent's — own text, never the daemon-composed
+/// first prompt (standing instructions, spawn prompt, preamble), which is
+/// why the send path derives from the raw text beside the composed one.
+///
+/// The clamp keeps the head, not the tail: a prompt's first words say what
+/// it is about, and Paseo clamps the same end.
+pub fn derive_session_title(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clean: String = collapsed
+        .chars()
+        .filter(|point| !point.is_control())
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        return None;
+    }
+    let title: String = clean.chars().take(crate::MAX_DISPLAY_NAME_CHARS).collect();
+    Some(title.trim_end().to_string())
 }
 
 impl ClientMessage {
@@ -954,6 +1002,7 @@ impl ClientMessage {
             | Self::SessionInterrupt { id, .. }
             | Self::SessionSetModel { id, .. }
             | Self::SessionSetMode { id, .. }
+            | Self::SessionSetName { id, .. }
             | Self::SessionPermissionRespond { id, .. }
             | Self::SessionReportAgent { id, .. }
             | Self::SessionsList { id }
@@ -1066,6 +1115,7 @@ impl ClientMessage {
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
             | Self::SessionSetMode { .. }
+            | Self::SessionSetName { .. }
             | Self::SessionReportAgent { .. }
             | Self::SessionsList { .. }
             | Self::SessionsWatch { .. }
@@ -1128,6 +1178,7 @@ impl ClientMessage {
             Self::SessionInterrupt { .. } => "SessionInterrupt",
             Self::SessionSetModel { .. } => "SessionSetModel",
             Self::SessionSetMode { .. } => "SessionSetMode",
+            Self::SessionSetName { .. } => "SessionSetName",
             Self::SessionPermissionRespond { .. } => "SessionPermissionRespond",
             Self::SessionReportAgent { .. } => "SessionReportAgent",
             Self::SessionsList { .. } => "SessionsList",
@@ -1224,6 +1275,7 @@ impl ClientMessage {
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
             | Self::SessionSetMode { .. }
+            | Self::SessionSetName { .. }
             | Self::SessionPermissionRespond { .. }
             | Self::SessionReportAgent { .. }
             | Self::SessionsUnwatch { .. }

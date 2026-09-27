@@ -567,6 +567,25 @@ impl DaemonClient {
         }
     }
 
+    /// Rename a session: the daemon validates the name, stores it on the
+    /// session record and the journal row, and pushes the roster.
+    pub fn session_set_name(
+        &self,
+        session_id: &str,
+        display_name: &str,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionSetName {
+            id,
+            session_id: session_id.to_string(),
+            display_name: display_name.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     #[cfg(feature = "server")]
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
         self.session_send_with_subscription(

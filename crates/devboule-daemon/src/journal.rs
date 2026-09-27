@@ -747,6 +747,13 @@ enum JournalCmd {
         peer_session_id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
+    /// A rename's recording: the session's `display_name` column and
+    /// nothing else — see [`Journal::set_display_name`].
+    SetDisplayName {
+        session_id: String,
+        display_name: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
     /// The resume road's disown mark: the provider refused this handle.
     /// `expected` names the refused handle, so a concurrent respawn's NEWER
     /// handle is never silenced; the refused handle itself is never
@@ -1146,6 +1153,23 @@ impl Journal {
         self.rpc(|reply| JournalCmd::SetPeerSessionId {
             session_id: session_id.to_string(),
             peer_session_id: peer_session_id.to_string(),
+            reply,
+        })
+    }
+
+    /// A rename's recording, issued from the dispatch thread beside the live
+    /// update: the rpc returns only after the write is committed, so any
+    /// roster read issued after the rename's answer is behind it. A row that
+    /// already carries the name costs no roster rebuild, by the same rule as
+    /// the handle write above.
+    pub fn set_display_name(
+        &self,
+        session_id: &str,
+        display_name: &str,
+    ) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::SetDisplayName {
+            session_id: session_id.to_string(),
+            display_name: display_name.to_string(),
             reply,
         })
     }
@@ -1963,6 +1987,24 @@ fn journal_loop(
                         // write — the announce-time writers re-persist the
                         // same id on every frame — changed nothing the roster
                         // renders, so it costs no rebuild.
+                        session_set_revision.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Ok(false) => {}
+                }
+                let _ = reply.send(result.map(|_| ()));
+            }
+            JournalCmd::SetDisplayName {
+                session_id,
+                display_name,
+                reply,
+            } => {
+                let result = set_display_name(&conn, &session_id, &display_name);
+                match &result {
+                    Err(error) => on_write_error(error),
+                    // The name is roster-visible, so a changed one moves the
+                    // revision by the handle's rule above; an unchanged write
+                    // costs no rebuild.
+                    Ok(true) => {
                         session_set_revision.fetch_add(1, Ordering::AcqRel);
                     }
                     Ok(false) => {}
@@ -3160,6 +3202,38 @@ fn set_peer_session_id(
                 updated_at_ms = ?2
          WHERE id = ?3",
         params![peer_session_id, now_ms() as i64, session_id],
+    )?;
+    if n == 0 {
+        Err(JournalError::SessionNotFound)
+    } else {
+        Ok(true)
+    }
+}
+
+/// A rename's write: the row's `display_name` column, verbatim. Returns
+/// whether the stored state changed, by the handle's rule above: a row that
+/// already carries the name costs no roster rebuild, and a missing row stays
+/// the error it has always been.
+fn set_display_name(
+    conn: &Connection,
+    session_id: &str,
+    display_name: &str,
+) -> Result<bool, JournalError> {
+    let current: Option<String> = match conn.query_row(
+        "SELECT display_name FROM sessions WHERE id = ?1",
+        [session_id],
+        |row| row.get(0),
+    ) {
+        Ok(value) => value,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(JournalError::SessionNotFound),
+        Err(error) => return Err(error.into()),
+    };
+    if current.as_deref() == Some(display_name) {
+        return Ok(false);
+    }
+    let n = conn.execute(
+        "UPDATE sessions SET display_name = ?1, updated_at_ms = ?2 WHERE id = ?3",
+        params![display_name, now_ms() as i64, session_id],
     )?;
     if n == 0 {
         Err(JournalError::SessionNotFound)

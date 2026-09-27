@@ -125,7 +125,8 @@ pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
 /// `caps` is the peer's own capability set, read from its `peers` row. Seven
 /// names are the wire permission model for a paired device (§8b A9/A11):
 /// `view` (`SessionsList`, `DevicesList`, `SessionAttach`), `send`
-/// (`SessionSend`, `AgentMessageSend`, `SessionDeposit`, `SessionSetMode`),
+/// (`SessionSend`, `AgentMessageSend`, `SessionDeposit`, `SessionSetMode`,
+/// `SessionSetName`),
 /// `answer_permissions` (`SessionPermissionRespond`), `create_sessions`
 /// (`SessionCreate`), `roster` (`PeerAgentsList`), `search` (the Oracle tool
 /// at the broker door — it decides no arm here, see [`CAP_SEARCH`]) and
@@ -196,6 +197,11 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // turn, which is the act `send` names. The prompt-skipping list (§8b
         // A5) refuses the specific modes on top of this, in `dispatch`.
         ClientMessage::SessionSetMode { .. } => with_capability(caps, CAP_SEND),
+        // Renaming a session rewrites the row the roster renders: a session
+        // write, under the same capability that names the act `send` names.
+        // Which session is the ownership check the operation makes itself,
+        // beside every other session write.
+        ClientMessage::SessionSetName { .. } => with_capability(caps, CAP_SEND),
 
         // The permission model itself is the one local act left. Starting or
         // completing a pairing, changing a device's capability set and revoking
@@ -1120,6 +1126,11 @@ pub(crate) mod tests {
             session_id: "s.a.1".to_string(),
             mode_id: "acceptEdits".to_string(),
         };
+        let set_name = || ClientMessage::SessionSetName {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            display_name: "worker one".to_string(),
+        };
 
         for role in [PeerRole::Client, PeerRole::Daemon] {
             // No capability at all: every slice-3 act is refused, and the
@@ -1167,6 +1178,15 @@ pub(crate) mod tests {
                 peer_allows(role, &caps(&[CAP_SEND]), &set_mode()),
                 PeerDecision::Allow,
                 "driving the mode is the act `send` names"
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_SEND]), &set_name()),
+                PeerDecision::Allow,
+                "renaming the session is the act `send` names"
+            );
+            assert_eq!(
+                peer_allows(role, &none, &set_name()),
+                PeerDecision::Deny(CAP_SEND)
             );
             assert_eq!(
                 peer_allows(role, &caps(&[CAP_ANSWER_PERMISSIONS]), &respond()),
@@ -1505,11 +1525,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// The twelve frames no `Deny` arm has ever covered: the handshake pair and
-    /// the ten act-named arms. Spelled as wire names so the walk above can prove
+    /// The thirteen frames no `Deny` arm has ever covered: the handshake pair and
+    /// the eleven act-named arms. Spelled as wire names so the walk above can prove
     /// it covers every *other* variant — with `VARIANT_COUNT` that is a closed
     /// statement, not a guess.
-    const ALWAYS_ALLOWED_VARIANTS: [&str; 12] = [
+    const ALWAYS_ALLOWED_VARIANTS: [&str; 13] = [
         "Hello",
         "Ping",
         "SessionsList",
@@ -1522,6 +1542,7 @@ pub(crate) mod tests {
         "SessionDeposit",
         "SessionPermissionRespond",
         "SessionSetMode",
+        "SessionSetName",
     ];
 
     /// The five wire variants of the three permission-model acts — start or
@@ -2373,6 +2394,10 @@ pub(crate) mod tests {
             ClientMessage::SessionSend { .. } | ClientMessage::SessionSetMode { .. } => {
                 under(CAP_SEND)
             }
+            // A rename is a session write: it rewrites the row the roster
+            // renders, so it needs the capability `SessionSend` needs and
+            // nothing more.
+            ClientMessage::SessionSetName { .. } => under(CAP_SEND),
             // An agent message is a send: it puts text into a session, so it
             // needs the capability `SessionSend` needs and nothing more.
             ClientMessage::AgentMessageSend { .. } => under(CAP_SEND),
@@ -2450,7 +2475,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 66;
+    pub(crate) const VARIANT_COUNT: usize = 67;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2477,6 +2502,7 @@ pub(crate) mod tests {
             ClientMessage::SessionInterrupt { .. } => "SessionInterrupt",
             ClientMessage::SessionSetModel { .. } => "SessionSetModel",
             ClientMessage::SessionSetMode { .. } => "SessionSetMode",
+            ClientMessage::SessionSetName { .. } => "SessionSetName",
             ClientMessage::SessionPermissionRespond { .. } => "SessionPermissionRespond",
             ClientMessage::SessionReportAgent { .. } => "SessionReportAgent",
             ClientMessage::SessionsList { .. } => "SessionsList",
@@ -2627,6 +2653,11 @@ pub(crate) mod tests {
                 id: 1,
                 session_id: "s.a.1".to_string(),
                 mode_id: "acceptEdits".to_string(),
+            },
+            ClientMessage::SessionSetName {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                display_name: "worker one".to_string(),
             },
             ClientMessage::SessionPermissionRespond {
                 id: 1,

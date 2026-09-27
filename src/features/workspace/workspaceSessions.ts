@@ -704,6 +704,10 @@ export function createWorkspaceSessionController(
         // The creator is identity, like origin: a push that carries it lands
         // it, and a push that omits it lets the row's known value stand.
         createdBy: snapshot.createdBy ?? previous?.createdBy,
+        // The name is identity, like the creator: a rename arrives as a
+        // roster push carrying the new name, and a push that omits it lets
+        // the row's known value stand.
+        displayName: snapshot.displayName ?? previous?.displayName,
         // Origin is session identity, not roster state: a push that stops
         // carrying it (or never did) must not erase what the list already
         // said about a row the app is holding, so the previous value stands in.
