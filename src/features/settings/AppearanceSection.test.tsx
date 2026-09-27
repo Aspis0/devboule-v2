@@ -24,8 +24,10 @@ function fakeStorage(initial: Record<string, string> = {}): StorageLike {
 }
 
 function inputFor(scope: ParentNode, value: string): HTMLInputElement {
-  const found = [...scope.querySelectorAll<HTMLInputElement>(".appearance-option input")].find(
-    (el) => el.value === value,
+  // Semantic hook, not a style class: the ghost-class guard in
+  // settingsStatic.test.ts forbids selecting on `.appearance-option`.
+  const found = scope.querySelector<HTMLInputElement>(
+    `input[name="appearance-theme"][value="${value}"]`,
   );
   if (!found) throw new Error(`no radio for ${value}`);
   return found;
@@ -68,7 +70,9 @@ describe("the Appearance row", () => {
 
   it("offers Light, Dark and Match system", () => {
     const current = mount(fakeStorage());
-    const radios = [...current.querySelectorAll<HTMLInputElement>(".appearance-option input")];
+    const radios = [
+      ...current.querySelectorAll<HTMLInputElement>('input[name="appearance-theme"]'),
+    ];
     expect(radios.map((radio) => radio.value)).toEqual(["light", "dark", "system"]);
     expect(current.querySelector('[role="radiogroup"]')).not.toBeNull();
   });

@@ -27,7 +27,8 @@ export function NotificationsSection() {
           <span className="machine-row-title">Show notifications</span>
           <span className="machine-row-desc">
             Devboule toasts when a session needs attention — finished, failed, or waiting on an
-            approval. Off means silence: the raise still shows in the tab strip.
+            approval. Off means silence: the raise still shows in the tab strip. Turning this back
+            on shows new notifications only.
           </span>
         </span>
         <button

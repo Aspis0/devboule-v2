@@ -33,17 +33,11 @@ export function SendBehaviorSetting() {
   const behavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
 
   return (
-    <div className="machine-card send-behavior">
-      <div className="machine-head">
-        <span className="machine-row-title">Default send</span>
-      </div>
-      <div
-        className="machine-choices send-behavior-options"
-        role="radiogroup"
-        aria-label="Default send"
-      >
+    <div className="machine-card">
+      <span className="settings-subheading">Default send</span>
+      <div className="machine-choices" role="radiogroup" aria-label="Default send">
         {OPTIONS.map((option) => (
-          <label className="machine-choice send-behavior-option" key={option.value}>
+          <label className="machine-choice" key={option.value}>
             <input
               type="radio"
               name="send-behavior"
@@ -53,7 +47,7 @@ export function SendBehaviorSetting() {
             />
             <span className="machine-row-copy">
               <span className="machine-row-title">{option.label}</span>
-              <span className="machine-row-desc send-behavior-note">{option.description}</span>
+              <span className="machine-row-desc">{option.description}</span>
             </span>
           </label>
         ))}

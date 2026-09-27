@@ -395,10 +395,16 @@ export function fireAttentionToast(
   attention: Attention,
   deps?: Partial<ToastDeps>,
 ): void {
-  // The Notifications page's master switch, read at fire time: a silenced
-  // raise is not offered, judged, or recorded, so it stays due and the next
-  // publication of it announces once the switch is back on.
-  if (!getShowNotifications()) return;
+  // The Notifications page's master switch, read at fire time. A raise
+  // that arrives while the switch is off is consumed, not kept due:
+  // turning the switch back on announces new raises only, never a burst
+  // of old toasts. The record moves only forward, like markAttentionSeen.
+  if (!getShowNotifications()) {
+    if (attentionRaised(lastFired.get(sessionId), attention)) {
+      lastFired.set(sessionId, attention);
+    }
+    return;
+  }
   // Offered, then marked as in flight — the mark is not a claim of having been
   // announced, and a publication the gate holds back gives it back below.
   if (!raiseIsOfferable(sessionId, attention)) return;
@@ -429,6 +435,11 @@ export function fireAttentionToast(
     // then, and a raise the session moved past while this one waited fails the
     // same test.
     if (!raiseIsOfferable(sessionId, attention)) return;
+    // The master switch again, after the async hops: the user may have
+    // switched it off while the window was being asked. Suppressed here
+    // means unrecorded — unlike a raise that arrived while off — so the
+    // next publication of the same raise still announces.
+    if (!getShowNotifications()) return;
     lastFired.set(sessionId, attention);
     // The previews switch, read at the same moment as the wording: off hands
     // the toast no held content, so it names the session and the reason only.
@@ -442,7 +453,13 @@ export function fireAttentionToast(
       if (lastFired.get(sessionId) !== attention) return;
       setTimeout(() => {
         if (lastFired.get(sessionId) !== attention) return;
-        void send(content).catch(() => {});
+        // Rebuilt at retry time, never resent frozen: either switch may
+        // have moved inside the 1.5 s window, and a retry that lands
+        // preview text the user just switched off breaks the privacy the
+        // switch promises. A master that is off now drops the retry.
+        if (!getShowNotifications()) return;
+        const retryHeld = getShowMessagePreviews() ? heldContentProvider?.(sessionId) : undefined;
+        void send(toastContent(title, attention.reason, retryHeld)).catch(() => {});
       }, TOAST_RETRY_DELAY_MS);
     }
   })();

@@ -1,14 +1,17 @@
 /* This-machine pages: Appearance, Layout, Editing, Notifications. R17-4 owns
    this file; the transcript-history rules live in diagnostics.css because
-   that section renders on the Diagnostics page.
+   that section renders on the Diagnostics page. The shell owns the
+   section label (`.settings-subheading` in settings.css): this sheet never
+   re-declares it, only borrows it for the card heads below.
    Geometry-critical declarations stay on bare classes: the card-geometry
    test reads them through cssProof, which models bare selectors only.
    Every face on these pages is the UI sans: no mono anywhere on this sheet
    (the Layout row used to read through the mono retention input). */
 
-/* The one card: max-w 720, r12, the panel face. Sections inside the settings
-   content column sit outside the shell's `> section` rhythm rule, so the
-   bottom margin is restated here. */
+/* The one card: max-w 720, r12, the panel face. The shell's rhythm rule
+   (`.settings-main-inner > section`) spaces the section roots; the two
+   `div` roots (Layout, Editing) sit outside it, so the margin is restated
+   here — dead but harmless on sections, live on divs. */
 .machine-card {
   max-width: 720px;
   margin-bottom: 18px;
@@ -137,10 +140,19 @@
   opacity: 0;
 }
 
-.machine-segment-option input:focus-visible + span {
+/* Focus belongs to the option box, never the label text: the ring must
+   read on the card fill for plain options and inside the accent fill for
+   the checked one. An accent ring on the accent fill is invisible —
+   exactly where arrow-key focus starts — so the checked option rings in
+   the contrast colour, offset inside its own fill. */
+.machine-segment-option:focus-within {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 4px;
+}
+
+.machine-segment-option-checked:focus-within {
+  outline-color: var(--accent-contrast);
+  outline-offset: -4px;
 }
 
 /* Choice lists whose options carry their own description lines (theme,
@@ -167,12 +179,21 @@
   background: var(--fill-hover);
 }
 
-/* The card head a choice list sits under: title only, no control. */
-.machine-head {
+/* The card head a choice list sits under: the shell's own section label,
+   borrowed, not re-declared (the static guard pins that). Its 26 px top
+   margin spaces sections apart; as a card's first child it would paint
+   empty top, so the margin is cleared inside this scope only — the same
+   accommodation the Agents section makes for its own head. */
+.machine-card > .settings-subheading:first-child {
+  margin-top: 0;
   padding: 12px 14px 4px;
 }
 
-.machine-choice input {
+/* The radio accent must win by specificity, not by sheet order: the global
+   `input[type="radio"]` rule ties a bare `.machine-choice input` at
+   (0,1,1), so any later sheet could take it. Scoped under the list it is
+   (0,2,1) and order-proof. */
+.machine-choices .machine-choice input {
   margin-top: 2px;
   accent-color: var(--accent);
 }

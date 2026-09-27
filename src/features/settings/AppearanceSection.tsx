@@ -36,19 +36,13 @@ export function AppearanceSection({
   }
 
   return (
-    <section className="machine-card appearance-section" aria-labelledby="appearance-heading">
-      <div className="machine-head">
-        <h3 className="machine-row-title" id="appearance-heading">
-          Theme
-        </h3>
-      </div>
-      <div
-        className="machine-choices appearance-options"
-        role="radiogroup"
-        aria-labelledby="appearance-heading"
-      >
+    <section className="machine-card" aria-labelledby="appearance-heading">
+      <h3 className="settings-subheading" id="appearance-heading">
+        Theme
+      </h3>
+      <div className="machine-choices" role="radiogroup" aria-labelledby="appearance-heading">
         {OPTIONS.map((option) => (
-          <label className="machine-choice appearance-option" key={option.value}>
+          <label className="machine-choice" key={option.value}>
             <input
               type="radio"
               name="appearance-theme"
@@ -56,15 +50,15 @@ export function AppearanceSection({
               checked={preference === option.value}
               onChange={() => choose(option.value)}
             />
-            <span className="machine-row-copy appearance-option-copy">
-              <span className="machine-row-title appearance-option-label">{option.label}</span>
-              <span className="machine-row-desc appearance-option-hint">{option.hint}</span>
+            <span className="machine-row-copy">
+              <span className="machine-row-title">{option.label}</span>
+              <span className="machine-row-desc">{option.hint}</span>
             </span>
           </label>
         ))}
       </div>
       {persisted ? null : (
-        <p className="machine-note appearance-persist-note" role="status">
+        <p className="machine-note" role="status">
           This choice could not be saved — it lasts until Devboule closes.
         </p>
       )}

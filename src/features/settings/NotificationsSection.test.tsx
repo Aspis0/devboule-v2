@@ -79,8 +79,9 @@ describe("NotificationsSection", () => {
     expect(switchFor("Show message previews").getAttribute("aria-checked")).toBe("false");
   });
 
-  it("says the previews reach the lock screen", () => {
+  it("says the previews reach the lock screen, and that switching back on shows new notifications only", () => {
     renderSection();
     expect(container.textContent).toContain("lock screen");
+    expect(container.textContent).toContain("Turning this back on shows new notifications only");
   });
 });

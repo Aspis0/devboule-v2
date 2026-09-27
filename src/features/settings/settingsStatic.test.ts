@@ -36,6 +36,49 @@ function settingsCss(name: string): string {
   return readFileSync(resolve(import.meta.dirname, name), "utf8");
 }
 
+function settingsTsx(name: string): string {
+  return readFileSync(resolve(import.meta.dirname, name), "utf8");
+}
+
+/** True when the sheet defines a rule for exactly this selector — a scoped
+ * accommodation like `.card > .name:first-child` does not count. */
+function definesBareRule(css: string, selector: string): boolean {
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const escaped = selector.replace(/[^a-z0-9]/gi, "\\$&");
+  return new RegExp(`(^|[,}])\\s*${escaped}\\s*\\{`).test(stripped);
+}
+
+/** Every selector in the sheet whose rule sets a monospace family, @-blocks
+ * included. The same walker the computed suites use, so a responsive tweak
+ * cannot smuggle a mono face past the allowlist below. */
+function monoSelectors(css: string): string[] {
+  const found: string[] = [];
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const scan = (source: string): void => {
+    let index = 0;
+    while (index < source.length) {
+      const open = source.indexOf("{", index);
+      if (open < 0) return;
+      const selector = source.slice(index, open);
+      let depth = 1;
+      let cursor = open + 1;
+      while (depth > 0 && cursor < source.length) {
+        if (source[cursor] === "{") depth += 1;
+        if (source[cursor] === "}") depth -= 1;
+        cursor += 1;
+      }
+      const body = source.slice(open + 1, cursor - 1);
+      if (selector.trim().startsWith("@")) scan(body);
+      else if (/JetBrains Mono|monospace/i.test(body)) {
+        for (const part of selector.split(",")) found.push(part.trim().replace(/\s+/g, " "));
+      }
+      index = cursor;
+    }
+  };
+  scan(stripped);
+  return found;
+}
+
 describe("Settings static contracts", () => {
   it("rings keyboard focus on the menu rows with a drawn outline", () => {
     const outlines = outlineValues(settingsCss("settings.css"), ".settings-menu-row:focus-visible");
@@ -67,9 +110,79 @@ describe("Settings static contracts", () => {
     for (const css of [profiles, diagnostics]) {
       expect(css).not.toContain(".settings-subheading");
     }
+    // general.css may borrow the shell's label for its card heads, never
+    // re-declare it: a scoped spacing accommodation is not a definition.
+    const general = settingsCss("general.css");
+    expect(general).toContain(".settings-subheading");
+    expect(definesBareRule(general, ".settings-subheading")).toBe(false);
     const rule = /\.settings-subheading\s*\{([^}]*)\}/.exec(shell)?.[1] ?? "";
     expect(rule).toContain("font-size: 12px");
     expect(rule).toContain("font-weight: 500");
+  });
+
+  it("carries no styling ghost classes on the This-machine markup", () => {
+    // F5: eleven class names were left in the JSX with zero CSS rules,
+    // kept alive only as test selectors. The selectors below read semantic
+    // hooks (input names, roles, the shared card classes) instead. The scan
+    // reads className tokens only, so `name="send-behavior"` (a live form
+    // name, not a style hook) does not count.
+    const markup = settingsTsx("AppearanceSection.tsx") + settingsTsx("SendBehaviorSetting.tsx");
+    const tokens = new Set<string>();
+    for (const found of markup.matchAll(/className="([^"]*)"/g)) {
+      for (const token of (found[1] ?? "").split(/\s+/)) tokens.add(token);
+    }
+    for (const ghost of [
+      "appearance-section",
+      "appearance-options",
+      "appearance-option",
+      "appearance-option-copy",
+      "appearance-option-label",
+      "appearance-option-hint",
+      "appearance-persist-note",
+      "send-behavior",
+      "send-behavior-options",
+      "send-behavior-option",
+      "send-behavior-note",
+    ]) {
+      expect(tokens, `${ghost} has no CSS rule and must leave the markup`).not.toContain(ghost);
+    }
+  });
+
+  it("carries mono only where the house allows it", () => {
+    // F6: every settings sheet scanned, @-blocks included, against an
+    // explicit allowlist. general.css is not on it: no mono may ever be
+    // declared on a This-machine page. A new mono face anywhere else fails
+    // here until its selector is declared — and justified — below.
+    const sheets = [
+      "settings.css",
+      "general.css",
+      "providers.css",
+      "profiles.css",
+      "devices.css",
+      "diagnostics.css",
+    ] as const;
+    const allowlist = new Map<string, readonly string[]>([
+      ["settings.css", [".settings-card-meta", ".model-choice-control", ".settings-card-value"]],
+      ["general.css", []],
+      [
+        "providers.css",
+        [
+          ".prov-detail-code",
+          ".provider-consent-command",
+          ".provider-update-error pre",
+          ".provider-version",
+        ],
+      ],
+      ["profiles.css", []],
+      ["devices.css", [".dev-fingerprint", ".dev-pair-code", ".dev-typed-input"]],
+      ["diagnostics.css", [".retention-limit-input", ".diagnostics-row dd"]],
+    ]);
+    for (const sheet of sheets) {
+      expect(
+        monoSelectors(settingsCss(sheet)).sort(),
+        `mono outside the allowlist in ${sheet}`,
+      ).toEqual([...(allowlist.get(sheet) ?? [])].sort());
+    }
   });
 
   it("keeps the panel explanation sentences", () => {

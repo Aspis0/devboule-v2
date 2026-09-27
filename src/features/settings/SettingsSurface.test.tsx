@@ -518,7 +518,7 @@ describe("Settings menu shell", () => {
   });
 
   it.each([
-    ["appearance", "Appearance", ".appearance-section"],
+    ["appearance", "Appearance", ".machine-card"],
     ["providers", "Providers", "#settings-panel-providers"],
     ["profiles", "Agent profiles", "#settings-panel-agents"],
     ["projects", "Projects", "#settings-panel-projects"],

@@ -46,7 +46,7 @@ describe("SendBehaviorSetting", () => {
     await renderSetting();
     // The card every other This-machine setting uses — not the page-heading
     // class a page-level title wears (review F17).
-    const card = container.querySelector(".machine-card.send-behavior");
+    const card = container.querySelector(".machine-card");
     expect(card).not.toBeNull();
     expect(card?.textContent).toContain("Default send");
     expect(container.querySelector("h2")).toBeNull();
