@@ -410,6 +410,29 @@ describe("the right panel's tabs", () => {
     ]);
   });
 
+  it("paints no tab underline while a kebab panel shows, only the kebab's mark", async () => {
+    const { inject, token } = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/workspace/strip/strip.css"),
+      read("src/features/workspace/Workspace.css"),
+      read("src/features/workspace/panel/panel.css"),
+    ]);
+    inject([".workspace-panel-tab", ".workspace-panel-tab-active", ".workspace-panel-tab-label"]);
+    await renderWorkspace();
+
+    await act(async () => kebab().click());
+    const pr = menuItems().find((item) => item.textContent === "Pull request");
+    if (pr === undefined) throw new Error("Pull request menu entry did not render");
+    await act(async () => pr.click());
+
+    // Paint follows what is on screen, not the parked selection: no tab
+    // carries the active class, so no underline takes the accent.
+    expect(container.querySelector(".workspace-panel-tab-active")).toBeNull();
+    expect(getComputedStyle(tabByName("Changes")).borderBottomColor).not.toBe(token("--accent"));
+    expect(kebab().className).toContain("workspace-panel-kebab-active");
+  });
+
   it("links each tab to the panel with ids, and the panel back with aria-labelledby", async () => {
     await renderWorkspace();
 
@@ -421,6 +444,7 @@ describe("the right panel's tabs", () => {
       expect(tab.getAttribute("aria-controls")).toBe("workspace-side-panel");
     }
     expect(tabByName("Changes").id).toBe("panel-tab-changes");
+    expect(tabByName("Changes").className).toContain("workspace-panel-tab-active");
     expect(panel.getAttribute("aria-labelledby")).toBe("panel-tab-changes");
     await act(async () => tabByName("Design").click());
     expect(tabpanel().getAttribute("aria-labelledby")).toBe("panel-tab-design");
@@ -516,6 +540,8 @@ describe("the right panel's tabs", () => {
     expect(panel.getAttribute("aria-label")).toBe("Pull request");
     expect(panel.hasAttribute("aria-labelledby")).toBe(false);
     expect(panel.tabIndex).toBe(0);
+    // No tab controls the region: aria-controls is omitted while it shows.
+    for (const tab of tabs()) expect(tab.hasAttribute("aria-controls")).toBe(false);
     expect(panel.textContent).toContain("Pull request");
     expect(panel.textContent).toContain("not available yet");
     expect(panel.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
@@ -700,7 +726,7 @@ describe("the right panel's tabs", () => {
     expect(container.querySelector(".workspace-panel-menu")).not.toBeNull();
   });
 
-  it("renders the first registry entry for an unknown active panel without selecting it", async () => {
+  it("selects the first registry entry for an unknown active panel", async () => {
     const registry = [
       {
         id: "only-available-panel",
@@ -719,9 +745,9 @@ describe("the right panel's tabs", () => {
     expect(container.querySelector("[data-testid=fallback-panel]")?.textContent).toBe(
       "Fallback content",
     );
-    // The only tab is showing, but nothing selected it: the active id names
-    // a panel this registry never had. The stop still sits on it.
-    expect(tabByName("Available panel").getAttribute("aria-selected")).toBe("false");
+    // The unknown id names nothing: the shown first entry is selected, so the
+    // tablist never rests with nothing selected.
+    expect(tabByName("Available panel").getAttribute("aria-selected")).toBe("true");
     expect(tabByName("Available panel").tabIndex).toBe(0);
   });
 });

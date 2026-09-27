@@ -46,9 +46,15 @@ export function SidePanelTabs({
   const [lastTabId, setLastTabId] = useState<string | null>(null);
   if (activeIsTab && lastTabId !== activeId) setLastTabId(activeId);
   const stopId = activeIsTab ? activeId : (lastTabId ?? tabs[0]?.id ?? null);
-  // The selection follows the stop, so the tablist always names exactly one
-  // selected tab — even while a kebab region is showing instead of a panel.
-  const selectedId = activeIsTab ? activeId : lastTabId;
+  // What the body shows: the active entry, else the registry's first entry
+  // (Workspace's fallback), else nothing.
+  const shownEntry = registry.find((entry) => entry.id === activeId) ?? registry[0] ?? null;
+  // Paint follows what is on screen (N8): only a shown tab paints active.
+  const paintedId = shownEntry !== null && shownEntry.placement === "tab" ? shownEntry.id : null;
+  // Selection keeps one tab named (APG): the shown tab, else the parked last
+  // tab, else the first tab. A menu panel leaves the tablist without a
+  // displayed panel — the region carries its own name instead.
+  const selectedId = paintedId ?? lastTabId ?? tabs[0]?.id ?? null;
 
   const listRef = useRef<HTMLDivElement>(null);
   const { tabIndexFor, onTabKeyDown } = usePanelTabsKeyboard({
@@ -126,6 +132,7 @@ export function SidePanelTabs({
       <div className="workspace-panel-tablist" role="tablist" aria-label="Side panel" ref={listRef}>
         {tabs.map((entry) => {
           const selected = entry.id === selectedId;
+          const painted = entry.id === paintedId;
           return (
             <button
               key={entry.id}
@@ -134,9 +141,9 @@ export function SidePanelTabs({
               role="tab"
               data-panel-tab={entry.id}
               aria-selected={selected}
-              aria-controls={SIDE_PANEL_BODY_ID}
+              aria-controls={paintedId === null ? undefined : SIDE_PANEL_BODY_ID}
               tabIndex={tabIndexFor(entry.id)}
-              className={`workspace-panel-tab${selected ? " workspace-panel-tab-active" : ""}`}
+              className={`workspace-panel-tab${painted ? " workspace-panel-tab-active" : ""}`}
               onClick={() => onSelect(entry.id)}
               onKeyDown={(event) => onTabKeyDown(entry.id, event)}
             >
