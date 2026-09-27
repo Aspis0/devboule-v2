@@ -2,8 +2,8 @@
 
 // The terminal header reads its title from the session, never from a literal:
 // `sessionTitle` already prefers a display name, so naming a session renames
-// this header with zero further changes. Workspace does not pass the title
-// yet (it is untouched by this slice), so the literal stays the default.
+// this header with zero further changes. Workspace passes the close seam but
+// not the title yet, so the literal stays the default.
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -142,9 +142,9 @@ describe("terminal pane header title", () => {
     });
     await act(async () => undefined);
     expect(container.querySelector(".workspace-terminal-status")?.textContent).toBe("Failed");
-    expect(
-      container.querySelector(".workspace-status-dot")?.className,
-    ).toContain("workspace-dot-terracotta");
+    expect(container.querySelector(".workspace-status-dot")?.className).toContain(
+      "workspace-dot-terracotta",
+    );
   });
 
   it("reads Quiet with the sentence in the tooltip and the accessible name when silent", async () => {

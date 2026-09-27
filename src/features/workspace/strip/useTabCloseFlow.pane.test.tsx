@@ -28,13 +28,17 @@ const SESSIONS: Session[] = [
   terminalSession("term-three", "Term three"),
 ];
 
-function renderFlow(sessions: Session[], onClose: OnClose) {
+function renderFlow(
+  sessions: Session[],
+  onClose: OnClose,
+  selection: ReadonlySet<string> = new Set<string>(),
+) {
   const store: { flow: Flow | null } = { flow: null };
   function Probe() {
     const flow = useTabCloseFlow({
       sessions,
       selectedSessionId: "agent-one",
-      selection: new Set(),
+      selection,
       onClose,
       selectSession: () => undefined,
       clearSelection: () => undefined,
@@ -48,6 +52,9 @@ function renderFlow(sessions: Session[], onClose: OnClose) {
       <div data-testid="close-confirm">
         <span data-testid="close-confirm-title">{confirm.title}</span>
         <span data-testid="close-confirm-label">{confirm.confirmLabel}</span>
+        <span data-testid="close-confirm-targets">
+          {confirm.targets.map((target) => target.id).join(" ")}
+        </span>
       </div>
     );
   }
@@ -73,8 +80,8 @@ afterEach(async () => {
   document.body.replaceChildren();
 });
 
-async function mount(sessions: Session[], onClose: OnClose) {
-  const rendered = renderFlow(sessions, onClose);
+async function mount(sessions: Session[], onClose: OnClose, selection?: ReadonlySet<string>) {
+  const rendered = renderFlow(sessions, onClose, selection);
   await rendered.mount();
   return rendered;
 }
@@ -150,6 +157,76 @@ describe("activatePaneEntry", () => {
     expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toBe(
       "Archive running agent?",
     );
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("opens the delete confirm from the tab menu's Delete", async () => {
+    const onClose = vi.fn();
+    const { host, root, flow } = await mount(SESSIONS, onClose);
+    await act(async () => {
+      flow().openMenu("agent-one");
+    });
+    await act(async () => {
+      flow().activateEntry("delete");
+    });
+    expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toContain(
+      "Delete",
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("opens the selection confirm from the tab menu's selection entry", async () => {
+    const onClose = vi.fn();
+    const { host, root, flow } = await mount(
+      SESSIONS,
+      onClose,
+      new Set(["agent-one", "agent-two"]),
+    );
+    await act(async () => {
+      flow().openMenu("agent-one");
+    });
+    await act(async () => {
+      flow().activateEntry("close-selection");
+    });
+    expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toContain(
+      "Close",
+    );
+    expect(host.querySelector("[data-testid='close-confirm-targets']")?.textContent).toBe(
+      "agent-one agent-two",
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("targets the tabs after the anchor for close-to-the-right", async () => {
+    const onClose = vi.fn();
+    const { host, root, flow } = await mount(SESSIONS, onClose);
+    await act(async () => {
+      flow().activatePaneEntry("agent-two", "right");
+    });
+    expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toBe(
+      "Close tabs to the right?",
+    );
+    // The anchor itself is never in its own target set.
+    expect(host.querySelector("[data-testid='close-confirm-targets']")?.textContent).toBe(
+      "term-three",
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("does nothing for an anchor the roster does not know", async () => {
+    const onClose = vi.fn();
+    const { host, root, flow } = await mount(SESSIONS, onClose);
+    await act(async () => {
+      flow().activatePaneEntry("gone", "right");
+    });
+    await act(async () => {
+      flow().activatePaneEntry("gone", "close");
+    });
+    expect(host.querySelector("[data-testid='close-confirm']")).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });

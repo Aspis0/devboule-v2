@@ -172,6 +172,9 @@
   color: var(--muted);
   font-family: var(--font-ui);
   font-size: 13px;
+  /* Backstop only: the JS middle-cut fits the box, so this marks genuinely
+     wider-than-average clusters rather than trimming the preserved tail. */
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

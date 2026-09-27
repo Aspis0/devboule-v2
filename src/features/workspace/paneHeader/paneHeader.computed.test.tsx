@@ -6,11 +6,11 @@
 // paneHeader.css through the surfaces (Workspace.tsx:18-19), strip.css through
 // SessionStrip (:23), Workspace.css last (Workspace.tsx:80).
 //
-// The inject list names the Workspace.css shared group rule bare
-// (".workspace-agent-status") alongside the header's descendant selectors on
-// purpose: the group loads later at equal-or-lower specificity, so if the
-// header's rules are ever rewritten to bare selectors the group wins and
-// these assertions go mono 10 — the test fails without the fix.
+// The header's restyle rules are descendant selectors because Workspace.css
+// used to carry a bare group rule for the same classes and loads later. That
+// group is gone (P3-12), so today nothing competes — and the assertion below
+// keeps it that way: it fails the day any sheet grows a bare rule for one
+// of these classes again.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -50,17 +50,21 @@ const QUIET: HeaderDisplay = {
   tooltip: "Quiet — no output, may still be working.",
 };
 
-async function renderHeader(
-  kind: "agent" | "terminal",
-  display: HeaderDisplay,
-): Promise<{ token: (name: string) => string | undefined }> {
-  const { inject, token } = assembleCssProof([
+function sheets(): string[] {
+  return [
     read("src/styles/tokens.css"),
     read("src/styles/global.css"),
     read("src/features/workspace/paneHeader/paneHeader.css"),
     read("src/features/workspace/strip/strip.css"),
     read("src/features/workspace/Workspace.css"),
-  ]);
+  ];
+}
+
+async function renderHeader(
+  kind: "agent" | "terminal",
+  display: HeaderDisplay,
+): Promise<{ token: (name: string) => string | undefined }> {
+  const { inject, token } = assembleCssProof(sheets());
   inject([
     ".workspace-agent-toolbar",
     ".workspace-terminal-toolbar",
@@ -69,7 +73,6 @@ async function renderHeader(
     ".workspace-agent-toolbar .workspace-agent-title",
     ".workspace-terminal-toolbar .workspace-terminal-title",
     ".workspace-agent-toolbar .workspace-agent-status",
-    ".workspace-agent-status",
     ".workspace-terminal-toolbar .workspace-terminal-status",
     ".pane-header-kebab",
   ]);
@@ -190,5 +193,15 @@ describe("pane header computed styles (real stylesheets, no app launch)", () => 
     expect(order.at(-1)).toContain("pane-header-kebab");
     expect(order.at(-2)).toContain("workspace-terminal-close");
     expect(order.at(-3)).toContain("workspace-terminal-interrupt");
+  });
+
+  it("has no bare rule competing with the header's descendant selectors", () => {
+    // The cascade is protected by there being no competing rule, not by
+    // specificity: these fail the day any sheet grows one again.
+    const { rulesFor } = assembleCssProof(sheets());
+    expect(rulesFor(".workspace-agent-status")).toBe("");
+    expect(rulesFor(".workspace-agent-title")).toBe("");
+    expect(rulesFor(".workspace-terminal-status")).toBe("");
+    expect(rulesFor(".workspace-terminal-title")).toBe("");
   });
 });

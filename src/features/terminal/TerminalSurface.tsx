@@ -276,7 +276,7 @@ export const TerminalSurface = memo(function TerminalSurface({
   const message = bannerText(banner);
   // The ended banner is this failure's ONE surface: its sentence (with the
   // close-tab action below) lives in the pane's bottom banner only, never
-  // repeated in the header status — the header keeps the state dot instead.
+  // repeated in the header — which now carries the shared word beside the dot.
   const ended = banner?.kind === "ended";
   const bannerDetail =
     banner !== null && (banner.kind === "error" || banner.kind === "ended")

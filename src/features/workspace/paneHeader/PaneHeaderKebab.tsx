@@ -164,6 +164,8 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
                 type="button"
                 role="menuitem"
                 className="pane-header-menu-item"
+                // Belt-and-braces: the workspace always wires the seam, so in
+                // the app this never disables; tests omit it on purpose.
                 disabled={entry.disabled || menu.onCloseEntry === null}
                 onClick={() => activateClose(entry.key)}
               >

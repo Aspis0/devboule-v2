@@ -1123,10 +1123,10 @@ describe("ACP agent session", () => {
   });
 
   it("supersedes a clean finish when the session is later recovered", async () => {
-    // H6: `closed` renders "Finished" and `error` renders "Needs attention" —
+    // H6: `closed` reads Stopped and `error` reads Failed in the header —
     // materially different. A clean exit that is later revealed to be a
     // takeover (`recovered`) must supersede the finish, or the session reads
-    // "Finished" forever.
+    // "Stopped" forever.
     const harness = makeHarness();
     await harness.session.start();
     harness.emit({ type: "exit", code: 0 });

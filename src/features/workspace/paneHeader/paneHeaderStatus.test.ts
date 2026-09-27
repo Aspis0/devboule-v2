@@ -84,9 +84,9 @@ describe("headerDisplay", () => {
   });
 
   it("names the other attention reasons the way the chip details them", () => {
-    expect(
-      headerDisplay(LIVE, 0, "idle", undefined, { reason: "finished", atMs: 1 }).word,
-    ).toBe("Done");
+    expect(headerDisplay(LIVE, 0, "idle", undefined, { reason: "finished", atMs: 1 }).word).toBe(
+      "Done",
+    );
     expect(headerDisplay(LIVE, 0, "idle", undefined, { reason: "error", atMs: 1 }).word).toBe(
       "Failed",
     );
@@ -115,9 +115,7 @@ describe("headerDisplay", () => {
       pulse: false,
       tooltip: "Connecting",
     });
-    expect(headerDisplay(null, null, "initializing", undefined, undefined).word).toBe(
-      "Connecting",
-    );
+    expect(headerDisplay(null, null, "initializing", undefined, undefined).word).toBe("Connecting");
   });
 
   it("never reads an unknown state as a healthy word", () => {
@@ -148,7 +146,7 @@ describe("the pulse means a turn runs, not that the process is up", () => {
   });
 });
 
-describe("the strip and the header agree for every roster state", () => {
+describe("the strip and the header agree on roster states and approval", () => {
   const cases: Array<{
     state: SessionState;
     elapsedMs: number | null;
