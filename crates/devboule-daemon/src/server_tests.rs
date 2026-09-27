@@ -1130,6 +1130,36 @@ fn forced_auth_checks_keep_a_per_provider_floor() {
 }
 
 #[test]
+fn the_forced_check_floor_stamps_completion_not_start() {
+    let (path, state) = temp_state("auth-force-floor-stamp");
+    let agent = installed_agent("claude");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let probe_calls = std::sync::Arc::clone(&calls);
+    // A probe slower than the floor: with a start stamp, the second forced
+    // request would see an expired floor and re-run; with a completion
+    // stamp, it reuses.
+    *state
+        .auth_probe
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(
+        move |_agent: &crate::provider_catalog::InstalledAgent| {
+            probe_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(2_100));
+            Some(canned_auth_check(0))
+        },
+    ));
+    assert!(state.check_provider_auth(&agent, true).is_some());
+    assert!(state.check_provider_auth(&agent, true).is_some());
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a forced request within the floor of the last completed run reuses it"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
 fn a_panicked_auth_check_removes_its_flight_and_reruns() {
     let (path, state) = temp_state("auth-panic");
     let agent = installed_agent("claude");

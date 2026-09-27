@@ -961,7 +961,6 @@ impl ServerState {
         };
         let result = flight
             .get_or_init(|| {
-                self.record_auth_run(&agent.id);
                 #[cfg(test)]
                 let observation = match probe.as_ref() {
                     Some(probe) => probe(agent),
@@ -969,7 +968,14 @@ impl ServerState {
                 };
                 #[cfg(not(test))]
                 let observation = crate::provider_auth::check(agent);
-                observation.map(|check| self.record_provider_auth_check(&agent.id, check))
+                observation.map(|check| {
+                    // Stamp at completion, not at start: a check that runs
+                    // longer than the floor would otherwise leave a stamp
+                    // that is already stale, and the floor would add nothing
+                    // for the provider whose checks are slowest.
+                    self.record_auth_run(&agent.id);
+                    self.record_provider_auth_check(&agent.id, check)
+                })
             })
             .clone();
         drop(guard);

@@ -111,12 +111,16 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 /// writes (fetta 4 delle scritture): stage, unstage, discard and commit
 /// share one bridge road, so the four add a single helper call. Then 57 → 58
 /// with `session_set_name` (P11 agent titles): the rename waits on the daemon
-/// like the mode switch it sits beside.
+/// like the mode switch it sits beside. Then 58 → 60 with the two
+/// protocol-12 roads: `providers_auth_check` (the login check spawns
+/// provider CLIs in the host's credential context, so it must never run on
+/// the UI thread) and `providers_set_enabled` (the switch write waits on
+/// the daemon like every other settings road).
 #[test]
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 58,
+        scan.helper_calls, 60,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }
