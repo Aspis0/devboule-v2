@@ -691,7 +691,8 @@
 
 .oracle-results-heading h3 {
   margin: 4px 0 0;
-  font-size: 13px;
+  color: var(--ink);
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -1047,12 +1048,6 @@
 
 .oracle-files-heading {
   align-items: flex-start;
-}
-
-.oracle-files-heading h4 {
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 600;
 }
 
 .oracle-files-note {

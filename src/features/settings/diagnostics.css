@@ -268,7 +268,7 @@
   font-size: 11px;
 }
 
-#settings-panel-diagnostics .retention-limit-input {
+.retention-panel .retention-limit-input {
   background: var(--panel-side);
   border-color: var(--line-strong);
 }

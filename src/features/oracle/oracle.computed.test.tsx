@@ -77,6 +77,7 @@ describe("oracle cards (real stylesheets, no app launch)", () => {
       ".oracle-admin-block[aria-labelledby] h4",
       ".oracle-admin-block h4",
       ".oracle-files-heading h4",
+      ".oracle-results-heading h3",
       ".oracle-eyebrow",
       ".oracle-stage-description",
       ".oracle-ready-intro p",
@@ -113,7 +114,13 @@ describe("oracle cards (real stylesheets, no app launch)", () => {
     filesHeading.appendChild(filesTitle);
     document.body.appendChild(filesHeading);
 
-    for (const heading of [title, readyTitle, adminTitle, filesTitle]) {
+    const resultsHeading = document.createElement("div");
+    resultsHeading.className = "oracle-results-heading";
+    const resultsTitle = document.createElement("h3");
+    resultsHeading.appendChild(resultsTitle);
+    document.body.appendChild(resultsHeading);
+
+    for (const heading of [title, readyTitle, adminTitle, filesTitle, resultsTitle]) {
       const style = getComputedStyle(heading);
       expect(style.fontSize).toBe("14px");
       expect(style.fontWeight).toBe("600");
@@ -140,6 +147,25 @@ describe("oracle cards (real stylesheets, no app launch)", () => {
       if (!file.endsWith(".tsx") || file.includes(".test.")) continue;
       expect(read(`src/features/oracle/${file}`)).not.toContain("oracle-page-heading");
     }
+  });
+
+  it("labels each admin block through the heading referenced by aria-labelledby", () => {
+    const source = read("src/features/oracle/OracleAdmin.tsx");
+    const blocks = [...source.matchAll(/<section\b[^>]*className="oracle-admin-block"[^>]*>/g)];
+    expect(blocks).toHaveLength(3);
+    for (const [index, match] of blocks.entries()) {
+      const opening = match[0]!;
+      const labelId = opening.match(/aria-labelledby="([^"]+)"/)?.[1];
+      expect(labelId, `admin block ${index + 1} needs aria-labelledby`).toBeDefined();
+      const end = source.indexOf("</section>", match.index);
+      const content = source.slice(match.index, end);
+      expect(content).toContain(`<h4 id="${labelId}"`);
+    }
+  });
+
+  it("declares the file inventory heading in one rule", () => {
+    const css = read("src/features/oracle/oracle.css");
+    expect([...css.matchAll(/\.oracle-files-heading h4/g)]).toHaveLength(1);
   });
 
   it("keeps the four-step rail and its step states", () => {

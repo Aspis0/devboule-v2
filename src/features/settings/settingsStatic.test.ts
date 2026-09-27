@@ -108,9 +108,10 @@ describe("Settings static contracts", () => {
     const profiles = settingsCss("profiles.css");
     const diagnostics = settingsCss("diagnostics.css");
     const projects = settingsCss("projects.css");
+    const devices = settingsCss("devices.css");
     // The section-label scale has one owner. Page sheets use structural
     // selectors for spacing so none can fork the label rule.
-    for (const css of [profiles, diagnostics, projects]) {
+    for (const css of [profiles, diagnostics, projects, devices]) {
       expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(".settings-subheading");
     }
     // general.css may borrow the shell's label for its card heads, never
