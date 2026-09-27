@@ -530,6 +530,9 @@ function renderToolItem(
       <summary className="workspace-chat-tool-summary">
         <ToolIcon name={model.icon} />
         <span className="workspace-chat-tool-label">{model.displayName}</span>
+        {running ? (
+          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
+        ) : null}
         {model.summary !== undefined ? (
           <span className="workspace-chat-tool-summary-text">{model.summary}</span>
         ) : null}
@@ -597,15 +600,7 @@ function ToolCallGroupEntry({ group, a2aNames, transcriptEnded }: ToolCallGroupE
         setOpen(event.currentTarget.open);
       }}
     >
-      <summary
-        className="workspace-chat-tool-group-summary"
-        aria-expanded={open}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" && event.key !== " ") return;
-          event.preventDefault();
-          setOpen((previous) => !previous);
-        }}
-      >
+      <summary className="workspace-chat-tool-group-summary" aria-expanded={open}>
         <ToolIcon name="wrench" />
         <span className="workspace-chat-tool-group-count">{callCount}</span>
         <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
@@ -837,6 +832,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     journalLoss: null,
   });
   const conversationRef = useRef<HTMLDivElement>(null);
+  const conversationPinnedToBottomRef = useRef(true);
   // The name source the a2a card resolves against, rebuilt only when a roster
   // the workspace handed down changes: resolution happens at render, so a
   // rename or a re-pairing is visible the next time the card paints.
@@ -1003,7 +999,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
 
   useEffect(() => {
     const conversation = conversationRef.current;
-    if (conversation === null) return;
+    if (conversation === null || !conversationPinnedToBottomRef.current) return;
     conversation.scrollTop = conversation.scrollHeight;
   }, [state.items, state.streaming, auxiliary]);
 
@@ -1116,7 +1112,15 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           ) : null}
         </div>
       ) : null}
-      <div ref={conversationRef} className="workspace-conversation workspace-scroll">
+      <div
+        ref={conversationRef}
+        className="workspace-conversation workspace-scroll"
+        onScroll={(event) => {
+          const conversation = event.currentTarget;
+          conversationPinnedToBottomRef.current =
+            conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight <= 48;
+        }}
+      >
         {state.items.length === 0 && state.status === "idle" && !osGone ? (
           <div className="workspace-chat-empty">Start a conversation with the agent.</div>
         ) : null}

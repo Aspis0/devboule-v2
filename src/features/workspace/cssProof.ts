@@ -2,13 +2,11 @@
 // the app: comments stripped, theme tokens resolved, and named rules injected
 // in sheet order, so the cascade under test is the bundle's own.
 //
-// Scope, stated plainly: this models selected rules, in source order. It
-// adjudicates neither specificity (a
-// higher-specificity rule in a later sheet beats the injected one
-// invisibly) nor pseudo-classes, descendant selectors, attribute
-// selectors that tests do not select, or anything inside @-blocks (skipped
-// whole). Enough for the explicitly selected styles, not a full browser
-// cascade proof. Tests that need assembled contents should use `rulesFor`.
+// Selected rules are injected in their original sheet order, and the DOM's
+// CSS engine resolves the real descendant, attribute, and specificity
+// relationships between them. This is a computed-style proof for the selected
+// DOM states, not a whole-app browser run. Happy DOM does not expose generated
+// pseudo-element content reliably; use `rulesFor` for those declarations.
 
 export type CssTheme = "light" | "dark";
 
@@ -51,6 +49,24 @@ function selectorMatches(ruleSelector: string, target: string): boolean {
     .some((part) => part === target);
 }
 
+function darkThemeBodies(css: string): string[] {
+  const bodies: string[] = [];
+  const headers = /\[data-theme=["']dark["']\]\s*\{/g;
+  for (let match = headers.exec(css); match !== null; match = headers.exec(css)) {
+    const open = css.indexOf("{", match.index);
+    let depth = 1;
+    let cursor = open + 1;
+    while (depth > 0 && cursor < css.length) {
+      if (css[cursor] === "{") depth += 1;
+      if (css[cursor] === "}") depth -= 1;
+      cursor += 1;
+    }
+    if (depth === 0) bodies.push(css.slice(open + 1, cursor - 1));
+    headers.lastIndex = cursor;
+  }
+  return bodies;
+}
+
 /** The assembled sheets, in bundle order: token resolution, rule lookup,
  * and injection all read this one joined source. */
 export function assembleCssProof(
@@ -62,6 +78,9 @@ export function assembleCssProof(
   /** The selected theme's token value, read from the sheets themselves. */
   token: (name: string) => string | undefined;
 } {
+  if (theme !== "light" && theme !== "dark") {
+    throw new Error(`Unsupported CSS proof theme: ${String(theme)}`);
+  }
   const stripped = sheets.map((sheet) => sheet.replace(/\/\*[\s\S]*?\*\//g, ""));
   const tokens = new Map<string, string>();
   for (const sheet of stripped) {
@@ -73,8 +92,8 @@ export function assembleCssProof(
   }
   if (theme === "dark") {
     for (const sheet of stripped) {
-      for (const block of sheet.matchAll(/\[data-theme=["']dark["']\]\s*\{([^}]*)\}/g)) {
-        for (const m of block[1]!.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
+      for (const body of darkThemeBodies(sheet)) {
+        for (const m of body.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
           tokens.set(`--${m[1]!.trim()}`, m[2]!.trim());
         }
       }

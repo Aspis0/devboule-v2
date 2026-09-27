@@ -47,27 +47,61 @@ describe("tool row computed styles", () => {
     "keeps open tool text and icons readable in the %s theme",
     (theme: CssTheme) => {
       const css = assembleCssProof(sheets, theme);
-      document.documentElement.dataset.theme = theme;
+      const lightCss = assembleCssProof(sheets, "light");
+      // The dark proof must actually resolve the dark token block; this fails
+      // if the resolver is bypassed because --code-bg differs by theme.
+      if (theme === "dark") {
+        expect(css.token("--code-bg")).not.toBe(lightCss.token("--code-bg"));
+      }
       css.inject([
-        ".workspace-chat-tool[open]",
-        ".workspace-chat-tool[open] > summary",
-        ".workspace-chat-tool[open] .workspace-chat-tool-summary-text",
-        ".workspace-chat-tool[open] .workspace-chat-tool-label",
-        ".workspace-chat-tool[open] .workspace-chat-tool-failed",
-        ".workspace-chat-tool[open] .workspace-chat-tool-location",
-        ".workspace-chat-tool[open] .workspace-chat-tool-interrupted",
-        ".workspace-chat-tool[open] summary::after",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open]",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] > summary",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-summary-text",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-label",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-failed",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-location",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary::after",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary > svg",
+        ".workspace-chat-tool:not(.workspace-chat-tool-group).is-interrupted .workspace-chat-tool-label",
         ".workspace-chat-tool-label",
         ".workspace-chat-tool-failed",
         ".workspace-chat-tool-location",
         ".workspace-chat-tool-interrupted",
+        ".workspace-chat-tool.is-failed .workspace-chat-tool-failed",
+        ".workspace-chat-tool.is-running .workspace-chat-tool-running",
+        ".workspace-chat-tool-running",
         ".workspace-chat-tool summary > svg",
         ".workspace-chat-tool summary::after",
         ".workspace-chat-tool-body",
+        ".workspace-chat-tool-group",
+        ".workspace-chat-tool[open]",
+        ".workspace-chat-tool[open] > summary",
+        ".workspace-chat-tool[open] .workspace-chat-tool-failed",
+        ".workspace-chat-tool[open] .workspace-chat-tool-interrupted",
+        ".workspace-chat-tool[open] summary::after",
+        ".workspace-chat-tool-group[open]",
+        ".workspace-chat-tool-group[open] > summary",
+        ".workspace-chat-tool-group-body",
+        ".workspace-chat-tool-group summary::after",
+        ".workspace-chat-tool-group-summary-text",
+        ".workspace-chat-tool-group-count",
+        ".workspace-chat-tool-group.is-interrupted .workspace-chat-tool-group-summary-text",
+        ".workspace-chat-tool-group .workspace-chat-tool-interrupted",
+        ".workspace-chat-tool-group .workspace-chat-tool-failed",
+        ".workspace-chat-tool-interrupted",
+        ".workspace-chat-tool-failed",
+        ".workspace-chat-tool-group summary > svg",
+        ".workspace-chat-tool-group.is-running .workspace-chat-tool-running",
+        ".workspace-chat-tool-group.is-running summary::after",
+        ".workspace-chat-tool.is-running summary::after",
+        ".workspace-chat-tool.is-failed summary::after",
+        ".workspace-chat-tool-interrupted",
+        ".workspace-chat-tool-location",
       ]);
 
       const tool = document.createElement("details");
-      tool.className = "workspace-chat-tool";
+      tool.className = "workspace-chat-entry workspace-chat-tool is-failed";
       tool.open = true;
       const summary = document.createElement("summary");
       const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -80,10 +114,7 @@ describe("tool row computed styles", () => {
       const failed = document.createElement("span");
       failed.className = "workspace-chat-tool-failed";
       failed.textContent = "×";
-      const interrupted = document.createElement("span");
-      interrupted.className = "workspace-chat-tool-interrupted";
-      interrupted.textContent = "Interrupted";
-      summary.append(icon, label, command, failed, interrupted);
+      summary.append(icon, label, command, failed);
       tool.append(summary);
 
       const body = document.createElement("div");
@@ -95,9 +126,23 @@ describe("tool row computed styles", () => {
       tool.append(body);
       document.body.append(tool);
 
+      const interruptedTool = document.createElement("details");
+      interruptedTool.className = "workspace-chat-entry workspace-chat-tool is-interrupted";
+      interruptedTool.open = true;
+      const interruptedSummary = document.createElement("summary");
+      const interruptedLabel = document.createElement("span");
+      interruptedLabel.className = "workspace-chat-tool-label";
+      interruptedLabel.textContent = "Shell";
+      const interrupted = document.createElement("span");
+      interrupted.className = "workspace-chat-tool-interrupted";
+      interrupted.textContent = "Interrupted";
+      interruptedSummary.append(interruptedLabel, interrupted);
+      interruptedTool.append(interruptedSummary);
+      document.body.append(interruptedTool);
+
       const codeBg = css.token("--code-bg");
       expect(codeBg).toBeDefined();
-      for (const text of [label, command, failed, location, interrupted]) {
+      for (const text of [label, command, failed, location, interruptedLabel, interrupted]) {
         const color = getComputedStyle(text).color;
         expect(contrastRatio(color, codeBg!)).toBeGreaterThanOrEqual(4.5);
       }
@@ -108,11 +153,165 @@ describe("tool row computed styles", () => {
       ).toBeGreaterThanOrEqual(4.5);
       expect(css.rulesFor(".workspace-chat-tool summary::after")).toContain('content: "▾"');
       expect(getComputedStyle(label).fontFamily).not.toContain("JetBrains Mono");
+      expect(getComputedStyle(interruptedLabel).fontFamily).not.toContain("JetBrains Mono");
       expect(getComputedStyle(command).fontFamily).toContain("JetBrains Mono");
       expect(getComputedStyle(body).fontFamily).toContain("JetBrains Mono");
+      expect(
+        contrastRatio(getComputedStyle(location).borderTopColor, codeBg!),
+      ).toBeGreaterThanOrEqual(3);
       tool.remove();
+      interruptedTool.remove();
     },
   );
+
+  it.each(["light", "dark"] as const)(
+    "keeps every expanded group summary span readable on the tool fill in the %s theme",
+    (theme: CssTheme) => {
+      const css = assembleCssProof(sheets, theme);
+      css.inject([
+        ".workspace-chat-tool",
+        ".workspace-chat-tool[open]",
+        ".workspace-chat-tool[open] > summary",
+        ".workspace-chat-tool[open] .workspace-chat-tool-failed",
+        ".workspace-chat-tool[open] .workspace-chat-tool-interrupted",
+        ".workspace-chat-tool[open] summary::after",
+        ".workspace-chat-tool-group",
+        ".workspace-chat-tool-group[open]",
+        ".workspace-chat-tool-group[open] > summary",
+        ".workspace-chat-tool-group-body",
+        ".workspace-chat-tool-group summary::after",
+        ".workspace-chat-tool-group-count",
+        ".workspace-chat-tool-group-summary-text",
+        ".workspace-chat-tool-group.is-interrupted .workspace-chat-tool-group-summary-text",
+        ".workspace-chat-tool-group .workspace-chat-tool-failed",
+        ".workspace-chat-tool-group .workspace-chat-tool-interrupted",
+        ".workspace-chat-tool-failed",
+        ".workspace-chat-tool-interrupted",
+        ".workspace-chat-tool.is-failed .workspace-chat-tool-failed",
+        ".workspace-chat-tool-group summary > svg",
+        ".workspace-chat-tool-running",
+        ".workspace-chat-tool-group.is-running .workspace-chat-tool-running",
+        ".workspace-chat-tool-group.is-running summary::after",
+      ]);
+      const group = document.createElement("details");
+      group.className =
+        "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group is-interrupted is-failed";
+      group.open = true;
+      const summary = document.createElement("summary");
+      summary.className = "workspace-chat-tool-group-summary";
+      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const count = document.createElement("span");
+      count.className = "workspace-chat-tool-group-count";
+      count.textContent = "3 tool calls";
+      const text = document.createElement("span");
+      text.className = "workspace-chat-tool-group-summary-text";
+      text.textContent = "Edited 1 file";
+      const failed = document.createElement("span");
+      failed.className = "workspace-chat-tool-failed";
+      failed.textContent = "×";
+      const interrupted = document.createElement("span");
+      interrupted.className = "workspace-chat-tool-interrupted";
+      interrupted.textContent = "Interrupted";
+      summary.append(icon, count, text, failed, interrupted);
+      const body = document.createElement("div");
+      body.className = "workspace-chat-tool-group-body";
+      const row = document.createElement("details");
+      row.className = "workspace-chat-entry workspace-chat-tool";
+      group.append(summary, body);
+      body.append(row);
+      document.body.append(group);
+
+      const fillTool = css.token("--fill-tool");
+      expect(getComputedStyle(group).backgroundColor).toBe("transparent");
+      expect(getComputedStyle(summary).backgroundColor).toBe(fillTool);
+      expect(getComputedStyle(summary).borderRadius).toBe("6px");
+      for (const span of [count, text, failed, interrupted]) {
+        const visibleBackground =
+          span === interrupted ? getComputedStyle(span).backgroundColor : fillTool!;
+        expect(
+          contrastRatio(getComputedStyle(span).color, visibleBackground),
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+      expect(contrastRatio(getComputedStyle(icon).color, fillTool!)).toBeGreaterThanOrEqual(4.5);
+      expect(
+        contrastRatio(getComputedStyle(summary, "::after").color, fillTool!),
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(getComputedStyle(body).gap).toBe("2px");
+      expect(getComputedStyle(body).marginTop).toBe("0px");
+      expect(getComputedStyle(row).backgroundColor).toBe(fillTool);
+      expect(getComputedStyle(row).borderRadius).toBe("6px");
+      group.remove();
+    },
+  );
+
+  it.each([
+    { state: "running", classes: "workspace-chat-entry workspace-chat-tool is-running" },
+    { state: "failed", classes: "workspace-chat-entry workspace-chat-tool is-failed" },
+  ])("styles a single $state tool row from its real status class", ({ state, classes }) => {
+    const css = assembleCssProof(sheets);
+    css.inject([
+      ".workspace-chat-tool",
+      ".workspace-chat-tool-running",
+      ".workspace-chat-tool.is-running .workspace-chat-tool-running",
+      ".workspace-chat-tool-failed",
+      ".workspace-chat-tool.is-failed .workspace-chat-tool-failed",
+      ".workspace-chat-tool.is-running summary::after",
+      ".workspace-chat-tool.is-failed summary::after",
+    ]);
+    const row = document.createElement("details");
+    row.className = classes;
+    const summary = document.createElement("summary");
+    const marker = document.createElement("span");
+    if (state === "running") {
+      marker.className = "workspace-chat-tool-running";
+      marker.setAttribute("role", "img");
+      marker.setAttribute("aria-label", "Running");
+    } else {
+      marker.className = "workspace-chat-tool-failed";
+      marker.textContent = "×";
+      marker.setAttribute("role", "img");
+      marker.setAttribute("aria-label", "Failed");
+    }
+    summary.append(marker);
+    row.append(summary);
+    document.body.append(row);
+
+    if (state === "running") {
+      expect(getComputedStyle(marker).backgroundColor).toBe(css.token("--tone-live"));
+      expect(getComputedStyle(marker).width).toBe("6px");
+      expect(getComputedStyle(marker).marginLeft).toBe("0px");
+      expect(css.rulesFor(".workspace-chat-tool.is-running summary::after")).toContain(
+        "margin-left: auto",
+      );
+    } else {
+      expect(getComputedStyle(marker).color).toBe(css.token("--danger"));
+      expect(
+        contrastRatio(getComputedStyle(marker).color, css.token("--fill-tool")!),
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+    row.remove();
+  });
+
+  it("keeps a running group's dot before a chevron pinned at the trailing edge", () => {
+    const css = assembleCssProof(sheets);
+    css.inject([".workspace-chat-tool-running", ".workspace-chat-tool.is-running summary::after"]);
+    const group = document.createElement("details");
+    group.className =
+      "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group is-running";
+    const summary = document.createElement("summary");
+    const dot = document.createElement("span");
+    dot.className = "workspace-chat-tool-running";
+    summary.append(dot);
+    group.append(summary);
+    document.body.append(group);
+
+    expect(getComputedStyle(dot).backgroundColor).toBe(css.token("--tone-live"));
+    expect(getComputedStyle(dot).marginLeft).toBe("0px");
+    expect(css.rulesFor(".workspace-chat-tool.is-running summary::after")).toContain(
+      "margin-left: auto",
+    );
+    group.remove();
+  });
 
   it.each(["light", "dark"] as const)(
     "keeps expanded groups transparent with separate tool rows and 2 px gaps in the %s theme",
@@ -125,9 +324,12 @@ describe("tool row computed styles", () => {
         ".workspace-chat-tool-group-summary",
         ".workspace-chat-tool-group-body",
         ".workspace-chat-tool",
+        ".workspace-chat-tool[open]",
+        ".workspace-chat-tool[open] > summary",
+        ".workspace-chat-tool[open] summary::after",
       ]);
       const group = document.createElement("details");
-      group.className = "workspace-chat-tool-group";
+      group.className = "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group";
       group.open = true;
       const summary = document.createElement("summary");
       summary.className = "workspace-chat-tool-group-summary";
@@ -139,11 +341,11 @@ describe("tool row computed styles", () => {
       body.append(row);
       document.body.append(group);
 
-      expect(getComputedStyle(group).backgroundColor).not.toBe(css.token("--fill-tool"));
+      expect(getComputedStyle(group).backgroundColor).toBe("transparent");
       expect(getComputedStyle(group).gap).toBe("2px");
       expect(getComputedStyle(summary).backgroundColor).toBe(css.token("--fill-tool"));
       expect(getComputedStyle(body).gap).toBe("2px");
-      expect(getComputedStyle(body).marginTop).not.toBe("4px");
+      expect(getComputedStyle(body).marginTop).toBe("0px");
       expect(getComputedStyle(row).backgroundColor).toBe(css.token("--fill-tool"));
       expect(getComputedStyle(row).borderRadius).toBe("6px");
       group.remove();

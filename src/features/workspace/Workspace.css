@@ -687,7 +687,7 @@
   font-size: 12px;
 }
 
-.workspace-chat-tool[open] {
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] {
   flex-direction: column;
   align-items: stretch;
   padding: 0;
@@ -695,32 +695,33 @@
   color: var(--code-text);
 }
 
-.workspace-chat-tool[open] > summary {
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] > summary {
   padding-inline: 8px;
   color: var(--code-text);
 }
 
-.workspace-chat-tool[open] .workspace-chat-tool-summary-text {
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-summary-text {
   color: var(--code-text);
   font-family: var(--font-mono);
   line-height: 1.45;
 }
 
-.workspace-chat-tool[open] .workspace-chat-tool-label,
-.workspace-chat-tool[open] .workspace-chat-tool-failed,
-.workspace-chat-tool[open] .workspace-chat-tool-location,
-.workspace-chat-tool[open] .workspace-chat-tool-interrupted,
-.workspace-chat-tool[open] summary::after {
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-label,
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-failed,
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-location,
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted,
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary::after,
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary > svg {
   color: var(--code-text);
 }
 
-.workspace-chat-tool[open] .workspace-chat-tool-interrupted {
-  border-color: var(--line-strong);
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted {
+  border-color: var(--code-text);
   background: var(--code-bg);
 }
 
-.workspace-chat-tool[open] .workspace-chat-tool-location {
-  border-color: var(--line-strong);
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-location {
+  border-color: var(--code-text);
 }
 
 .workspace-chat-tool-group[open] {
@@ -735,6 +736,7 @@
   padding: 0 8px;
   border-radius: 6px;
   background: var(--fill-tool);
+  color: var(--ink-soft);
 }
 
 .workspace-chat-tool summary,
@@ -787,11 +789,20 @@
 
 .workspace-chat-tool-running {
   flex: none;
-  margin-left: auto;
+  margin-left: 0;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--tone-live);
+}
+
+.workspace-chat-tool.is-running summary::after,
+.workspace-chat-tool.is-failed summary::after {
+  margin-left: auto;
+}
+
+.workspace-chat-tool.is-failed .workspace-chat-tool-failed {
+  color: var(--danger);
 }
 
 .workspace-chat-tool.is-cancelled {
@@ -811,7 +822,7 @@
   border-radius: 999px;
   color: var(--silence);
   background: var(--surface-muted);
-  font-size: 9.5px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -903,12 +914,14 @@
 .workspace-chat-tool summary > svg,
 .workspace-chat-tool-group summary > svg {
   flex: none;
+  color: var(--ink-soft);
 }
 
 .workspace-chat-tool-group-body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  margin-top: 0;
 }
 
 .workspace-chat-error {

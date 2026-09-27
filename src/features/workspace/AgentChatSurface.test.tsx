@@ -2595,7 +2595,7 @@ describe("AgentChatSurface", () => {
     expect(conversation.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
-  it("scrolls to the bottom when auxiliary arrives without a new transcript item", async () => {
+  it("keeps the reader's position when auxiliary arrives away from the bottom", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -2607,7 +2607,39 @@ describe("AgentChatSurface", () => {
     const conversation = container.querySelector(".workspace-conversation");
     if (conversation === null) throw new Error("conversation did not render");
     Object.defineProperty(conversation, "scrollHeight", { value: 420, configurable: true });
-    conversation.scrollTop = 0;
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 80;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="scroll-agent"
+          title="Agent"
+          auxiliary={<div data-testid="aux-node">Permission card</div>}
+        />,
+      );
+    });
+
+    expect(conversation.scrollTop).toBe(80);
+  });
+
+  it("follows auxiliary updates when the reader is already at the bottom", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    Object.defineProperty(conversation, "scrollHeight", { value: 420, configurable: true });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 220;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
 
     await act(async () => {
       root.render(
@@ -2633,7 +2665,7 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Ready");
   });
 
-  it("renders a shell tool row with the command in the summary", async () => {
+  it("renders a running shell tool row with the command and running indicator", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -2654,7 +2686,7 @@ describe("AgentChatSurface", () => {
 
     const row = container.querySelector("details.workspace-chat-tool");
     if (row === null) throw new Error("tool row did not render");
-    expect(row.classList.contains("is-running")).toBe(true);
+    expect(row.querySelector('.workspace-chat-tool-running[aria-label="Running"]')).not.toBeNull();
     const summary = row.querySelector("summary")?.textContent ?? "";
     expect(summary).toContain("Shell");
     expect(summary).toContain("cargo test");
@@ -2694,7 +2726,7 @@ describe("AgentChatSurface", () => {
     expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("result body");
   });
 
-  it("marks failed tool rows and running rows with their classes", async () => {
+  it("renders accessible failed and running marks on single tool rows", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -2731,12 +2763,13 @@ describe("AgentChatSurface", () => {
       "details.workspace-chat-tool:not(.workspace-chat-tool-group)",
     );
     expect(rows).toHaveLength(2);
-    expect(rows[0].classList.contains("is-failed")).toBe(true);
     const singleFailure = rows[0].querySelector(".workspace-chat-tool-failed");
     expect(singleFailure?.textContent).toBe("×");
     expect(singleFailure?.getAttribute("role")).toBe("img");
     expect(singleFailure?.getAttribute("aria-label")).toBe("Failed");
-    expect(rows[1].classList.contains("is-running")).toBe(true);
+    expect(
+      rows[1].querySelector('.workspace-chat-tool-running[aria-label="Running"]'),
+    ).not.toBeNull();
     expect(rows[1].querySelector(".workspace-chat-tool-location")?.textContent).toBe(
       "src/lib.rs:12",
     );
@@ -2832,7 +2865,7 @@ describe("AgentChatSurface", () => {
     expect(group.querySelectorAll("details.workspace-chat-tool")).toHaveLength(3);
   });
 
-  it("opens and closes grouped tools with click, Enter, and Space", async () => {
+  it("opens and closes grouped tools with click", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -2865,16 +2898,9 @@ describe("AgentChatSurface", () => {
     await act(async () => summary.click());
     expect(group.open).toBe(true);
     expect(summary.getAttribute("aria-expanded")).toBe("true");
-    await act(async () => {
-      summary.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    });
+    await act(async () => summary.click());
     expect(group.open).toBe(false);
     expect(summary.getAttribute("aria-expanded")).toBe("false");
-    await act(async () => {
-      summary.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
-    });
-    expect(group.open).toBe(true);
-    expect(summary.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("keeps parent and subagent tools in separate runs with the subagent frame", async () => {
@@ -2955,10 +2981,14 @@ describe("AgentChatSurface", () => {
     });
 
     const running = container.querySelector("details.workspace-chat-tool-group");
-    expect(running?.classList.contains("is-running")).toBe(true);
-    expect(running?.classList.contains("is-failed")).toBe(false);
     expect(running?.querySelector(".workspace-chat-tool-failed")).toBeNull();
     expect(running?.querySelector(".workspace-chat-tool-running")).not.toBeNull();
+    expect(running?.querySelector(".workspace-chat-tool-running")?.getAttribute("role")).toBe(
+      "img",
+    );
+    expect(running?.querySelector(".workspace-chat-tool-running")?.getAttribute("aria-label")).toBe(
+      "Running",
+    );
 
     await act(async () => {
       channelHarness.active?.({
@@ -2969,8 +2999,6 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    expect(running?.classList.contains("is-running")).toBe(false);
-    expect(running?.classList.contains("is-failed")).toBe(true);
     expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("×");
     expect(running?.querySelector(".workspace-chat-tool-failed")?.getAttribute("role")).toBe("img");
     expect(running?.querySelector(".workspace-chat-tool-failed")?.getAttribute("aria-label")).toBe(
@@ -3010,6 +3038,12 @@ describe("AgentChatSurface", () => {
     if (summary === null) throw new Error("tool group summary did not render");
     await act(async () => summary.click());
     expect(group.open).toBe(true);
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    Object.defineProperty(conversation, "scrollHeight", { value: 600, configurable: true });
+    Object.defineProperty(conversation, "clientHeight", { value: 200, configurable: true });
+    conversation.scrollTop = 80;
+    conversation.dispatchEvent(new Event("scroll", { bubbles: true }));
 
     await act(async () => {
       channelHarness.active?.({
@@ -3027,6 +3061,7 @@ describe("AgentChatSurface", () => {
     expect(updatedGroup).toBe(group);
     expect(updatedGroup?.open).toBe(true);
     expect(updatedGroup?.querySelector("summary")?.getAttribute("aria-expanded")).toBe("true");
+    expect(conversation.scrollTop).toBe(80);
     expect(updatedGroup?.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
       "3 tool calls",
     );
