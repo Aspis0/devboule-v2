@@ -138,13 +138,23 @@ describe("ProviderKebab", () => {
     expect(document.activeElement).toBe(items[0]);
   });
 
-  it("closes on Tab so focus can move on without an orphan menu", async () => {
+  it("closes when focus leaves the menu, and stays for moves inside", async () => {
     await renderKebab({ onUpdate: () => {} });
     await openMenu();
-    const first = menuItems()[0];
-    if (!first) throw new Error("menu items did not render");
+    const items = menuItems();
+    expect(items.length).toBeGreaterThan(1);
+    // Tab order inside the menu: focus moves item to item, menu stays.
     await act(async () => {
-      first.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      items[0]?.dispatchEvent(
+        new FocusEvent("focusout", { bubbles: true, relatedTarget: items[1] }),
+      );
+    });
+    expect(container.querySelector('[role="menu"]')).not.toBeNull();
+    // Focus out to the page: the menu goes with it, no orphan left behind.
+    await act(async () => {
+      items[1]?.dispatchEvent(
+        new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }),
+      );
     });
     expect(container.querySelector('[role="menu"]')).toBeNull();
   });

@@ -52,9 +52,11 @@ describe("ProviderModelCount", () => {
     vi.clearAllMocks();
   });
 
-  async function renderCount(supported = true) {
+  async function renderCount(supported = true, epoch = 0) {
     await act(async () =>
-      root.render(<ProviderModelCount providerId="grok" supported={supported} cache={cache} />),
+      root.render(
+        <ProviderModelCount providerId="grok" supported={supported} cache={cache} epoch={epoch} />,
+      ),
     );
     await act(async () => undefined);
   }
@@ -92,7 +94,9 @@ describe("ProviderModelCount", () => {
       const otherRoot = createRoot(other);
       const otherCache = new Map();
       await act(async () =>
-        otherRoot.render(<ProviderModelCount providerId="grok" supported cache={otherCache} />),
+        otherRoot.render(
+          <ProviderModelCount providerId="grok" supported cache={otherCache} epoch={0} />,
+        ),
       );
       await act(async () => undefined);
       expect(other.textContent ?? "").not.toMatch(/\d+ models?/);
@@ -112,14 +116,14 @@ describe("ProviderModelCount", () => {
   });
 
   it("serves a cached reply without asking again", async () => {
-    cache.set("grok", 7);
+    cache.set("grok", { epoch: 0, value: 7 });
     await renderCount();
     expect(providerVocabularyGet).not.toHaveBeenCalled();
     expect(container.textContent).toContain("7 models");
   });
 
   it("serves a cached absence without asking again", async () => {
-    cache.set("grok", null);
+    cache.set("grok", { epoch: 0, value: null });
     await renderCount();
     expect(providerVocabularyGet).not.toHaveBeenCalled();
     expect(container.textContent).toBe("");
@@ -134,5 +138,36 @@ describe("ProviderModelCount", () => {
     await renderCount();
     expect(providerVocabularyGet).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("5 models");
+  });
+
+  it("dedupes a remount inside the read window instead of probing twice", async () => {
+    // Expand → collapse → expand while the read is open: the second mount
+    // subscribes to the in-flight promise, and one call serves both.
+    let resolveRead!: (reply: ProviderVocabulary) => void;
+    vi.mocked(providerVocabularyGet).mockReturnValueOnce(
+      new Promise<ProviderVocabulary>((resolve) => {
+        resolveRead = resolve;
+      }),
+    );
+    await renderCount();
+    expect(providerVocabularyGet).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderCount();
+    expect(providerVocabularyGet).toHaveBeenCalledTimes(1);
+
+    resolveRead(vocabularyWith("present", 9));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(providerVocabularyGet).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("9 models");
+  });
+
+  it("ignores entries from a previous epoch", async () => {
+    cache.set("grok", { epoch: 0, value: 3 });
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(vocabularyWith("present", 4));
+    await renderCount(true, 1);
+    expect(providerVocabularyGet).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("4 models");
   });
 });

@@ -46,8 +46,14 @@ function Harness({ supported = true, active = true }: { supported?: boolean; act
       <button type="button" onClick={() => store.setEnabled("grok", true)}>
         on
       </button>
+      <button type="button" onClick={() => store.setEnabled("claude", false)}>
+        claude-off
+      </button>
       <button type="button" onClick={() => store.turnAllOn("grok")}>
         all-on
+      </button>
+      <button type="button" onClick={() => store.retry()}>
+        refetch
       </button>
     </div>
   );
@@ -166,6 +172,74 @@ describe("useToolPolicies", () => {
     expect(container.querySelector('[data-testid="write-error-grok"]')).toBeNull();
   });
 
+  it("reports and reverts row A when it rejects after row B wrote", async () => {
+    // N2: sequencing is per provider, so B's newer write never swallows A's
+    // rejection — A's optimistic row reverts and its error is recorded.
+    let rejectA!: (cause: unknown) => void;
+    vi.mocked(toolPolicySet).mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectA = reject;
+        }),
+    );
+    await renderHarness();
+    await act(async () => buttonNamed("off").click());
+    await act(async () => buttonNamed("claude-off").click());
+    await act(async () => undefined);
+    expect(toolPolicySet).toHaveBeenCalledTimes(2);
+
+    await act(async () => rejectA({ code: "io", message: "grok unwritable" }));
+    await act(async () => undefined);
+    const rows = container.querySelector('[data-testid="policies"]')?.textContent ?? "";
+    // B's confirmed row stands; A's optimistic row is gone, with an error.
+    // (errorSentence maps the rejection message to detail, so the harness
+    // sentence is the io sentence — the point is A reported at all.)
+    expect(rows).toContain("claude");
+    expect(rows).not.toContain("grok");
+    expect(container.querySelector('[data-testid="write-error-grok"]')?.textContent).toContain(
+      "system or file operation failed",
+    );
+  });
+
+  it("keeps a settled write against a refetch issued before it", async () => {
+    // N1: refetch F is issued first and hangs; write W starts while F is
+    // open and settles; F's stale pre-write reply lands last and must not
+    // overwrite the newer settled row.
+    await renderHarness();
+    expect(toolPolicyGet).toHaveBeenCalledTimes(1);
+    let resolveFetch!: (reply: ToolPolicyReply) => void;
+    vi.mocked(toolPolicyGet).mockImplementationOnce(
+      () =>
+        new Promise<ToolPolicyReply>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    let resolveWrite!: () => void;
+    vi.mocked(toolPolicySet).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveWrite = resolve;
+        }),
+    );
+    await act(async () => buttonNamed("refetch").click());
+    await act(async () => undefined);
+    expect(toolPolicyGet).toHaveBeenCalledTimes(2);
+    await act(async () => buttonNamed("off").click());
+    await act(async () => undefined);
+    await act(async () => resolveWrite());
+    await act(async () => undefined);
+    expect(container.querySelector('[data-testid="policies"]')?.textContent).toContain(
+      '"enabled":false',
+    );
+
+    resolveFetch({ policies: [] });
+    await act(async () => undefined);
+    await act(async () => undefined);
+    // The stale reply lands after the settle: grok's confirmed row stands.
+    expect(container.querySelector('[data-testid="policies"]')?.textContent).toContain("grok");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("ends a failed load in Retry and recovers on success", async () => {
     vi.mocked(toolPolicyGet).mockRejectedValueOnce({ code: "io", message: "pipe is gone" });
     await renderHarness();
@@ -218,6 +292,21 @@ describe("useToolPolicies", () => {
     expect(container.querySelector('[data-testid="write-error-grok"]')).not.toBeNull();
     await act(async () => buttonNamed("dismiss-grok").click());
     expect(container.querySelector('[data-testid="write-error-grok"]')).toBeNull();
+  });
+
+  it("clears a dead Retry instead of lingering when nothing is retryable", async () => {
+    vi.mocked(toolPolicyGet).mockRejectedValueOnce({ code: "io", message: "pipe is gone" });
+    await renderHarness();
+    expect(toolPolicyGet).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    // The catalog drops every tool-bearing provider: the store cannot
+    // fetch, so Retry clears the alert instead of firing into the void.
+    await act(async () => root.render(<Harness supported active={false} />));
+    await act(async () => undefined);
+    await act(async () => buttonNamed("Retry").click());
+    await act(async () => undefined);
+    expect(toolPolicyGet).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("merges a refetch around an in-flight write instead of dropping it", async () => {

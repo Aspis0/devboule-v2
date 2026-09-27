@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderInfo } from "../../../types/ipc";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import { providerCanUpdate, providerRowStatus, providerVersionSegments } from "../providerStatus";
@@ -58,6 +58,10 @@ export interface ProviderRowProps {
   actionsDisabled: boolean;
   /** Bumped by Refresh: remounts the lazy count so an open row re-reads. */
   modelEpoch: number;
+  /** Registry row that starts through npx: said plainly on the row. */
+  viaNpx: boolean;
+  /** Panel-owned node registry for returning focus after Confirm. */
+  rowRef: (node: HTMLDivElement | null) => void;
   onToggleTools: (next: boolean) => void;
   onTurnAllOn: () => void;
   onOpenUpdate: (trigger: HTMLButtonElement | null) => void;
@@ -88,6 +92,8 @@ export function ProviderRow({
   busyVerb,
   actionsDisabled,
   modelEpoch,
+  viaNpx,
+  rowRef,
   onToggleTools,
   onTurnAllOn,
   onOpenUpdate,
@@ -97,7 +103,14 @@ export function ProviderRow({
   onRefresh,
 }: ProviderRowProps) {
   const [expanded, setExpanded] = useState(false);
-  const rowRef = useRef<HTMLDivElement>(null);
+  const rowScopeRef = useRef<HTMLDivElement>(null);
+  const setWrapNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      rowScopeRef.current = node;
+      rowRef(node);
+    },
+    [rowRef],
+  );
   // Kebab Update passes no trigger (the menu item unmounts), so the row
   // remembers where consent came from and returns focus to the kebab on
   // Cancel itself — the panel's restore effect only covers live triggers.
@@ -135,12 +148,12 @@ export function ProviderRow({
   function cancelConsent() {
     onCancelConsent();
     if (consentFromKebab) {
-      rowRef.current?.querySelector<HTMLButtonElement>(".prov-kebab")?.focus();
+      rowScopeRef.current?.querySelector<HTMLButtonElement>(".prov-kebab")?.focus();
     }
   }
 
   return (
-    <div className="prov-row-wrap" ref={rowRef}>
+    <div className="prov-row-wrap" ref={setWrapNode} tabIndex={-1} data-provider-row={provider.id}>
       <div className="prov-row">
         <button
           type="button"
@@ -160,12 +173,14 @@ export function ProviderRow({
           <span className={`prov-dot prov-dot-${status.tone}`} aria-hidden="true" />
           <span className="prov-status-word">{status.word}</span>
           {status.detail !== null ? <span className="sr-only">{status.detail}</span> : null}
+          {viaNpx ? <span className="prov-via">via npx</span> : null}
           {expanded ? (
             <ProviderModelCount
               key={modelEpoch}
               providerId={provider.id}
               supported={vocabularySupported}
               cache={modelCache}
+              epoch={modelEpoch}
             />
           ) : null}
         </span>

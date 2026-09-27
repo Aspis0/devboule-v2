@@ -45,7 +45,12 @@ import {
   toolPolicyGet,
   toolPolicySet,
 } from "../../../lib/tauri";
-import type { DaemonStatus, ProviderCatalog, ProviderInfo } from "../../../types/ipc";
+import type {
+  DaemonStatus,
+  ProviderCatalog,
+  ProviderInfo,
+  ProviderUpdateOutcome,
+} from "../../../types/ipc";
 import { ProvidersPanel } from "./ProvidersPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -240,6 +245,49 @@ describe("providers sections and search", () => {
 
     expect(container.textContent).toMatch(/no providers match/i);
     expect(container.textContent).not.toContain("codex-acp");
+  });
+
+  it("groups npx runners after the real CLIs, saying via npx on each row", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        installedProvider({ id: "grok" }),
+        {
+          id: "agoragentic-acp",
+          executable: "agoragentic-mcp@1.3.0",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+          origin: "npx-wrapper",
+        },
+        {
+          id: "codex-acp",
+          executable: "",
+          acpAvailable: false,
+          authentication: "unknown",
+          installed: false,
+          npmPackage: "@agentclientprotocol/codex-acp",
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    const installed = Array.from(container.querySelectorAll("section")).find(
+      (section) => section.getAttribute("aria-label") === "Installed",
+    );
+    const npx = Array.from(container.querySelectorAll("section")).find(
+      (section) => section.getAttribute("aria-label") === "Run on demand (npx)",
+    );
+    if (!installed) throw new Error("Installed section did not render");
+    if (!npx) throw new Error("npx section did not render");
+    expect(installed.textContent).toContain("grok");
+    expect(installed.textContent).not.toContain("agoragentic-acp");
+    expect(installed.textContent).not.toContain("via npx");
+    expect(npx.textContent).toContain("agoragentic-acp");
+    expect(npx.textContent).toContain("via npx");
+    expect(npx.textContent).toMatch(/nothing is installed/i);
+    // Install flow untouched: the not-installed row stays available.
+    expect(container.textContent).toContain("Available to install");
   });
 
   it("says when no agent CLI is on PATH", async () => {
@@ -747,6 +795,63 @@ describe("provider update and install", () => {
     await act(async () => undefined);
     expect(providerUpdate).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("npm install -g @vibe/grok-cli@latest");
+  });
+
+  it("lands focus on the row after Confirm, on both the kebab and details paths", async () => {
+    async function confirmThroughKebab(): Promise<void> {
+      const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
+      if (!kebab) throw new Error("kebab did not render");
+      await act(async () => kebab.click());
+      const update = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+      ).find((item) => item.textContent === "Update");
+      if (!update) throw new Error("Update item did not render");
+      await act(async () => update.click());
+      const confirm = container.querySelector<HTMLButtonElement>(".provider-consent-confirm");
+      if (!confirm) throw new Error("consent Confirm did not render");
+      await act(async () => confirm.click());
+      await act(async () => undefined);
+    }
+
+    // Kebab path: the menu item is unmounted, so only the row can take focus.
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [npmProvider()],
+      unreadableDirs: 0,
+    });
+    let resolveUpdate!: (outcome: ProviderUpdateOutcome) => void;
+    vi.mocked(providerUpdate).mockReturnValueOnce(
+      new Promise<ProviderUpdateOutcome>((resolve) => {
+        resolveUpdate = resolve;
+      }),
+    );
+    await renderPanel();
+    await confirmThroughKebab();
+    expect(document.activeElement?.getAttribute("data-provider-row")).toBe("grok");
+    resolveUpdate({ ok: true, exitCode: 0, log: "" });
+    await act(async () => undefined);
+    await act(async () => root.unmount());
+    container.remove();
+
+    // Details path: the Update button unmounts under the actions lock, so
+    // the row takes focus here too instead of <body>.
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [npmProvider()],
+      unreadableDirs: 0,
+    });
+    vi.mocked(providerUpdate).mockReturnValueOnce(
+      new Promise<ProviderUpdateOutcome>((resolve) => {
+        resolveUpdate = resolve;
+      }),
+    );
+    await renderPanel();
+    const confirm = await openConsentFromDetails();
+    await act(async () => confirm.click());
+    await act(async () => undefined);
+    expect(document.activeElement?.getAttribute("data-provider-row")).toBe("grok");
+    resolveUpdate({ ok: true, exitCode: 0, log: "" });
+    await act(async () => undefined);
   });
 
   it("runs npm at most once when Confirm is double-clicked", async () => {

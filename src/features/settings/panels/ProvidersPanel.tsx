@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { providerUpdate, providersList, providersRefresh } from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
@@ -71,6 +71,36 @@ export function ProvidersPanel() {
     setModelEpoch((epoch) => epoch + 1);
   }
 
+  // Row nodes by provider id, for returning focus after Confirm on the
+  // kebab path (the menu item is unmounted, so the trigger restore has
+  // nothing to focus). Callbacks are cached per id: a fresh closure every
+  // render would detach and re-attach every ref on every 2 s poll.
+  const rowNodesRef = useRef(new Map<string, HTMLDivElement>());
+  const rowRefCallbacks = useRef(new Map<string, (node: HTMLDivElement | null) => void>());
+  const registerRowNode = useCallback((providerId: string) => {
+    let callback = rowRefCallbacks.current.get(providerId);
+    if (!callback) {
+      callback = (node: HTMLDivElement | null) => {
+        if (node === null) rowNodesRef.current.delete(providerId);
+        else rowNodesRef.current.set(providerId, node);
+      };
+      rowRefCallbacks.current.set(providerId, callback);
+    }
+    return callback;
+  }, []);
+  // Set on Confirm when the trigger is already gone (kebab path): the
+  // effect below moves focus onto the row showing the npm run.
+  const pendingFocusRowRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (npmRun === null) return;
+    const providerId = pendingFocusRowRef.current;
+    if (providerId === null) return;
+    const node = rowNodesRef.current.get(providerId);
+    node?.focus();
+    if (node) pendingFocusRowRef.current = null;
+  }, [npmRun, catalog]);
+
   useEffect(() => {
     consentInFlightRef.current = false;
     if (consent === null) {
@@ -89,6 +119,17 @@ export function ProvidersPanel() {
   const installed = useMemo(
     () => (providers ?? []).filter((provider) => provider.installed !== false),
     [providers],
+  );
+  // Registry agents run on demand through npx (the old "available via npx"):
+  // no local executable, so they get their own group and must not crowd
+  // the real CLIs under "Installed".
+  const localProviders = useMemo(
+    () => installed.filter((provider) => provider.origin !== "npx-wrapper"),
+    [installed],
+  );
+  const npxProviders = useMemo(
+    () => installed.filter((provider) => provider.origin === "npx-wrapper"),
+    [installed],
   );
   const available = useMemo(
     () => (providers ?? []).filter((provider) => provider.installed === false),
@@ -166,6 +207,11 @@ export function ProvidersPanel() {
     if (consent === null || consentInFlightRef.current) return;
     consentInFlightRef.current = true;
     const { provider } = consent;
+    // Confirm always lands focus on the row showing the npm run: the
+    // kebab trigger is already unmounted, and the details Update button
+    // unmounts under the actions lock. The restore effect keeps serving
+    // Cancel/Escape, whose triggers stay mounted.
+    pendingFocusRowRef.current = provider.id;
     setConsent(null);
     setNpmFailure(null);
     setNpmRun({ providerId: provider.id, verb: consent.verb });
@@ -205,6 +251,39 @@ export function ProvidersPanel() {
     consent !== null && consent.provider.npmPackage
       ? `npm install -g ${consent.provider.npmPackage}@latest`
       : null;
+
+  function renderInstalledRow(provider: ProviderInfo, viaNpx: boolean) {
+    const withTools = toolPolicySupported && (provider.tools ?? []).length > 0;
+    const runHere = npmRun?.providerId === provider.id;
+    return (
+      <ProviderRow
+        key={provider.id}
+        provider={provider}
+        toolPolicy={withTools ? toolPolicyFor(provider.id, toolStore.policies) : null}
+        toolsDisabled={toolStore.policies === null}
+        vocabularySupported={vocabularySupported}
+        modelCache={modelCache}
+        consentOpen={consent?.provider.id === provider.id}
+        npmCommand={consent?.provider.id === provider.id ? npmCommand : null}
+        npmVerb={consent?.provider.id === provider.id ? consent.verb : null}
+        npmFailure={npmFailure?.providerId === provider.id ? npmFailure : null}
+        writeError={toolStore.writeErrors[provider.id] ?? null}
+        onDismissWriteError={() => toolStore.dismissWriteError(provider.id)}
+        busyVerb={runHere && npmRun ? npmRun.verb : null}
+        actionsDisabled={npmRun !== null}
+        modelEpoch={modelEpoch}
+        viaNpx={viaNpx}
+        rowRef={registerRowNode(provider.id)}
+        onToggleTools={(next) => toolStore.setEnabled(provider.id, next)}
+        onTurnAllOn={() => toolStore.turnAllOn(provider.id)}
+        onOpenUpdate={(trigger) => openConsent(provider, "update", trigger)}
+        onConfirmConsent={confirmConsent}
+        onCancelConsent={() => setConsent(null)}
+        onDismissFailure={() => setNpmFailure(null)}
+        onRefresh={refresh}
+      />
+    );
+  }
   return (
     <div id="settings-panel-providers">
       <button className="provider-refresh" type="button" disabled={refreshing} onClick={refresh}>
@@ -247,40 +326,23 @@ export function ProvidersPanel() {
               </button>
             </div>
           ) : null}
-          {installed.length > 0 ? (
+          {localProviders.length > 0 ? (
             <section aria-label="Installed">
               <h3 className="settings-subheading">Installed</h3>
               <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
-                {installed.map((provider) => {
-                  const withTools = toolPolicySupported && (provider.tools ?? []).length > 0;
-                  const runHere = npmRun?.providerId === provider.id;
-                  return (
-                    <ProviderRow
-                      key={provider.id}
-                      provider={provider}
-                      toolPolicy={withTools ? toolPolicyFor(provider.id, toolStore.policies) : null}
-                      toolsDisabled={toolStore.policies === null}
-                      vocabularySupported={vocabularySupported}
-                      modelCache={modelCache}
-                      consentOpen={consent?.provider.id === provider.id}
-                      npmCommand={consent?.provider.id === provider.id ? npmCommand : null}
-                      npmVerb={consent?.provider.id === provider.id ? consent.verb : null}
-                      npmFailure={npmFailure?.providerId === provider.id ? npmFailure : null}
-                      writeError={toolStore.writeErrors[provider.id] ?? null}
-                      onDismissWriteError={() => toolStore.dismissWriteError(provider.id)}
-                      busyVerb={runHere && npmRun ? npmRun.verb : null}
-                      actionsDisabled={npmRun !== null}
-                      modelEpoch={modelEpoch}
-                      onToggleTools={(next) => toolStore.setEnabled(provider.id, next)}
-                      onTurnAllOn={() => toolStore.turnAllOn(provider.id)}
-                      onOpenUpdate={(trigger) => openConsent(provider, "update", trigger)}
-                      onConfirmConsent={confirmConsent}
-                      onCancelConsent={() => setConsent(null)}
-                      onDismissFailure={() => setNpmFailure(null)}
-                      onRefresh={refresh}
-                    />
-                  );
-                })}
+                {localProviders.map((provider) => renderInstalledRow(provider, false))}
+              </div>
+            </section>
+          ) : null}
+          {npxProviders.length > 0 ? (
+            <section aria-label="Run on demand (npx)">
+              <h3 className="settings-subheading">Run on demand (npx)</h3>
+              <p className="prov-group-note">
+                These providers start on demand through npx — nothing is installed for them on this
+                machine.
+              </p>
+              <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
+                {npxProviders.map((provider) => renderInstalledRow(provider, true))}
               </div>
             </section>
           ) : null}
@@ -305,7 +367,13 @@ export function ProvidersPanel() {
                     const runHere = npmRun?.providerId === provider.id;
                     const consentHere = consent?.provider.id === provider.id;
                     return (
-                      <div className="prov-available-row" key={provider.id}>
+                      <div
+                        className="prov-available-row"
+                        key={provider.id}
+                        ref={registerRowNode(provider.id)}
+                        tabIndex={-1}
+                        data-provider-row={provider.id}
+                      >
                         <span className="prov-available-main">
                           <span className="prov-name">{provider.id}</span>
                           {(provider.npmPackage ?? provider.executable) ? (

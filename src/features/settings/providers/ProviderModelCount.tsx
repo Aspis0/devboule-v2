@@ -13,9 +13,16 @@ export const PROVIDER_VOCABULARY_CAPABILITY = "provider_vocabulary";
  * Panel-owned model-count cache: provider id to its counted models, or null
  * when the probe said nothing countable. Owned by the panel (not the module)
  * so a remount starts unpoisoned, and cleared on Refresh so counts revalidate
- * with the catalog.
+ * with the catalog. The value may be the read itself while it is open: a
+ * remount during the window (collapse/expand, epoch bump) subscribes to the
+ * same promise instead of firing a second probe for the same provider.
  */
-export type ModelCountCache = Map<string, number | null>;
+export type ModelCountValue = number | null | Promise<number | null>;
+export interface ModelCountEntry {
+  epoch: number;
+  value: ModelCountValue;
+}
+export type ModelCountCache = Map<string, ModelCountEntry>;
 
 /**
  * The "N models" suffix of one expanded row. Mounts only with the expanded
@@ -29,37 +36,58 @@ export function ProviderModelCount({
   providerId,
   supported,
   cache,
+  epoch,
 }: {
   providerId: string;
   /** True only when the handshake advertised `provider_vocabulary`. */
   supported: boolean;
   cache: ModelCountCache;
+  /** Panel generation: entries from another epoch are never trusted. */
+  epoch: number;
 }) {
-  const [count, setCount] = useState<number | null | undefined>(() =>
-    cache.has(providerId) ? (cache.get(providerId) ?? null) : undefined,
-  );
+  const [count, setCount] = useState<number | null | undefined>(() => {
+    const entry = cache.get(providerId);
+    if (entry && entry.epoch === epoch && !(entry.value instanceof Promise)) {
+      return entry.value;
+    }
+    return undefined;
+  });
 
   useEffect(() => {
-    if (!supported || cache.has(providerId)) return;
+    if (!supported) return;
     let cancelled = false;
-    void providerVocabularyGet(providerId, "", false).then(
+    const entry = cache.get(providerId);
+    if (entry !== undefined && entry.epoch === epoch) {
+      // Settled values are already in state; an open read gets a second
+      // subscriber instead of a second probe.
+      if (entry.value instanceof Promise) {
+        void entry.value.then((value) => {
+          if (!cancelled) setCount(value);
+        });
+      }
+      return;
+    }
+    const pending = providerVocabularyGet(providerId, "", false).then(
       (reply) => {
-        if (cancelled) return;
         const items = reply.models.state === "present" ? (reply.models.items ?? []) : [];
-        const next = items.length > 0 ? items.length : null;
-        cache.set(providerId, next);
-        setCount(next);
+        return items.length > 0 ? items.length : null;
       },
-      () => {
-        if (cancelled) return;
-        cache.set(providerId, null);
-        setCount(null);
-      },
+      () => null,
     );
+    cache.set(providerId, { epoch, value: pending });
+    void pending.then((value) => {
+      if (cancelled) return;
+      // Never clobber a newer entry: a refresh or a second read may have
+      // replaced this promise while it was open.
+      if (cache.get(providerId)?.value === pending) {
+        cache.set(providerId, { epoch, value });
+      }
+      setCount(value);
+    });
     return () => {
       cancelled = true;
     };
-  }, [providerId, supported, cache]);
+  }, [providerId, supported, cache, epoch]);
 
   if (count === undefined || count === null) return null;
   const text = modelCountText(count);

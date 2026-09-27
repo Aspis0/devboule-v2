@@ -57,6 +57,8 @@ describe("ProviderRow", () => {
       busyVerb: null,
       actionsDisabled: false,
       modelEpoch: 0,
+      viaNpx: false,
+      rowRef: () => {},
       onToggleTools: () => {},
       onTurnAllOn: () => {},
       onOpenUpdate: () => {},
@@ -180,6 +182,13 @@ describe("ProviderRow", () => {
     if (!turnOn) throw new Error("Turn-all-on did not render");
     await act(async () => turnOn.click());
     expect(onTurnAllOn).toHaveBeenCalledTimes(1);
+  });
+
+  it("says via npx plainly on registry rows, never on local ones", async () => {
+    await renderRow({ viaNpx: true });
+    expect(container.textContent).toContain("via npx");
+    await renderRow({ viaNpx: false });
+    expect(container.textContent).not.toContain("via npx");
   });
 
   it("shows Updating… in auto-expanded details while its npm run is in flight", async () => {

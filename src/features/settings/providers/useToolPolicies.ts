@@ -22,11 +22,16 @@ export interface ToolPolicies {
  * The panel's single tool-policy store. One fetch answers every row (the old
  * card fetched per provider); every write carries one boolean and an always
  * empty deny list, which is also what normalises a legacy row the first time
- * its switch is touched. Overlap keeps the old card's contract: writes go
- * out in click order and only the newest sequence owns the UI when it
- * settles, while a fetch reply merges around in-flight writes instead of
- * dropping them — so a reconnect refetch heals stale rows without clobbering
- * an optimistic one.
+ * its switch is touched.
+ *
+ * Sequencing is per provider, never global: each provider has its own write
+ * counter and in-flight count, and every fetch captures both at issue time.
+ * A rejection is therefore always reported and reverted for its own row,
+ * even while another row writes (a global counter would swallow it); a
+ * reply issued before a write can never overwrite the newer settled row —
+ * for a provider written after the fetch was issued, or with a write still
+ * open, the local row stands and the daemon's row is adopted for everyone
+ * else, so a reconnect refetch still heals stale rows.
  */
 export function useToolPolicies(supported: boolean, active: boolean): ToolPolicies {
   const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
@@ -37,23 +42,54 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
   // Synchronous mirror of `policies`: what a second rapid write reads and
   // the base its revert applies to — never the render closure.
   const policiesRef = useRef<readonly ToolPolicyEntry[] | null>(null);
-  // Monotonic write sequence: only the newest write owns the UI on settle.
-  const seqRef = useRef(0);
-  // Providers with a write between sent and settled. A fetch reply adopts
-  // the daemon's rows for everyone else and keeps these rows' optimistic
-  // state; each write's own settle confirms or reverts it.
-  const pinnedRef = useRef<Set<string>>(new Set());
+  // Write sequence per provider: only the newest write to THAT provider owns
+  // its row on settle, so a newer write to another provider never swallows
+  // this one's rejection and revert.
+  const seqByProvider = useRef(new Map<string, number>());
+  // Open writes per provider. A Set would unpin on the first settle while a
+  // second overlapping write to the same row is still open; the count keeps
+  // the pin until the last one lands.
+  const inFlightByProvider = useRef(new Map<string, number>());
+
+  function seqOf(providerId: string): number {
+    return seqByProvider.current.get(providerId) ?? 0;
+  }
+
+  function inFlightOf(providerId: string): number {
+    return inFlightByProvider.current.get(providerId) ?? 0;
+  }
 
   useEffect(() => {
     if (!supported || !active) return;
     let cancelled = false;
+    // The reply's own age: a provider written after this fetch was issued —
+    // or with a write already open then — keeps its local row, whatever the
+    // reply carries. Everyone else adopts the daemon's answer.
+    const seqAtFetch = new Map(seqByProvider.current);
+    const openAtFetch = new Set(
+      [...inFlightByProvider.current.entries()]
+        .filter(([, count]) => count > 0)
+        .map(([providerId]) => providerId),
+    );
     void toolPolicyGet()
       .then((reply) => {
         if (cancelled) return;
-        const pinned = pinnedRef.current;
-        const kept = (policiesRef.current ?? []).filter((entry) => pinned.has(entry.providerId));
-        const fetched = reply.policies.filter((entry) => !pinned.has(entry.providerId));
-        const merged = [...fetched, ...kept];
+        const fetchedById = new Map(reply.policies.map((entry) => [entry.providerId, entry]));
+        const currentById = new Map(
+          (policiesRef.current ?? []).map((entry) => [entry.providerId, entry]),
+        );
+        const merged: ToolPolicyEntry[] = [];
+        for (const providerId of new Set([...fetchedById.keys(), ...currentById.keys()])) {
+          const newerWrite = seqOf(providerId) !== (seqAtFetch.get(providerId) ?? 0);
+          const overlapped = openAtFetch.has(providerId) || inFlightOf(providerId) > 0;
+          const fetched = fetchedById.get(providerId);
+          const current = currentById.get(providerId);
+          if ((!newerWrite && !overlapped && fetched !== undefined) || current === undefined) {
+            if (fetched !== undefined) merged.push(fetched);
+          } else if (current !== undefined) {
+            merged.push(current);
+          }
+        }
         policiesRef.current = merged;
         setPolicies(merged);
         setLoadError(null);
@@ -74,8 +110,9 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
     const before = policiesRef.current ?? [];
     const hadRow = before.some((entry) => entry.providerId === providerId);
     const previous = toolPolicyFor(providerId, policiesRef.current);
-    pinnedRef.current.add(providerId);
-    const seq = ++seqRef.current;
+    seqByProvider.current.set(providerId, seqOf(providerId) + 1);
+    const seq = seqOf(providerId);
+    inFlightByProvider.current.set(providerId, inFlightOf(providerId) + 1);
     // A new write to this provider retires its own unacknowledged failure;
     // other providers' reports stand until theirs is touched or dismissed.
     setWriteErrors((errors) => {
@@ -94,7 +131,9 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
       await toolPolicySet(providerId, nextEnabled ? null : false, []);
       return;
     } catch (cause) {
-      if (seq !== seqRef.current) return;
+      // Superseded only by a newer write to THIS provider: another row's
+      // traffic never cancels this row's revert and report.
+      if (seqOf(providerId) !== seq) return;
       // Put back exactly what this write replaced: the prior row when one
       // existed, nothing at all when the provider never had a row.
       const without = (policiesRef.current ?? []).filter(
@@ -115,7 +154,9 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
       const failure = errorSentence(cause);
       setWriteErrors((errors) => ({ ...errors, [providerId]: failure }));
     } finally {
-      pinnedRef.current.delete(providerId);
+      const open = inFlightOf(providerId) - 1;
+      if (open <= 0) inFlightByProvider.current.delete(providerId);
+      else inFlightByProvider.current.set(providerId, open);
     }
   }
 
@@ -137,6 +178,14 @@ export function useToolPolicies(supported: boolean, active: boolean): ToolPolici
   }
 
   function retry() {
+    // A dead Retry must not linger: when the store cannot fetch (no
+    // capability, or no tool-bearing provider left), the alert clears
+    // instead of sitting on screen with nothing behind it.
+    if (!supported || !active) {
+      setLoadError(null);
+      setLoadFailed(false);
+      return;
+    }
     setLoadError(null);
     setLoadFailed(false);
     setLoadNonce((nonce) => nonce + 1);

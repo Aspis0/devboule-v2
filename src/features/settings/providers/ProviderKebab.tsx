@@ -90,9 +90,14 @@ export function ProviderKebab({
     } else if (event.key === "End") {
       event.preventDefault();
       items[items.length - 1]?.focus();
-    } else if (event.key === "Tab") {
-      // Leave the menu as focus moves on: an orphan menu with focus
-      // elsewhere is the keyboard trap the arrows exist to prevent.
+    }
+  }
+
+  // Focus leaving the menu closes it: Tab order then moves on naturally,
+  // and no orphan menu survives with focus elsewhere. Moves inside the
+  // menu keep it open; React's onBlur bubbles like focusout.
+  function onMenuBlur(event: React.FocusEvent) {
+    if (!menuRef.current?.contains(event.relatedTarget as Node | null)) {
       close(false);
     }
   }
@@ -132,6 +137,7 @@ export function ProviderKebab({
           aria-label={`Actions for ${providerId}`}
           className="prov-menu"
           onKeyDown={onMenuKeyDown}
+          onBlur={onMenuBlur}
         >
           {onUpdate ? (
             <button

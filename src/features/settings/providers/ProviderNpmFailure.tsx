@@ -50,7 +50,7 @@ export function ProviderWriteError({
       <ErrorText
         sentence={error.sentence}
         detail={error.detail}
-        id={`settings-tool-policy-error-${providerId}`}
+        id={`settings-tool-policy-error-${providerId.replace(/[^a-zA-Z0-9_-]/g, "-")}`}
       />
       <button
         type="button"
