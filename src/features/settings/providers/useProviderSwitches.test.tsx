@@ -54,7 +54,9 @@ describe("useProviderSwitches", () => {
   });
 
   function click(name: string) {
-    const button = [...container.querySelectorAll("button")].find((node) => node.textContent === name);
+    const button = [...container.querySelectorAll("button")].find(
+      (node) => node.textContent === name,
+    );
     if (!button) throw new Error(`button ${name} did not render`);
     button.click();
   }

@@ -270,15 +270,16 @@ export function ProvidersPanel() {
   );
   const toolStore = useToolPolicies(toolPolicySupported, toolProviderCount > 0);
   const providerSwitches = useProviderSwitches(providerSwitchSupported);
+  const { beginFetch, reconcile } = providerSwitches;
 
   useEffect(() => {
     let cancelled = false;
     const seq = ++fetchSeqRef.current;
-    const switchFetch = providerSwitches.beginFetch();
+    const switchFetch = beginFetch();
     void providersList()
       .then(async (listed) => {
         if (cancelled || seq !== fetchSeqRef.current) return;
-        providerSwitches.reconcile(listed.providers, switchFetch);
+        reconcile(listed.providers, switchFetch);
         setCatalog(listed);
         try {
           const checked = await providersAuthCheck();
@@ -298,7 +299,7 @@ export function ProvidersPanel() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [beginFetch, reconcile]);
 
   function refresh() {
     if (refreshInFlightRef.current) return;
@@ -309,7 +310,7 @@ export function ProvidersPanel() {
     // Counts belong to the old catalog: drop them so the next expand re-reads.
     invalidateModelCounts();
     const seq = ++fetchSeqRef.current;
-    const switchFetch = providerSwitches.beginFetch();
+    const switchFetch = beginFetch();
     void providersRefresh()
       .then(async (fresh) => {
         let checkedCatalog = fresh;
@@ -319,7 +320,7 @@ export function ProvidersPanel() {
           // Keep the fresh catalog and its last-start fallback.
         }
         if (seq === fetchSeqRef.current) {
-          providerSwitches.reconcile(checkedCatalog.providers, switchFetch);
+          reconcile(checkedCatalog.providers, switchFetch);
           setCatalog(checkedCatalog);
         }
         // The refetch is the proof a handoff landed: installed rows move
@@ -418,11 +419,11 @@ export function ProvidersPanel() {
         // A version bump can change the model list: counts re-read on expand.
         invalidateModelCounts();
         // The refetch is the proof: the fresh catalog carries the new version.
-        const switchFetch = providerSwitches.beginFetch();
+        const switchFetch = beginFetch();
         void providersList()
           .then((fresh) => {
             if (seq === fetchSeqRef.current) {
-              providerSwitches.reconcile(fresh.providers, switchFetch);
+              reconcile(fresh.providers, switchFetch);
               setCatalog((current) => (current === null ? fresh : mergeAuthChecks(fresh, current)));
             }
           })

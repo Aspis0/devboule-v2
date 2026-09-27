@@ -22,6 +22,7 @@ vi.mock("../../../lib/tauri", async (importOriginal) => {
         "typed_permissions",
         "devices",
         "tool_policy",
+        "provider.switches",
       ],
       message: null,
     })),
@@ -388,6 +389,7 @@ describe("provider rows and status", () => {
         "typed_permissions",
         "devices",
         "tool_policy",
+        "provider.switches",
         "provider_vocabulary",
       ]),
     );
