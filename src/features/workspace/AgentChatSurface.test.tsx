@@ -899,6 +899,7 @@ describe("AgentChatSurface", () => {
     expect(childItems[0]?.textContent).toContain("Child output");
     expect((childItems[0] as HTMLElement).style.marginInlineStart).toBe("64px");
     expect(childItems[1]?.classList.contains("workspace-chat-subagent-depth-unknown")).toBe(true);
+    expect(childItems[1]?.getAttribute("title")).toBe("Subagent depth unavailable");
     expect((childItems[1] as HTMLElement).style.marginInlineStart).toBe("");
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');

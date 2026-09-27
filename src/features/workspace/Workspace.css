@@ -912,6 +912,9 @@
 .workspace-chat-finish {
   flex: none;
   margin-top: 2px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 13px;
 }
 
 .workspace-chat-empty {

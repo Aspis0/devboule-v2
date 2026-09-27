@@ -35,9 +35,38 @@
   margin: 4px 0;
 }
 
+.workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-1 {
+  margin: 4px 0 2px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-2 {
+  margin: 4px 0 2px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
 .workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-3 {
   margin: 4px 0 2px;
   font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-4 {
+  margin: 4px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-5,
+.workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-6 {
+  margin: 4px 0 2px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.45;
 }
@@ -109,6 +138,7 @@
   color: var(--muted);
   font-size: 12px;
   opacity: 0;
+  pointer-events: none;
   cursor: pointer;
 }
 
@@ -119,6 +149,7 @@
 
 .timeline-copy-chip:focus-visible {
   opacity: 1;
+  pointer-events: auto;
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -133,16 +164,10 @@
 .workspace-chat-assistant:hover .timeline-copy-chip,
 .workspace-chat-assistant:focus-within .timeline-copy-chip {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .workspace-chat-assistant:hover .workspace-chat-copy,
 .workspace-chat-assistant:focus-within .workspace-chat-copy {
   padding-right: 84px;
-}
-
-.workspace-conversation .workspace-chat-typing {
-  padding-left: 2px;
-  color: var(--muted);
-  font-size: 13px;
-  font-family: var(--font-ui);
 }

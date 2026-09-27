@@ -40,33 +40,40 @@ describe("MarkdownText", () => {
       />,
     );
 
-    expect(markup).toContain('class="plan-markdown-heading plan-markdown-heading-3"');
-    expect(markup).toContain("<code>C:\\Users\\x\\design-sandbox</code>");
-    expect(markup).toContain("<strong>bold</strong>");
-    expect(markup).toContain("<ul>");
-    expect(markup).toContain("<li>first item</li>");
-    expect(markup).toContain(
-      "<pre><code>const path = `C:\\Users\\x\\design-sandbox`;</code></pre>",
+    expect(markup).toBe(
+      '<div><div role="heading" aria-level="3" class="plan-markdown-heading plan-markdown-heading-3">Details</div><p>A <code>C:\\Users\\x\\design-sandbox</code> path and <strong>bold</strong> text.</p><ul><li>first item</li><li>second item</li></ul><pre><code>const path = `C:\\Users\\x\\design-sandbox`;</code></pre></div>',
     );
   });
 
   it("honors Markdown backslash escapes without consuming following delimiters", () => {
     const markup = renderToStaticMarkup(
-      <MarkdownText text={String.raw`\*literal\* and \`tick\``} />,
+      <MarkdownText text={String.raw`\*literal\* and \_under\_ and \`tick\``} />,
     );
 
-    expect(markup).toContain("*literal* and `tick`");
-    expect(markup).not.toContain("<em>");
-    expect(markup).not.toContain("<code>");
+    expect(markup).toBe("<div><p>*literal* and _under_ and `tick`</p></div>");
   });
 
-  it("does not pair escaped ticks around a Windows path as inline code", () => {
+  it("renders an inline code paragraph without the closing delimiter", () => {
+    const markup = renderToStaticMarkup(<MarkdownText text={"a `code` b"} />);
+
+    expect(markup).toBe("<div><p>a <code>code</code> b</p></div>");
+  });
+
+  it("renders the acceptance Windows path without a stray closing tick", () => {
     const markup = renderToStaticMarkup(
-      <MarkdownText text={"literal \\`tick\\` then `C:\\Users\\x\\design-sandbox`"} />,
+      <MarkdownText text={"A `C:\\Users\\x\\design-sandbox` path"} />,
     );
 
-    expect(markup).toContain("literal `tick` then ");
-    expect(markup).toContain("<code>C:\\Users\\x\\design-sandbox</code>");
-    expect(markup.match(/<code>/g)).toHaveLength(1);
+    expect(markup).toBe("<div><p>A <code>C:\\Users\\x\\design-sandbox</code> path</p></div>");
+  });
+
+  it("keeps a trailing Windows path backslash inside the code span", () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownText text={"Save under `C:\\temp\\` and `other` ok"} />,
+    );
+
+    expect(markup).toBe(
+      "<div><p>Save under <code>C:\\temp\\</code> and <code>other</code> ok</p></div>",
+    );
   });
 });
