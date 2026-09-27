@@ -1351,6 +1351,28 @@ impl DaemonClient {
         }
     }
 
+    /// Switch one provider off or back on. Off hides it from the picker and
+    /// refuses every spawn and probe; live sessions keep running. Rides the
+    /// tool-policy capability beside the tool writes, and the reply is the
+    /// daemon's frame rather than `()`, like theirs.
+    pub fn provider_set_enabled(
+        &self,
+        provider_id: &str,
+        enabled: bool,
+    ) -> Result<DaemonMessage, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::TOOL_POLICY)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProviderSetEnabled {
+            id,
+            provider_id: provider_id.to_string(),
+            enabled,
+        })? {
+            reply @ DaemonMessage::ProviderSetEnabledOk { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// The whole stored agent-profile document: the ordered profile list and the
     /// standing instructions, straight from the daemon's frame.
     ///
@@ -2163,6 +2185,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::PairingDeclined { id, .. }
         | DaemonMessage::ToolPolicy { id, .. }
         | DaemonMessage::ToolPolicySetOk { id }
+        | DaemonMessage::ProviderSetEnabledOk { id }
         | DaemonMessage::AgentProfiles { id, .. }
         | DaemonMessage::AgentProfilesSetOk { id }
         | DaemonMessage::DelegationState { id, .. }

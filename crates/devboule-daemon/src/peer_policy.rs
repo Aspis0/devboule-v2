@@ -234,6 +234,10 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // agents, and a device without it may not.
         ClientMessage::ToolPolicyGet { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ToolPolicySet { .. } => with_capability(caps, CAP_ADMIN),
+        // The provider on/off switch is provider config beside the tool
+        // policy: the same administrative gate. A paired device may only
+        // flip what it could already reconfigure.
+        ClientMessage::ProviderSetEnabled { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::AgentProfilesGet { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::AgentProfilesSet { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::DelegationGet { .. } => with_capability(caps, CAP_ADMIN),
@@ -1323,6 +1327,14 @@ pub(crate) mod tests {
                 provider_id: "claude".to_string(),
                 enabled: Some(false),
                 disabled_tools: Vec::new(),
+            },
+            // The provider on/off switch is this device's own settings
+            // beside the tool policy: open to a device the owner granted
+            // the whole surface, refused without it.
+            ClientMessage::ProviderSetEnabled {
+                id: 1,
+                provider_id: "grok".to_string(),
+                enabled: false,
             },
             // The agent profiles, read and write: this device's own settings,
             // so they ride the administrative capability — open to a device
@@ -2460,6 +2472,7 @@ pub(crate) mod tests {
             ClientMessage::PeerSetCaps { .. } => local("peer.set_caps"),
             ClientMessage::ToolPolicyGet { .. } => administrative(),
             ClientMessage::ToolPolicySet { .. } => administrative(),
+            ClientMessage::ProviderSetEnabled { .. } => administrative(),
             ClientMessage::AgentProfilesGet { .. } => administrative(),
             ClientMessage::AgentProfilesSet { .. } => administrative(),
             ClientMessage::ProviderVocabularyGet { .. } => administrative(),
@@ -2475,7 +2488,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 67;
+    pub(crate) const VARIANT_COUNT: usize = 68;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2545,6 +2558,7 @@ pub(crate) mod tests {
             ClientMessage::PeerSetCaps { .. } => "PeerSetCaps",
             ClientMessage::ToolPolicyGet { .. } => "ToolPolicyGet",
             ClientMessage::ToolPolicySet { .. } => "ToolPolicySet",
+            ClientMessage::ProviderSetEnabled { .. } => "ProviderSetEnabled",
             ClientMessage::AgentProfilesGet { .. } => "AgentProfilesGet",
             ClientMessage::AgentProfilesSet { .. } => "AgentProfilesSet",
             ClientMessage::ProviderVocabularyGet { .. } => "ProviderVocabularyGet",
@@ -2844,6 +2858,11 @@ pub(crate) mod tests {
                 provider_id: "claude".to_string(),
                 enabled: Some(false),
                 disabled_tools: Vec::new(),
+            },
+            ClientMessage::ProviderSetEnabled {
+                id: 1,
+                provider_id: "grok".to_string(),
+                enabled: false,
             },
             ClientMessage::AgentProfilesGet { id: 1 },
             ClientMessage::AgentProfilesSet {

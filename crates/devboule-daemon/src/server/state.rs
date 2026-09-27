@@ -76,6 +76,12 @@ pub struct ServerState {
     /// instance per daemon: the file beside the journal is this daemon's,
     /// and a paired device's toggles are its own.
     pub(crate) tool_policy: Arc<crate::tool_policy::ToolPolicyStore>,
+    /// Per-provider on/off switches, read at every spawn, probe and
+    /// vocabulary decision and written by `ProviderSetEnabled`. One
+    /// instance per daemon: the file beside the journal is this daemon's,
+    /// and a paired device's toggles are its own — like the tool policy
+    /// above, and unlike anything a peer may change without `admin`.
+    pub(crate) provider_switches: Arc<crate::provider_switches::ProviderSwitchStore>,
     /// The agent-profile document: the ordered list a creation resolves and the
     /// standing instructions that travel with it. Written by
     /// `AgentProfilesSet`, read by the creation path at the moment it resolves a
@@ -280,6 +286,11 @@ impl ServerState {
         let mcp = Arc::new(crate::mcp_broker::McpBroker::new(&paths.dir)?);
         // Read before `paths` moves into the session registry below.
         let tool_policy = Arc::new(crate::tool_policy::ToolPolicyStore::load(&paths.dir));
+        // The on/off switches load the same way, from the file beside the
+        // tool policies: absent means every provider is on.
+        let provider_switches = Arc::new(crate::provider_switches::ProviderSwitchStore::load(
+            &paths.dir,
+        ));
         // The user's provider rows must be live BEFORE the profile store
         // validates, because a profile may name one. Without this the load
         // asks a catalogue that has no user rows yet, the profile naming one
@@ -337,6 +348,7 @@ impl ServerState {
             session_create_test_gate: Mutex::new(None),
             mcp,
             tool_policy,
+            provider_switches,
             agent_profiles,
             delegation,
             sessions,
@@ -836,6 +848,13 @@ impl ServerState {
         self: &Arc<Self>,
         directories: &[std::path::PathBuf],
     ) -> crate::claude_catalog::ClaudeCatalogSnapshot {
+        // A switched-off Claude is never probed: the fallback table answers
+        // without a process, the way an absent Claude does.
+        if !self.provider_switches.is_enabled("claude") {
+            return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                crate::claude_catalog::fallback_models(),
+            );
+        }
         let Some(agent) = crate::provider_catalog::find_available_in_paths("claude", directories)
         else {
             return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(

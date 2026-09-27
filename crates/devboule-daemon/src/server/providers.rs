@@ -156,7 +156,11 @@ fn wire_provider(
         protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
         origin: agent.installed.then(|| agent.origin.as_wire().to_string()),
         launch_args: agent.launch_args,
-        pickable: agent.pickable,
+        pickable: if state.provider_switches.is_enabled(&agent.id) {
+            agent.pickable
+        } else {
+            Some(false)
+        },
         installed_version,
         latest_version,
         agent_version: state.provider_version(&agent.id),
@@ -164,6 +168,9 @@ fn wire_provider(
         installed: agent.installed,
         npm_package: agent.npm_package.map(str::to_string),
         tools: agent.tools,
+        // The row's own switch, read at this moment: an off provider hides
+        // from the picker downstream, so the row must say so here.
+        enabled: state.provider_switches.is_enabled(&agent.id),
     }
 }
 
@@ -329,6 +336,11 @@ pub(super) fn probe_native_version(
     state: &ServerState,
     agent: &crate::provider_catalog::InstalledAgent,
 ) -> Option<(String, CliVersionFingerprint)> {
+    // A switched-off provider is never probed: no process starts for it,
+    // so the cached version (read without a process) is all the row shows.
+    if !state.provider_switches.is_enabled(&agent.id) {
+        return None;
+    }
     #[cfg(test)]
     {
         // Counted above the stubbed body: the entry is the seam a real

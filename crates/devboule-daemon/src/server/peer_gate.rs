@@ -339,6 +339,8 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::PeerSetCaps { .. } => None,
         ClientMessage::ToolPolicyGet { .. } => None,
         ClientMessage::ToolPolicySet { .. } => None,
+        // A provider switch names a provider, never a mode: nothing to vet.
+        ClientMessage::ProviderSetEnabled { .. } => None,
     }
 }
 
@@ -575,6 +577,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::PeerSetCaps { .. }
         | ClientMessage::ToolPolicyGet { .. }
         | ClientMessage::ToolPolicySet { .. }
+        | ClientMessage::ProviderSetEnabled { .. }
         | ClientMessage::AgentProfilesGet { .. }
         | ClientMessage::AgentProfilesSet { .. }
         | ClientMessage::ProviderVocabularyGet { .. }

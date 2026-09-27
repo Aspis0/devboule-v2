@@ -83,6 +83,8 @@ mod provider_feature_probe;
 #[cfg(feature = "server")]
 mod provider_features;
 #[cfg(feature = "server")]
+mod provider_switches;
+#[cfg(feature = "server")]
 mod provider_update;
 #[cfg(feature = "server")]
 mod provider_vocabulary;

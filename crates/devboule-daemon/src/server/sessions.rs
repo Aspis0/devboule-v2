@@ -504,6 +504,7 @@ pub(super) fn dispatch_session(
         | ClientMessage::PeerSetCaps { .. }
         | ClientMessage::ToolPolicyGet { .. }
         | ClientMessage::ToolPolicySet { .. }
+        | ClientMessage::ProviderSetEnabled { .. }
         | ClientMessage::AgentProfilesGet { .. }
         | ClientMessage::AgentProfilesSet { .. }
         | ClientMessage::ProviderVocabularyGet { .. }

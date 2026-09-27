@@ -248,6 +248,18 @@ pub(crate) fn provider_vocabulary_reply(
             .with_id(id),
         );
     };
+    // No cache shortcut for a switched-off provider: serving the cache
+    // would keep a dead provider's form alive, and probing would start
+    // its process. One sentence either way.
+    if !state.provider_switches.is_enabled(&canonical) {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                crate::provider_switches::disabled_sentence(&canonical),
+            )
+            .with_id(id),
+        );
+    }
 
     let facts = discovery_facts(state, &canonical);
     let now_ms = crate::server::unix_millis();
@@ -724,6 +736,38 @@ mod tests {
         };
         assert_eq!(provider, "claude", "the reply carries the canonical id");
 
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// A switched-off provider answers the vocabulary with the switch
+    /// sentence, not with a probe: no process may start for it, cached or
+    /// otherwise.
+    #[test]
+    fn a_switched_off_provider_is_refused_without_probing() {
+        let state = state();
+        state
+            .provider_switches
+            .set("grok", false)
+            .expect("the switch lands");
+        let reply = provider_vocabulary_reply(&state, 92, "grok", None, false);
+        let DaemonMessage::Error(error) = &reply else {
+            panic!("a switched-off provider must be refused, got {reply:?}");
+        };
+        assert_eq!(error.code, devboule_protocol::ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("grok") && error.message.contains("Providers"),
+            "one plain sentence: {error:?}"
+        );
+        assert_eq!(
+            state
+                .provider_vocabulary
+                .probes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the refusal probes zero times"
+        );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(state);
         let _ = std::fs::remove_dir_all(runtime_dir);

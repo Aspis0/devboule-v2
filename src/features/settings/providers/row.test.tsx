@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 // One installed provider row: chevron details, glyph, sans name, dot status,
-// the single tools switch, kebab. The vocabulary probe fires only for an
+// the provider and tools switches, kebab. The vocabulary probe fires only for an
 // expanded row whose last start was measured.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -45,6 +45,10 @@ describe("ProviderRow", () => {
     cache = new Map();
     props = {
       provider: providerWith(),
+      enabled: true,
+      onToggleProvider: () => {},
+      providerWriteError: null,
+      providerSwitchSupported: true,
       toolPolicy: { enabled: true, disabledTools: [] },
       toolsDisabled: false,
       vocabularySupported: true,
@@ -157,12 +161,19 @@ describe("ProviderRow", () => {
     expect(container.textContent).not.toMatch(/\d+ models?/);
   });
 
-  it("hides the switch when there is no tool policy to show", async () => {
-    await renderRow({ toolPolicy: null });
-    expect(container.querySelector('[role="switch"]')).toBeNull();
+  it("keeps an off row's explanatory details open without reading its vocabulary", async () => {
+    await renderRow({ enabled: false });
+    expect(container.textContent).toContain("Off");
+    expect(container.textContent).toContain("Existing sessions keep running.");
+    expect(providerVocabularyGet).not.toHaveBeenCalled();
   });
 
-  it("toggles through the single switch and surfaces the legacy denials", async () => {
+  it("hides the tools switch when there is no tool policy to show", async () => {
+    await renderRow({ toolPolicy: null });
+    expect(container.querySelector('[role="switch"][aria-label^="Devboule tools for"]')).toBeNull();
+  });
+
+  it("toggles Devboule tools and surfaces the legacy denials", async () => {
     const onToggleTools = vi.fn();
     const onTurnAllOn = vi.fn();
     await renderRow({
@@ -170,7 +181,9 @@ describe("ProviderRow", () => {
       onToggleTools,
       onTurnAllOn,
     });
-    const master = container.querySelector<HTMLButtonElement>('[role="switch"]');
+    const master = container.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label^="Devboule tools for"]',
+    );
     if (!master) throw new Error("switch did not render");
     expect(master.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toMatch(/older setting/i);

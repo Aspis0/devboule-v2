@@ -841,6 +841,16 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         disabled_tools: Vec<String>,
     },
+    /// Switch one provider off or back on. Stored beside the tool policies
+    /// and read at every spawn, probe and vocabulary decision: an off
+    /// provider hides from the picker and is never started, while live
+    /// sessions of it keep running. A paired device needs the
+    /// administrative capability, like the tool-policy writes beside it.
+    ProviderSetEnabled {
+        id: u64,
+        provider_id: String,
+        enabled: bool,
+    },
     /// Read the whole agent-profile document: the ordered profile list and the
     /// standing instructions. This device's own settings: profiles carry the
     /// modes and tool overlays this machine's agents are created in, so a paired
@@ -1126,6 +1136,7 @@ impl ClientMessage {
             | Self::PeerSetCaps { id, .. }
             | Self::ToolPolicyGet { id }
             | Self::ToolPolicySet { id, .. }
+            | Self::ProviderSetEnabled { id, .. }
             | Self::AgentProfilesGet { id }
             | Self::AgentProfilesSet { id, .. }
             | Self::ProviderVocabularyGet { id, .. }
@@ -1228,6 +1239,7 @@ impl ClientMessage {
             | Self::PeerSetCaps { .. }
             | Self::ToolPolicyGet { .. }
             | Self::ToolPolicySet { .. }
+            | Self::ProviderSetEnabled { .. }
             | Self::AgentProfilesGet { .. }
             | Self::AgentProfilesSet { .. }
             | Self::ProviderVocabularyGet { .. }
@@ -1302,6 +1314,7 @@ impl ClientMessage {
             Self::PeerSetCaps { .. } => "PeerSetCaps",
             Self::ToolPolicyGet { .. } => "ToolPolicyGet",
             Self::ToolPolicySet { .. } => "ToolPolicySet",
+            Self::ProviderSetEnabled { .. } => "ProviderSetEnabled",
             Self::AgentProfilesGet { .. } => "AgentProfilesGet",
             Self::AgentProfilesSet { .. } => "AgentProfilesSet",
             Self::DelegationGet { .. } => "DelegationGet",
@@ -1393,6 +1406,7 @@ impl ClientMessage {
             | Self::PeerRevoke { .. }
             | Self::PeerSetCaps { .. }
             | Self::ToolPolicySet { .. }
+            | Self::ProviderSetEnabled { .. }
             | Self::AgentProfilesSet { .. }
             | Self::DelegationSet { .. } => true,
         }
@@ -1691,6 +1705,10 @@ pub enum DaemonMessage {
     },
     /// The reply to `ToolPolicySet` once the store is on disk.
     ToolPolicySetOk {
+        id: u64,
+    },
+    /// The reply to `ProviderSetEnabled` once the switch is on disk.
+    ProviderSetEnabledOk {
         id: u64,
     },
     /// The reply to `AgentProfilesGet`: the whole stored document, the ordered
@@ -2651,6 +2669,11 @@ pub struct ProviderInfo {
     /// tool section.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDescriptor>,
+    /// Whether the provider is switched on. Absent means on, including for
+    /// older daemons. Only `false` is serialized; an off provider hides from
+    /// the picker and refuses every spawn and probe.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
 }
 
 /// One tool a provider's sessions can be served by the daemon's MCP broker.
@@ -2766,6 +2789,10 @@ pub struct AgentProfilesDocument {
 }
 
 fn default_provider_installed() -> bool {
+    true
+}
+
+fn default_true() -> bool {
     true
 }
 

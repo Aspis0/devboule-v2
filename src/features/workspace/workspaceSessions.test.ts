@@ -158,6 +158,29 @@ describe("workspace session controller", () => {
     expect(requiresConsent(providers[2])).toBe(false);
   });
 
+  it("hides switched-off providers from the new-session picker", () => {
+    expect(
+      chatCapableProviders([
+        {
+          id: "grok",
+          executable: "grok.exe",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+          enabled: false,
+        },
+        {
+          id: "claude",
+          executable: "claude.exe",
+          acpAvailable: false,
+          authentication: "unknown",
+          protocol: "stream-json",
+          enabled: true,
+        },
+      ]).map((provider) => provider.id),
+    ).toEqual(["claude"]);
+  });
+
   it("does not list a provider whose protocol cannot be launched", () => {
     expect(
       chatCapableProviders([

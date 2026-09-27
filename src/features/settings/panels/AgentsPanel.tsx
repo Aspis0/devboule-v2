@@ -469,7 +469,10 @@ export function AgentProfilesPanel() {
   // array identity per render would re-run it — and re-ask the daemon — on
   // every parent re-render. Above the early return, like every hook here.
   const installedProviders = useMemo(
-    () => (catalog?.providers ?? []).filter((provider) => provider.installed !== false),
+    () =>
+      (catalog?.providers ?? []).filter(
+        (provider) => provider.installed !== false && provider.enabled !== false,
+      ),
     [catalog],
   );
 

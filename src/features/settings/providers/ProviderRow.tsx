@@ -49,6 +49,10 @@ export interface ProviderRowConsent {
 
 export interface ProviderRowProps {
   provider: ProviderInfo;
+  enabled: boolean;
+  onToggleProvider: (next: boolean) => void;
+  providerWriteError: string | null;
+  providerSwitchSupported: boolean;
   /**
    * The stored tool-policy row, or null when no switch is shown: either the
    * handshake did not advertise `tool_policy`, or this provider serves no
@@ -99,13 +103,17 @@ export interface ProviderRowProps {
 }
 
 /**
- * One installed provider row: h44 — chevron, glyph, sans name, dot status,
- * the single Devboule-tools switch, kebab. The chevron opens the details
- * (path, version, protocol, update); the model count mounts only there, and
- * only after a measured start, so the panel never probes on mount.
+ * One installed provider row: h44 — chevron, glyph, name, dot status, the
+ * provider and Devboule-tools switches, and kebab. The chevron opens details
+ * (path, version, protocol, update); vocabulary mounts only in an expanded,
+ * enabled row, so opening a switched-off row never probes its provider.
  */
 export function ProviderRow({
   provider,
+  enabled,
+  onToggleProvider,
+  providerWriteError,
+  providerSwitchSupported,
   toolPolicy,
   toolsDisabled,
   vocabularySupported,
@@ -145,18 +153,22 @@ export function ProviderRow({
       consent !== null ||
       npmFailure !== null ||
       writeError !== null ||
+      providerWriteError !== null ||
       busyVerb !== null ||
       terminalNotice !== null
     ) {
       setExpanded(true);
     }
-  }, [consent, npmFailure, writeError, busyVerb, terminalNotice]);
-  const status = providerRowStatus(provider);
+  }, [consent, npmFailure, writeError, providerWriteError, busyVerb, terminalNotice]);
+  const detailsOpen = expanded || !enabled;
+  const status = enabled
+    ? providerRowStatus(provider)
+    : { tone: "idle" as const, word: "Off", detail: null };
   const canUpdate = providerCanUpdate(provider) && !actionsDisabled;
   // A login consent types into a terminal tab, independent of the daemon's
   // npm lock — but the consent card is still one per page, so a running
   // npm keeps every entry point shut.
-  const canLogin = onOpenLogin !== undefined && !actionsDisabled;
+  const canLogin = enabled && onOpenLogin !== undefined && !actionsDisabled;
   // Provider ids are user-declarable (`user_providers` rows), so the id is
   // sanitised before it becomes a DOM id.
   const detailsId = `prov-details-${provider.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -198,10 +210,11 @@ export function ProviderRow({
       <div className="prov-row">
         <button
           type="button"
-          className={`prov-chev${expanded ? " prov-chev-open" : ""}`}
-          aria-expanded={expanded}
-          {...(expanded ? { "aria-controls": detailsId } : {})}
+          className={`prov-chev${detailsOpen ? " prov-chev-open" : ""}`}
+          aria-expanded={detailsOpen}
+          {...(detailsOpen ? { "aria-controls": detailsId } : {})}
           aria-label={`Details for ${provider.id}`}
+          disabled={!enabled}
           onClick={() => setExpanded((open) => !open)}
         >
           <span aria-hidden="true">›</span>
@@ -215,7 +228,7 @@ export function ProviderRow({
           <span className="prov-status-word">{status.word}</span>
           {status.detail !== null ? <span className="sr-only">{status.detail}</span> : null}
           {viaNpx ? <span className="prov-via">via npx</span> : null}
-          {expanded ? (
+          {detailsOpen && enabled ? (
             <ProviderModelCount
               key={modelEpoch}
               providerId={provider.id}
@@ -226,12 +239,29 @@ export function ProviderRow({
           ) : null}
         </span>
         <span className="prov-spacer" aria-hidden="true" />
+        {providerSwitchSupported ? (
+          <span className="prov-tools">
+            <span className="prov-tools-label" aria-hidden="true">
+              On
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={enabled}
+              aria-label={`On for ${provider.id}`}
+              className={`prov-switch${enabled ? " prov-switch-on" : ""}`}
+              onClick={() => onToggleProvider(!enabled)}
+            >
+              <i aria-hidden="true" />
+            </button>
+          </span>
+        ) : null}
         {toolPolicy === null ? null : (
           <ProviderToolsSwitch
             providerId={provider.id}
             enabled={toolPolicy.enabled}
             hasLegacyDenials={toolPolicy.disabledTools.length > 0}
-            disabled={toolsDisabled}
+            disabled={toolsDisabled || !enabled}
             onToggle={onToggleTools}
             onTurnAllOn={onTurnAllOn}
           />
@@ -244,8 +274,18 @@ export function ProviderRow({
           onRefresh={onRefresh}
         />
       </div>
-      {expanded ? (
+      {detailsOpen ? (
         <div className="prov-details" id={detailsId}>
+          {!enabled ? (
+            <div className="prov-detail-line" role="status">
+              <span className="prov-terminal-note">Off. Existing sessions keep running.</span>
+            </div>
+          ) : null}
+          {providerWriteError !== null ? (
+            <div className="prov-detail-line" role="alert">
+              {providerWriteError}
+            </div>
+          ) : null}
           <div className="prov-detail-line">
             <span className="prov-detail-label">Path</span>
             <code className="prov-detail-code">{provider.executable}</code>

@@ -5773,3 +5773,37 @@ fn a_repeated_send_replays_the_no_turn_disposition() {
     ));
     let _ = std::fs::remove_dir_all(path);
 }
+
+/// A switched-off provider costs zero version-probe entries: the probe is
+/// the spawn seam itself, so entering it is what becomes a process.
+#[test]
+fn a_switched_off_provider_is_never_version_probed() {
+    let (path, state) = temp_state("switch-probe");
+    let agent = update_test_agent(
+        "grok",
+        None,
+        true,
+        crate::provider_catalog::InstallChannel::Native,
+        std::path::PathBuf::from("grok.exe"),
+    );
+    let probes = || {
+        state
+            .version_probe_entries
+            .load(std::sync::atomic::Ordering::SeqCst)
+    };
+    assert_eq!(probes(), 0);
+    let _ = super::providers::probe_native_version(&state, &agent);
+    assert_eq!(probes(), 1, "an enabled provider probes");
+    state
+        .provider_switches
+        .set("grok", false)
+        .expect("the switch lands");
+    let _ = super::providers::probe_native_version(&state, &agent);
+    assert_eq!(
+        probes(),
+        1,
+        "a switched-off provider starts no probe process"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}

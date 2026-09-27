@@ -1913,6 +1913,76 @@ fn tool_policy_wire_contract_round_trips_with_its_exact_field_names() {
 }
 
 #[test]
+fn provider_set_enabled_round_trips_with_its_wire_words() {
+    // The Providers row's On switch is built against this JSON: a rename
+    // here is a silently inert toggle there.
+    let set = ClientMessage::ProviderSetEnabled {
+        id: 36,
+        provider_id: "grok".to_string(),
+        enabled: false,
+    };
+    let value = serde_json::to_value(&set).expect("json");
+    assert_eq!(value["type"], "provider_set_enabled");
+    assert_eq!(value["providerId"], "grok");
+    assert_eq!(value["enabled"], false);
+    assert_eq!(set.request_id(), Some(36));
+    assert_eq!(set.name(), "ProviderSetEnabled");
+    assert!(set.is_state_changing());
+    assert_eq!(set.idempotency_key(), None);
+    assert_eq!(
+        serde_json::from_value::<ClientMessage>(value).expect("round trip"),
+        set
+    );
+    assert_eq!(
+        serde_json::to_value(DaemonMessage::ProviderSetEnabledOk { id: 37 }).expect("json"),
+        serde_json::json!({"type": "provider_set_enabled_ok", "id": 37})
+    );
+}
+
+#[test]
+fn provider_info_enabled_travels_only_when_off() {
+    // Only the off state travels: an enabled row omits the field, so rows
+    // the diagnostics fixture pins for enabled providers do not move.
+    let off = ProviderInfo {
+        id: "grok".to_string(),
+        executable: "grok.exe".to_string(),
+        acp_available: true,
+        authentication: "unknown".to_string(),
+        protocol: Some("acp".to_string()),
+        origin: None,
+        launch_args: None,
+        pickable: None,
+        installed_version: None,
+        latest_version: None,
+        agent_version: None,
+        install_channel: None,
+        installed: true,
+        npm_package: None,
+        tools: Vec::new(),
+        enabled: false,
+    };
+    let off_json = serde_json::to_value(&off).expect("json");
+    assert_eq!(off_json["enabled"], false);
+    assert_eq!(
+        serde_json::from_value::<ProviderInfo>(off_json).expect("round trip"),
+        off
+    );
+    let on = ProviderInfo {
+        enabled: true,
+        ..off.clone()
+    };
+    let on_json = serde_json::to_value(&on).expect("json");
+    assert!(
+        on_json.get("enabled").is_none(),
+        "an enabled row omits the field, like `installed`"
+    );
+    assert_eq!(
+        serde_json::from_value::<ProviderInfo>(on_json).expect("absent means on"),
+        on
+    );
+}
+
+#[test]
 fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
     // The Settings → Agents form is built against this JSON, and a rename
     // here is a silently dropped profile field there, so the names are
@@ -2471,6 +2541,7 @@ fn providers_list_round_trips_with_camel_case_and_unknown_auth() {
             installed: true,
             npm_package: None,
             tools: Vec::new(),
+            enabled: true,
         }],
         unreadable_dirs: 2,
     };
@@ -2514,6 +2585,7 @@ fn providers_refresh_round_trips_with_same_providers_shape() {
                 installed: true,
                 npm_package: None,
                 tools: Vec::new(),
+                enabled: true,
             },
             ProviderInfo {
                 id: "pi".to_string(),
@@ -2531,6 +2603,7 @@ fn providers_refresh_round_trips_with_same_providers_shape() {
                 installed: true,
                 npm_package: None,
                 tools: Vec::new(),
+                enabled: true,
             },
         ],
         unreadable_dirs: 0,
@@ -2569,6 +2642,7 @@ fn provider_origin_is_camel_case_on_the_wire() {
             installed: true,
             npm_package: None,
             tools: Vec::new(),
+            enabled: true,
         }],
         unreadable_dirs: 0,
     };
@@ -2591,6 +2665,7 @@ fn provider_origin_is_camel_case_on_the_wire() {
         installed: true,
         npm_package: None,
         tools: Vec::new(),
+        enabled: true,
     };
     let native_json = serde_json::to_value(&native).expect("json");
     assert_eq!(native_json["origin"], "user-binary");
@@ -2618,6 +2693,7 @@ fn provider_launch_args_and_pickable_are_optional_camel_case_fields() {
         installed: true,
         npm_package: None,
         tools: Vec::new(),
+        enabled: true,
     };
     let encoded = serde_json::to_value(&wrapper).expect("json");
     assert_eq!(encoded["launchArgs"][0], "--registry=https://evil");
@@ -2705,6 +2781,7 @@ fn provider_info_installed_false_is_emitted_and_missing_means_true() {
         installed: false,
         npm_package: Some("@openai/codex".to_string()),
         tools: Vec::new(),
+        enabled: true,
     };
     let encoded = serde_json::to_value(&not_installed).expect("json");
     assert_eq!(encoded["installed"], false);
@@ -2745,6 +2822,7 @@ fn synthetic_provider_info_round_trips_installed_package_and_latest_version() {
         installed: false,
         npm_package: Some("@qwen-code/qwen-code".to_string()),
         tools: Vec::new(),
+        enabled: true,
     };
     let encoded = serde_json::to_value(&synthetic).expect("synthetic json");
     assert_eq!(encoded["installed"], false);

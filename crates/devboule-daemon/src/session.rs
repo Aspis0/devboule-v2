@@ -487,6 +487,12 @@ mod session_name_tests;
 #[cfg(test)]
 #[path = "session_out_of_band_tests.rs"]
 mod session_out_of_band_tests;
+/// The provider on/off switch at the session roads: the create road
+/// (wire, MCP children and recovery share it), resume, and the running
+/// session the switch never touches.
+#[cfg(test)]
+#[path = "session_provider_switch_tests.rs"]
+mod session_provider_switch_tests;
 /// The road a session that cannot be reopened is replaced by: a new session of
 /// the same family carrying the conversation read back from the journal. A
 /// sibling like the resume phases, and taken only where the resume road proves
@@ -1898,6 +1904,24 @@ impl SessionRegistry {
             command,
             meta,
         )?;
+        // The switch is read here, before the birth door: a disabled
+        // provider refuses before a row exists, a child is linked, or a
+        // process starts — every create road (wire, MCP child, recovery)
+        // funnels through this function, so this one check covers them all.
+        // Terminals carry no provider and skip it; live sessions are never
+        // re-checked, so turning a provider off strands nothing running.
+        let provider_id = resolved
+            .session_provider
+            .as_deref()
+            .or(match &resolved.kind {
+                SessionKind::Claude => Some("claude"),
+                SessionKind::Codex => Some("codex"),
+                SessionKind::Pi => Some("pi"),
+                SessionKind::Acp | SessionKind::Terminal => None,
+            });
+        if let Some(provider_id) = provider_id {
+            crate::provider_switches::refuse_if_disabled(&state.provider_switches, provider_id)?;
+        }
         let (origin, title) = session_create::birth_stamps(meta, conn_peer, &resolved.kind);
         let (record, metadata, record_generation) = session_create::build_birth_record(
             &resolved,
@@ -2126,6 +2150,10 @@ impl SessionRegistry {
         let (journal, record) = self.resume_locate_record(session_id)?;
         let _workspace_creation = self.workspace_creation_guard(record.workspace_id.as_deref())?;
         let (provider, peer_session_id) = resume_handle(&record, owner)?;
+        // A resume starts a provider process, so the switch answers here
+        // too: an ended session of a switched-off provider stays ended
+        // until it is switched back on. Live sessions are never re-checked.
+        crate::provider_switches::refuse_if_disabled(&state.provider_switches, &provider)?;
         let (command, generation) = match self.resume_stage_command(&record, &provider) {
             Ok(staged) => staged,
             // The folder this session worked in is gone (the pre-flight's own

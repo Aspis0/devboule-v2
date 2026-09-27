@@ -63,6 +63,28 @@ pub async fn provider_update(
     Ok(ProviderUpdateResult { ok, exit_code, log })
 }
 
+/// Switch one provider off or back on. Off hides it from the picker and
+/// refuses every spawn and probe; live sessions keep running. The daemon
+/// answers `ProviderSetEnabledOk`; anything else is the wrong variant.
+#[tauri::command]
+pub async fn provider_set_enabled(
+    bridge: State<'_, DaemonBridge>,
+    provider_id: String,
+    enabled: bool,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(
+        move || match client.provider_set_enabled(&provider_id, enabled)? {
+            devboule_protocol::DaemonMessage::ProviderSetEnabledOk { .. } => Ok(()),
+            _ => Err(CommandError::new(
+                devboule_protocol::ErrorCode::Internal,
+                "unexpected daemon reply",
+            )),
+        },
+    )
+    .await
+}
+
 fn require_client(
     bridge: &DaemonBridge,
 ) -> Result<std::sync::Arc<devboule_daemon::DaemonClient>, CommandError> {

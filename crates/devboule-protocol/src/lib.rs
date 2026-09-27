@@ -202,12 +202,13 @@ pub mod caps {
     /// and rides `view`).
     pub const DEVICES: &str = "devices";
     pub const TYPED_PERMISSIONS: &str = "typed_permissions";
-    /// Per-provider MCP tool policy (`ToolPolicyGet`/`ToolPolicySet`).
+    /// Per-provider MCP tool policy (`ToolPolicyGet`/`ToolPolicySet`) and the
+    /// provider on/off switch (`ProviderSetEnabled`).
     ///
-    /// A client must not send those two requests to a daemon that predates
+    /// A client must not send those requests to a daemon that predates
     /// them: the daemon's reader cannot deserialize the variants and the
     /// connection would fail on a frame the old peer never knew. The client
-    /// helpers refuse the pair unless this name was negotiated, which is what
+    /// helpers refuse the set pair unless this name was negotiated, which is what
     /// this name exists for.
     pub const TOOL_POLICY: &str = "tool_policy";
 

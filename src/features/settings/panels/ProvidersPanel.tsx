@@ -41,6 +41,7 @@ import {
   type ProviderRowConsent,
 } from "../providers/ProviderRow";
 import { useToolPolicies } from "../providers/useToolPolicies";
+import { useProviderSwitches } from "../providers/useProviderSwitches";
 import "../providers.css";
 
 /** A pending npm run on one provider row: what the daemon is doing right now. */
@@ -239,6 +240,7 @@ export function ProvidersPanel() {
     [installed],
   );
   const toolStore = useToolPolicies(toolPolicySupported, toolProviderCount > 0);
+  const providerSwitches = useProviderSwitches();
 
   useEffect(() => {
     let cancelled = false;
@@ -578,6 +580,10 @@ export function ProvidersPanel() {
       <ProviderRow
         key={provider.id}
         provider={provider}
+        enabled={providerSwitches.isEnabled(provider)}
+        onToggleProvider={(next) => void providerSwitches.setEnabled(provider, next)}
+        providerWriteError={providerSwitches.states[provider.id]?.error?.sentence ?? null}
+        providerSwitchSupported={toolPolicySupported}
         toolPolicy={withTools ? toolPolicyFor(provider.id, toolStore.policies) : null}
         toolsDisabled={toolStore.policies === null}
         vocabularySupported={vocabularySupported}

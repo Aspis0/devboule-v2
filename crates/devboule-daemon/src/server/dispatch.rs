@@ -309,6 +309,11 @@ pub(super) fn dispatch_immediate(
             enabled,
             disabled_tools,
         } => tool_policy_set(state, id, provider_id, enabled, disabled_tools, passed),
+        ClientMessage::ProviderSetEnabled {
+            id,
+            provider_id,
+            enabled,
+        } => provider_set_enabled(state, id, provider_id, enabled, passed),
         ClientMessage::AgentProfilesGet { id } => agent_profiles_get(state, id, passed),
         ClientMessage::AgentProfilesSet { id, document } => {
             agent_profiles_set(state, id, document, passed)

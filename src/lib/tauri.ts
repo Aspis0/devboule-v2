@@ -236,6 +236,7 @@ export type CommandArgs = {
   peer_set_caps: { deviceId: string; caps: readonly Cap[] };
   tool_policy_get: undefined;
   tool_policy_set: { providerId: string; enabled: boolean | null; disabledTools: string[] };
+  provider_set_enabled: { providerId: string; enabled: boolean };
   agent_profiles_get: undefined;
   agent_profiles_set: { document: AgentProfilesDocument };
   provider_vocabulary_get: {
@@ -347,6 +348,8 @@ type CommandResults = {
   tool_policy_get: ToolPolicyReply;
   /** The daemon answers `ToolPolicySetOk`; the set itself is the proof. */
   tool_policy_set: void;
+  /** The daemon answers `ProviderSetEnabledOk`; the set itself is the proof. */
+  provider_set_enabled: void;
   /**
    * The whole stored document — the ordered profile list plus the standing
    * instructions, in the human's order. An empty document is the honest
@@ -494,6 +497,7 @@ export const COMMAND_ARG_KEYS = {
   peer_set_caps: ["deviceId", "caps"],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
+  provider_set_enabled: ["providerId", "enabled"],
   agent_profiles_get: [],
   agent_profiles_set: ["document"],
   provider_vocabulary_get: ["provider", "model", "refresh"],
@@ -1062,6 +1066,13 @@ export const toolPolicySet = (
   enabled: boolean | null,
   disabledTools: string[],
 ) => invokeTyped("tool_policy_set", { providerId, enabled, disabledTools });
+/**
+ * Switch one provider off or back on. Off hides it from the picker and
+ * refuses every spawn and probe; live sessions keep running. The daemon
+ * answers `ProviderSetEnabledOk`.
+ */
+export const providerSetEnabled = (providerId: string, enabled: boolean) =>
+  invokeTyped("provider_set_enabled", { providerId, enabled });
 
 /**
  * The whole stored agent-profile document — the ordered profile list plus the

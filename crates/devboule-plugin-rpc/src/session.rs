@@ -269,6 +269,7 @@ impl PluginSession {
                         // exhaustive on purpose.
                         | DaemonMessage::ToolPolicy { id, .. }
                         | DaemonMessage::ToolPolicySetOk { id }
+                        | DaemonMessage::ProviderSetEnabledOk { id }
                         // The agent-profile store is the same kind of object
                         // and is local for the same reason: a plugin backend
                         // may not read or write what this machine's agents are

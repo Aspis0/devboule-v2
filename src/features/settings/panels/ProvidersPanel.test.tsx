@@ -28,6 +28,7 @@ vi.mock("../../../lib/tauri", async (importOriginal) => {
     providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providersRefresh: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providerUpdate: vi.fn(async () => ({ ok: true, exitCode: 0, log: "" })),
+    providerSetEnabled: vi.fn(async () => undefined),
     daemonDiagnostics: vi.fn(async () => ({
       environment: { osVersion: "Windows 10.0.26200 (x86_64)" },
     })),
@@ -43,6 +44,7 @@ import {
   daemonDiagnostics,
   daemonStatus,
   providerUpdate,
+  providerSetEnabled,
   providerVocabularyGet,
   providersList,
   providersRefresh,
@@ -1014,8 +1016,63 @@ describe("tools switch wiring", () => {
   }
 
   function toolSwitch(): HTMLButtonElement | null {
-    return container.querySelector<HTMLButtonElement>('.prov-row [role="switch"]');
+    return container.querySelector<HTMLButtonElement>(
+      '.prov-row [role="switch"][aria-label^="Devboule tools for"]',
+    );
   }
+
+  function providerSwitch(): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>(
+      '.prov-row [role="switch"][aria-label^="On for"]',
+    );
+  }
+
+  it("shows an off provider as Off, keeps its tools switch disabled, and persists On", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        installedProvider({
+          enabled: false,
+          tools: [{ name: "some_tool", description: "Something." }],
+        }),
+      ],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    const onSwitch = providerSwitch();
+    if (!onSwitch) throw new Error("provider switch did not render");
+    expect(container.textContent).toContain("Off");
+    expect(container.textContent).toContain("Existing sessions keep running.");
+    expect(onSwitch.getAttribute("aria-checked")).toBe("false");
+    expect(toolSwitch()?.disabled).toBe(true);
+    await act(async () => onSwitch.click());
+    await act(async () => undefined);
+    expect(providerSetEnabled).toHaveBeenCalledWith("grok", true);
+    expect(providerSwitch()?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("reverts the provider switch and reports a failed write", async () => {
+    vi.mocked(providerSetEnabled).mockRejectedValueOnce({
+      code: "io",
+      message: "switch file unwritable",
+    });
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [installedProvider()],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    const onSwitch = providerSwitch();
+    if (!onSwitch) throw new Error("provider switch did not render");
+    await act(async () => onSwitch.click());
+    await act(async () => undefined);
+
+    expect(providerSetEnabled).toHaveBeenCalledWith("grok", false);
+    expect(providerSwitch()?.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "A system or file operation failed on this machine.",
+    );
+  });
 
   it("hides the switch and never fetches when the daemon lacks tool_policy", async () => {
     vi.mocked(daemonStatus).mockResolvedValueOnce(

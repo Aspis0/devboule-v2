@@ -59,6 +59,33 @@ pub(super) fn agent_profiles_get(
     }
 }
 
+/// Switch one provider off or back on. Unknown ids are the caller's
+/// mistake; a write failure is the daemon's, and the store kept the
+/// switches it already had — the same split `tool_policy_set` makes.
+pub(super) fn provider_set_enabled(
+    state: &Arc<ServerState>,
+    id: u64,
+    provider_id: String,
+    enabled: bool,
+    _passed: &GatePassed,
+) -> DaemonMessage {
+    match state.provider_switches.set(&provider_id, enabled) {
+        Ok(()) => DaemonMessage::ProviderSetEnabledOk { id },
+        Err(error) => {
+            let code = match error {
+                crate::provider_switches::SwitchError::InvalidRequest(_) => {
+                    ErrorCode::InvalidRequest
+                }
+                crate::provider_switches::SwitchError::Io(_) => ErrorCode::Io,
+            };
+            DaemonMessage::Error(
+                WireError::new(code, format!("Could not switch '{provider_id}': {error}"))
+                    .with_id(id),
+            )
+        }
+    }
+}
+
 pub(super) fn agent_profiles_set(
     state: &Arc<ServerState>,
     id: u64,

@@ -137,6 +137,7 @@ pub fn run() {
             backend::providers::providers_list,
             backend::providers::providers_refresh,
             backend::providers::provider_update,
+            backend::providers::provider_set_enabled,
             oracle::oracle_workspace_get,
             oracle::oracle_workspace_set,
             oracle::oracle_model_download_start,

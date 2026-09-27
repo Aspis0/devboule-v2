@@ -2803,6 +2803,10 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::PeerSetCaps { .. } => None,
         ClientMessage::ToolPolicyGet { .. } => None,
         ClientMessage::ToolPolicySet { .. } => None,
+        // A provider switch names a provider, never a session: this
+        // harness calls the registry directly, and there is no row here
+        // for it to reach.
+        ClientMessage::ProviderSetEnabled { .. } => None,
         ClientMessage::AgentProfilesGet { .. } => None,
         ClientMessage::AgentProfilesSet { .. } => None,
         ClientMessage::ProviderVocabularyGet { .. } => None,
