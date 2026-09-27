@@ -527,6 +527,57 @@ describe("providers refresh", () => {
     expect(container.textContent).toContain("grok");
   });
 
+  it("keeps the refreshed catalog when the slow initial list resolves late", async () => {
+    let resolveList: ((catalog: ProviderCatalog) => void) | undefined;
+    vi.mocked(providersList).mockReturnValueOnce(
+      new Promise<ProviderCatalog>((resolve) => {
+        resolveList = resolve;
+      }),
+    );
+    vi.mocked(providersRefresh).mockResolvedValueOnce({
+      providers: [installedProvider({ id: "fresh-cli" })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    expect(container.textContent).toContain("Looking for agent CLIs");
+
+    const button = container.querySelector<HTMLButtonElement>(".provider-refresh");
+    if (!button) throw new Error("Refresh button did not render");
+    await act(async () => button.click());
+    await act(async () => undefined);
+    expect(container.textContent).toContain("fresh-cli");
+
+    resolveList?.({ providers: [installedProvider()], unreadableDirs: 0 });
+    await act(async () => undefined);
+    expect(container.textContent).toContain("fresh-cli");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("ignores a late initial-list rejection after a refresh", async () => {
+    let rejectList: ((cause: unknown) => void) | undefined;
+    vi.mocked(providersList).mockReturnValueOnce(
+      new Promise<ProviderCatalog>((_resolve, reject) => {
+        rejectList = reject;
+      }),
+    );
+    vi.mocked(providersRefresh).mockResolvedValueOnce({
+      providers: [installedProvider({ id: "fresh-cli" })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    const button = container.querySelector<HTMLButtonElement>(".provider-refresh");
+    if (!button) throw new Error("Refresh button did not render");
+    await act(async () => button.click());
+    await act(async () => undefined);
+    expect(container.textContent).toContain("fresh-cli");
+
+    rejectList?.({ code: "internal", message: "stale list died" });
+    await act(async () => undefined);
+    expect(container.textContent).toContain("fresh-cli");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("ignores a second click while the refresh promise is still in flight", async () => {
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [installedProvider()],
