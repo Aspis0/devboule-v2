@@ -13,6 +13,7 @@ import { hasTerminalInput, requestTerminalInput } from "../../terminal/pendingTe
 import { useSettingsDaemon } from "../settingsDaemon";
 import {
   PROVIDER_SWITCHES_CAPABILITY,
+  PROVIDER_AUTH_CHECK_CAPABILITY,
   TOOL_POLICY_CAPABILITY,
   logTail,
   toolPolicyFor,
@@ -124,6 +125,7 @@ export function ProvidersPanel() {
   // Bumped by every fetch (mount and refresh); a response only applies when its
   // sequence is still the latest, so a slow mount list cannot revert a refresh.
   const fetchSeqRef = useRef(0);
+  const authCheckSeqRef = useRef(-1);
   // Set synchronously on click so a second click before the re-render is a no-op.
   const refreshInFlightRef = useRef(false);
   // The one npm run the daemon is executing on this client's behalf.
@@ -234,6 +236,7 @@ export function ProvidersPanel() {
   const terminalWorkspaceId = getLastSelectedWorkspaceId();
   const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
   const providerSwitchSupported = daemon.capabilities.includes(PROVIDER_SWITCHES_CAPABILITY);
+  const providerAuthCheckSupported = daemon.capabilities.includes(PROVIDER_AUTH_CHECK_CAPABILITY);
   const vocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
 
   const providers = useMemo(() => catalog?.providers ?? null, [catalog]);
@@ -281,14 +284,6 @@ export function ProvidersPanel() {
         if (cancelled || seq !== fetchSeqRef.current) return;
         reconcile(listed.providers, switchFetch);
         setCatalog(listed);
-        try {
-          const checked = await providersAuthCheck();
-          if (!cancelled && seq === fetchSeqRef.current) {
-            setCatalog(mergeAuthChecks(listed, checked));
-          }
-        } catch {
-          // Catalog discovery still works when an auth check cannot run.
-        }
       })
       .catch((cause: unknown) => {
         if (!cancelled && seq === fetchSeqRef.current) {
@@ -300,6 +295,26 @@ export function ProvidersPanel() {
       cancelled = true;
     };
   }, [beginFetch, reconcile]);
+
+  useEffect(() => {
+    if (!providerAuthCheckSupported || catalog === null) return;
+    const seq = fetchSeqRef.current;
+    if (authCheckSeqRef.current === seq) return;
+    authCheckSeqRef.current = seq;
+    let cancelled = false;
+    void providersAuthCheck()
+      .then((checked) => {
+        if (!cancelled && seq === fetchSeqRef.current) {
+          setCatalog((current) => (current === null ? current : mergeAuthChecks(current, checked)));
+        }
+      })
+      .catch(() => {
+        // Catalog discovery still works when an auth check cannot run.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [catalog, providerAuthCheckSupported]);
 
   function refresh() {
     if (refreshInFlightRef.current) return;
@@ -315,11 +330,14 @@ export function ProvidersPanel() {
       .then(async (fresh) => {
         let checkedCatalog = fresh;
         try {
-          checkedCatalog = mergeAuthChecks(fresh, await providersAuthCheck());
+          if (providerAuthCheckSupported) {
+            checkedCatalog = mergeAuthChecks(fresh, await providersAuthCheck());
+          }
         } catch {
           // Keep the fresh catalog and its last-start fallback.
         }
         if (seq === fetchSeqRef.current) {
+          authCheckSeqRef.current = seq;
           reconcile(checkedCatalog.providers, switchFetch);
           setCatalog(checkedCatalog);
         }

@@ -52,6 +52,23 @@ pub(super) fn dispatch(
         }
         return Some(DaemonMessage::Error(error));
     }
+    if let ClientMessage::ProvidersAuthCheck { id } = &request {
+        let id = *id;
+        let worker_state = Arc::clone(state);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-provider-auth-check".to_string())
+            .spawn(move || {
+                outbound.enqueue_reply(providers_reply(&worker_state, id, false, true));
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, "could not start provider status check").with_id(id),
+            ));
+        }
+        return None;
+    }
     if let ClientMessage::ProvidersRefresh { id } = request {
         let worker_state = Arc::clone(state);
         let outbound = Arc::clone(&conn.outbound);
@@ -302,7 +319,9 @@ pub(super) fn dispatch_immediate(
             dispatch_session(state, owner, request, conn, typed_permissions_ok, passed)
         }
         ClientMessage::ProvidersList { id } => providers_reply(state, id, false, false),
-        ClientMessage::ProvidersAuthCheck { id } => providers_reply(state, id, false, true),
+        ClientMessage::ProvidersAuthCheck { .. } => {
+            unreachable!("ProvidersAuthCheck is dispatched by the async wrapper")
+        }
         ClientMessage::ToolPolicyGet { id } => tool_policy_get(state, id, passed),
         ClientMessage::ToolPolicySet {
             id,

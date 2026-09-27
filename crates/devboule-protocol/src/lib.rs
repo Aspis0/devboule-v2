@@ -216,6 +216,7 @@ pub mod caps {
     /// Provider on/off switch (`ProviderSetEnabled`). This has its own name
     /// because older daemons may know tool policies without knowing this frame.
     pub const PROVIDER_SWITCHES: &str = "provider.switches";
+    pub const PROVIDER_AUTH_CHECK: &str = "provider.auth-check";
 
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
@@ -640,6 +641,7 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     capabilities.push(Capability::new(caps::DEVICES));
     capabilities.push(Capability::new(caps::TOOL_POLICY));
     capabilities.push(Capability::new(caps::PROVIDER_SWITCHES));
+    capabilities.push(Capability::new(caps::PROVIDER_AUTH_CHECK));
     // A deposit is a session RPC this daemon serves, so the daemon offers the
     // name; the app has to offer it too or the intersection drops it.
     capabilities.push(Capability::new(caps::ATTACHMENTS_DEPOSIT));
@@ -698,6 +700,7 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // a client that did not offer it would refuse its own RPCs.
     capabilities.push(Capability::new(caps::TOOL_POLICY));
     capabilities.push(Capability::new(caps::PROVIDER_SWITCHES));
+    capabilities.push(Capability::new(caps::PROVIDER_AUTH_CHECK));
     // Same reason as `tool_policy`, and the same pairing: the handshake
     // negotiates the intersection, so a name only the daemon offers is never
     // negotiated, and a client could not then tell a daemon that accepts
@@ -804,6 +807,21 @@ mod tests {
                 .any(|cap| cap.as_str() == caps::PROVIDER_SWITCHES),
             "the app and daemon must negotiate the switch frame independently"
         );
+    }
+
+    #[test]
+    fn provider_auth_check_capability_is_negotiated_in_both_directions() {
+        let daemon = m3a_daemon_capabilities();
+        let client = m3a_client_capabilities();
+        assert!(daemon
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_AUTH_CHECK));
+        assert!(client
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_AUTH_CHECK));
+        assert!(intersect_capabilities(&client, &daemon)
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_AUTH_CHECK));
     }
 
     #[test]

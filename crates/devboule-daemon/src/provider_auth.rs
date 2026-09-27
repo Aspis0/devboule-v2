@@ -1,18 +1,15 @@
 //! Explicit, read-only login checks for the provider settings refresh.
 
-#[cfg(not(test))]
 use crate::provider_catalog::ProviderOrigin;
 use crate::provider_catalog::{InstalledAgent, KNOWN_AGENTS};
-#[cfg(not(test))]
 use std::io::Read;
-#[cfg(not(test))]
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 #[cfg(not(test))]
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(test))]
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(not(test))]
 const MAX_STATUS_OUTPUT: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,9 +94,21 @@ pub(crate) fn check_if_enabled<T>(enabled: bool, probe: impl FnOnce() -> Option<
 }
 
 #[cfg(test)]
-pub(crate) fn check(_agent: &InstalledAgent) -> Option<AuthCheck> {
+pub(crate) fn check(agent: &InstalledAgent) -> Option<AuthCheck> {
     // Never launch host provider CLIs or inspect its credential store in tests.
+    if agent.id == "claude" {
+        TEST_CLAUDE_CHECK_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
     None
+}
+
+#[cfg(test)]
+static TEST_CLAUDE_CHECK_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn test_check_call_count() -> usize {
+    TEST_CLAUDE_CHECK_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[cfg(not(test))]
@@ -132,6 +141,14 @@ pub(crate) fn check(agent: &InstalledAgent) -> Option<AuthCheck> {
 
 #[cfg(not(test))]
 fn run_check(agent: &InstalledAgent, args: &[String]) -> (&'static str, &'static str) {
+    run_check_with_timeout(agent, args, CHECK_TIMEOUT)
+}
+
+fn run_check_with_timeout(
+    agent: &InstalledAgent,
+    args: &[String],
+    timeout: Duration,
+) -> (&'static str, &'static str) {
     let mut command = Command::new(&agent.executable);
     command
         .args(&agent.prefix_args)
@@ -180,16 +197,12 @@ fn run_check(agent: &InstalledAgent, args: &[String]) -> (&'static str, &'static
         loop {
             match stdout.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
-                Ok(read) if output.len() < MAX_STATUS_OUTPUT => {
-                    let keep = read.min(MAX_STATUS_OUTPUT - output.len());
-                    output.extend_from_slice(&chunk[..keep]);
-                }
-                Ok(_) => {}
+                Ok(read) => append_bounded_output(&mut output, &chunk[..read]),
             }
         }
         let _ = output_tx.send(output);
     });
-    let deadline = Instant::now() + CHECK_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let exit_status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -226,6 +239,13 @@ fn classify_failure(failure: ProbeFailure) -> (&'static str, &'static str) {
     }
 }
 
+fn append_bounded_output(output: &mut Vec<u8>, chunk: &[u8]) {
+    let keep = chunk
+        .len()
+        .min(MAX_STATUS_OUTPUT.saturating_sub(output.len()));
+    output.extend_from_slice(&chunk[..keep]);
+}
+
 fn classify_result(
     provider_id: &str,
     exit_code: Option<i32>,
@@ -239,8 +259,7 @@ fn classify_result(
         },
         "codex" => match exit_code {
             Some(0) => ("logged_in", "CLI confirmed an active login."),
-            Some(_) => ("logged_out", "CLI reported no active login."),
-            None => ("unknown", "CLI returned an unrecognized status result."),
+            _ => ("unknown", "CLI returned an unrecognized status result."),
         },
         "pi" => match serde_json::from_slice::<serde_json::Value>(output)
             .ok()

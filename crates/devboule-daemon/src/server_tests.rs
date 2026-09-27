@@ -773,11 +773,41 @@ fn providers_list_returns_catalog_entries_with_unknown_authentication() {
 #[test]
 fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
     let state = Arc::new(ServerState::new("disabled-provider-wire".to_string()));
+    state.record_provider_auth_check(
+        "claude",
+        crate::provider_auth::AuthCheck {
+            status: "logged_in",
+            reason: "CLI confirmed an active login.",
+            checked_at: 1,
+        },
+    );
+    let cached = super::providers::providers_reply(&state, 70, false, false);
+    let DaemonMessage::Providers { providers, .. } = cached else {
+        panic!("cached providers reply expected");
+    };
+    assert_eq!(
+        providers
+            .iter()
+            .find(|row| row.id == "claude")
+            .unwrap()
+            .auth_status
+            .as_deref(),
+        Some("logged_in"),
+        "enabled rows return the cached result without spawning a check"
+    );
+    for agent in crate::provider_catalog::KNOWN_AGENTS {
+        state
+            .provider_switches
+            .set(agent.id, false)
+            .expect("disable auth-check fixtures");
+    }
+    let checks_before = crate::provider_auth::test_check_call_count();
     state
         .provider_switches
         .set("claude", false)
         .expect("disable the catalog provider");
-    let reply = super::providers::providers_reply(&state, 71, false, false);
+    assert!(!state.provider_switches.is_enabled("claude"));
+    let reply = super::providers::providers_reply(&state, 71, false, true);
     let DaemonMessage::Providers { providers, .. } = reply else {
         panic!("providers reply expected, got {reply:?}");
     };
@@ -787,6 +817,15 @@ fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
         .expect("Claude remains visible in Settings");
     assert!(!claude.enabled);
     assert_eq!(claude.pickable, Some(false));
+    assert_eq!(
+        claude.auth_status, None,
+        "OFF rows do not expose stale auth cache"
+    );
+    assert_eq!(
+        crate::provider_auth::test_check_call_count(),
+        checks_before,
+        "OFF rows never enter the process checker"
+    );
 }
 
 #[test]

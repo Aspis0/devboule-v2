@@ -1530,6 +1530,7 @@ impl DaemonClient {
     }
 
     pub fn providers_auth_check(&self) -> Result<(Vec<ProviderInfo>, u32), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::PROVIDER_AUTH_CHECK)?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::ProvidersAuthCheck { id })? {
             DaemonMessage::Providers {

@@ -33,10 +33,7 @@ pub(super) fn providers_reply(
             let authentication = state.provider_health(&agent.id);
             let enabled = state.provider_switches.is_enabled(&agent.id);
             let auth_check = if check_auth {
-                crate::provider_auth::check_if_enabled(enabled, || {
-                    crate::provider_auth::check(&agent)
-                })
-                .map(|check| state.record_provider_auth_check(&agent.id, check))
+                state.check_provider_auth(&agent)
             } else if enabled {
                 state.provider_auth_check(&agent.id)
             } else {

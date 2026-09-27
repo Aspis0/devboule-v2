@@ -23,6 +23,7 @@ vi.mock("../../../lib/tauri", async (importOriginal) => {
         "devices",
         "tool_policy",
         "provider.switches",
+        "provider.auth-check",
       ],
       message: null,
     })),
@@ -541,6 +542,12 @@ describe("provider rows and status", () => {
 });
 
 describe("providers refresh", () => {
+  it("shows unknown from an old daemon without sending the auth-check frame", async () => {
+    vi.mocked(daemonStatus).mockResolvedValueOnce(daemonStatusWith(["ping", "status"]));
+    await renderPanel();
+    expect(providersAuthCheck).not.toHaveBeenCalled();
+  });
+
   it("checks login on open and explicit Refresh only", async () => {
     await renderPanel();
     expect(providersAuthCheck).toHaveBeenCalledTimes(1);
@@ -1041,6 +1048,9 @@ describe("tools switch wiring", () => {
   }
 
   it("shows an off provider as Off, keeps its tools switch disabled, and persists On", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue(
+      daemonStatusWith(["ping", "status", "tool_policy", "provider.switches"]),
+    );
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [
         installedProvider({
@@ -1065,6 +1075,9 @@ describe("tools switch wiring", () => {
   });
 
   it("reverts the provider switch and reports a failed write", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue(
+      daemonStatusWith(["ping", "status", "tool_policy", "provider.switches"]),
+    );
     vi.mocked(providerSetEnabled).mockRejectedValueOnce({
       code: "io",
       message: "switch file unwritable",

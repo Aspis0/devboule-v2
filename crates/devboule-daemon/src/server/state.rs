@@ -112,6 +112,8 @@ pub struct ServerState {
     /// Latest explicit Providers-page auth observation, keyed by provider.
     /// Like last-start health, this relies on the daemon remaining single-user.
     provider_auth_checks: Mutex<HashMap<String, crate::provider_auth::AuthCheck>>,
+    provider_auth_inflight:
+        Mutex<HashMap<String, Arc<std::sync::OnceLock<Option<crate::provider_auth::AuthCheck>>>>>,
     /// Version declared by the provider's most recent successful ACP
     /// initialize handshake, keyed by provider id.
     provider_versions: Mutex<HashMap<String, String>>,
@@ -360,6 +362,7 @@ impl ServerState {
             session_watchers: Mutex::new(HashMap::new()),
             provider_health: Mutex::new(HashMap::new()),
             provider_auth_checks: Mutex::new(HashMap::new()),
+            provider_auth_inflight: Mutex::new(HashMap::new()),
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
             claude_version_probes: Mutex::new(HashSet::new()),
@@ -807,6 +810,48 @@ impl ServerState {
             .unwrap_or_else(|error| error.into_inner())
             .get(provider_id)
             .cloned()
+    }
+
+    pub(crate) fn check_provider_auth(
+        &self,
+        agent: &crate::provider_catalog::InstalledAgent,
+    ) -> Option<crate::provider_auth::AuthCheck> {
+        let (flight, created) = {
+            let mut in_flight = self
+                .provider_auth_inflight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match in_flight.get(&agent.id) {
+                Some(flight) => (Arc::clone(flight), false),
+                None => {
+                    let flight = Arc::new(std::sync::OnceLock::new());
+                    in_flight.insert(agent.id.clone(), Arc::clone(&flight));
+                    (flight, true)
+                }
+            }
+        };
+        let result = flight
+            .get_or_init(|| {
+                crate::provider_auth::check_if_enabled(
+                    self.provider_switches.is_enabled(&agent.id),
+                    || crate::provider_auth::check(agent),
+                )
+                .map(|check| self.record_provider_auth_check(&agent.id, check))
+            })
+            .clone();
+        if created {
+            let mut in_flight = self
+                .provider_auth_inflight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if in_flight
+                .get(&agent.id)
+                .is_some_and(|current| Arc::ptr_eq(current, &flight))
+            {
+                in_flight.remove(&agent.id);
+            }
+        }
+        result
     }
 
     pub(crate) fn record_provider_version(&self, provider_id: &str, version: &str) {

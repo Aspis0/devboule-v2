@@ -52,7 +52,8 @@ describe("providerRowStatus", () => {
       }),
     );
     expect(failedStart.word).toBe("Start failed");
-    expect(failedStart.detail).toBe("The provider status check timed out.");
+    expect(failedStart.detail).toContain("older start failure");
+    expect(failedStart.detail).toContain("status check timed out");
   });
 
   it("reads a measured start as Started with the live tone, never Ready", () => {

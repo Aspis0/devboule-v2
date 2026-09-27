@@ -11,6 +11,16 @@ export interface ProviderRowStatus {
   detail: string | null;
 }
 
+function providerStatusDetail(provider: ProviderInfo, authReason: string | null): string | null {
+  const startFailure = provider.authentication.startsWith("failed:")
+    ? provider.authentication.slice("failed:".length).trim()
+    : "";
+  const details = [authReason, startFailure.length > 0 ? startFailure : null].filter(
+    (detail): detail is string => detail !== null,
+  );
+  return details.length > 0 ? [...new Set(details)].join(" · ") : null;
+}
+
 /**
  * Prefer the explicit auth observation when the daemon has one; providers
  * without a check keep the honest last-start words. Details are rendered into
@@ -19,13 +29,25 @@ export interface ProviderRowStatus {
 export function providerRowStatus(provider: ProviderInfo): ProviderRowStatus {
   const authCheckReason = provider.authStatus === "unknown" ? (provider.authReason ?? null) : null;
   if (provider.authStatus === "logged_in") {
-    return { tone: "live", word: "Logged in", detail: provider.authReason ?? null };
+    return {
+      tone: "live",
+      word: "Logged in",
+      detail: providerStatusDetail(provider, provider.authReason ?? null),
+    };
   }
   if (provider.authStatus === "logged_out") {
-    return { tone: "failed", word: "Not logged in", detail: provider.authReason ?? null };
+    return {
+      tone: "failed",
+      word: "Not logged in",
+      detail: providerStatusDetail(provider, provider.authReason ?? null),
+    };
   }
   if (provider.authStatus === "credentials_found") {
-    return { tone: "idle", word: "Credentials found", detail: provider.authReason ?? null };
+    return {
+      tone: "idle",
+      word: "Credentials found",
+      detail: providerStatusDetail(provider, provider.authReason ?? null),
+    };
   }
   if (provider.authentication === "ok")
     return {
@@ -34,11 +56,10 @@ export function providerRowStatus(provider: ProviderInfo): ProviderRowStatus {
       detail: authCheckReason ?? "Last measured start completed.",
     };
   if (provider.authentication.startsWith("failed:")) {
-    const reason = provider.authentication.slice("failed:".length).trim();
     return {
       tone: "failed",
       word: "Start failed",
-      detail: authCheckReason ?? (reason.length > 0 ? reason : null),
+      detail: providerStatusDetail(provider, authCheckReason),
     };
   }
   return {
@@ -134,6 +155,7 @@ export const TOOL_POLICY_CAPABILITY = "tool_policy";
 
 /** The handshake capability that gates ProviderSetEnabled frames. */
 export const PROVIDER_SWITCHES_CAPABILITY = "provider.switches";
+export const PROVIDER_AUTH_CHECK_CAPABILITY = "provider.auth-check";
 
 /**
  * What one provider's toggles read from a stored row. `undefined` is the
