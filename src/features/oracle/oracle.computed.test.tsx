@@ -1,13 +1,17 @@
 // @vitest-environment happy-dom
 
 // The Oracle surface against the settings card language, proved against
-// the real stylesheets in bundle order: tokens, global, the shell sheet,
-// then oracle.css. Bare single-class selectors in the light theme only
-// (cssProof's scope); the dark theme and anything it cannot see belong to
-// a live check and are listed in the slice report. The four-step flow and
-// every Oracle IPC stay exactly as they are — this suite pins surfaces.
+// the real stylesheets in the REAL bundle order, measured with
+// `vite build` on this tree (SettingsSurface chunk byte offsets:
+// diagnostics 55, devices 3427, oracle 7656, general 25685, providers
+// 26993, profiles 33013, projects 38259, settings.css LAST at 39720+).
+// Bare single-class selectors in the light theme only (cssProof's scope);
+// the dark theme and anything it cannot see belong to a live check and
+// are listed in the slice report. The four-step flow and every Oracle IPC
+// stay exactly as they are — the flow pin is a markup test in
+// OracleSetup.test.tsx, not a CSS string below.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { assembleCssProof, removeCssProof } from "../workspace/cssProof";
@@ -28,8 +32,14 @@ function box(className: string): HTMLElement {
 const proof = assembleCssProof([
   read("src/styles/tokens.css"),
   read("src/styles/global.css"),
-  read("src/features/settings/settings.css"),
+  read("src/features/settings/diagnostics.css"),
+  read("src/features/settings/devices.css"),
   read("src/features/oracle/oracle.css"),
+  read("src/features/settings/general.css"),
+  read("src/features/settings/providers.css"),
+  read("src/features/settings/profiles.css"),
+  read("src/features/settings/projects.css"),
+  read("src/features/settings/settings.css"),
 ]);
 
 afterEach(() => {
@@ -60,23 +70,33 @@ describe("oracle cards (real stylesheets, no app launch)", () => {
     expect(proof.rulesFor(".oracle-query-surface")).not.toContain("box-shadow");
   });
 
-  it("keeps one content-title scale under the shell's page title", () => {
-    proof.inject([".oracle-stage-content h3"]);
-    const content = box("oracle-stage-content");
-    const title = document.createElement("h3");
-    title.textContent = "Choose a folder for Oracle";
-    content.appendChild(title);
-    expect(getComputedStyle(title).fontSize).toBe("18px");
-    // The group rule above also names this selector; what matters is the
-    // cascade winner — the last font-size the sheets declare for it.
-    const sizes = [
-      ...proof.rulesFor(".oracle-ready-intro h3").matchAll(/font-size:\s*(\d+)px/g),
-    ].map((match) => match[1]);
-    expect(sizes.at(-1)).toBe("18");
+  it("sets every flow heading at the house section label", () => {
+    // The brief aligns Oracle's cards AND headings: 12px/500/--muted, the
+    // same label every other settings page hangs on its card. All four
+    // grouped selectors, not just the first.
+    for (const selector of [
+      ".oracle-stage-content h3",
+      ".oracle-ready-intro h3",
+      ".oracle-admin-block h4",
+      ".oracle-files-heading h4",
+    ]) {
+      const rules = proof.rulesFor(selector);
+      expect(rules).toContain("font-size: 12px");
+      expect(rules).toContain("font-weight: 500");
+      expect(rules).toContain(proof.token("--muted"));
+    }
   });
 
   it("carries no page heading of its own — the shell titles the page", () => {
+    // Two halves: no rule declares one, and no component renders one. A
+    // resurrected consumer would otherwise render an unstyled heading
+    // with the first half still green.
     expect(read("src/features/oracle/oracle.css")).not.toContain("oracle-page-heading");
+    const dir = resolve(rootDir, "src/features/oracle");
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith(".tsx") || file.includes(".test.")) continue;
+      expect(read(`src/features/oracle/${file}`)).not.toContain("oracle-page-heading");
+    }
   });
 
   it("keeps the four-step rail and its step states", () => {

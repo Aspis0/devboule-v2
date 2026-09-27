@@ -245,7 +245,7 @@ export class DiagnosticsErrorBoundary extends Component<
             </p>
             <button
               type="button"
-              className="diagnostics-boundary-retry"
+              className="diagnostics-boundary-retry diagnostics-retry"
               onClick={() => this.setState({ error: null })}
             >
               Try again

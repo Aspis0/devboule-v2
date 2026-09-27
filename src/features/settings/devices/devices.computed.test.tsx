@@ -407,6 +407,7 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
       "src/features/settings/profiles.css",
       "src/features/settings/general.css",
       "src/features/settings/diagnostics.css",
+      "src/features/settings/projects.css",
     ]) {
       const selectors = read(sheet)
         .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -417,12 +418,11 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
 
   it("keeps mono type to code on every settings sheet", () => {
     // N5: the risk moved sheets once already (the shared `device-*` rules
-    // now live in the shell sheet), so the allowlist scans all six. Each
+    // now live in the shell sheet), so the allowlist scans all seven. Each
     // entry names its owner: devices (this slice), shell legacy + shell
     // model picker (R17-0), providers (R17-1's own guard mirrors it),
-    // retention + diagnostics rows + the raw report text (diagnostics
-    // sheet; R17-5 declares the `pre` face explicitly instead of relying
-    // on the user-agent default).
+    // retention + diagnostics rows (diagnostics sheet), projects (R17-5,
+    // no mono faces: the paths keep the shell's meta face).
     const sheets: Record<string, readonly string[]> = {
       "src/features/settings/devices.css": [
         ".dev-pair-code",
@@ -444,11 +444,8 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
       ],
       "src/features/settings/profiles.css": [],
       "src/features/settings/general.css": [],
-      "src/features/settings/diagnostics.css": [
-        ".retention-limit-input",
-        ".diagnostics-row dd",
-        ".diagnostics-text",
-      ],
+      "src/features/settings/diagnostics.css": [".retention-limit-input", ".diagnostics-row dd"],
+      "src/features/settings/projects.css": [],
     };
     let scanned = 0;
     for (const [sheet, allowed] of Object.entries(sheets)) {

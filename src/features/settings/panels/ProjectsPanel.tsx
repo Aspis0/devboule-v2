@@ -65,7 +65,7 @@ export function ProjectsPanel() {
 
   return (
     <div id="settings-panel-projects">
-      <section aria-label="Projects">
+      <div className="proj-stack">
         {loading ? <div role="status">Loading projects…</div> : null}
         {error !== null ? (
           <div role="alert">
@@ -127,15 +127,15 @@ export function ProjectsPanel() {
         {!loading && error === null && projects.length === 0 ? (
           <div role="status">No projects registered</div>
         ) : null}
-      </section>
-      <button
-        className="settings-dashed-action"
-        type="button"
-        ref={addProjectRef}
-        onClick={() => setDialogOpen(true)}
-      >
-        <span aria-hidden="true">+</span>Add project
-      </button>
+        <button
+          className="settings-dashed-action"
+          type="button"
+          ref={addProjectRef}
+          onClick={() => setDialogOpen(true)}
+        >
+          <span aria-hidden="true">+</span>Add project
+        </button>
+      </div>
 
       <NewProjectDialog open={dialogOpen} onClose={closeDialog} onCreate={handleProjectAdded} />
     </div>

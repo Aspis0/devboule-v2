@@ -63,6 +63,9 @@
   font-size: 11px;
 }
 
+/* Provider rows are inline prose summaries (key and value in one breath),
+   not labelled rows: the full values live in the mono rows above and the
+   raw text below, so these keep the surrounding sans face. */
 .diagnostics-providers {
   display: grid;
   gap: 6px;
@@ -97,26 +100,34 @@
   place-items: center;
   color: var(--ink-soft);
   cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--panel-card);
+  border: 1px solid var(--line);
   border-radius: 999px;
   font-size: 11px;
 }
 
+/* Colour and edge move here; the drawn ring ships app-wide
+   (`button:focus-visible` in global.css), so this sheet owns none. */
 .diagnostics-copy:hover,
-.diagnostics-retry:hover {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta);
-}
-
-/* The hover above moves colour and edge only; the drawn focus ring lives
-   here so a keyboard tab is never mistaken for a rest state. */
+.diagnostics-retry:hover,
 .diagnostics-copy:focus-visible,
 .diagnostics-retry:focus-visible {
   color: var(--terracotta-deep);
   border-color: var(--terracotta);
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+}
+
+/* The retry pill sits on the error card's own ground: without this scope
+   it is fill-on-fill (the devices sheet documents the same defect). */
+#settings-panel-diagnostics .diagnostics-retry {
+  background: var(--panel-side);
+  border-color: var(--line-strong);
+}
+
+/* The id above outranks the house hover/focus edge, so both states are
+   re-stated inside the same scope. */
+#settings-panel-diagnostics .diagnostics-retry:hover,
+#settings-panel-diagnostics .diagnostics-retry:focus-visible {
+  border-color: var(--terracotta);
 }
 
 .diagnostics-copy-note {
@@ -128,8 +139,10 @@
   color: var(--terracotta-deep);
 }
 
-/* The raw report text is data, so mono stays — declared here instead of
-   relying on the `pre` default, so the allowlist test can see it. */
+/* The raw report text keeps the `pre` default exactly as base had it: no
+   font-family declaration anywhere on this selector. Declaring one would
+   swap the typeface of the pasted-into-an-issue block (and its scroll-box
+   metrics) under a "no visual change" claim. */
 .diagnostics-text {
   max-width: 720px;
   max-height: 280px;
@@ -137,10 +150,9 @@
   padding: 10px 12px;
   overflow: auto;
   color: var(--ink-soft);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
+  background: var(--panel-side);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
   white-space: pre;
 }
@@ -170,8 +182,10 @@
   font-size: 11px;
 }
 
+/* The base grid's 14px top margin now hangs below the note, holding the
+   redaction reassurance off the first report card. */
 .diagnostics-note {
-  margin: 8px 0 0;
+  margin: 8px 0 14px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -191,18 +205,45 @@
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel-card);
-  padding: 4px 0;
+  padding: 10px 0;
 }
 
+/* Rows keep the shell's borderless shape; the inset here beats it by
+   specificity whatever sheet order the bundle emits. */
 .retention-summary > .settings-card,
 .retention-limits > .retention-limit-row {
   padding-right: 14px;
   padding-left: 14px;
 }
 
-.retention-summary > .settings-card + .settings-card,
-.retention-limits > .retention-limit-row + .retention-limit-row {
+/* Dividers hook elements, not classes: the rows belong to another slice's
+   panel, so a class rename must not silently drop the lines. The usage
+   rows are divs (the blocked-copy line is a `p`, excluded); the limit
+   rows are labels. */
+.retention-summary > div + div,
+.retention-limits > label + label {
   border-top: 1px solid var(--line);
+}
+
+/* The heading, help sentences and blocked-copy line sit beside the rows
+   as direct children; they share the 14px inset and the 8px rhythm. */
+.retention-limits > .settings-subheading,
+.retention-limits > .retention-help,
+.retention-summary > .retention-blocked-copy {
+  padding-right: 14px;
+  padding-left: 14px;
+}
+
+.retention-limits > .settings-subheading {
+  margin: 0 0 8px;
+}
+
+.retention-limits > .retention-help {
+  margin: 0 0 8px;
+}
+
+.retention-summary > .retention-blocked-copy {
+  margin: 8px 0 0;
 }
 
 .retention-blocked-copy,
@@ -217,20 +258,13 @@
   color: var(--ink-soft);
 }
 
-.retention-limit-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 0;
-}
-
 .retention-limit-input {
   width: 160px;
   margin-left: auto;
   padding: 7px 9px;
   color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--panel-card);
+  border: 1px solid var(--line);
   border-radius: 7px;
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;

@@ -37,4 +37,34 @@ describe("Oracle error recovery", () => {
 
     expect(markup.indexOf("Choose another folder")).toBeLessThan(markup.indexOf("Try again"));
   });
+
+  it("walks the same four steps in the same words on every stage", () => {
+    // The setup flow is Folder → Models → Index → Ask; the rail renders
+    // on every stage, so one stage proves the shape for all of them.
+    const markup = renderToStaticMarkup(
+      <OracleSetup
+        stage="models"
+        workspaceRequest={{ status: "loading" }}
+        statusRequest={{ status: "idle" }}
+        workspaceBusy={false}
+        indexStarting={false}
+        cancelBusy={false}
+        modelDownloadBusy={false}
+        workspaceActionError={null}
+        indexActionError={null}
+        onChooseWorkspace={() => undefined}
+        onStartIndex={() => undefined}
+        onCancel={() => undefined}
+        onRefreshStatus={() => undefined}
+        onRetryModels={() => undefined}
+      />,
+    );
+
+    const steps = markup.match(/oracle-setup-step-number">[^<]*<\/span>\s*<span>([^<]*)<\/span>/g);
+    if (steps === null) throw new Error("setup rail did not render");
+    expect(steps).toHaveLength(4);
+    for (const label of ["Folder", "Models", "Index", "Ask"]) {
+      expect(markup).toContain(`<span>${label}</span>`);
+    }
+  });
 });

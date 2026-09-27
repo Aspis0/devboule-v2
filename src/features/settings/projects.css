@@ -4,11 +4,14 @@
    geometry test reads them through cssProof, which models bare selectors
    only. */
 
-/* Same vertical rhythm as the shell's `.settings-main-inner > section`:
-   our sections sit inside #settings-panel-projects, so the shell rule
-   cannot reach them and the 18 px reference is restated here. */
-#settings-panel-projects > section {
-  margin-bottom: 18px;
+/* The page's only top reference (18px under the intro) and its
+   inter-block gap: loading, error, empty, rows and the Add action all
+   sit in the stack, never flush against each other or the intro. */
+.proj-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 18px;
 }
 
 /* One house card for the project list; rows below the first divide on
@@ -35,8 +38,10 @@
 /* The row's type, in the spec's sizes and never mono: the name is the
    label, the workspace paths keep the shell's mono meta face through
    `.settings-card-meta` (paths are data, read verbatim), lifted to meta
-   12 below. */
-.proj-name {
+   12 below. `settings-card-title` survives on the row for its
+   `display: block`; the size wins by specificity, not sheet order — the
+   shell sheet loads last in the bundle. */
+#settings-panel-projects .proj-name {
   color: var(--ink);
   font-size: 14px;
   font-weight: 500;

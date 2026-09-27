@@ -107,8 +107,12 @@ describe("Settings static contracts", () => {
     const shell = settingsCss("settings.css");
     const profiles = settingsCss("profiles.css");
     const diagnostics = settingsCss("diagnostics.css");
+    // Bare definitions live in the shell sheet alone. Page sheets may
+    // reference the class under their own scope (retention insets its
+    // heading this way); a bare redefinition here would fork the label
+    // scale, and only that is banned.
     for (const css of [profiles, diagnostics]) {
-      expect(css).not.toContain(".settings-subheading");
+      expect(css).not.toMatch(/^\s*\.settings-subheading\s*\{/m);
     }
     // general.css may borrow the shell's label for its card heads, never
     // re-declare it: a scoped spacing accommodation is not a definition.

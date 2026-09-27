@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -310,6 +310,27 @@ describe("diagnostics panel", () => {
       "Providers",
       "Environment",
     ]);
+  });
+
+  it("gives the boundary retry the same pill as the load retry", async () => {
+    // Two error cards, one sentence ("Try again"): the boundary card's
+    // button carries no styling of its own, so it shares the retry pill.
+    function Child(): ReactNode {
+      throw new Error("render failed");
+    }
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <DiagnosticsErrorBoundary>
+          <Child />
+        </DiagnosticsErrorBoundary>,
+      );
+    });
+
+    const retry = container.querySelector(".diagnostics-boundary-retry");
+    if (retry === null) throw new Error("boundary retry control did not render");
+    expect(retry.classList.contains("diagnostics-retry")).toBe(true);
   });
 });
 

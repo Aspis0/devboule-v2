@@ -248,4 +248,13 @@ describe("Settings projects", () => {
     expect(card.querySelectorAll(".settings-project-card")).toHaveLength(1);
     expect(card.textContent).toContain("real-project");
   });
+
+  it("holds loading, error, rows and the Add action in one spaced stack", async () => {
+    await renderProjects();
+
+    const stack = container.querySelector(".proj-stack");
+    if (stack === null) throw new Error("project stack did not render");
+    expect(stack.querySelector(".proj-card")).not.toBeNull();
+    expect(stack.querySelector(".settings-dashed-action")?.textContent).toContain("Add project");
+  });
 });
