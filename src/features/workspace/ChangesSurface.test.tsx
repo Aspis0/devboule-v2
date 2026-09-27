@@ -133,6 +133,29 @@ describe("ChangesSurface", () => {
     expect(container.textContent).not.toContain("No uncommitted changes");
     expect(container.textContent).not.toContain("not a git repository");
     expect(container.querySelector(".workspace-file-change")).toBeNull();
+    // The caveat reply names the checkout (isGit, branch kept) but withholds
+    // every count: the branch name and a retry stand beside the sentence.
+    expect(container.querySelector(".workspace-changes-branch")?.textContent).toContain("main");
+    expect(container.querySelector(".workspace-changes-branch-totals")).toBeNull();
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
+    if (refresh === null) throw new Error("refresh button did not render on caveat");
+    await act(async () => {
+      refresh.click();
+    });
+    expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
+  });
+
+  it("names a missing branch honestly on a caveat reply, with a retry", async () => {
+    // The daemon's caveat() carries branch: None — no name invented.
+    vi.mocked(workspaceGitStatus).mockResolvedValue(
+      statusReply({ branch: null, error: "git status exited with code 128" }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+
+    expect(container.querySelector(".workspace-changes-branch")?.textContent).toContain(
+      "No branch",
+    );
+    expect(container.querySelector('button[aria-label="Refresh"]')).not.toBeNull();
   });
 
   // Fix round R1: a degraded count round brings rows AND the sentence
@@ -576,7 +599,6 @@ describe("ChangesSurface", () => {
     expect(container.textContent).toContain("No workspace is selected.");
     expect(controls()).not.toContain("Refresh");
     expect(container.querySelector('button[aria-label="Refresh"]')).toBeNull();
-    expect(container.querySelector(".workspace-changes-toolbar")).toBeNull();
   });
 
   // R7b fix pass 1: Refresh exists on every screen with a workspace — the

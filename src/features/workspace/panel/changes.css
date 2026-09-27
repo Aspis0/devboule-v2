@@ -293,9 +293,11 @@
 }
 
 /* Uncommitted | Commits: 24px buttons on a fill-tool bed, the active one
-   a panel-card chip. */
+   a panel-card chip. Shrink-wrapped to its content: the panel root is a
+   flex column, whose stretch would otherwise pull this bed full width. */
 .workspace-changes-seg {
   display: inline-flex;
+  align-self: flex-start;
   gap: 2px;
   margin: 2px 6px 8px;
   padding: 2px;

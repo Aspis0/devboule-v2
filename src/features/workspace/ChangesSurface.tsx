@@ -313,12 +313,12 @@ export const ChangesSurface = memo(function ChangesSurface({
   const notice = caveat ?? status.failure;
   const loading = workspaceId !== null && reply === null && status.failure === null;
   // The chrome (branch row, switch) stands on any answer that names the
-  // checkout — including a withheld list, whose header facts survive the
-  // cap (branch and `dirty` still stand) — while an error with no rows
-  // behind it, or a folder that is not a repository, shows no chrome at
-  // all. Totals and the tree stay countable-only: never zeros for an
-  // unknown tree.
-  const chrome = reply !== null && reply.isGit && (reply.rows.length > 0 || reply.error === null);
+  // checkout — rows, a clean tree, a withheld list, or a caveat: all four
+  // keep isGit with a branch that still stands. Only a folder that is not
+  // a repository never is. Totals and the tree stay countable-only: never
+  // zeros for an unknown tree, and a caveat with no rows claims nothing
+  // below its sentence.
+  const chrome = reply !== null && reply.isGit;
 
   /** One act, one shape: clear the previous refusal, hold the controls
    * while the wire decides, and surface a refusal as the alert under the
@@ -441,8 +441,9 @@ export const ChangesSurface = memo(function ChangesSurface({
             <>
               {/* A caveat distrusts part of this reply, never all of it:
                   rows on screen stand beside the sentence above, a clean
-                  tree says so, and a withheld list shows nothing countable
-                  — the branch name above is all that survived the cap. */}
+                  tree says so, and anything rowless shows nothing below
+                  the sentence — the branch name above is all that a
+                  withheld list or a caveat could keep. */}
               {reply.rows.length > 0 ? (
                 <ChangesTreeView
                   workspaceId={workspaceId}
@@ -458,7 +459,7 @@ export const ChangesSurface = memo(function ChangesSurface({
                   acting={acting}
                   onOpenFile={onOpenFile}
                 />
-              ) : !reply.dirty ? (
+              ) : reply.error === null && !reply.dirty ? (
                 <div className="workspace-changes-state">
                   No uncommitted changes in this workspace.
                 </div>

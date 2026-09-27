@@ -61,10 +61,12 @@ function indent(depth: number): { paddingLeft: string } {
   return { paddingLeft: `${6 + depth * 14}px` };
 }
 
-/** A group id from a folder path: slashes are legal in ids but hostile in
- * selectors, so everything outside a small safe set becomes a dash. */
+/** A group id from a folder path: every unsafe character becomes its
+ * hex code, so distinct paths can never share an id (`a b` → `a-20-b`
+ * beside `a-b`). Dots, dashes, underscores and colons pass through —
+ * legal in ids, escaped at lookup time. */
 function groupIdFor(path: string): string {
-  return `changes-group-${path.replace(/[^a-zA-Z0-9-_.:]/g, "-")}`;
+  return `changes-group-${path.replace(/[^a-zA-Z0-9-_.:]/g, (glyph) => `-${glyph.charCodeAt(0).toString(16)}-`)}`;
 }
 
 const FileIcon = (
@@ -244,7 +246,9 @@ const FolderNode = memo(function FolderNode({
         type="button"
         className="workspace-changes-folder"
         aria-expanded={expanded}
-        aria-controls={groupId}
+        // Named only while it resolves: a collapsed disclosure owns no
+        // group node, and a dangling aria-controls is an ARIA violation.
+        aria-controls={expanded ? groupId : undefined}
         aria-label={`${expanded ? "Collapse" : "Expand"} ${folder.path}`}
         title={folder.path}
         style={indent(depth)}

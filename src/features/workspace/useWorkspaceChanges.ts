@@ -121,6 +121,13 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
     [workspaceId],
   );
 
+  // Stays useCallback-wrapped on exactly these deps: the writer hook's
+  // `run` and the surface's act identities hang off `refresh`, and the
+  // memoised Changes tree re-renders per commit-field keystroke the day
+  // this closure churns on anything shallower (a keystroke touches none
+  // of the four deps, so the tree's twelve props hold still). No test
+  // can see that — memo is invisible in happy-dom — so the invariant
+  // lives here as a comment instead of a guard.
   const refresh = useCallback((): void => {
     void readStatus();
     const path =

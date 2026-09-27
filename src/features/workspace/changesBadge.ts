@@ -26,7 +26,13 @@ export function changesBadgeLabel(status: WorkspaceGitStatus): string {
  * tree reads `+0 −0`: known exact zeros, not an absence.
  */
 export function changesTotalsLabel(status: WorkspaceGitStatus): string | null {
-  if (status.rows.length === 0 && status.dirty) return null;
+  if (status.rows.length === 0) {
+    // A clean tree reads known zeros; a withheld list or a caveat with no
+    // rows reads nothing — never zeros, estimated or not, for a tree the
+    // reply did not describe.
+    if (status.error !== null || status.dirty) return null;
+    return `+${status.totals.additions} −${status.totals.deletions}`;
+  }
   const counts = `+${status.totals.additions} −${status.totals.deletions}`;
   const exact = status.error === null && !status.rows.some((row) => row.capped);
   return exact ? counts : `≈${counts}`;

@@ -201,7 +201,8 @@ describe("ChangesSurface R7b panel body", () => {
 
     const toggle = container.querySelector<HTMLButtonElement>('button[aria-expanded="true"]');
     if (toggle === null) throw new Error("folder toggle did not render");
-    // The disclosure names the group it owns.
+    // The disclosure names the group it owns — while it owns one: a
+    // collapsed folder's aria-controls must not dangle at a missing id.
     const groupId = toggle.getAttribute("aria-controls");
     if (groupId === null) throw new Error("folder toggle names no group");
     expect(container.querySelector(`#${CSS.escape(groupId)}`)).not.toBeNull();
@@ -212,6 +213,7 @@ describe("ChangesSurface R7b panel body", () => {
     });
     expect(container.querySelector('.workspace-file-change[title="src/sub/b.ts"]')).toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBeNull();
     expect(toggle.parentElement?.textContent).toContain("+11 −5");
     await act(async () => {
       toggle.click();
@@ -385,6 +387,32 @@ describe("ChangesSurface R7b panel body", () => {
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
   });
 
+  it("gives colliding folder names distinct groups", async () => {
+    // `a b` and `a-b` must not share an id: collapsing one folder's button
+    // must never report controlling the other (WCAG 4.1.1).
+    vi.mocked(workspaceGitStatus).mockResolvedValue(
+      statusReply({
+        dirty: true,
+        totals: { additions: 2, deletions: 0 },
+        rows: [row({ path: "a b/f.ts", additions: 1 }), row({ path: "a-b/g.ts", additions: 1 })],
+      }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+
+    const groups = Array.from(container.querySelectorAll(".workspace-changes-tree ul[id]"));
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.id).not.toBe(groups[1]?.id);
+    for (const toggle of Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-changes-folder"),
+    )) {
+      const target = toggle.getAttribute("aria-controls");
+      if (target === null) throw new Error("folder toggle names no group");
+      const group = container.querySelector(`#${CSS.escape(target)}`);
+      if (group === null) throw new Error("folder toggle dangles");
+      expect(group.textContent).toContain(toggle.title.includes("a b") ? "f.ts" : "g.ts");
+    }
+  });
+
   it("marks the open file current, never a pressed toggle", async () => {
     // Selecting shows the diff below; pressing again changes nothing, so
     // the row must not announce a toggle contract (aria-pressed) it cannot
@@ -426,7 +454,14 @@ describe("ChangesSurface R7b panel body", () => {
     expect(folderStats.textContent).toBe("≈+9 −0");
   });
 
-  it("keeps the tree standing while the commit field takes keystrokes", async () => {
+  it("keeps draft, collapse and poll cadence while the commit field takes keystrokes", async () => {
+    // What this guards: typing must owe no re-read, must not drop the
+    // collapse, must not eat the draft. What it does NOT guard: render
+    // counts — memo is a pure optimisation, invisible in happy-dom with
+    // no test seam, so the memoisation itself is reviewed, not tested
+    // (the chain is refresh→run→stage→runStage in the reader, writer and
+    // surface hooks: break any useCallback link and the tree re-renders
+    // per character).
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({
         dirty: true,
@@ -556,6 +591,34 @@ describe("ChangesSurface R7b panel body", () => {
     expect(getComputedStyle(diffHeader).fontFamily).not.toContain("JetBrains Mono");
   });
 
+  it("shrinks the switch to its content instead of stretching it full width", async () => {
+    // Fix pass 2: the panel root became a flex column (P1-3), and a column
+    // stretches its children across the axis — the mockup shows a ~155px
+    // pill, not a full-width bed. The mechanism is align-self on the item;
+    // the exact pill width is live-only (happy-dom does no layout).
+    const { inject } = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/workspace/Workspace.css"),
+      read("src/features/workspace/panel/changes.css"),
+      read("src/features/workspace/strip/strip.css"),
+      read("src/features/workspace/panel/panel.css"),
+    ]);
+    inject([".workspace-changes-seg"]);
+    vi.mocked(workspaceGitStatus).mockResolvedValue(
+      statusReply({
+        dirty: true,
+        totals: { additions: 3, deletions: 0 },
+        rows: [row({ path: "a.ts", additions: 3 })],
+      }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+
+    const seg = container.querySelector<HTMLElement>(".workspace-changes-seg");
+    if (seg === null) throw new Error("switch did not render");
+    expect(getComputedStyle(seg).alignSelf).toBe("flex-start");
+  });
+
   it("pins the commit row to the panel bottom outside the scroll flow", async () => {
     const { inject } = assembleCssProof([
       read("src/styles/tokens.css"),
@@ -579,9 +642,9 @@ describe("ChangesSurface R7b panel body", () => {
     // itself sticks to the scrollport's bottom edge while the tree
     // scrolls under it. Whether it truly never scrolls away is live-only
     // (happy-dom does no layout), but the mechanism is pinned here.
-    const root = container.querySelector<HTMLElement>(".workspace-changes");
-    if (root === null) throw new Error("changes root did not render");
-    expect(getComputedStyle(root).display).toBe("flex");
+    const panel = container.querySelector<HTMLElement>(".workspace-changes");
+    if (panel === null) throw new Error("changes root did not render");
+    expect(getComputedStyle(panel).display).toBe("flex");
     const commitRow = container.querySelector<HTMLElement>(".workspace-commit-row");
     if (commitRow === null) throw new Error("commit row did not render");
     expect(getComputedStyle(commitRow).position).toBe("sticky");
