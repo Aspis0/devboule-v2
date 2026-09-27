@@ -120,6 +120,19 @@ describe("Settings static contracts", () => {
     expect(rule).toContain("font-weight: 500");
   });
 
+  it("zeroes the card-head margins in the author rule, never relying on UA defaults", () => {
+    // N2: happy-dom ships no UA sheet, so no computed style can see the
+    // h3's margin-block-end — the guard asserts the author rule that
+    // zeroes it. One block head per card plus explicit zeroes is what
+    // makes the Appearance and Editing heads render identical spacing.
+    const general = settingsCss("general.css");
+    const body =
+      /\.machine-card\s*>\s*\.settings-subheading:first-child\s*\{([^}]*)\}/.exec(general)?.[1] ??
+      "";
+    expect(body, "the head accommodation rule is missing").not.toBe("");
+    expect(body).toMatch(/margin\s*:\s*0|margin-block-end\s*:\s*0/);
+  });
+
   it("carries no styling ghost classes on the This-machine markup", () => {
     // F5: eleven class names were left in the JSX with zero CSS rules,
     // kept alive only as test selectors. The selectors below read semantic

@@ -42,6 +42,15 @@ afterEach(async () => {
 });
 
 describe("SendBehaviorSetting", () => {
+  it("heads the card with the same block-level shell label as Appearance", async () => {
+    // N1/N2: the head must be one block element with the shell's
+    // subheading class — an inline span takes no vertical padding and
+    // keeps no UA margin, so the two cards diverge.
+    await renderSetting();
+    const head = container.querySelector("h3.settings-subheading");
+    expect(head?.textContent).toBe("Default send");
+  });
+
   it("offers Queue and Steer in the Editing page's card, Queue checked by default", async () => {
     await renderSetting();
     // The card every other This-machine setting uses — not the page-heading

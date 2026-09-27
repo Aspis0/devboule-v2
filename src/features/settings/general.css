@@ -182,10 +182,12 @@
 /* The card head a choice list sits under: the shell's own section label,
    borrowed, not re-declared (the static guard pins that). Its 26 px top
    margin spaces sections apart; as a card's first child it would paint
-   empty top, so the margin is cleared inside this scope only — the same
-   accommodation the Agents section makes for its own head. */
+   empty top, so the margins are zeroed inside this scope and the spacing
+   comes from the padding alone. Every head is the same block element, and
+   no UA default is relied on: an inline head takes no vertical padding
+   and a UA margin-block-end would differ per element. */
 .machine-card > .settings-subheading:first-child {
-  margin-top: 0;
+  margin: 0;
   padding: 12px 14px 4px;
 }
 

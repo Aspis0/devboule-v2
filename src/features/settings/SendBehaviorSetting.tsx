@@ -33,8 +33,10 @@ export function SendBehaviorSetting() {
   const behavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
 
   return (
-    <div className="machine-card">
-      <span className="settings-subheading">Default send</span>
+    <div className="machine-card" aria-labelledby="send-behavior-heading">
+      <h3 className="settings-subheading" id="send-behavior-heading">
+        Default send
+      </h3>
       <div className="machine-choices" role="radiogroup" aria-label="Default send">
         {OPTIONS.map((option) => (
           <label className="machine-choice" key={option.value}>
