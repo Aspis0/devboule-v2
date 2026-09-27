@@ -2,14 +2,24 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { providerUpdate, providersList, providersRefresh } from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
+import { useAppStore } from "../../../store/appStore";
+import { sharedSessionController } from "../../workspace/workspaceSessions";
+import { requestTerminalInput } from "../../terminal/pendingTerminalInput";
 import { useSettingsDaemon } from "../settingsDaemon";
 import { TOOL_POLICY_CAPABILITY, logTail, toolPolicyFor } from "../providerStatus";
+import { ProviderConsentBlock } from "../providers/ProviderConsentBlock";
 import type { ProviderCatalog, ProviderInfo } from "../../../types/ipc";
 import {
   PROVIDER_VOCABULARY_CAPABILITY,
   type ModelCountCache,
 } from "../providers/ProviderModelCount";
-import { ProviderConsentBlock } from "../providers/ProviderConsentBlock";
+import { providerLogin, providerTerminalPlan } from "../providers/providerTerminalCommands";
+import {
+  clearTerminalRun,
+  clearTerminalRuns,
+  recordTerminalRun,
+  terminalRuns,
+} from "../providers/providerTerminalRuns";
 import { ProviderNpmFailure } from "../providers/ProviderNpmFailure";
 import { ProviderRow, ProviderVersionLine } from "../providers/ProviderRow";
 import { useToolPolicies } from "../providers/useToolPolicies";
@@ -24,7 +34,19 @@ interface ProviderNpmRun {
 /** A provider held open in the consent card, waiting for the user's Confirm. */
 interface ProviderConsent {
   provider: ProviderInfo;
-  verb: "update" | "install";
+  verb: "update" | "install" | "login";
+}
+
+/** The consent's own words: what Confirm types, and what it changes. */
+const NPM_WARNING =
+  "This changes your global npm installation; running sessions keep the old version until they are restarted.";
+const TERMINAL_LEAD = "Confirm opens a terminal tab and types these lines, then takes you there.";
+
+/** The row line after a terminal handoff, until Refresh or dismiss. */
+function terminalRunNotice(verb: "install" | "login"): string {
+  return verb === "install"
+    ? "Installing in a terminal — finish the login there."
+    : "Logging in from a terminal — finish it there.";
 }
 
 /**
@@ -53,6 +75,18 @@ export function ProvidersPanel() {
     detail: string | null;
   } | null>(null);
   const [consent, setConsent] = useState<ProviderConsent | null>(null);
+  // A terminal tab the daemon would not start: panel-level, because the
+  // row that asked may belong to either section and the shared roster owns
+  // the daemon's own words (Settings cannot see them).
+  const [terminalError, setTerminalError] = useState<{
+    providerId: string;
+    text: string;
+  } | null>(null);
+  const terminalErrorDismissRef = useRef<HTMLButtonElement | null>(null);
+  // The handoff notes live in the module store (the surface remounts on
+  // navigation); this epoch only re-renders when one is recorded, cleared,
+  // or dismissed.
+  const [, setRunsEpoch] = useState(0);
   // Cleared after the close commits (not at the end of confirm): a second
   // synchronous click still sees the stale non-null consent, so the ref must
   // stay armed until that re-render.
@@ -92,6 +126,10 @@ export function ProvidersPanel() {
   }, [npmRun, catalog]);
 
   useEffect(() => {
+    if (terminalError !== null) terminalErrorDismissRef.current?.focus();
+  }, [terminalError]);
+
+  useEffect(() => {
     consentInFlightRef.current = false;
     if (consent === null) {
       consentRestoreRef.current?.focus();
@@ -102,6 +140,7 @@ export function ProvidersPanel() {
   // The handshake's own capability list, through the same channel every other
   // surface reads it: the supervisor's `daemon_status`.
   const daemon = useSettingsDaemon();
+  const selectSurface = useAppStore((state) => state.selectSurface);
   const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
   const vocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
 
@@ -162,6 +201,11 @@ export function ProvidersPanel() {
     refreshInFlightRef.current = true;
     setRefreshing(true);
     setError(null);
+    setTerminalError(null);
+    // The refetch is the proof the handoff landed: installed rows move
+    // sections, so every waiting note goes with it.
+    clearTerminalRuns();
+    setRunsEpoch((epoch) => epoch + 1);
     // Counts belong to the old catalog: drop them so the next expand re-reads.
     invalidateModelCounts();
     const seq = ++fetchSeqRef.current;
@@ -185,7 +229,7 @@ export function ProvidersPanel() {
 
   function openConsent(
     provider: ProviderInfo,
-    verb: "update" | "install",
+    verb: "update" | "install" | "login",
     trigger: HTMLButtonElement | null,
   ) {
     if (npmRun !== null) return;
@@ -196,6 +240,16 @@ export function ProvidersPanel() {
   function confirmConsent() {
     if (consent === null || consentInFlightRef.current) return;
     consentInFlightRef.current = true;
+    // Only the headless update runs here: install and login hand their
+    // exact lines to a terminal tab instead (the login is interactive,
+    // which the daemon's headless npm road cannot do).
+    if (consent.verb !== "update") {
+      const { provider, verb } = consent;
+      pendingFocusRowRef.current = provider.id;
+      setConsent(null);
+      confirmTerminal(provider, verb);
+      return;
+    }
     const { provider } = consent;
     // Confirm always lands focus on the row showing the npm run: the
     // kebab trigger is already unmounted, and the details Update button
@@ -236,15 +290,74 @@ export function ProvidersPanel() {
       });
   }
 
+  /**
+   * Install and login run in a terminal tab, not in the daemon: the login
+   * is interactive (browser, TUI), which the headless npm road cannot do.
+   * The tab is created with no workspace, so it renders in whichever
+   * workspace the person lands on — same shared controller the "+" menu
+   * uses, minus its focus arming, which lives in Workspace-local state.
+   */
+  function confirmTerminal(provider: ProviderInfo, verb: "install" | "login") {
+    const plan = providerTerminalPlan(provider, verb);
+    if (plan === null) return;
+    void sharedSessionController()
+      .create("terminal", null, null)
+      .then((session) => {
+        if (session === null) {
+          setTerminalError({
+            providerId: provider.id,
+            text: "Could not open a terminal tab. The daemon did not start one — try again.",
+          });
+          return;
+        }
+        requestTerminalInput(session.id, plan.lines);
+        recordTerminalRun(provider.id, verb);
+        setRunsEpoch((epoch) => epoch + 1);
+        setTerminalError(null);
+        // create() already selected the tab; the surface switch remounts
+        // this panel, so the handoff note lives in the module store.
+        selectSurface("workspace");
+      });
+  }
+
   const unreadableDirs = catalog?.unreadableDirs ?? 0;
+  // The headless update's one line; install and login show their terminal
+  // plan (install plus login) through consentPlan below.
   const npmCommand =
-    consent !== null && consent.provider.npmPackage
+    consent !== null && consent.verb === "update" && consent.provider.npmPackage
       ? `npm install -g ${consent.provider.npmPackage}@latest`
       : null;
+  const consentPlan =
+    consent !== null && consent.verb !== "update"
+      ? providerTerminalPlan(consent.provider, consent.verb)
+      : null;
+  // Update keeps its global-npm warning verbatim; a terminal handoff names
+  // the tab first, then the npm change the install line makes.
+  const consentNotice =
+    consent === null
+      ? null
+      : consent.verb === "update"
+        ? NPM_WARNING
+        : consentPlan === null
+          ? null
+          : consent.verb === "install"
+            ? `${TERMINAL_LEAD} ${NPM_WARNING}${consentPlan.note ? ` ${consentPlan.note}` : ""}`
+            : consentPlan.note
+              ? `${TERMINAL_LEAD} ${consentPlan.note}`
+              : TERMINAL_LEAD;
+  const consentLines =
+    consent === null
+      ? null
+      : consent.verb === "update"
+        ? npmCommand !== null
+          ? [npmCommand]
+          : null
+        : (consentPlan?.lines ?? null);
 
   function renderInstalledRow(provider: ProviderInfo, viaNpx: boolean) {
     const withTools = toolPolicySupported && (provider.tools ?? []).length > 0;
     const runHere = npmRun?.providerId === provider.id;
+    const runHereNotice = terminalRuns().find((run) => run.providerId === provider.id) ?? null;
     return (
       <ProviderRow
         key={provider.id}
@@ -254,9 +367,15 @@ export function ProvidersPanel() {
         vocabularySupported={vocabularySupported}
         modelCache={modelCache}
         consentOpen={consent?.provider.id === provider.id}
-        npmCommand={consent?.provider.id === provider.id ? npmCommand : null}
-        npmVerb={consent?.provider.id === provider.id ? consent.verb : null}
+        consentLines={consent?.provider.id === provider.id ? consentLines : null}
+        consentNotice={consent?.provider.id === provider.id ? consentNotice : null}
+        consentVerb={consent?.provider.id === provider.id ? consent.verb : null}
         npmFailure={npmFailure?.providerId === provider.id ? npmFailure : null}
+        terminalNotice={runHereNotice !== null ? terminalRunNotice(runHereNotice.verb) : null}
+        onDismissNotice={() => {
+          clearTerminalRun(provider.id);
+          setRunsEpoch((epoch) => epoch + 1);
+        }}
         writeError={toolStore.writeErrors[provider.id] ?? null}
         onDismissWriteError={() => toolStore.dismissWriteError(provider.id)}
         busyVerb={runHere && npmRun ? npmRun.verb : null}
@@ -266,6 +385,11 @@ export function ProvidersPanel() {
         onToggleTools={(next) => toolStore.setEnabled(provider.id, next)}
         onTurnAllOn={() => toolStore.turnAllOn(provider.id)}
         onOpenUpdate={(trigger) => openConsent(provider, "update", trigger)}
+        onOpenLogin={
+          providerLogin(provider.id) !== null
+            ? (trigger) => openConsent(provider, "login", trigger)
+            : undefined
+        }
         onConfirmConsent={confirmConsent}
         onCancelConsent={() => setConsent(null)}
         onDismissFailure={() => setNpmFailure(null)}
@@ -285,6 +409,21 @@ export function ProvidersPanel() {
             detail={error.detail}
             id="settings-providers-error"
           />
+        </div>
+      ) : null}
+      {terminalError ? (
+        <div role="alert" className="provider-card-block provider-update-error">
+          <span>
+            {terminalError.providerId}: {terminalError.text}
+          </span>
+          <button
+            ref={terminalErrorDismissRef}
+            type="button"
+            className="provider-refresh provider-update-error-dismiss"
+            onClick={() => setTerminalError(null)}
+          >
+            Dismiss
+          </button>
         </div>
       ) : null}
       {providers === null ? (
@@ -339,10 +478,11 @@ export function ProvidersPanel() {
                   No providers match this search.
                 </p>
               ) : (
-                <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
+                <div className="prov-card" aria-busy={refreshing}>
                   {visibleAvailable.map((provider) => {
-                    const runHere = npmRun?.providerId === provider.id;
                     const consentHere = consent?.provider.id === provider.id;
+                    const availableNotice =
+                      terminalRuns().find((run) => run.providerId === provider.id) ?? null;
                     return (
                       <div
                         className="prov-available-row"
@@ -359,9 +499,19 @@ export function ProvidersPanel() {
                           ) : null}
                           <ProviderVersionLine provider={provider} />
                         </span>
-                        {runHere && npmRun ? (
-                          <span className="prov-busy" role="status">
-                            {npmRun.verb === "install" ? "Installing…" : "Updating…"}
+                        {availableNotice !== null ? (
+                          <span className="provider-card-block prov-terminal-note" role="status">
+                            {terminalRunNotice(availableNotice.verb)}
+                            <button
+                              type="button"
+                              className="provider-refresh provider-update-error-dismiss"
+                              onClick={() => {
+                                clearTerminalRun(provider.id);
+                                setRunsEpoch((epoch) => epoch + 1);
+                              }}
+                            >
+                              Dismiss
+                            </button>
                           </span>
                         ) : provider.npmPackage ? (
                           <button
@@ -375,11 +525,12 @@ export function ProvidersPanel() {
                             Install
                           </button>
                         ) : null}
-                        {consentHere && npmCommand !== null && consent !== null ? (
+                        {consentHere && consentLines !== null && consent !== null ? (
                           <ProviderConsentBlock
                             providerId={provider.id}
                             verb={consent.verb}
-                            command={npmCommand}
+                            lines={consentLines}
+                            notice={consentNotice}
                             onConfirm={confirmConsent}
                             onCancel={() => setConsent(null)}
                           />

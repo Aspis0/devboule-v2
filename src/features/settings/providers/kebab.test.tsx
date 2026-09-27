@@ -169,6 +169,23 @@ describe("ProviderKebab", () => {
     expect(container.querySelector('[role="menu"]')).toBeNull();
   });
 
+  it("offers Log in only when the provider documents a login, and calls through", async () => {
+    const onLogin = vi.fn();
+    await renderKebab({ onLogin });
+    await openMenu();
+    const login = menuItems().find((item) => item.textContent === "Log in");
+    if (!login) throw new Error("Log in item did not render");
+    await act(async () => login.click());
+    expect(onLogin).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it("omits Log in when the provider has no login command", async () => {
+    await renderKebab();
+    await openMenu();
+    expect(menuItems().map((item) => item.textContent)).not.toContain("Log in");
+  });
+
   it("keeps only one menu open across rows", async () => {
     await act(async () =>
       root.render(

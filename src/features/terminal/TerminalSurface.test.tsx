@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bannerText, TerminalSurface } from "./TerminalSurface";
+import { requestTerminalInput } from "./pendingTerminalInput";
 
 const coreMocks = vi.hoisted(() => {
   const snapshotEvent = {
@@ -374,6 +375,36 @@ describe("TerminalSurface observer wiring", () => {
     expect(
       container.querySelector<HTMLButtonElement>(".workspace-terminal-interrupt")?.disabled,
     ).toBe(false);
+  });
+
+  it("types a requested install then login, each plus Enter, in order", async () => {
+    requestTerminalInput("session-1", ["npm install -g @openai/codex@latest", "codex login"]);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+    });
+    await act(async () => flush(400));
+
+    const sends = vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "session_send")
+      .map(([, args]) => args);
+    expect(sends).toEqual([
+      { id: "session-1", subscriptionId: 17, text: "npm install -g @openai/codex@latest\n" },
+      { id: "session-1", subscriptionId: 17, text: "codex login\n" },
+    ]);
+  });
+
+  it("sends nothing when no run was requested for the tab", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+    });
+    await act(async () => flush(400));
+
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "session_send"),
+    ).toHaveLength(0);
   });
 });
 

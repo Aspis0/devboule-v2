@@ -284,6 +284,17 @@
   font-size: 12px;
 }
 
+/* A terminal handoff waiting on the row: the same muted status words,
+   with room for its Dismiss. Plain text, never mono (see rowGeometry). */
+.prov-terminal-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
 .prov-available-row {
   display: flex;
   flex-wrap: wrap;

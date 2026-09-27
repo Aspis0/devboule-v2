@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { PermissionRequest, PermissionResolved, SessionState } from "../../types/ipc";
+import { takeTerminalInput } from "./pendingTerminalInput";
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
@@ -206,10 +207,17 @@ export const TerminalSurface = memo(function TerminalSurface({
 
     void session
       .start()
-      .then(() => {
+      .then(async () => {
         // start() resolves only after createView opened the xterm, so the
         // helper textarea exists here — take the armed request if any.
         if (mounted) takeAutoFocus();
+        // A provider install/login handed to this tab before it existed:
+        // type each line plus Enter through the normal road (a start still
+        // applying its snapshot queues them in order behind it).
+        const pending = takeTerminalInput(sessionId);
+        if (pending !== null) {
+          for (const line of pending) await session.writeToPty(`${line}\n`);
+        }
       })
       .catch(() => {
         if (mounted) setBanner({ kind: "error", message: "Could not start the terminal." });

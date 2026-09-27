@@ -50,9 +50,12 @@ describe("ProviderRow", () => {
       vocabularySupported: true,
       modelCache: cache,
       consentOpen: false,
-      npmCommand: null,
-      npmVerb: null,
+      consentLines: null,
+      consentNotice: null,
+      consentVerb: null,
       npmFailure: null,
+      terminalNotice: null,
+      onDismissNotice: () => {},
       writeError: null,
       busyVerb: null,
       actionsDisabled: false,
@@ -269,8 +272,9 @@ describe("ProviderRow", () => {
           })}
           onCancelConsent={onCancelConsent}
           consentOpen
-          npmCommand="npm install -g @vibe/grok-cli@latest"
-          npmVerb="update"
+          consentLines={["npm install -g @vibe/grok-cli@latest"]}
+          consentNotice={null}
+          consentVerb="update"
         />,
       ),
     );
@@ -292,8 +296,9 @@ describe("ProviderRow", () => {
       }),
       onOpenUpdate,
       consentOpen: true,
-      npmCommand: "npm install -g @vibe/grok-cli@latest",
-      npmVerb: "update",
+      consentLines: ["npm install -g @vibe/grok-cli@latest"],
+      consentNotice: null,
+      consentVerb: "update",
       onConfirmConsent,
     });
     expect(onOpenUpdate).not.toHaveBeenCalled();
@@ -340,5 +345,75 @@ describe("ProviderRow", () => {
     if (!dismiss) throw new Error("Dismiss did not render");
     await act(async () => dismiss.click());
     expect(onDismissFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens login from the details button and the kebab, omitted without a handler", async () => {
+    const onOpenLogin = vi.fn();
+    await renderRow({ onOpenLogin });
+    await act(async () => chevron().click());
+    const detailsLogin = container.querySelector<HTMLButtonElement>(".provider-login");
+    if (!detailsLogin) throw new Error("details Log in did not render");
+    expect(detailsLogin.textContent).toBe("Log in");
+    await act(async () => detailsLogin.click());
+    expect(onOpenLogin).toHaveBeenCalledTimes(1);
+    expect(onOpenLogin.mock.calls[0]?.[0]).toBe(detailsLogin);
+
+    const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
+    if (!kebab) throw new Error("kebab did not render");
+    await act(async () => kebab.click());
+    const menuLogin = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Log in");
+    if (!menuLogin) throw new Error("kebab Log in did not render");
+    await act(async () => menuLogin.click());
+    expect(onOpenLogin).toHaveBeenCalledTimes(2);
+    expect(onOpenLogin.mock.calls[1]?.[0]).toBeNull();
+  });
+
+  it("shows no login entry points without a login handler", async () => {
+    await renderRow();
+    await act(async () => chevron().click());
+    expect(container.querySelector(".provider-login")).toBeNull();
+    const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
+    if (!kebab) throw new Error("kebab did not render");
+    await act(async () => kebab.click());
+    expect(
+      Array.from(container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).map(
+        (item) => item.textContent,
+      ),
+    ).not.toContain("Log in");
+  });
+
+  it("renders every consent line verbatim with its notice", async () => {
+    await renderRow({
+      consentOpen: true,
+      consentLines: ["npm install -g @openai/codex@latest", "codex login"],
+      consentNotice: "Confirm opens a terminal tab.",
+      consentVerb: "install",
+      onConfirmConsent: () => {},
+    });
+    const lines = Array.from(container.querySelectorAll(".provider-consent-command")).map(
+      (node) => node.textContent,
+    );
+    expect(lines).toEqual(["npm install -g @openai/codex@latest", "codex login"]);
+    expect(container.textContent).toContain("Confirm opens a terminal tab.");
+  });
+
+  it("opens collapsed details for a terminal handoff, with Dismiss", async () => {
+    const onDismissNotice = vi.fn();
+    await renderRow({
+      terminalNotice: "Installing in a terminal — finish the login there.",
+      onDismissNotice,
+    });
+    expect(chevron().getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "Installing in a terminal — finish the login there.",
+    );
+    const dismiss = container.querySelector<HTMLButtonElement>(
+      '[role="status"] .provider-update-error-dismiss',
+    );
+    if (!dismiss) throw new Error("notice Dismiss did not render");
+    await act(async () => dismiss.click());
+    expect(onDismissNotice).toHaveBeenCalledTimes(1);
   });
 });

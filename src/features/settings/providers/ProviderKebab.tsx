@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * One row's kebab: Update (only when the row can update), Refresh, copy
- * path. Opens onto its first item, arrows travel, Escape closes and returns
+ * One row's kebab: Update (only when the row can update), Log in (only
+ * when the provider documents a login command), Refresh, copy path. Opens
+ * onto its first item, arrows travel, Escape closes and returns
  * focus to the button, choosing closes. Copy feedback stays on the item
  * until the menu closes — no timers, nothing to outlive the menu.
  */
@@ -10,6 +11,7 @@ export function ProviderKebab({
   providerId,
   path,
   onUpdate,
+  onLogin,
   onRefresh,
 }: {
   providerId: string;
@@ -17,6 +19,8 @@ export function ProviderKebab({
   path: string;
   /** Absent when the row cannot update: the item is omitted, not disabled. */
   onUpdate?: () => void;
+  /** Absent when the provider documents no login command: omitted, not disabled. */
+  onLogin?: () => void;
   onRefresh: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -150,6 +154,19 @@ export function ProviderKebab({
               }}
             >
               Update
+            </button>
+          ) : null}
+          {onLogin ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="prov-menu-item"
+              onClick={() => {
+                close(false);
+                onLogin();
+              }}
+            >
+              Log in
             </button>
           ) : null}
           <button

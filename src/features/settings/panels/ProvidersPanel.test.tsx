@@ -45,11 +45,22 @@ import {
   toolPolicyGet,
   toolPolicySet,
 } from "../../../lib/tauri";
+const sessionMocks = vi.hoisted(() => ({ create: vi.fn() }));
+
+vi.mock("../../workspace/workspaceSessions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../workspace/workspaceSessions")>();
+  return { ...actual, sharedSessionController: () => ({ create: sessionMocks.create }) };
+});
+
+import { takeTerminalInput } from "../../terminal/pendingTerminalInput";
+import { clearTerminalRuns, terminalRuns } from "../providers/providerTerminalRuns";
+import { useAppStore } from "../../../store/appStore";
 import type {
   DaemonStatus,
   ProviderCatalog,
   ProviderInfo,
   ProviderUpdateOutcome,
+  Session,
 } from "../../../types/ipc";
 import { ProvidersPanel } from "./ProvidersPanel";
 
@@ -918,7 +929,8 @@ describe("provider update and install", () => {
     expect(container.querySelector(".provider-update-error")).toBeNull();
   });
 
-  it("installs a not-installed row through the same consent", async () => {
+  it("installs a not-installed row through a terminal tab, never headless npm", async () => {
+    sessionMocks.create.mockResolvedValueOnce({ id: "term-1" } as Session);
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [
         {
@@ -933,6 +945,7 @@ describe("provider update and install", () => {
       ],
       unreadableDirs: 0,
     });
+    useAppStore.getState().selectSurface("settings");
     await renderPanel();
 
     const install = container.querySelector<HTMLButtonElement>(".provider-install");
@@ -943,7 +956,12 @@ describe("provider update and install", () => {
     if (!confirm) throw new Error("consent Confirm did not render");
     await act(async () => confirm.click());
     await act(async () => undefined);
-    expect(providerUpdate).toHaveBeenCalledWith("codex-acp");
+    expect(providerUpdate).not.toHaveBeenCalled();
+    expect(sessionMocks.create).toHaveBeenCalledWith("terminal", null, null);
+    expect(takeTerminalInput("term-1")).toEqual([
+      "npm install -g @agentclientprotocol/codex-acp@latest",
+    ]);
+    expect(useAppStore.getState().activeSurface).toBe("workspace");
   });
 });
 
@@ -1236,5 +1254,248 @@ describe("tools switch wiring", () => {
       "A system or file operation failed on this machine.",
     );
     expect(toolSwitch()?.disabled).toBe(false);
+  });
+});
+
+describe("terminal install and login", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    clearTerminalRuns();
+    sessionMocks.create.mockReset();
+    sessionMocks.create.mockResolvedValue({ id: "term-1" } as Session);
+    useAppStore.getState().selectSurface("settings");
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.clearAllMocks();
+    clearTerminalRuns();
+    useAppStore.getState().selectSurface("workspace");
+  });
+
+  async function renderPanel() {
+    root = createRoot(container);
+    await act(async () => root.render(<ProvidersPanel />));
+    await act(async () => undefined);
+  }
+
+  function available(overrides: Partial<ProviderInfo> = {}): ProviderInfo {
+    return {
+      id: "codex",
+      executable: "",
+      acpAvailable: false,
+      authentication: "unknown",
+      installed: false,
+      npmPackage: "@openai/codex",
+      latestVersion: "0.5.0",
+      ...overrides,
+    };
+  }
+
+  function consentLines(): string[] {
+    return Array.from(container.querySelectorAll(".provider-consent-command")).map(
+      (node) => node.textContent ?? "",
+    );
+  }
+
+  async function confirm() {
+    const button = container.querySelector<HTMLButtonElement>(".provider-consent-confirm");
+    if (!button) throw new Error("consent Confirm did not render");
+    await act(async () => button.click());
+    await act(async () => undefined);
+  }
+
+  async function openInstall() {
+    const install = container.querySelector<HTMLButtonElement>(".provider-install");
+    if (!install) throw new Error("Install did not render");
+    await act(async () => install.click());
+  }
+
+  it("shows install then login as separate consent lines and types both in order", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [available()],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    await openInstall();
+
+    expect(consentLines()).toEqual(["npm install -g @openai/codex@latest", "codex login"]);
+    expect(providerUpdate).not.toHaveBeenCalled();
+
+    await confirm();
+    expect(providerUpdate).not.toHaveBeenCalled();
+    expect(sessionMocks.create).toHaveBeenCalledTimes(1);
+    expect(sessionMocks.create).toHaveBeenCalledWith("terminal", null, null);
+    expect(takeTerminalInput("term-1")).toEqual([
+      "npm install -g @openai/codex@latest",
+      "codex login",
+    ]);
+    expect(useAppStore.getState().activeSurface).toBe("workspace");
+    expect(terminalRuns()).toEqual([{ providerId: "codex", verb: "install" }]);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "Installing in a terminal — finish the login there.",
+    );
+  });
+
+  it("runs nothing until Confirm, and Cancel runs nothing at all", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [available()],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    await openInstall();
+    expect(sessionMocks.create).not.toHaveBeenCalled();
+
+    const cancel = container.querySelector<HTMLButtonElement>(".provider-consent-cancel");
+    if (!cancel) throw new Error("consent Cancel did not render");
+    await act(async () => cancel.click());
+    await act(async () => undefined);
+    expect(sessionMocks.create).not.toHaveBeenCalled();
+    expect(providerUpdate).not.toHaveBeenCalled();
+    expect(terminalRuns()).toEqual([]);
+    expect(useAppStore.getState().activeSurface).toBe("settings");
+  });
+
+  it("logs a documented provider in from its kebab with only the login line", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [installedProvider({ id: "claude", executable: "claude" })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
+    if (!kebab) throw new Error("kebab did not render");
+    await act(async () => kebab.click());
+    const login = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Log in");
+    if (!login) throw new Error("Log in item did not render");
+    await act(async () => login.click());
+    await act(async () => undefined);
+    expect(consentLines()).toEqual(["claude auth login"]);
+
+    await confirm();
+    expect(sessionMocks.create).toHaveBeenCalledWith("terminal", null, null);
+    expect(takeTerminalInput("term-1")).toEqual(["claude auth login"]);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "Logging in from a terminal — finish it there.",
+    );
+  });
+
+  it("omits Log in where the provider documents no login command", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [installedProvider({ id: "pi", executable: "pi" })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
+    if (!kebab) throw new Error("kebab did not render");
+    await act(async () => kebab.click());
+    expect(
+      Array.from(container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).map(
+        (item) => item.textContent,
+      ),
+    ).not.toContain("Log in");
+  });
+
+  it("names the TUI login on a pi install consent, with only the install line", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [available({ id: "pi", npmPackage: "@earendil-works/pi-coding-agent" })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    await openInstall();
+
+    expect(consentLines()).toEqual(["npm install -g @earendil-works/pi-coding-agent@latest"]);
+    expect(container.textContent).toContain("/login");
+
+    await confirm();
+    expect(takeTerminalInput("term-1")).toEqual([
+      "npm install -g @earendil-works/pi-coding-agent@latest",
+    ]);
+  });
+
+  it("says plainly that an unknown provider has no login command", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [available({ id: "something-new", npmPackage: "@example/new-cli" })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    await openInstall();
+
+    expect(consentLines()).toEqual(["npm install -g @example/new-cli@latest"]);
+    expect(container.textContent).toMatch(/no login command/i);
+  });
+
+  it("shows a dismissible alert and stays put when no terminal starts", async () => {
+    sessionMocks.create.mockReset();
+    sessionMocks.create.mockResolvedValue(null);
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [available()],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    await openInstall();
+    await confirm();
+
+    const alert = container.querySelector('[role="alert"]');
+    if (!alert) throw new Error("terminal alert did not render");
+    expect(alert.textContent).toContain("codex");
+    expect(alert.textContent).toContain("Could not open a terminal tab.");
+    expect(providerUpdate).not.toHaveBeenCalled();
+    expect(takeTerminalInput("term-1")).toBeNull();
+    expect(useAppStore.getState().activeSurface).toBe("settings");
+    expect(document.activeElement?.textContent).toBe("Dismiss");
+
+    const dismiss = container.querySelector<HTMLButtonElement>(
+      '[role="alert"] .provider-update-error-dismiss',
+    );
+    if (!dismiss) throw new Error("alert Dismiss did not render");
+    await act(async () => dismiss.click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("clears the handoff note on Refresh and on dismiss", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [available()],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    await openInstall();
+    await confirm();
+    // The surface switch remounts the panel in production; the module store
+    // is what survives it, so read back through a fresh mount.
+    await act(async () => root.unmount());
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [available()],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "Installing in a terminal",
+    );
+
+    const dismiss = container.querySelector<HTMLButtonElement>(
+      '[role="status"] .provider-update-error-dismiss',
+    );
+    if (!dismiss) throw new Error("note Dismiss did not render");
+    await act(async () => dismiss.click());
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(terminalRuns()).toEqual([]);
+
+    await openInstall();
+    await confirm();
+    vi.mocked(providersRefresh).mockResolvedValueOnce({ providers: [], unreadableDirs: 0 });
+    const refresh = container.querySelectorAll<HTMLButtonElement>(".provider-refresh")[0];
+    if (!refresh) throw new Error("Refresh did not render");
+    await act(async () => refresh.click());
+    await act(async () => undefined);
+    expect(terminalRuns()).toEqual([]);
   });
 });

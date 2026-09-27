@@ -47,9 +47,15 @@ export interface ProviderRowProps {
   vocabularySupported: boolean;
   modelCache: ModelCountCache;
   consentOpen: boolean;
-  npmCommand: string | null;
-  npmVerb: "update" | "install" | null;
+  /** The exact lines the consent shows, in type order; null when no consent. */
+  consentLines: readonly string[] | null;
+  /** The warning under the consent lines; null when the lines stand alone. */
+  consentNotice: string | null;
+  consentVerb: "update" | "install" | "login" | null;
   npmFailure: { text: string; detail: string | null } | null;
+  /** A terminal handoff waiting on this row, shown until Refresh or dismiss. */
+  terminalNotice: string | null;
+  onDismissNotice: () => void;
   writeError: ErrorSentence | null;
   onDismissWriteError: () => void;
   /** This row's npm run, while the daemon executes it. */
@@ -63,6 +69,8 @@ export interface ProviderRowProps {
   onToggleTools: (next: boolean) => void;
   onTurnAllOn: () => void;
   onOpenUpdate: (trigger: HTMLButtonElement | null) => void;
+  /** Absent when the provider documents no login command: no entry points. */
+  onOpenLogin?: (trigger: HTMLButtonElement | null) => void;
   onConfirmConsent: () => void;
   onCancelConsent: () => void;
   onDismissFailure: () => void;
@@ -82,9 +90,12 @@ export function ProviderRow({
   vocabularySupported,
   modelCache,
   consentOpen,
-  npmCommand,
-  npmVerb,
+  consentLines,
+  consentNotice,
+  consentVerb,
   npmFailure,
+  terminalNotice,
+  onDismissNotice,
   writeError,
   onDismissWriteError,
   busyVerb,
@@ -94,6 +105,7 @@ export function ProviderRow({
   onToggleTools,
   onTurnAllOn,
   onOpenUpdate,
+  onOpenLogin,
   onConfirmConsent,
   onCancelConsent,
   onDismissFailure,
@@ -105,17 +117,27 @@ export function ProviderRow({
   // remembers where consent came from and returns focus to the kebab on
   // Cancel itself — the panel's restore effect only covers live triggers.
   const [consentFromKebab, setConsentFromKebab] = useState(false);
-  // Consent, failure, write errors, and a running npm live inside the
-  // details: arriving any of them opens the row, so a kebab Update on a
-  // collapsed row still reveals its consent card instead of opening it
-  // invisibly.
+  // Consent, failure, write errors, a running npm, and a terminal handoff
+  // live inside the details: arriving any of them opens the row, so a
+  // kebab Update on a collapsed row still reveals its consent card instead
+  // of opening it invisibly.
   useEffect(() => {
-    if (consentOpen || npmFailure !== null || writeError !== null || busyVerb !== null) {
+    if (
+      consentOpen ||
+      npmFailure !== null ||
+      writeError !== null ||
+      busyVerb !== null ||
+      terminalNotice !== null
+    ) {
       setExpanded(true);
     }
-  }, [consentOpen, npmFailure, writeError, busyVerb]);
+  }, [consentOpen, npmFailure, writeError, busyVerb, terminalNotice]);
   const status = providerRowStatus(provider);
   const canUpdate = providerCanUpdate(provider) && !actionsDisabled;
+  // A login consent types into a terminal tab, independent of the daemon's
+  // npm lock — but the consent card is still one per page, so a running
+  // npm keeps every entry point shut.
+  const canLogin = onOpenLogin !== undefined && !actionsDisabled;
   // Provider ids are user-declarable (`user_providers` rows), so the id is
   // sanitised before it becomes a DOM id.
   const detailsId = `prov-details-${provider.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -133,6 +155,16 @@ export function ProviderRow({
   function openUpdateFromDetails(trigger: HTMLButtonElement) {
     setConsentFromKebab(false);
     onOpenUpdate(trigger);
+  }
+
+  function openLoginFromKebab() {
+    setConsentFromKebab(true);
+    onOpenLogin?.(null);
+  }
+
+  function openLoginFromDetails(trigger: HTMLButtonElement) {
+    setConsentFromKebab(false);
+    onOpenLogin?.(trigger);
   }
 
   function cancelConsent() {
@@ -189,6 +221,7 @@ export function ProviderRow({
           providerId={provider.id}
           path={provider.executable}
           onUpdate={canUpdate ? openUpdateFromKebab : undefined}
+          onLogin={canLogin ? openLoginFromKebab : undefined}
           onRefresh={onRefresh}
         />
       </div>
@@ -228,14 +261,38 @@ export function ProviderRow({
               </button>
             </div>
           ) : null}
-          {consentOpen && npmCommand !== null && npmVerb !== null ? (
+          {canLogin ? (
+            <div className="prov-detail-line">
+              <button
+                type="button"
+                className="provider-refresh provider-login"
+                onClick={(event) => openLoginFromDetails(event.currentTarget)}
+              >
+                Log in
+              </button>
+            </div>
+          ) : null}
+          {consentOpen && consentLines !== null && consentVerb !== null ? (
             <ProviderConsentBlock
               providerId={provider.id}
-              verb={npmVerb}
-              command={npmCommand}
+              verb={consentVerb}
+              lines={consentLines}
+              notice={consentNotice}
               onConfirm={onConfirmConsent}
               onCancel={cancelConsent}
             />
+          ) : null}
+          {terminalNotice !== null ? (
+            <div className="prov-detail-line" role="status">
+              <span className="prov-terminal-note">{terminalNotice}</span>
+              <button
+                type="button"
+                className="provider-refresh provider-update-error-dismiss"
+                onClick={onDismissNotice}
+              >
+                Dismiss
+              </button>
+            </div>
           ) : null}
           {npmFailure !== null ? (
             <ProviderNpmFailure
