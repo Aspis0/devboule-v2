@@ -578,6 +578,14 @@ describe("Settings menu shell", () => {
       const dot = container.querySelector(".settings-host-dot");
       expect(dot?.className).toContain("settings-host-dot-terracotta");
       expect(dot?.className).not.toContain("settings-host-dot-green");
+      // Recovery: the next answer lands and the dot returns to green.
+      vi.mocked(daemonStatus).mockResolvedValue(capable);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2100);
+      });
+      expect(container.querySelector(".settings-host-dot")?.className).toContain(
+        "settings-host-dot-green",
+      );
     } finally {
       for (const resolve of pending.splice(0)) resolve(capable);
       await act(async () => undefined);

@@ -15,6 +15,7 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
 
 import { daemonStatus } from "../../lib/tauri";
 import { HostDot } from "./HostDot";
+import { useSettingsDaemon } from "./settingsDaemon";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -102,5 +103,28 @@ describe("settingsDaemon", () => {
     await act(async () => undefined);
     const dot = container.querySelector(".settings-host-dot");
     expect(dot?.className).toContain("settings-host-dot-green");
+  });
+
+  it("does not re-render on consecutive timeouts once unresponsive", async () => {
+    // A frozen hang must settle the subscribers once, then bail out: the
+    // second timeout emits nothing, so no subscriber re-renders on it.
+    vi.mocked(daemonStatus).mockImplementation(() => new Promise<DaemonStatus>(() => undefined));
+    let renders = 0;
+    function Probe() {
+      useSettingsDaemon();
+      renders += 1;
+      return null;
+    }
+    root = createRoot(container);
+    await act(async () => root!.render(<Probe />));
+    expect(renders).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+    expect(renders).toBe(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(renders).toBe(2);
   });
 });

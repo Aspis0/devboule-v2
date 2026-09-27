@@ -653,7 +653,8 @@ button:focus-visible {
 }
 
 /* Screen-reader-only utility for every surface (loaded by main.tsx for the
-   whole app). One definition: surfaces must not carry their own copies. */
+   whole app). Kept separate from `.error-detail-sr-only` below, which adds
+   `user-select: none` for copied raw text. */
 .sr-only {
   position: absolute;
   width: 1px;

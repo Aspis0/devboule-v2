@@ -158,6 +158,12 @@
   max-width: 720px;
 }
 
+/* The header block, then the page: Providers sets the reference with its
+   list's 18 px top margin, and every other page matches it here. */
+.settings-main-inner > section {
+  margin-bottom: 18px;
+}
+
 .settings-page-title {
   margin: 0;
   color: var(--ink);

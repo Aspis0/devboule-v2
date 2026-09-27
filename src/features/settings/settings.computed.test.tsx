@@ -67,4 +67,13 @@ describe("settings shell layout (real stylesheets, no app launch)", () => {
     expect(style.scrollbarWidth).toBe("thin");
     expect(style.scrollbarColor).not.toBe("");
   });
+
+  it("gives the first card the same top spacing on every page", () => {
+    inject([".settings-main-inner > section"]);
+    const inner = box("settings-main-inner");
+    const header = document.createElement("section");
+    inner.appendChild(header);
+    // Providers sets the reference with its list's 18 px top margin.
+    expect(getComputedStyle(header).marginBottom).toBe("18px");
+  });
 });

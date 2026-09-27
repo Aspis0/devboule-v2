@@ -3313,7 +3313,7 @@ describe("Settings agents panel — new profile form", () => {
     // control's own sentence, the three cap refusals, the model/mode
     // refusals, the two profile-cap sentences, the two catalog sentences,
     // the idle-close field's own hint and the off toggle's note, the shell page
-    // title and intro (scenario 24 collects the intro through the surface), the tick notes (including the
+    // intro (scenario 24 collects it through the surface; the title stays out), the tick notes (including the
     // open-editor clause on the row tick), and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry), and the standing box's keep-it-short

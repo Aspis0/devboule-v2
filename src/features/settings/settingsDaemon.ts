@@ -35,13 +35,8 @@ const DISCONNECTED_DAEMON: DaemonStatus = {
 let current: DaemonStatus = CONNECTING_DAEMON;
 const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | null = null;
+// At most one request is outstanding: only a settling call clears inFlight, never unmount.
 let inFlight = false;
-// Tags each issued request so an orphaned older answer can neither emit
-// over a newer one nor clear the guard early. Deleted on purpose: no
-// `inFlight = false` on unmount — the timeout below owns that case, and
-// clearing it would let a remount issue a second concurrent call whose
-// older answer could then win (StrictMode double-mounts every mount).
-let generation = 0;
 
 // A hung `daemon_status` must not wedge the poll: bound every call by the
 // poll interval, so a call that never settles still releases `inFlight`
@@ -66,10 +61,8 @@ function emit(next: DaemonStatus) {
 function tick() {
   if (inFlight) return;
   inFlight = true;
-  const gen = ++generation;
   void withTimeout(daemonStatus()).then(
     (next) => {
-      if (gen !== generation) return;
       inFlight = false;
       if (listeners.size > 0) emit(next);
     },
@@ -78,14 +71,18 @@ function tick() {
     // timer ever prints the old-daemon sentence. A rejected call is a real
     // failure and still reports disconnected.
     (cause: unknown) => {
-      if (gen !== generation) return;
       inFlight = false;
       if (listeners.size > 0) {
-        emit(
-          cause instanceof Error && cause.message === TIMEOUT_MESSAGE
-            ? { ...current, state: "unresponsive" }
-            : DISCONNECTED_DAEMON,
-        );
+        if (cause instanceof Error && cause.message === TIMEOUT_MESSAGE) {
+          // Already unresponsive: keep the same object so subscribers bail
+          // out instead of re-rendering every poll on a frozen hang. The
+          // message is dropped with the downgrade: a supervisor sentence
+          // from minutes ago must not read as the current state.
+          if (current.state === "unresponsive") return;
+          emit({ ...current, state: "unresponsive", message: null });
+        } else {
+          emit(DISCONNECTED_DAEMON);
+        }
       }
     },
   );
