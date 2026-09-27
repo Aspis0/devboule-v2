@@ -2816,10 +2816,59 @@ describe("AgentChatSurface", () => {
     expect(groups).toHaveLength(1);
     const group = groups[0];
     expect(group.hasAttribute("open")).toBe(false);
+    expect(group.querySelector("summary")?.getAttribute("aria-expanded")).toBe("false");
+    expect(group.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
+      "3 tool calls",
+    );
     expect(group.querySelector(".workspace-chat-tool-group-summary-text")?.textContent).toBe(
       "Edited 1 file, ran 1 command, and read 1 file",
     );
     expect(group.querySelectorAll("details.workspace-chat-tool")).toHaveLength(3);
+  });
+
+  it("opens and closes grouped tools with click, Enter, and Space", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="tool-group-keyboard" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-one",
+        title: "one",
+        status: "completed",
+        kind: "read",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-two",
+        title: "two",
+        status: "completed",
+        kind: "read",
+      });
+    });
+
+    const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
+    if (group === null) throw new Error("tool group did not render");
+    const summary = group.querySelector("summary");
+    if (summary === null) throw new Error("tool group summary did not render");
+    await act(async () => summary.click());
+    expect(group.open).toBe(true);
+    expect(summary.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => {
+      summary.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(group.open).toBe(false);
+    expect(summary.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => {
+      summary.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    });
+    expect(group.open).toBe(true);
+    expect(summary.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("keeps parent and subagent tools in separate runs with the subagent frame", async () => {
@@ -2903,6 +2952,7 @@ describe("AgentChatSurface", () => {
     expect(running?.classList.contains("is-running")).toBe(true);
     expect(running?.classList.contains("is-failed")).toBe(false);
     expect(running?.querySelector(".workspace-chat-tool-failed")).toBeNull();
+    expect(running?.querySelector(".workspace-chat-tool-running")).not.toBeNull();
 
     await act(async () => {
       channelHarness.active?.({

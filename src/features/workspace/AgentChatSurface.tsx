@@ -579,17 +579,40 @@ function renderGroupEntry(group: ToolCallGroup, a2aNames: A2aNameSource, transcr
   const interrupted = transcriptEnded && anyRunning;
   const running = anyRunning && !transcriptEnded;
   const failed = group.items.some((item) => isToolFailedStatus(item.status));
+  const callCount = `${group.items.length} tool calls`;
   const className = `${frame.className} workspace-chat-tool-group${running ? " is-running" : ""}${failed ? " is-failed" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
-    <details className={className} key={group.id} style={frame.style}>
-      <summary className="workspace-chat-tool-group-summary">
+    <details
+      className={className}
+      key={group.id}
+      style={frame.style}
+      onToggle={(event) => {
+        event.currentTarget
+          .querySelector("summary")
+          ?.setAttribute("aria-expanded", String(event.currentTarget.open));
+      }}
+    >
+      <summary
+        className="workspace-chat-tool-group-summary"
+        aria-expanded="false"
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          const details = event.currentTarget.parentElement;
+          if (details instanceof HTMLDetailsElement) details.open = !details.open;
+        }}
+      >
         <ToolIcon name="wrench" />
+        <span className="workspace-chat-tool-group-count">{callCount}</span>
         <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
+        {running ? (
+          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
+        ) : null}
         {interrupted ? (
           <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
         ) : null}
         {failed ? (
-          <span className="workspace-chat-tool-failed" aria-hidden="true">
+          <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
             ×
           </span>
         ) : null}
