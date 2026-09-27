@@ -54,6 +54,7 @@ import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
 import { PaneHeader } from "./paneHeader/PaneHeader";
 import { paneHeaderStatus, headerPulseActive } from "./paneHeader/paneHeaderStatus";
+import { agentHeaderMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import {
   INTERRUPTED_TOOL_CLASS,
   INTERRUPTED_TOOL_COPY,
@@ -107,6 +108,8 @@ interface AgentChatSurfaceProps {
   cwd?: string;
   id?: string;
   auxiliary?: ReactNode;
+  /** The kebab's close-group wiring, from the tab-close flow. Absent until the workspace passes it. */
+  headerMenuSeam?: HeaderMenuSeam;
   observedState?: SessionState | null;
   elapsedMs?: number | null;
   /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
@@ -728,6 +731,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   cwd,
   id,
   auxiliary,
+  headerMenuSeam,
   observedState = null,
   elapsedMs = null,
   daemonState,
@@ -1011,7 +1015,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         statusWord={statusLabel}
         dotTone={statusDot}
         pulsing={headerPulseActive(state.streaming, observedState)}
-        cwd={cwd}
+        menu={agentHeaderMenu(cwd, headerMenuSeam)}
         subagentSlot={
           state.subagents.length > 0 ? (
             <SubagentMenu subagents={state.subagents} statusCounts={state.subagentStatusCounts} />

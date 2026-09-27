@@ -15,6 +15,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { assembleCssProof, removeCssProof } from "../cssProof";
 import { PaneHeader } from "./PaneHeader";
+import { agentHeaderMenu } from "./paneHeaderMenu";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -49,7 +50,13 @@ async function renderAgentHeader(): Promise<{ token: (name: string) => string | 
   const root = createRoot(host);
   await act(async () => {
     root.render(
-      <PaneHeader kind="agent" title="Claude" statusWord="Working…" dotTone="green" cwd="C:\\x" />,
+      <PaneHeader
+        kind="agent"
+        title="Claude"
+        statusWord="Working…"
+        dotTone="green"
+        menu={agentHeaderMenu("C:\\x", undefined)}
+      />,
     );
   });
   return { token };

@@ -1,14 +1,6 @@
-.workspace-session-cwd {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .workspace-terminal-toolbar {
+  position: relative; /* The kebab menu anchors here, as on the agent row. */
+  z-index: 1;
   display: flex;
   flex: none;
   align-items: center;
@@ -42,10 +34,6 @@
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.workspace-terminal-toolbar .workspace-session-cwd {
-  flex: 0 1 180px;
 }
 
 .workspace-terminal-interrupt {
@@ -135,8 +123,23 @@
   white-space: nowrap;
 }
 
-.workspace-agent-toolbar .workspace-session-cwd {
-  flex: 0 1 180px;
+.pane-header-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 8px;
+  z-index: 2;
+  min-width: 190px;
+  max-width: 280px;
+}
+
+.pane-header-path {
+  padding: 7px 9px 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pane-header-kebab {

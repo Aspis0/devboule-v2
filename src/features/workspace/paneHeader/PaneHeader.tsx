@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import "./paneHeader.css";
+import type { PaneHeaderMenu as PaneHeaderMenuConfig } from "./paneHeaderMenu";
+import { PaneHeaderKebab } from "./PaneHeaderKebab";
 
 export interface PaneHeaderProps {
   kind: "agent" | "terminal";
@@ -7,7 +9,8 @@ export interface PaneHeaderProps {
   statusWord: string;
   dotTone: "green" | "terracotta" | "border";
   pulsing?: boolean;
-  cwd?: string;
+  /** Null renders no kebab: a menu with nothing actionable is a dead control. */
+  menu: PaneHeaderMenuConfig | null;
   subagentSlot?: ReactNode;
   trailingSlot?: ReactNode;
 }
@@ -18,7 +21,7 @@ export function PaneHeader({
   statusWord,
   dotTone,
   pulsing,
-  cwd,
+  menu,
   subagentSlot,
   trailingSlot,
 }: PaneHeaderProps) {
@@ -37,11 +40,8 @@ export function PaneHeader({
       ) : (
         <span className="workspace-terminal-status">{statusWord}</span>
       )}
-      {cwd ? <span className="workspace-session-cwd">{cwd}</span> : null}
       {agent ? null : trailingSlot}
-      <button type="button" className="pane-header-kebab" aria-label="Session actions">
-        ⋮
-      </button>
+      {menu === null ? null : <PaneHeaderKebab menu={menu} />}
     </div>
   );
 }

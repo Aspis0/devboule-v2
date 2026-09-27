@@ -6,6 +6,7 @@ import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
 import { PaneHeader } from "../workspace/paneHeader/PaneHeader";
+import { terminalHeaderMenu, type HeaderMenuSeam } from "../workspace/paneHeader/paneHeaderMenu";
 import { sessionDotTone } from "../workspace/workspaceSessions";
 
 interface TerminalSurfaceProps {
@@ -36,6 +37,8 @@ interface TerminalSurfaceProps {
   autoFocusGuard?: () => boolean;
   /** Reports the request spent (focus taken, or declined), so the strip can forget it. */
   onAutoFocusTaken?: () => void;
+  /** The kebab's close-group wiring, from the tab-close flow. Absent until the workspace passes it. */
+  headerMenuSeam?: HeaderMenuSeam;
   /**
    * Closes this pane's tab — the action the ended banner's sentence names.
    * Present in Workspace; absent only in tests that never show that banner.
@@ -128,6 +131,7 @@ export const TerminalSurface = memo(function TerminalSurface({
   autoFocusGuard,
   onAutoFocusTaken,
   onCloseTab,
+  headerMenuSeam,
 }: TerminalSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
@@ -277,7 +281,7 @@ export const TerminalSurface = memo(function TerminalSurface({
         title={title ?? "Terminal"}
         statusWord={ended ? "" : (message ?? "Connected to the local shell")}
         dotTone={sessionDotTone(observedState)}
-        cwd={cwd}
+        menu={terminalHeaderMenu(cwd, onCloseTab, headerMenuSeam)}
         trailingSlot={
           <>
             {ended ? null : (
