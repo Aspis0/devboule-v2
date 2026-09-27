@@ -750,6 +750,7 @@
 .workspace-chat-tool summary,
 .workspace-chat-tool-group summary {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 8px;
   min-height: 24px;
@@ -777,8 +778,8 @@
   margin-left: auto;
 }
 
-.workspace-chat-tool[open] summary::after,
-.workspace-chat-tool-group[open] summary::after {
+.workspace-chat-tool[open] > summary::after,
+.workspace-chat-tool-group[open] > summary::after {
   transform: rotate(180deg);
 }
 

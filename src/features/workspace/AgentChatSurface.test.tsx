@@ -1,11 +1,20 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { StrictMode, act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { PermissionRequest, Session, SessionEvent, SessionState } from "../../types/ipc";
 import type { AgentStatus } from "../../lib/agentSession";
 import { heldAssistantTextFor } from "./attentionNotice";
+import { assembleCssProof } from "./cssProof";
+
+const rootDir = resolve(import.meta.dirname, "../../..");
+const workspaceCss = assembleCssProof([
+  readFileSync(resolve(rootDir, "src/styles/tokens.css"), "utf8"),
+  readFileSync(resolve(rootDir, "src/features/workspace/Workspace.css"), "utf8"),
+]);
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -3169,6 +3178,66 @@ describe("AgentChatSurface", () => {
     if (singleDot === null || groupDot === null) throw new Error("running dots did not render");
     expect(single.querySelector("summary")?.lastElementChild).toBe(singleDot);
     expect(group.querySelector("summary")?.lastElementChild).toBe(groupDot);
+  });
+
+  it("rotates only an open row's own chevron inside an open group", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="chevron-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-first",
+        title: "first",
+        status: "completed",
+        kind: "execute",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-second",
+        title: "second",
+        status: "completed",
+        kind: "execute",
+      });
+    });
+
+    const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
+    if (group === null) throw new Error("tool group did not render");
+    const groupSummary = group.querySelector("summary");
+    if (groupSummary === null) throw new Error("group summary did not render");
+    await act(async () => {
+      groupSummary.click();
+    });
+    expect(group.open).toBe(true);
+    const innerRows = group.querySelectorAll<HTMLDetailsElement>(
+      ".workspace-chat-tool-group-body > details.workspace-chat-tool",
+    );
+    expect(innerRows.length).toBe(2);
+    for (const row of innerRows) {
+      expect(row.open).toBe(false);
+    }
+
+    // Live finding: a closed inner row's chevron rendered rotated
+    // (matrix(-1,0,0,-1,0,0)) because the group's [open] rule reached its
+    // descendants' summaries. Happy DOM resolves no computed transform on a
+    // generated pseudo-element (probed: ""), so the rule source is asserted:
+    // the rotate must hang off the open element's own summary only.
+    expect(workspaceCss.rulesFor(".workspace-chat-tool[open] > summary::after")).toContain(
+      "transform: rotate(180deg)",
+    );
+    expect(workspaceCss.rulesFor(".workspace-chat-tool-group[open] > summary::after")).toContain(
+      "transform: rotate(180deg)",
+    );
+    expect(workspaceCss.rulesFor(".workspace-chat-tool[open] summary::after")).not.toContain(
+      "transform: rotate(180deg)",
+    );
+    expect(workspaceCss.rulesFor(".workspace-chat-tool-group[open] summary::after")).not.toContain(
+      "transform: rotate(180deg)",
+    );
   });
 
   it("renders a websearch tool row with the query and keeps output in the body", async () => {

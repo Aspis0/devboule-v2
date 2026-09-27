@@ -329,6 +329,22 @@ describe("tool row computed styles", () => {
     row.remove();
   });
 
+  it("lets a row's summary span the full row so the chevron owns the trailing edge", () => {
+    const css = assembleCssProof(sheets);
+    css.inject([".workspace-chat-tool", ".workspace-chat-tool summary"]);
+    const row = document.createElement("details");
+    row.className = "workspace-chat-entry workspace-chat-tool";
+    const summary = document.createElement("summary");
+    row.append(summary);
+    document.body.append(row);
+
+    // A content-width summary leaves the chevron's auto margin no free space,
+    // so the chevron sits after the label instead of the trailing edge (live
+    // finding: closed inner rows of an open group).
+    expect(getComputedStyle(summary).flexGrow).toBe("1");
+    row.remove();
+  });
+
   it.each(["light", "dark"] as const)(
     "keeps a running group's dot at the trailing edge in the %s theme",
     (theme: CssTheme) => {
