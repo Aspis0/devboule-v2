@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bannerText, TerminalSurface } from "./TerminalSurface";
 import { hasTerminalInput, requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
 
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+
 const coreMocks = vi.hoisted(() => {
   const snapshotEvent = {
     type: "snapshot",
@@ -385,11 +389,15 @@ describe("TerminalSurface observer wiring", () => {
   }
 
   async function waitForSends(count: number): Promise<void> {
-    // The attach chain is async; a fixed sleep flakes under load while a
-    // missing send must still fail — poll for the sends, bound the wait.
-    await vi.waitFor(() => {
-      expect(sessionSends()).toHaveLength(count);
-    });
+    // No clock here on purpose: every attach hop is event-loop work, so
+    // yielding the loop suffices however slow the machine is. The round cap
+    // guards a genuine hang only; a missing send still fails below.
+    for (let round = 0; round < 200 && sessionSends().length < count; round += 1) {
+      await act(async () => {
+        await flush(0);
+      });
+    }
+    expect(sessionSends()).toHaveLength(count);
   }
 
   it("types a requested line once, terminated as xterm Enter", async () => {
