@@ -2914,14 +2914,34 @@ fn a_derived_title_is_the_first_non_empty_line_collapsed_and_clamped() {
     assert_eq!(derived.chars().count(), crate::MAX_DISPLAY_NAME_CHARS);
 }
 
-/// Declining, not stripping: a line carrying a character no name may hold
-/// yields no title rather than a mutated word — the tab must show what the
-/// person typed, and the next prompt retries.
+/// Sanitising restores the person's words, so pasted text with soft hyphens
+/// or zero-width spaces still titles — stripped to the word underneath.
+/// An explicit rename refuses the same characters outright: refusing user
+/// input and deriving from it are different doors.
 #[test]
-fn a_derived_title_declines_unsafe_characters_instead_of_stripping_them() {
-    assert_eq!(derive_session_title("fix\u{7}the bug"), None);
-    assert_eq!(derive_session_title("\u{202e}worker"), None);
-    assert_eq!(derive_session_title("zero\u{200b}width"), None);
+fn a_derived_title_strips_invisible_formatting_instead_of_declining() {
+    // A line hyphenated across a source line break, as pasted from a
+    // browser or PDF reader: the soft hyphens vanish and the word stands.
+    assert_eq!(
+        derive_session_title("hy\u{00ad}phen\u{00ad}ated first line here"),
+        Some("hyphenated first line here".to_string())
+    );
+    assert_eq!(
+        derive_session_title("zero\u{200b}width words here"),
+        Some("zerowidth words here".to_string()),
+        "a zero-width space joins, exactly as the source rendered it"
+    );
+    assert_eq!(
+        derive_session_title("\u{202e}worker"),
+        Some("worker".to_string()),
+        "a bidi override is invisible: dropping it restores the word"
+    );
+    // Controls strip the same way; what is left still has to be a line.
+    assert_eq!(
+        derive_session_title("fix\u{7}the bug"),
+        Some("fixthe bug".to_string())
+    );
+    assert_eq!(derive_session_title("\u{200b}"), None);
     // Separators are the exception: the collapse turns them into spaces
     // before the check runs — the same neutralisation Paseo's `\s` does —
     // so no layout break survives into the title. The stored-name door
@@ -2935,10 +2955,18 @@ fn a_derived_title_declines_unsafe_characters_instead_of_stripping_them() {
         Some("fix the bug".to_string()),
         "plain text still titles"
     );
+    let stripped =
+        derive_session_title("hy\u{00ad}phen\u{00ad}ated first line here").expect("a title");
+    assert!(
+        validate_display_name(&stripped).is_ok(),
+        "a derived title always passes validation: {stripped:?}"
+    );
 }
 
 /// The clamp counts grapheme clusters, never splitting one: a combining mark
-/// stays with its base, and a ZWJ sequence is kept whole or not at all.
+/// stays with its base, and a regional-indicator pair is kept whole or not
+/// at all. (ZWJ sequences never reach the clamp: the sanitiser strips the
+/// joiner as invisible formatting first.)
 #[test]
 fn a_derived_title_never_splits_a_grapheme_cluster() {
     // e + combining acute, 70 of them: 70 characters but 70 clusters.

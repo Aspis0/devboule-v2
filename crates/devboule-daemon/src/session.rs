@@ -1716,6 +1716,7 @@ impl SessionRegistry {
             if let Ok(mut map) = self.inner.lock() {
                 map.remove(session_id);
             }
+            self.forget_display_name_epoch(session_id);
             journal.unpin(session_id);
         }
         self.notify_session_transition(owner, session_id);
@@ -2233,18 +2234,12 @@ impl SessionRegistry {
                         "journal could not clear the disown mark for {session_id}: {clear_error}"
                     );
                 }
-                // A resumed session that never earned a name takes one from
-                // its own journal now — agents only, decided inside
-                // `title_untitled_from_journal` before any event decodes.
-                // A session that already has one keeps it, and a failure
-                // here is cosmetic — the resume stands either way.
-                self.title_untitled_from_journal(
-                    session_id,
-                    owner,
-                    &record,
-                    &journal,
-                    &conn.conn_peer,
-                );
+                // No resume-time derivation: the journal's first `Composer`
+                // row holds the composed prompt (standing instructions plus
+                // spawn prompt plus preamble plus text), so it can never be
+                // trusted as the person's words. An untitled legacy session
+                // keeps the app's fallback until its next prompt — which
+                // titles it from the raw text — or until the user renames it.
             }
             Err(mut error) => {
                 state.session_finished();
@@ -2314,6 +2309,7 @@ impl SessionRegistry {
                             map.remove(session_id);
                         }
                     }
+                    self.forget_display_name_epoch(session_id);
                     // The eviction is a live-map change, not a journal write:
                     // a repeated mark answers `Ok(false)` and moves no revision,
                     // so only this clear drops the cached row the eviction removed.
@@ -2954,6 +2950,7 @@ impl SessionRegistry {
         });
         if is_idle_transcript {
             map.remove(session_id);
+            self.forget_display_name_epoch(session_id);
             if let Some(journal) = &self.journal {
                 journal.unpin(session_id);
             }
@@ -3020,8 +3017,10 @@ impl SessionRegistry {
         }
         // The closed session's message-brake entries go in the same critical
         // section that takes it out of the map (A2-06): a send that found it
-        // here cannot reserve a slot for it afterwards (A2-05).
+        // here cannot reserve a slot for it afterwards (A2-05). The
+        // display-name write identity leaves with it for the same reason.
         forget_message_brake_target(&self.message_brakes, session_id);
+        self.forget_display_name_epoch(session_id);
         Ok(map.remove(session_id))
     }
 
@@ -3343,31 +3342,7 @@ impl SessionRegistry {
             .unwrap_or(false)
     }
 
-    /// Title an untitled session from its journal: the first composer
-    /// message it holds names it. Terminals never reach the read — no row
-    /// they hold could name them, and the scan is skipped before a single
-    /// event decodes — and neither does a session that already has a name.
-    /// The journalled creation echo is composed text, so only `Composer`
-    /// rows qualify here (the send site admits the creator's task from its
-    /// raw text, which the journal no longer holds).
-    pub(crate) fn title_untitled_from_journal(
-        &self,
-        session_id: &str,
-        owner: &OwnerId,
-        record: &SessionRecord,
-        journal: &Journal,
-        conn_peer: &Option<ConnPeer>,
-    ) -> bool {
-        if record.display_name.is_some() || !record.kind.is_agent() {
-            return false;
-        }
-        match journal.first_composer_title(session_id) {
-            Ok(Some(name)) => self.title_if_unset(session_id, owner, &name, conn_peer),
-            _ => false,
-        }
-    }
-
-    /// The one road the rename and both auto-titles share: the live record
+    /// The one road the rename and the auto-title share: the live record
     /// moves first and the journal row second, and a row that refuses takes
     /// the record back with it — but only when the record still holds this
     /// call's own write (see `rollback_display_name`), so a concurrent
@@ -3432,6 +3407,26 @@ impl SessionRegistry {
         let epoch = epochs.entry(session_id.to_string()).or_insert(0);
         *epoch += 1;
         *epoch
+    }
+
+    /// Drop a departed session's display-name write identity. Called where
+    /// the session leaves the map, beside the message-brake entries the
+    /// close road already forgets: session ids are never reused, so an
+    /// entry without a session is a leak for the daemon's whole life.
+    fn forget_display_name_epoch(&self, session_id: &str) {
+        if let Ok(mut epochs) = self.display_name_epochs.lock() {
+            epochs.remove(session_id);
+        }
+    }
+
+    /// How many display-name write identities are held, for the test that
+    /// pins the table's lifecycle.
+    #[cfg(test)]
+    pub(crate) fn display_name_epoch_count(&self) -> usize {
+        self.display_name_epochs
+            .lock()
+            .map(|epochs| epochs.len())
+            .unwrap_or(0)
     }
 
     /// Restore the record after a refused journal write — but only this

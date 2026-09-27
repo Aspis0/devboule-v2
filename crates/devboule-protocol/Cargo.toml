@@ -15,6 +15,8 @@ serde = { version = "=1.0.229", features = ["derive"] }
 # as ping/status. Already in the workspace (daemon, src-tauri).
 serde_json = "=1.0.151"
 # Direct because display-name clamping counts grapheme clusters, not scalars.
-# Already in the workspace (locked 1.13.3 through the Tauri dependency tree);
-# this does not add a new package.
+# Already in the workspace (locked 1.13.3 through the Tauri dependency tree):
+# no new package enters the lockfile, but the THIRD_PARTY.md inventory moves
+# this row from transitive to direct — regenerate it with
+# `pnpm run generate:third-party` whenever this list changes.
 unicode-segmentation = "=1.13.3"

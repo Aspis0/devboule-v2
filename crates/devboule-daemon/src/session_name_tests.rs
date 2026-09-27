@@ -317,123 +317,6 @@ fn an_explicit_name_is_never_overwritten_by_a_later_prompt() {
 }
 
 #[test]
-fn an_untitled_session_derives_its_title_from_its_journal() {
-    let (dir, registry, journal) = tmp_delete_registry();
-    let owner = test_owner("name-import", "c1");
-    let id = "s.name.8";
-    birth_row(&journal, id, &owner);
-    // Notices and relays precede the person's message in the journal: none
-    // of them may name the session, and none of them may spend the slot.
-    for (seq, kind, text) in [
-        (
-            2,
-            UserMessageKind::Creation,
-            "standing instructions\n\nspawn prompt\n\npreamble\n\ndo the task",
-        ),
-        (
-            3,
-            UserMessageKind::SystemNotice,
-            "<devboule-system>\nkind: agent_quiet\nsummary: still working\n</devboule-system>",
-        ),
-        (
-            4,
-            UserMessageKind::IncomingA2a,
-            "<devboule-system>\nkind: agent_message\nbody: delegate this\n</devboule-system>",
-        ),
-    ] {
-        let event = SessionEvent::AgentUserMessage {
-            message_id: Some(format!("devboule-user-1-{seq}")),
-            text: text.to_string(),
-            author: UserMessageAuthor::Agent,
-            message_kind: kind,
-        };
-        journal
-            .append_blocking(
-                crate::journal::agent_report_record(id, 1, seq, &event).expect("record"),
-            )
-            .expect("history is journalled");
-    }
-    let event = SessionEvent::AgentUserMessage {
-        message_id: Some("devboule-user-1-5".to_string()),
-        text: "Fix the login redirect\nsome more detail".to_string(),
-        author: UserMessageAuthor::Human,
-        message_kind: UserMessageKind::Composer,
-    };
-    journal
-        .append_blocking(crate::journal::agent_report_record(id, 1, 5, &event).expect("record"))
-        .expect("the first user message is journalled");
-    insert_live_agent(&registry, id, owner.clone());
-    let conn = ConnHandle::new(1);
-    let record = journal
-        .list()
-        .expect("rows")
-        .into_iter()
-        .find(|record| record.id == id)
-        .expect("the row");
-
-    assert!(
-        registry.title_untitled_from_journal(id, &owner, &record, &journal, &conn.conn_peer),
-        "an untitled session with a journalled prompt is titled"
-    );
-    assert_eq!(
-        live_display_name(&registry, id).as_deref(),
-        Some("Fix the login redirect"),
-        "the person's words name it — not the composed echo, the notice or the relay"
-    );
-    assert_eq!(
-        journal_display_name(&journal, id).as_deref(),
-        Some("Fix the login redirect")
-    );
-
-    let record = journal
-        .list()
-        .expect("rows")
-        .into_iter()
-        .find(|record| record.id == id)
-        .expect("the row");
-    assert!(
-        !registry.title_untitled_from_journal(id, &owner, &record, &journal, &conn.conn_peer),
-        "a second pass changes nothing: the name is set now"
-    );
-    journal.shutdown();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_terminal_never_reads_its_journal_for_a_title() {
-    let (dir, registry, journal) = tmp_delete_registry();
-    let owner = test_owner("name-terminal-row", "c1");
-    let id = "s.name.10";
-    let mut record = crate::journal::new_session_record(
-        id.to_string(),
-        owner.user.clone(),
-        None,
-        SessionKind::Terminal,
-        "Terminal",
-    );
-    record.display_name = None;
-    journal.upsert_blocking(record.clone()).expect("birth row");
-    let event = SessionEvent::AgentUserMessage {
-        message_id: Some("devboule-user-1-2".to_string()),
-        text: "Fix the login redirect".to_string(),
-        author: UserMessageAuthor::Human,
-        message_kind: UserMessageKind::Composer,
-    };
-    journal
-        .append_blocking(crate::journal::agent_report_record(id, 1, 2, &event).expect("record"))
-        .expect("history is journalled");
-    // The journal is shut down before the call: any event decode would fail
-    // or hang, so a clean `false` proves the kind gate runs first.
-    journal.shutdown();
-    let conn = ConnHandle::new(1);
-    assert!(
-        !registry.title_untitled_from_journal(id, &owner, &record, &journal, &conn.conn_peer),
-        "a terminal has no title to derive, however rich its journal"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn a_rename_pushes_the_roster_with_the_new_name() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("name-push", "c1");
@@ -888,65 +771,40 @@ fn concurrent_first_prompts_title_exactly_once() {
 }
 
 #[test]
-fn the_title_scan_stops_at_the_window() {
-    let (dir, _registry, journal) = tmp_delete_registry();
-    let owner = test_owner("name-window", "c1");
-    let notice = SessionEvent::AgentUserMessage {
-        message_id: None,
-        text: "<devboule-system>\nkind: agent_quiet\nsummary: still working\n</devboule-system>"
-            .to_string(),
-        author: UserMessageAuthor::Agent,
-        message_kind: UserMessageKind::SystemNotice,
-    };
-    let late = SessionEvent::AgentUserMessage {
-        message_id: None,
-        text: "Fix the login redirect".to_string(),
-        author: UserMessageAuthor::Human,
-        message_kind: UserMessageKind::Composer,
-    };
-    // Past the window the session stays untitled until its next prompt: the
-    // scan stays bounded rather than decoding the transcript to reach it.
-    let far_id = "s.name.32";
-    birth_row(&journal, far_id, &owner);
-    for seq in 2..=300u64 {
-        journal
-            .append_blocking(
-                crate::journal::agent_report_record(far_id, 1, seq, &notice).expect("record"),
-            )
-            .expect("history is journalled");
-    }
-    journal
-        .append_blocking(
-            crate::journal::agent_report_record(far_id, 1, 301, &late).expect("record"),
-        )
-        .expect("history is journalled");
+fn a_closed_session_leaves_no_write_identity_behind() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("name-reap", "c1");
+    let first_id = "s.name.40";
+    let second_id = "s.name.41";
+    insert_live_agent(&registry, first_id, owner.clone());
+    insert_live_agent(&registry, second_id, owner.clone());
+    birth_row(&journal, first_id, &owner);
+    birth_row(&journal, second_id, &owner);
+    let conn = ConnHandle::new(1);
+    registry
+        .set_display_name(first_id, &owner, "worker one", &conn)
+        .expect("the first rename lands");
+    registry
+        .set_display_name(second_id, &owner, "worker two", &conn)
+        .expect("the second rename lands");
     assert_eq!(
-        journal.first_composer_title(far_id).expect("the scan runs"),
-        None,
-        "past the window the session stays untitled until its next prompt"
+        registry.display_name_epoch_count(),
+        2,
+        "one identity per named session"
     );
-    // Inside the window a composer message is found, skipping the notices
-    // ahead of it.
-    let near_id = "s.name.33";
-    birth_row(&journal, near_id, &owner);
-    for seq in 2..=100u64 {
-        journal
-            .append_blocking(
-                crate::journal::agent_report_record(near_id, 1, seq, &notice).expect("record"),
-            )
-            .expect("history is journalled");
-    }
-    journal
-        .append_blocking(
-            crate::journal::agent_report_record(near_id, 1, 101, &late).expect("record"),
-        )
-        .expect("history is journalled");
+
+    registry
+        .close(first_id, &owner, &conn.conn_peer)
+        .expect("the close lands");
     assert_eq!(
-        journal
-            .first_composer_title(near_id)
-            .expect("the scan runs"),
-        Some("Fix the login redirect".to_string()),
-        "a composer message inside the window is found"
+        registry.display_name_epoch_count(),
+        1,
+        "the departed session's identity leaves with it"
+    );
+    assert_eq!(
+        live_display_name(&registry, second_id).as_deref(),
+        Some("worker two"),
+        "the surviving session keeps its name and its identity"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);

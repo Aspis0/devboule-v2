@@ -1575,15 +1575,6 @@ impl UserMessageKind {
     pub fn titles_from_raw_text(self) -> bool {
         matches!(self, Self::Composer | Self::Creation)
     }
-
-    /// Whether a journalled message of this kind may title its session:
-    /// only the person's composer message. The journalled creation echo is
-    /// the composed prompt, so `Creation` qualifies at the send site and
-    /// never here; legacy `Unknown` rows stay untitled until the next
-    /// prompt rather than risk a notice's words.
-    pub fn titles_from_record(self) -> bool {
-        matches!(self, Self::Composer)
-    }
 }
 
 #[cfg(test)]

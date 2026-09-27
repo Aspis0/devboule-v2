@@ -29,8 +29,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use devboule_protocol::{
-    derive_session_title, ErrorCode, JournalRetention, PeerRole, Project, RetentionPatch, Session,
-    SessionEvent, SessionKind, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity,
+    ErrorCode, JournalRetention, PeerRole, Project, RetentionPatch, Session, SessionEvent,
+    SessionKind, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity,
     UnattendedState, WireError, Workspace, WorkspaceIsolation,
 };
 
@@ -754,11 +754,6 @@ enum JournalCmd {
         display_name: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
-    /// The resume road's title read — see [`Journal::first_composer_title`].
-    FirstComposerTitle {
-        session_id: String,
-        reply: mpsc::Sender<Result<Option<String>, JournalError>>,
-    },
     /// The resume road's disown mark: the provider refused this handle.
     /// `expected` names the refused handle, so a concurrent respawn's NEWER
     /// handle is never silenced; the refused handle itself is never
@@ -1458,19 +1453,6 @@ impl Journal {
         })
     }
 
-    /// The resume road's title read: the first composer-authored user
-    /// message, oldest first, without decoding the whole journal. Only
-    /// `agent_report` rows are read (the provider's own envelopes never
-    /// carry a user message), at most one bounded window of them: the first
-    /// user message is early — creation echo, then notices — and past the
-    /// window the session stays untitled until its next prompt titles it.
-    pub fn first_composer_title(&self, session_id: &str) -> Result<Option<String>, JournalError> {
-        self.rpc(|reply| JournalCmd::FirstComposerTitle {
-            session_id: session_id.to_string(),
-            reply,
-        })
-    }
-
     pub(crate) fn replay_agent_page(
         &self,
         session_id: &str,
@@ -2152,9 +2134,6 @@ fn journal_loop(
             }
             JournalCmd::Replay { session_id, reply } => {
                 let _ = reply.send(replay_session(&conn, &session_id));
-            }
-            JournalCmd::FirstComposerTitle { session_id, reply } => {
-                let _ = reply.send(first_composer_title(&conn, &session_id));
             }
             JournalCmd::ReplayAgentPage {
                 session_id,
@@ -3261,51 +3240,6 @@ fn set_display_name(
     } else {
         Ok(true)
     }
-}
-
-/// How many `agent_report` rows the resume road's title read scans: enough
-/// for the creation echo and the notices that precede the first user
-/// message, small enough that the scan stays a point read on the request
-/// path rather than a transcript decode.
-const FIRST_TITLE_ROW_LIMIT: i64 = 256;
-
-/// The resume road's title read: the oldest composer-authored user message's
-/// derived title, or `None` when the window holds none. Rows decode one at a
-/// time in journal order and the scan stops at the first title, so a long
-/// transcript costs one bounded index read and a handful of small JSON
-/// parses — never a full decode. Unparseable rows are skipped the way the
-/// replay skips them: a corrupt notice must not take the title with it.
-fn first_composer_title(
-    conn: &Connection,
-    session_id: &str,
-) -> Result<Option<String>, JournalError> {
-    let mut statement = conn.prepare(
-        "SELECT payload, checksum FROM events
-         WHERE session_id = ?1 AND kind = 'agent_report'
-         ORDER BY generation, seq LIMIT ?2",
-    )?;
-    let rows = statement.query_map(params![session_id, FIRST_TITLE_ROW_LIMIT], |row| {
-        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)? as u32))
-    })?;
-    for row in rows {
-        let (payload, checksum) = row?;
-        if crc32(&payload) != checksum {
-            continue;
-        }
-        let Ok(SessionEvent::AgentUserMessage {
-            text, message_kind, ..
-        }) = serde_json::from_slice::<SessionEvent>(&payload)
-        else {
-            continue;
-        };
-        if !message_kind.titles_from_record() {
-            continue;
-        }
-        if let Some(title) = derive_session_title(&text) {
-            return Ok(Some(title));
-        }
-    }
-    Ok(None)
 }
 
 /// The disown mark: the provider refused this exact handle, recorded beside

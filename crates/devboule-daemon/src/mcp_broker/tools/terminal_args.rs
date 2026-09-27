@@ -27,7 +27,13 @@ pub(super) fn parse_name(arguments: &Value) -> Result<Option<String>, String> {
                 return Ok(None);
             }
             let name = validate_display_name(trimmed)?;
-            Ok(Some(name))
+            // The tool-visible sentence is the tool's own contract: the
+            // protocol validator above enforces the same rule, but a model
+            // reading this tool must see this tool's words.
+            match devboule_protocol::unsafe_character(&name) {
+                Some(category) => Err(format!("name must be plain text: it contains {category}")),
+                None => Ok(Some(name)),
+            }
         }
         Some(_) => Err("name must be a string".to_string()),
     }

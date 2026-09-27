@@ -934,7 +934,8 @@ pub enum ClientMessage {
 /// Sixty characters for an explicit rename is a deliberate divergence from
 /// Paseo, which allows 200 there and clamps only the derived title: a tab
 /// strip is not a profile page, and the surfaces that render this name are
-/// sized for the derived cap.
+/// sized for the derived cap. Deriving sanitises and clamps instead of
+/// refusing (see [`derive_session_title`)).
 ///
 /// Refusing an empty name instead of treating it as absent is deliberate:
 /// `None` is how a caller says "no name", and a caller that sent `""` (or only
@@ -967,12 +968,16 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 /// — the tab strip, the pane header, History rows, attention toasts — and
 /// shares its cap.
 ///
-/// `None` when the text holds no line worth naming, or when the collapsed
-/// line carries a character no name may hold: declining is the rule here
-/// rather than the validation's refusal, but stripping the character and
-/// keeping a mutated word is never an option — the tab must show what the
-/// person typed. Separator characters never reach that check: the collapse
-/// turns them into spaces first, the same neutralisation Paseo's `\s` does.
+/// `None` when the text holds no line worth naming, or when nothing
+/// nameable survives sanitising. Separators never reach the check: the
+/// collapse turns them into spaces first, the same neutralisation Paseo's
+/// `\s` does. Invisible formatting and controls are *stripped*, not
+/// declined — dropping a soft hyphen or a bidi override restores the word
+/// the person typed, which is what a pasted paragraph needs — while an
+/// explicit rename refuses the same characters outright: refusing user
+/// input and deriving from it are different doors (see
+/// [`validate_display_name`]), and the rule is refuse on explicit rename,
+/// sanitise and clamp on derivation.
 /// Callers hand this function the person's — or the creator agent's — own
 /// text, never the daemon-composed first prompt (standing instructions,
 /// spawn prompt, preamble), which is why the send path derives from the raw
@@ -982,25 +987,30 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 /// like parity: the clamp counts by grapheme clusters rather than UTF-16
 /// code units (sixty emoji stay sixty rather than thirty), and Rust's
 /// whitespace set is not JS `\s` (U+FEFF splits words there and not here;
-/// U+0085 the reverse) — cosmetic, and invisible-formatting names are
-/// refused either way.
+/// U+0085 the reverse) — cosmetic either way, since derivation strips what
+/// renaming refuses.
 ///
 /// The clamp keeps the head, not the tail: a prompt's first words say what
 /// it is about, and Paseo clamps the same end.
 pub fn derive_session_title(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
     let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    if crate::text_safety::unsafe_character(&collapsed).is_some() {
+    let clean: String = collapsed
+        .chars()
+        .filter(|point| !point.is_control() && !crate::text_safety::is_invisible_format(*point))
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
         return None;
     }
-    Some(clamp_display_name(&collapsed))
+    Some(clamp_display_name(clean))
 }
 
 /// Clamp a trusted name to [`crate::MAX_DISPLAY_NAME_CHARS`] characters
-/// without splitting a grapheme cluster: a combining mark or a ZWJ sequence
-/// cut mid-cluster renders as a stray accent or a half-drawn emoji in the
-/// strip. Counts characters like the validation cap, so a clamped name still
-/// passes it; drops a trailing space the cut may leave behind.
+/// without splitting a grapheme cluster: a combining mark cut from its base
+/// renders as a stray accent in the strip. Counts characters like the
+/// validation cap, so a clamped name still passes it; drops a trailing
+/// space the cut may leave behind.
 ///
 /// Length only: callers pass text whose characters already satisfy the rule
 /// (derived titles decline the unsafe ones above; internal composers build

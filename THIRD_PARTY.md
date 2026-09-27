@@ -1084,7 +1084,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | unicode-ident | 1.0.24 | Rust transitive (lockfile) | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-normalization | 0.1.25 | Rust direct runtime | MIT OR Apache-2.0 |
 | unicode-normalization-alignments | 0.1.12 | Rust transitive (lockfile) | MIT/Apache-2.0 |
-| unicode-segmentation | 1.13.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| unicode-segmentation | 1.13.3 | Rust direct runtime | MIT OR Apache-2.0 |
 | unicode-width | 0.2.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | unicode-xid | 0.2.6 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | unicode_categories | 0.1.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
