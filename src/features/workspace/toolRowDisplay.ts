@@ -18,6 +18,9 @@ const DISPLAY_NAMES: Record<string, string> = {
   search: "Search",
   fetch: "Fetch",
   think: "Task",
+  // An answered model question: the label names it, the summary (the
+  // question itself, as the title) stays visible without a click.
+  question: "Question",
 };
 
 const ICONS: Record<string, ToolIconName> = {
@@ -28,6 +31,7 @@ const ICONS: Record<string, ToolIconName> = {
   search: "search",
   fetch: "search",
   think: "bot",
+  question: "bot",
 };
 
 /** Names with `:`, `.`, `/` or `__` are kept as-is; otherwise `[-_.]`→space, capitalize first. */

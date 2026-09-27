@@ -158,6 +158,10 @@ mod pi_client;
 /// registry — so the registry lookup is re-exported for that caller.
 #[path = "provider.rs"]
 mod provider;
+#[path = "question_acceptance.rs"]
+mod question_acceptance;
+#[path = "question_transcript.rs"]
+mod question_transcript;
 /// Pi's mode dictionary, re-exported for the `unattended` derivation: the
 /// vocabulary lives in the client that writes the permission extension, and
 /// `peer_policy::unattended_mode` reads it from there without this module

@@ -3298,4 +3298,354 @@ mod question_tests {
             _ => panic!("expected a permission request"),
         }
     }
+
+    #[allow(clippy::type_complexity)]
+    fn open_harness(
+        label: &str,
+    ) -> (
+        Arc<PermissionBroker>,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+        Arc<super::SessionRuntime>,
+        Arc<crate::journal::Journal>,
+        std::path::PathBuf,
+        super::ClaudeReader,
+    ) {
+        let path = crate::session::permission_broker::permission_path(label);
+        let _ = std::fs::remove_file(&path);
+        let journal = Arc::new(crate::journal::Journal::open(&path).expect("journal"));
+        let session_id = "s.claude.transcript".to_string();
+        journal
+            .upsert_blocking(crate::journal::new_session_record(
+                session_id.clone(),
+                "owner",
+                None,
+                devboule_protocol::SessionKind::Claude,
+                "claude transcript test",
+            ))
+            .expect("session row");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let controls = Arc::new(Mutex::new(HashMap::new()));
+        let captured_for_sender = Arc::clone(&captured);
+        let controls_for_sender = Arc::clone(&controls);
+        let sender: Arc<super::PermissionSender> = Arc::new(move |id, result| {
+            let pending: ClaudePendingControl = controls_for_sender
+                .lock()
+                .expect("controls")
+                .remove(&id)
+                .expect("pending control");
+            let frame = super::control_response_frame(
+                &pending.request_id,
+                &pending.input,
+                pending.is_question,
+                &result,
+            );
+            captured_for_sender.lock().expect("captured").push(frame);
+            Ok(())
+        });
+        let broker = PermissionBroker::for_test(sender);
+        let runtime = super::SessionRuntime::for_acp(
+            session_id,
+            Some(Arc::clone(&journal)),
+            Arc::clone(&broker),
+        );
+        let reader = test_reader(Arc::clone(&broker), Arc::clone(&controls));
+        (broker, captured, runtime, journal, path, reader)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn journaled_harness(
+        label: &str,
+        line: serde_json::Value,
+    ) -> (
+        Arc<PermissionBroker>,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+        Arc<super::SessionRuntime>,
+        Arc<crate::journal::Journal>,
+        std::path::PathBuf,
+    ) {
+        let (broker, captured, runtime, journal, path, mut reader) = open_harness(label);
+        reader
+            .feed(format!("{line}\n").as_bytes(), &runtime)
+            .expect("feed question");
+        (broker, captured, runtime, journal, path)
+    }
+
+    fn assistant_tool_use(tool_use_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-merge-1",
+                "content": [{
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "AskUserQuestion",
+                    "input": {
+                        "questions": [{"question": "Which colour should I paint the fence?"}]
+                    }
+                }]
+            }
+        })
+    }
+
+    fn question_tool_result(tool_use_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": [{"type": "text", "text": "Barn red, obviously"}],
+                    "is_error": false
+                }]
+            }
+        })
+    }
+
+    /// This card's tool row, rebuilt through the history replay reader.
+    fn replayed_tool_rows(
+        journal: &crate::journal::Journal,
+        path: &std::path::Path,
+        session_id: &str,
+    ) -> Vec<SessionEvent> {
+        journal.flush().expect("journal flush");
+        let conn = rusqlite::Connection::open(path).expect("inspect journal");
+        crate::journal::replay_session(&conn, session_id)
+            .expect("history replay")
+            .events
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    SessionEvent::AgentToolCall { .. } | SessionEvent::AgentToolUpdate { .. }
+                )
+            })
+            .collect()
+    }
+
+    /// Claude, end to end: an answered question leaves exactly one tool row
+    /// under the card id — the provider's `tool_use_id` — with the
+    /// question's words and the picked label, and the history reader
+    /// rebuilds the same row.
+    #[test]
+    fn answered_question_leaves_one_transcript_row() {
+        let (broker, _, runtime, journal, path) =
+            journaled_harness("claude-transcript-pick", question_line("toolu_question"));
+        let _runtime = Arc::clone(&runtime);
+        broker
+            .respond_with_option(
+                "toolu_question",
+                PermissionOutcome::AllowOnce,
+                Some("q0o1".to_string()),
+                None,
+            )
+            .expect("option pick");
+        let rows = replayed_tool_rows(&journal, &path, "s.claude.transcript");
+        assert_eq!(rows.len(), 2, "one answered card leaves one row");
+        match &rows[0] {
+            SessionEvent::AgentToolCall {
+                tool_call_id,
+                title,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "toolu_question");
+                assert_eq!(title, "Which colour should I paint the fence?");
+            }
+            _ => panic!("expected the tool call"),
+        }
+        match &rows[1] {
+            SessionEvent::AgentToolUpdate {
+                tool_call_id, text, ..
+            } => {
+                assert_eq!(tool_call_id, "toolu_question");
+                let text = text.as_deref().unwrap_or_default();
+                assert!(text.contains("Which colour should I paint the fence?"));
+                assert!(text.contains("Barn red"));
+            }
+            _ => panic!("expected the tool update"),
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dismissed_question_leaves_no_transcript_row() {
+        let (broker, _, runtime, journal, path) =
+            journaled_harness("claude-transcript-dismiss", question_line("toolu_question"));
+        let _runtime = Arc::clone(&runtime);
+        broker
+            .respond_with_option("toolu_question", PermissionOutcome::Deny, None, None)
+            .expect("dismissal");
+        assert!(replayed_tool_rows(&journal, &path, "s.claude.transcript").is_empty());
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn tool_ids(events: &[SessionEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentToolCall { tool_call_id, .. }
+                | SessionEvent::AgentToolUpdate { tool_call_id, .. } => Some(tool_call_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The load-bearing merge: a provider `tool_use` and a `can_use_tool`
+    /// carrying the same `tool_use_id` become one row — the broker's pair
+    /// reuses the card id, live and after replay. If the card were filed
+    /// under the control `request_id` instead, the ids split and this fails.
+    #[test]
+    fn provider_tool_use_and_card_share_one_row() {
+        let (broker, _, runtime, journal, path, mut reader) =
+            open_harness("claude-transcript-merge");
+        let _runtime = Arc::clone(&runtime);
+        let conn = super::ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            "s.claude.transcript",
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        reader
+            .feed(
+                format!("{}\n", assistant_tool_use("toolu_merge")).as_bytes(),
+                &runtime,
+            )
+            .expect("feed tool_use");
+        reader
+            .feed(
+                format!("{}\n", question_line("toolu_merge")).as_bytes(),
+                &runtime,
+            )
+            .expect("feed permission");
+        let live: Vec<SessionEvent> = super::drain(&conn)
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    SessionEvent::AgentToolCall { .. } | SessionEvent::AgentToolUpdate { .. }
+                )
+            })
+            .collect();
+        assert_eq!(tool_ids(&live), vec!["toolu_merge".to_string()]);
+        broker
+            .respond_with_option(
+                "toolu_merge",
+                PermissionOutcome::AllowOnce,
+                Some("q0o1".to_string()),
+                None,
+            )
+            .expect("option pick");
+        let live: Vec<SessionEvent> = super::drain(&conn)
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    SessionEvent::AgentToolCall { .. } | SessionEvent::AgentToolUpdate { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            tool_ids(&live),
+            vec!["toolu_merge".to_string(), "toolu_merge".to_string()]
+        );
+        // The provider's own echo arrives last and adds no text: the row's
+        // final text is exactly ours.
+        reader
+            .feed(
+                format!("{}\n", question_tool_result("toolu_merge")).as_bytes(),
+                &runtime,
+            )
+            .expect("feed tool_result");
+        let live: Vec<SessionEvent> = super::drain(&conn)
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    SessionEvent::AgentToolCall { .. } | SessionEvent::AgentToolUpdate { .. }
+                )
+            })
+            .collect();
+        assert_eq!(live.len(), 1);
+        match &live[0] {
+            SessionEvent::AgentToolUpdate {
+                tool_call_id, text, ..
+            } => {
+                assert_eq!(tool_call_id, "toolu_merge");
+                assert_eq!(text.as_deref(), None);
+            }
+            _ => panic!("expected the provider update"),
+        }
+        let replayed = replayed_tool_rows(&journal, &path, "s.claude.transcript");
+        assert_eq!(replayed.len(), 4);
+        assert!(tool_ids(&replayed).iter().all(|id| id == "toolu_merge"));
+        match &replayed[2] {
+            SessionEvent::AgentToolUpdate { text, .. } => {
+                assert_eq!(
+                    text.as_deref(),
+                    Some("Question: Which colour should I paint the fence?\nAnswer: Barn red")
+                );
+            }
+            _ => panic!("expected our update"),
+        }
+        match &replayed[3] {
+            SessionEvent::AgentToolUpdate { text, .. } => {
+                assert_eq!(text.as_deref(), None);
+            }
+            _ => panic!("expected the provider update"),
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Without a `tool_use_id` the card falls back to the control
+    /// `request_id`, and the broker's row follows it there: the provider's
+    /// row under another id stays a separate row. The merge holds only
+    /// when the request carries the tool id.
+    #[test]
+    fn missing_tool_use_id_falls_back_to_request_id() {
+        let (broker, _, runtime, journal, path, mut reader) =
+            open_harness("claude-transcript-fallback");
+        let _runtime = Arc::clone(&runtime);
+        let mut line = question_line("toolu_detached");
+        line["request"]
+            .as_object_mut()
+            .expect("request")
+            .remove("tool_use_id");
+        reader
+            .feed(
+                format!("{}\n", assistant_tool_use("toolu_detached")).as_bytes(),
+                &runtime,
+            )
+            .expect("feed tool_use");
+        reader
+            .feed(format!("{line}\n").as_bytes(), &runtime)
+            .expect("feed permission");
+        broker
+            .respond_with_option(
+                "ask-1",
+                PermissionOutcome::AllowOnce,
+                Some("q0o1".to_string()),
+                None,
+            )
+            .expect("option pick");
+        let replayed = replayed_tool_rows(&journal, &path, "s.claude.transcript");
+        assert_eq!(replayed.len(), 3);
+        assert_eq!(
+            tool_ids(&replayed),
+            vec![
+                "toolu_detached".to_string(),
+                "ask-1".to_string(),
+                "ask-1".to_string()
+            ]
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
 }

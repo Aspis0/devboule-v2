@@ -155,16 +155,9 @@ fn codex_question_answers(
         let mut answers = std::collections::BTreeMap::new();
         for (text, value) in parsed {
             let question = questions.iter().find(|item| item.question == text)?;
-            if value.trim().is_empty() {
-                return None;
-            }
             answers.insert(question.id.clone(), codex_answer_labels(question, &value));
         }
-        return if answers.is_empty() {
-            None
-        } else {
-            Some(answers)
-        };
+        return Some(answers);
     }
     // One pick answers one question: several questions are always answered
     // together through the text map above.

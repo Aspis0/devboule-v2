@@ -41,10 +41,14 @@ mod journal_retention;
 #[path = "journal_schema.rs"]
 mod journal_schema;
 
+// Test-only door to the history reader; production reaches it through the
+// private import below, so release builds carry no test name.
+#[cfg(test)]
+pub(crate) use journal_replay::replay_session;
+#[cfg(not(test))]
+use journal_replay::replay_session;
 pub(crate) use journal_replay::AgentReplayPage;
-use journal_replay::{
-    closed_child_record, list_sessions, owned_child_record, replay_agent_page, replay_session,
-};
+use journal_replay::{closed_child_record, list_sessions, owned_child_record, replay_agent_page};
 use journal_retention::{
     delete_session_user, effective_limits, journal_retention, journal_usage, retain,
     set_journal_retention, RetentionState,

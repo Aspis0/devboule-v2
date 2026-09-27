@@ -27,13 +27,15 @@ export function isToolCallGroup(entry: AgentChatItem | ToolCallGroup): entry is 
 /**
  * Paseo's `isGroupableToolCall` (`grouping.ts:85-90`) excludes the `plan`
  * detail type and the `speak` tool name. Here `kind === "plan"` is the plan
- * exclusion; `speak` has no equivalent — no tool kind maps to it
- * (`toolRowDisplay.ts` knows `execute/read/edit/delete/search/fetch/think`),
- * so only `plan` is excluded.
+ * exclusion and `kind === "question"` keeps answered cards out of runs,
+ * so the transcript's only copy of a question and its answer is never
+ * buried in a collapsed group. `speak` has no equivalent — no other tool
+ * kind maps to it.
  */
 export function isGroupableToolCall(item: AgentChatItem): item is ToolChatItem {
   if (item.role !== "tool") return false;
-  return item.kind?.trim().toLowerCase() !== "plan";
+  const kind = item.kind?.trim().toLowerCase();
+  return kind !== "plan" && kind !== "question";
 }
 
 /**

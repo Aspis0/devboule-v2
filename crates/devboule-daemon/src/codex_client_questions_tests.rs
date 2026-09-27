@@ -5,8 +5,8 @@ use devboule_protocol::SessionEvent;
 
 use super::super::codex_questions::{codex_question_result, parse_codex_questions};
 use super::input_test_support::{
-    asked_question, fence_question_params, question_harness, single_question_params,
-    user_input_line,
+    asked_question, fence_question_params, question_harness, question_harness_with_journal,
+    single_question_params, user_input_line,
 };
 
 #[test]
@@ -242,4 +242,166 @@ fn parse_codex_questions_skips_what_nobody_could_answer() {
     );
     assert!(questions[0].allow_other);
     assert!(questions[0].secret);
+}
+
+fn replayed_tool_rows(
+    journal: &crate::journal::Journal,
+    path: &std::path::Path,
+) -> Vec<SessionEvent> {
+    journal.flush().expect("journal flush");
+    let conn = rusqlite::Connection::open(path).expect("inspect journal");
+    crate::journal::replay_session(&conn, "s.codex.questions")
+        .expect("history replay")
+        .events
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                SessionEvent::AgentToolCall { .. } | SessionEvent::AgentToolUpdate { .. }
+            )
+        })
+        .collect()
+}
+
+/// Codex, end to end: an answered question leaves exactly one tool row
+/// with the question's words and the picked label, rebuilt by the history
+/// reader, and the provider's own reply carries the answers map.
+#[test]
+fn answered_question_leaves_one_transcript_row() {
+    let ((broker, captured, runtime, conn, mut reader), journal, path) =
+        question_harness_with_journal("codex-transcript-pick");
+    reader.dispatch_value(
+        user_input_line("item/tool/requestUserInput", single_question_params()),
+        &runtime,
+    );
+    let _ = conn.pull_events();
+    broker
+        .respond_with_option(
+            "item-1",
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            Some("q0o0".to_string()),
+            None,
+        )
+        .expect("option pick");
+    let frames = captured.lock().expect("captured");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        frames[0]["result"],
+        serde_json::json!({ "answers": { "q1": { "answers": ["Forest green (Recommended)"] } } })
+    );
+    // The live attach lane carries the same pair: the event_pull reader
+    // path, not just the journal rows.
+    let live: Vec<SessionEvent> = conn
+        .pull_events()
+        .into_iter()
+        .filter_map(|event| match event.envelope.event {
+            SessionEvent::AgentToolCall { .. } | SessionEvent::AgentToolUpdate { .. } => {
+                Some(event.envelope.event)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(live.len(), 2);
+    assert!(live.iter().all(|event| match event {
+        SessionEvent::AgentToolCall { tool_call_id, .. }
+        | SessionEvent::AgentToolUpdate { tool_call_id, .. } => tool_call_id == "item-1",
+        _ => false,
+    }));
+    let texts = replayed_tool_rows(&journal, &path);
+    assert_eq!(texts.len(), 2, "one answered card leaves one row");
+    match &texts[0] {
+        SessionEvent::AgentToolCall {
+            tool_call_id,
+            title,
+            ..
+        } => {
+            assert_eq!(tool_call_id, "item-1");
+            assert_eq!(title, "Which colour should I paint the fence?");
+        }
+        _ => panic!("expected the tool call"),
+    }
+    match &texts[1] {
+        SessionEvent::AgentToolUpdate {
+            tool_call_id, text, ..
+        } => {
+            assert_eq!(tool_call_id, "item-1");
+            let text = text.as_deref().unwrap_or_default();
+            assert!(text.contains("Which colour should I paint the fence?"));
+            assert!(text.contains("Forest green (Recommended)"));
+        }
+        _ => panic!("expected the tool update"),
+    }
+    journal.shutdown();
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn dismissed_question_leaves_no_transcript_row() {
+    let ((broker, _, runtime, conn, mut reader), journal, path) =
+        question_harness_with_journal("codex-transcript-dismiss");
+    reader.dispatch_value(
+        user_input_line("item/tool/requestUserInput", single_question_params()),
+        &runtime,
+    );
+    let _ = conn.pull_events();
+    broker
+        .respond_with_option(
+            "item-1",
+            devboule_protocol::PermissionOutcome::Deny,
+            None,
+            None,
+        )
+        .expect("dismissal");
+    assert!(replayed_tool_rows(&journal, &path).is_empty());
+    journal.shutdown();
+    let _ = std::fs::remove_file(path);
+}
+
+/// A secret question answered by option pick: the transcript row hides the
+/// label, and so does the resolved event — the option id and kind travel
+/// (positions, not words), the name stays out.
+#[test]
+fn secret_option_pick_hides_the_label_everywhere() {
+    let ((broker, _, runtime, conn, mut reader), journal, path) =
+        question_harness_with_journal("codex-transcript-secret-pick");
+    let mut params = single_question_params();
+    params["questions"][0]["isSecret"] = serde_json::json!(true);
+    reader.dispatch_value(
+        user_input_line("item/tool/requestUserInput", params),
+        &runtime,
+    );
+    let _ = conn.pull_events();
+    broker
+        .respond_with_option(
+            "item-1",
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            Some("q0o0".to_string()),
+            None,
+        )
+        .expect("option pick");
+    let resolved = conn
+        .pull_events()
+        .into_iter()
+        .find_map(|event| match event.envelope.event {
+            SessionEvent::PermissionResolved {
+                tool_call_id,
+                selected_option_name,
+                ..
+            } if tool_call_id == "item-1" => Some(selected_option_name),
+            _ => None,
+        })
+        .expect("resolved event");
+    assert_eq!(resolved, None);
+    let rows = replayed_tool_rows(&journal, &path);
+    assert_eq!(rows.len(), 2);
+    match &rows[1] {
+        SessionEvent::AgentToolUpdate { text, .. } => {
+            let text = text.as_deref().unwrap_or_default();
+            assert!(text.contains("(hidden)"));
+            assert!(!text.contains("Forest green"));
+        }
+        _ => panic!("expected the tool update"),
+    }
+    journal.shutdown();
+    let _ = std::fs::remove_file(path);
 }

@@ -1051,11 +1051,13 @@ pub enum SessionEvent {
     /// The durable record of a resolution, emitted beside
     /// [`SessionEvent::PermissionResolved`] on **every** resolution — a
     /// person's answer, a delegated one, an auto-answer and a cancel alike —
-    /// and journalled, because the snapshot's delegation count is read back
-    /// from what survived, not from live state. `answered_by` is absent for a
-    /// human and names the creator session for a delegated answer; `outcome`
-    /// is the journal's own vocabulary (`allow_once`, `deny`, `timeout`,
-    /// `cancelled`, …), the same string the `permissions` table records.
+    /// and journalled as an `agent_report` row, so live and replayed
+    /// observers see the same resolutions. The delegation count itself is
+    /// read from the `permissions` table, not from this event.
+    /// `answered_by` is absent for a human and names the creator session for
+    /// a delegated answer; `outcome` is the journal's own vocabulary
+    /// (`allow_once`, `deny`, `timeout`, `cancelled`, …), the same string the
+    /// `permissions` table records.
     PermissionAnswered {
         card_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

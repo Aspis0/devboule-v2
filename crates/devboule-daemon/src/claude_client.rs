@@ -1025,8 +1025,9 @@ fn parse_ask_user_questions(input: &Value) -> Vec<PermissionQuestion> {
 /// The `answers` map for an `AskUserQuestion` allow: keyed by the full
 /// question text. An option pick decodes the position the daemon encoded
 /// when it built the card; a text answer is the value verbatim for one
-/// question, or a JSON object of text-to-value for several. Anything
-/// unmappable yields nothing, and the caller refuses.
+/// question, or a JSON object of text-to-value for several. The broker
+/// completes only what `question_acceptance` accepted; anything unmappable
+/// still yields nothing, and the caller refuses.
 fn question_answers(
     input: &Value,
     option_id: &str,
@@ -1049,16 +1050,10 @@ fn question_answers(
             serde_json::from_str(answer).ok()?;
         let mut answers = serde_json::Map::new();
         for (key, value) in parsed {
-            if value.is_empty() || !questions.iter().any(|item| item.question == key) {
-                return None;
-            }
-            answers.insert(key, Value::String(value));
+            let question = questions.iter().find(|item| item.question == key)?;
+            answers.insert(question.question.clone(), Value::String(value));
         }
-        return if answers.is_empty() {
-            None
-        } else {
-            Some(answers)
-        };
+        return Some(answers);
     }
     // One pick answers one question: several questions are always answered
     // together through the text map above.

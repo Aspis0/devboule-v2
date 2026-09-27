@@ -75,6 +75,17 @@ describe("groupToolCalls", () => {
     expect(grouped[2]).toBe(second);
   });
 
+  it("excludes answered questions from a run", () => {
+    const first = tool({ title: "one" });
+    const question = tool({ title: "Question", kind: "question" });
+    const second = tool({ title: "two" });
+    const grouped = groupToolCalls([first, question, second]);
+    expect(grouped).toHaveLength(3);
+    expect(grouped[0]).toBe(first);
+    expect(grouped[1]).toBe(question);
+    expect(grouped[2]).toBe(second);
+  });
+
   it("groups a trailing run whose last tool is still running", () => {
     const first = tool({ title: "one", status: "completed" });
     const running = tool({ title: "two", status: "running" });

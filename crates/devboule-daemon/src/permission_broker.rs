@@ -224,6 +224,10 @@ pub(crate) struct PermissionBroker {
 const REUSED_ID_NOTICE: &str =
     "The agent reused the id of a question this session already closed, so this request was declined.";
 
+/// Wordless diagnostic for a refused transcript publish: static text plus
+/// ids, never the question or the answer.
+const QUESTION_ROW_NOT_PUBLISHED: &str = "A question transcript row was not published.";
+
 #[derive(Debug)]
 pub(super) enum PermissionResponseError {
     NotFound,
@@ -447,7 +451,7 @@ impl PermissionBroker {
         option_id: Option<String>,
         answer: Option<String>,
     ) -> Result<(), PermissionResponseError> {
-        let (options, is_question) = {
+        let (options, is_question, questions) = {
             let table = self
                 .pending
                 .lock()
@@ -457,11 +461,17 @@ impl PermissionBroker {
                 .get(tool_call_id)
                 .ok_or(PermissionResponseError::NotFound)?;
             match &pending.request {
-                SessionEvent::PermissionRequest { options, kind, .. } => (
+                SessionEvent::PermissionRequest {
+                    options,
+                    kind,
+                    questions,
+                    ..
+                } => (
                     options.clone(),
                     matches!(kind, Some(PermissionRequestKind::Question)),
+                    questions.clone().unwrap_or_default(),
                 ),
-                _ => (Vec::new(), false),
+                _ => (Vec::new(), false, Vec::new()),
             }
         };
         // A question's free-text answer travels beside the option pick,
@@ -474,13 +484,26 @@ impl PermissionBroker {
                     "a question answer names an option or carries text, not both".to_string(),
                 ));
             }
+            if answer.is_some() && outcome != PermissionOutcome::AllowOnce {
+                return Err(PermissionResponseError::InvalidRequest(
+                    "a question's text answer must grant, not refuse".to_string(),
+                ));
+            }
+            if let Some(answer) = &answer {
+                validate_permission_field("answer", answer)?;
+            }
+            // Every grant passes the one acceptance rule before `take`:
+            // nothing a shaper could not map is journalled or sent, and a
+            // refused card stays open for a real answer.
+            if outcome == PermissionOutcome::AllowOnce {
+                super::question_acceptance::validate_answer(
+                    &questions,
+                    option_id.as_deref(),
+                    answer.as_deref(),
+                )
+                .map_err(|reason| PermissionResponseError::InvalidRequest(reason.to_string()))?;
+            }
             if let Some(answer) = answer {
-                if outcome != PermissionOutcome::AllowOnce {
-                    return Err(PermissionResponseError::InvalidRequest(
-                        "a question's text answer must grant, not refuse".to_string(),
-                    ));
-                }
-                validate_permission_field("answer", &answer)?;
                 let pending = self.take(tool_call_id, None)?;
                 #[cfg(test)]
                 self.run_after_take_hook();
@@ -515,11 +538,6 @@ impl PermissionBroker {
                     "cancelled",
                     None,
                 );
-            }
-            if outcome == PermissionOutcome::AllowOnce && option_id.is_none() {
-                return Err(PermissionResponseError::InvalidRequest(
-                    "a question grant must name the picked option or carry its text".to_string(),
-                ));
             }
         } else if answer.is_some() {
             return Err(PermissionResponseError::InvalidRequest(
@@ -1093,27 +1111,68 @@ impl PermissionBroker {
                 Err(error) => Err(PermissionResponseError::Io(error)),
             };
         }
-        let send_result = self.dispatch_with_fallback(pending, result);
+        let send_result = self.dispatch_with_fallback(pending, result.clone());
         if let Some(runtime) = runtime {
             runtime.remove_permission_request(&pending.tool_call_id);
+            // One tool row per answered card, under the card's own id: for
+            // Claude that is the provider's tool_use_id when the request
+            // carries one, so the provider's pending row and this row merge
+            // instead of doubling. Without it the card falls back to the
+            // control request_id and the rows stay separate. A dismissal
+            // answers nothing, so it adds no row of ours.
+            let answered =
+                super::question_transcript::answered_questions(&pending.request, &result);
+            if !answered.is_empty() {
+                // The title names only answered questions — first plus a
+                // count — so the collapsed line agrees with the body; the
+                // "Question" label comes from the kind map.
+                let title = super::question_transcript::format_card_title(&answered);
+                let output = super::question_transcript::format_tool_output(&answered);
+                let kind = Some(super::question_transcript::QUESTION_ROW_KIND.to_string());
+                let call = SessionEvent::AgentToolCall {
+                    tool_call_id: pending.tool_call_id.clone(),
+                    title: title.clone(),
+                    status: "completed".to_string(),
+                    kind: kind.clone(),
+                    locations: None,
+                    subagent_type: None,
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                };
+                let update = SessionEvent::AgentToolUpdate {
+                    tool_call_id: pending.tool_call_id.clone(),
+                    status: Some("completed".to_string()),
+                    text: Some(output),
+                    title: Some(title),
+                    kind,
+                    locations: None,
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                };
+                // Both halves are attempted even if the first fails. A row
+                // the stream refuses is a wordless log line — ids only —
+                // and never a blocked or undone answer.
+                let call_ok = runtime.publish_daemon_event(call);
+                let update_ok = runtime.publish_daemon_event(update);
+                if !call_ok || !update_ok {
+                    eprintln!(
+                        "{} session {} card {}",
+                        QUESTION_ROW_NOT_PUBLISHED, runtime.session_id, pending.tool_call_id
+                    );
+                }
+            }
             let _ = runtime.publish_agent_event(
                 permission_resolved_event(pending, selected_option, journal_outcome, answered_by),
                 None,
             );
-            // The durable attribution record, on every resolution: the
-            // snapshot's delegation count is read back from what the journal
-            // survived, and the app's replayed ledger has no other source.
-            let _ = runtime.publish_agent_event(
-                permission_answered_event(pending, answered_by, journal_outcome),
-                Some(
-                    &serde_json::to_string(&permission_answered_event(
-                        pending,
-                        answered_by,
-                        journal_outcome,
-                    ))
-                    .unwrap_or_default(),
-                ),
-            );
+            // Journalled as an agent report so both replay readers return
+            // it; an output row would be dropped by replay and leak raw
+            // JSON into a terminal's scrollback.
+            let _ = runtime.publish_daemon_event(permission_answered_event(
+                pending,
+                answered_by,
+                journal_outcome,
+            ));
         }
         self.mark_done(pending, decision);
         send_result.map_err(PermissionResponseError::Io)
@@ -1324,13 +1383,24 @@ fn permission_resolved_event(
         "allow_once" | "allow_always" => Some(journal_outcome.to_string()),
         _ => None,
     };
+    // A secret question's answer never names its label: the option id and
+    // kind travel (positions, not words), the name stays out.
+    let secret = matches!(
+        &pending.request,
+        SessionEvent::PermissionRequest {
+            questions: Some(questions),
+            ..
+        } if questions.iter().any(|question| question.secret == Some(true))
+    );
     SessionEvent::PermissionResolved {
         tool_call_id: pending.tool_call_id.clone(),
         selected_option_id: selected_option.map(|option| option.option_id.clone()),
         selected_option_kind: selected_option
             .map(|option| option.kind.clone())
             .or(granted_kind),
-        selected_option_name: selected_option.map(|option| option.name.clone()),
+        selected_option_name: (!secret)
+            .then(|| selected_option.map(|option| option.name.clone()))
+            .flatten(),
         answered_by: answered_by.map(str::to_string),
     }
 }
@@ -3490,9 +3560,10 @@ mod question_tests {
     /// The free-text answer reaches the provider's reply frame through a
     /// store that holds none of its words: the `permissions` row keeps the
     /// request plus `allow_once`, and the resolved event carries the
-    /// granted kind with no option id or name.
+    /// granted kind with no option id or name. (The answer itself is kept
+    /// like a chat message: `question_transcript_tests` pins where.)
     #[test]
-    fn question_free_text_answer_is_journaled_without_its_words() {
+    fn question_free_text_answer_stays_out_of_the_permissions_table() {
         let secret = "chartreuse, the fence nobody else has";
         let path = permission_path("question-answer");
         let _ = std::fs::remove_file(&path);
@@ -3569,3 +3640,18 @@ mod question_tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+#[cfg(test)]
+#[path = "permission_broker_permission_answered_tests.rs"]
+mod permission_answered_tests;
+#[cfg(test)]
+#[path = "permission_broker_question_secrecy_tests.rs"]
+mod question_secrecy_tests;
+/// Answered questions as tool rows, split by topic: `permission_broker.rs`
+/// holds the publish path; the row shape lives in
+/// `permission_broker_question_transcript_tests.rs`, secrecy in
+/// `permission_broker_question_secrecy_tests.rs`, and the attribution
+/// record in `permission_broker_permission_answered_tests.rs`.
+#[cfg(test)]
+#[path = "permission_broker_question_transcript_tests.rs"]
+mod question_transcript_tests;

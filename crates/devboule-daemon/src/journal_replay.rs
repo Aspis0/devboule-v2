@@ -322,7 +322,7 @@ fn deserialize_overlay(raw: Option<String>) -> Option<crate::provider_catalog::T
     known.then(|| crate::provider_catalog::ToolOverlay::from_profile_names(&names))
 }
 
-pub(super) fn replay_session(conn: &Connection, session_id: &str) -> Result<Replay, JournalError> {
+pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Replay, JournalError> {
     let record = conn
         .query_row(
             "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,

@@ -50,6 +50,9 @@ pub(crate) struct ClaudeView {
     current_mode: Option<String>,
     peer_session_id: Option<String>,
     cwd: Option<PathBuf>,
+    /// This turn's `AskUserQuestion` call ids, so a granted result drops its
+    /// echo text. Cleared at turn end: a late result reads as ordinary.
+    question_tool_ids: HashSet<String>,
     /// The last published command list, by full value: the initialize
     /// handshake's rich list and the init frame's bare names are two readings
     /// of one menu, so a repeat publishes nothing.
@@ -67,6 +70,7 @@ impl ClaudeView {
             peer_session_id: None,
             cwd,
             published_commands: None,
+            question_tool_ids: HashSet::new(),
         }
     }
 
@@ -457,6 +461,14 @@ impl ClaudeView {
                     }
                 }
                 Some("tool_use") => {
+                    // A question's tool call is an ordinary provider row: the
+                    // broker's own row reuses the card id, so the two merge
+                    // by call id instead of doubling.
+                    if block.get("name").and_then(Value::as_str) == Some("AskUserQuestion") {
+                        if let Some(id) = block.get("id").and_then(Value::as_str) {
+                            self.question_tool_ids.insert(id.to_string());
+                        }
+                    }
                     if let Some(event) = tool_call_from_block(
                         block,
                         self.cwd.as_deref(),
@@ -485,12 +497,27 @@ impl ClaudeView {
         content
             .iter()
             .filter_map(|block| {
-                tool_update_from_result(block, parent_tool_use_id.clone(), spawn_depth)
+                let mut update =
+                    tool_update_from_result(block, parent_tool_use_id.clone(), spawn_depth)?;
+                let question = block
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| self.question_tool_ids.remove(id));
+                let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
+                // A granted question's merged row already reads Question /
+                // Answer; Claude's echo would append the answer a second time.
+                if question && !failed {
+                    if let SessionEvent::AgentToolUpdate { text, .. } = &mut update {
+                        *text = None;
+                    }
+                }
+                Some(update)
             })
             .collect()
     }
 
     fn ingest_result(&mut self, envelope: &Value) -> Vec<SessionEvent> {
+        self.question_tool_ids.clear();
         // Debt: stream-json has no ACP-like inactivity watchdog, so a dead
         // CLI can leave a turn without ever producing an AgentFinished event.
         let stop_reason = envelope
@@ -2622,5 +2649,93 @@ mod tests {
             PathBuf::from("src").join("Lib.rs").to_string_lossy(),
             "Windows prefix match is case-insensitive; remainder keeps original casing"
         );
+    }
+
+    fn ask_tool_use(id: &str) -> Value {
+        json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "id": id,
+                    "name": "AskUserQuestion",
+                    "input": { "questions": [{ "question": "Which colour?" }] }
+                }]
+            }
+        })
+    }
+
+    fn ask_tool_result(id: &str, failed: bool) -> Value {
+        json!({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": id,
+                    "content": [{"type": "text", "text": "Green"}],
+                    "is_error": failed
+                }]
+            }
+        })
+    }
+
+    /// A question's provider row passes through untouched: the broker's own
+    /// row reuses the card id, so grant and provider rows merge by call id
+    /// instead of doubling, whatever the result flag says.
+    #[test]
+    fn ask_user_question_tool_use_passes_through() {
+        let mut mapper = view();
+        let events = mapper.ingest(&ask_tool_use("ask-1"));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            SessionEvent::AgentToolCall { tool_call_id, .. } if tool_call_id == "ask-1"
+        ));
+    }
+
+    #[test]
+    fn ask_user_question_result_drops_only_a_granted_echo() {
+        let mut mapper = view();
+        for failed in [false, true] {
+            let _ = mapper.ingest(&ask_tool_use("ask-9"));
+            let events = mapper.ingest(&ask_tool_result("ask-9", failed));
+            assert_eq!(events.len(), 1);
+            match &events[0] {
+                SessionEvent::AgentToolUpdate {
+                    tool_call_id,
+                    status,
+                    text,
+                    ..
+                } => {
+                    assert_eq!(tool_call_id, "ask-9");
+                    assert_eq!(
+                        status.as_deref(),
+                        Some(if failed { "failed" } else { "completed" })
+                    );
+                    // A grant's echo is dropped; a refusal keeps Claude's
+                    // own words, since no answer row of ours carries them.
+                    assert_eq!(text.as_deref(), if failed { Some("Green") } else { None });
+                }
+                _ => panic!("expected the tool update"),
+            }
+        }
+    }
+
+    #[test]
+    fn turn_end_forgets_question_ids() {
+        let mut mapper = view();
+        let _ = mapper.ingest(&ask_tool_use("ask-9"));
+        let _ = mapper.ingest(&serde_json::json!({
+            "type": "result",
+            "stop_reason": "end_turn",
+        }));
+        let events = mapper.ingest(&ask_tool_result("ask-9", false));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            SessionEvent::AgentToolUpdate { text, .. } => {
+                assert_eq!(text.as_deref(), Some("Green"));
+            }
+            _ => panic!("expected the tool update"),
+        }
     }
 }

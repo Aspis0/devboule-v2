@@ -10,10 +10,13 @@ use devboule_protocol::SessionEvent;
 
 use super::super::codex_input_requests::{codex_permission_frame, CodexPendingResponse};
 use super::super::event_pull::ConnHandle;
-use super::super::permission_broker::{PermissionBroker, PermissionSender};
+use super::super::permission_broker::{permission_path, PermissionBroker, PermissionSender};
 use super::super::session_runtime::SessionRuntime;
 use super::{catalog_from_response, empty_commands, CodexReader, CodexRequests};
 use crate::codex_view::CodexView;
+use crate::journal::{new_session_record, Journal};
+use devboule_protocol::SessionKind;
+use std::path::PathBuf;
 
 /// Fixtures: question and elicitation params in the providers' shapes.
 /// One parked Codex answer shaped for the wire through the same entry point
@@ -97,6 +100,49 @@ pub(super) fn question_harness() -> QuestionHarness {
     );
     let reader = question_reader(Arc::clone(&broker), Arc::clone(&response_ids));
     (broker, captured, runtime, conn, reader)
+}
+
+/// The same question harness with a journal, so an answered question's
+/// transcript row can be read back from the store that must keep it.
+#[allow(clippy::type_complexity)]
+pub(super) fn question_harness_with_journal(
+    label: &str,
+) -> (QuestionHarness, Arc<Journal>, PathBuf) {
+    let path = permission_path(label);
+    let _ = std::fs::remove_file(&path);
+    let journal = Arc::new(Journal::open(&path).expect("journal"));
+    let session_id = "s.codex.questions".to_string();
+    journal
+        .upsert_blocking(new_session_record(
+            session_id.clone(),
+            "owner",
+            None,
+            SessionKind::Codex,
+            "codex transcript test",
+        ))
+        .expect("session row");
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let response_ids = Arc::new(Mutex::new(HashMap::new()));
+    let broker = PermissionBroker::for_test(capturing_codex_sender(&captured, &response_ids));
+    let runtime = SessionRuntime::for_acp(
+        session_id.clone(),
+        Some(Arc::clone(&journal)),
+        Arc::clone(&broker),
+    );
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        &session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let reader = question_reader(Arc::clone(&broker), Arc::clone(&response_ids));
+    ((broker, captured, runtime, conn, reader), journal, path)
 }
 
 pub(super) fn user_input_line(method: &str, params: serde_json::Value) -> serde_json::Value {

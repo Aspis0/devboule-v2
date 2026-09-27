@@ -32,7 +32,7 @@ pub(super) struct EchoHarness {
     pub(super) reader: AcpReader,
     frames: std::sync::mpsc::Receiver<String>,
     child: Option<std::process::Child>,
-    journal: Arc<Journal>,
+    pub(super) journal: Arc<Journal>,
 }
 
 impl Drop for EchoHarness {

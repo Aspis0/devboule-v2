@@ -258,3 +258,78 @@ fn parse_grok_questions_skips_what_nobody_could_answer() {
     assert!(!questions[1].multi_select);
     assert!(questions[2].options.is_empty());
 }
+
+fn replayed_tool_rows(journal: &crate::journal::Journal) -> Vec<SessionEvent> {
+    journal.flush().expect("journal flush");
+    let conn = rusqlite::Connection::open(journal.path()).expect("inspect journal");
+    crate::journal::replay_session(&conn, super::question_support::SESSION)
+        .expect("history replay")
+        .events
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                SessionEvent::AgentToolCall { .. } | SessionEvent::AgentToolUpdate { .. }
+            )
+        })
+        .collect()
+}
+
+/// grok, end to end: an answered question leaves exactly one tool row
+/// with the question's words and the picked label, rebuilt by the history
+/// reader.
+#[test]
+fn answered_question_leaves_one_transcript_row() {
+    let mut echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let _ = echo.conn.pull_events();
+    echo.broker
+        .respond_with_option(
+            "call-fence-0",
+            PermissionOutcome::AllowOnce,
+            Some("q0o1".to_string()),
+            None,
+        )
+        .expect("option pick");
+    assert_eq!(
+        echo.read_frame()["result"]["answers"],
+        serde_json::json!({ FENCE: ["Barn red"] })
+    );
+    let rows = replayed_tool_rows(&echo.journal);
+    assert_eq!(rows.len(), 2, "one answered card leaves one row");
+    match &rows[0] {
+        SessionEvent::AgentToolCall {
+            tool_call_id,
+            title,
+            ..
+        } => {
+            assert_eq!(tool_call_id, "call-fence-0");
+            assert_eq!(title, FENCE);
+        }
+        _ => panic!("expected the tool call"),
+    }
+    match &rows[1] {
+        SessionEvent::AgentToolUpdate {
+            tool_call_id, text, ..
+        } => {
+            assert_eq!(tool_call_id, "call-fence-0");
+            let text = text.as_deref().unwrap_or_default();
+            assert!(text.contains(FENCE));
+            assert!(text.contains("Barn red"));
+        }
+        _ => panic!("expected the tool update"),
+    }
+}
+
+#[test]
+fn dismissed_question_leaves_no_transcript_row() {
+    let echo = echo_harness();
+    live_turn(&echo.reader);
+    echo.dispatch(&enveloped(0));
+    let _ = echo.conn.pull_events();
+    echo.broker
+        .respond_with_option("call-fence-0", PermissionOutcome::Deny, None, None)
+        .expect("dismissal");
+    assert!(replayed_tool_rows(&echo.journal).is_empty());
+}
