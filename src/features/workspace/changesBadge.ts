@@ -20,19 +20,14 @@ export function changesBadgeLabel(status: WorkspaceGitStatus): string {
 }
 
 /**
- * The branch row's total: the same `≈` rule as the badge, but `null` when
- * the reply withheld its rows (`rows` empty, `dirty` true) — a cut-short
- * list is not a zero total, so the row shows no numbers at all. A clean
- * tree reads `+0 −0`: known exact zeros, not an absence.
+ * The branch row's total: the same `≈` rule as the badge, but only while
+ * rows stand behind it. A clean tree reads nothing — the "no uncommitted
+ * changes" sentence is the whole story, and `+0 −0` beside the branch is
+ * noise. A withheld list or a rowless caveat reads nothing either: never
+ * zeros, estimated or not, for a tree the reply did not describe.
  */
 export function changesTotalsLabel(status: WorkspaceGitStatus): string | null {
-  if (status.rows.length === 0) {
-    // A clean tree reads known zeros; a withheld list or a caveat with no
-    // rows reads nothing — never zeros, estimated or not, for a tree the
-    // reply did not describe.
-    if (status.error !== null || status.dirty) return null;
-    return `+${status.totals.additions} −${status.totals.deletions}`;
-  }
+  if (status.rows.length === 0) return null;
   const counts = `+${status.totals.additions} −${status.totals.deletions}`;
   const exact = status.error === null && !status.rows.some((row) => row.capped);
   return exact ? counts : `≈${counts}`;

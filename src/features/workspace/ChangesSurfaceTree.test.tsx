@@ -123,6 +123,18 @@ describe("ChangesSurface R7b panel body", () => {
     expect(branchRow().querySelector(".workspace-changes-branch-chevron")?.tagName).toBe("SPAN");
   });
 
+  it("shows no totals on a clean tree: the sentence already says it", async () => {
+    // Live fix (dark screenshot 01): "+0 −0" beside the branch on an
+    // empty tree is noise — "No uncommitted changes" is the whole story.
+    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+
+    expect(container.textContent).toContain("No uncommitted changes in this workspace.");
+    expect(branchRow().textContent).toContain("main");
+    expect(container.querySelector(".workspace-changes-branch-totals")).toBeNull();
+    expect(container.textContent).not.toContain("+0 −0");
+    expect(container.querySelector('button[aria-label="Refresh"]')).not.toBeNull();
+  });
+
   it("prints a detached head and a missing branch honestly, never blank", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({

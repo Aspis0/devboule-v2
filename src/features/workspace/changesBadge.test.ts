@@ -104,8 +104,8 @@ describe("changesTotalsLabel", () => {
     ).toBe("≈+96 −41");
   });
 
-  it("reads a clean tree as known zeros, a withheld list as nothing", () => {
-    expect(changesTotalsLabel(status())).toBe("+0 −0");
+  it("reads nothing without rows: clean, withheld or rowless caveat alike", () => {
+    expect(changesTotalsLabel(status())).toBeNull();
     expect(changesTotalsLabel(status({ dirty: true }))).toBeNull();
     expect(changesTotalsLabel(status({ error: "git status exited with code 128" }))).toBeNull();
   });
