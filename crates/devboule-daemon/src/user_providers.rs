@@ -1,7 +1,7 @@
 //! User provider rows: the catalogue's open half, read from disk.
 //!
 //! Paseo's row shape (`RECON-paseo-provider-config.md` §1), scoped to the
-//! fields this pass consumes: `extends`, `label`, `description`, `command`
+//! fields the daemon consumes: `extends`, `label`, `description`, `command`
 //! (a non-empty argv list) and `env`. A field the daemon accepts and ignores
 //! is a promise it does not keep, so the shape carries nothing else and
 //! unknown fields are refused (`deny_unknown_fields`) — a document naming
@@ -19,7 +19,7 @@
 //! any row validation is refused whole, for the reason `agent_profiles.rs`
 //! states: half a list of providers is not a smaller catalogue, it is a
 //! different one. Only a fully valid document is built into a whole new
-//! registry and swapped through the pass-2e-1 seam in one step.
+//! registry and swapped through the registry's swap seam in one step.
 //!
 //! The read happens at the boundaries that answer "which providers exist"
 //! (the create and resume roads), not on a timer: a create already pays for
@@ -78,9 +78,9 @@ pub(crate) const MAX_PROVIDER_ENV_BYTES: usize = 4 * 1024;
 #[serde(deny_unknown_fields)]
 pub(crate) struct UserProviderRow {
     /// The provider implementation this row rides. Mandatory for every row
-    /// this pass accepts: this pass accepts `extends: "acp"` only, and a row
-    /// extending a native family is refused with the sentence that says it is
-    /// not supported yet.
+    /// accepted: only `extends: "acp"` is accepted, and a row extending a
+    /// native family is refused with the sentence that says it is not
+    /// supported yet.
     #[serde(default)]
     pub(crate) extends: Option<String>,
     #[serde(default)]
@@ -154,7 +154,7 @@ pub(crate) fn parse_providers_document(
 }
 
 /// The two Paseo validations, verbatim in meaning, plus the two scope limits
-/// this pass states rather than hides.
+/// stated rather than hidden.
 fn validate_row(id: &str, row: &UserProviderRow, native_ids: &[String]) -> Result<(), String> {
     // Paseo validation 1: the id is a closed alphabet. A provider id becomes
     // a path segment and a config key; an unvalidated id is the
@@ -167,7 +167,7 @@ fn validate_row(id: &str, row: &UserProviderRow, native_ids: &[String]) -> Resul
     }
     // Scope limit, stated rather than hidden: Paseo's builtin-override half
     // (a built-in id with no `extends` overrides that built-in) is not
-    // imported by this pass.
+    // imported.
     // Ids **and** aliases: several catalog names are alias-only
     // (`claude-code`, `grok-build`, ...), and a row taking one of those would
     // shadow the built-in on the spawn road — `resolve_named` consults the
@@ -229,8 +229,8 @@ fn validate_row(id: &str, row: &UserProviderRow, native_ids: &[String]) -> Resul
             "provider \"{id}\" declares label or description; nothing displays them yet, so they are refused rather than silently ignored (not supported yet)"
         ));
     }
-    // A row this pass accepts is an ACP row, and an ACP row is its command:
-    // without one it is a profile target nothing can spawn.
+    // An accepted row is an ACP row, and an ACP row is its command: without
+    // one it is a profile target nothing can spawn.
     let Some(command) = &row.command else {
         return Err(format!(
             "provider \"{id}\" must declare command (a non-empty argv list)"
@@ -476,7 +476,7 @@ mod tests {
         parse_providers_document(bytes, &natives())
     }
 
-    /// A row this pass accepts: extends acp, an argv, an env entry.
+    /// A row that is accepted: extends acp, an argv, an env entry.
     fn valid_row_json(id: &str) -> String {
         format!(
             r#"{{"{id}": {{"extends": "acp",
@@ -510,9 +510,9 @@ mod tests {
         );
     }
 
-    /// M2-e2-a: an id outside the closed alphabet is refused, naming the id
-    /// and the pattern — an unvalidated id is the path-join defect waiting
-    /// to happen.
+    /// An id outside the closed alphabet is refused, naming the id and the
+    /// pattern — an unvalidated id is the path-join defect waiting to
+    /// happen.
     #[test]
     fn an_id_outside_the_closed_alphabet_is_refused() {
         for id in [
@@ -533,7 +533,7 @@ mod tests {
         }
     }
 
-    /// M2-e2-b: a custom row MUST declare `extends`.
+    /// A custom row MUST declare `extends`.
     #[test]
     fn a_row_without_extends_is_refused() {
         let document = r#"{"my-agent": {"command": ["/bin/my-agent"]}}"#;
@@ -544,8 +544,8 @@ mod tests {
         );
     }
 
-    /// M2-e2-c: `extends` is checked against a closed set — ours is the
-    /// native ids plus the `acp` sentinel, and the refusal names the set.
+    /// `extends` is checked against a closed set — ours is the native ids
+    /// plus the `acp` sentinel, and the refusal names the set.
     #[test]
     fn extends_outside_the_closed_set_is_refused() {
         let document = r#"{"my-agent": {"extends": "gemini", "command": ["/bin/my-agent"]}}"#;
@@ -650,7 +650,7 @@ mod tests {
     /// reads), and deleting the file retires it. The rows lock is held
     /// across the assertions so a concurrent production refresh cannot swap
     /// the rows out under the test.
-    /// Pass 2e-2 let a profile name a user provider. The profile store
+    /// A profile can name a user provider. The profile store
     /// validates at **startup**, and the rows were only ever read on the
     /// create and resume roads — so a legitimate pair of files made
     /// `AgentProfilesStore::load` refuse the profile, and `load` does not

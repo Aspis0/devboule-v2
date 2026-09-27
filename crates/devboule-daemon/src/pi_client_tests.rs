@@ -13,8 +13,8 @@ use crate::attachment_store::AttachmentStore;
 use crate::pi_view::events_from_line;
 use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
 use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch, SessionRuntime, StaticImageSink};
-// The shared admission helper (A2-03): one place, so the Pi and the Codex
-// steer tests exercise the same token `with_active_turn` hands out.
+// The shared admission helper: one place, so the Pi and the Codex steer
+// tests exercise the same token `with_active_turn` hands out.
 use crate::test_support::steer_through_the_turn;
 use devboule_protocol::{ErrorCode, PromptAttachment, SessionEvent, WireError};
 use std::collections::HashMap;
@@ -1483,7 +1483,7 @@ fn reader_with_control(control: Arc<PiControl>) -> PiReader {
 
 #[test]
 fn the_control_channel_ending_wakes_every_waiter() {
-    // A2-02: the reader thread is what delivers answers, so when the child's
+    // The reader thread is what delivers answers, so when the child's
     // output ends no answer can arrive for anyone still waiting. Left
     // registered, each waiter would sit out the whole response timeout for a
     // reply the reader can no longer deliver — the steer's own timeout is
@@ -1522,7 +1522,7 @@ fn the_control_channel_ending_wakes_every_waiter() {
 
 #[test]
 fn a_control_response_for_an_id_nobody_waits_for_is_ignored() {
-    // A2-02: the id space carries answers that are not this control's — to
+    // The id space carries answers that are not this control's — to
     // commands no waiter registered, and to requests whose waiter already
     // timed out. An unknown id is nothing to deliver, not an error and not a
     // panic, and it must not disturb the waiter that *is* registered.
@@ -1661,10 +1661,10 @@ fn a_pi_that_takes_the_steer_is_steered_with_the_frame_the_round_trip_wrote() {
 
 #[test]
 fn steering_a_slash_input_is_refused_as_paseo_refuses_it() {
-    // Paseo `pi/agent.ts:1417-1419`: "Pi rejects steer RPCs that are
-    // extension commands", so a `/…` input is never steered — it answers
-    // `Ok(false)`, the refusal that sends the caller down its pre-existing
-    // interrupt-and-replace, where the text can run directly. No child is
+    // Pi rejects steer RPCs that are extension commands, so a `/…` input is
+    // never steered — it answers `Ok(false)`, the refusal that sends the
+    // caller down its pre-existing interrupt-and-replace, where the text
+    // can run directly. No child is
     // needed: the refusal must happen *before* a frame is written, which is
     // what the childless control proves — a write attempt would error.
     let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
@@ -1689,11 +1689,10 @@ fn steering_a_slash_input_is_refused_as_paseo_refuses_it() {
 
 #[test]
 fn only_the_reply_that_answers_the_live_request_becomes_the_command_list() {
-    // Paseo drops a response no live request waits for
-    // (`jsonl-rpc-process.ts:157-163, 283-292`); ours must too — and harder:
-    // the row is the journal's copy, so a reply that answered nothing must
-    // reach neither the transcript nor the replay source, or a reattach would
-    // derive a list nobody asked for (review A5-2 #1). The registration below
+    // Paseo drops a response no live request waits for; ours must too —
+    // and harder: the row is the journal's copy, so a reply that answered
+    // nothing must reach neither the transcript nor the replay source, or a
+    // reattach would derive a list nobody asked for. The registration below
     // is what `commands::begin_get_commands` puts in the table; the two later
     // replies are an id nobody holds and the same id once its waiter is gone.
     use crate::journal::{new_session_record, Journal};
@@ -2032,11 +2031,10 @@ mod delivery_tests {
         );
     }
 
-    /// The tick contradiction, walked over pi's own closed mode
-    /// vocabulary plus the broker table (the R2a audit's F9 — this
-    /// refusal had no test at all): for every mode pi can start in, a
-    /// tick is admitted exactly when the daemon's broker answers that
-    /// mode, and refused with the contradiction sentence otherwise.
+    /// The tick contradiction, walked over pi's own closed mode vocabulary
+    /// plus the broker table: for every mode pi can start in, a tick is
+    /// admitted exactly when the daemon's broker answers that mode, and
+    /// refused with the contradiction sentence otherwise.
     #[test]
     fn a_pi_auto_accept_tick_over_an_asking_mode_is_refused() {
         fn delivery(mode: &str, tick: bool) -> crate::profile_delivery::ProfileDelivery {
@@ -2117,8 +2115,7 @@ const FAKE_PI_DELIVERY_REFUSES: &str = r#"
 const fs = require("fs");
 // An open listener keeps this process alive when its stdin closes, so "the
 // child exited" after the teardown can only mean the kill did it — a
-// teardown that merely closed the pipe cannot satisfy the assertion (the
-// re-audit's P3-6).
+// teardown that merely closed the pipe cannot satisfy the assertion.
 require("net").createServer().listen(0, "127.0.0.1");
 let buffered = "";
 process.stdin.on("data", (chunk) => {
@@ -2217,7 +2214,7 @@ process.stdin.on("data", (chunk) => {
 /// A fake that serves the real `spawn_process` handshake — `get_state`,
 /// `get_available_models`, `get_available_thinking_levels` — and then
 /// answers whatever else comes, logging every frame. This is the fake
-/// the spawn seam is tested with (the re-audit's P2-3).
+/// the spawn seam is tested with.
 const FAKE_PI_SPAWN_HANDSHAKE: &str = r#"
 const fs = require("fs");
 let buffered = "";
@@ -2387,8 +2384,8 @@ setInterval(() => {}, 1000);
 /// the redactor, fake enough to never be a secret.
 const FAKE_BEARER: &str = "FAKE-BEARER-REDACTION-PROBE-7f3a";
 
-/// The lifecycle the R2a audit's F1 convicted: a profile delivery for pi
-/// is an awaited control rpc, and the only code that can deliver its
+/// The lifecycle a profile delivery for pi follows: it is an awaited
+/// control rpc, and the only code that can deliver its
 /// answer is the session reader thread `start_spawned_session` starts.
 /// These tests drive that real ordering — the `SpawnedSession` is
 /// assembled the way `spawn_process` assembles it, the delivery travels
@@ -2763,14 +2760,14 @@ mod lifecycle_tests {
         let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
     }
 
-    /// The re-audit's P2-1: the session is not visible until it is
-    /// configured. The gated fake holds the `set_model` answer, so the
-    /// delivery — and with it the whole create — sits in flight while
-    /// the child is already spawned and the reader already running. In
-    /// that window the registry holds the entry as `Configuring`: no
-    /// roster read may hand the id out, because a prompt sent now would
-    /// be silently discarded if the delivery were refused. The old
-    /// insert-as-live shape fails the not-listed assertion here.
+    /// The session is not visible until it is configured. The gated fake
+    /// holds the `set_model` answer, so the delivery — and with it the
+    /// whole create — sits in flight while the child is already spawned
+    /// and the reader already running. In that window the registry holds
+    /// the entry as `Configuring`: no roster read may hand the id out,
+    /// because a prompt sent now would be silently discarded if the
+    /// delivery were refused. An insert-as-live implementation would fail
+    /// the not-listed assertion here.
     #[test]
     fn a_session_is_not_listed_until_its_delivery_lands() {
         let log = log_path("window");
@@ -2859,11 +2856,10 @@ mod lifecycle_tests {
 
         // The gate opens, the delivery lands, the create returns — and
         // only then does the session exist for its peers. Resume's guard
-        // (the re-audit's P2-1) sits behind the journal-row lookup and
-        // `resume_handle`, and a resumable row takes that path — so the
-        // resume refusal is observed by writing the row a resumed ACP
-        // child carries and naming the windowed id the way the audit's
-        // trigger describes. The named-provider resolution the resume
+        // sits behind the journal-row lookup and `resume_handle`, and a
+        // resumable row takes that path — so the resume refusal is
+        // observed by writing the row a resumed ACP child carries and
+        // naming the windowed id. The named-provider resolution the resume
         // performs before the guard needs the direct-command override.
         let _acp_env = crate::session::lock_acp_env();
         std::env::set_var("DEVBOULE_ACP_COMMAND", r#"["cmd"]"#);
@@ -2958,17 +2954,13 @@ mod lifecycle_tests {
         let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
     }
 
-    /// The re-audit's P2-3: the seam the F1 repair created is
-    /// `spawn_process` building the hook and handing it to the
-    /// `SpawnedSession` — and no test called `spawn_process` for pi at
-    /// all, so passing `None` there left the suite green while the
-    /// profile's model died silently at spawn. This test runs the real
-    /// seam: the real `spawn_process` (its handshake served by the fake,
-    /// its extension written into the state's runtime dir), its output
-    /// fed to the real `start_spawned_session`, and the profile's switch
-    /// asserted on the child's wire. Cut the wiring — `None` in place of
-    /// the hook — and nothing ever answers the switch: the wait times
-    /// out, red.
+    /// The seam is `spawn_process` building the hook and handing it to the
+    /// `SpawnedSession`. This test runs the real seam: the real
+    /// `spawn_process` (its handshake served by the fake, its extension
+    /// written into the state's runtime dir), its output fed to the real
+    /// `start_spawned_session`, and the profile's switch asserted on the
+    /// child's wire. Cut the wiring — `None` in place of the hook — and
+    /// nothing ever answers the switch: the wait times out, red.
     #[test]
     fn spawn_process_wires_the_delivery_the_reader_will_run() {
         let log = log_path("spawnwiring");

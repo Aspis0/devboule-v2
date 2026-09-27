@@ -38,7 +38,7 @@ use crate::ServerState;
 
 /// The workspace's own folder: the id resolved it, so there is no parent to
 /// act from and no second spelling to give it (Paseo refuses the same three
-/// spellings, `service.ts:640-697-752`). Pathless, like every sentence here.
+/// spellings). Pathless, like every sentence here.
 const THE_ROOT: &str = "the workspace's own folder cannot be renamed, duplicated or deleted";
 const NAME_EMPTY: &str = "the new name is empty";
 const NAME_SEPARATOR: &str = "the new name must not contain a path separator";
@@ -180,9 +180,9 @@ fn vouched_entry(root: &Path, requested: &str) -> Result<(PathBuf, std::fs::Meta
     }
 }
 
-/// The new name, judged the way Paseo judges a created name
-/// (`service.ts:599-605`) — trimmed first, and the trimmed spelling is the
-/// one acted on, because validating one string and storing another would
+/// The new name, judged the way Paseo judges a created name — trimmed
+/// first, and the trimmed spelling is the one acted on, because validating
+/// one string and storing another would
 /// keep a name the rule never judged. One name: not empty, not `.`/`..`, no
 /// separator, never Win32's silent rewrites, and never the repository's own
 /// metadata folder — the guard the listing runs, on the other end of the
@@ -265,8 +265,8 @@ fn case_only_of(source: &Path, destination: &Path, new_name: &str) -> bool {
 
 /// The act itself. An entry git tracks is renamed through `git mv`, so the
 /// act arrives in the Changes panel staged — one rename there, not a
-/// deletion beside a stranger (parity with Paseo `service.ts:730`,
-/// `DECISIONS-write.md` §3). A workspace that is not a repository root (no
+/// deletion beside a stranger (parity with Paseo, `DECISIONS-write.md` §3).
+/// A workspace that is not a repository root (no
 /// repository, a folder inside one, or a probe git did not answer) renames on
 /// the filesystem alone: there the Changes panel's own views have the same
 /// boundary, so there is nothing staged for.
@@ -408,8 +408,8 @@ fn duplicated(root: &Path, requested: &str) -> Result<String, String> {
 }
 
 /// The first free `… copy` / `… copy 2` / `… copy 3` name beside the
-/// original — Paseo's loop (`service.ts:651-664`), which never overwrites:
-/// a name is taken only after its own stat says something is there, and the
+/// original — Paseo's loop, which never overwrites: a name is taken only
+/// after its own stat says something is there, and the
 /// creation below is exclusive anyway.
 fn free_copy_name(source: &Path) -> PathBuf {
     let parent = source

@@ -46,10 +46,9 @@ mod out_of_band;
 
 const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
 const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
-/// Paseo's own pi RPC budget (`DEFAULT_PI_RPC_TIMEOUT_MS` in
-/// `packages/server/src/server/agent/providers/pi/agent.ts`): the handshake
-/// covers three RPCs under one deadline where Paseo allows this per request,
-/// so this stays the stricter side. A healthy cold start measured ~6 s.
+/// Paseo's own pi RPC budget (`DEFAULT_PI_RPC_TIMEOUT_MS`) allows this per
+/// request; the handshake covers three RPCs under one deadline, so this
+/// stays the stricter side. A healthy cold start measured ~6 s.
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
@@ -1264,8 +1263,8 @@ pub(crate) fn unattended_answer(delivered_mode: Option<&str>) -> UnattendedState
 /// ticks the toggle and names `ask` asks the child to ask and not to ask at
 /// once — the refusal is the answer; a substitution is not.
 /// The tick half of [`validate_delivery`] as one predicate, shared with the
-/// tests that cross it against the pre-card gate (the re-audit's P1): the
-/// gate's `Contradicts` for pi must name exactly the pairs this refuses.
+/// tests that cross it against the pre-card gate: the gate's `Contradicts`
+/// for pi must name exactly the pairs this refuses.
 pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
     let mode_id = delivery.mode_id.as_deref().unwrap_or(DEFAULT_MODE);
     delivery.auto_accept
@@ -1606,16 +1605,16 @@ fn spawn_pi(
     ));
     let control = Arc::new(PiControl::new(Arc::clone(&stdin), Arc::clone(&next_id)));
     // The list request goes out immediately after the handshake (Paseo asks
-    // once, `pi/agent.ts:1658-1664`): registered and written, never awaited
-    // on this thread — the reply was measured to take tens of seconds, and
-    // neither the session's start nor a prompt may sit on it. The reader
-    // starts the waiter that turns the reply into the menu.
+    // once too): registered and written, never awaited on this thread — the
+    // reply was measured to take tens of seconds, and neither the session's
+    // start nor a prompt may sit on it. The reader starts the waiter that
+    // turns the reply into the menu.
     let commands_reply = commands::begin_get_commands(&control);
-    // Paseo's `tryHandleOutOfBand` dispatch (`pi/agent.ts:1667-1691`): pi is
-    // the only family whose side-effect commands exist today, so pi is the
-    // only spawn that builds the seam a send consults. The compact slot it
-    // owns is shared with the reader, which observes pi's own compaction
-    // frames — Paseo keeps both halves in one agent (`:2344-2356`).
+    // Mirrors Paseo's out-of-band dispatch: pi is the only family whose
+    // side-effect commands exist today, so pi is the only spawn that builds
+    // the seam a send consults. The compact slot it owns is shared with the
+    // reader, which observes pi's own compaction frames — Paseo keeps both
+    // halves in one agent too.
     let handler = out_of_band::PiOutOfBandCommands::new(Arc::clone(&control));
     let compact_guard = handler.compact_guard();
     let out_of_band: Option<Arc<dyn OutOfBandCommands>> = Some(Arc::new(handler));
@@ -1665,7 +1664,7 @@ fn spawn_pi(
     // reader thread — which `start_spawned_session` starts after this
     // function returns. An awaited call at this point stalls fifteen seconds
     // against a deliverer that does not exist and then kills every child a
-    // profile creates (the R2a audit's F1). The rpc travels as a hook on the
+    // profile creates. The rpc travels as a hook on the
     // `SpawnedSession` instead; the hook runs once that reader is live, and
     // a refusal there still tears the child down before it can answer
     // anything.
@@ -2641,7 +2640,7 @@ impl PiControl {
     }
 
     /// Wake every waiter still registered with the reason the control channel
-    /// ended (A2-02).
+    /// ended.
     ///
     /// A response can no longer arrive for any of them — the child's output is
     /// what delivers responses, and it is over — so a waiter left registered
@@ -2678,11 +2677,11 @@ impl SessionSteerer for PiSteerer {
         text: &str,
         turn: &mut TurnToken<'_>,
     ) -> Result<bool, WireError> {
-        // Paseo refuses to steer a slash input (`pi/agent.ts:1417-1419`:
-        // "Pi rejects steer RPCs that are extension commands"), so it keeps
-        // the interrupt-and-replace fallback where the text can run
-        // directly. Refused before a frame is written, which is what makes
-        // this `Ok(false)` and not a transport error.
+        // Paseo's pi client refuses to steer a slash input (pi rejects steer
+        // RPCs that are extension commands), so a slash input keeps the
+        // interrupt-and-replace fallback where the text can run directly.
+        // Refused before a frame is written, which is what makes this
+        // `Ok(false)` and not a transport error.
         if commands::parse_slash_invocation(text).is_some() {
             return Ok(false);
         }
@@ -2992,8 +2991,7 @@ impl PiReader {
     }
 
     /// The compact slot shared with the out-of-band handler, so pi's own
-    /// compaction frames end the run they belong to (Paseo
-    /// `pi/agent.ts:2344-2356`).
+    /// compaction frames end the run they belong to, mirroring Paseo.
     fn with_compact_guard(mut self, compact: Arc<out_of_band::CompactGuard>) -> Self {
         self.compact = compact;
         self
@@ -3011,11 +3009,10 @@ impl PiReader {
         if value.get("type").and_then(Value::as_str) == Some("response") {
             let claimed = self.control.deliver(&value);
             // Paseo finds no pending entry for such a response and returns
-            // without effect (`jsonl-rpc-process.ts:157-163, 283-292`); ours
-            // must do the same, and harder: this row would be replay's copy
-            // of the list, so a `get_commands` reply that answered nothing —
-            // an expired id, a foreign one — reaches neither the transcript
-            // nor the journal (review A5-2 #1). A claimed reply is two
+            // without effect; ours must do the same, and harder: this row
+            // would be replay's copy of the list, so a `get_commands` reply
+            // that answered nothing — an expired id, a foreign one — reaches
+            // neither the transcript nor the journal. A claimed reply is two
             // things at once: the waiter's answer (delivered above) and a
             // row whose derivation is the published list, carrying the row's
             // sequence like every other row.
@@ -3307,8 +3304,8 @@ impl ReaderDispatch for PiReader {
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
         // The child's output is over, so the control channel is: every waiter
         // still holding a response channel is answered here with what that end
-        // means (A2-02), rather than being left to time out on a reply the
-        // reader can no longer deliver.
+        // means, rather than being left to time out on a reply the reader can
+        // no longer deliver.
         self.control
             .fail_pending("Pi control channel closed before the response arrived.");
         self.permission_broker.close();

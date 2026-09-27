@@ -39,7 +39,7 @@ pub(super) struct Listed {
 /// - an entry must stat **without following** and must be an ordinary entry.
 ///   A vanished or unreadable entry, a symlink and a junction all fail that
 ///   one test on one line, and all are **skipped** — a single bad entry never
-///   fails the whole listing (Paseo's rule, `service.ts:164-174`), and a
+///   fails the whole listing (Paseo's rule), and a
 ///   link's target is never classified, which is why `kind` is only ever
 ///   `dir` or `file`. Every such skip is **counted** in `skipped`: a folder
 ///   with a link inside says so instead of looking complete;

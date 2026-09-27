@@ -29,8 +29,8 @@ pub(in crate::mcp_broker) fn auto_accept_line(
     }
 }
 
-/// The one consent-surface fact the composition adds (F1, decided): a peer
-/// holding `answer_permissions` may answer its own creation card, and a human
+/// The one consent-surface fact the composition adds: a peer holding
+/// `answer_permissions` may answer its own creation card, and a human
 /// reading the card must see that the asking device is also a potential
 /// answerer. Paseo's model is the reference — its `create_agent_request`
 /// needs the capability pair and shows no card at all, the grant IS the
@@ -178,8 +178,8 @@ pub(in crate::mcp_broker) fn creation_card(
     };
     // The card's auto-accept line reads the mode, and only the mode, through
     // the same prediction the birth will apply: the tick over an asking mode
-    // is refused before this card is raised (the R2a audit's F7), so on every
-    // card carrying a tick, "Yes" names the mode that does the answering.
+    // is refused before this card is raised, so on every card carrying a
+    // tick, "Yes" names the mode that does the answering.
     let auto = auto_accept_line(
         predicted_unattended(&profile.provider, &profile.mode),
         &profile.mode,
@@ -232,8 +232,8 @@ pub(in crate::mcp_broker) fn creation_card(
     // description and the word rides the payload.
     let card_tools = card_tools_for_provider(&profile.provider);
     let tools_sentence = card_tools_sentence(card_tools);
-    // The consent surface names its own composition (F1, decided): a paired
-    // device holding `answer_permissions` may answer this card itself, and a
+    // The consent surface names its own composition: a paired device
+    // holding `answer_permissions` may answer this card itself, and a
     // human reading it must be able to see that the asking device is also a
     // potential answerer. Paseo's model is the reference: its
     // `create_agent_request` needs the capability pair and shows no card at

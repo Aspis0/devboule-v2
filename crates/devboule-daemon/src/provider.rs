@@ -7,7 +7,8 @@
 //! `acp_client`, `peer_policy`, `mcp_broker`, `provider_vocabulary`), and a
 //! method whose fact is still keyed by kind in shared code calls that shared
 //! function rather than copying the list (`prompt_skipping_mode` -> the
-//! `peer_policy` lists; the MOVE of those lists is pass 2b's business). This
+//! `peer_policy` lists; moving those lists into this module is a separate
+//! concern from this seam). This
 //! module never grows a fact a client module should own; its one job is that
 //! a create's road from request to running child selects its family through
 //! the registry instead of an `if`/`match` on `SessionKind` or provider
@@ -57,7 +58,7 @@ use super::{ProviderProvenance, SpawnedSession};
 /// epistemics sibling of `prompt_skipping_mode`: same home, different
 /// question, never merged into one predicate.
 ///
-/// `allow(dead_code)` until pass 2d converts `unattended_mode`'s call site —
+/// `allow(dead_code)` until `unattended_mode`'s call site converts to this —
 /// the mapping exists so that conversion is a caller swap, not a redesign.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,13 +116,12 @@ fn agent_unattended_mode(
 /// steerers, switchers, sinks) deliberately stays on the per-session traits;
 /// this trait answers only what is true of the family.
 ///
-/// `allow(dead_code)` on the trait, precisely because 2a is the first slice
-/// of pass 2: the spawn road (identity, remap, command resolution, stamping,
-/// spawn) routes through here today, while the mode-vocabulary, image, MCP
-/// and lifecycle surfaces keep their delegation bodies for passes 2b/2c,
-/// whose call-site conversions are the callers those methods wait for. Each
-/// body is live delegation to today's code, written now so 2b/2c convert a
-/// caller, not a signature.
+/// `allow(dead_code)` on the trait: the spawn road (identity, remap, command
+/// resolution, stamping, spawn) routes through here today, while the
+/// mode-vocabulary, image, MCP and lifecycle surfaces keep their delegation
+/// bodies until their call sites convert. Each body is live delegation to
+/// today's code, written now so a later conversion swaps a caller, not a
+/// signature.
 #[allow(dead_code)]
 pub(crate) trait Provider: Send + Sync {
     /// The family's own id, exactly as the catalog spells the rows that bind
@@ -199,9 +199,9 @@ pub(crate) trait Provider: Send + Sync {
     fn validate_mode(&self, mode_id: &str) -> Result<(), WireError>;
 
     /// Whether this mode skips permission prompts for a peer. The lists are
-    /// per-family facts and live here since pass 2b — `peer_policy`'s mode
-    /// functions read them through the registry, so the walking tests and
-    /// the peer gate answer from one source: these impls.
+    /// per-family facts and live here — `peer_policy`'s mode functions read
+    /// them through the registry, so the walking tests and the peer gate
+    /// answer from one source: these impls.
     fn prompt_skipping_mode(&self, mode_id: &str) -> bool;
 
     /// Whether this family's modes are defined at run time by the agent and
@@ -216,9 +216,9 @@ pub(crate) trait Provider: Send + Sync {
     fn image_delivery(&self) -> super::ImageDelivery;
 
     /// Whether sessions of this family can host the daemon's MCP broker.
-    /// Answered per impl since pass 2c: every agent family hosts, a
-    /// terminal hosts nothing. The broker's `hosts_mcp` predicate reads
-    /// this through the registry, so these impls are the single source.
+    /// Answered per impl: every agent family hosts, a terminal hosts
+    /// nothing. The broker's `hosts_mcp` predicate reads this through the
+    /// registry, so these impls are the single source.
     fn hosts_mcp(&self) -> bool;
 
     /// Whether this family's first prompt may wait on the broker.
@@ -233,7 +233,7 @@ pub(crate) trait Provider: Send + Sync {
     /// Build this family's MCP carrier from the broker's launch config. Pi
     /// and Codex own real carriers (bridge file / per-session home); the ACP
     /// and Claude shapes ride the handshake and the launch argv inside their
-    /// clients and have no carrier to mint here (pass 2c moves the shapes).
+    /// clients and have no carrier to mint here.
     fn mcp_launch(
         &self,
         config: &McpLaunchConfig,
@@ -284,7 +284,7 @@ pub(crate) trait Provider: Send + Sync {
     fn spawn_measures_health(&self) -> bool;
 
     /// The vocabulary axes this family can answer a vocabulary query with.
-    /// Answered per impl since pass 2d: Claude's disk scrape
+    /// Answered per impl: Claude's disk scrape
     /// (`provider_vocabulary::claude_axes`), every other family `absent`
     /// (`provider_vocabulary::absent_axes`). The query's cache/request layer
     /// stays on `ServerState`; the reply asks this through the registry, so
@@ -322,7 +322,7 @@ pub(crate) trait Provider: Send + Sync {
     ) -> Result<(), WireError>;
 
     /// The `unattended` marker's answer for a mode delivered to this family.
-    /// Answered per impl since pass 2d; the epistemics sibling of
+    /// Answered per impl; the epistemics sibling of
     /// `prompt_skipping_mode` — same home, different question, never merged
     /// into one predicate. Route A (the daemon answers itself) is the shared
     /// helper every agent impl calls; route B (the daemon authored the knob)
@@ -463,7 +463,7 @@ impl Provider for AcpProvider {
     ) -> Result<McpProviderConfig, WireError> {
         // ACP's MCP shape is the payload form applied at the handshake inside
         // the client (`acp_server_value` into `session/new`/`session/load`);
-        // no carrier is minted outside it. Pass 2c moves the shape.
+        // no carrier is minted outside it.
         Ok(McpProviderConfig::default())
     }
 
@@ -624,8 +624,7 @@ impl Provider for ClaudeProvider {
     ) -> Result<McpProviderConfig, WireError> {
         // Claude's MCP shape is the `--mcp-config` argv pair, pointed at the
         // path the broker minted into the launch config and applied inside
-        // the client's spawn. No carrier is built outside it; pass 2c moves
-        // the shape.
+        // the client's spawn. No carrier is built outside it.
         Ok(McpProviderConfig::default())
     }
 
@@ -1291,8 +1290,7 @@ pub(crate) struct ProviderRegistry {
     /// The user rows this snapshot was built from, carried beside `entries`
     /// so one swap can never tear a row's declaration from its registry
     /// entry. The profile lookup answers from `entries` — ids that bind an
-    /// implementation, i.e. rows that can spawn — never from here alone
-    /// (pass 2e step 3's ordering rule).
+    /// implementation, i.e. rows that can spawn — never from here alone.
     user_rows: BTreeMap<Arc<str>, crate::user_providers::UserProviderRow>,
 }
 
@@ -1368,9 +1366,8 @@ impl ProviderRegistry {
 
     /// The ids this snapshot publishes — the entries, i.e. rows that bind an
     /// implementation and can spawn. The one source the profile lookup may
-    /// answer from; `user_rows` alone never publishes an id (pass 2e step
-    /// 3's ordering rule: a profile cannot name a provider nothing can
-    /// spawn).
+    /// answer from; `user_rows` alone never publishes an id: a profile
+    /// cannot name a provider nothing can spawn.
     pub(crate) fn published_ids(&self) -> impl Iterator<Item = &Arc<str>> {
         self.entries.iter().map(|(id, _)| id)
     }
@@ -1465,12 +1462,8 @@ pub(crate) fn catalog_registry() -> Arc<ProviderRegistry> {
 /// nothing inside the swap can fail — a build that errors, or never
 /// happens, swaps nothing, and every `catalog_registry()` reader sees
 /// either the previous snapshot or `next`, never a mixture (Paseo's
-/// prepare → apply → commit around `mutable-provider-config-owner.ts`: the
-/// registry is never left half-swapped). Nothing in production swaps yet:
-/// pass 2e step 2's user rows enter through here, and until then only
-/// tests call it. Dead in non-test builds until then — the attribute is the
-/// machine form of the sentence above.
-#[cfg_attr(not(test), allow(dead_code))]
+/// prepare → apply → commit shape: the registry is never left
+/// half-swapped). Production swaps through [`apply_user_rows`].
 pub(crate) fn swap_catalog_registry(next: ProviderRegistry) -> Arc<ProviderRegistry> {
     let next = Arc::new(next);
     let mut current = catalog_cell().write().unwrap();
@@ -1500,7 +1493,6 @@ pub(crate) fn native_family_ids() -> Vec<String> {
 /// unreadable document never reaches here (the live registry is never
 /// emptied by a bad read; `user_providers::refresh_user_rows` owns that
 /// rule).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn apply_user_rows(rows: BTreeMap<String, crate::user_providers::UserProviderRow>) {
     if catalog_registry().user_rows_equivalent(&rows) {
         return;
@@ -1513,8 +1505,8 @@ pub(crate) fn apply_user_rows(rows: BTreeMap<String, crate::user_providers::User
 mod tests {
     use super::*;
 
-    /// M2-e1, half one — the fallthrough is a property of the registry
-    /// itself, so it is tested on a local one and touches no global state:
+    /// The fallthrough is a property of the registry itself, so it is
+    /// tested on a local one and touches no global state:
     /// an id no row publishes resolves to ACP, the open dimension's rule.
     #[test]
     fn a_registry_with_no_rows_falls_through_to_acp() {
@@ -1533,8 +1525,8 @@ mod tests {
         );
     }
 
-    /// M2-e1, half two — the swap seam is live: it replaces the snapshot the
-    /// whole process reads and hands back the one it replaced.
+    /// The swap seam is live: it replaces the snapshot the whole process
+    /// reads and hands back the one it replaced.
     ///
     /// It swaps in an **equivalent** registry, deliberately, and never a
     /// degraded one. This test shares the process-wide cell with every other
@@ -1545,9 +1537,9 @@ mod tests {
     /// registry keeps the seam observable through snapshot *identity* while
     /// leaving every concurrent reader the same answers it would have had.
     ///
-    /// It holds the rows lock for the same reason, and pass 2e-2 is what made
-    /// that necessary: identity is only observable if nothing else swaps
-    /// between the read and the swap. Without the lock this test and the two
+    /// It holds the rows lock for the same reason: identity is only
+    /// observable if nothing else swaps between the read and the swap.
+    /// Without the lock this test and the two
     /// that put user rows live would break each other both ways — a foreign
     /// swap in the window makes `replaced` some other snapshot, and this
     /// test's builtins-only replacement would drop their rows mid-assertion.
@@ -1576,14 +1568,14 @@ mod tests {
         );
     }
 
-    /// Pass 2e step 3, and the ordering rule the design states for it: the
-    /// profile lookup answers for rows that bind an implementation — rows
-    /// that can spawn — never for a row that is merely declared. A snapshot
-    /// whose row sits in `user_rows` with no registry entry is the exact
-    /// shape "lookup widened before the rows can spawn" would publish, and
-    /// the lookup refuses it: a profile cannot name a provider nothing can
-    /// spawn. (M2-e2-e's target — widening the walk to the declared rows —
-    /// turns the first assert red.) Local registries only; no global state.
+    /// The ordering rule the design states for the profile lookup: it
+    /// answers for rows that bind an implementation — rows that can spawn —
+    /// never for a row that is merely declared. A snapshot whose row sits
+    /// in `user_rows` with no registry entry is the exact shape "lookup
+    /// widened before the rows can spawn" would publish, and the lookup
+    /// refuses it: a profile cannot name a provider nothing can spawn.
+    /// (Widening the walk to the declared rows turns the first assert red.)
+    /// Local registries only; no global state.
     #[test]
     fn a_profile_lookup_answers_for_rows_that_bind_an_implementation_only() {
         let rows = crate::user_providers::parse_providers_document(
@@ -1611,15 +1603,15 @@ mod tests {
             Some("declared-agent".to_string()),
             "a live row canonicalises like any other provider id"
         );
-        // And the built-ins answer first, exactly as before this pass.
+        // And the built-ins still answer first.
         assert_eq!(
             crate::provider_catalog::catalog_provider_id_for(&bound, ClaudeProvider.id()),
             Some(ClaudeProvider.id().to_string()),
         );
     }
 
-    /// Pass 2c: whose spawn success measures provider health is a per-family
-    /// fact living in the impls, read by the create path's success arm
+    /// Whose spawn success measures provider health is a per-family fact
+    /// living in the impls, read by the create path's success arm
     /// through the registry. A completed handshake proves the provider
     /// started and accepted a session; a bare process spawn proves nothing,
     /// so Claude records failures only. Pins all five answers — without this

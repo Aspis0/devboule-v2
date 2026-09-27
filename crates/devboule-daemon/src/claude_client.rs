@@ -47,8 +47,7 @@ type ClaudeFrameWriter = Arc<dyn Fn(&[u8]) -> io::Result<()> + Send + Sync>;
 /// the CLI's answer: request id → the effort the profile named. The session
 /// reader answers them in `ClaudeReader::dispatch_control_response` — a
 /// refused effort fails the session the way a refused initial mode does,
-/// instead of disappearing while the child runs at the CLI's own level (the
-/// R2a audit's F2).
+/// instead of disappearing while the child runs at the CLI's own level.
 type ClaudeDeliverySettings = Arc<Mutex<HashMap<String, String>>>;
 
 struct ClaudePendingControl {
@@ -286,8 +285,8 @@ fn launch_model_id(delivery: &ProfileDelivery, models: &[SessionModel]) -> Optio
 /// cannot be delivered is refused here, before a process exists, and a child
 /// that exists was delivered everything its card printed.
 /// The tick half of [`validate_delivery`] as one predicate, shared with the
-/// tests that cross it against the pre-card gate (the re-audit's P1): the
-/// gate's `Contradicts` for Claude must name exactly the pairs this refuses.
+/// tests that cross it against the pre-card gate: the gate's `Contradicts`
+/// for Claude must name exactly the pairs this refuses.
 pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
     let mode_id = delivery
         .mode_id
@@ -341,10 +340,10 @@ pub(super) fn validate_delivery(
     // A **provisional** catalog is no vocabulary, and this codebase already
     // says so one function over: `validate_claude_effort` refuses to judge
     // when the runtime catalog is provisional. The creation path obeys the
-    // same rule (the R2a audit's F4): a CLI upgrade invalidates the
-    // version-keyed cache, and until the derivation finishes the fallback's
-    // three aliases are a placeholder, not a list to judge a profile's saved
-    // id against. Judging it there manufactured intermittent refusals of
+    // same rule: a CLI upgrade invalidates the version-keyed cache, and until
+    // the derivation finishes the fallback's three aliases are a placeholder,
+    // not a list to judge a profile's saved id against. Judging it there
+    // manufactured intermittent refusals of
     // legitimate profiles. The `--model` argv below takes whatever the CLI
     // knows, so nothing is delivered that this skip cannot account for; the
     // runtime effort switch judges the thinking axis against the live
@@ -694,9 +693,8 @@ fn spawn_claude_child(
     // exists, so the gate — opened only by the session reader's delivery of
     // the mode response — cannot flush a prompt between or before them), and
     // with its response tracked: a CLI that refuses the effort fails the
-    // session instead of silently running at its own level (the R2a audit's
-    // F2). A write failure here is a refused creation, like a failed mode
-    // write above.
+    // session instead of silently running at its own level. A write failure
+    // here is a refused creation, like a failed mode write above.
     let delivery_settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
     if let Some(thinking) = delivery.thinking_option_id.as_deref() {
         if let Err(error) = send_initial_effort(&stdin, &next_id, &delivery_settings, thinking) {
@@ -1466,7 +1464,7 @@ fn write_gated_frame(
 }
 
 /// Writes one already-framed *steer* through the mode gate, refusing instead of
-/// queueing while the gate is still awaiting the initial mode response (A2-01).
+/// queueing while the gate is still awaiting the initial mode response.
 ///
 /// The gate's queue exists for the frames that start a session — the initial
 /// mode request and the prompt behind it — and for those it is correct: they
@@ -1540,8 +1538,8 @@ impl SessionSteerer for ClaudeSteerer {
         }
         let uuid = uuid::Uuid::new_v4().to_string();
         let bytes = frame_user_message(text, Some(&uuid), Some("next")).map_err(send_failure)?;
-        // The gate is refused, not queued, while it is `AwaitingResponse`
-        // (A2-01). That window is between spawn and the initial mode response:
+        // The gate is refused, not queued, while it is `AwaitingResponse`.
+        // That window is between spawn and the initial mode response:
         // Claude has not been sent the mode request's answer — let alone a
         // prompt — so no turn was ever started for the steer to join, and the
         // caller's answer has to be the refusal every unavailable steer gets,
@@ -1550,8 +1548,7 @@ impl SessionSteerer for ClaudeSteerer {
         // the session: `write_gated_frame` still holds them in one ordered
         // batch that a single `flush_gate_frames` writes, and a gate that fails
         // drops the whole batch rather than delivering it late
-        // (`fail_initial_mode_parts`). The trace is in
-        // `slice-4-daemon-fix-2-report.md`.
+        // (`fail_initial_mode_parts`).
         if write_gated_steer_frame(&self.stdin, self.mode_gate.as_ref(), &bytes)
             .map_err(send_failure)?
         {
@@ -1781,10 +1778,9 @@ fn confirm_delivery_settings(
         }
         // The crate's one bounded read of a child's pipe, shared with the ACP
         // creation path. `fill_buf` on an empty pipe **blocks**, so a deadline
-        // checked around it is unreachable: an earlier shape of this function
-        // polled `fill_buf` and reached its "timeout" only when the child
-        // happened to write or die — measured as a 200 ms bound that took
-        // nineteen minutes in the test below. The shared read peeks the pipe
+        // checked around it is unreachable: polling `fill_buf` reaches a
+        // "timeout" only when the child happens to write or die — measured as
+        // a 200 ms bound that took nineteen minutes in the test below. The shared read peeks the pipe
         // where a peek exists and consults the deadline on every turn; where no
         // peek exists it says so in its own doc instead of pretending.
         let text = match crate::session::acp_client::read_line_bounded_with_limit(
@@ -2500,8 +2496,8 @@ impl ClaudeReader {
         // mode was the card's promise, so a refusal fails the session exactly
         // as a refused initial mode does — an AgentError on the transcript,
         // stdin closed so the child cannot go on to answer anything at the
-        // CLI's own level. An ignored response here is the silence the R2a
-        // audit's F2 convicted.
+        // CLI's own level. An ignored response here is exactly the silence
+        // this refusal exists to prevent.
         //
         // One arm serves both settings because the frame and its answer are
         // one shape; `delivered_names` is the word the refusal names, so the

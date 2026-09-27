@@ -1367,8 +1367,8 @@ fn session_state_maps_to_the_a2a_words() {
     );
 }
 
-/// The frozen wire contract (slice-5b app-delegation report §6.3): the
-/// marker crosses as `unattended: "yes" | "no" | "unknown"`, is a **key on
+/// The frozen wire contract: the marker crosses as
+/// `unattended: "yes" | "no" | "unknown"`, is a **key on
 /// every write** (the collapsed `bool` it replaces skipped `false`, which
 /// made absent and false the same value), and a frame without the key
 /// reads as `unknown` — the daemon has not said — never as `no`, which
@@ -1426,7 +1426,7 @@ fn unattended_is_required_on_every_write_and_absent_reads_as_unknown() {
     );
 }
 
-/// The type change the 4 → 5 protocol bump exists for (audit R2b-1 §7).
+/// The type change the 4 → 5 protocol bump exists for.
 /// `unattended` crossed the wire as an optional JSON boolean and now
 /// crosses as a lowercase string written on every frame. `#[serde(default)]`
 /// covers an absent key — the test above — and has no effect on a key
@@ -1467,8 +1467,8 @@ fn an_old_boolean_unattended_key_fails_to_decode() {
     assert_eq!(decoded.unattended, UnattendedState::Unknown);
 }
 
-/// The roster surface (audit R2b-1 §6.2): the pushed
-/// [`SessionStateSnapshot`] carries the marker as a **key on every push**
+/// The roster surface: the pushed [`SessionStateSnapshot`] carries the
+/// marker as a **key on every push**
 /// — for all three answers — and a push without the key reads `unknown`.
 /// The attributes on the two structs are symmetric by eye, but nothing
 /// pinned the snapshot's half: a `skip_serializing_if` added to this

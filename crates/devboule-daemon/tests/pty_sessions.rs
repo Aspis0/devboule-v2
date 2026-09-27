@@ -51,9 +51,8 @@ const LEGACY_RING_CAPACITY: usize = 256 * 1024;
 /// selects the OS credential store and writes a `noise-static-<runtime dir
 /// hash>` entry that nothing ever deletes (measured: 66 entries from this file
 /// in one suite run, and enough of them make `CredWrite` fail with Windows
-/// error 8 -- see `reports/remote-agents/keyring-test-leak-fix-report.md`).
-/// Every spawn in this file passes through `daemon_bin()`, so the call lives
-/// there.
+/// error 8). Every spawn in this file passes through `daemon_bin()`, so the
+/// call lives there.
 fn file_secret_store() {
     // Set once, before the first spawn: the tests run in parallel threads, so a
     // process-wide write per call would race them.
@@ -2725,13 +2724,11 @@ fn journal_growth_after_13mb_flood() {
     // flags a reopened transcript carries (assertions below). It is NOT a
     // graceful-shutdown test; the kill stays.
     //
-    // The blind 800 ms sleep this replaces was the measured hole behind the
-    // adversarial finding: the live view bypasses the journal, so "the client
-    // saw everything" says nothing about the writer; on a 4-vCPU runner the
-    // writer was still 1.9 MiB behind when TerminateProcess took the bounded
-    // queue with it, and the old test then asserted a completeness nobody
-    // had checked. The deterministic sync below makes the completeness claim
-    // checkable instead of lucky.
+    // A blind sleep is not enough here: the live view bypasses the journal,
+    // so "the client saw everything" says nothing about the writer. On a
+    // 4-vCPU runner the writer was measured 1.9 MiB behind when
+    // TerminateProcess took the bounded queue with it. The deterministic sync
+    // below makes the completeness claim checkable instead of lucky.
     //
     // Three gates, in order:
     // 1. Exit delivered to the client (process end observed);

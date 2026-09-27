@@ -188,15 +188,14 @@ fn stdout_blocks_until_bytes(_reader: &BufReader<ChildStdout>) -> Result<bool, (
 /// `BufRead::read_line` on a child's stdout has no timeout of its own, and
 /// an agent that takes the request off the wire and never answers it would
 /// hold the creation — the child, the reservation, the journal row and the
-/// caller's tool call — forever (the re-audit's P2-2). On Windows the read
-/// is assembled from non-blocking pieces: bytes already in the `BufReader`
-/// are consumed without I/O, the pipe is peeked before every fill, and —
-/// the re-audit's P2-3 — the deadline is checked at the top of every
-/// iteration, so an agent that keeps the pipe non-empty without a newline
-/// is refused as boundedly as a mute one, and the line never grows past
-/// [`MAX_ACP_PERMISSION_LINE_BYTES`]. A mute or dribbling agent becomes an
-/// `Io` refusal naming the wait; a dead agent becomes the same EOF sentence
-/// the plain read produced.
+/// caller's tool call — forever. On Windows the read is assembled from
+/// non-blocking pieces: bytes already in the `BufReader` are consumed
+/// without I/O, the pipe is peeked before every fill, and the deadline is
+/// checked at the top of every iteration, so an agent that keeps the pipe
+/// non-empty without a newline is refused as boundedly as a mute one, and
+/// the line never grows past [`MAX_ACP_PERMISSION_LINE_BYTES`]. A mute or
+/// dribbling agent becomes an `Io` refusal naming the wait; a dead agent
+/// becomes the same EOF sentence the plain read produced.
 ///
 /// **On every other platform this read is not bounded.** There is no pipe
 /// peek in std to poll a child's stdout against a deadline, and no
@@ -204,8 +203,8 @@ fn stdout_blocks_until_bytes(_reader: &BufReader<ChildStdout>) -> Result<bool, (
 /// deadline has no mechanism to act through: `deadline` is accepted to keep
 /// one call shape and is deliberately not honoured there. An agent that
 /// never answers — or answers in bytes that never form a newline — holds
-/// the creation on such a platform exactly the way the pre-fix read did.
-/// Windows is the only target this daemon is built and tested on; a
+/// the creation on such a platform for as long as an unbounded read ever
+/// would. Windows is the only target this daemon is built and tested on; a
 /// platform added later must either give this function a real poll or keep
 /// this paragraph telling the truth.
 pub(crate) fn read_line_bounded(
@@ -225,9 +224,8 @@ pub(crate) fn read_line_bounded_with_limit(
     let mut line: Vec<u8> = Vec::new();
     loop {
         // The deadline is consulted on every iteration, not only when the
-        // peek reports the pipe quiet (the re-audit's P2-3): a dribbler
-        // that keeps bytes flowing without a newline must hit the same
-        // bound a mute agent does.
+        // peek reports the pipe quiet: a dribbler that keeps bytes flowing
+        // without a newline must hit the same bound a mute agent does.
         if Instant::now() >= deadline {
             return Err(WireError::new(
                 ErrorCode::Io,
@@ -633,8 +631,8 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
     // the user declared must not depend on either. The row comes from the
     // live registry snapshot, the same one the profile lookup answers from,
     // so a row that resolves here is exactly a row that was validated and
-    // swapped in (pass 2e step 2: the rows ride the same road as a catalog
-    // row; nothing here learns a new name).
+    // swapped in: it rides the same road as a catalog row, and nothing here
+    // learns a new name.
     if let Some(row) = crate::session::catalog_registry().user_row_for(id) {
         // Validation refuses a row without a command, so this arm is
         // unreachable for a live row; it refuses instead of unwrapping
@@ -825,9 +823,9 @@ fn spawn_process_with_load(
         Ok(handshake) => handshake,
         Err(error) => {
             // A provider that died during its own startup — initialize,
-            // session/new, session/load, set_mode — never became a session
-            // (audit-2 §1): it is named as that, not as an I/O fault that
-            // reads like a protocol problem. The status is read **before**
+            // session/new, session/load, set_mode — never became a session:
+            // it is named as that, not as an I/O fault that reads like a
+            // protocol problem. The status is read **before**
             // the teardown, through the same pre-kill poll the delivery arm
             // uses: a post-kill `try_wait` sees our own kill's cached status
             // and names every handshake failure an exit, including one the
@@ -898,7 +896,7 @@ fn spawn_process_with_load(
         // things are freed, and the same three behaviours hold — a provider
         // that died during the delivery is named as that, its last stderr
         // lines travel with the message, and the whole banner is redacted
-        // before it leaves for the caller (the R2a audit's F5).
+        // before it leaves for the caller.
         //
         // Whether the provider died on its own is read **before** the
         // teardown: after the kill the exit status is ours, and the naming
@@ -1164,10 +1162,10 @@ pub(crate) fn probe_declarations(
         }
     };
     // Close the session the read opened before the process goes, when the agent
-    // said it can be asked to: Paseo's `closeProbe` does the same and gates on
-    // `sessionCapabilities.close` (`acp-agent.ts:1441`). Killing the process is
-    // not the equivalent — an agent that persists sessions past process exit
-    // keeps the orphan, where it shows in the user's history or eats a session
+    // said it can be asked to (mirrors Paseo's `closeProbe`, gated on
+    // `sessionCapabilities.close`). Killing the process is not the
+    // equivalent — an agent that persists sessions past process exit keeps
+    // the orphan, where it shows in the user's history or eats a session
     // quota. An agent that did not advertise it is never sent the request,
     // because it answers with a method-not-found error and gains nothing.
     if let Some(session_id) = close {
@@ -2344,9 +2342,9 @@ fn apply_profile_delivery(
     // synchronous — and so is the **confirmation**: the response is read
     // here, the way the handshake reads its answers, because the session
     // reader that dispatches responses does not exist yet. A creation that
-    // reported success now would promise a model the child may never run
-    // (the R2a audit's F3): an agent that answers the switch with an error
-    // refuses the creation instead.
+    // reported success now would promise a model the child may never run:
+    // an agent that answers the switch with an error refuses the creation
+    // instead.
     let switcher = AcpSwitcher {
         transport: Arc::clone(transport),
     };
@@ -2485,11 +2483,10 @@ fn undeliverable(id: &str, wanted: &str) -> WireError {
 ///
 /// The read happens **before** the teardown: after the kill the exit status is
 /// ours, and naming from a post-kill read would fire for every refusal,
-/// including an agent that answered with an error and was then torn down —
-/// which is exactly what the handshake arm's old post-kill read did (the
-/// re-audit's P3-1 note). A child whose stdout the daemon just read EOF from is
-/// on its way out: its exit becomes observable a beat after the pipe closes,
-/// hence the short bounded poll rather than one `try_wait`.
+/// including an agent that answered with an error and was then torn down. A
+/// child whose stdout the daemon just read EOF from is on its way out: its
+/// exit becomes observable a beat after the pipe closes, hence the short
+/// bounded poll rather than one `try_wait`.
 ///
 /// `None` — still running (a live agent that answered an error, or one that is
 /// merely slow). `Some(None)` — gone with no code to name (killed, or a status
@@ -2955,9 +2952,9 @@ fn read_response_envelope(
     budget: Duration,
 ) -> Result<serde_json::Value, WireError> {
     // One deadline per awaited response: every read below is made against
-    // it, so an rpc's own wait is the whole of what it is given (the
-    // re-audit's P2-2). `budget` is the caller's: the first answer covers
-    // the provider's startup, every later one the agent's own work.
+    // it, so an rpc's own wait is the whole of what it is given. `budget` is
+    // the caller's: the first answer covers the provider's startup, every
+    // later one the agent's own work.
     let deadline = Instant::now() + budget;
     loop {
         let line = read_line_bounded(reader, deadline, budget)?;
@@ -3021,20 +3018,20 @@ fn redact_mcp_error(mut error: WireError, mcp: Option<&McpLaunchConfig>) -> Wire
 }
 
 /// How much of a startup failure's own words, and of its joined stderr, reach
-/// the caller (audit-3 §4). A provider can answer a failed handshake with a
-/// megabyte of output; this is a chat banner, not a log.
+/// the caller. A provider can answer a failed handshake with a megabyte of
+/// output; this is a chat banner, not a log.
 const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 256;
 
 /// See [`MAX_HANDSHAKE_MESSAGE_BYTES`].
 const MAX_HANDSHAKE_STDERR_BYTES: usize = 1024;
 
-/// The whole banner, not only its halves (audit-3 §4): the tool caller forwards
-/// this string, and a provider that writes a hundred kilobytes to either half
-/// must not push a transcript through a chat banner.
+/// The whole banner, not only its halves: the tool caller forwards this
+/// string, and a provider that writes a hundred kilobytes to either half must
+/// not push a transcript through a chat banner.
 const MAX_HANDSHAKE_ERROR_BYTES: usize = 1024;
 
-/// At most `limit` bytes of `text` — the `…` included (audit-3 S5D-03) — cut on a
-/// character boundary when something was dropped.
+/// At most `limit` bytes of `text` — the `…` included — cut on a character
+/// boundary when something was dropped.
 fn bounded_excerpt(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_string();
@@ -3062,7 +3059,7 @@ fn redact_handshake_error(
         return redact_mcp_error(error, mcp);
     }
     // Both halves are the provider's to choose, and the tool caller forwards
-    // this string: an excerpt, not a transcript (audit-3 §4).
+    // this string: an excerpt, not a transcript.
     let message = format!(
         "{} Agent stderr: {}",
         error.message,

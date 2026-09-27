@@ -615,8 +615,8 @@ fn claude_prompts_waiting_for_initial_mode_response_flush_in_order() {
     let _ = harness.child.wait();
 }
 
-/// A2-01: a steer that arrives while the mode gate is still
-/// `AwaitingResponse` is *refused*, not queued.
+/// A steer that arrives while the mode gate is still `AwaitingResponse` is
+/// *refused*, not queued.
 ///
 /// The queue is for the frames that start a session: the mode request and
 /// the prompt behind it are one ordered batch, and a gate that fails drops
@@ -1462,8 +1462,8 @@ fn permission_description_uses_wire_description_never_decision_reason() {
 
 #[test]
 fn permission_request_level_description_wins_over_input_description() {
-    // Gap audit: the measured frame uses the identical string in both
-    // places, so precedence needs its own frame.
+    // The measured frame uses the identical string in both places, so
+    // precedence needs its own frame.
     let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
     let mut reader = test_reader(Arc::clone(&broker), Arc::new(Mutex::new(HashMap::new())));
     let (runtime, conn) = attached(&broker);
@@ -2082,13 +2082,12 @@ fn a_claude_model_outside_the_vocabulary_is_refused_with_the_mismatch_sentence()
 /// An empty published list is a different refusal from an unknown id:
 /// there is no list the name could have been a typo from.
 ///
-/// The state this test constructs is one production does not build: the
-/// R2a audit's F10 found no production path to an empty vocabulary (the
-/// fallback lists three aliases, a derivation never caches empty, and
-/// since the F4 fix a provisional catalog is not judged at all). The
-/// arm's remaining reachable input is a hand-edited cache file carrying
-/// `models: []`; the sentence is pinned for that state, and for its own
-/// integrity as the absence half of the two-sentence split.
+/// The state this test constructs is one production does not build: there
+/// is no production path to an empty vocabulary (the fallback lists three
+/// aliases, a derivation never caches empty, and a provisional catalog is
+/// not judged at all). The arm's remaining reachable input is a hand-edited
+/// cache file carrying `models: []`; the sentence is pinned for that state,
+/// and for its own integrity as the absence half of the two-sentence split.
 #[test]
 fn a_claude_model_against_an_empty_vocabulary_is_refused_with_the_absence_sentence() {
     let error = validate_model_choice(&[], Some("claude-bogus-9"))
@@ -2149,9 +2148,9 @@ fn claude_thinking_absence_and_mismatch_are_two_distinct_refusals() {
 /// `autoAccept` is a constraint on which mode is delivered: the only
 /// The tick contradiction, walked over the **whole** closed mode
 /// vocabulary `claude_view::mode_state` declares — not two hand-picked
-/// ids (the R2a audit's F9): for every mode, a tick is admitted exactly
-/// when the daemon's own broker answers that mode, and refused with the
-/// contradiction sentence otherwise. A provisional catalog stands in for
+/// ids: for every mode, a tick is admitted exactly when the daemon's own
+/// broker answers that mode, and refused with the contradiction sentence
+/// otherwise. A provisional catalog stands in for
 /// the model axis, which this test does not exercise: the mode and tick
 /// are judged before the catalog is ever consulted.
 #[test]
@@ -2299,10 +2298,9 @@ fn the_effort_frame_names_the_flag_and_its_refusal_names_it_back() {
     );
 }
 
-/// R2a F2, the write: the delivery's effort frame is written
-/// **synchronously**, so a stdin that cannot take it refuses the
-/// delivery here — at the spawn, with the child still young — instead of
-/// failing silently on a thread nobody joins.
+/// The delivery's effort frame is written **synchronously**, so a stdin
+/// that cannot take it refuses the delivery here — at the spawn, with the
+/// child still young — instead of failing silently on a thread nobody joins.
 #[test]
 fn an_effort_frame_that_cannot_be_written_refuses_the_delivery() {
     let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
@@ -2319,9 +2317,9 @@ fn an_effort_frame_that_cannot_be_written_refuses_the_delivery() {
     );
 }
 
-/// R2a F2, the answer: the delivery's effort request is **tracked**. A
-/// CLI that refuses `apply_flag_settings` fails the session the way a
-/// refused initial mode does — an AgentError naming the refused effort,
+/// The delivery's effort request is **tracked**. A CLI that refuses
+/// `apply_flag_settings` fails the session the way a refused initial mode
+/// does — an AgentError naming the refused effort,
 /// stdin closed so the child cannot go on answering at its own level —
 /// instead of the response disappearing while the card's promise quietly
 /// does not hold.
@@ -2429,8 +2427,8 @@ fn slice_of_kinds(events: &[SessionEvent]) -> Vec<String> {
         .collect()
 }
 
-/// R2a F4: a **provisional** catalog is no vocabulary, and the creation
-/// path now refuses to judge on it, exactly as the runtime path
+/// A **provisional** catalog is no vocabulary, and the creation path
+/// refuses to judge on it, exactly as the runtime path
 /// (`validate_claude_effort`) already does. A CLI upgrade empties the
 /// version-keyed cache and the fallback's three aliases are a
 /// placeholder, not a list to judge a saved id against; judging it there
@@ -2485,7 +2483,7 @@ fn a_model_is_not_judged_against_a_provisional_catalog_and_the_derived_one_match
     );
 }
 
-/// P1 of the review: a delivered fast-mode flag is **confirmed before the child
+/// A delivered fast-mode flag is **confirmed before the child
 /// is accepted**, and each of the three answers is its own outcome. The base
 /// write-and-forget shape left a create path that returned a running session
 /// while the CLI had either refused the setting or never answered it — a card

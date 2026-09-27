@@ -70,8 +70,8 @@ const LINE_EXCEEDS_WINDOW: &str =
     "the line exceeds one window; what follows it in the file cannot be read this way";
 
 /// Extensions handed back as image content — recognized by spelling alone,
-/// the way Paseo does it (`service.ts:91-95`), because an image's bytes are
-/// binary and would otherwise never be shown. `svg` is absent on purpose:
+/// the way Paseo does it, because an image's bytes are binary and would
+/// otherwise never be shown. `svg` is absent on purpose:
 /// it is text and reads better as text. Shared with
 /// [`crate::workspace_file_preview`], whose stage gate needs this list for
 /// the same reason; the panel's mirror of every extension the preview draws

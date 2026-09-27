@@ -1,7 +1,6 @@
 //! The compact-run tests: Paseo's one-compaction-at-a-time guard — its
 //! refusal sentence, and the compaction frames that hold and release the
-//! slot — and the bound that keeps a silent child from pinning a thread
-//! (review A5-2 #3 and #4).
+//! slot — and the bound that keeps a silent child from pinning a thread.
 
 use super::super::{PiControl, PiReader};
 use crate::session::event_pull::ConnHandle;
@@ -111,12 +110,11 @@ fn wait_for_notice(conn: &ConnHandle, text: &str) -> Vec<String> {
 
 #[test]
 fn a_second_compact_is_refused_while_the_first_is_outstanding() {
-    // Paseo refuses a second `/compact` with its own sentence while one runs
-    // (`pi/agent.ts:1821-1825`, thrown into the client's `[Error] …` line at
-    // `agent-manager.ts:2381-2387`) and writes no second RPC — the refusal
-    // returns before the write (review A5-2 #3). The child holds the first
-    // compaction open by never answering, so the window is deterministic and
-    // both runs settle synchronously: no timers, no node, no flake.
+    // Paseo refuses a second `/compact` with its own sentence while one runs,
+    // shown as the client's `[Error] …` line, and writes no second RPC — the
+    // refusal returns before the write. The child holds the first compaction
+    // open by never answering, so the window is deterministic and both runs
+    // settle synchronously: no timers, no node, no flake.
     let (mut child, stdin) = absorbing_child();
     let control = PiControl::new(stdin, Arc::new(AtomicU64::new(1)));
     let handler = super::PiOutOfBandCommands::new(Arc::new(control));
@@ -525,7 +523,7 @@ fn a_failed_compact_closes_its_compacting_marker() {
     let _ = child.kill();
     let _ = child.wait();
 }
-/// it — the window Paseo's guard lives in (`pi/agent.ts:1826` to `:2352`).
+/// it — the window Paseo's guard lives in.
 const FAKE_PI_ENDS_COMPACT_LATE: &str = r#"
 let buffered = "";
 process.stdin.on("data", (chunk) => {
@@ -552,11 +550,10 @@ process.stdin.on("data", (chunk) => {
 
 #[test]
 fn the_guard_holds_until_the_compaction_ends_and_releases_after_it() {
-    // Paseo's guard lifecycle end to end (`pi/agent.ts:1826,1856-1860,
-    // 2344-2356`): an RPC that settled while its compaction is still
-    // running keeps the slot — the second compact is refused — and pi's own
-    // `compaction_end` releases it, so a third compact is accepted
-    // (review A5-2 #3). One reader does both jobs exactly as production
+    // Paseo's guard lifecycle end to end: an RPC that settled while its
+    // compaction is still running keeps the slot — the second compact is
+    // refused — and pi's own `compaction_end` releases it, so a third
+    // compact is accepted. One reader does both jobs exactly as production
     // does: it delivers the reply and observes the compaction frames on the
     // handler's own guard.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
@@ -647,8 +644,8 @@ fn the_guard_holds_until_the_compaction_ends_and_releases_after_it() {
 
 #[test]
 fn a_compact_whose_child_never_answers_ends_in_a_bounded_failure_and_frees_the_slot() {
-    // review A5-2 #4: the compact wait is bounded — a live child that stops
-    // answering must not pin a worker thread and its registration for the
+    // The compact wait is bounded — a live child that stops answering must
+    // not pin a worker thread and its registration for the
     // session's life — and the round trip still ends in Paseo's failure
     // line, so the timeout is visible to the user rather than silent. The
     // bound is short here only so the test does not wait the production one.
