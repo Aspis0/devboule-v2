@@ -71,6 +71,7 @@ fn secret_answer_reaches_the_provider_but_no_forbidden_store() {
         options: Vec::new(),
         is_chooser: None,
         kind: Some(PermissionRequestKind::Question),
+        plan: None,
         questions: Some(vec![PermissionQuestion {
             question: "Which colour should I paint the fence?".to_string(),
             header: None,

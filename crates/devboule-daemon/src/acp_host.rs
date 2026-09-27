@@ -1063,6 +1063,7 @@ fn terminal_permission_event(
         ],
         is_chooser: None,
         kind: None,
+        plan: None,
         questions: None,
         // A placeholder the daemon overwrites with the session's stored origin
         // before the request leaves for a subscriber.

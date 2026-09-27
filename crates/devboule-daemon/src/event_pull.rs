@@ -693,7 +693,10 @@ fn pull_live_agent_replay_events(
             let derived = match record.kind {
                 crate::journal::EventKind::AgentReport => {
                     match serde_json::from_slice::<SessionEvent>(&record.payload) {
-                        Ok(event) => vec![event],
+                        Ok(mut event) => {
+                            crate::plan_text::bound_permission_request(&mut event);
+                            vec![event]
+                        }
                         Err(error) => {
                             mark_replay_parse_failure(
                                 pull.runtime.as_ref(),
@@ -708,7 +711,7 @@ fn pull_live_agent_replay_events(
                 }
                 crate::journal::EventKind::AcpEnvelope => {
                     match serde_json::from_slice::<serde_json::Value>(&record.payload) {
-                        Ok(value) => {
+                        Ok(mut value) => {
                             if replay.is_codex {
                                 let view = replay
                                     .codex_view
@@ -717,6 +720,7 @@ fn pull_live_agent_replay_events(
                             } else if replay.is_pi {
                                 crate::pi_view::events_from_line(&value)
                             } else {
+                                crate::plan_text::bound_claude_envelope(&mut value);
                                 let views = crate::acp_view::view_from_envelope(&value, "");
                                 if !views.is_empty() {
                                     views

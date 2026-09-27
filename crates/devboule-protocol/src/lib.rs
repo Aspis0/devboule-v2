@@ -162,7 +162,10 @@ pub use session::{
 /// `AgentProfilesSet` the moment an app saves a non-default idle timer —
 /// the human's edit lost until the daemon restarts. The handshake has to
 /// separate the two builds before that save exists.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// Bumped to 11 for plan permission requests: the plan kind and Markdown body
+/// drive a separate review-and-implement flow, so a 10-speaking app would
+/// mistake the card for an ordinary tool permission.
+pub const PROTOCOL_VERSION: u32 = 11;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.

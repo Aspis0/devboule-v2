@@ -11,6 +11,7 @@ export interface ToolRowModel {
 }
 
 const DISPLAY_NAMES: Record<string, string> = {
+  plan: "Plan",
   execute: "Shell",
   read: "Read",
   edit: "Edit",
@@ -24,6 +25,7 @@ const DISPLAY_NAMES: Record<string, string> = {
 };
 
 const ICONS: Record<string, ToolIconName> = {
+  plan: "eye",
   execute: "terminal",
   read: "eye",
   edit: "pencil",
@@ -70,7 +72,7 @@ export function toolRowDisplay(item: ToolItem): ToolRowModel {
       ? humanizeToolName(item.title)
       : "Tool";
   let summary: string | undefined;
-  if (!fromBareName) {
+  if (!fromBareName && kind !== "plan") {
     if (kind === "read" || kind === "edit" || kind === "delete") {
       const first = item.locations?.[0]?.path;
       summary =

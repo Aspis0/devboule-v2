@@ -70,6 +70,7 @@ import { SessionContextMeter } from "./ContextMeter";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
+import { MarkdownText } from "../../components/MarkdownText";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
 import { setHeldAssistantText } from "./attentionNotice";
@@ -516,10 +517,16 @@ function renderToolItem(
   const model = toolRowDisplay(item);
   const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
   const running = isToolRunningStatus(item.status) && !interrupted;
-  const failed = isToolFailedStatus(item.status);
+  const failed = item.kind !== "plan" && isToolFailedStatus(item.status);
   const status = item.status.toLowerCase();
   const cancelled = status === "cancelled" || status === "canceled";
-  const toolClassName = `${className}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
+  const planDecision =
+    item.kind === "plan"
+      ? ["Approved", "Rejected", "Withdrawn"].includes(item.title)
+        ? item.title
+        : undefined
+      : undefined;
+  const toolClassName = `${className}${item.kind === "plan" ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
     <details className={toolClassName} key={item.id} style={style}>
       <summary className="workspace-chat-tool-summary">
@@ -527,6 +534,9 @@ function renderToolItem(
         <span className="workspace-chat-tool-label">{model.displayName}</span>
         {model.summary !== undefined ? (
           <span className="workspace-chat-tool-summary-text">{model.summary}</span>
+        ) : null}
+        {planDecision !== undefined ? (
+          <span className="workspace-chat-tool-summary-text">{planDecision}</span>
         ) : null}
         {interrupted ? (
           <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
@@ -547,7 +557,11 @@ function renderToolItem(
             ))}
           </div>
         ) : null}
-        {item.output ? <div className="workspace-chat-copy">{item.output}</div> : null}
+        {item.output ? (
+          <div className="workspace-chat-copy">
+            {item.kind === "plan" ? <MarkdownText text={item.output} /> : item.output}
+          </div>
+        ) : null}
       </div>
     </details>
   );

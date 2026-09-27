@@ -1221,6 +1221,7 @@ pub(super) fn permission_attention_event() -> SessionEvent {
         options: Vec::new(),
         is_chooser: None,
         kind: None,
+        plan: None,
         questions: None,
         // A provider client writes `local` here; the daemon overwrites it
         // with the session's stored origin on the way out.
@@ -3207,6 +3208,7 @@ fn permission_card(tool_call_id: &str) -> SessionEvent {
         }],
         is_chooser: None,
         kind: None,
+        plan: None,
         questions: None,
         origin: SessionOrigin::local(),
         create_agent: None,

@@ -183,6 +183,9 @@ pub(crate) trait ModelSwitcher: Send + Sync {
     fn manifest(&self) -> Option<SessionEvent> {
         None
     }
+    fn reports_mode_from_provider(&self) -> bool {
+        false
+    }
     fn clone_switcher(&self) -> Box<dyn ModelSwitcher>;
     fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
         Box::new(UnsupportedSteerer)

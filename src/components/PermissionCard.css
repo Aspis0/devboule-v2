@@ -84,6 +84,34 @@
   white-space: pre-wrap;
 }
 
+.permission-card-plan {
+  max-height: 16em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.permission-card-plan pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.permission-card-plan .plan-markdown-heading-1 {
+  font-size: 1.25em;
+  font-weight: 700;
+}
+
+.permission-card-plan .plan-markdown-heading-2 {
+  font-size: 1.1em;
+  font-weight: 700;
+}
+
+.permission-card-plan .plan-markdown-heading-3,
+.permission-card-plan .plan-markdown-heading-4,
+.permission-card-plan .plan-markdown-heading-5,
+.permission-card-plan .plan-markdown-heading-6 {
+  font-weight: 650;
+}
+
 .permission-card-dot {
   width: 6px;
   height: 6px;

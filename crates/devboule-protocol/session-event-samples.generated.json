@@ -67,7 +67,7 @@
     "type": "agent_thought"
   },
   {
-    "kind": "read",
+    "kind": "plan",
     "locations": [
       {
         "line": 1,
@@ -76,10 +76,9 @@
     ],
     "parentToolUseId": "toolu_parent",
     "spawnDepth": 1,
-    "status": "",
-    "subagentType": "explorer",
-    "title": "",
-    "toolCallId": "",
+    "status": "pending",
+    "title": "Plan",
+    "toolCallId": "toolu_plan",
     "type": "agent_tool_call"
   },
   {
@@ -94,7 +93,7 @@
     "status": null,
     "text": null,
     "title": "cargo test",
-    "toolCallId": "",
+    "toolCallId": "toolu_plan",
     "type": "agent_tool_update"
   },
   {

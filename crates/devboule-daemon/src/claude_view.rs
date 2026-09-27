@@ -45,6 +45,7 @@ struct StreamedBlock {
 pub(crate) struct ClaudeView {
     streamed: HashMap<(Option<String>, u64), StreamedBlock>,
     current_message_ids: HashMap<Option<String>, String>,
+    plan_tool_ids: HashSet<String>,
     current_model: Option<String>,
     last_manifest_model: Option<String>,
     current_mode: Option<String>,
@@ -64,6 +65,7 @@ impl ClaudeView {
         Self {
             streamed: HashMap::new(),
             current_message_ids: HashMap::new(),
+            plan_tool_ids: HashSet::new(),
             current_model: None,
             last_manifest_model: None,
             current_mode: None,
@@ -80,6 +82,11 @@ impl ClaudeView {
 
     pub(crate) fn set_mode(&mut self, mode_id: &str) {
         self.current_mode = Some(mode_id.to_string());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_mode_id(&self) -> Option<&str> {
+        self.current_mode.as_deref()
     }
 
     /// Map one parsed envelope to zero or more view events. Unknown or
@@ -100,6 +107,7 @@ impl ClaudeView {
         let subtype = envelope.get("subtype").and_then(Value::as_str);
         if subtype != Some("init") {
             return match subtype {
+                Some("status") => self.ingest_status(envelope),
                 Some("task_started") => self.ingest_task_started(envelope),
                 Some("task_notification") => self.ingest_task_notification(envelope),
                 Some("background_tasks_changed") => self.ingest_background_tasks_changed(envelope),
@@ -123,12 +131,9 @@ impl ClaudeView {
             .and_then(Value::as_str)
             .filter(|model| !model.is_empty())
             .map(str::to_string);
-        self.current_mode = envelope
-            .get("permissionMode")
-            .and_then(Value::as_str)
-            .filter(|mode| !mode.is_empty())
-            .map(str::to_string)
-            .or_else(|| Some("default".to_string()));
+        if let Some(mode) = reported_permission_mode(envelope) {
+            self.current_mode = Some(mode.to_string());
+        }
         if let Some(model) = model.clone() {
             self.current_model = Some(model);
         }
@@ -157,6 +162,35 @@ impl ClaudeView {
             }
         }
         events
+    }
+
+    fn ingest_status(&mut self, envelope: &Value) -> Vec<SessionEvent> {
+        let Some(mode) = reported_permission_mode(envelope) else {
+            return Vec::new();
+        };
+        if self.current_mode.as_deref() == Some(mode) {
+            return Vec::new();
+        }
+        self.current_mode = Some(mode.to_string());
+        let model = self.last_manifest_model.clone();
+        let models = model
+            .as_ref()
+            .map(|model_id| SessionModel {
+                model_id: model_id.clone(),
+                name: model_id.clone(),
+                description: None,
+                context_tokens: None,
+                current_effort: None,
+                efforts: None,
+            })
+            .into_iter()
+            .collect();
+        vec![SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: model,
+            models,
+            modes: self.mode_state(),
+        }]
     }
 
     /// The initialize handshake's answer: the SDK's `supportedCommands()` is
@@ -259,9 +293,7 @@ impl ClaudeView {
     }
 
     fn mode_state(&self) -> Option<SessionModeStateView> {
-        Some(mode_state(
-            self.current_mode.as_deref().unwrap_or("default"),
-        ))
+        self.current_mode.as_deref().map(mode_state)
     }
 
     /// `slash_commands` off the init frame: a flat array of names carrying
@@ -461,12 +493,17 @@ impl ClaudeView {
                     }
                 }
                 Some("tool_use") => {
-                    // A question's tool call is an ordinary provider row: the
-                    // broker's own row reuses the card id, so the two merge
-                    // by call id instead of doubling.
-                    if block.get("name").and_then(Value::as_str) == Some("AskUserQuestion") {
+                    let is_question =
+                        block.get("name").and_then(Value::as_str) == Some("AskUserQuestion");
+                    let is_plan = block.get("name").and_then(Value::as_str) == Some("ExitPlanMode");
+                    if is_question || is_plan {
                         if let Some(id) = block.get("id").and_then(Value::as_str) {
-                            self.question_tool_ids.insert(id.to_string());
+                            if is_question {
+                                self.question_tool_ids.insert(id.to_string());
+                            }
+                            if is_plan {
+                                self.plan_tool_ids.insert(id.to_string());
+                            }
                         }
                     }
                     if let Some(event) = tool_call_from_block(
@@ -476,6 +513,26 @@ impl ClaudeView {
                         spawn_depth,
                     ) {
                         events.push(event);
+                    }
+                    if is_plan {
+                        if let Some(tool_call_id) = block.get("id").and_then(Value::as_str) {
+                            let plan = block
+                                .pointer("/input/plan")
+                                .and_then(Value::as_str)
+                                .filter(|plan| !plan.is_empty())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| "No plan text was provided.".to_string());
+                            events.push(SessionEvent::AgentToolUpdate {
+                                tool_call_id: tool_call_id.to_string(),
+                                status: None,
+                                text: Some(plan),
+                                title: None,
+                                kind: Some("plan".to_string()),
+                                locations: None,
+                                parent_tool_use_id: parent_tool_use_id.clone(),
+                                spawn_depth,
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -511,6 +568,9 @@ impl ClaudeView {
                         *text = None;
                     }
                 }
+                if matches!(&update, SessionEvent::AgentToolUpdate { tool_call_id, .. } if self.plan_tool_ids.contains(tool_call_id)) {
+                    return None;
+                }
                 Some(update)
             })
             .collect()
@@ -518,6 +578,7 @@ impl ClaudeView {
 
     fn ingest_result(&mut self, envelope: &Value) -> Vec<SessionEvent> {
         self.question_tool_ids.clear();
+        self.plan_tool_ids.clear();
         // Debt: stream-json has no ACP-like inactivity watchdog, so a dead
         // CLI can leave a turn without ever producing an AgentFinished event.
         let stop_reason = envelope
@@ -742,6 +803,7 @@ fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
     };
     // The summary only; the frontend derives the display name from `kind`.
     match name {
+        "ExitPlanMode" => "Plan".to_string(),
         "Bash" | "PowerShell" => field("command").map(truncated_command).unwrap_or_default(),
         "Read" | "Edit" | "Write" | "NotebookEdit" => field("file_path")
             .or_else(|| field("path"))
@@ -798,7 +860,11 @@ fn tool_call_from_block(
         tool_call_id,
         title: tool_title(name, input, cwd),
         status: "pending".to_string(),
-        kind: Some(tool_kind_from_name(name).to_string()),
+        kind: Some(if name == "ExitPlanMode" {
+            "plan".to_string()
+        } else {
+            tool_kind_from_name(name).to_string()
+        }),
         locations: tool_locations(name, input, cwd),
         subagent_type: (name == "Agent")
             .then(|| input.get("subagent_type"))
@@ -978,6 +1044,14 @@ struct ClaudeMode {
     /// every other mode stops at the human for at least one tool class, so
     /// the marker says `no` and the roster renders nothing.
     unattended: UnattendedState,
+}
+
+pub(crate) fn reported_permission_mode(envelope: &Value) -> Option<&str> {
+    envelope
+        .get("permissionMode")
+        .or_else(|| envelope.get("mode"))
+        .and_then(Value::as_str)
+        .filter(|mode| !mode.is_empty())
 }
 
 /// The mode the daemon delivers when a create names none — the same default
@@ -1205,6 +1279,24 @@ mod tests {
             }
             other => panic!("expected manifest then commands, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn system_init_without_mode_keeps_the_mode_unreported() {
+        let mut mapper = view();
+        let mut envelope = init_frame();
+        envelope
+            .as_object_mut()
+            .expect("init object")
+            .remove("permissionMode");
+
+        let events = mapper.ingest(&envelope);
+
+        assert_eq!(mapper.current_mode_id(), None);
+        assert!(matches!(
+            events.as_slice(),
+            [SessionEvent::SessionManifest { modes: None, .. }]
+        ));
     }
 
     /// The companion guard: an init without the field keeps publishing the
@@ -2499,6 +2591,52 @@ mod tests {
     }
 
     #[test]
+    fn system_status_updates_mode_only_when_the_cli_reports_it() {
+        let mut mapper = view();
+        let _ = mapper.ingest(&init_frame());
+        let status = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "status",
+            "permissionMode": "acceptEdits"
+        }));
+        assert!(matches!(status.as_slice(), [SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        }] if modes.current_mode_id == "acceptEdits"));
+        assert!(mapper
+            .ingest(&json!({
+                "type": "system",
+                "subtype": "status",
+                "permission_mode": "plan"
+            }))
+            .is_empty());
+        assert!(mapper
+            .ingest(&json!({
+                "type": "system",
+                "subtype": "status",
+                "status": "requesting"
+            }))
+            .is_empty());
+    }
+
+    #[test]
+    fn captured_mode_frames_map_to_manifest_updates() {
+        let mut mapper = view();
+        let frames = include_str!("../fixtures/wire/claude-exit-plan-mode.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("captured frame"))
+            .collect::<Vec<_>>();
+
+        let init = mapper.ingest(&frames[0]);
+        assert!(matches!(init.as_slice(), [SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        }] if modes.current_mode_id == "plan"));
+        let status = mapper.ingest(&frames[2]);
+        assert!(matches!(status.as_slice(), [SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        }] if modes.current_mode_id == "acceptEdits"));
+    }
+
+    #[test]
     fn tool_kind_mapping_covers_the_named_claude_tools() {
         let cases = [
             ("Read", "read"),
@@ -2616,6 +2754,47 @@ mod tests {
                 }
                 other => panic!("expected unknown tool call, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn exit_plan_mode_timeline_carries_plan_and_resolution() {
+        let mut mapper = view();
+        let calls = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "plan-message",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "plan-tool",
+                    "name": "ExitPlanMode",
+                    "input": {"plan": "## Steps\n\n- Add the route"}
+                }]
+            }
+        }));
+        assert!(matches!(calls.as_slice(), [
+            SessionEvent::AgentToolCall { title, kind: Some(kind), .. },
+            SessionEvent::AgentToolUpdate { text: Some(plan), kind: Some(update_kind), .. }
+        ] if title == "Plan" && kind == "plan" && plan == "## Steps\n\n- Add the route" && update_kind == "plan"));
+
+        for is_error in [false, true] {
+            let result = mapper.ingest(&json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "plan-tool",
+                        "is_error": is_error,
+                        "content": [{"type": "text", "text": "provider result must not replace the decision"}]
+                    }]
+                }
+            }));
+            assert!(
+                result.is_empty(),
+                "provider status must not contradict the human decision: {result:?}"
+            );
         }
     }
 

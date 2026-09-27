@@ -226,6 +226,77 @@ describe("AgentChatSurface", () => {
     localStorage.removeItem("devboule.modelEffortPrefs");
   });
 
+  it("renders plan tool rows with Markdown and an explicit outcome", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+    for (const [id, status, decision] of [
+      ["plan-ok", "completed", "Approved"],
+      ["plan-no", "failed", "Rejected"],
+      ["plan-withdrawn", "cancelled", "Withdrawn"],
+    ] as const) {
+      await act(async () => {
+        channelHarness.active?.({
+          type: "agent_tool_call",
+          toolCallId: id,
+          title: "Plan",
+          status: "pending",
+          kind: "plan",
+        });
+        channelHarness.active?.({
+          type: "agent_tool_update",
+          toolCallId: id,
+          status: null,
+          text: "## Steps\n\n- Add the route",
+          kind: "plan",
+        });
+        channelHarness.active?.({
+          type: "agent_tool_update",
+          toolCallId: id,
+          status,
+          text: null,
+          title: decision,
+        });
+      });
+    }
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "plan-provider-text",
+        title: "Plan",
+        status: "pending",
+        kind: "plan",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "plan-provider-text",
+        status: "failed",
+        text: "Plan approved.",
+        kind: "plan",
+      });
+    });
+    const rows = [...container.querySelectorAll(".workspace-chat-tool")];
+    expect(rows).toHaveLength(4);
+    expect(rows[0].querySelector(".workspace-chat-tool-label")?.textContent).toBe("Plan");
+    expect(
+      rows[0].querySelector(".workspace-chat-tool-body .plan-markdown-heading-2")?.textContent,
+    ).toBe("Steps");
+    expect(rows[0].textContent).toContain("Approved");
+    expect(rows[0].querySelector(".workspace-chat-tool-body")?.textContent).not.toContain(
+      "Plan approved.",
+    );
+    expect(rows[1].classList.contains("is-failed")).toBe(false);
+    expect(rows[2].classList.contains("is-cancelled")).toBe(true);
+    expect(rows[1].querySelector(".workspace-chat-tool-body")?.textContent).not.toContain(
+      "Plan rejected.",
+    );
+    expect(rows[1].textContent).toContain("Rejected");
+    expect(rows[2].textContent).toContain("Withdrawn");
+    expect(rows[3].querySelector(".workspace-chat-tool-summary-text")).toBeNull();
+  });
+
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();

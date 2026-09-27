@@ -160,6 +160,7 @@ pub(super) enum DelegatedPeek {
         pending: Arc<PendingPermission>,
         options: Vec<PermissionOption>,
         is_question: bool,
+        is_plan: bool,
     },
     Absent,
 }
@@ -321,7 +322,7 @@ impl PermissionBroker {
         // #4). `publish_agent_event_with_seq` writes both again on the way
         // out, which is what covers publishers that never come through here.
         let request = stamp_origin(request, runtime.origin());
-        let request = stamp_chooser(request);
+        let mut request = stamp_chooser(request);
         let tool_call_id = match &request {
             SessionEvent::PermissionRequest { tool_call_id, .. } => tool_call_id.clone(),
             _ => {
@@ -330,7 +331,7 @@ impl PermissionBroker {
                 ));
             }
         };
-        validate_permission_request(&tool_call_id, &request)?;
+        validate_permission_request(&tool_call_id, &mut request)?;
         // An id the journal already holds a decision for is DONE: a second
         // card here would show a person an answer that can never be written
         // (the audit row is write-once), and the agent would be told
@@ -614,17 +615,19 @@ impl PermissionBroker {
         };
         match table.entries.get(tool_call_id) {
             Some(pending) => {
-                let (options, is_question) = match &pending.request {
+                let (options, is_question, is_plan) = match &pending.request {
                     SessionEvent::PermissionRequest { options, kind, .. } => (
                         options.clone(),
                         matches!(kind, Some(PermissionRequestKind::Question)),
+                        matches!(kind, Some(PermissionRequestKind::Plan)),
                     ),
-                    _ => (Vec::new(), false),
+                    _ => (Vec::new(), false, false),
                 };
                 DelegatedPeek::Found {
                     pending: Arc::clone(pending),
                     options,
                     is_question,
+                    is_plan,
                 }
             }
             None => DelegatedPeek::Absent,
@@ -730,8 +733,14 @@ impl PermissionBroker {
             DelegatedPeek::Found {
                 options,
                 is_question,
+                is_plan,
                 ..
             } => {
+                if *is_plan {
+                    return Err(format!(
+                        "permission card {tool_call_id} is a plan; only a person can approve or reject it"
+                    ));
+                }
                 // A question belongs to the person, never to a parent
                 // agent — even a single-option one no chooser rule marks.
                 // The MCP answer door names no option and carries no text,
@@ -1037,17 +1046,20 @@ impl PermissionBroker {
         let Some(current) = table.entries.get(tool_call_id) else {
             return Err(PermissionResponseError::NotFound);
         };
-        let (options, is_question) = match &current.request {
+        let (options, is_special_request) = match &current.request {
             SessionEvent::PermissionRequest { options, kind, .. } => (
                 options.clone(),
-                matches!(kind, Some(PermissionRequestKind::Question)),
+                matches!(
+                    kind,
+                    Some(PermissionRequestKind::Question | PermissionRequestKind::Plan)
+                ),
             ),
             _ => return Ok(None),
         };
-        // Semantic, not structural: a question is never auto-answered, in
-        // any mode — including bypass or "may run without asking". The
+        // Semantic, not structural: questions and plans always reach the person,
+        // including bypass mode. The
         // chooser rule below stays for every other request.
-        if is_question {
+        if is_special_request {
             return Ok(None);
         }
         if options_form_a_chooser(&options) {
@@ -1102,6 +1114,7 @@ impl PermissionBroker {
                     permission_resolved_event(pending, None, "cancelled", answered_by),
                     None,
                 );
+                publish_plan_outcome(&runtime, pending, PlanOutcome::Withdrawn);
             }
             self.mark_done(pending, decision);
             return match send_result {
@@ -1165,14 +1178,24 @@ impl PermissionBroker {
                 permission_resolved_event(pending, selected_option, journal_outcome, answered_by),
                 None,
             );
-            // Journalled as an agent report so both replay readers return
-            // it; an output row would be dropped by replay and leak raw
-            // JSON into a terminal's scrollback.
+            // Replay rebuilds delegation attribution from this durable event.
             let _ = runtime.publish_daemon_event(permission_answered_event(
                 pending,
                 answered_by,
                 journal_outcome,
             ));
+            if let SessionEvent::PermissionRequest {
+                kind: Some(PermissionRequestKind::Plan),
+                ..
+            } = &pending.request
+            {
+                let outcome = match selected_option.map(|option| option.option_id.as_str()) {
+                    Some("implement" | "implement_bypass") => PlanOutcome::Approved,
+                    Some(_) => PlanOutcome::Rejected,
+                    None => PlanOutcome::Withdrawn,
+                };
+                publish_plan_outcome(&runtime, pending, outcome);
+            }
         }
         self.mark_done(pending, decision);
         send_result.map_err(PermissionResponseError::Io)
@@ -1421,19 +1444,50 @@ fn permission_answered_event(
     }
 }
 
-/// The same event with the session's origin written into it, when it is a
-/// permission request.
-///
-/// Every field is named, deliberately: a pattern with `..` would silently drop
-/// the next field this variant gains, and the card's provenance line is
-/// written by whoever adds it. A compile error here is the reminder.
-///
-/// `origin` is not `Option`, so this **overwrites** whatever a provider client
-/// put there: the placeholder cannot survive to the wire, and a peer session's
-/// card cannot be mislabelled as this machine's own. Called from the broker
-/// (the pending entry carries the truth for the per-peer card count) and from
-/// `SessionRuntime::publish_agent_event_with_seq`, which is the one place a
-/// request leaves for a subscriber.
+enum PlanOutcome {
+    Approved,
+    Rejected,
+    Withdrawn,
+}
+
+impl PlanOutcome {
+    fn status_and_title(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Approved => ("completed", "Approved"),
+            Self::Rejected => ("failed", "Rejected"),
+            Self::Withdrawn => ("cancelled", "Withdrawn"),
+        }
+    }
+}
+
+fn publish_plan_outcome(
+    runtime: &super::session_runtime::SessionRuntime,
+    pending: &PendingPermission,
+    outcome: PlanOutcome,
+) {
+    if let SessionEvent::PermissionRequest {
+        kind: Some(PermissionRequestKind::Plan),
+        ..
+    } = &pending.request
+    {
+        let (status, title) = outcome.status_and_title();
+        let published = runtime.publish_daemon_event(SessionEvent::AgentToolUpdate {
+            tool_call_id: pending.tool_call_id.clone(),
+            status: Some(status.to_string()),
+            text: None,
+            title: Some(title.to_string()),
+            kind: Some("plan".to_string()),
+            locations: None,
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        });
+        if !published {
+            eprintln!("could not publish the completed plan row");
+        }
+    }
+}
+
+/// Stamp session origin; no `..` keeps provenance explicit when fields are added.
 pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> SessionEvent {
     match request {
         SessionEvent::PermissionRequest {
@@ -1449,6 +1503,7 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
             create_agent,
             is_chooser,
             kind,
+            plan,
             questions,
         } => SessionEvent::PermissionRequest {
             tool_call_id,
@@ -1461,6 +1516,7 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
             options,
             is_chooser,
             kind,
+            plan,
             questions,
             origin,
             create_agent,
@@ -1478,20 +1534,22 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
 /// `SessionRuntime::publish_agent_event_with_seq` on the way out — the one
 /// place a request leaves for a subscriber — so every copy that can reach the
 /// app carries the verdict, and the card renders one control per option
-/// without ever re-deriving the rule from the option list. Like the origin
-/// stamp this **overwrites**: a value a provider client wrote cannot survive
-/// to the wire.
+/// without re-deriving the rule from the option list. Explicit verdicts are
+/// authoritative for ordinary cards; plan actions always keep `false` because
+/// duplicate allow kinds are still distinct plan actions.
 pub(super) fn stamp_chooser(mut request: SessionEvent) -> SessionEvent {
     if let SessionEvent::PermissionRequest {
         options,
         is_chooser,
+        kind,
         ..
     } = &mut request
     {
-        // A card that already says it is a chooser keeps saying so: some
-        // cards need named choices without repeating a kind, and the stamp
-        // must not downgrade them to the generic pair.
-        *is_chooser = (*is_chooser).or(options_form_a_chooser(options).then_some(true));
+        if matches!(kind, Some(PermissionRequestKind::Plan)) {
+            *is_chooser = Some(false);
+        } else {
+            *is_chooser = (*is_chooser).or(options_form_a_chooser(options).then_some(true));
+        }
     }
     request
 }
@@ -1508,9 +1566,10 @@ fn peer_origin_device(request: &SessionEvent) -> Option<String> {
 
 fn validate_permission_request(
     tool_call_id: &str,
-    request: &SessionEvent,
+    request: &mut SessionEvent,
 ) -> Result<(), PermissionResponseError> {
     validate_permission_field("tool_call_id", tool_call_id)?;
+    crate::plan_text::bound_permission_request(request);
     let SessionEvent::PermissionRequest {
         title,
         description,
@@ -1768,6 +1827,7 @@ pub(super) fn permission_with_kinds(tool_call_id: &str, kinds: &[(&str, &str)]) 
         // same way it stamps the origin.
         is_chooser: None,
         kind: None,
+        plan: None,
         questions: None,
     }
 }
@@ -1795,6 +1855,7 @@ pub(super) fn permission_question_single_option(tool_call_id: &str) -> SessionEv
         create_agent: None,
         is_chooser: None,
         kind: Some(PermissionRequestKind::Question),
+        plan: None,
         questions: Some(vec![PermissionQuestion {
             question: "Shall I paint the fence green?".to_string(),
             header: None,
@@ -1806,6 +1867,38 @@ pub(super) fn permission_question_single_option(tool_call_id: &str) -> SessionEv
             allow_other: Some(true),
             secret: None,
         }]),
+    }
+}
+
+#[cfg(test)]
+fn permission_plan(tool_call_id: &str) -> SessionEvent {
+    use devboule_protocol::PermissionRequestKind;
+    SessionEvent::PermissionRequest {
+        tool_call_id: tool_call_id.to_string(),
+        title: "Plan".to_string(),
+        description: None,
+        command: None,
+        args: None,
+        cwd: None,
+        env: None,
+        options: vec![
+            PermissionOption {
+                option_id: "deny".to_string(),
+                name: "Reject".to_string(),
+                kind: "reject_once".to_string(),
+            },
+            PermissionOption {
+                option_id: "implement".to_string(),
+                name: "Implement".to_string(),
+                kind: "allow_once".to_string(),
+            },
+        ],
+        origin: SessionOrigin::local(),
+        create_agent: None,
+        is_chooser: None,
+        kind: Some(PermissionRequestKind::Plan),
+        plan: Some("## Steps\n\n- Build".to_string()),
+        questions: None,
     }
 }
 
@@ -1841,6 +1934,7 @@ pub(super) fn permission_question(tool_call_id: &str) -> SessionEvent {
         // same way it stamps the origin.
         is_chooser: None,
         kind: Some(PermissionRequestKind::Question),
+        plan: None,
         questions: Some(vec![PermissionQuestion {
             question: "Which colour should I paint the fence?".to_string(),
             header: None,
@@ -1895,18 +1989,73 @@ pub(super) type SentResponses = Vec<(u64, serde_json::Value)>;
 mod tests {
     use super::SessionRuntime;
     use super::{
-        peer_card_count, permission, permission_path, permission_with_kinds, test_broker,
-        PermissionBroker, PermissionSender, MAX_ACP_PERMISSION_ARGS, MAX_PENDING_ACP_PERMISSIONS,
-        MAX_PENDING_FOR_PEER,
+        peer_card_count, permission, permission_path, permission_plan, permission_with_kinds,
+        test_broker, PermissionBroker, PermissionOption, PermissionSender, MAX_ACP_PERMISSION_ARGS,
+        MAX_PENDING_ACP_PERMISSIONS, MAX_PENDING_FOR_PEER,
     };
     use crate::journal::Journal;
     use devboule_protocol::{
-        PeerRole, PermissionOutcome, SessionEvent, SessionKind, SessionOrigin,
+        PeerRole, PermissionOutcome, PermissionRequestKind, SessionEvent, SessionKind,
+        SessionOrigin,
     };
     use rusqlite::Connection;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
+
+    #[test]
+    fn permission_registration_bounds_plan_text() {
+        let mut request = permission_plan("bounded-plan");
+        if let SessionEvent::PermissionRequest { plan, .. } = &mut request {
+            *plan = Some(format!(
+                "ab{}",
+                "🧭".repeat(crate::plan_text::MAX_PLAN_BYTES)
+            ));
+        }
+
+        let (broker, _) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(0, request, &runtime)
+            .expect("register valid permission plan");
+        let (_, request) = broker.pending_cards(1).pop().expect("pending plan");
+
+        assert!(matches!(
+            request,
+            SessionEvent::PermissionRequest { plan: Some(plan), .. }
+                if plan.len() == crate::plan_text::MAX_PLAN_BYTES - 3
+                    && plan.ends_with("[Plan truncated.]")
+        ));
+    }
+
+    #[test]
+    fn plan_with_duplicate_implement_options_is_not_a_chooser_even_if_previously_marked() {
+        let mut request = permission_plan("plan-chooser");
+        let SessionEvent::PermissionRequest {
+            options,
+            is_chooser,
+            kind,
+            ..
+        } = &mut request
+        else {
+            unreachable!();
+        };
+        options.push(PermissionOption {
+            option_id: "implement_bypass".to_string(),
+            name: "Implement with bypass".to_string(),
+            kind: "allow_once".to_string(),
+        });
+        *is_chooser = Some(true);
+        *kind = Some(PermissionRequestKind::Plan);
+
+        assert!(matches!(
+            super::stamp_chooser(request),
+            SessionEvent::PermissionRequest {
+                is_chooser: Some(false),
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn mcp_cancel_is_scoped_to_session_and_request_and_withdraws_host_card() {
@@ -2435,6 +2584,41 @@ mod tests {
         assert!(sent.lock().expect("sent lock").is_empty());
         journal.shutdown();
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn auto_answer_never_answers_a_plan_in_any_mode_or_after_a_mode_switch() {
+        for mode in ["default", "acceptEdits", "auto", "bypassPermissions"] {
+            let (broker, sent) = test_broker();
+            let runtime = Arc::new(SessionRuntime::new());
+            runtime.store_session_manifest(SessionEvent::SessionManifest {
+                provider_id: Some("claude".to_string()),
+                current_model_id: None,
+                models: Vec::new(),
+                modes: Some(devboule_protocol::SessionModeStateView {
+                    current_mode_id: mode.to_string(),
+                    available_modes: Vec::new(),
+                }),
+            });
+            let id = format!("plan-{mode}");
+            broker
+                .register(0, permission_plan(&id), &runtime)
+                .expect("register plan");
+            assert!(
+                !broker.auto_answer(&id, &runtime).expect("check plan"),
+                "plans must reach the person in {mode}"
+            );
+            if mode == "default" {
+                runtime
+                    .set_current_mode_id("bypassPermissions")
+                    .expect("change mode while card is open");
+                assert!(
+                    !broker.auto_answer(&id, &runtime).expect("check open plan"),
+                    "a mode change cannot silently answer the open plan"
+                );
+            }
+            assert!(sent.lock().expect("sender").is_empty());
+        }
     }
 
     /// `full-access` is Codex's own spelling, answered for Codex only: an
@@ -3362,8 +3546,8 @@ mod tests {
 #[cfg(test)]
 mod question_tests {
     use super::{
-        permission_path, permission_question, permission_question_single_option, test_broker,
-        PermissionBroker, PermissionSender,
+        permission_path, permission_plan, permission_question, permission_question_single_option,
+        test_broker, PermissionBroker, PermissionSender,
     };
     use crate::journal::Journal;
     use crate::session::SessionRuntime;
@@ -3535,6 +3719,29 @@ mod question_tests {
             sent.lock().expect("sent lock").is_empty(),
             "nothing went to the agent"
         );
+    }
+
+    #[test]
+    fn delegation_refuses_a_plan_card() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(217, permission_plan("plan-delegated"), &runtime)
+            .expect("register");
+        let error = broker
+            .answer_delegated(
+                "plan-delegated",
+                PermissionOutcome::AllowOnce,
+                &|| true,
+                &|_| false,
+                &|_| Ok(()),
+                &|_| Ok(()),
+                "s.creator",
+            )
+            .expect_err("a plan stays with the person");
+        assert!(error.contains("is a plan"), "{error}");
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
     }
 
     #[test]

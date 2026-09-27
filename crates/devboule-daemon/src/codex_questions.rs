@@ -250,6 +250,7 @@ pub(super) fn dispatch_question(
         options,
         is_chooser: None,
         kind: Some(PermissionRequestKind::Question),
+        plan: None,
         questions: Some(
             questions
                 .iter()

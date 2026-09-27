@@ -30,6 +30,17 @@ describe("toolRowDisplay", () => {
     });
   });
 
+  it("labels a plan row with an eye icon", () => {
+    expect(toolRowDisplay(tool({ kind: "plan", title: "Plan steps" }))).toEqual({
+      displayName: "Plan",
+      icon: "eye",
+    });
+  });
+
+  it("does not build a summary for plan markdown, which is rendered in the body", () => {
+    expect(toolRowDisplay(tool({ kind: "plan", title: "Plan steps" })).summary).toBeUndefined();
+  });
+
   it("labels edit and delete calls with a pencil icon", () => {
     expect(toolRowDisplay(tool({ kind: "edit", title: "src/main.rs" }))).toEqual({
       displayName: "Edit",

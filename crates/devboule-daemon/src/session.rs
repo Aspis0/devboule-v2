@@ -3267,28 +3267,13 @@ impl SessionRegistry {
                 })?;
             (switcher, Arc::clone(&session.runtime))
         };
+        let reports_mode = switcher.reports_mode_from_provider();
         switcher.set_mode(mode_id)?;
-        let Some(SessionEvent::SessionManifest {
-            provider_id,
-            current_model_id,
-            models,
-            modes: Some(mut modes),
-        }) = runtime.session_manifest()
-        else {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                "Session mode state disappeared while switching.",
-            ));
-        };
-        modes.current_mode_id = mode_id.to_string();
-        let manifest = runtime.store_session_manifest(SessionEvent::SessionManifest {
-            provider_id,
-            current_model_id,
-            models,
-            modes: Some(modes),
-        });
-        let _ = runtime.publish_agent_event(manifest, None);
-        Ok(())
+        if reports_mode {
+            Ok(())
+        } else {
+            runtime.set_current_mode_id(mode_id)
+        }
     }
 
     fn validate_claude_effort(

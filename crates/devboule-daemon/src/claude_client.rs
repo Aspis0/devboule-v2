@@ -41,6 +41,7 @@ const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
 const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
 type ClaudeModeResponses = Arc<Mutex<HashMap<String, Sender<Result<(), String>>>>>;
+type ClaudeFrameWriter = Arc<dyn Fn(&[u8]) -> io::Result<()> + Send + Sync>;
 
 /// The delivery's effort requests that have been written and are waiting for
 /// the CLI's answer: request id → the effort the profile named. The session
@@ -53,6 +54,8 @@ type ClaudeDeliverySettings = Arc<Mutex<HashMap<String, String>>>;
 struct ClaudePendingControl {
     request_id: String,
     input: Value,
+    is_plan: bool,
+    pre_plan_mode: Option<String>,
     /// The card's recorded kind, decided once at dispatch. The reply is
     /// shaped from this fact — never re-derived from the input's shape, so
     /// a tool whose input merely carries a `questions` array is still
@@ -61,10 +64,7 @@ struct ClaudePendingControl {
 }
 
 enum ClaudeModeGateState {
-    AwaitingResponse {
-        request_id: String,
-        requested_mode: String,
-    },
+    AwaitingResponse { request_id: String },
     Ready,
     Failed(String),
 }
@@ -783,6 +783,12 @@ fn spawn_claude_child(
     // arrives on the session reader like every other control response, and
     // an old CLI's error — or silence — only costs the early list.
     let pending_initialize = begin_initialize(&stdin, &next_id);
+    let switcher = ClaudeSwitcher {
+        stdin: Arc::clone(&stdin),
+        next_id: Arc::clone(&next_id),
+        mode_responses: Arc::clone(&mode_responses),
+        mode_gate: Some(Arc::clone(&mode_gate)),
+    };
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
     let writer = ClaudeWriter {
@@ -826,12 +832,7 @@ fn spawn_claude_child(
         process_job,
         master: None,
         killer: Box::new(killer),
-        switcher: Some(Box::new(ClaudeSwitcher {
-            stdin: Arc::clone(&stdin),
-            next_id: Arc::clone(&next_id),
-            mode_responses,
-            mode_gate: Some(Arc::clone(&mode_gate)),
-        })),
+        switcher: Some(Box::new(switcher)),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
         // Not an ACP session: no negotiated structured route. The static one
@@ -862,8 +863,18 @@ fn claude_permission_sender(
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     controls: Arc<Mutex<HashMap<u64, ClaudePendingControl>>>,
 ) -> Arc<PermissionSender> {
+    claude_permission_sender_with_writer(
+        controls,
+        Arc::new(move |bytes| write_child_stdin(&stdin, bytes, "Claude")),
+    )
+}
+
+fn claude_permission_sender_with_writer(
+    controls: Arc<Mutex<HashMap<u64, ClaudePendingControl>>>,
+    writer: ClaudeFrameWriter,
+) -> Arc<PermissionSender> {
     Arc::new(move |id, result| {
-        let frame = {
+        let (request_id, input, is_question, is_plan, pre_plan_mode) = {
             let controls = controls
                 .lock()
                 .map_err(|_| io::Error::other("Claude permission map lock poisoned"))?;
@@ -873,17 +884,26 @@ fn claude_permission_sender(
                     "Claude permission response had no matching control request",
                 ));
             };
-            control_response_frame(
-                &pending.request_id,
-                &pending.input,
+            (
+                pending.request_id.clone(),
+                pending.input.clone(),
                 pending.is_question,
-                &result,
+                pending.is_plan,
+                pending.pre_plan_mode.clone(),
             )
         };
+        let frame = control_response_frame(
+            &request_id,
+            &input,
+            is_question,
+            is_plan,
+            pre_plan_mode.as_deref(),
+            &result,
+        );
         let mut bytes = serde_json::to_vec(&frame)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         bytes.push(b'\n');
-        let result = write_child_stdin(&stdin, &bytes, "Claude");
+        let result = writer(&bytes);
         if result.is_ok() {
             controls
                 .lock()
@@ -894,10 +914,30 @@ fn claude_permission_sender(
     })
 }
 
+fn plan_target_mode(
+    is_plan: bool,
+    option_id: &str,
+    pre_plan_mode: Option<&str>,
+) -> Option<&'static str> {
+    if !is_plan {
+        return None;
+    }
+    match option_id {
+        "implement" => Some("acceptEdits"),
+        "implement_bypass" if pre_plan_mode == Some("bypassPermissions") => {
+            Some("bypassPermissions")
+        }
+        "implement_bypass" => Some("acceptEdits"),
+        _ => None,
+    }
+}
+
 fn control_response_frame(
     request_id: &str,
     input: &Value,
     is_question: bool,
+    is_plan: bool,
+    pre_plan_mode: Option<&str>,
     result: &Value,
 ) -> Value {
     let outcome = result
@@ -925,14 +965,25 @@ fn control_response_frame(
                 "message": "The user declined this question.",
             }),
         }
-    } else if outcome == "selected" && option_id == "allow" {
-        serde_json::json!({
+    } else if outcome == "selected"
+        && matches!(option_id, "allow" | "implement" | "implement_bypass")
+    {
+        let mut response = serde_json::json!({
             "behavior": "allow",
             "updatedInput": input,
-        })
+        });
+        if let Some(mode) = plan_target_mode(is_plan, option_id, pre_plan_mode) {
+            response["updatedPermissions"] = serde_json::json!([{
+                "type": "setMode",
+                "mode": mode,
+                "destination": "session",
+            }]);
+        }
+        response
     } else {
         let message = match outcome {
             "cancelled" => "The permission request was cancelled.",
+            _ if is_plan => "The user rejected this plan.",
             _ => "The user declined this command.",
         };
         serde_json::json!({
@@ -1571,7 +1622,6 @@ fn start_initial_mode(
     let mode_gate = Arc::new(Mutex::new(ClaudeModeGate {
         state: ClaudeModeGateState::AwaitingResponse {
             request_id: request_id.clone(),
-            requested_mode: requested_mode.clone(),
         },
         pending_frames: Vec::new(),
     }));
@@ -1832,9 +1882,11 @@ fn flush_gate_frames(
     gate: &mut ClaudeModeGate,
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     view: &mut ClaudeView,
-    mode_id: &str,
+    mode_id: Option<&str>,
 ) -> Option<io::Error> {
-    view.set_mode(mode_id);
+    if let Some(mode_id) = mode_id {
+        view.set_mode(mode_id);
+    }
     for bytes in std::mem::take(&mut gate.pending_frames) {
         if let Err(error) = write_child_stdin(stdin, &bytes, "Claude") {
             return Some(error);
@@ -1915,6 +1967,10 @@ fn send_control_request_frame(
 }
 
 impl ModelSwitcher for ClaudeSwitcher {
+    fn reports_mode_from_provider(&self) -> bool {
+        true
+    }
+
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError> {
         if let Some(model_id) = model_id {
             let request_id = format!("set-model-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -2196,7 +2252,8 @@ impl ClaudeReader {
                 return;
             }
         };
-        let value = runtime.redact_mcp_value(&value);
+        let mut value = runtime.redact_mcp_value(&value);
+        crate::plan_text::bound_claude_envelope(&mut value);
         observe_mcp_status(&value, runtime);
         // The initialize answer carries the account identity next to the
         // commands; the journal keeps only what the menu reads.
@@ -2205,13 +2262,37 @@ impl ClaudeReader {
         if self.dispatch_control_response(&value, runtime) {
             return;
         }
+        let mut view_value = value.clone();
+        let is_mode_report = value.get("type").and_then(Value::as_str) == Some("system")
+            && matches!(
+                value.get("subtype").and_then(Value::as_str),
+                Some("init" | "status")
+            );
+        if is_mode_report {
+            if let Some(mode_id) = crate::claude_view::reported_permission_mode(&value) {
+                if let Err(error) = runtime.record_claude_mode_report(mode_id) {
+                    if let Some(object) = view_value.as_object_mut() {
+                        object.remove("permissionMode");
+                        object.remove("mode");
+                    }
+                    self.publish(
+                        runtime,
+                        SessionEvent::AgentError {
+                            message: format!(
+                                "Claude reported mode {mode_id}, but session state was not updated: {}",
+                                error.message
+                            ),
+                        },
+                    );
+                }
+            }
+        }
         if is_can_use_tool(&value) {
             self.dispatch_permission(&value, runtime, event_seq);
             return;
         }
-        for event in self.view.ingest(&value) {
+        for event in self.view.ingest(&view_value) {
             let event = if matches!(&event, SessionEvent::SessionManifest { .. }) {
-                let event = self.manifest_with_requested_mode(event);
                 let event = runtime.store_session_manifest(event);
                 if let Some(session_id) = self.view.peer_session_id() {
                     runtime.set_peer_session_id(session_id.to_string());
@@ -2221,40 +2302,6 @@ impl ClaudeReader {
                 event
             };
             self.publish_with_seq(runtime, event, event_seq);
-        }
-    }
-
-    fn manifest_with_requested_mode(&self, event: SessionEvent) -> SessionEvent {
-        let Some(mode_gate) = &self.mode_gate else {
-            return event;
-        };
-        let requested_mode = mode_gate.lock().ok().and_then(|gate| match &gate.state {
-            ClaudeModeGateState::AwaitingResponse { requested_mode, .. } => {
-                Some(requested_mode.clone())
-            }
-            ClaudeModeGateState::Ready | ClaudeModeGateState::Failed(_) => None,
-        });
-        let Some(requested_mode) = requested_mode else {
-            return event;
-        };
-        match event {
-            SessionEvent::SessionManifest {
-                provider_id,
-                current_model_id,
-                models,
-                mut modes,
-            } => {
-                if let Some(modes) = &mut modes {
-                    modes.current_mode_id = requested_mode;
-                }
-                SessionEvent::SessionManifest {
-                    provider_id,
-                    current_model_id,
-                    models,
-                    modes,
-                }
-            }
-            event => event,
         }
     }
 
@@ -2337,7 +2384,7 @@ impl ClaudeReader {
         &mut self,
         runtime: &Arc<SessionRuntime>,
         request_id: &str,
-        result: Result<String, String>,
+        result: Result<Option<String>, String>,
     ) {
         let Some(mode_gate) = self.mode_gate.as_ref().cloned() else {
             return;
@@ -2355,6 +2402,17 @@ impl ClaudeReader {
                 );
             }
             Ok(mode_id) => {
+                if let Some(mode_id) = &mode_id {
+                    let update = if runtime.session_manifest().is_some() {
+                        runtime.set_claude_reported_mode_id(mode_id)
+                    } else {
+                        runtime.record_claude_mode_report(mode_id)
+                    };
+                    if let Err(error) = update {
+                        self.fail_initial_mode(runtime, &error.message);
+                        return;
+                    }
+                }
                 let write_error = {
                     let Ok(mut gate) = mode_gate.lock() else {
                         self.fail_initial_mode(runtime, "Claude mode gate is unavailable.");
@@ -2373,7 +2431,7 @@ impl ClaudeReader {
                         &mut gate,
                         self.stdin.as_ref().expect("mode gate has stdin"),
                         &mut self.view,
-                        &mode_id,
+                        mode_id.as_deref(),
                     )
                 };
                 if let Some(error) = write_error {
@@ -2400,18 +2458,17 @@ impl ClaudeReader {
             mode_gate.lock().ok().and_then(|gate| match &gate.state {
                 ClaudeModeGateState::AwaitingResponse {
                     request_id: expected,
-                    requested_mode,
-                } if expected == request_id => Some(requested_mode.clone()),
+                    ..
+                } if expected == request_id => Some(()),
                 _ => None,
             })
         });
-        if let Some(requested_mode) = initial {
+        if initial.is_some() {
             let result = match value.pointer("/response/subtype").and_then(Value::as_str) {
                 Some("success") => Ok(value
                     .pointer("/response/response/mode")
                     .and_then(Value::as_str)
-                    .unwrap_or(&requested_mode)
-                    .to_string()),
+                    .map(str::to_string)),
                 Some("error") => Err(value
                     .pointer("/response/error")
                     .and_then(Value::as_str)
@@ -2501,9 +2558,15 @@ impl ClaudeReader {
                     .pointer("/response/response/mode")
                     .and_then(Value::as_str)
                 {
-                    self.view.set_mode(mode_id);
+                    runtime.set_claude_reported_mode_id(mode_id).map_err(|error| {
+                        self.publish(runtime, SessionEvent::AgentError {
+                            message: format!("Claude reported mode {mode_id}, but session state was not updated: {}", error.message),
+                        });
+                        error.message
+                    }).map(|()| self.view.set_mode(mode_id))
+                } else {
+                    Ok(())
                 }
-                Ok(())
             }
             Some("error") => Err(value
                 .pointer("/response/error")
@@ -2553,6 +2616,7 @@ impl ClaudeReader {
             .and_then(Value::as_str)
             .unwrap_or(request_id)
             .to_string();
+        let is_plan = tool_name == "ExitPlanMode";
         let input = request.get("input").cloned().unwrap_or(Value::Null);
         // A model's question is a question, not a permission:
         // `AskUserQuestion` carries its items in `input.questions`, and the
@@ -2584,7 +2648,42 @@ impl ClaudeReader {
             .get("command")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let (title, description, options, kind, questions) = if asked.is_empty() {
+        let plan = is_plan.then(|| {
+            input
+                .get("plan")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| "No plan text was provided.".to_string())
+        });
+        let (title, description, options, kind, questions) = if is_plan {
+            let mut options = vec![
+                PermissionOption {
+                    option_id: "deny".to_string(),
+                    name: "Reject".to_string(),
+                    kind: "reject_once".to_string(),
+                },
+                PermissionOption {
+                    option_id: "implement".to_string(),
+                    name: "Implement".to_string(),
+                    kind: "allow_once".to_string(),
+                },
+            ];
+            if runtime.mode_before_plan_id().as_deref() == Some("bypassPermissions") {
+                options.push(PermissionOption {
+                    option_id: "implement_bypass".to_string(),
+                    name: "Implement with bypass".to_string(),
+                    kind: "allow_once".to_string(),
+                });
+            }
+            (
+                "Plan".to_string(),
+                None,
+                options,
+                Some(PermissionRequestKind::Plan),
+                None,
+            )
+        } else if asked.is_empty() {
             (
                 display_name.to_string(),
                 description,
@@ -2635,7 +2734,7 @@ impl ClaudeReader {
             )
         };
         let event = SessionEvent::PermissionRequest {
-            tool_call_id: tool_use_id,
+            tool_call_id: tool_use_id.clone(),
             title,
             description,
             command,
@@ -2646,6 +2745,7 @@ impl ClaudeReader {
             is_chooser: None,
             kind,
             questions,
+            plan,
             // A placeholder the daemon overwrites with the session's stored
             // origin before the request leaves for a subscriber.
             origin: devboule_protocol::SessionOrigin::unknown(),
@@ -2658,6 +2758,8 @@ impl ClaudeReader {
                 ClaudePendingControl {
                     request_id: request_id.to_string(),
                     input: input.clone(),
+                    is_plan,
+                    pre_plan_mode: is_plan.then(|| runtime.mode_before_plan_id()).flatten(),
                     is_question,
                 },
             );

@@ -540,6 +540,7 @@ fn permission_request_round_trips_with_tool_call_correlation() {
         }],
         is_chooser: None,
         kind: None,
+        plan: None,
         questions: None,
         origin: SessionOrigin::peer("device-phone", PeerRole::Client),
         create_agent: None,
@@ -592,6 +593,7 @@ fn a_permission_request_origin_round_trips_and_absence_is_a_wire_error() {
         options: Vec::new(),
         is_chooser: None,
         kind: None,
+        plan: None,
         questions: None,
         origin: SessionOrigin::local(),
         create_agent: None,
@@ -1550,6 +1552,7 @@ fn question_kind_and_items_round_trip_with_exact_wire_shape() {
         ],
         is_chooser: None,
         kind: Some(PermissionRequestKind::Question),
+        plan: None,
         questions: Some(vec![PermissionQuestion {
             question: "Which colour should I paint the fence?".to_string(),
             header: None,
@@ -1587,6 +1590,36 @@ fn question_kind_and_items_round_trip_with_exact_wire_shape() {
     assert_eq!(encoded["questions"][0]["multiSelect"], false);
     assert_eq!(encoded["questions"][0]["allowOther"], true);
     assert!(encoded["questions"][0].get("secret").is_none());
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, event);
+}
+
+#[test]
+fn plan_kind_and_markdown_round_trip_with_exact_wire_shape() {
+    let event = SessionEvent::PermissionRequest {
+        tool_call_id: "call-plan".to_string(),
+        title: "Plan".to_string(),
+        description: None,
+        command: None,
+        args: None,
+        cwd: None,
+        env: None,
+        options: vec![PermissionOption {
+            option_id: "implement".to_string(),
+            name: "Implement".to_string(),
+            kind: "allow_once".to_string(),
+        }],
+        is_chooser: None,
+        kind: Some(PermissionRequestKind::Plan),
+        plan: Some("## Steps\n\n- Implement".to_string()),
+        questions: None,
+        origin: SessionOrigin::local(),
+        create_agent: None,
+    };
+    let encoded = serde_json::to_value(&event).expect("json");
+    assert_eq!(encoded["kind"], "plan");
+    assert_eq!(encoded["plan"], "## Steps\n\n- Implement");
+    assert!(encoded.get("questions").is_none());
     let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
     assert_eq!(decoded, event);
 }

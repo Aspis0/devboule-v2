@@ -12,6 +12,42 @@ fn pull_events(conn: &ConnHandle) -> Vec<SessionEvent> {
         .collect()
 }
 
+#[test]
+fn entering_plan_remembers_the_mode_to_resume() {
+    let runtime = SessionRuntime::new();
+    for mode in ["bypassPermissions", "plan"] {
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(SessionModeStateView {
+                current_mode_id: mode.to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        runtime
+            .record_claude_mode_report(mode)
+            .expect("record reported mode");
+    }
+    assert_eq!(
+        runtime.mode_before_plan_id().as_deref(),
+        Some("bypassPermissions")
+    );
+    runtime.store_session_manifest(SessionEvent::SessionManifest {
+        provider_id: Some("claude".to_string()),
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(SessionModeStateView {
+            current_mode_id: "acceptEdits".to_string(),
+            available_modes: Vec::new(),
+        }),
+    });
+    runtime
+        .record_claude_mode_report("acceptEdits")
+        .expect("record reported mode");
+    assert_eq!(runtime.mode_before_plan_id(), None);
+}
+
 /// The takeover tells every *other* observer that its view is dead. That
 /// must travel as the event's identity, not as a sentence on AgentError —
 /// the event a single malformed output line rides on — which the app can
@@ -109,6 +145,67 @@ fn store_session_manifest_preserves_thin_updates() {
     );
     assert_eq!(returned_modes.as_ref(), Some(&modes));
     assert_eq!(runtime.session_manifest(), Some(returned));
+}
+
+#[test]
+fn mode_update_surfaces_a_poisoned_manifest_lock() {
+    let runtime = SessionRuntime::new();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _manifest = runtime.session_manifest.lock().expect("manifest lock");
+        panic!("poison manifest lock");
+    }));
+
+    let error = runtime
+        .set_current_mode_id("acceptEdits")
+        .expect_err("a poisoned manifest cannot accept a mode update");
+    assert_eq!(
+        error.message,
+        "Session manifest is unavailable; mode change was not applied."
+    );
+}
+
+#[test]
+fn mode_update_rejects_a_missing_manifest() {
+    let runtime = SessionRuntime::new();
+
+    let error = runtime
+        .set_current_mode_id("acceptEdits")
+        .expect_err("a missing manifest cannot accept a mode update");
+    assert_eq!(
+        error.message,
+        "Session mode manifest is missing; mode change was not applied."
+    );
+}
+
+#[test]
+fn mode_update_reports_a_closed_stream() {
+    let runtime = SessionRuntime::new();
+    runtime.store_session_manifest(SessionEvent::SessionManifest {
+        provider_id: Some("claude".to_string()),
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(devboule_protocol::SessionModeStateView {
+            current_mode_id: "default".to_string(),
+            available_modes: Vec::new(),
+        }),
+    });
+    runtime
+        .set_current_mode_id("bypassPermissions")
+        .expect("mode");
+    runtime.set_current_mode_id("plan").expect("plan mode");
+    let before = runtime.session_manifest();
+    let previous = runtime.mode_before_plan_id();
+    runtime.stream.lock().expect("stream lock").output_closed = true;
+
+    let error = runtime
+        .set_current_mode_id("acceptEdits")
+        .expect_err("a closed stream cannot deliver the mode update");
+    assert_eq!(
+        error.message,
+        "Session event stream is unavailable; mode change was not applied."
+    );
+    assert_eq!(runtime.session_manifest(), before);
+    assert_eq!(runtime.mode_before_plan_id(), previous);
 }
 
 #[test]
@@ -292,6 +389,116 @@ fn session_notice_survives_detach_and_reattach() {
     )));
     journal.shutdown();
 }
+
+#[test]
+fn plan_rows_and_agent_report_outcomes_replay_from_the_journal() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-plan-decision-replay");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let session_id = "s.plan.replay";
+    let mut record =
+        crate::journal::new_session_record(session_id, "owner", None, SessionKind::Claude, "Plan");
+    record.closed = false;
+    journal.upsert_blocking(record).expect("session row");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+
+    let large_plan = format!("ab{}", "🧭".repeat(crate::plan_text::MAX_PLAN_BYTES));
+    let plans = [
+        ("approved-plan", "Review the changes"),
+        ("rejected-plan", "Run the migration"),
+        ("withdrawn-plan", "Remove the old API"),
+        ("unanswered-plan", "Wait for a decision"),
+        ("oversized-plan", large_plan.as_str()),
+    ];
+    let envelope = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "id": "message-plan-replay",
+            "role": "assistant",
+            "content": plans.iter().map(|(id, plan)| serde_json::json!({
+                "type": "tool_use",
+                "id": id,
+                "name": "ExitPlanMode",
+                "input": {"plan": plan},
+            })).collect::<Vec<_>>(),
+        },
+    });
+    runtime
+        .journal_agent_envelope(&envelope)
+        .expect("journal Claude row");
+
+    for (tool_call_id, status, title) in [
+        ("approved-plan", "completed", "Approved"),
+        ("rejected-plan", "failed", "Rejected"),
+        ("withdrawn-plan", "cancelled", "Withdrawn"),
+    ] {
+        assert!(runtime.publish_daemon_event(SessionEvent::AgentToolUpdate {
+            tool_call_id: tool_call_id.to_string(),
+            status: Some(status.to_string()),
+            text: None,
+            title: Some(title.to_string()),
+            kind: Some("plan".to_string()),
+            locations: None,
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        }));
+    }
+    journal.flush().expect("flush decision rows");
+
+    let recovered = SessionRuntime::from_replay(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+        journal.replay(session_id).expect("replay"),
+    );
+    let connection = ConnHandle::new(1);
+    let attached = recovered
+        .try_attach_with_replay(None, &connection, false)
+        .expect("recovered attach");
+    connection.track_with_agent_replay(
+        session_id,
+        Arc::clone(&recovered),
+        true,
+        None,
+        attached.generation,
+        attached.live_agent_replay,
+    );
+    let replayed = pull_events(&connection);
+    for (tool_call_id, plan) in plans {
+        let expected_plan = crate::plan_text::bound_plan_text(plan);
+        assert!(replayed.iter().any(|event| matches!(event,
+            SessionEvent::AgentToolUpdate { tool_call_id: id, text: Some(text), kind: Some(kind), .. }
+            if id == tool_call_id && text == &expected_plan && kind == "plan"
+        )), "missing re-derived plan body for {tool_call_id}");
+    }
+    for (tool_call_id, status, title) in [
+        ("approved-plan", "completed", "Approved"),
+        ("rejected-plan", "failed", "Rejected"),
+        ("withdrawn-plan", "cancelled", "Withdrawn"),
+    ] {
+        assert!(replayed.iter().any(|event| matches!(event,
+            SessionEvent::AgentToolUpdate { tool_call_id: id, status: Some(actual_status), text: None, title: Some(actual_title), kind: Some(kind), .. }
+            if id == tool_call_id && actual_status == status && actual_title == title && kind == "plan"
+        )), "missing AgentReport outcome for {tool_call_id}");
+    }
+    assert!(
+        !replayed.iter().any(|event| matches!(event,
+            SessionEvent::AgentToolUpdate { tool_call_id, title: Some(title), .. }
+            if tool_call_id == "unanswered-plan" && title == "Withdrawn"
+        )),
+        "replay must leave the unanswered card unanswered"
+    );
+    assert!(
+        replayed.iter().any(|event| matches!(event,
+            SessionEvent::AgentToolCall { tool_call_id, status, kind: Some(kind), .. }
+            if tool_call_id == "unanswered-plan" && status == "pending" && kind == "plan"
+        )),
+        "the unanswered plan remains pending for the ended-transcript renderer"
+    );
+    journal.shutdown();
+}
+
 /// The first prompt is owed exactly once per session, and a session built
 /// from a replay is owed none: the standing instructions are a session-start
 /// rule, never a resume rule.

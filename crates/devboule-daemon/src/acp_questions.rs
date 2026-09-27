@@ -139,6 +139,7 @@ pub(super) fn grok_question_event(
         options,
         is_chooser: Some(false),
         kind: Some(PermissionRequestKind::Question),
+        plan: None,
         questions: Some(
             questions
                 .iter()

@@ -439,13 +439,14 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                     }
                 }
                 Some(EventKind::AgentReport) => {
-                    if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                    if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                        crate::plan_text::bound_permission_request(&mut event);
                         gen_events.push(event);
                         gen_seqs.push(seq);
                     }
                 }
                 Some(EventKind::AcpEnvelope) => {
-                    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                    if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload) {
                         if record.kind == SessionKind::Codex {
                             for view in codex_view.ingest(&value) {
                                 gen_events.push(view);
@@ -457,6 +458,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                                 gen_seqs.push(seq);
                             }
                         } else {
+                            crate::plan_text::bound_claude_envelope(&mut value);
                             let views = crate::acp_view::view_from_envelope(&value, "");
                             if views.is_empty() {
                                 for view in claude_view.ingest(&value) {
@@ -520,10 +522,12 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                     });
                 }
                 if kind == "agent_report" {
-                    if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                    if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                        crate::plan_text::bound_permission_request(&mut event);
                         covered_reports.push((seq, event));
                     }
-                } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                } else if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload)
+                {
                     if record.kind == SessionKind::Codex {
                         for view in covered_codex.ingest(&value) {
                             covered_reports.push((seq, view));
@@ -533,6 +537,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                             covered_reports.push((seq, view));
                         }
                     } else {
+                        crate::plan_text::bound_claude_envelope(&mut value);
                         let views = crate::acp_view::view_from_envelope(&value, "");
                         if views.is_empty() {
                             for view in covered_claude.ingest(&value) {

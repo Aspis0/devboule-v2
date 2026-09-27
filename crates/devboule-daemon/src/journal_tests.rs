@@ -810,6 +810,7 @@ fn a_preset_spelled_creation_card_hydrates_on_replay() {
         }],
         is_chooser: None,
         kind: None,
+        plan: None,
         questions: None,
         origin: devboule_protocol::SessionOrigin::local(),
         create_agent: Some(Box::new(devboule_protocol::CreateAgentCard {

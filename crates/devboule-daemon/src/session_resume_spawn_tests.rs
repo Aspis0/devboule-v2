@@ -60,7 +60,7 @@ fn evicting_a_dead_child_reports_its_end_and_leaves_its_runtime_open() {
     );
     wait_for_child_finished(&fixture, &creator, &child);
     assert!(
-        child_runtime.can_publish_agent_user_message(),
+        child_runtime.can_publish_agent_event(),
         "the resumed generation's runtime is not finished by the eviction"
     );
     fixture.finish();

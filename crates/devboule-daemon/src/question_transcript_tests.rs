@@ -18,6 +18,7 @@ fn request_with(questions: Vec<devboule_protocol::PermissionQuestion>) -> Sessio
         options: Vec::new(),
         is_chooser: None,
         kind: Some(PermissionRequestKind::Question),
+        plan: None,
         questions: Some(questions),
         origin: SessionOrigin::local(),
         create_agent: None,

@@ -337,6 +337,7 @@ fn two_question_card(tool_call_id: &str) -> SessionEvent {
         ],
         is_chooser: None,
         kind: Some(PermissionRequestKind::Question),
+        plan: None,
         questions: Some(vec![
             item("Which colour should I paint the fence?", &["Green", "Red"]),
             item("Which stain finish?", &["Matte", "Satin"]),

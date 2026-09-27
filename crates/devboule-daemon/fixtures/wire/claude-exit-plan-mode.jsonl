@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","mode":"plan"}
+{"type":"control_response","response":{"subtype":"success","request_id":"e32b7bcf-d470-4d10-83a8-e9f245b890e5","response":{"behavior":"allow","updatedInput":{"plan":"1. Create C:\\tmp\\plan-probe\\hello.txt containing the word \"hi\" using the Write tool.\n2. Verify by reading the file back.\n","planFilePath":"C:\\Users\\gualt\\.claude\\plans\\plan-create-a-file-crispy-blum.md"},"updatedPermissions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}]}}}
+{"type":"system","subtype":"status","mode":"acceptEdits"}

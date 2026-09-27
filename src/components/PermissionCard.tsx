@@ -4,6 +4,7 @@ import { optionOutcome } from "../lib/optionOutcome";
 import { sessionPermissionRespond } from "../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import { ErrorText } from "./ErrorText";
+import { MarkdownText } from "./MarkdownText";
 import type {
   DaemonConnectionState,
   PermissionQuestion,
@@ -435,6 +436,7 @@ export function PermissionCard({
   if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
 
   const subject = permissionSubject(request, toolTitle);
+  const isPlan = request.kind === "plan";
   const provenance = permissionOriginLabel(origin ?? request.origin, deviceNames);
   const commandLine = formatPermissionCommand(request);
   const daemonReachable = daemonState === "connected";
@@ -637,7 +639,7 @@ export function PermissionCard({
       {provenance !== null ? <div className="permission-card-origin">{provenance}</div> : null}
       <div className="permission-card-heading">
         <span className={`permission-card-dot permission-card-${cardTone}`} />
-        <span className="permission-card-action">{subject.action}</span>
+        <span className="permission-card-action">{isPlan ? "Plan" : subject.action}</span>
         {request.cwd ? <span className="permission-card-context">{request.cwd}</span> : null}
       </div>
       {subject.target ? (
@@ -647,6 +649,11 @@ export function PermissionCard({
       ) : null}
       {request.description ? (
         <div className="permission-card-description">{request.description}</div>
+      ) : null}
+      {isPlan ? (
+        <div className="permission-card-description permission-card-plan">
+          <MarkdownText text={request.plan ?? "No plan text was provided."} />
+        </div>
       ) : null}
       {commandLine ? <div className="permission-card-command">{commandLine}</div> : null}
       {request.env && request.env.length > 0 ? (
@@ -659,7 +666,7 @@ export function PermissionCard({
           The daemon is not reachable. Reconnect to answer this request.
         </div>
       ) : null}
-      {!isQuestion && !isChooser && (!allowSupported || !denySupported) ? (
+      {!isQuestion && !isPlan && !isChooser && (!allowSupported || !denySupported) ? (
         <div className="permission-card-unavailable" role="status">
           {!allowSupported ? "Allow once is not offered for this request." : null}
           {!allowSupported && !denySupported ? " " : null}
@@ -752,7 +759,7 @@ export function PermissionCard({
               Submit
             </button>
           </>
-        ) : isChooser ? (
+        ) : isChooser || isPlan ? (
           <>
             {!hasRejectOption ? (
               <button

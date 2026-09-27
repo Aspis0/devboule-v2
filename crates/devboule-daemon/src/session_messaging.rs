@@ -759,7 +759,7 @@ impl super::SessionRegistry {
             if has_prompt && mcp_required {
                 runtime.wait_for_mcp_ready(mcp_timeout)?;
             }
-            if has_prompt && !runtime.can_publish_agent_user_message() {
+            if has_prompt && !runtime.can_publish_agent_event() {
                 return Err(internal("Agent input could not be recorded."));
             }
         }

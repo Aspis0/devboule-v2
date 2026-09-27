@@ -74,20 +74,20 @@ fn session_event_samples() -> Vec<SessionEvent> {
             commands: Vec::new(),
         },
         AgentToolCall => SessionEvent::AgentToolCall {
-            tool_call_id: String::new(),
-            title: String::new(),
-            status: String::new(),
-            kind: Some("read".to_string()),
+            tool_call_id: "toolu_plan".to_string(),
+            title: "Plan".to_string(),
+            status: "pending".to_string(),
+            kind: Some("plan".to_string()),
             locations: Some(vec![crate::ToolLocation {
                 path: "src/lib.rs".to_string(),
                 line: Some(1),
             }]),
-            subagent_type: Some("explorer".to_string()),
+            subagent_type: None,
             parent_tool_use_id: Some("toolu_parent".to_string()),
             spawn_depth: Some(1),
         },
         AgentToolUpdate => SessionEvent::AgentToolUpdate {
-            tool_call_id: String::new(),
+            tool_call_id: "toolu_plan".to_string(),
             status: None,
             text: None,
             title: Some("cargo test".to_string()),
@@ -213,6 +213,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             // by it. `questions` stays absent — this sample is the ordinary
             // tool card, the same variant with the field absent.
             kind: Some(crate::PermissionRequestKind::Tool),
+            plan: None,
             questions: None,
             origin: crate::SessionOrigin::unknown(),
             // The sample carries the creation payload rather than `None`: the

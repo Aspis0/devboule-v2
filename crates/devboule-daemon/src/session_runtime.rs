@@ -201,6 +201,8 @@ pub(crate) struct SessionRuntime {
     pub(crate) published_frames: AtomicU64,
     pub(crate) published_bytes: AtomicUsize,
     pub(crate) session_manifest: Mutex<Option<SessionEvent>>,
+    mode_before_plan: Mutex<Option<String>>,
+    claude_reported_mode: Mutex<Option<String>>,
     mcp_bearer: Mutex<Option<String>>,
     mcp_url: Mutex<Option<String>>,
     mcp_readiness: Mutex<McpReadiness>,
@@ -512,6 +514,8 @@ impl SessionRuntime {
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
+            mode_before_plan: Mutex::new(None),
+            claude_reported_mode: Mutex::new(None),
             agent_message: Mutex::new(None),
             agent_stop_reason: Mutex::new(None),
             mcp_bearer: Mutex::new(None),
@@ -1182,6 +1186,28 @@ impl SessionRuntime {
             }
             event => event,
         };
+        if let SessionEvent::SessionManifest {
+            provider_id,
+            modes: Some(modes),
+            ..
+        } = &event
+        {
+            if provider_id.as_deref() != Some("claude") {
+                let old_mode = previous.and_then(|previous| match previous {
+                    SessionEvent::SessionManifest {
+                        modes: Some(previous_modes),
+                        ..
+                    } => Some(previous_modes.current_mode_id.as_str()),
+                    _ => None,
+                });
+                if let Err(error) = self.record_mode_before_plan(old_mode, &modes.current_mode_id) {
+                    eprintln!(
+                        "session {} could not update pre-plan mode: {}",
+                        self.session_id, error.message
+                    );
+                }
+            }
+        }
         *stored = Some(event.clone());
         event
     }
@@ -1196,6 +1222,35 @@ impl SessionRuntime {
             *stored_state = state;
         }
         event
+    }
+
+    fn record_mode_before_plan(
+        &self,
+        previous_mode: Option<&str>,
+        mode_id: &str,
+    ) -> Result<(), WireError> {
+        let mut stored = self.mode_before_plan.lock().map_err(|_| {
+            WireError::new(
+                ErrorCode::Io,
+                "Pre-plan mode history is unavailable; mode history was not updated.",
+            )
+        })?;
+        Self::update_mode_before_plan(&mut stored, previous_mode, mode_id);
+        Ok(())
+    }
+
+    fn update_mode_before_plan(
+        stored: &mut Option<String>,
+        previous_mode: Option<&str>,
+        mode_id: &str,
+    ) {
+        if mode_id == "plan" {
+            if previous_mode != Some("plan") {
+                *stored = previous_mode.map(str::to_string);
+            }
+        } else {
+            *stored = None;
+        }
     }
 
     pub(crate) fn store_claude_catalog(&self, event: SessionEvent) -> SessionEvent {
@@ -1962,7 +2017,7 @@ impl SessionRuntime {
         self.publish_journaled_agent_event(|_, _| event).is_some()
     }
 
-    pub(crate) fn can_publish_agent_user_message(&self) -> bool {
+    pub(crate) fn can_publish_agent_event(&self) -> bool {
         self.lock_stream()
             .map(|stream| !stream.output_closed)
             .unwrap_or(false)
@@ -2418,6 +2473,139 @@ impl SessionRuntime {
             } => Some(modes.current_mode_id),
             _ => None,
         }
+    }
+
+    pub(crate) fn mode_before_plan_id(&self) -> Option<String> {
+        self.mode_before_plan
+            .lock()
+            .ok()
+            .and_then(|mode| mode.clone())
+    }
+
+    pub(crate) fn set_current_mode_id(&self, mode_id: &str) -> Result<(), WireError> {
+        if !self.can_publish_agent_event() {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                "Session event stream is unavailable; mode change was not applied.",
+            ));
+        }
+        let mut stored = self.session_manifest.lock().map_err(|_| {
+            WireError::new(
+                ErrorCode::Io,
+                "Session manifest is unavailable; mode change was not applied.",
+            )
+        })?;
+        let Some(manifest) = stored.as_mut() else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session mode manifest is missing; mode change was not applied.",
+            ));
+        };
+        let (previous_mode, modes) = match manifest {
+            SessionEvent::SessionManifest {
+                modes: Some(modes), ..
+            } => (modes.current_mode_id.clone(), modes),
+            _ => {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Session mode state is missing; mode change was not applied.",
+                ));
+            }
+        };
+        let mut mode_before_plan = self.mode_before_plan.lock().map_err(|_| {
+            WireError::new(
+                ErrorCode::Io,
+                "Pre-plan mode history is unavailable; mode change was not applied.",
+            )
+        })?;
+        Self::update_mode_before_plan(&mut mode_before_plan, Some(&previous_mode), mode_id);
+        modes.current_mode_id = mode_id.to_string();
+        let manifest = manifest.clone();
+        drop(mode_before_plan);
+        drop(stored);
+        // The stream preflight decides whether to mutate; publication can race with EOF.
+        let _was_silent = self.publish_agent_event(manifest, None);
+        Ok(())
+    }
+
+    pub(crate) fn record_claude_mode_report(&self, mode_id: &str) -> Result<(), WireError> {
+        if !self.can_publish_agent_event() {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                "Session event stream is unavailable; reported mode was not applied.",
+            ));
+        }
+        let mut reported_mode = self.claude_reported_mode.lock().map_err(|_| {
+            WireError::new(
+                ErrorCode::Io,
+                "Claude reported-mode history is unavailable; mode was not applied.",
+            )
+        })?;
+        let mut mode_before_plan = self.mode_before_plan.lock().map_err(|_| {
+            WireError::new(
+                ErrorCode::Io,
+                "Claude pre-plan mode history is unavailable; mode was not applied.",
+            )
+        })?;
+        Self::update_mode_before_plan(&mut mode_before_plan, reported_mode.as_deref(), mode_id);
+        *reported_mode = Some(mode_id.to_string());
+        Ok(())
+    }
+
+    pub(crate) fn set_claude_reported_mode_id(&self, mode_id: &str) -> Result<(), WireError> {
+        if !self.can_publish_agent_event() {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                "Session event stream is unavailable; reported mode was not applied.",
+            ));
+        }
+        let mut stored = self.session_manifest.lock().map_err(|_| {
+            WireError::new(
+                ErrorCode::Io,
+                "Session manifest is unavailable; reported mode was not applied.",
+            )
+        })?;
+        let Some(manifest) = stored.as_mut() else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Claude mode manifest is missing; reported mode was not applied.",
+            ));
+        };
+        let modes = match manifest {
+            SessionEvent::SessionManifest {
+                provider_id: Some(provider_id),
+                modes: Some(modes),
+                ..
+            } if provider_id == "claude" => modes,
+            _ => {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Claude mode state is missing; reported mode was not applied.",
+                ));
+            }
+        };
+        let mut reported_mode = self.claude_reported_mode.lock().map_err(|_| {
+            WireError::new(
+                ErrorCode::Io,
+                "Claude reported-mode history is unavailable; mode was not applied.",
+            )
+        })?;
+        let mut mode_before_plan = self.mode_before_plan.lock().map_err(|_| {
+            WireError::new(
+                ErrorCode::Io,
+                "Claude pre-plan mode history is unavailable; mode was not applied.",
+            )
+        })?;
+        Self::update_mode_before_plan(&mut mode_before_plan, reported_mode.as_deref(), mode_id);
+        *reported_mode = Some(mode_id.to_string());
+        modes.current_mode_id = mode_id.to_string();
+        let manifest = manifest.clone();
+        drop(mode_before_plan);
+        drop(reported_mode);
+        drop(stored);
+        // The stream preflight decides whether to mutate; publication can race with EOF.
+        let _was_silent = self.publish_agent_event(manifest, None);
+        Ok(())
     }
 
     /// What this session's mode says about a write-shaped act

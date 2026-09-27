@@ -991,11 +991,14 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is_chooser: Option<bool>,
         /// Why the daemon is asking: an ordinary tool permission or a
-        /// model's question for the person. Absent reads as `tool` — every
-        /// request before this field, and every non-question request, is
-        /// one. The broker never auto-answers a `question`, in any mode.
+        /// model's question or plan for the person. Absent reads as `tool` —
+        /// every request before this field, and every ordinary tool request,
+        /// is one. The broker never auto-answers a question or plan.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<PermissionRequestKind>,
+        /// Markdown body for a model's plan approval request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<String>,
         /// The model's questions, one entry per `input.questions` item the
         /// provider sent. Present only when `kind` is `question`; the card
         /// renders one group per entry (radio options, or checkboxes when
@@ -1272,13 +1275,15 @@ pub struct PermissionOption {
 ///
 /// Absent on the wire reads as [`PermissionRequestKind::Tool`]: the default
 /// is deliberate, so every request from a daemon older than this field keeps
-/// its meaning.
+/// its meaning. A plan carries Markdown in its request's `plan` field and
+/// waits for the person to accept or reject it.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionRequestKind {
     #[default]
     Tool,
     Question,
+    Plan,
 }
 
 /// One question a model asked the person, as carried on a `question`

@@ -319,6 +319,7 @@ fn write_gate_card(
         // choice is unclickable.
         is_chooser: Some(true),
         kind: None,
+        plan: None,
         questions: None,
         origin: SessionOrigin::unknown(),
         create_agent: None,

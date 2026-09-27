@@ -437,6 +437,7 @@ fn the_pending_list_frames_titles_and_excerpts_like_the_push_envelope() {
         }],
         is_chooser: None,
         kind: None,
+        plan: None,
         questions: None,
         origin: SessionOrigin::local(),
         create_agent: None,

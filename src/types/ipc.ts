@@ -450,10 +450,10 @@ export interface PermissionRequest {
    * Why the daemon is asking: an ordinary tool permission or a model's
    * question for the person. Absent reads as `"tool"` — every request
    * from a daemon older than this field is one. The card renders the
-   * question form only for `"question"`; a marked chooser the daemon
-   * stamped underneath stays the fallback for older clients.
+   * question form only for `"question"`; plans render Markdown; a marked
+   * chooser the daemon stamped underneath stays the fallback for older clients.
    */
-  kind?: "tool" | "question";
+  kind?: "tool" | "question" | "plan";
   /**
    * The model's questions, one entry per asked item. Present only on a
    * `"question"` request; the card renders one group per entry (radio
@@ -463,6 +463,8 @@ export interface PermissionRequest {
    * while free text travels as the respond call's `answer`.
    */
   questions?: PermissionQuestion[];
+  /** The model's Markdown plan on a `plan` request. */
+  plan?: string;
   /**
    * The origin of the session this request belongs to, when the daemon sends
    * it. The card renders a `peer` origin as its own provenance line, in its own
