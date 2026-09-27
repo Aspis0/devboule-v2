@@ -162,6 +162,15 @@ describe("devices panel", () => {
     return found;
   }
 
+  async function openRowKebab(): Promise<void> {
+    await act(async () => {
+      const kebab = container.querySelector<HTMLButtonElement>(".dev-kebab");
+      if (kebab === null) throw new Error("row kebab did not render");
+      kebab.click();
+      await Promise.resolve();
+    });
+  }
+
   function codeInput(): HTMLInputElement {
     const field = container.querySelector<HTMLInputElement>('input[aria-label="pairing code"]');
     if (field === null) throw new Error("code field did not render");
@@ -830,6 +839,7 @@ describe("devices panel", () => {
   it("asks for a second click before revoking", async () => {
     vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
     await renderPanel();
+    await openRowKebab();
 
     await act(async () => {
       buttonByText("Revoke").click();
@@ -850,6 +860,7 @@ describe("devices panel", () => {
   it("uses the stronger copy for a lost or stolen device", async () => {
     vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
     await renderPanel();
+    await openRowKebab();
 
     await act(async () => {
       buttonByText("Lost or stolen device").click();
@@ -894,23 +905,32 @@ describe("devices panel", () => {
     expect(buttonByText("Retry")).toBeTruthy();
   });
 
-  it("gives every device card the class its column layout depends on", async () => {
-    // The peer, pending and revoked cards declare flex properties; only
-    // `settings-card` supplies `display: flex`, so the class list is the
-    // contract that keeps that layout from silently going inert.
+  it("gives every device row the classes its layout depends on", async () => {
+    // The rows declare their own flex layout on `dev-` classes: no row may
+    // lean on the shell's `settings-card` for `display: flex`, and the kebab
+    // trigger must name the daemon's display name, never the raw device id.
     vi.mocked(devicesList).mockResolvedValue(
       replyWith({ peers: [CLIENT_PEER, REVOKED_PEER], pending: [PENDING] }),
     );
     await renderPanel();
 
-    for (const selector of [".device-peer", ".device-pending", ".device-revoked-row"]) {
-      const cards = Array.from(container.querySelectorAll(selector));
-      expect(cards.length, `${selector} did not render`).toBeGreaterThan(0);
-      for (const card of cards) {
-        expect(card.classList.contains("settings-card"), selector).toBe(true);
-        expect(card.classList.contains("settings-device-card"), selector).toBe(true);
-      }
+    for (const card of Array.from(container.querySelectorAll(".dev-row-wrap"))) {
+      expect(card.classList.contains("settings-card")).toBe(false);
+      expect(card.querySelector(":scope > .dev-row")).not.toBeNull();
+      expect(card.querySelector(":scope > .dev-details")).not.toBeNull();
+      const glyph = card.querySelector(".dev-glyph svg");
+      expect(glyph?.getAttribute("aria-hidden")).toBe("true");
+      expect(card.querySelector(".dev-name")?.textContent).not.toBe("");
+      expect(card.querySelector(".dev-status")?.textContent).not.toBe("");
     }
+    expect(container.querySelectorAll(".dev-row-wrap").length).toBe(2);
+    const kebab = container.querySelector(".dev-kebab");
+    if (kebab === null) throw new Error("row kebab did not render");
+    expect(kebab.getAttribute("aria-label")).toBe(`Actions for ${CLIENT_PEER.displayName}`);
+    expect(container.textContent).not.toContain(CLIENT_PEER.deviceId);
+    const revoked = container.querySelector(".dev-revoked-row");
+    if (revoked === null) throw new Error("revoked row did not render");
+    expect(revoked.querySelector(".dev-name")?.textContent).toBe(REVOKED_PEER.displayName);
   });
 
   it("ignores a poll reply that would undo a confirmed capability change", async () => {
@@ -1081,6 +1101,7 @@ describe("devices panel", () => {
     vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
     vi.mocked(peerRevoke).mockResolvedValue({ ...CLIENT_PEER, revokedAt: NOW });
     await renderPanel();
+    await openRowKebab();
 
     await act(async () => {
       buttonByText("Revoke").click();

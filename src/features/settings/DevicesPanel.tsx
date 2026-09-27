@@ -20,6 +20,8 @@ import type {
   RemoteState,
 } from "../../types/ipc";
 import { nextCaps } from "./peerCaps";
+import { DeviceGlyph } from "./devices/DeviceGlyph";
+import { DeviceKebab } from "./devices/DeviceKebab";
 import "./devices.css";
 
 /**
@@ -200,10 +202,10 @@ interface RoleChoiceProps {
 /** The two peer roles, each with the one line that says what it means. */
 function RoleChoice({ name, value, disabled, onChange }: RoleChoiceProps) {
   return (
-    <fieldset className="device-role-choice">
+    <fieldset className="dev-role-choice">
       <legend>Pair the other device as</legend>
       {ROLE_OPTIONS.map((option) => (
-        <label className="device-role-option" key={option.value}>
+        <label className="dev-role-option" key={option.value}>
           <input
             type="radio"
             name={name}
@@ -212,8 +214,8 @@ function RoleChoice({ name, value, disabled, onChange }: RoleChoiceProps) {
             disabled={disabled}
             onChange={() => onChange(option.value)}
           />
-          <span className="device-role-name">{option.label}</span>
-          <span className="device-role-hint">{option.hint}</span>
+          <span className="dev-role-name">{option.label}</span>
+          <span className="dev-role-hint">{option.hint}</span>
         </label>
       ))}
     </fieldset>
@@ -248,88 +250,95 @@ function heldCap(row: PeerRow, caps: readonly Cap[]): { cap: Cap; note: string }
     : null;
 }
 
-/** One paired device, with its capability toggles and its inline revoke. */
+/** One paired device: the row (glyph, name, status, kebab) with its
+ * capability toggles and its inline revoke underneath. */
 function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCardProps) {
   // Which revoke copy is armed on this row, if any. Local to the row so a
   // half-answered revoke on one device is not shown as armed on another.
   const [armed, setArmed] = useState<"revoke" | "lost" | null>(null);
   const held = heldCap(row, caps);
   return (
-    <div className="settings-card settings-device-card device-peer">
-      <div className="device-peer-head">
-        <span
-          className={`device-dot device-dot-${row.online ? "ready" : "idle"}`}
-          aria-hidden="true"
+    <div className="dev-row-wrap">
+      <div className="dev-row">
+        <span className="dev-glyph">
+          <DeviceGlyph />
+        </span>
+        <span className="dev-name">{row.displayName}</span>
+        <span className="dev-role-chip">{row.role}</span>
+        <span className="dev-status">
+          <span className={`dev-dot dev-dot-${row.online ? "live" : "idle"}`} aria-hidden="true" />
+          {row.online ? "online" : "offline"}
+        </span>
+        <span className="dev-spacer" aria-hidden="true" />
+        <DeviceKebab
+          displayName={row.displayName}
+          onRevoke={() => setArmed("revoke")}
+          onLost={() => setArmed("lost")}
         />
-        <span className="settings-card-title">{row.displayName}</span>
-        <span className="device-role-chip">{row.role}</span>
-        <span className="settings-card-value">{row.online ? "online" : "offline"}</span>
       </div>
-      <span className="settings-card-meta">
-        {row.address}
-        {row.bindingNodeName === null ? "" : ` · ${row.bindingNodeName}`}
-      </span>
-      <span className="settings-card-meta">paired {relativeTime(row.pairedAt, now)}</span>
-      <fieldset className="device-caps">
-        <legend className="device-caps-legend">This device may</legend>
-        {CAP_ORDER.map((cap) => (
-          <label className="device-cap" key={cap}>
-            <input
-              type="checkbox"
-              checked={caps.includes(cap)}
-              disabled={busy || held?.cap === cap}
-              onChange={(event) => onToggleCap(cap, event.target.checked)}
-            />
-            <span>{CAP_LABELS[cap]}</span>
-            {held?.cap === cap ? <span className="device-cap-note">{held.note}</span> : null}
-          </label>
-        ))}
-      </fieldset>
-      {row.role === "client" ? null : (
-        <p className="device-copy">
-          A daemon peer reaches the sessions it created on this device; this machine's own sessions
-          are not in its list.
-        </p>
-      )}
-      {error === undefined ? null : (
-        <p role="alert" className="device-error">
-          <ErrorText
-            sentence={error.sentence}
-            detail={error.detail}
-            id={`devices-row-error-${row.deviceId}`}
-          />
-        </p>
-      )}
-      <div className="device-actions">
-        <button type="button" className="settings-device-action" onClick={() => setArmed("revoke")}>
-          Revoke
-        </button>
-        <button type="button" className="settings-device-action" onClick={() => setArmed("lost")}>
-          Lost or stolen device
-        </button>
-      </div>
-      {armed === null ? null : (
-        <div className="device-inline-confirm">
+      <div className="dev-details">
+        <span className="dev-meta">
+          {row.address}
+          {row.bindingNodeName === null ? "" : ` · ${row.bindingNodeName}`}
+        </span>
+        <span className="dev-meta">paired {relativeTime(row.pairedAt, now)}</span>
+        <fieldset className="dev-caps">
+          <legend className="dev-caps-legend">This device may</legend>
+          {CAP_ORDER.map((cap) => (
+            <label className="dev-cap" key={cap}>
+              <input
+                type="checkbox"
+                checked={caps.includes(cap)}
+                disabled={busy || held?.cap === cap}
+                onChange={(event) => onToggleCap(cap, event.target.checked)}
+              />
+              <span>{CAP_LABELS[cap]}</span>
+              {held?.cap === cap ? <span className="dev-cap-note">{held.note}</span> : null}
+            </label>
+          ))}
+        </fieldset>
+        {row.role === "client" ? null : (
           <p className="device-copy">
-            {armed === "lost"
-              ? "Revokes this device now, closes its connections, and records it in the audit log."
-              : "Revoking stops this device reaching this one. It can come back only with a new pairing code."}
+            A daemon peer reaches the sessions it created on this device; this machine's own
+            sessions are not in its list.
           </p>
-          <div className="device-actions">
-            <button
-              type="button"
-              className="settings-device-action"
-              disabled={busy}
-              onClick={onRevoke}
-            >
-              Revoke now
-            </button>
-            <button type="button" className="settings-device-action" onClick={() => setArmed(null)}>
-              Cancel
-            </button>
+        )}
+        {error === undefined ? null : (
+          <p role="alert" className="device-error">
+            <ErrorText
+              sentence={error.sentence}
+              detail={error.detail}
+              id={`devices-row-error-${row.deviceId}`}
+            />
+          </p>
+        )}
+        {armed === null ? null : (
+          <div className="device-inline-confirm">
+            <p className="device-copy">
+              {armed === "lost"
+                ? "Revokes this device now, closes its connections, and records it in the audit log."
+                : "Revoking stops this device reaching this one. It can come back only with a new pairing code."}
+            </p>
+            <div className="device-actions">
+              <button
+                type="button"
+                className="settings-device-action"
+                disabled={busy}
+                onClick={onRevoke}
+              >
+                Revoke now
+              </button>
+              <button
+                type="button"
+                className="settings-device-action"
+                onClick={() => setArmed(null)}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -740,230 +749,224 @@ export function DevicesPanel() {
 
   return (
     <div id="settings-panel-devices">
-      <div className="settings-stack settings-stack-tight settings-devices-list">
-        {listError === null ? null : (
-          <div className="device-actions" role="alert">
+      {listError === null ? null : (
+        <div className="device-actions" role="alert">
+          <ErrorText
+            sentence={listError.sentence}
+            detail={listError.detail}
+            id="devices-list-error-panel"
+          />
+          <button type="button" className="settings-device-action" onClick={refresh}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      <section className="dev-card">
+        <div className="dev-head-line">
+          <span
+            className={`dev-dot dev-dot-${self.remote.state === "enabled" ? "live" : "idle"}`}
+            aria-hidden="true"
+          />
+          <h3 className="dev-card-title">This device</h3>
+          <span className="dev-status">{remoteLabel(self.remote)}</span>
+        </div>
+        <span className="dev-name">{self.displayName}</span>
+        <div className="dev-fingerprint-row">
+          <span className="dev-fingerprint">{groupFingerprint(self.keyFingerprint)}</span>
+          <button
+            type="button"
+            className="settings-device-action"
+            onClick={() => void copyFingerprint(self.keyFingerprint)}
+          >
+            {copyState === "copied" ? "Copied." : copyState === "failed" ? "Copy failed" : "Copy"}
+          </button>
+        </div>
+        <span className="dev-meta">
+          {self.addresses.length === 0
+            ? "no tailnet address"
+            : `${self.addresses.join(", ")} · port ${self.port}`}
+        </span>
+      </section>
+
+      <section className="dev-card">
+        <h3 className="dev-card-title" ref={pairHeadingRef} tabIndex={-1}>
+          Pair a device
+        </h3>
+        <p className="device-copy">
+          One device shows a code, the other types it. The far side then has to confirm the pairing,
+          and the code stops working five minutes after it appears.
+        </p>
+        <div className="device-actions">
+          <button
+            type="button"
+            className="settings-device-action"
+            disabled={enterOpen || enterBusyFlow}
+            onClick={() => void showCode()}
+          >
+            {starting ? "Asking…" : "Show a code"}
+          </button>
+          <button
+            type="button"
+            className="settings-device-action"
+            disabled={showBusy}
+            onClick={() => setEnterOpen((open) => !open)}
+          >
+            Enter a code
+          </button>
+        </div>
+
+        {liveCode === null ? null : (
+          <div className="dev-pair-block">
+            <span className="dev-pair-code" aria-label="pairing code">
+              {groupCode(liveCode.code)}
+            </span>
+            <span className="dev-meta">Type this on the other device at {liveCode.address}</span>
+            <span className="dev-meta">Expires in {formatDuration(liveCode.expiresAt - now)}</span>
+            <button type="button" className="settings-device-action" onClick={cancelCode}>
+              Cancel
+            </button>
+          </div>
+        )}
+        {codeError === null ? null : (
+          <p role="alert" className="device-error">
             <ErrorText
-              sentence={listError.sentence}
-              detail={listError.detail}
-              id="devices-list-error-panel"
+              sentence={codeError.sentence}
+              detail={codeError.detail}
+              id="devices-code-error"
             />
-            <button type="button" className="settings-device-action" onClick={refresh}>
-              Retry
+          </p>
+        )}
+
+        <RoleChoice
+          name="pairing-show-role"
+          value={showRole}
+          disabled={showBusy || enterOpen}
+          onChange={setShowRole}
+        />
+
+        {enterOpen ? (
+          <form className="dev-pair-form" onSubmit={(event) => void submitEnter(event)}>
+            <label className="device-field">
+              <span>Address</span>
+              <input
+                type="text"
+                value={enterAddress}
+                placeholder={`100.64.0.1:${DEFAULT_PEER_PORT}`}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setEnterAddress(event.target.value)}
+              />
+              <span className="device-field-hint">
+                host:port — an IPv6 address goes in brackets, like [fd7a:115c:a1e0::1]:
+                {DEFAULT_PEER_PORT}
+              </span>
+            </label>
+            <label className="device-field">
+              <span>Code</span>
+              <input
+                type="text"
+                value={enterCode}
+                aria-label="pairing code"
+                placeholder="XXXX XXXX"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                inputMode="text"
+                maxLength={CODE_LENGTH}
+                onChange={(event) => setEnterCode(sanitizePairingCode(event.target.value))}
+              />
+            </label>
+            <RoleChoice
+              name="pairing-enter-role"
+              value={enterRole}
+              disabled={enterBusyFlow}
+              onChange={setEnterRole}
+            />
+            <div className="device-actions">
+              <button type="submit" className="settings-device-action" disabled={enterBusyFlow}>
+                {enterBusy ? "Pairing…" : "Pair"}
+              </button>
+              <button
+                type="button"
+                className="settings-device-action"
+                disabled={enterBusyFlow}
+                onClick={() => {
+                  setEnterOpen(false);
+                  setEnterError(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : null}
+
+        {waiting === null ? null : (
+          <div className="dev-pair-block">
+            {waitingExpired ? (
+              <span className="dev-meta">Pairing expired</span>
+            ) : (
+              <>
+                <span className="dev-meta">Waiting for {waiting.displayName} to confirm</span>
+                <span className="dev-meta">
+                  Expires in {formatDuration(waiting.expiresAt - now)}
+                </span>
+              </>
+            )}
+            <button
+              type="button"
+              className="settings-device-action"
+              onClick={() => setWaiting(null)}
+            >
+              {waitingExpired ? "Dismiss" : "Cancel"}
             </button>
           </div>
         )}
 
-        <section className="settings-card device-section">
-          <div className="device-self-head">
-            <span
-              className={`device-dot device-dot-${self.remote.state === "enabled" ? "ready" : "idle"}`}
-              aria-hidden="true"
-            />
-            <h3 className="settings-card-title">This device</h3>
-            <span className="settings-card-value">{remoteLabel(self.remote)}</span>
-          </div>
-          <span className="settings-card-meta">{self.displayName}</span>
-          <div className="device-fingerprint-row">
-            <span className="device-fingerprint">{groupFingerprint(self.keyFingerprint)}</span>
-            <button
-              type="button"
-              className="settings-device-action"
-              onClick={() => void copyFingerprint(self.keyFingerprint)}
-            >
-              {copyState === "copied" ? "Copied." : copyState === "failed" ? "Copy failed" : "Copy"}
-            </button>
-          </div>
-          <span className="settings-card-meta">
-            {self.addresses.length === 0
-              ? "no tailnet address"
-              : `${self.addresses.join(", ")} · port ${self.port}`}
+        {pairedNotice === null ? null : (
+          <span className="dev-meta">
+            Paired with {pairedNotice.displayName} ({pairedNotice.role}).
           </span>
-        </section>
+        )}
 
-        <section className="settings-card device-section">
-          <h3 className="settings-card-title" ref={pairHeadingRef} tabIndex={-1}>
-            Pair a device
-          </h3>
-          <p className="device-copy">
-            One device shows a code, the other types it. The far side then has to confirm the
-            pairing, and the code stops working five minutes after it appears.
+        {enterError === null ? null : (
+          <p role="alert" className="device-error">
+            <ErrorText
+              sentence={enterError.sentence}
+              detail={enterError.detail}
+              id="devices-enter-error"
+            />
           </p>
-          <div className="device-actions">
-            <button
-              type="button"
-              className="settings-device-action"
-              disabled={enterOpen || enterBusyFlow}
-              onClick={() => void showCode()}
-            >
-              {starting ? "Asking…" : "Show a code"}
-            </button>
-            <button
-              type="button"
-              className="settings-device-action"
-              disabled={showBusy}
-              onClick={() => setEnterOpen((open) => !open)}
-            >
-              Enter a code
-            </button>
-          </div>
+        )}
+      </section>
 
-          {liveCode === null ? null : (
-            <div className="device-pair-block">
-              <span className="device-pair-code" aria-label="pairing code">
-                {groupCode(liveCode.code)}
-              </span>
-              <span className="settings-card-meta">
-                Type this on the other device at {liveCode.address}
-              </span>
-              <span className="settings-card-meta">
-                Expires in {formatDuration(liveCode.expiresAt - now)}
-              </span>
-              <button type="button" className="settings-device-action" onClick={cancelCode}>
-                Cancel
-              </button>
-            </div>
-          )}
-          {codeError === null ? null : (
-            <p role="alert" className="device-error">
-              <ErrorText
-                sentence={codeError.sentence}
-                detail={codeError.detail}
-                id="devices-code-error"
-              />
-            </p>
-          )}
-
-          <RoleChoice
-            name="pairing-show-role"
-            value={showRole}
-            disabled={showBusy || enterOpen}
-            onChange={setShowRole}
-          />
-
-          {enterOpen ? (
-            <form className="device-pair-form" onSubmit={(event) => void submitEnter(event)}>
-              <label className="device-field">
-                <span>Address</span>
-                <input
-                  type="text"
-                  value={enterAddress}
-                  placeholder={`100.64.0.1:${DEFAULT_PEER_PORT}`}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => setEnterAddress(event.target.value)}
-                />
-                <span className="device-field-hint">
-                  host:port — an IPv6 address goes in brackets, like [fd7a:115c:a1e0::1]:
-                  {DEFAULT_PEER_PORT}
-                </span>
-              </label>
-              <label className="device-field">
-                <span>Code</span>
-                <input
-                  type="text"
-                  value={enterCode}
-                  aria-label="pairing code"
-                  placeholder="XXXX XXXX"
-                  autoComplete="off"
-                  autoCapitalize="characters"
-                  spellCheck={false}
-                  inputMode="text"
-                  maxLength={CODE_LENGTH}
-                  onChange={(event) => setEnterCode(sanitizePairingCode(event.target.value))}
-                />
-              </label>
-              <RoleChoice
-                name="pairing-enter-role"
-                value={enterRole}
-                disabled={enterBusyFlow}
-                onChange={setEnterRole}
-              />
-              <div className="device-actions">
-                <button type="submit" className="settings-device-action" disabled={enterBusyFlow}>
-                  {enterBusy ? "Pairing…" : "Pair"}
-                </button>
-                <button
-                  type="button"
-                  className="settings-device-action"
-                  disabled={enterBusyFlow}
-                  onClick={() => {
-                    setEnterOpen(false);
-                    setEnterError(null);
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          ) : null}
-
-          {waiting === null ? null : (
-            <div className="device-pair-block">
-              {waitingExpired ? (
-                <span className="settings-card-meta">Pairing expired</span>
-              ) : (
-                <>
-                  <span className="settings-card-meta">
-                    Waiting for {waiting.displayName} to confirm
-                  </span>
-                  <span className="settings-card-meta">
-                    Expires in {formatDuration(waiting.expiresAt - now)}
-                  </span>
-                </>
-              )}
-              <button
-                type="button"
-                className="settings-device-action"
-                onClick={() => setWaiting(null)}
-              >
-                {waitingExpired ? "Dismiss" : "Cancel"}
-              </button>
-            </div>
-          )}
-
-          {pairedNotice === null ? null : (
-            <span className="settings-card-meta">
-              Paired with {pairedNotice.displayName} ({pairedNotice.role}).
-            </span>
-          )}
-
-          {enterError === null ? null : (
-            <p role="alert" className="device-error">
-              <ErrorText
-                sentence={enterError.sentence}
-                detail={enterError.detail}
-                id="devices-enter-error"
-              />
-            </p>
-          )}
-        </section>
-
-        {reply.pending.length === 0 ? null : (
-          <section className="settings-card device-section">
-            <h3 className="settings-card-title" ref={pendingHeadingRef} tabIndex={-1}>
+      {reply.pending.length === 0 ? null : (
+        <section className="dev-list-card">
+          <div className="dev-list-head">
+            <h3 className="dev-card-title" ref={pendingHeadingRef} tabIndex={-1}>
               Waiting for your confirmation ({reply.pending.length})
             </h3>
             <p className="device-copy">
               A device asked to pair. Compare the fingerprint below with the one shown on that
               device — the person there can read theirs aloud — before you let it in.
             </p>
-            {reply.pending.map((pending) => (
-              <div
-                className="settings-card settings-device-card device-pending"
-                key={pending.deviceId}
-              >
-                <div className="device-peer-head">
-                  <span className="settings-card-title">{pending.displayName}</span>
-                  <span className="device-role-chip">{pending.role}</span>
-                  <span className="settings-card-value">
-                    expires in {formatDuration(pending.expiresAt - now)}
-                  </span>
-                </div>
-                <span className="device-fingerprint">
-                  {groupFingerprint(pending.keyFingerprint)}
+          </div>
+          {reply.pending.map((pending) => (
+            <div className="dev-row-wrap" key={pending.deviceId}>
+              <div className="dev-row">
+                <span className="dev-glyph">
+                  <DeviceGlyph />
                 </span>
-                <span className="settings-card-meta">{pending.address}</span>
+                <span className="dev-name">{pending.displayName}</span>
+                <span className="dev-role-chip">{pending.role}</span>
+                <span className="dev-status">
+                  expires in {formatDuration(pending.expiresAt - now)}
+                </span>
+              </div>
+              <div className="dev-details">
+                <span className="dev-fingerprint">{groupFingerprint(pending.keyFingerprint)}</span>
+                <span className="dev-meta">{pending.address}</span>
                 <div className="device-actions">
                   <button
                     type="button"
@@ -992,12 +995,14 @@ export function DevicesPanel() {
                   </p>
                 ) : null}
               </div>
-            ))}
-          </section>
-        )}
+            </div>
+          ))}
+        </section>
+      )}
 
-        <section className="settings-card device-section">
-          <h3 className="settings-card-title" ref={pairedHeadingRef} tabIndex={-1}>
+      <section className="dev-list-card">
+        <div className="dev-list-head">
+          <h3 className="dev-card-title" ref={pairedHeadingRef} tabIndex={-1}>
             Paired devices
             {activePeers.length === 0 ? "" : ` (${activePeers.length})`}
           </h3>
@@ -1013,40 +1018,34 @@ export function DevicesPanel() {
               one that turns the Oracle search on.
             </p>
           )}
-          {activePeers.map((row) => (
-            <PeerCard
-              key={row.deviceId}
-              row={row}
-              caps={capOverrides[row.deviceId] ?? row.caps}
-              now={now}
-              busy={rowBusy === row.deviceId}
-              error={rowError?.deviceId === row.deviceId ? rowError.message : undefined}
-              onToggleCap={(cap, next) => void toggleCap(row, cap, next)}
-              onRevoke={() => void revoke(row)}
-            />
-          ))}
-          {revokedPeers.length === 0 ? null : (
-            <details className="device-revoked">
-              <summary>Revoked ({revokedPeers.length})</summary>
-              {revokedPeers.map((row) => (
-                <div
-                  className="settings-card settings-device-card device-revoked-row"
-                  key={row.deviceId}
-                >
-                  <span className="settings-card-title">{row.displayName}</span>
-                  <span className="device-role-chip">{row.role}</span>
-                  <span
-                    className="settings-card-meta"
-                    title={new Date(row.revokedAt).toISOString()}
-                  >
-                    revoked {relativeTime(row.revokedAt, now)}
-                  </span>
-                </div>
-              ))}
-            </details>
-          )}
-        </section>
-      </div>
+        </div>
+        {activePeers.map((row) => (
+          <PeerCard
+            key={row.deviceId}
+            row={row}
+            caps={capOverrides[row.deviceId] ?? row.caps}
+            now={now}
+            busy={rowBusy === row.deviceId}
+            error={rowError?.deviceId === row.deviceId ? rowError.message : undefined}
+            onToggleCap={(cap, next) => void toggleCap(row, cap, next)}
+            onRevoke={() => void revoke(row)}
+          />
+        ))}
+        {revokedPeers.length === 0 ? null : (
+          <details className="dev-revoked">
+            <summary>Revoked ({revokedPeers.length})</summary>
+            {revokedPeers.map((row) => (
+              <div className="dev-revoked-row" key={row.deviceId}>
+                <span className="dev-name">{row.displayName}</span>
+                <span className="dev-role-chip">{row.role}</span>
+                <span className="dev-meta" title={new Date(row.revokedAt).toISOString()}>
+                  revoked {relativeTime(row.revokedAt, now)}
+                </span>
+              </div>
+            ))}
+          </details>
+        )}
+      </section>
     </div>
   );
 }
