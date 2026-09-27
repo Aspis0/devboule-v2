@@ -164,11 +164,9 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// `AgentProfilesSet` the moment an app saves a non-default idle timer —
 /// the human's edit lost until the daemon restarts. The handshake has to
 /// separate the two builds before that save exists.
-/// Version 11 includes plan permission requests and `SessionSetName`: the
-/// plan kind/body have their own review flow, and a rename frame must not be
-/// sent to a daemon that cannot parse it.
-/// Version 12 adds the provider on/off frame, which a version 11 daemon cannot
-/// deserialize and which has its own negotiated capability.
+/// Version 11 adds plan permission requests. Version 12 adds provider on/off
+/// switches, the `SessionSetName` session-rename frame, and the negotiated
+/// `provider.auth-check` capability for credential-status checks.
 pub const PROTOCOL_VERSION: u32 = 12;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still

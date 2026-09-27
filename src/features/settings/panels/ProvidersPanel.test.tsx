@@ -1100,6 +1100,19 @@ describe("tools switch wiring", () => {
     );
   });
 
+  it("hides provider switches when the daemon does not advertise the capability", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWith(["ping", "status", "tool_policy"]));
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [installedProvider()],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    expect(container.textContent).toContain("grok");
+    expect(providerSwitch()).toBeNull();
+    expect(providerSetEnabled).not.toHaveBeenCalled();
+  });
+
   it("hides the switch and never fetches when the daemon lacks tool_policy", async () => {
     vi.mocked(daemonStatus).mockResolvedValueOnce(
       daemonStatusWith(["ping", "status", "sessions", "journal", "typed_permissions", "devices"]),

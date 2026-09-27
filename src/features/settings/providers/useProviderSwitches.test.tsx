@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { providerSetEnabled } from "../../../lib/tauri";
@@ -18,9 +18,23 @@ const grok = { id: "grok", enabled: true } as ProviderInfo;
 
 function Harness({ supported = true }: { supported?: boolean }) {
   const switches = useProviderSwitches(supported);
+  const fetchSnapshot = useRef<ReturnType<typeof switches.beginFetch> | null>(null);
   return (
     <div>
       <output data-testid="enabled">{String(switches.isEnabled(grok))}</output>
+      <button type="button" onClick={() => (fetchSnapshot.current = switches.beginFetch())}>
+        begin-fetch
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          if (fetchSnapshot.current) {
+            switches.reconcile([{ ...grok, enabled: true }], fetchSnapshot.current);
+          }
+        }}
+      >
+        reconcile-stale-on
+      </button>
       <button type="button" onClick={() => void switches.setEnabled(grok, true)}>
         local-on
       </button>
@@ -73,5 +87,24 @@ describe("useProviderSwitches", () => {
     await act(async () => root.render(<Harness supported={false} />));
     await act(async () => click("off"));
     expect(providerSetEnabled).not.toHaveBeenCalled();
+  });
+
+  it("preserves a toggle made after a fetch snapshot even if its write settles first", async () => {
+    let finishWrite: (() => void) | undefined;
+    vi.mocked(providerSetEnabled).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishWrite = resolve)),
+    );
+    await act(async () => root.render(<Harness />));
+    await act(async () => click("begin-fetch"));
+    await act(async () => click("off"));
+    expect(container.querySelector("[data-testid=enabled]")?.textContent).toBe("false");
+
+    await act(async () => {
+      finishWrite?.();
+      await Promise.resolve();
+    });
+    await act(async () => click("reconcile-stale-on"));
+
+    expect(container.querySelector("[data-testid=enabled]")?.textContent).toBe("false");
   });
 });

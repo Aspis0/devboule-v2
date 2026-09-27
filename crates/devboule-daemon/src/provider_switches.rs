@@ -212,24 +212,23 @@ fn read_switches(path: &Path) -> Result<HashSet<String>, String> {
         )
     })?;
     let mut admitted = HashSet::new();
+    let mut discarded_id = false;
     for id in document.disabled {
         let id = id.trim();
         if id.is_empty() || id.len() > crate::tool_policy::MAX_POLICY_NAME_BYTES {
-            return Err(format!(
-                "{} contains an invalid provider id",
-                path.display()
-            ));
+            discarded_id = true;
+            continue;
         }
         let canonical =
             crate::provider_catalog::catalog_provider_id(id).unwrap_or_else(|| id.to_string());
         if !admitted.contains(&canonical) && admitted.len() >= crate::tool_policy::MAX_POLICY_ROWS {
-            return Err(format!(
-                "{} names more than {} disabled providers",
-                path.display(),
-                crate::tool_policy::MAX_POLICY_ROWS
-            ));
+            discarded_id = true;
+            continue;
         }
         admitted.insert(canonical);
+    }
+    if discarded_id {
+        eprintln!("provider-switches: ignored invalid or excess disabled provider ids");
     }
     Ok(admitted)
 }
@@ -330,6 +329,33 @@ mod tests {
         assert!(
             !store.is_enabled("user-provider.example"),
             "loading without the user row must preserve its saved off state"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_invalid_id_does_not_reset_other_disabled_providers() {
+        let dir = temp_dir("invalid-row-keeps-valid-switches");
+        std::fs::create_dir_all(&dir).expect("create runtime directory");
+        std::fs::write(
+            dir.join(SWITCHES_FILE),
+            br#"{"disabled":["grok","","claude"]}"#,
+        )
+        .expect("seed one malformed id beside valid switches");
+
+        let store = ProviderSwitchStore::load(&dir);
+
+        assert!(
+            !store.is_enabled("grok"),
+            "the saved OFF state must survive"
+        );
+        assert!(
+            !store.is_enabled("claude"),
+            "valid rows after the bad id survive"
+        );
+        assert!(
+            store.is_enabled("qwen"),
+            "providers absent from the file stay ON"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
