@@ -20,6 +20,7 @@ import { AgentChatSurface } from "./AgentChatSurface";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { useTabSelection } from "./strip/useTabSelection";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
+import { buildTabCloseEntries } from "./strip/tabCloseMenu";
 import { SessionStrip } from "./strip/SessionStrip";
 import { discardPersistedPendingCloses, sharedCloseActions } from "./strip/closeActions";
 import type { CloseIntent } from "./strip/closePolicy";
@@ -1254,6 +1255,13 @@ export function Workspace({
                 elapsedMs={paneSession.elapsedMs}
                 daemonState={daemon.state}
                 sessionRoster={sessions}
+                headerMenuSeam={{
+                  closeEntries: buildTabCloseEntries(
+                    visibleSessions.findIndex((row) => row.id === paneSession.id),
+                    visibleSessions.length,
+                  ),
+                  onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
+                }}
                 deviceNames={peerNames}
                 hasPendingPermission={hasPendingPermission}
                 // The app-level owner's queue for this session (see
@@ -1294,6 +1302,13 @@ export function Workspace({
                 onClosed={handleSessionClosed}
                 onExited={handleSessionClosed}
                 onCloseTab={() => tabClose.closeSingle(paneSession.id)}
+                headerMenuSeam={{
+                  closeEntries: buildTabCloseEntries(
+                    visibleSessions.findIndex((row) => row.id === paneSession.id),
+                    visibleSessions.length,
+                  ),
+                  onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
+                }}
                 onPermissionRequest={handlePermissionRequest}
                 onPermissionResolved={handlePermissionResolved}
               />

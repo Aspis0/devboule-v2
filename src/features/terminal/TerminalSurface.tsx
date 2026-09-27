@@ -7,7 +7,7 @@ import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
 import { PaneHeader } from "../workspace/paneHeader/PaneHeader";
 import { headerDisplay } from "../workspace/paneHeader/paneHeaderStatus";
-import { terminalHeaderMenu, type HeaderMenuSeam } from "../workspace/paneHeader/paneHeaderMenu";
+import { headerMenu, type HeaderMenuSeam } from "../workspace/paneHeader/paneHeaderMenu";
 
 interface TerminalSurfaceProps {
   workspaceId: string | null;
@@ -278,7 +278,7 @@ export const TerminalSurface = memo(function TerminalSurface({
         kind="terminal"
         title={title ?? "Terminal"}
         display={headerDisplay(observedState, null, null)}
-        menu={terminalHeaderMenu(cwd, onCloseTab, headerMenuSeam)}
+        menu={headerMenu(cwd, headerMenuSeam)}
         trailingSlot={
           <>
             {ended ? null : (

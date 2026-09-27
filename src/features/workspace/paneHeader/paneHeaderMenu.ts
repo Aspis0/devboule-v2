@@ -1,8 +1,7 @@
-import { buildTabCloseEntries, type TabMenuEntry } from "../strip/tabCloseMenu";
+import type { TabMenuEntry } from "../strip/tabCloseMenu";
 
-/** The close-group wiring the workspace owns. The header cannot build it:
- * entry enablement needs the tab's roster position, and firing needs the
- * tab-close flow with its confirmations — both live above the surfaces. */
+/** Do not add a file named PaneHeaderMenu.* beside this one: on a
+ * case-insensitive filesystem it collides with this module (TS1149). */
 export interface HeaderMenuSeam {
   closeEntries: TabMenuEntry[];
   onCloseEntry: (key: TabMenuEntry["key"]) => void;
@@ -14,7 +13,7 @@ export interface PaneHeaderMenu {
   onCloseEntry: ((key: TabMenuEntry["key"]) => void) | null;
 }
 
-const PATH_NOTE_LIMIT = 48;
+const PATH_NOTE_LIMIT = 28;
 
 function splitClusters(value: string): string[] {
   const Segmenter = Intl.Segmenter;
@@ -28,7 +27,10 @@ function splitClusters(value: string): string[] {
 }
 
 /** Middle-truncates a path for the menu's note row, clusters not code units:
- * a unit-based cut halves an astral scalar and renders U+FFFD. */
+ * a unit-based cut halves an astral scalar and renders U+FFFD. The limit is
+ * set against the note's own box (240 px menu, 206 px of note): at 13 px the
+ * average cluster advances ~6.8 px, so 28 clusters fit with room, and the
+ * row carries no CSS ellipsis that could eat the preserved tail. */
 export function middleTruncate(value: string, maxLength = PATH_NOTE_LIMIT): string {
   const clusters = splitClusters(value);
   if (clusters.length <= maxLength) return value;
@@ -38,58 +40,16 @@ export function middleTruncate(value: string, maxLength = PATH_NOTE_LIMIT): stri
   return `${clusters.slice(0, head).join("")}…${clusters.slice(clusters.length - tail).join("")}`;
 }
 
-/** The brief's exact close set, labelled by the tab menu itself: right,
- * others, close. No left (the brief excludes it), no delete, no rename —
- * rename needs a daemon frame that does not exist — and no raw ids. */
-function closeGroup(enable: (key: TabMenuEntry["key"]) => boolean): TabMenuEntry[] {
-  return buildTabCloseEntries(0, 1)
-    .filter((entry) => entry.key === "right" || entry.key === "others" || entry.key === "close")
-    .map((entry) => ({ ...entry, disabled: entry.disabled || !enable(entry.key) }));
-}
-
-/** No handler anywhere: every close row disabled, so none can misfire. */
-export function unwiredCloseEntries(): TabMenuEntry[] {
-  return closeGroup(() => false);
-}
-
-/** This tab's Close needs no roster position, so it stays enabled. */
-function terminalCloseEntries(): TabMenuEntry[] {
-  return closeGroup((key) => key === "close");
-}
-
-export function agentHeaderMenu(
+/** The header menu with no path row when the row carries no cwd, and no
+ * close rows until the workspace wires the seam: entry enablement needs the
+ * tab's roster position and firing needs the tab-close flow, both above the
+ * surfaces. Null means no kebab — a menu with nothing actionable is dead. */
+export function headerMenu(
   cwd: string | undefined,
   seam: HeaderMenuSeam | undefined,
 ): PaneHeaderMenu | null {
-  if (cwd === undefined && seam === undefined) return null;
-  return {
-    copyPath: cwd ?? null,
-    closeEntries: seam?.closeEntries ?? unwiredCloseEntries(),
-    onCloseEntry: seam?.onCloseEntry ?? null,
-  };
-}
-
-export function terminalHeaderMenu(
-  cwd: string | undefined,
-  onCloseTab: (() => void) | undefined,
-  seam: HeaderMenuSeam | undefined,
-): PaneHeaderMenu | null {
-  if (cwd === undefined && seam === undefined && onCloseTab === undefined) return null;
-  if (seam !== undefined) {
-    return {
-      copyPath: cwd ?? null,
-      closeEntries: seam.closeEntries,
-      onCloseEntry: seam.onCloseEntry,
-    };
-  }
-  if (onCloseTab === undefined) {
-    return { copyPath: cwd ?? null, closeEntries: unwiredCloseEntries(), onCloseEntry: null };
-  }
-  return {
-    copyPath: cwd ?? null,
-    closeEntries: terminalCloseEntries(),
-    onCloseEntry: (key) => {
-      if (key === "close") onCloseTab();
-    },
-  };
+  const copyPath = !cwd ? null : cwd;
+  const closeEntries = seam?.closeEntries ?? [];
+  if (copyPath === null && closeEntries.length === 0) return null;
+  return { copyPath, closeEntries, onCloseEntry: seam?.onCloseEntry ?? null };
 }

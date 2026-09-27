@@ -54,7 +54,7 @@ import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
 import { PaneHeader } from "./paneHeader/PaneHeader";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
-import { agentHeaderMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
+import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import {
   INTERRUPTED_TOOL_CLASS,
   INTERRUPTED_TOOL_COPY,
@@ -1013,7 +1013,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         kind="agent"
         title={title || "Agent"}
         display={header}
-        menu={agentHeaderMenu(cwd, headerMenuSeam)}
+        menu={headerMenu(cwd, headerMenuSeam)}
         subagentSlot={
           state.subagents.length > 0 ? (
             <SubagentMenu subagents={state.subagents} statusCounts={state.subagentStatusCounts} />

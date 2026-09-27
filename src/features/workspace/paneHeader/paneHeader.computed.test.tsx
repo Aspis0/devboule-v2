@@ -15,7 +15,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { assembleCssProof, removeCssProof } from "../cssProof";
 import { PaneHeader } from "./PaneHeader";
-import { agentHeaderMenu } from "./paneHeaderMenu";
+import { headerMenu } from "./paneHeaderMenu";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -54,7 +54,7 @@ async function renderAgentHeader(): Promise<{ token: (name: string) => string | 
         kind="agent"
         title="Claude"
         display={{ word: "Running", tone: "green", pulse: true, tooltip: "Running" }}
-        menu={agentHeaderMenu("C:\\x", undefined)}
+        menu={headerMenu("C:\\x", undefined)}
       />,
     );
   });

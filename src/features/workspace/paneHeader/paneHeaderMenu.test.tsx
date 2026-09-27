@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 // The pane header's kebab: entries limited to actions with a working path
-// (copy the path when known; the tab menu's close group), keyboard that
+// (copy the path when known; the workspace-wired close group), keyboard that
 // follows the strip's tab menu, and focus that returns to the kebab.
 
 import { act } from "react";
@@ -9,14 +9,11 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { buildTabCloseEntries } from "../strip/tabCloseMenu";
 import { PaneHeader } from "./PaneHeader";
-import {
-  agentHeaderMenu,
-  middleTruncate,
-  terminalHeaderMenu,
-  type PaneHeaderMenu,
-} from "./paneHeaderMenu";
+import { headerMenu, middleTruncate, type PaneHeaderMenu } from "./paneHeaderMenu";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const DISPLAY = { word: "Running", tone: "green", pulse: true, tooltip: "Running" } as const;
 
 function renderHeader() {
   const host = document.createElement("div");
@@ -28,14 +25,7 @@ function renderHeader() {
 async function openMenu(menu: PaneHeaderMenu) {
   const { host, root } = renderHeader();
   await act(async () => {
-    root.render(
-      <PaneHeader
-        kind="agent"
-        title="Claude"
-        display={{ word: "Running", tone: "green", pulse: true, tooltip: "Running" }}
-        menu={menu}
-      />,
-    );
+    root.render(<PaneHeader kind="agent" title="Claude" display={DISPLAY} menu={menu} />);
   });
   const kebab = host.querySelector<HTMLButtonElement>(".pane-header-kebab");
   if (kebab === null) throw new Error("kebab did not render");
@@ -45,13 +35,14 @@ async function openMenu(menu: PaneHeaderMenu) {
   return { host, root, kebab };
 }
 
+function seam() {
+  return { closeEntries: buildTabCloseEntries(1, 3), onCloseEntry: vi.fn() };
+}
+
 describe("pane header menu entries", () => {
-  it("holds Copy path plus the tab menu's close group, and nothing else", async () => {
-    const menu = agentHeaderMenu("C:\\Users\\gualt\\Desktop", {
-      closeEntries: buildTabCloseEntries(1, 3),
-      onCloseEntry: () => undefined,
-    });
-    if (menu === null) throw new Error("agent menu was null");
+  it("holds Copy path plus the seam's close group, and nothing else", async () => {
+    const menu = headerMenu("C:\\Users\\gualt\\Desktop", seam());
+    if (menu === null) throw new Error("menu was null");
     const { host, root } = await openMenu(menu);
     const rows = [...host.querySelectorAll("[role='menuitem']")].map((row) => row.textContent);
     expect(rows).toEqual(["Copy path", "Close to the right", "Close other tabs", "Close"]);
@@ -62,64 +53,60 @@ describe("pane header menu entries", () => {
   });
 
   it("reuses the tab menu's labels verbatim", () => {
-    const menu = agentHeaderMenu("C:\\x", {
-      closeEntries: buildTabCloseEntries(1, 3),
-      onCloseEntry: () => undefined,
-    });
-    if (menu === null) throw new Error("agent menu was null");
-    const tabLabels = new Map(buildTabCloseEntries(1, 3).map((entry) => [entry.key, entry.label]));
+    const wired = seam();
+    const menu = headerMenu("C:\\x", wired);
+    if (menu === null) throw new Error("menu was null");
+    const tabLabels = new Map(
+      buildTabCloseEntries(1, 3).map((entry) => [entry.key, entry.label]),
+    );
     for (const entry of menu.closeEntries) {
       expect(entry.label).toBe(tabLabels.get(entry.key));
     }
   });
 
   it("renders no kebab when nothing can act", () => {
-    expect(agentHeaderMenu(undefined, undefined)).toBeNull();
-    expect(terminalHeaderMenu(undefined, undefined, undefined)).toBeNull();
+    expect(headerMenu(undefined, undefined)).toBeNull();
+    expect(headerMenu("", undefined)).toBeNull();
   });
 
-  it("leaves the close group disabled until the workspace wires it", async () => {
-    const menu = agentHeaderMenu("C:\\x", undefined);
-    if (menu === null) throw new Error("agent menu was null");
+  it("renders the kebab without a path row when the row carries no cwd", async () => {
+    const menu = headerMenu(undefined, seam());
+    if (menu === null) throw new Error("menu was null without a cwd");
     const { host, root } = await openMenu(menu);
-    const rows = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
-    expect(rows[0]?.disabled).toBe(false);
-    expect(rows.slice(1).map((row) => row.disabled)).toEqual([true, true, true]);
+    expect(host.querySelector(".pane-header-path")).toBeNull();
+    const rows = [...host.querySelectorAll("[role='menuitem']")].map((row) => row.textContent);
+    expect(rows).toEqual(["Close to the right", "Close other tabs", "Close"]);
     await act(async () => root.unmount());
   });
 
-  it("enables this tab's Close through the terminal's existing close path", async () => {
-    const onCloseTab = vi.fn();
-    const menu = terminalHeaderMenu("C:\\x", onCloseTab, undefined);
-    if (menu === null) throw new Error("terminal menu was null");
-    const { host, root } = await openMenu(menu);
-    const rows = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
-    const close = rows.find((row) => row.textContent === "Close");
-    if (close === undefined) throw new Error("Close entry did not render");
-    expect(close.disabled).toBe(false);
-    await act(async () => {
-      close.click();
-    });
-    expect(onCloseTab).toHaveBeenCalledTimes(1);
-    await act(async () => root.unmount());
+  it("treats an empty cwd like no cwd", () => {
+    expect(headerMenu("", seam())?.copyPath).toBeNull();
   });
 
-  it("dispatches a wired close entry with its tab-menu key", async () => {
-    const onCloseEntry = vi.fn();
-    const menu = agentHeaderMenu("C:\\x", {
-      closeEntries: buildTabCloseEntries(1, 3),
-      onCloseEntry,
-    });
-    if (menu === null) throw new Error("agent menu was null");
+  it("dispatches every close entry with its tab-menu key", async () => {
+    const wired = seam();
+    const menu = headerMenu("C:\\x", wired);
+    if (menu === null) throw new Error("menu was null");
     const { host, root } = await openMenu(menu);
-    const rows = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
-    const others = rows.find((row) => row.textContent === "Close other tabs");
-    if (others === undefined) throw new Error("Close other tabs did not render");
-    await act(async () => {
-      others.click();
-    });
-    expect(onCloseEntry).toHaveBeenCalledTimes(1);
-    expect(onCloseEntry).toHaveBeenCalledWith("others");
+    const keys = ["right", "others", "close"] as const;
+    for (const [index, key] of keys.entries()) {
+      // Copy path is rows[0]; the close group follows in seam order.
+      // Re-queried every pass: firing closes the menu, so last pass's
+      // nodes are detached and their clicks would go nowhere.
+      const rows = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
+      const row = rows[index + 1];
+      if (row === undefined) throw new Error(`close entry ${key} did not render`);
+      await act(async () => {
+        row.click();
+      });
+      expect(wired.onCloseEntry).toHaveBeenNthCalledWith(index + 1, key);
+      if (index < keys.length - 1) {
+        await act(async () => {
+          host.querySelector<HTMLButtonElement>(".pane-header-kebab")!.click();
+        });
+      }
+    }
+    expect(wired.onCloseEntry).toHaveBeenCalledTimes(3);
     await act(async () => root.unmount());
   });
 });
@@ -128,8 +115,8 @@ describe("pane header menu copy", () => {
   it("copies the full path and says so on the row", async () => {
     const writeText = vi.fn(async (_text: string) => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const menu = agentHeaderMenu("C:\\Users\\gualt\\Desktop\\New devboule", undefined);
-    if (menu === null) throw new Error("agent menu was null");
+    const menu = headerMenu("C:\\Users\\gualt\\Desktop\\New devboule", seam());
+    if (menu === null) throw new Error("menu was null");
     const { host, root } = await openMenu(menu);
     const rows = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
     const copy = rows.find((row) => row.textContent === "Copy path");
@@ -145,8 +132,8 @@ describe("pane header menu copy", () => {
 
   it("shows the path middle-truncated with the full path in a tooltip", async () => {
     const long = `C:\\Users\\gualt\\Desktop\\${"nested\\".repeat(10)}work`;
-    const menu = agentHeaderMenu(long, undefined);
-    if (menu === null) throw new Error("agent menu was null");
+    const menu = headerMenu(long, seam());
+    if (menu === null) throw new Error("menu was null");
     const { host, root } = await openMenu(menu);
     const note = host.querySelector(".pane-header-path");
     if (note === null) throw new Error("path note did not render");
@@ -158,33 +145,10 @@ describe("pane header menu copy", () => {
 });
 
 describe("pane header menu keyboard", () => {
-  it("opens on the first enabled entry, arrows move, Escape returns focus to the kebab", async () => {
-    const menu = agentHeaderMenu("C:\\x", undefined);
-    if (menu === null) throw new Error("agent menu was null");
+  it("opens on the first entry, arrows move, Escape returns focus to the kebab", async () => {
+    const menu = headerMenu("C:\\x", seam());
+    if (menu === null) throw new Error("menu was null");
     const { host, root, kebab } = await openMenu(menu);
-    const rows = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
-    expect(document.activeElement).toBe(rows[0]);
-    await act(async () => {
-      rows[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    });
-    // The close group is disabled without the workspace seam, so arrows wrap
-    // on the one enabled row instead of landing on a dead entry.
-    expect(document.activeElement).toBe(rows[0]);
-    await act(async () => {
-      rows[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-    expect(host.querySelector("[role='menu']")).toBeNull();
-    expect(document.activeElement).toBe(kebab);
-    await act(async () => root.unmount());
-  });
-
-  it("moves across enabled entries when the workspace wired them", async () => {
-    const menu = agentHeaderMenu("C:\\x", {
-      closeEntries: buildTabCloseEntries(1, 3),
-      onCloseEntry: () => undefined,
-    });
-    if (menu === null) throw new Error("agent menu was null");
-    const { host, root } = await openMenu(menu);
     const rows = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
     const enabled = rows.filter((row) => !row.disabled);
     expect(document.activeElement).toBe(enabled[0]);
@@ -200,22 +164,29 @@ describe("pane header menu keyboard", () => {
       );
     });
     expect(document.activeElement).toBe(enabled[0]);
+    await act(async () => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(host.querySelector("[role='menu']")).toBeNull();
+    expect(document.activeElement).toBe(kebab);
     await act(async () => root.unmount());
   });
 });
 
 describe("middleTruncate", () => {
   it("leaves a short path whole", () => {
-    expect(middleTruncate("C:\\x", 48)).toBe("C:\\x");
+    expect(middleTruncate("C:\\x", 28)).toBe("C:\\x");
   });
 
   it("keeps the head and the tail with one ellipsis", () => {
     const long = `C:\\Users\\gualt\\Desktop\\${"nested\\".repeat(10)}work`;
-    const cut = middleTruncate(long, 48);
+    const cut = middleTruncate(long, 28);
     expect(cut).toContain("…");
     expect(cut.startsWith("C:\\Users")).toBe(true);
     expect(cut.endsWith("work")).toBe(true);
-    expect([...cut].length).toBeLessThanOrEqual(49);
+    expect([...cut].length).toBeLessThanOrEqual(29);
   });
 
   it("never splits an astral character", () => {

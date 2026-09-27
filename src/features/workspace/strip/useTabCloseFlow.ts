@@ -159,6 +159,7 @@ export function useTabCloseFlow({
   closeMenu: () => void;
   closeSingle: (sessionId: string) => void;
   activateEntry: (key: TabMenuEntry["key"]) => void;
+  activatePaneEntry: (anchorId: string, key: TabMenuEntry["key"]) => void;
   confirmClose: () => void;
   cancelClose: () => void;
 } {
@@ -281,15 +282,10 @@ export function useTabCloseFlow({
 
   const closeMenu = useCallback(() => setMenuState(null), []);
 
-  const activateEntry = useCallback(
-    (key: TabMenuEntry["key"]) => {
-      // Only the menu's own buttons get here, so menuState stands for the
-      // open menu; reading the state (not the derived object) keeps this
-      // callback stable across renders.
-      const open = menuState;
-      setMenuState(null);
-      if (open === null) return;
-      const anchorId = open.anchorId;
+  // The per-anchor core both entry points share: the tab menu resolves its
+  // anchor from its own open state, the pane header names its session.
+  const fireAnchorEntry = useCallback(
+    (anchorId: string, key: TabMenuEntry["key"]) => {
       if (key === "close") {
         closeSingle(anchorId);
         return;
@@ -306,6 +302,28 @@ export function useTabCloseFlow({
         });
         return;
       }
+      if (key === "close-selection") return;
+      const closed = sessionsForTabAction(key, sessions, anchorId);
+      if (closed.length === 0) return;
+      openConfirm({
+        kind: "archive",
+        targets: closed.map(targetOf),
+        title: bulkActionTitle(key),
+        message: bulkCloseMessage(countSessions(closed)),
+        confirmLabel: "Close",
+      });
+    },
+    [closeSingle, openConfirm, sessions],
+  );
+
+  const activateEntry = useCallback(
+    (key: TabMenuEntry["key"]) => {
+      // Only the menu's own buttons get here, so menuState stands for the
+      // open menu; reading the state (not the derived object) keeps this
+      // callback stable across renders.
+      const open = menuState;
+      setMenuState(null);
+      if (open === null) return;
       if (key === "close-selection") {
         // The selection menu ALWAYS asks, even when the roster has shrunk it
         // to one: the ask lists the live set, so the user confirms what is
@@ -324,17 +342,20 @@ export function useTabCloseFlow({
         });
         return;
       }
-      const closed = sessionsForTabAction(key, sessions, anchorId);
-      if (closed.length === 0) return;
-      openConfirm({
-        kind: "archive",
-        targets: closed.map(targetOf),
-        title: bulkActionTitle(key),
-        message: bulkCloseMessage(countSessions(closed)),
-        confirmLabel: "Close",
-      });
+      fireAnchorEntry(open.anchorId, key);
     },
-    [closeSingle, menuState, openConfirm, selection, sessions],
+    [fireAnchorEntry, menuState, openConfirm, selection, sessions],
+  );
+
+  // The pane header's kebab fires through the same policy and confirmation
+  // as the tab menu, anchored at its own session instead of the tab menu's.
+  // Keys the header never offers (selection, delete) are refused here.
+  const activatePaneEntry = useCallback(
+    (anchorId: string, key: TabMenuEntry["key"]) => {
+      if (key === "close-selection" || key === "delete") return;
+      fireAnchorEntry(anchorId, key);
+    },
+    [fireAnchorEntry],
   );
 
   const confirmClose = useCallback(() => {
@@ -414,6 +435,7 @@ export function useTabCloseFlow({
     closeMenu,
     closeSingle,
     activateEntry,
+    activatePaneEntry,
     confirmClose,
     cancelClose,
   };
