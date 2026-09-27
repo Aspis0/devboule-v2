@@ -9,7 +9,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { useModalOpen } from "../../lib/modalOpen";
+import { useMenuOpen } from "../../lib/menuOpen";
 import type { PlanUsage } from "../../types/ipc";
 import {
   formatContextTokens,
@@ -219,7 +219,7 @@ export function ContextPopover({
   // that never happens would freeze "resets in" at whatever it said on open.
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  useModalOpen(open);
+  useMenuOpen(open, onClose);
 
   const update = useCallback(() => {
     const anchor = anchorRef.current;

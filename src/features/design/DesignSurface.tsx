@@ -5577,9 +5577,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         </div>
       ) : null}
 
+      {/* Always mounted: the registration must follow the boolean, not the
+          mount — a conditional mount would let the signal leak. */}
       <DesignCraftSheet
-        // Mounted only while open today; the boolean makes the registration
-        // honest either way.
         open={craftSheetMode !== null}
         skillIndex={skillIndex}
         skillSelection={skillSelection}

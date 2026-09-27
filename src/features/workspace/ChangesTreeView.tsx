@@ -16,6 +16,8 @@ import { buildChangesTree, type ChangesTreeFolder, type ChangesTreeNode } from "
  */
 interface ChangesTreeViewProps {
   rows: WorkspaceGitRow[];
+  /** True when the reply carries a caveat: every folder sum below is a
+   * floor, capped rows or not (the branch total says the same). */
   inexact: boolean;
   selection: string | null;
   onSelect: (path: string) => void;

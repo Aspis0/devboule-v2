@@ -11,17 +11,27 @@ import { ProfileDialog } from "./ProfileDialog";
 describe("ProfileDialog", () => {
   let container: HTMLDivElement;
   let root: Root | undefined;
+  let currentProps: { onClose: () => void; withDirtyButton: boolean; busy: boolean } = {
+    onClose: () => undefined,
+    withDirtyButton: false,
+    busy: false,
+  };
 
-  function renderDialogBody(onClose: () => void, withDirtyButton: boolean, busy: boolean) {
+  function renderDialogBody(open: boolean) {
     return (
-      <ProfileDialog open title="Edit profile — Coder" busy={busy} onClose={onClose}>
+      <ProfileDialog
+        open={open}
+        title="Edit profile — Coder"
+        busy={currentProps.busy}
+        onClose={currentProps.onClose}
+      >
         {({ requestClose, markDirty }) => (
           <>
             <input aria-label="First field" />
             <button type="button" onClick={requestClose}>
               Cancel
             </button>
-            {withDirtyButton ? (
+            {currentProps.withDirtyButton ? (
               <button type="button" onClick={markDirty}>
                 Make dirty
               </button>
@@ -41,9 +51,17 @@ describe("ProfileDialog", () => {
     withDirtyButton?: boolean;
     busy?: boolean;
   } = {}) {
+    currentProps = { onClose, withDirtyButton, busy };
     root = createRoot(container);
     act(() => {
-      root!.render(renderDialogBody(onClose, withDirtyButton, busy));
+      root!.render(renderDialogBody(true));
+    });
+  }
+
+  /** The dialog is always mounted: re-render it with a different open. */
+  function setOpen(open: boolean) {
+    act(() => {
+      root!.render(renderDialogBody(open));
     });
   }
 
@@ -58,8 +76,9 @@ describe("ProfileDialog", () => {
     renderDialog({ onClose, withDirtyButton, busy: false });
     return {
       rerenderBusy() {
+        currentProps.busy = true;
         act(() => {
-          root!.render(renderDialogBody(onClose, withDirtyButton, true));
+          root!.render(renderDialogBody(true));
         });
       },
     };
@@ -114,8 +133,35 @@ describe("ProfileDialog", () => {
   });
 
   it("moves focus to the first field on open", () => {
-    renderDialog();
+    // The dialog is always mounted: focus must move on the OPEN, not on
+    // mount — while it is closed the pane behind is inert, so a mount-time
+    // placement would be swallowed.
+    root = createRoot(container);
+    act(() => {
+      root!.render(renderDialogBody(false));
+    });
+    expect(container.querySelector(".edit-card")).toBeNull();
+    act(() => {
+      root!.render(renderDialogBody(true));
+    });
     expect(document.activeElement).toBe(field("First field"));
+  });
+
+  it("a fresh open does not inherit the last session's discard arm", () => {
+    const onClose = vi.fn();
+    renderDialog({ onClose, withDirtyButton: true });
+    act(() => buttonByText("Make dirty").click());
+    pressKey("Escape");
+    expect(container.querySelector(".device-inline-confirm")).not.toBeNull();
+    act(() => buttonByText("Discard").click());
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // Close, then reopen: the arm must not survive into the next session,
+    // and a clean form must close at once.
+    setOpen(false);
+    setOpen(true);
+    expect(container.querySelector(".device-inline-confirm")).toBeNull();
+    act(() => buttonByText("Cancel").click());
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 
   it("traps Tab inside the dialog", () => {

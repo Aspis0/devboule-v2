@@ -233,6 +233,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
           ref={triggerRef}
           className={modalOpen ? "crescent-sliver crescent-sliver-blocked" : "crescent-sliver"}
           aria-label="Reveal navigation"
+          aria-disabled={modalOpen || undefined}
           aria-expanded={navOpen}
           aria-controls="devboule-crescent-navigation"
           onPointerEnter={openNav}

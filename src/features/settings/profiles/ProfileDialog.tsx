@@ -74,6 +74,7 @@ export function ProfileDialog({
   }
 
   useEffect(() => {
+    if (!open) return;
     const card = cardRef.current;
     if (card === null) return;
     // The form's first field, not the ×: opening a dialog lands the human
@@ -82,7 +83,7 @@ export function ProfileDialog({
       "input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
     );
     (fields[0] ?? focusableIn(card)[0])?.focus();
-  }, []);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;

@@ -65,7 +65,11 @@ export const DesignFolderControl = memo(function DesignFolderControl({
 
   const close = useCallback(() => {
     setOpen(false);
-    queueMicrotask(() => triggerRef.current?.focus());
+    // Focus returns only when the menu had it: a band hover closing the menu
+    // must not yank focus off the sliver the user just tabbed to.
+    if (wrapRef.current?.contains(document.activeElement)) {
+      queueMicrotask(() => triggerRef.current?.focus());
+    }
   }, []);
 
   useMenuOpen(open, close);

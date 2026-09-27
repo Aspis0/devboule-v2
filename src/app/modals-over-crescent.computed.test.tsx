@@ -5,9 +5,15 @@
 // ancestor chain — no hand-written list of selectors — checking that no
 // ancestor creates a stacking context (which would trap the dialog under the
 // crescent band) and that the dialog's own z-index beats the band's. The
-// sheets are every stylesheet under src. Computed values come from the
-// proof helper's inject: happy-dom reads a property as "" when no injected
-// rule declares it, so "" is the answer to "no creator here".
+// sheets are every stylesheet under src.
+//
+// Scope, stated plainly: the proof helper skips @-blocks and descendant
+// selectors wholesale, so an ancestor's transform or z-index declared in a
+// media query or a descendant rule is invisible here — the walk proves the
+// chains the sheets actually declare, not every chain they could declare.
+// Computed values come from the proof helper's inject: happy-dom reads a
+// property as "" when no injected rule declares it, so "" is the answer to
+// "no creator here".
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";

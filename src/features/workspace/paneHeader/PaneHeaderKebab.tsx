@@ -63,7 +63,11 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
   }, [open]);
 
   function closeToKebab() {
-    kebabRef.current?.focus({ preventScroll: true });
+    // Focus returns only when the menu had it: a band hover closing the
+    // menu must not yank focus off the sliver the user just tabbed to.
+    if (rootRef.current?.contains(document.activeElement)) {
+      kebabRef.current?.focus({ preventScroll: true });
+    }
     setOpen(false);
   }
 
