@@ -1,57 +1,6 @@
-.retention-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.retention-summary,
-.retention-limits {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.retention-blocked-copy,
-.retention-help {
-  margin: 0;
-  color: var(--terracotta-deep);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.retention-help {
-  color: var(--ink-soft);
-}
-
-.retention-limit-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.retention-limit-input {
-  width: 160px;
-  margin-left: auto;
-  padding: 7px 9px;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-}
-
-.settings-retention-alert {
-  padding: 9px 11px;
-  color: var(--terracotta-deep);
-  background: color-mix(in srgb, var(--terracotta) 10%, transparent);
-  border: 1px solid var(--terracotta);
-  border-radius: 8px;
-  font-size: 12px;
-}
-
+/* This-machine components: appearance, the window-close choice, and the
+   default send choice. R17-4 owns this file; the transcript-history rules
+   live in diagnostics.css because that section renders on the Diagnostics page. */
 /* Appearance (theme choice) — new tokens only; Settings' own redesign is a
    later slice, so these rows use the shell's type and line tokens. */
 .appearance-section {
@@ -116,7 +65,7 @@
   font-size: var(--type-meta);
 }
 
-/* Default send: what Enter does while the agent runs (General tab). */
+/* Default send: what Enter does while the agent runs (Editing page). */
 
 .send-behavior {
   margin-bottom: 18px;

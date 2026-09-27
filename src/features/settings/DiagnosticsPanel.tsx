@@ -3,7 +3,6 @@ import { daemonDiagnostics } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
 import type { DaemonDiagnostics } from "../../types/ipc";
-import { SettingsHeading } from "./SettingsSurface";
 import "./diagnostics.css";
 
 type DiagnosticsRecord = Record<string, unknown>;
@@ -200,15 +199,17 @@ function RecordSection({ title, record }: RecordSectionProps) {
   );
 }
 
+interface DiagnosticsErrorBoundaryProps {
+  children: ReactNode;
+}
+
+// Kept beside the Copy button, not as a page heading: the shell titles the
+// page now, but the redaction reassurance belongs with the action it guards.
 const SAFETY_NOTE =
   "This report is numbers and versions about the app itself. It is already " +
   "redacted by the daemon: no secrets, no conversation content, no session " +
   "titles, and paths with the home directory redacted. Copying it is safe — " +
   "paste it straight into an issue.";
-
-interface DiagnosticsErrorBoundaryProps {
-  children: ReactNode;
-}
 
 interface DiagnosticsErrorBoundaryState {
   error: unknown;
@@ -228,8 +229,7 @@ export class DiagnosticsErrorBoundary extends Component<
   render() {
     if (this.state.error !== null) {
       return (
-        <div id="settings-panel-diagnostics" role="tabpanel" aria-label="Diagnostics">
-          <SettingsHeading title="Diagnostics" description={SAFETY_NOTE} />
+        <div id="settings-panel-diagnostics">
           <div className="settings-card diagnostics-error" role="alert">
             <h3 className="settings-card-title">Could not render the diagnostics</h3>
             <p>
@@ -333,8 +333,7 @@ function DiagnosticsPanelContent() {
 
   if (error !== null) {
     return (
-      <div id="settings-panel-diagnostics" role="tabpanel" aria-label="Diagnostics">
-        <SettingsHeading title="Diagnostics" description={SAFETY_NOTE} />
+      <div id="settings-panel-diagnostics">
         <div className="settings-card diagnostics-error" role="alert">
           <h3 className="settings-card-title">Could not load the diagnostics</h3>
           <p>
@@ -355,8 +354,7 @@ function DiagnosticsPanelContent() {
 
   if (report === null) {
     return (
-      <div id="settings-panel-diagnostics" role="tabpanel" aria-label="Diagnostics">
-        <SettingsHeading title="Diagnostics" description={SAFETY_NOTE} />
+      <div id="settings-panel-diagnostics">
         <p className="diagnostics-loading">Loading the diagnostics…</p>
       </div>
     );
@@ -364,8 +362,7 @@ function DiagnosticsPanelContent() {
 
   if (isReportEmpty(report)) {
     return (
-      <div id="settings-panel-diagnostics" role="tabpanel" aria-label="Diagnostics">
-        <SettingsHeading title="Diagnostics" description={SAFETY_NOTE} />
+      <div id="settings-panel-diagnostics">
         <p className="diagnostics-empty">The daemon answered, but sent no diagnostics data.</p>
       </div>
     );
@@ -376,8 +373,7 @@ function DiagnosticsPanelContent() {
   const providers = Array.isArray(source.providers) ? source.providers : [];
 
   return (
-    <div id="settings-panel-diagnostics" role="tabpanel" aria-label="Diagnostics">
-      <SettingsHeading title="Diagnostics" description={SAFETY_NOTE} />
+    <div id="settings-panel-diagnostics">
       <div className="diagnostics-actions">
         <button type="button" className="diagnostics-copy" onClick={() => void copyReport()}>
           Copy diagnostics
@@ -389,6 +385,7 @@ function DiagnosticsPanelContent() {
           </span>
         ) : null}
       </div>
+      <p className="diagnostics-note">{SAFETY_NOTE}</p>
       <div className="diagnostics-grid">
         <RecordSection title="Daemon" record={source.daemon} />
         <RecordSection title="Health" record={health} />

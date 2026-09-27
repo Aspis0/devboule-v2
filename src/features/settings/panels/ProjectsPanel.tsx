@@ -4,7 +4,6 @@ import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { NewProjectDialog } from "../../../components/NewProjectDialog";
 import type { Project, Workspace } from "../../../types/ipc";
-import { SettingsHeading } from "../SettingsSurface";
 export function ProjectsPanel() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workspacesByProject, setWorkspacesByProject] = useState<Record<string, Workspace[]>>({});
@@ -64,11 +63,7 @@ export function ProjectsPanel() {
   }, []);
 
   return (
-    <div id="settings-panel-projects" role="tabpanel" aria-label="Projects">
-      <SettingsHeading
-        title="Projects"
-        description="A project is a git repository or any directory this daemon can reach. Workspaces live inside it."
-      />
+    <div id="settings-panel-projects">
       <div className="settings-stack settings-stack-spaced">
         {loading ? <div role="status">Loading projects…</div> : null}
         {error !== null ? (

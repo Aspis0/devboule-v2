@@ -1,3 +1,4 @@
+/* Devices page: this device, the pairing flows, and the paired list. R17-3 owns this file. */
 .settings-device-card {
   gap: 12px;
 }

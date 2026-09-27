@@ -1,24 +1,28 @@
 # Settings surface
 
-Six tabs: General, Projects, Oracle, Providers & models, Devices, and
-Diagnostics.
+Fourteen pages in five groups, behind one left menu (`SettingsSurface.tsx`,
+menu catalogue in `settingsMenu.ts`, icons in `menuIcons.tsx`): **This machine**
+(Appearance, Layout, Editing, Shortcuts, Notifications, Diagnostics),
+**Providers & agents** (Providers, Agent profiles, Usage), **Workspace**
+(Projects, Oracle), **Devices** (a static "This PC" row, Paired devices,
+Permissions), **About**. The shell renders every page's title and intro; pages
+with no function yet render an honest empty state instead of controls.
 
-Five tabs are backed by typed daemon IPC: **Providers & models** lists the
-agent CLIs found on PATH and offers refresh plus consent-gated npm
-install/update (`providersList`, `providersRefresh`, `providerUpdate` in
-`SettingsSurface.tsx`), **Oracle** embeds the Oracle panel, whose values
-and actions all come through the typed Oracle IPC wrappers, **General**
-contains only the journal-usage and journal-retention controls on real IPC
-(`JournalRetentionPanel.tsx`), **Diagnostics** reports live daemon
-health through the typed `daemonDiagnostics` command
-(`DiagnosticsPanel.tsx`), and **Devices** shows this device's identity,
-both pairing directions, the pairings waiting for confirmation here, and
-the paired list with its capability toggles and revoke
-(`DevicesPanel.tsx`).
+Panels with function live in `panels/` (`ProvidersPanel.tsx`,
+`AgentsPanel.tsx` with `DelegationSetting`, `ProjectsPanel.tsx`); the
+Providers/Agents/Projects/Devices/Diagnostics panels are backed by typed
+daemon IPC, Appearance by local theme storage, the window-close choice by
+surface settings, Default send by local storage, and journal retention by
+`journalRetentionGet`/`Set` plus `journalUsage`. Per-provider status and
+tool-policy reads live in `providerStatus.ts`.
 
-**Projects** lists the daemon's persisted projects through `projects_list`
-and registers new ones through the same native-picker flow as the
-Workspace sidebar.
+Each page owns its stylesheet (`providers.css`, `profiles.css`, `devices.css`,
+`general.css` for the This-machine components, `diagnostics.css` which also
+carries the transcript-history section rendered on the Diagnostics page);
+`settings.css` holds base tokens, the shell, and the shared card/stack
+primitives every page renders inside — later slices read it but do not edit
+it. The transcript-history rules live with the Diagnostics page, not with the
+component file, for exactly that reason.
 
 No mock data is left in this surface. The two controls that promised
 features this product does not have — "Lock app" and "+ Pair a device" —

@@ -19,7 +19,6 @@ import type {
   PendingPairing,
   RemoteState,
 } from "../../types/ipc";
-import { SettingsHeading } from "./SettingsSurface";
 import { nextCaps } from "./peerCaps";
 import "./devices.css";
 
@@ -94,9 +93,6 @@ const CAP_LABELS: Record<Cap, string> = {
   // the device may still drive sessions but may not change this machine.
   admin: "administer this device (settings, projects, shutdown)",
 };
-
-const DEVICES_DESCRIPTION =
-  "Paired clients that may drive this daemon. Pairing is per-device and revocable.";
 
 /** What the Copy button says: the copy either happened or it did not. */
 type CopyState = "idle" | "copied" | "failed";
@@ -715,8 +711,7 @@ export function DevicesPanel() {
 
   if (reply === null) {
     return (
-      <div id="settings-panel-devices" role="tabpanel" aria-label="Devices">
-        <SettingsHeading title="Devices" description={DEVICES_DESCRIPTION} />
+      <div id="settings-panel-devices">
         {listError === null ? (
           <div role="status">Loading devices…</div>
         ) : (
@@ -744,9 +739,7 @@ export function DevicesPanel() {
   const enterBusyFlow = enterBusy || waitingActive;
 
   return (
-    <div id="settings-panel-devices" role="tabpanel" aria-label="Devices">
-      <SettingsHeading title="Devices" description={DEVICES_DESCRIPTION} />
-
+    <div id="settings-panel-devices">
       <div className="settings-stack settings-stack-tight settings-devices-list">
         {listError === null ? null : (
           <div className="device-actions" role="alert">

@@ -301,12 +301,6 @@ export function OraclePanel() {
 
   return (
     <div className="oracle-panel">
-      <header className="oracle-page-heading">
-        <div className="oracle-eyebrow">Local code search</div>
-        <h2>Oracle</h2>
-        <p>Ask where code lives and get the smallest useful source spans to open.</p>
-      </header>
-
       {stage === "ready" || stage === "incomplete" ? (
         <ReadyOracle
           workspace={workspace}

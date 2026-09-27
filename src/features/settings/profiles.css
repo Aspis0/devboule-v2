@@ -184,3 +184,13 @@
   color: var(--silence);
   font-size: 11px;
 }
+
+/* Section labels inside the page cards. Duplicated in diagnostics.css: the rule is six stable lines, and each future slice owns its own copy so no two slices edit one file. */
+.settings-subheading {
+  margin-top: 26px;
+  color: var(--silence);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}

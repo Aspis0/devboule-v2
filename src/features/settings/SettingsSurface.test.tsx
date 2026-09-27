@@ -78,6 +78,9 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import type { AgentProfilesDocument, DaemonStatus } from "../../types/ipc";
+import { SETTINGS_MENU } from "./settingsMenu";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { SettingsSurface } from "./SettingsSurface";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -156,18 +159,20 @@ describe("Settings removed placeholder rows", () => {
     expect(container.querySelector("#settings-panel-labs")).toBeNull();
   });
 
-  it("shows retention, send and close behaviours on Diagnostics, no placeholder rows", async () => {
+  it("shows retention on Diagnostics, no placeholder rows and no parked behaviours", async () => {
     root = createRoot(container);
     await act(async () => root.render(<SettingsSurface />));
     await act(async () => openMenuRow("Diagnostics").click());
     await act(async () => undefined);
 
     expect(container.textContent).not.toContain("Crescent reveal zone");
-    // "Default send" was a placeholder once; it is a real setting now and its
-    // presence is asserted below. These are the rows that must stay gone.
+    // "Default send" and "When I close the window" were parked here once; they live on
+    // Editing and Layout now, and their presence is asserted there. These are the rows that
+    // must stay gone.
     expect(container.textContent).not.toContain("Daemon shuts down with the app");
     expect(container.textContent).not.toContain("Telemetry");
-    expect(container.textContent).toContain("Default send");
+    expect(container.textContent).not.toContain("Default send");
+    expect(container.textContent).not.toContain("When I close the window");
     expect(container.textContent).toContain("Retention limits");
   });
 
@@ -216,7 +221,15 @@ describe("Settings menu shell", () => {
       instanceId: "settings-test",
       protocolVersion: 4,
       clients: 1,
-      capabilities: ["ping", "status", "sessions", "journal", "typed_permissions", "devices"],
+      capabilities: [
+        "ping",
+        "status",
+        "sessions",
+        "journal",
+        "typed_permissions",
+        "devices",
+        "agent_profiles",
+      ],
       message: null,
     };
   }
@@ -273,12 +286,13 @@ describe("Settings menu shell", () => {
     expect(container.textContent).not.toContain("Labs");
   });
 
-  it("opens on Providers, marked current", async () => {
+  it("opens on Providers, marked current, with the panel mounted", async () => {
     await renderShell();
     const providers = container.querySelector("[data-settings-page='providers']");
     if (!providers) throw new Error("Providers row did not render");
     expect(providers.getAttribute("aria-current")).toBe("page");
     expect(container.textContent).not.toContain("not available yet");
+    expect(container.querySelector("#settings-panel-providers")).not.toBeNull();
   });
 
   it("marks only the open page current", async () => {
@@ -303,33 +317,51 @@ describe("Settings menu shell", () => {
     expect(document.activeElement?.textContent).toBe("About devboule");
     await act(async () => keyDown(document.activeElement as Element, "Home"));
     expect(document.activeElement?.textContent).toBe("Appearance");
+    // Arrows move focus only: the page does not change under them.
+    expect(
+      container.querySelector("[data-settings-page='providers']")?.getAttribute("aria-current"),
+    ).toBe("page");
   });
 
-  it("opens the focused page with Enter and Space", async () => {
+  it("opens the focused page with Enter and Space without leaving the menu", async () => {
     await renderShell();
     const appearance = openPage("Appearance");
     await act(async () => appearance.focus());
     await act(async () => keyDown(document.activeElement as Element, "ArrowDown"));
     await act(async () => keyDown(document.activeElement as Element, "Enter"));
     await act(async () => undefined);
-    expect(
-      container.querySelector("[data-settings-page='layout']")?.getAttribute("aria-current"),
-    ).toBe("page");
-    await act(async () => openPage("Appearance").focus());
+    const layout = container.querySelector("[data-settings-page='layout']");
+    expect(layout?.getAttribute("aria-current")).toBe("page");
+    // Focus stays on the row, so arrow travel keeps working.
+    expect(document.activeElement).toBe(layout);
     await act(async () => keyDown(document.activeElement as Element, "ArrowDown"));
+    expect(document.activeElement?.textContent).toBe("Editing");
+    // The new page is announced without moving focus.
+    expect(container.querySelector(".settings-live")?.textContent).toContain("Layout");
+    // Space behaves the same.
     await act(async () => keyDown(document.activeElement as Element, " "));
     await act(async () => undefined);
     expect(
-      container.querySelector("[data-settings-page='layout']")?.getAttribute("aria-current"),
+      container.querySelector("[data-settings-page='editing']")?.getAttribute("aria-current"),
     ).toBe("page");
+    expect(document.activeElement?.textContent).toBe("Editing");
   });
 
-  it("moves focus to the page title on navigation", async () => {
+  it.each([
+    ["Shortcuts", "shortcuts"],
+    ["Providers", "providers"],
+    ["Paired devices", "paired"],
+  ])("moves focus to the page title on click navigation (%s)", async (label, id) => {
     await renderShell();
-    await act(async () => openPage("Shortcuts").click());
+    // Leave the default page first: clicking the already-open row is not a
+    // navigation and moves nothing.
+    await act(async () => openPage("Appearance").click());
     await act(async () => undefined);
-    const title = container.querySelector(".settings-page-title");
+    await act(async () => openPage(label).click());
+    await act(async () => undefined);
+    const title = container.querySelector(`#settings-page-title-${id}`);
     if (!title) throw new Error("Page title did not render");
+    expect(title.textContent).toBe(label);
     expect(document.activeElement).toBe(title);
   });
 
@@ -338,51 +370,41 @@ describe("Settings menu shell", () => {
     expect(openPage("Back to workspace").tagName).toBe("BUTTON");
   });
 
-  it("shows the host row with the daemon live dot and no action", async () => {
+  it("shows a static host row with no status dot", async () => {
     await renderShell();
     const menu = container.querySelector("[aria-label='Settings pages']");
     const host = menu?.querySelector(".settings-host-row");
     if (!host) throw new Error("Host row did not render");
     expect(host.textContent).toContain("This PC");
     expect(host.tagName).not.toBe("BUTTON");
-    expect(host.querySelector(".settings-host-dot-green")).not.toBeNull();
+    expect(host.querySelector("[class*='settings-host-dot']")).toBeNull();
   });
 
-  it.each([
-    ["connecting", "settings-host-dot-border"],
-    ["disconnected", "settings-host-dot-terracotta"],
-    ["error", "settings-host-dot-terracotta"],
-    ["unresponsive", "settings-host-dot-terracotta"],
-  ])("maps the %s daemon state to %s", async (state, dotClass) => {
-    vi.mocked(daemonStatus).mockResolvedValue({
-      ...connectedDaemon(),
-      state: state as DaemonStatus["state"],
-    });
-    root = createRoot(container);
-    await act(async () => root.render(<SettingsSurface />));
-    await act(async () => undefined);
-    await act(async () => undefined);
-    expect(container.querySelector(`.${dotClass}`)).not.toBeNull();
+  it("keeps a visible focus ring on the navigation target", () => {
+    const css = readFileSync(resolve(import.meta.dirname, "settings.css"), "utf8");
+    const titleBlock = /\.settings-page-title\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(titleBlock).not.toMatch(/outline\s*:\s*none/);
+    expect(css).toContain(".settings-page-title:focus");
   });
 
-  it.each([
-    ["layout", "Layout", "How the app arranges its panes and windows."],
-    ["editing", "Editing", "How composing and editing messages behaves."],
-    ["shortcuts", "Shortcuts", "Keyboard shortcuts for working in the app."],
-    ["usage", "Usage", "How much of each provider plan has been used."],
-    ["permissions", "Permissions", "What agents and paired devices may do without asking."],
-    ["about", "About devboule", "The app version and where to read more about it."],
-  ])("shows the %s page as an honest empty state", async (_id, title, intro) => {
-    await renderShell();
-    await act(async () => openPage(title).click());
-    await act(async () => undefined);
-    const content = container.querySelector("[data-settings-content]");
-    if (!content) throw new Error("Settings content did not render");
-    expect(content.textContent).toContain(title);
-    expect(content.textContent).toContain(intro);
-    expect(content.textContent).toContain("not available yet");
-    expect(content.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
-  });
+  const EMPTY_PAGES = SETTINGS_MENU.flatMap((group) => group.pages).filter(
+    (page) => page.unavailable === true && page.note === undefined,
+  );
+
+  it.each(EMPTY_PAGES.map((page) => [page.id, page.label, page.intro]))(
+    "shows the %s page as an honest empty state",
+    async (_id, title, intro) => {
+      await renderShell();
+      await act(async () => openPage(title).click());
+      await act(async () => undefined);
+      const content = container.querySelector("[data-settings-content]");
+      if (!content) throw new Error("Settings content did not render");
+      expect(content.textContent).toContain(title);
+      expect(content.textContent).toContain(intro);
+      expect(content.textContent).toContain("not available yet");
+      expect(content.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
+    },
+  );
 
   it("says the notification toasts exist but have no control", async () => {
     await renderShell();
@@ -394,5 +416,92 @@ describe("Settings menu shell", () => {
     expect(content.textContent).toContain("not available yet");
     expect(content.textContent).toMatch(/toasts?/i);
     expect(content.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
+  });
+
+  it.each(
+    SETTINGS_MENU.flatMap((group) => group.pages).map((page) => [page.id, page.label, page.intro]),
+  )("titles every page exactly as its menu row (%s)", async (_id, label, intro) => {
+    await renderShell();
+    await act(async () => openPage(label).click());
+    await act(async () => undefined);
+    const content = container.querySelector("[data-settings-content]");
+    if (!content) throw new Error("Settings content did not render");
+    const titles = Array.from(content.querySelectorAll(".settings-page-title"));
+    expect(titles).toHaveLength(1);
+    expect(titles[0].textContent).toBe(label);
+    expect(content.textContent).toContain(intro);
+    expect(content.querySelectorAll(".settings-page-heading")).toHaveLength(0);
+  });
+
+  it("holds the close behaviour on Layout and the send behaviour on Editing", async () => {
+    await renderShell();
+    await act(async () => openPage("Layout").click());
+    await act(async () => undefined);
+    let content = container.querySelector("[data-settings-content]");
+    expect(content?.textContent).toContain("When I close the window");
+    expect(content?.textContent).not.toContain("not available yet");
+    await act(async () => openPage("Editing").click());
+    await act(async () => undefined);
+    content = container.querySelector("[data-settings-content]");
+    expect(content?.textContent).toContain("Default send");
+    expect(content?.textContent).not.toContain("not available yet");
+  });
+
+  it("gives Diagnostics one page-level heading", async () => {
+    await renderShell();
+    await act(async () => openPage("Diagnostics").click());
+    await act(async () => undefined);
+    const content = container.querySelector("[data-settings-content]");
+    if (!content) throw new Error("Settings content did not render");
+    const titles = Array.from(content.querySelectorAll(".settings-page-title"));
+    expect(titles).toHaveLength(1);
+    expect(titles[0].textContent).toBe("Diagnostics");
+    expect(content.textContent).not.toContain("Journal storage");
+    expect(content.textContent).toContain("Transcript history");
+    expect(content.textContent).toContain("Retention limits");
+  });
+
+  it("renders no orphaned tabpanels", async () => {
+    await renderShell();
+    for (const label of [
+      "Providers",
+      "Agent profiles",
+      "Projects",
+      "Paired devices",
+      "Diagnostics",
+      "Oracle",
+      "Appearance",
+    ]) {
+      await act(async () => openPage(label).click());
+      await act(async () => undefined);
+      expect(container.querySelectorAll('[role="tabpanel"]')).toHaveLength(0);
+    }
+  });
+
+  it.each([
+    ["appearance", "Appearance", ".appearance-section"],
+    ["providers", "Providers", "#settings-panel-providers"],
+    ["profiles", "Agent profiles", "#settings-panel-agents"],
+    ["projects", "Projects", "#settings-panel-projects"],
+    ["paired", "Paired devices", "#settings-panel-devices"],
+    ["diagnostics", "Diagnostics", "#settings-panel-diagnostics"],
+    ["layout", "Layout", ".settings-card"],
+    ["editing", "Editing", ".settings-card"],
+  ])("mounts the %s panel", async (_id, label, selector) => {
+    await renderShell();
+    await act(async () => openPage(label).click());
+    await act(async () => undefined);
+    const content = container.querySelector("[data-settings-content]");
+    if (!content) throw new Error("Settings content did not render");
+    expect(content.querySelector(selector)).not.toBeNull();
+  });
+
+  it("mounts the Oracle panel", async () => {
+    await renderShell();
+    await act(async () => openPage("Oracle").click());
+    await act(async () => undefined);
+    const content = container.querySelector("[data-settings-content]");
+    if (!content) throw new Error("Settings content did not render");
+    expect(content.textContent).toContain("Oracle mock");
   });
 });

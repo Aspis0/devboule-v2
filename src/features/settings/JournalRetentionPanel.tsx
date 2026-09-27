@@ -5,7 +5,7 @@ import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
-import "./general.css";
+import "./diagnostics.css";
 
 const RETENTION_FIELDS = [
   "sessionMaxBytes",
@@ -109,10 +109,10 @@ export function JournalRetentionPanel() {
 
   return (
     <div className="retention-panel">
-      <div className="settings-page-heading">
-        <h2>Transcript history</h2>
-        <p>See how much journal history is saved and choose its retention limits.</p>
-      </div>
+      <h3 className="settings-subheading">Transcript history</h3>
+      <p className="retention-help">
+        See how much journal history is saved and choose its retention limits.
+      </p>
       {error && (
         <div className="settings-retention-alert" role="alert">
           <ErrorText sentence={error.sentence} detail={error.detail} id="journal-retention-error" />

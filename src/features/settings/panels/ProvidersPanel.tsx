@@ -9,7 +9,6 @@ import {
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { useWorkspaceDaemon } from "../../workspace/workspaceDaemon";
-import { SettingsHeading } from "../SettingsSurface";
 import {
   ALWAYS_ON_REASON,
   ALWAYS_ON_TOOL,
@@ -49,11 +48,6 @@ export interface ProviderConsent {
   provider: ProviderInfo;
   verb: "update" | "install";
 }
-
-/**
- * Update applies only to npm-installed CLIs whose package is known and whose
- * latest version differs from the installed one.
-
 
 /**
  * Per-provider tool toggles, under one provider card. Renders nothing when
@@ -450,11 +444,7 @@ export function ProvidersPanel() {
   const providers = catalog?.providers ?? null;
   const unreadableDirs = catalog?.unreadableDirs ?? 0;
   return (
-    <div id="settings-panel-providers" role="tabpanel" aria-label="Providers and models">
-      <SettingsHeading
-        title="Providers & models"
-        description="CLI agents found on PATH. An executable is not a login: the status shows the last measured start outcome, or unknown until one is measured."
-      />
+    <div id="settings-panel-providers">
       <button className="provider-refresh" type="button" disabled={refreshing} onClick={refresh}>
         {refreshing ? "Refreshing…" : "Refresh"}
       </button>

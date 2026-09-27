@@ -1,4 +1,8 @@
+/* Providers page: the provider cards, their tool toggles, and the
+   consent-gated npm install/update flow. R17-1 owns this file. */
 .provider-list {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   margin-top: 18px;
 }
@@ -104,6 +108,18 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.provider-name,
+.provider-detail {
+  display: block;
+}
+
+.provider-detail {
+  margin-top: 2px;
+  color: var(--silence);
   font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
 }

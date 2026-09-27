@@ -103,35 +103,11 @@
   font-size: 13px;
 }
 
-.settings-host-dot {
-  width: 7px;
-  height: 7px;
-  flex: none;
-  margin-left: auto;
-  border-radius: 999px;
-}
-
-.settings-host-dot-green {
-  background: var(--green);
-}
-
-.settings-host-dot-border {
-  background: var(--border-strong);
-}
-
-.settings-host-dot-terracotta {
-  background: var(--terracotta);
-}
-
 .settings-main {
   flex: 1;
   min-width: 0;
   padding: 26px 36px;
   overflow-y: auto;
-}
-
-.settings-main-inner {
-  outline: none;
 }
 
 .settings-page-title {
@@ -140,7 +116,14 @@
   font-family: var(--font-display);
   font-size: 20px;
   font-weight: 400;
-  outline: none;
+}
+
+/* The navigation target: focus lands here programmatically, so the ring is
+   on :focus, not :focus-visible — the heuristics would hide it after a
+   mouse click, and a title is only ever focused by a page change. */
+.settings-page-title:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .settings-page-intro {
@@ -169,7 +152,6 @@
   line-height: 1.6;
 }
 
-.provider-list,
 .settings-stack {
   display: flex;
   flex-direction: column;
@@ -215,14 +197,11 @@
   min-width: 0;
 }
 
-.provider-name,
-.provider-detail,
 .settings-card-title,
 .settings-card-meta {
   display: block;
 }
 
-.provider-detail,
 .settings-card-meta {
   margin-top: 2px;
   color: var(--silence);
@@ -265,15 +244,6 @@
 
 .provider-switch-on .provider-switch-knob {
   left: 19px;
-}
-
-.settings-subheading {
-  margin-top: 26px;
-  color: var(--silence);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .default-model-grid {

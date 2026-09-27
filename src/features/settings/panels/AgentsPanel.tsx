@@ -28,7 +28,6 @@ import type {
   ProviderCatalog,
 } from "../../../types/ipc";
 import { useWorkspaceDaemon } from "../../workspace/workspaceDaemon";
-import { SettingsHeading } from "../SettingsSurface";
 import "../profiles.css";
 /**
  * The handshake capability that gates the whole Agents section, spelled
@@ -740,11 +739,7 @@ export function AgentProfilesPanel() {
   }
 
   return (
-    <div id="settings-panel-agents" role="tabpanel" aria-label="Agents">
-      <SettingsHeading
-        title="Agents"
-        description="Profiles are the kinds of agent an agent may start. The order here is the order agents read, top down. A profile without the tick stays yours alone: agents never see it."
-      />
+    <div id="settings-panel-agents">
       {/* Beside the profiles, on purpose: the switch and the profiles it
           governs are one consent surface, and splitting them across tabs
           rebuilds the two-level setting that was refused in so many words. */}

@@ -18,11 +18,13 @@ export type SettingsPageId =
 export interface SettingsMenuPage {
   id: SettingsPageId;
   label: string;
+  /** One line saying what the page holds. Every page carries one. */
+  intro: string;
   /**
-   * One line saying what the page will hold. Only pages with no function
-   * carry one — a page with an intro renders the honest empty state.
+   * Set for pages with no function yet: the page renders the quiet
+   * "not available" line and no controls.
    */
-  intro?: string;
+  unavailable?: boolean;
   /** An extra quiet line under the empty state, for the one behaviour the
       page can already name (the notification toasts). */
   note?: string;
@@ -31,7 +33,7 @@ export interface SettingsMenuPage {
 export interface SettingsMenuGroup {
   label: string;
   pages: SettingsMenuPage[];
-  /** The Devices group carries the live host row above its pages. */
+  /** The Devices group carries the host row above its pages. */
   host?: boolean;
 }
 
@@ -39,47 +41,89 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
   {
     label: "This machine",
     pages: [
-      { id: "appearance", label: "Appearance" },
-      { id: "layout", label: "Layout", intro: "How the app arranges its panes and windows." },
-      { id: "editing", label: "Editing", intro: "How composing and editing messages behaves." },
+      { id: "appearance", label: "Appearance", intro: "Light or dark theme for the app." },
+      {
+        id: "layout",
+        label: "Layout",
+        intro: "What happens when the app window closes.",
+      },
+      {
+        id: "editing",
+        label: "Editing",
+        intro: "How composing and editing messages behaves.",
+      },
       {
         id: "shortcuts",
         label: "Shortcuts",
         intro: "Keyboard shortcuts for working in the app.",
+        unavailable: true,
       },
       {
         id: "notifications",
         label: "Notifications",
         intro: "Sounds and toasts for things that need attention.",
+        unavailable: true,
         note: "Attention toasts already appear, but they have no control yet.",
       },
-      { id: "diagnostics", label: "Diagnostics" },
+      {
+        id: "diagnostics",
+        label: "Diagnostics",
+        intro:
+          "Numbers and versions about the app itself, already redacted by the daemon, plus the transcript history it keeps.",
+      },
     ],
   },
   {
     label: "Providers & agents",
     pages: [
-      { id: "providers", label: "Providers" },
-      { id: "profiles", label: "Agent profiles" },
-      { id: "usage", label: "Usage", intro: "How much of each provider plan has been used." },
+      {
+        id: "providers",
+        label: "Providers",
+        intro: "The agent CLIs this daemon can start, and the tools each one offers.",
+      },
+      {
+        id: "profiles",
+        label: "Agent profiles",
+        intro: "The kinds of agent that can be started, and the instructions they all receive.",
+      },
+      {
+        id: "usage",
+        label: "Usage",
+        intro: "How much of each provider plan has been used.",
+        unavailable: true,
+      },
     ],
   },
   {
     label: "Workspace",
     pages: [
-      { id: "projects", label: "Projects" },
-      { id: "oracle", label: "Oracle" },
+      {
+        id: "projects",
+        label: "Projects",
+        intro:
+          "A project is a git repository or any directory this daemon can reach. Workspaces live inside it.",
+      },
+      {
+        id: "oracle",
+        label: "Oracle",
+        intro: "Ask where code lives and get the smallest useful source spans to open.",
+      },
     ],
   },
   {
     label: "Devices",
     host: true,
     pages: [
-      { id: "paired", label: "Paired devices" },
+      {
+        id: "paired",
+        label: "Paired devices",
+        intro: "Paired clients that may drive this daemon. Pairing is per-device and revocable.",
+      },
       {
         id: "permissions",
         label: "Permissions",
         intro: "What agents and paired devices may do without asking.",
+        unavailable: true,
       },
     ],
   },
@@ -90,6 +134,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
         id: "about",
         label: "About devboule",
         intro: "The app version and where to read more about it.",
+        unavailable: true,
       },
     ],
   },
@@ -100,8 +145,12 @@ export const SETTINGS_PAGE_ORDER: readonly SettingsPageId[] = SETTINGS_MENU.flat
   group.pages.map((page) => page.id),
 );
 
+const PAGE_BY_ID: ReadonlyMap<SettingsPageId, SettingsMenuPage> = new Map(
+  SETTINGS_MENU.flatMap((group) => group.pages.map((page) => [page.id, page] as const)),
+);
+
 export function settingsPageById(id: SettingsPageId): SettingsMenuPage {
-  const found = SETTINGS_MENU.flatMap((group) => group.pages).find((page) => page.id === id);
+  const found = PAGE_BY_ID.get(id);
   if (!found) throw new Error(`Unknown settings page: ${id}`);
   return found;
 }

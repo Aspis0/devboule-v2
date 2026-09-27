@@ -110,7 +110,8 @@ describe("diagnostics panel", () => {
 
     expect(daemonDiagnostics).toHaveBeenCalledTimes(1);
     const text = container.textContent ?? "";
-    expect(text).toContain("Diagnostics");
+    // The page title lives in the shell now; the panel keeps the redaction
+    // reassurance beside its Copy button, word for word.
     // The safety sentence must be exact: the report DOES carry paths (the
     // runtime dir and pipe name, with the home directory redacted), so "no
     // file paths" would be a lie the user can catch by reading the paste.

@@ -1,8 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, RefObject } from "react";
 import { useAppStore } from "../../store/appStore";
-import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
-import { daemonDotTone, daemonLabel } from "../workspace/sidebar/SidebarFooter";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
 import { OraclePanel } from "../oracle/OraclePanel";
@@ -26,7 +24,7 @@ import "./settings.css";
 /** The quiet line under every page with no function yet. */
 const EMPTY_PAGE_NOTE = "This page is not available yet.";
 
-function SettingsEmptyPage({
+function SettingsPageHeader({
   page,
   titleRef,
 }: {
@@ -40,7 +38,7 @@ function SettingsEmptyPage({
         {page.label}
       </h2>
       <p className="settings-page-intro">{page.intro}</p>
-      <p className="settings-page-empty">{EMPTY_PAGE_NOTE}</p>
+      {page.unavailable === true ? <p className="settings-page-empty">{EMPTY_PAGE_NOTE}</p> : null}
       {page.note ? <p className="settings-page-empty">{page.note}</p> : null}
     </section>
   );
@@ -49,28 +47,41 @@ function SettingsEmptyPage({
 export function SettingsSurface() {
   const [activePage, setActivePage] = useState<SettingsPageId>("providers");
   const selectSurface = useAppStore((state) => state.selectSurface);
-  const daemon = useWorkspaceDaemon();
   const menuRef = useRef<HTMLElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const previousPage = useRef<SettingsPageId>(activePage);
+  // Clicks move focus to the page title; keyboard activation deliberately
+  // does not, so arrow travel through the menu keeps working (F4). The
+  // effect reads this, never the event.
+  const focusTitleOnChange = useRef(false);
+  const [liveMessage, setLiveMessage] = useState("");
 
-  // Focus follows navigation, never the mount: the title of an empty page,
-  // otherwise the content top. The ref comparison (not a first-render flag)
-  // is what survives StrictMode's double effect.
+  // Focus follows a click navigation to the page title, never the mount.
+  // The ref comparison (not a first-render flag) is what survives
+  // StrictMode's double effect. A keyboard activation instead announces the
+  // new page through the live region and leaves focus on its row.
   useEffect(() => {
     if (previousPage.current === activePage) return;
     previousPage.current = activePage;
-    const content = contentRef.current;
-    if (!content) return;
-    const title = content.querySelector<HTMLElement>(".settings-page-title");
-    (title ?? content).focus();
+    if (focusTitleOnChange.current) {
+      focusTitleOnChange.current = false;
+      titleRef.current?.focus();
+    } else {
+      setLiveMessage(`${settingsPageById(activePage).label} page open`);
+    }
   }, [activePage]);
+
+  function openPage(id: SettingsPageId, moveFocus: boolean) {
+    focusTitleOnChange.current = moveFocus;
+    setActivePage(id);
+  }
 
   function handleMenuKeyDown(event: KeyboardEvent<HTMLButtonElement>, id: SettingsPageId) {
     if (event.key === "Enter" || event.key === " ") {
+      // preventDefault also suppresses the native click activation, so the
+      // row keeps focus and the arrows below stay live.
       event.preventDefault();
-      setActivePage(id);
+      openPage(id, false);
       return;
     }
     const index = SETTINGS_PAGE_ORDER.indexOf(id);
@@ -87,20 +98,19 @@ export function SettingsSurface() {
       ?.focus();
   }
 
-  function renderContent() {
+  function renderPanel() {
     switch (activePage) {
       case "appearance":
         return <AppearanceSection />;
+      case "layout":
+        return <CloseBehaviorSetting />;
+      case "editing":
+        return <SendBehaviorSetting />;
       case "diagnostics":
         return (
           <>
             <DiagnosticsPanel />
-            <div className="settings-subheading">Journal storage</div>
             <JournalRetentionPanel />
-            <div className="settings-subheading">Window</div>
-            <CloseBehaviorSetting />
-            <div className="settings-subheading">Message sending</div>
-            <SendBehaviorSetting />
           </>
         );
       case "providers":
@@ -114,11 +124,9 @@ export function SettingsSurface() {
       case "paired":
         return <DevicesPanel />;
       default:
-        return <SettingsEmptyPage page={settingsPageById(activePage)} titleRef={titleRef} />;
+        return null;
     }
   }
-
-  const hostSentence = daemonLabel(daemon);
 
   return (
     <section className="surface-card settings-surface" aria-label="Settings">
@@ -137,14 +145,9 @@ export function SettingsSurface() {
               <span className="settings-menu-group-label">{group.label}</span>
             </div>
             {group.host ? (
-              <div className="settings-host-row" title={hostSentence}>
+              <div className="settings-host-row">
                 <SettingsMenuIcon id="host" />
                 <span>This PC</span>
-                <span
-                  className={`settings-host-dot settings-host-dot-${daemonDotTone(daemon.state)}`}
-                  role="img"
-                  aria-label={hostSentence}
-                />
               </div>
             ) : null}
             {group.pages.map((page) => (
@@ -154,7 +157,7 @@ export function SettingsSurface() {
                 className={`settings-menu-row${activePage === page.id ? " settings-menu-row-active" : ""}`}
                 data-settings-page={page.id}
                 aria-current={activePage === page.id ? "page" : undefined}
-                onClick={() => setActivePage(page.id)}
+                onClick={() => openPage(page.id, true)}
                 onKeyDown={(event) => handleMenuKeyDown(event, page.id)}
               >
                 <SettingsMenuIcon id={page.id} />
@@ -164,10 +167,14 @@ export function SettingsSurface() {
           </Fragment>
         ))}
       </nav>
+      <span className="sr-only settings-live" role="status">
+        {liveMessage}
+      </span>
 
       <div className="settings-main">
-        <div className="settings-main-inner" ref={contentRef} tabIndex={-1} data-settings-content>
-          {renderContent()}
+        <div className="settings-main-inner" data-settings-content>
+          <SettingsPageHeader page={settingsPageById(activePage)} titleRef={titleRef} />
+          {renderPanel()}
         </div>
       </div>
     </section>

@@ -42,10 +42,10 @@ afterEach(async () => {
 });
 
 describe("SendBehaviorSetting", () => {
-  it("offers Queue and Steer in the General tab's row form, Queue checked by default", async () => {
+  it("offers Queue and Steer in the Editing page's row form, Queue checked by default", async () => {
     await renderSetting();
-    // The row every other General setting uses — not the page-heading class a
-    // tab-level title wears (review F17).
+    // The row every other Editing setting uses — not the page-heading class a
+    // page-level title wears (review F17).
     const row = container.querySelector(".settings-card.settings-value-row");
     expect(row).not.toBeNull();
     expect(row?.textContent).toContain("Default send");

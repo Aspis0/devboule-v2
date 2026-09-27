@@ -123,11 +123,11 @@ describe("Settings agents panel", () => {
     };
   }
 
-  // Renders the surface, waits for the handshake, opens the Agents tab and
-  // answers the document fetch, so assertions see the settled list. The
-  // capability mock is `mockResolvedValue`, not `Once`: the hook polls per
-  // consumer, so ProvidersPanel (the default tab) consumes a one-shot answer
-  // before the Agents tab ever mounts.
+  // Renders the panel directly, waits for the handshake, and answers the
+  // document fetch, so assertions see the settled list. The capability mock
+  // is `mockResolvedValue`, not `Once`: the panel and the delegation switch
+  // each poll the handshake, so a one-shot answer would be spent on the
+  // first consumer.
   async function renderAgentsPanel(doc: AgentProfilesDocument) {
     vi.mocked(daemonStatus).mockResolvedValue(
       daemonStatusWith([
@@ -1753,8 +1753,8 @@ describe("Settings agents panel — new profile form", () => {
     };
   }
 
-  // Renders the surface, opens the Agents tab and answers the document
-  // fetch. `capabilities` decides which daemon generation the form meets:
+  // Renders the panel directly and answers the document fetch.
+  // `capabilities` decides which daemon generation the form meets:
   // without `provider_vocabulary` (every daemon today) it must fall back to
   // free text and say that reason out loud.
   async function renderAgentsPanel(
@@ -3279,7 +3279,7 @@ describe("Settings agents panel — new profile form", () => {
     // hint under its textarea. A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(49);
+    expect(sentences).toHaveLength(48);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;
