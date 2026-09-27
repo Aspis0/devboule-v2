@@ -188,9 +188,8 @@ impl ProviderSwitchStore {
     }
 }
 
-/// Read the file: the canonicalised known ids, dropping whatever the
-/// catalog no longer publishes (an uninstalled provider's row cannot be
-/// consulted, so keeping it would be a switch that does nothing).
+/// Read the file, canonicalising built-in aliases while retaining ids that
+/// are temporarily absent from the live catalog (including user rows).
 fn read_switches(path: &Path) -> Result<HashSet<String>, String> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
@@ -213,20 +212,24 @@ fn read_switches(path: &Path) -> Result<HashSet<String>, String> {
         )
     })?;
     let mut admitted = HashSet::new();
-    let mut dropped = 0;
     for id in document.disabled {
-        match crate::provider_catalog::catalog_provider_id(id.trim()) {
-            Some(canonical) => {
-                admitted.insert(canonical);
-            }
-            None => dropped += 1,
+        let id = id.trim();
+        if id.is_empty() || id.len() > crate::tool_policy::MAX_POLICY_NAME_BYTES {
+            return Err(format!(
+                "{} contains an invalid provider id",
+                path.display()
+            ));
         }
-    }
-    if dropped > 0 {
-        eprintln!(
-            "provider-switches: {} names {dropped} providers the catalog no longer publishes; dropped",
-            path.display()
-        );
+        let canonical =
+            crate::provider_catalog::catalog_provider_id(id).unwrap_or_else(|| id.to_string());
+        if !admitted.contains(&canonical) && admitted.len() >= crate::tool_policy::MAX_POLICY_ROWS {
+            return Err(format!(
+                "{} names more than {} disabled providers",
+                path.display(),
+                crate::tool_policy::MAX_POLICY_ROWS
+            ));
+        }
+        admitted.insert(canonical);
     }
     Ok(admitted)
 }
@@ -282,9 +285,12 @@ mod tests {
         store.set("GROK", true).expect("switch back on");
         assert!(store.is_enabled("grok"));
         // A fresh load reads the durable copy, not the memory.
+        store.set("claude", false).expect("switch Claude off");
         let reopened = ProviderSwitchStore::load(&dir);
-        assert!(store.is_enabled("grok"));
-        assert!(reopened.is_enabled("grok"));
+        assert!(
+            !reopened.is_enabled("claude"),
+            "reload reads the persisted off state"
+        );
         store.set("qwen", false).expect("second switch off");
         let reread = ProviderSwitchStore::load(&dir);
         assert!(!reread.is_enabled("qwen"));
@@ -296,6 +302,7 @@ mod tests {
     fn an_unknown_provider_is_refused_and_changes_nothing() {
         let dir = temp_dir("unknown");
         let store = ProviderSwitchStore::load(&dir);
+        store.set("grok", false).expect("the store is nonempty");
         let error = store
             .set("not-a-provider", false)
             .expect_err("unknown ids cannot be switched");
@@ -304,6 +311,26 @@ mod tests {
             "the refusal names the id: {error}"
         );
         assert!(store.is_enabled("not-a-provider"));
+        assert!(
+            !store.is_enabled("grok"),
+            "refusing an unknown id preserves existing switches"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_disabled_user_provider_survives_a_load_without_a_live_catalog_row() {
+        let dir = temp_dir("user-row-not-live");
+        std::fs::write(
+            dir.join(SWITCHES_FILE),
+            br#"{"disabled":["user-provider.example"]}"#,
+        )
+        .expect("seed a previously saved user provider switch");
+        let store = ProviderSwitchStore::load(&dir);
+        assert!(
+            !store.is_enabled("user-provider.example"),
+            "loading without the user row must preserve its saved off state"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

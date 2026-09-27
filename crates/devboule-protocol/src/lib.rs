@@ -202,8 +202,7 @@ pub mod caps {
     /// and rides `view`).
     pub const DEVICES: &str = "devices";
     pub const TYPED_PERMISSIONS: &str = "typed_permissions";
-    /// Per-provider MCP tool policy (`ToolPolicyGet`/`ToolPolicySet`) and the
-    /// provider on/off switch (`ProviderSetEnabled`).
+    /// Per-provider MCP tool policy (`ToolPolicyGet`/`ToolPolicySet`).
     ///
     /// A client must not send those requests to a daemon that predates
     /// them: the daemon's reader cannot deserialize the variants and the
@@ -211,6 +210,10 @@ pub mod caps {
     /// helpers refuse the set pair unless this name was negotiated, which is what
     /// this name exists for.
     pub const TOOL_POLICY: &str = "tool_policy";
+
+    /// Provider on/off switch (`ProviderSetEnabled`). This has its own name
+    /// because older daemons may know tool policies without knowing this frame.
+    pub const PROVIDER_SWITCHES: &str = "provider.switches";
 
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
@@ -634,6 +637,7 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     capabilities.push(Capability::new(caps::TYPED_PERMISSIONS));
     capabilities.push(Capability::new(caps::DEVICES));
     capabilities.push(Capability::new(caps::TOOL_POLICY));
+    capabilities.push(Capability::new(caps::PROVIDER_SWITCHES));
     // A deposit is a session RPC this daemon serves, so the daemon offers the
     // name; the app has to offer it too or the intersection drops it.
     capabilities.push(Capability::new(caps::ATTACHMENTS_DEPOSIT));
@@ -691,6 +695,7 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // `tool_policy_get`/`tool_policy_set` unless this name was negotiated, so
     // a client that did not offer it would refuse its own RPCs.
     capabilities.push(Capability::new(caps::TOOL_POLICY));
+    capabilities.push(Capability::new(caps::PROVIDER_SWITCHES));
     // Same reason as `tool_policy`, and the same pairing: the handshake
     // negotiates the intersection, so a name only the daemon offers is never
     // negotiated, and a client could not then tell a daemon that accepts
@@ -779,6 +784,25 @@ mod tests {
         assert!(m3a_client_capabilities()
             .iter()
             .any(|cap| cap.as_str() == caps::TOOL_POLICY));
+    }
+
+    #[test]
+    fn provider_switch_capability_is_separate_from_tool_policy() {
+        let daemon = m3a_daemon_capabilities();
+        let client = m3a_client_capabilities();
+        assert!(daemon
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_SWITCHES));
+        assert!(client
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_SWITCHES));
+        assert_eq!(
+            intersect_capabilities(&client, &daemon)
+                .iter()
+                .any(|cap| cap.as_str() == caps::PROVIDER_SWITCHES),
+            true,
+            "the app and daemon must negotiate the switch frame independently"
+        );
     }
 
     #[test]

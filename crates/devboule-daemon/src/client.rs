@@ -1353,14 +1353,14 @@ impl DaemonClient {
 
     /// Switch one provider off or back on. Off hides it from the picker and
     /// refuses every spawn and probe; live sessions keep running. Rides the
-    /// tool-policy capability beside the tool writes, and the reply is the
+    /// provider-switch capability, and the reply is the
     /// daemon's frame rather than `()`, like theirs.
     pub fn provider_set_enabled(
         &self,
         provider_id: &str,
         enabled: bool,
     ) -> Result<DaemonMessage, DaemonError> {
-        self.require_agreed(devboule_protocol::caps::TOOL_POLICY)?;
+        self.require_agreed(devboule_protocol::caps::PROVIDER_SWITCHES)?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::ProviderSetEnabled {
             id,

@@ -534,6 +534,78 @@ fn a_daemon_that_did_not_negotiate_tool_policy_is_never_sent_a_policy_rpc() {
         );
         assert_eq!(wire.message, "capability 'tool_policy' was not negotiated");
     }
+    let _ = release_tx.send(());
+    drop(client);
+    server.join().expect("server joins");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An older daemon may advertise tool policy while lacking the distinct
+/// provider-switch frame. The client must reject locally before writing it.
+#[cfg(windows)]
+#[test]
+fn a_tool_policy_only_daemon_is_never_sent_a_provider_switch_frame() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-client-provider-switch-cap");
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let _ = framed.recv::<ClientMessage>().expect("client hello");
+        let mut hello = DaemonHello::plugin_backend("provider-switch-cap-test", std::process::id());
+        hello.capabilities.push(devboule_protocol::Capability::new(
+            devboule_protocol::caps::TOOL_POLICY,
+        ));
+        framed.send(&DaemonMessage::Hello(hello)).expect("hello");
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        let next = framed.recv_timeout::<ClientMessage>(Duration::from_millis(500));
+        assert!(
+            next.is_err(),
+            "no provider-switch frame may be sent: {next:?}"
+        );
+    });
+
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match crate::transport::connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = super::handshake(
+        connection,
+        devboule_protocol::ClientHello::m3a(
+            super::test_owner("provider-switch-cap-test").expect("owner"),
+            "provider-switch-cap-test",
+        ),
+    )
+    .expect("handshake");
+    assert!(client
+        .hello()
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == devboule_protocol::caps::TOOL_POLICY));
+    assert!(!client
+        .hello()
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == devboule_protocol::caps::PROVIDER_SWITCHES));
+    let error = client
+        .provider_set_enabled("claude", false)
+        .expect_err("an older daemon does not know the frame");
+    let DaemonError::Handshake(wire) = error else {
+        panic!("capability mismatch must be a handshake error: {error:?}");
+    };
+    assert_eq!(wire.code, ErrorCode::CapabilityNotSupported);
+    assert_eq!(
+        wire.message,
+        "capability 'provider.switches' was not negotiated"
+    );
 
     let _ = release_tx.send(());
     drop(client);

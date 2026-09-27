@@ -96,8 +96,16 @@ fn a_switched_off_provider_refuses_the_create_road_before_the_birth_door() {
 #[test]
 fn an_unknown_provider_id_passes_the_switch_open() {
     let (dir, state) = switch_state("create-unknown");
-    // Nothing the set door accepts can be unknown, so an unknown id reads
-    // as on: the road must not invent a refusal for it.
+    state
+        .provider_switches
+        .set("claude", false)
+        .expect("the store has a real disabled entry");
+    let canonicalized =
+        crate::provider_switches::refuse_if_disabled(&state.provider_switches, "CLAUDE")
+            .expect_err("a case alias of a disabled provider must be refused");
+    assert_eq!(canonicalized.code, ErrorCode::InvalidRequest);
+    assert!(canonicalized.message.contains("claude"));
+    // An unrelated id remains open even when the store contains a disabled row.
     crate::provider_switches::refuse_if_disabled(&state.provider_switches, "test-agent")
         .expect("an unknown provider is not switched off");
     state.sessions.journal.as_ref().expect("journal").shutdown();

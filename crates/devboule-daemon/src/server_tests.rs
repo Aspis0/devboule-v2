@@ -771,6 +771,25 @@ fn providers_list_returns_catalog_entries_with_unknown_authentication() {
 }
 
 #[test]
+fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
+    let state = Arc::new(ServerState::new("disabled-provider-wire".to_string()));
+    state
+        .provider_switches
+        .set("claude", false)
+        .expect("disable the catalog provider");
+    let reply = super::providers::providers_reply(&state, 71, false, false);
+    let DaemonMessage::Providers { providers, .. } = reply else {
+        panic!("providers reply expected, got {reply:?}");
+    };
+    let claude = providers
+        .iter()
+        .find(|provider| provider.id == "claude")
+        .expect("Claude remains visible in Settings");
+    assert!(!claude.enabled);
+    assert_eq!(claude.pickable, Some(false));
+}
+
+#[test]
 fn tool_policy_set_then_get_round_trips_through_dispatch() {
     let path = crate::test_dirs::test_temp_dir("devboule-tool-policy-dispatch");
     let state = ServerState::with_paths(
@@ -1708,6 +1727,32 @@ fn a_claude_read_enters_the_version_probe_seam_only_while_the_version_is_unknown
     drop(state);
     let _ = std::fs::remove_dir_all(runtime_dir);
     let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn a_disabled_claude_catalog_uses_fallback_without_entering_a_probe() {
+    let temp = crate::test_dirs::test_temp_dir("disabled-claude-catalog-gate");
+    std::fs::write(temp.join("claude.exe"), b"not really claude").expect("fake binary");
+    let state = ServerState::new("disabled-claude-catalog".to_string());
+    state
+        .provider_switches
+        .set("claude", false)
+        .expect("disable Claude");
+    let before = state.version_probe_entry_count();
+    let snapshot = state.claude_models_in_paths(&[temp.clone()]);
+    assert_eq!(
+        snapshot.state,
+        crate::claude_catalog::ClaudeCatalogState::Provisional
+    );
+    assert_eq!(
+        state.version_probe_entry_count(),
+        before,
+        "disabled Claude must use fallback data without starting a probe"
+    );
+    let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+    drop(state);
+    let _ = std::fs::remove_dir_all(&runtime_dir);
+    let _ = std::fs::remove_dir_all(&temp);
 }
 
 /// The biconditional, on the daemon's actual replies and in both

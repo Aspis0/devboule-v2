@@ -11,7 +11,12 @@ import { useAppStore } from "../../../store/appStore";
 import { sharedSessionController } from "../../workspace/workspaceSessions";
 import { hasTerminalInput, requestTerminalInput } from "../../terminal/pendingTerminalInput";
 import { useSettingsDaemon } from "../settingsDaemon";
-import { TOOL_POLICY_CAPABILITY, logTail, toolPolicyFor } from "../providerStatus";
+import {
+  PROVIDER_SWITCHES_CAPABILITY,
+  TOOL_POLICY_CAPABILITY,
+  logTail,
+  toolPolicyFor,
+} from "../providerStatus";
 import { ProviderConsentBlock } from "../providers/ProviderConsentBlock";
 import type { ProviderCatalog, ProviderInfo } from "../../../types/ipc";
 import {
@@ -228,6 +233,7 @@ export function ProvidersPanel() {
   // without one this page offers no tab at all (headless install instead).
   const terminalWorkspaceId = getLastSelectedWorkspaceId();
   const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
+  const providerSwitchSupported = daemon.capabilities.includes(PROVIDER_SWITCHES_CAPABILITY);
   const vocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
 
   const providers = useMemo(() => catalog?.providers ?? null, [catalog]);
@@ -263,14 +269,16 @@ export function ProvidersPanel() {
     [installed],
   );
   const toolStore = useToolPolicies(toolPolicySupported, toolProviderCount > 0);
-  const providerSwitches = useProviderSwitches();
+  const providerSwitches = useProviderSwitches(providerSwitchSupported);
 
   useEffect(() => {
     let cancelled = false;
     const seq = ++fetchSeqRef.current;
+    const switchFetch = providerSwitches.beginFetch();
     void providersList()
       .then(async (listed) => {
         if (cancelled || seq !== fetchSeqRef.current) return;
+        providerSwitches.reconcile(listed.providers, switchFetch);
         setCatalog(listed);
         try {
           const checked = await providersAuthCheck();
@@ -301,6 +309,7 @@ export function ProvidersPanel() {
     // Counts belong to the old catalog: drop them so the next expand re-reads.
     invalidateModelCounts();
     const seq = ++fetchSeqRef.current;
+    const switchFetch = providerSwitches.beginFetch();
     void providersRefresh()
       .then(async (fresh) => {
         let checkedCatalog = fresh;
@@ -309,7 +318,10 @@ export function ProvidersPanel() {
         } catch {
           // Keep the fresh catalog and its last-start fallback.
         }
-        if (seq === fetchSeqRef.current) setCatalog(checkedCatalog);
+        if (seq === fetchSeqRef.current) {
+          providerSwitches.reconcile(checkedCatalog.providers, switchFetch);
+          setCatalog(checkedCatalog);
+        }
         // The refetch is the proof a handoff landed: installed rows move
         // sections, so waiting notes clear only on success — a Refresh
         // mid-install must not re-offer Install for a run still going.
@@ -406,9 +418,11 @@ export function ProvidersPanel() {
         // A version bump can change the model list: counts re-read on expand.
         invalidateModelCounts();
         // The refetch is the proof: the fresh catalog carries the new version.
+        const switchFetch = providerSwitches.beginFetch();
         void providersList()
           .then((fresh) => {
             if (seq === fetchSeqRef.current) {
+              providerSwitches.reconcile(fresh.providers, switchFetch);
               setCatalog((current) => (current === null ? fresh : mergeAuthChecks(fresh, current)));
             }
           })
@@ -623,7 +637,7 @@ export function ProvidersPanel() {
         enabled={providerSwitches.isEnabled(provider)}
         onToggleProvider={(next) => void providerSwitches.setEnabled(provider, next)}
         providerWriteError={providerSwitches.states[provider.id]?.error?.sentence ?? null}
-        providerSwitchSupported={toolPolicySupported}
+        providerSwitchSupported={providerSwitchSupported}
         toolPolicy={withTools ? toolPolicyFor(provider.id, toolStore.policies) : null}
         toolsDisabled={toolStore.policies === null}
         vocabularySupported={vocabularySupported}

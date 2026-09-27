@@ -132,6 +132,9 @@ export const ALWAYS_ON_REASON = "Always on: sessions need the agent roster.";
  */
 export const TOOL_POLICY_CAPABILITY = "tool_policy";
 
+/** The handshake capability that gates ProviderSetEnabled frames. */
+export const PROVIDER_SWITCHES_CAPABILITY = "provider.switches";
+
 /**
  * What one provider's toggles read from a stored row. `undefined` is the
  * same as enabled: `ToolPolicyGet` returns stored rows only, so a provider
