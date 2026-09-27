@@ -968,8 +968,9 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 /// — the tab strip, the pane header, History rows, attention toasts — and
 /// shares its cap.
 ///
-/// `None` when the text holds no line worth naming, or when nothing
-/// nameable survives sanitising. The first line is declined outright when
+/// `None` when the text holds no line worth naming, when a non-whitespace
+/// control declines it, or when nothing nameable survives sanitising — a
+/// line of nothing but joiners renders as a blank label, so it is no title. The first line is declined outright when
 /// it carries a non-whitespace control: stripping one would fuse two words
 /// into a title the person never typed. Separators never reach either
 /// check: the collapse turns them into spaces first, the same
@@ -1020,7 +1021,18 @@ pub fn derive_session_title(text: &str) -> Option<String> {
     if clean.is_empty() {
         return None;
     }
-    Some(clamp_display_name(clean))
+    let title = clamp_display_name(clean);
+    // A line of nothing but joiners clamps to a title that renders as
+    // nothing: require one character with visible weight, or there is no
+    // title worth spending the slot on.
+    title
+        .chars()
+        .any(|point| {
+            !point.is_whitespace()
+                && !point.is_control()
+                && !crate::text_safety::is_invisible_format(point)
+        })
+        .then_some(title)
 }
 
 /// Clamp a trusted name to [`crate::MAX_DISPLAY_NAME_CHARS`] characters
@@ -1029,10 +1041,11 @@ pub fn derive_session_title(text: &str) -> Option<String> {
 /// validation cap, so a clamped name still passes it; drops a trailing
 /// space the cut may leave behind.
 ///
-/// Length only: callers pass text whose characters already satisfy the rule
-/// (derived titles strip the unsafe ones above; internal composers build
-/// from validated names plus ASCII suffixes), which is why this clamps
-/// rather than validates.
+/// Length only: callers pass text the sanitiser has already shaped
+/// (derived titles strip invisible formatting but keep joiners by design;
+/// internal composers build from validated names plus ASCII suffixes), so
+/// a clamped name can hold U+200C/U+200D the rename validator would
+/// refuse — length is what this enforces, not the character rule.
 pub fn clamp_display_name(name: &str) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     let mut taken = 0;

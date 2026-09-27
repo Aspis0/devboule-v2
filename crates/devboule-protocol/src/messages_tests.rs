@@ -2962,6 +2962,15 @@ fn a_derived_title_strips_invisible_formatting_instead_of_declining() {
     );
 }
 
+/// A first line of nothing but joiners is no title: it renders as a blank
+/// label, so the session keeps its fallback and the slot stays unspent.
+#[test]
+fn a_derived_title_needs_a_visible_character() {
+    assert_eq!(derive_session_title("\u{200d}"), None);
+    assert_eq!(derive_session_title("\u{200c} \u{200d} "), None);
+    assert_eq!(derive_session_title("   "), None);
+}
+
 /// Joiners survive the sanitiser: stripping U+200D would break every ZWJ
 /// emoji sequence, and stripping U+200C would join words Persian and Indic
 /// scripts mean to keep apart. Both are invisible, neither spoofs.
