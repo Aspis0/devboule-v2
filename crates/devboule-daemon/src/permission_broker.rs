@@ -857,17 +857,17 @@ impl PermissionBroker {
         let Ok(pending) = self.take(tool_call_id, Some(expected)) else {
             return false;
         };
-        let done = self
-            .complete(
-                &pending,
-                serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
-                None,
-                journal_outcome,
-                None,
-            )
-            .is_ok();
+        // Before the resolved publish, so no push re-broadcasts the
+        // standing attention: the card is already out of the table.
         Self::clear_attention_after_withdrawal(&pending);
-        done
+        self.complete(
+            &pending,
+            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+            None,
+            journal_outcome,
+            None,
+        )
+        .is_ok()
     }
 
     /// The table lock closes the gap between checking cancellation and inserting a card.
@@ -902,17 +902,17 @@ impl PermissionBroker {
             return false;
         };
         cancelled.mark_cancelled();
-        let done = self
-            .complete(
-                &pending,
-                serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
-                None,
-                "cancelled",
-                None,
-            )
-            .is_ok();
+        // Before the resolved publish, so no push re-broadcasts the
+        // standing attention: the card is already out of the table.
         Self::clear_attention_after_withdrawal(&pending);
-        done
+        self.complete(
+            &pending,
+            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+            None,
+            "cancelled",
+            None,
+        )
+        .is_ok()
     }
 
     /// Soft interrupt: complete every pending request as cancelled but leave
@@ -947,6 +947,9 @@ impl PermissionBroker {
 
     fn complete_cancelled(&self, pending: Vec<Arc<PendingPermission>>) {
         for pending in pending {
+            // Before the resolved publish, so no push re-broadcasts the
+            // standing attention: the drain already took every card.
+            Self::clear_attention_after_withdrawal(&pending);
             let _ = self.complete(
                 &pending,
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
@@ -954,7 +957,6 @@ impl PermissionBroker {
                 "cancelled",
                 None,
             );
-            Self::clear_attention_after_withdrawal(&pending);
         }
     }
 

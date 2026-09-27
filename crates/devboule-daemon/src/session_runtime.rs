@@ -2029,8 +2029,8 @@ impl SessionRuntime {
 
     /// Clear a standing permission attention once its last card is gone.
     /// Withdrawal doors only: answers keep their own clear and its push.
-    /// Lock order attention -> broker pending; the caller must hold neither
-    /// (complete() only reaches here after take()/drain() released the table).
+    /// Lock order attention -> broker pending; the withdrawal doors call it
+    /// after take()/drain() released the table, holding neither.
     pub(crate) fn clear_permission_attention_if_idle(&self) -> bool {
         let Ok(mut attention) = self.attention.lock() else {
             return false;

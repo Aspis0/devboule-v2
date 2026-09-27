@@ -300,19 +300,28 @@ fn install_sink(registry: &SessionRegistry) -> Arc<Mutex<Vec<Vec<SessionStateSna
     log
 }
 
-/// The last pushed row for this session. A push that never carried the row
-/// fails here, so a missing row cannot pass as a cleared attention.
-fn last_pushed_row(
+/// Every pushed row for this session: a stale first push fails here even
+/// when the last row is already clean.
+fn pushed_rows_for(
     sink: &Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
     session_id: &str,
-) -> SessionStateSnapshot {
+) -> Vec<SessionStateSnapshot> {
     sink.lock()
         .expect("sink log")
         .iter()
         .flatten()
         .filter(|snapshot| snapshot.id == session_id)
         .cloned()
-        .last()
+        .collect()
+}
+/// The last pushed row for this session. A push that never carried the row
+/// fails here, so a missing row cannot pass as a cleared attention.
+fn last_pushed_row(
+    sink: &Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
+    session_id: &str,
+) -> SessionStateSnapshot {
+    pushed_rows_for(sink, session_id)
+        .pop()
         .expect("a push carried the session row")
 }
 
@@ -353,9 +362,15 @@ fn cancelling_a_parked_card_clears_permission_attention() {
         runtime.attention().is_none(),
         "withdrawing the last card clears permission attention"
     );
+    let rows = pushed_rows_for(&sink, session_id);
+    assert_eq!(
+        sink.lock().expect("sink log").len(),
+        2,
+        "the withdrawal pushes twice: the clear, then the resolved card"
+    );
     assert!(
-        last_pushed_row(&sink, session_id).attention.is_none(),
-        "the pushed row carries no attention"
+        rows.iter().all(|row| row.attention.is_none()),
+        "no pushed row carries the stale attention"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -392,11 +407,16 @@ fn withdrawing_one_of_two_cards_keeps_permission_attention() {
         devboule_protocol::AttentionReason::Permission
     );
 
+    let sink = install_sink(&registry);
     // Deliberate asymmetry, and the answer side is the wrong one: a wire
     // answer clears unconditionally even with a card still parked, while a
     // withdrawal keeps the pill while one is. Widening the answer door is a
     // separate decision; this test pins the withdrawal half.
     assert!(broker.cancel("two-cards-first", &pending_first, "cancelled"));
+    assert!(
+        sink.lock().expect("sink log").is_empty(),
+        "a partial withdrawal pushes nothing: the pill is still right"
+    );
 
     assert_eq!(
         runtime
@@ -512,9 +532,15 @@ fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
         runtime.attention().is_none(),
         "mcp cancel clears permission attention"
     );
+    let rows = pushed_rows_for(&sink, session_id);
+    assert_eq!(
+        sink.lock().expect("sink log").len(),
+        2,
+        "the withdrawal pushes twice: the clear, then the resolved card"
+    );
     assert!(
-        last_pushed_row(&sink, session_id).attention.is_none(),
-        "the pushed row carries no attention"
+        rows.iter().all(|row| row.attention.is_none()),
+        "no pushed row carries the stale attention"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -557,9 +583,15 @@ fn closing_the_broker_clears_permission_attention() {
         runtime.attention().is_none(),
         "closing the broker clears permission attention"
     );
+    let rows = pushed_rows_for(&sink, session_id);
+    assert_eq!(
+        sink.lock().expect("sink log").len(),
+        2,
+        "the withdrawal pushes twice: the clear, then the resolved card"
+    );
     assert!(
-        last_pushed_row(&sink, session_id).attention.is_none(),
-        "the pushed row carries no attention"
+        rows.iter().all(|row| row.attention.is_none()),
+        "no pushed row carries the stale attention"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -608,12 +640,17 @@ fn withdrawing_from_a_dead_session_still_pushes_the_cleared_row() {
         last_pushed_row(&sink, session_id).attention.is_none(),
         "the clear pushes its own row: the resolved publish is dropped"
     );
+    assert_eq!(
+        sink.lock().expect("sink log").len(),
+        1,
+        "the dropped publish pushes nothing: only the clear's own push"
+    );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
-fn auto_answer_grants_without_touching_permission_attention() {
+fn auto_answer_grants_without_raising_attention() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-auto-attention", "process-auto-attention");
     let session_id = "s.auto-attention.1";
@@ -640,17 +677,18 @@ fn auto_answer_grants_without_touching_permission_attention() {
     registry
         .attach(session_id, None, &conn, &owner, true)
         .expect("attach");
-    let request = permission_broker::permission("auto-attention-card");
-    runtime.publish_agent_event(request.clone(), None);
+    // Production order: every auto_answer call site grants and returns
+    // before the PermissionRequest is ever published, so no raise precedes
+    // the grant and there is no pill to go stale. This test pins that the
+    // grant path raises nothing; it says nothing about a published card.
     let broker = runtime.permission_broker().expect("permission broker");
     broker
-        .register(27, request, &runtime)
+        .register(
+            27,
+            permission_broker::permission("auto-attention-card"),
+            &runtime,
+        )
         .expect("permission request");
-    assert_eq!(
-        runtime.attention().expect("permission attention").reason,
-        devboule_protocol::AttentionReason::Permission
-    );
-
     assert!(
         broker
             .auto_answer("auto-attention-card", &runtime)
@@ -658,12 +696,9 @@ fn auto_answer_grants_without_touching_permission_attention() {
         "the mode grants the card"
     );
     assert_eq!(broker.pending_len(), 0);
-    // Deliberate: a mode grant is answer-side, and only withdrawal doors
-    // clear. No owner clears for a mode grant today; changing that is a
-    // separate decision, so this test pins the boundary, not the wish.
-    assert_eq!(
-        runtime.attention().expect("grant keeps attention").reason,
-        devboule_protocol::AttentionReason::Permission
+    assert!(
+        runtime.attention().is_none(),
+        "the grant raised no attention"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
