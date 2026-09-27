@@ -1,0 +1,547 @@
+// @vitest-environment happy-dom
+
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../lib/tauri", async (importOriginal) => {
+  const { agentsPanelTauriMock } = await import("./agentsPanelTestMocks");
+  return agentsPanelTauriMock(await importOriginal());
+});
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(),
+}));
+
+import {
+  agentProfilesGet,
+  agentProfilesSet,
+  daemonStatus,
+  providerVocabularyGet,
+  providersList,
+} from "../../../lib/tauri";
+import type { AgentProfilesReply, ProviderVocabulary } from "../../../types/ipc";
+import { AgentProfilesPanel } from "./AgentsPanel";
+import { SettingsSurface } from "../SettingsSurface";
+import {
+  dom,
+  useAgentsPanelDom,
+  OLDER_DAEMON,
+  VOCABULARY_DAEMON,
+  daemonStatusWith,
+  makeProfile,
+  makeProvider,
+  makeVocabulary,
+  storedProfile,
+  renderAgentsPanel,
+  typeText,
+  tickCheckbox,
+} from "./agentsPanelTestHarness";
+import {
+  openForm,
+  form,
+  nameField,
+  modelControl,
+  modeControl,
+  createButton,
+  rowTicks,
+} from "./agentsPanelTestQueries";
+
+describe("Settings agents panel — sentence uniqueness", () => {
+  useAgentsPanelDom(() => [makeProvider()]);
+
+  it("gives every state its own sentence: no two rendered sentences are equal or substrings", async () => {
+    // The property the sentences exist for, held over the render itself:
+    // every sentence-bearing state the Agents panel can reach is rendered
+    // here — the vocabulary states, the caps and their refusals, the load
+    // errors, the catalog states, and the standing panel copy — and every
+    // rendered sentence is compared with every other. Equal is a collapse,
+    // and a substring is a collapse waiting for its neighbouring words to
+    // change. An earlier version collected only the vocabulary hints inside
+    // the new-profile form; bdf0318's claim to render "every
+    // sentence-bearing state" was wider than that net, and this is the net
+    // sized to the claim.
+    const scenarioNames: string[] = [];
+    const sentences: string[] = [];
+    // A sentence already collected from an earlier state is the same
+    // sentence: it enters the net once.
+    const seen = new Set<string>();
+
+    // Sentence-bearing elements only: labels, buttons, row titles and
+    // option texts are not sentences. An element that contains another
+    // collected element (the off-switch wrapper around its two paragraphs,
+    // a role=status wrapper) is dropped — its text would falsely "contain"
+    // the real sentences inside it.
+    const SENTENCE_SELECTOR = [
+      ".device-field-hint",
+      ".device-copy",
+      ".agent-profile-tick-note",
+      ".agent-profiles-off p",
+      ".agent-profile-note-empty",
+      ".profile-spawn-empty",
+      ".agent-standing .agent-byte-counter",
+      "[role='alert']",
+      "[role='status']",
+    ].join(",");
+
+    async function collectScenario(name: string) {
+      const panel = dom.container.querySelector("#settings-panel-agents");
+      if (!panel) throw new Error("agents panel did not render");
+      const elements = Array.from(panel.querySelectorAll<HTMLElement>(SENTENCE_SELECTOR));
+      const leaves = elements.filter(
+        (element) => !elements.some((other) => other !== element && element.contains(other)),
+      );
+      for (const element of leaves) {
+        let text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+        // The standing counter's leading numbers are data, not copy, and
+        // data prefixes manufacture fake containments ("8400 / 8192…"
+        // contains "0 / 8192…"): compare the copy, tokenise the numbers.
+        if (element.classList.contains("agent-byte-counter")) {
+          text = text.replace(/^\d+ \/ \d+ bytes/, "N / M bytes");
+        }
+        if (text === "" || seen.has(text)) continue;
+        seen.add(text);
+        scenarioNames.push(name);
+        sentences.push(text);
+      }
+      // A fresh mount for the next scenario.
+      if (dom.root !== undefined) {
+        await act(async () => dom.root!.unmount());
+        dom.root = undefined;
+      }
+      dom.container.innerHTML = "";
+    }
+
+    function agentsSectionButton(text: string): HTMLButtonElement {
+      const button = Array.from(
+        dom.container.querySelectorAll<HTMLButtonElement>("#settings-panel-agents button"),
+      ).find((candidate) => candidate.textContent === text);
+      if (!button) throw new Error(`button ${text} did not render`);
+      return button;
+    }
+
+    function agentRow(name: string): HTMLElement {
+      const row = Array.from(
+        dom.container.querySelectorAll<HTMLElement>(".agent-profile-row"),
+      ).find((candidate) => candidate.querySelector(".profile-name")?.textContent === name);
+      if (!row) throw new Error(`profile row ${name} did not render`);
+      return row;
+    }
+
+    async function openEditorOn(name: string) {
+      const edit = agentRow(name).querySelector<HTMLButtonElement>(
+        `button[aria-label="Edit ${name}"]`,
+      );
+      if (!edit) throw new Error(`Edit button on ${name} did not render`);
+      await act(async () => edit.click());
+      await act(async () => undefined);
+    }
+
+    async function armAndOpen(reply: ProviderVocabulary | undefined) {
+      if (reply !== undefined) {
+        vi.mocked(providerVocabularyGet).mockResolvedValueOnce(reply);
+      }
+      await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+      await openForm();
+      await act(async () => undefined);
+      await act(async () => undefined);
+    }
+
+    // 1. Older daemon: no query is sent, the sentence is there at once.
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await collectScenario("older daemon");
+
+    // 2. The query itself fails.
+    vi.mocked(providerVocabularyGet).mockRejectedValueOnce({
+      code: "io",
+      message: "A system or file operation failed on this machine.",
+    });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await collectScenario("query failed");
+
+    // 3. `none` on both axes: the provider answered "I have none".
+    await armAndOpen(
+      makeVocabulary({ models: { state: "none", items: [] }, modes: { state: "none", items: [] } }),
+    );
+    await collectScenario("none");
+
+    // 4. `absent` on both axes: no source could answer.
+    await armAndOpen(makeVocabulary());
+    await collectScenario("absent");
+
+    // 5. present with origin daemon on both axes.
+    await armAndOpen(
+      makeVocabulary({
+        models: {
+          state: "present",
+          origin: "daemon",
+          items: [{ modelId: "opus", name: "Opus" }],
+        },
+        modes: { state: "present", origin: "daemon", items: [{ id: "code", name: "Code" }] },
+      }),
+    );
+    await collectScenario("daemon origin");
+
+    // 5b. present with the origin left undeclared on both axes: the items
+    // are still offered, and the missing authorship is named.
+    await armAndOpen(
+      makeVocabulary({
+        models: { state: "present", items: [{ modelId: "opus", name: "Opus" }] },
+        modes: { state: "present", items: [{ id: "code", name: "Code" }] },
+      }),
+    );
+    await collectScenario("origin undeclared");
+
+    // 6. Malformed: the reply arrived, neither axis did.
+    await armAndOpen({ provider: "claude", source: "probe" } as unknown as ProviderVocabulary);
+    await collectScenario("malformed");
+
+    // 7. present with empty items on both axes: the forbidden contradiction.
+    await armAndOpen(
+      makeVocabulary({
+        models: { state: "present", origin: "provider", items: [] },
+        modes: { state: "present", origin: "provider", items: [] },
+      }),
+    );
+    await collectScenario("present empty");
+
+    // 8. A state value outside the union on both axes.
+    await armAndOpen(
+      makeVocabulary({
+        models: { state: "expired", items: [] } as unknown as ProviderVocabulary["models"],
+        modes: { state: "expired", items: [] } as unknown as ProviderVocabulary["modes"],
+      }),
+    );
+    await collectScenario("unknown state");
+
+    // 9. The ACP mode suggestion, labelled a suggestion. Two catalog
+    // answers are queued because two panels fetch on mount: the default
+    // ProvidersPanel tab consumes the first, the Agents panel's picker the
+    // second — the form's provider must be the ACP one.
+    const zedCatalog = {
+      providers: [makeProvider({ id: "zed", protocol: "acp", executable: "C:\\cli\\zed.cmd" })],
+      unreadableDirs: 0,
+    };
+    vi.mocked(providersList).mockResolvedValueOnce(zedCatalog).mockResolvedValueOnce(zedCatalog);
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        provider: "zed",
+        models: {
+          state: "present",
+          origin: "provider",
+          items: [{ modelId: "zed-model", name: "Zed model" }],
+        },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await collectScenario("ACP suggestion");
+
+    // 10. The vocabulary ask still in flight.
+    vi.mocked(providerVocabularyGet).mockReturnValueOnce(
+      new Promise<ProviderVocabulary>(() => undefined),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await collectScenario("vocabulary in flight");
+
+    // 11. The panel load failed: the daemon's sentence and a Retry. The code
+    // is `internal` so this scenario's sentence stays distinct from the io
+    // ones in the uniqueness net below.
+    vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWith(OLDER_DAEMON));
+    vi.mocked(agentProfilesGet).mockRejectedValueOnce({
+      code: "internal",
+      message: "the store is unreachable",
+    });
+    dom.root = createRoot(dom.container);
+    await act(async () => dom.root!.render(<AgentProfilesPanel />));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await collectScenario("load failed");
+
+    // 12. The panel load still in flight.
+    vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWith(OLDER_DAEMON));
+    vi.mocked(agentProfilesGet).mockImplementationOnce(
+      () => new Promise<AgentProfilesReply>(() => undefined),
+    );
+    dom.root = createRoot(dom.container);
+    await act(async () => dom.root!.render(<AgentProfilesPanel />));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await collectScenario("loading");
+
+    // 13. The off switch, with a note-less row.
+    await renderAgentsPanel({
+      profiles: [makeProfile({ note: "" }), makeProfile({ id: "x2", name: "Coder", note: "" })],
+      standingInstructions: "",
+    });
+    await collectScenario("off switch");
+
+    // 14. A delete armed: the inline confirm's copy.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    const trash = dom.container.querySelector<HTMLButtonElement>(
+      '.agent-profile-row button[aria-label="Delete Explorer"]',
+    );
+    if (!trash) throw new Error("row trash button did not render");
+    await act(async () => trash.click());
+    await act(async () => undefined);
+    await collectScenario("delete armed");
+
+    // 15. The row editor open: its not-editable-here hint.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    await collectScenario("editor open");
+
+    // 15b. The discard check armed: Escape on a dirty dialog.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    const discardName = dom.container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!discardName) throw new Error("editor name field did not render");
+    await typeText(discardName, "Scout");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await collectScenario("discard armed");
+
+    // 15c. Older stored denials: the quiet line, not a control.
+    await renderAgentsPanel({
+      profiles: [
+        makeProfile({
+          toolOverlay: ["devboule_send_message", "devboule_create_agent", "devboule_list_profiles"],
+        }),
+      ],
+      standingInstructions: "",
+    });
+    await openEditorOn("Explorer");
+    await collectScenario("legacy denials");
+
+    // 15d. A save in flight: the honest exit while the write runs. The
+    // write stays pending past the collect (the busy-lock test's shape) —
+    // the pane unmounts under it without settling anything.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    const flightName = dom.container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!flightName) throw new Error("editor name field did not render");
+    await typeText(flightName, "Scout");
+    vi.mocked(agentProfilesSet).mockImplementationOnce(() => new Promise<void>(() => undefined));
+    await act(async () => agentsSectionButton("Save").click());
+    await act(async () => undefined);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await collectScenario("save in flight");
+
+    // 16. The name-cap refusal.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    const editorName = dom.container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!editorName) throw new Error("editor name field did not render");
+    await typeText(editorName, "🦄".repeat(61));
+    await act(async () => agentsSectionButton("Save").click());
+    await act(async () => undefined);
+    await collectScenario("name cap refusal");
+
+    // 17. The note-cap refusal.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    const editorNote = dom.container.querySelector<HTMLTextAreaElement>(
+      ".agent-inline-editor textarea",
+    );
+    if (!editorNote) throw new Error("editor note field did not render");
+    await typeText(editorNote, "é".repeat(1100));
+    await act(async () => agentsSectionButton("Save").click());
+    await act(async () => undefined);
+    await collectScenario("note cap refusal");
+
+    // 18. The standing-instructions cap refusal.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    const standingField = dom.container.querySelector<HTMLTextAreaElement>(
+      ".agent-standing textarea",
+    );
+    if (!standingField) throw new Error("standing instructions field did not render");
+    await typeText(standingField, "é".repeat(4200));
+    await act(async () => agentsSectionButton("Save standing instructions").click());
+    await act(async () => undefined);
+    await collectScenario("standing cap refusal");
+
+    // 19. The create form refusing a missing model.
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await typeText(nameField(), "Scout");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await collectScenario("model missing refusal");
+
+    // 20. The create form refusing a missing mode.
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await typeText(nameField(), "Scout");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await collectScenario("mode missing refusal");
+
+    // 21. The create-time profile-cap refusal: the store reaches the cap
+    // while the form is open (the read-back of an unrelated write adopts a
+    // 64-row store), so the guard under the Create button is what speaks.
+    const sixtyThree = Array.from({ length: 63 }, (_, index) =>
+      makeProfile({ id: `p-${index}`, name: `P ${index}` }),
+    );
+    await renderAgentsPanel({ profiles: sixtyThree, standingInstructions: "" });
+    await openForm();
+    await typeText(nameField(), "Gamma");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [...sixtyThree, storedProfile("minted-cap")],
+        standingInstructions: "",
+      },
+    });
+    await tickCheckbox(rowTicks()[0]!, true);
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await collectScenario("profile cap refusal");
+
+    // 22. The store at the cap: the hint that names it before any typing.
+    const full = Array.from({ length: 64 }, (_, index) =>
+      makeProfile({ id: `c-${index}`, name: `C ${index}` }),
+    );
+    await renderAgentsPanel({ profiles: full, standingInstructions: "" });
+    await collectScenario("at cap");
+
+    // 23. The catalog read and found empty: the only state allowed to say
+    // no agent CLI is installed.
+    vi.mocked(providersList).mockResolvedValueOnce({ providers: [], unreadableDirs: 0 });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await collectScenario("catalog empty");
+
+    // 24. The catalog read failed: it names the failure, never emptiness.
+    vi.mocked(providersList).mockRejectedValueOnce({ code: "io", message: "the scan failed" });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await collectScenario("catalog failed");
+
+    // The one declared duplicate: the tick note exists in the form and on
+    // the row — the same control in two places, so identical is right — and
+    // this assertion is what holds them equal, so an edit to either is
+    // loud instead of a silent parting.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openForm();
+    const formAvailableNote = Array.from(
+      form().querySelectorAll<HTMLElement>(".agent-profile-tick-note"),
+    ).find((note) => note.textContent?.startsWith("Lets an agent start"));
+    const rowTickNote = dom.container.querySelector<HTMLElement>(
+      ".agent-profile-row .agent-profile-tick-note",
+    );
+    if (!formAvailableNote || !rowTickNote) throw new Error("tick notes did not render");
+    const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
+    expect(normalize(formAvailableNote.textContent ?? "")).toBe(
+      normalize(rowTickNote.textContent ?? ""),
+    );
+    await collectScenario("tick note pin");
+
+    // 24. The shell header above the panel: the intro that now carries the
+    // panel's order sentence (the title stays out — labels are not sentences).
+    // Rendered through the surface so the net covers the sentence where users
+    // actually read it.
+    vi.mocked(daemonStatus).mockResolvedValue(
+      daemonStatusWith([
+        "ping",
+        "status",
+        "sessions",
+        "journal",
+        "typed_permissions",
+        "devices",
+        "agent_profiles",
+      ]),
+    );
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [], standingInstructions: "" },
+    });
+    dom.root = createRoot(dom.container);
+    await act(async () => dom.root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const profilesRow = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((candidate) => candidate.textContent?.trim() === "Agent profiles");
+    if (!profilesRow) throw new Error("Agent profiles row did not render");
+    await act(async () => profilesRow.click());
+    await act(async () => undefined);
+    const content = dom.container.querySelector("[data-settings-content]");
+    if (!content) throw new Error("settings content did not render");
+    // The net holds sentences, not labels: the shell page title above the
+    // panel is pinned by the shell titles test, so only the intro (which
+    // carries the panel's order sentence) enters here.
+    for (const element of Array.from(
+      content.querySelectorAll<HTMLElement>(".settings-page-intro"),
+    )) {
+      const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (text === "" || seen.has(text)) continue;
+      seen.add(text);
+      scenarioNames.push("shell header");
+      sentences.push(text);
+    }
+    await act(async () => dom.root!.unmount());
+    dom.root = undefined;
+    dom.container.innerHTML = "";
+
+    // The count is part of the net: a scenario that stops rendering its
+    // sentence, or a new sentence nobody rendered here, moves this number.
+    // Fifty-four: the delegation section's one sentence on this panel (an
+    // older daemon's named absence — the switch itself is gated harder and
+    // only renders when the handshake advertises permission_delegation), the
+    // fifteen vocabulary sentences, the ACP suggestion
+    // and the in-flight ask, the load-failed and loading sentences, the
+    // off-switch pair and the no-note sentence, the delete-confirm copy,
+    // the editor's two hints (when the spawn prompt is sent, and that running
+    // agents keep what they started with), the thinking option's own hint,
+    // the one feature-list sentence (the provider answered and offered
+    // nothing; the read-only rows and their "saved but not delivered"
+    // sentence went with the D4 prune, and the ACP cold start renders a
+    // role=status ask that the in-flight ask below already collects), the
+    // three cap refusals (the per-tool add control went with the owner
+    // rule, and its sentence with it), the model/mode
+    // refusals, the two profile-cap sentences, the two catalog sentences,
+    // the idle-close field's own hint and the off toggle's note, the shell page
+    // intro (scenario 24 collects it through the surface; the title stays out), the tick notes (including the
+    // open-dialog clause on the row tick), the no-spawn-prompt sentence on
+    // rows without one, the discard check's sentence, the legacy-denials
+    // line, the save-in-flight sentence, the icon field's hint, the
+    // empty-list line, and the standing
+    // copy with its counter (whose numbers are tokenised, so every scenario
+    // renders it into one net entry), and the standing box's keep-it-short
+    // hint under its textarea. A new sentence that does not come
+    // through a scenario here moves this number; so does a sentence a
+    // scenario stopped rendering.
+    expect(sentences).toHaveLength(54);
+    for (let i = 0; i < sentences.length; i++) {
+      for (let j = i + 1; j < sentences.length; j++) {
+        const a = sentences[i]!;
+        const b = sentences[j]!;
+        expect(
+          a === b,
+          `${scenarioNames[i]} and ${scenarioNames[j]} render the same sentence`,
+        ).toBe(false);
+        expect(
+          a.includes(b),
+          `${scenarioNames[i]} sentence contains the ${scenarioNames[j]} sentence: "${b}" inside "${a}"`,
+        ).toBe(false);
+        expect(
+          b.includes(a),
+          `${scenarioNames[j]} sentence contains the ${scenarioNames[i]} sentence: "${a}" inside "${b}"`,
+        ).toBe(false);
+      }
+    }
+  });
+});
