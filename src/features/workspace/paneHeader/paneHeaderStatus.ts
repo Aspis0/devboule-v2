@@ -29,3 +29,15 @@ export function paneHeaderStatus(
   if (type === "live") return { copy: "Live", tone: "green" };
   return { copy: "Connecting…", tone: "border" };
 }
+
+// The running dot's pulse follows the typing row's own condition
+// (`state.streaming && !osGone` in the surface): a row that says the agent
+// is working with a static dot, or a pulse with no working row, is a lie.
+export function headerPulseActive(
+  streaming: boolean,
+  observed: SessionState | null | undefined,
+): boolean {
+  if (!streaming) return false;
+  const type = observed?.type ?? null;
+  return type !== "ended" && type !== "recovered";
+}

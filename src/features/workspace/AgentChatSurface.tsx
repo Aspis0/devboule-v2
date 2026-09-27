@@ -53,7 +53,7 @@ import {
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
 import { PaneHeader } from "./paneHeader/PaneHeader";
-import { paneHeaderStatus } from "./paneHeader/paneHeaderStatus";
+import { paneHeaderStatus, headerPulseActive } from "./paneHeader/paneHeaderStatus";
 import {
   INTERRUPTED_TOOL_CLASS,
   INTERRUPTED_TOOL_COPY,
@@ -1010,6 +1010,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         title={title || "Agent"}
         statusWord={statusLabel}
         dotTone={statusDot}
+        pulsing={headerPulseActive(state.streaming, observedState)}
         cwd={cwd}
         subagentSlot={
           state.subagents.length > 0 ? (

@@ -13,6 +13,8 @@ interface TerminalSurfaceProps {
   sessionId: string;
   observedState?: SessionState | null;
   cwd?: string;
+  /** The session's display name. Absent until the workspace passes it. */
+  title?: string;
   id?: string;
   onClosed?: () => void;
   onExited?: () => void;
@@ -116,6 +118,7 @@ export const TerminalSurface = memo(function TerminalSurface({
   sessionId,
   observedState,
   cwd,
+  title,
   id,
   onClosed,
   onExited,
@@ -271,7 +274,7 @@ export const TerminalSurface = memo(function TerminalSurface({
           never green (E1.1, live finding 1). */}
       <PaneHeader
         kind="terminal"
-        title="Terminal"
+        title={title ?? "Terminal"}
         statusWord={ended ? "" : (message ?? "Connected to the local shell")}
         dotTone={sessionDotTone(observedState)}
         cwd={cwd}

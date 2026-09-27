@@ -1,9 +1,9 @@
 .workspace-session-cwd {
   min-width: 0;
   overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -13,8 +13,9 @@
   flex: none;
   align-items: center;
   gap: 8px;
-  min-height: 39px;
-  padding: 0 14px;
+  height: 36px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
 }
 
 .workspace-terminal-toolbar .workspace-status-dot {
@@ -22,27 +23,34 @@
   height: 6px;
 }
 
-.workspace-terminal-title {
+/* Descendant selectors on purpose: Workspace.css still carries the old bare
+   rules for these classes (its shared groups), and it loads after this sheet
+   — a bare rule here would lose the cascade. */
+.workspace-terminal-toolbar .workspace-terminal-title {
   flex: none;
   color: var(--ink);
-  font-size: 11.5px;
+  font-family: var(--font-ui);
+  font-size: 14px;
   font-weight: 600;
 }
 
-.workspace-terminal-status {
+.workspace-terminal-toolbar .workspace-terminal-status {
   min-width: 0;
   overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-terminal-toolbar .workspace-session-cwd {
+  flex: 0 1 180px;
 }
 
 .workspace-terminal-interrupt {
   flex: none;
   height: 24px;
-  margin-left: auto;
   padding: 0 9px;
   color: var(--ink-soft);
   background: transparent;
@@ -92,10 +100,10 @@
   display: flex;
   flex: none;
   align-items: center;
-  flex-wrap: wrap;
   gap: 8px;
-  min-height: 39px;
-  padding: 7px 20px;
+  height: 36px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
 }
 
 .workspace-agent-toolbar .workspace-status-dot {
@@ -103,25 +111,53 @@
   height: 6px;
 }
 
-.workspace-agent-title {
+/* Descendant selectors on purpose: see the terminal title above. */
+.workspace-agent-toolbar .workspace-agent-title {
   flex: 1 1 160px;
   min-width: 0;
   overflow: hidden;
   color: var(--ink);
-  font-size: 11.5px;
+  font-family: var(--font-ui);
+  font-size: 14px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-agent-status {
+.workspace-agent-toolbar .workspace-agent-status {
   flex: 1 1 90px;
   min-width: 0;
   overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-agent-toolbar .workspace-session-cwd {
   flex: 0 1 180px;
+}
+
+.pane-header-kebab {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.pane-header-kebab:hover,
+.pane-header-kebab:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
 }

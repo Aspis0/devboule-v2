@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSessionState, AgentStatus } from "../../../lib/agentSession";
 import type { SessionState } from "../../../types/ipc";
-import { paneHeaderStatus } from "./paneHeaderStatus";
+import { paneHeaderStatus, headerPulseActive } from "./paneHeaderStatus";
 
 function agentWith(status: AgentStatus): AgentSessionState {
   return { status } as AgentSessionState;
@@ -93,5 +93,21 @@ describe("paneHeaderStatus", () => {
     expect(unknown.copy).not.toBe("Live");
     expect(unknown.copy).not.toBe("Working…");
     expect(unknown.tone).not.toBe("green");
+  });
+});
+
+describe("headerPulseActive", () => {
+  it("pulses exactly while the typing row shows: streaming with a live process", () => {
+    expect(headerPulseActive(true, LIVE)).toBe(true);
+    expect(headerPulseActive(true, SILENT)).toBe(true);
+    // No roster row yet is not "process gone": like the typing row, the dot
+    // follows the controller's streaming flag, not the roster's presence.
+    expect(headerPulseActive(true, null)).toBe(true);
+  });
+
+  it("stays static when nothing streams or the process is gone", () => {
+    expect(headerPulseActive(false, LIVE)).toBe(false);
+    expect(headerPulseActive(true, ENDED)).toBe(false);
+    expect(headerPulseActive(true, RECOVERED)).toBe(false);
   });
 });

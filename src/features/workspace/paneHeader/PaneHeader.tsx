@@ -6,6 +6,7 @@ export interface PaneHeaderProps {
   title: string;
   statusWord: string;
   dotTone: "green" | "terracotta" | "border";
+  pulsing?: boolean;
   cwd?: string;
   subagentSlot?: ReactNode;
   trailingSlot?: ReactNode;
@@ -16,6 +17,7 @@ export function PaneHeader({
   title,
   statusWord,
   dotTone,
+  pulsing,
   cwd,
   subagentSlot,
   trailingSlot,
@@ -23,7 +25,9 @@ export function PaneHeader({
   const agent = kind === "agent";
   return (
     <div className={agent ? "workspace-agent-toolbar" : "workspace-terminal-toolbar"}>
-      <span className={`workspace-status-dot workspace-dot-${dotTone}`} />
+      <span
+        className={`workspace-status-dot workspace-dot-${dotTone}${pulsing === true ? " dot-pulse" : ""}`}
+      />
       <span className={agent ? "workspace-agent-title" : "workspace-terminal-title"}>{title}</span>
       {agent ? subagentSlot : null}
       {agent ? (
@@ -35,6 +39,9 @@ export function PaneHeader({
       )}
       {cwd ? <span className="workspace-session-cwd">{cwd}</span> : null}
       {agent ? null : trailingSlot}
+      <button type="button" className="pane-header-kebab" aria-label="Session actions">
+        ⋮
+      </button>
     </div>
   );
 }
