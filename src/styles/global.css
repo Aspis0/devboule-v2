@@ -61,6 +61,13 @@ textarea {
   color: inherit;
 }
 
+/* Radios and checkboxes in the app accent, never the browser blue —
+   inherited, so one line covers both themes. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
 button {
   border: 0;
 }

@@ -65,35 +65,45 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-/** The declarations of one theme block: later same-token lines win. */
-function themeBlock(tokens: string, selector: string): string {
-  // Tokens are declared across several same-selector blocks; join them
-  // all so an alias in a later block still resolves.
-  const bodies: string[] = [];
+/** Every `--token: value` declaration under one selector, last wins. */
+function tokenDeclarations(tokens: string, selector: string): Map<string, string> {
+  const map = new Map<string, string>();
   const escaped = selector.replace(/[^a-z0-9]/gi, "\\$&");
   const pattern = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "g");
-  for (const match of tokens.matchAll(pattern)) bodies.push(match[1] ?? "");
-  if (bodies.length === 0) throw new Error(`${selector} block not found`);
-  return bodies.join("\n");
+  for (const match of tokens.matchAll(pattern)) {
+    const body = (match[1] ?? "").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const decl of body.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
+      map.set(`--${decl[1]}`, decl[2]!.trim());
+    }
+  }
+  return map;
 }
 
-/** A token's value inside one theme block, through `var()` indirections. */
-function themeValue(body: string, token: string): string {
-  // Last match wins: a later same-token line overrides the earlier one.
-  const matches = [...body.matchAll(new RegExp(`${token}:\\s*([^;]+);`, "g"))];
-  if (matches.length === 0) throw new Error(`${token} not found`);
-  let value = matches[matches.length - 1]![1]!.trim();
-  for (let pass = 0; pass < 3; pass += 1) {
+/**
+ * One token's resolved value for one theme. `:root` declarations apply to
+ * both themes and `[data-theme="dark"]` overlays them — so an alias
+ * declared once (like `--terracotta`, or `--surface-muted`) re-resolves
+ * through whichever theme's chain names it.
+ */
+function resolveToken(
+  root: Map<string, string>,
+  dark: Map<string, string>,
+  token: string,
+  isDark: boolean,
+): string {
+  const decls = isDark ? new Map([...root, ...dark]) : root;
+  let value = decls.get(token);
+  if (value === undefined) throw new Error(`${token} not declared`);
+  for (let pass = 0; pass < 4; pass += 1) {
     const ref = value.match(/^var\((--[a-z-]+)\)$/);
     if (ref === null) return value;
-    const next = [...body.matchAll(new RegExp(`${ref[1]}:\\s*([^;]+);`, "g"))];
-    if (next.length === 0) throw new Error(`unresolved ${value}`);
-    value = next[next.length - 1]![1]!.trim();
+    const next = decls.get(ref[1]!);
+    if (next === undefined) throw new Error(`unresolved ${value}`);
+    value = next;
   }
   return value;
 }
 
-/** WCAG 2.x relative luminance of a `#rrggbb` colour. */
 function luminance(hex: string): number {
   const channels = [1, 3, 5].map((at) => {
     const channel = parseInt(hex.slice(at, at + 2), 16) / 255;
@@ -456,14 +466,15 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     expect(proof.rulesFor(".dev-typed-input")).toMatch(/monospace/);
   });
 
-  it("separates the action buttons from the card by a measured ratio", () => {
-    // N3: "different" proves nothing — 1.063 passes it. This reads the
-    // override rule's own token names, resolves them per theme, and gates
-    // both ratios: the fill floor locks the override (the base is exactly
-    // 1.00), the border floor is the visibility bar the resting state
-    // clears with margin. No quiet fill token reaches 1.3 in both themes
-    // (panel-side is 1.063/1.076, fill-hover 1.153/1.246), so the border
-    // carries the boundary and the test says so.
+  it("locks the button/card separation against regression", () => {
+    // Regression tripwire, not WCAG 1.4.11 conformance (3 : 1): the resting
+    // fill sits at 1.06 and the resting border at 1.7 / 1.6, both under the
+    // standard. The conformant boundary is the hover/focus terracotta
+    // (4.7 / 5.1, pinned below). What this gates is flattening: the fill
+    // floor locks the override (the base is exactly 1.00), the border floor
+    // locks the stronger resting edge. No quiet fill token reaches 1.3 in
+    // both themes (panel-side is 1.063/1.076, fill-hover 1.153/1.21), so the
+    // border carries the resting boundary and the test says so.
     const devices = read("src/features/settings/devices.css");
     const override = devices.match(
       /#settings-panel-devices \.settings-device-action\s*\{([^}]*)\}/,
@@ -477,11 +488,16 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     const fillToken = tokenName("background");
     const borderToken = tokenName("border-color");
     const tokens = read("src/styles/tokens.css");
-    // Light is the `:root` blocks; dark is `[data-theme="dark"]`.
-    for (const body of [themeBlock(tokens, ":root"), themeBlock(tokens, '[data-theme="dark"]')]) {
-      const card = themeValue(body, "--panel-card");
-      expect(contrastRatio(themeValue(body, fillToken), card)).toBeGreaterThanOrEqual(1.05);
-      expect(contrastRatio(themeValue(body, borderToken), card)).toBeGreaterThanOrEqual(1.3);
+    const root = tokenDeclarations(tokens, ":root");
+    const dark = tokenDeclarations(tokens, '[data-theme="dark"]');
+    for (const isDark of [false, true]) {
+      const card = resolveToken(root, dark, "--panel-card", isDark);
+      expect(
+        contrastRatio(resolveToken(root, dark, fillToken, isDark), card),
+      ).toBeGreaterThanOrEqual(1.05);
+      expect(
+        contrastRatio(resolveToken(root, dark, borderToken, isDark), card),
+      ).toBeGreaterThanOrEqual(1.3);
     }
   });
 
@@ -506,6 +522,21 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
       if (token === null) throw new Error(`no border rule for :${state}`);
       expect(token, `:${state}`).toBe("--terracotta");
     }
+    // And the winning token earns the conformance the resting state
+    // lacks: terracotta against the card clears 3 : 1 in both themes.
+    // Resolved per theme through the merged declarations, because the
+    // alias is declared once and re-resolves (as `--surface-muted` does).
+    const tokens = read("src/styles/tokens.css");
+    const root = tokenDeclarations(tokens, ":root");
+    const dark = tokenDeclarations(tokens, '[data-theme="dark"]');
+    for (const isDark of [false, true]) {
+      expect(
+        contrastRatio(
+          resolveToken(root, dark, "--terracotta", isDark),
+          resolveToken(root, dark, "--panel-card", isDark),
+        ),
+      ).toBeGreaterThanOrEqual(3);
+    }
   });
 
   it("keeps the button fill distinct from the card ground in both themes", () => {
@@ -515,9 +546,25 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     // identically). Values come from the token sheet, not from constants
     // in this file.
     const tokens = read("src/styles/tokens.css");
-    // Light is the `:root` blocks; dark is `[data-theme="dark"]`.
-    for (const body of [themeBlock(tokens, ":root"), themeBlock(tokens, '[data-theme="dark"]')]) {
-      expect(themeValue(body, "--panel-side")).not.toBe(themeValue(body, "--panel-card"));
+    const root = tokenDeclarations(tokens, ":root");
+    const dark = tokenDeclarations(tokens, '[data-theme="dark"]');
+    for (const isDark of [false, true]) {
+      expect(resolveToken(root, dark, "--panel-side", isDark)).not.toBe(
+        resolveToken(root, dark, "--panel-card", isDark),
+      );
+    }
+  });
+
+  it("paints checkboxes and radios in the app accent, house-wide", () => {
+    // Live check: the pairing role radios rendered in the browser's
+    // default blue. One inherited line in the global sheet fixes every
+    // checkbox and radio in both themes.
+    proof.inject(['input[type="checkbox"]', 'input[type="radio"]']);
+    for (const kind of ["checkbox", "radio"]) {
+      const control = document.createElement("input");
+      control.type = kind;
+      document.body.appendChild(control);
+      expect(getComputedStyle(control).accentColor).toBe(proof.token("--accent"));
     }
   });
 
@@ -532,6 +579,20 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     // Muted, proved without a hex: the same computed colour as the
     // house meta line.
     expect(getComputedStyle(title).color).toBe(getComputedStyle(box("dev-meta")).color);
+  });
+
+  it("sets the pairing role legend in sentence case like every other label", () => {
+    // Live check: "PAIR THE OTHER DEVICE AS" was the only all-caps label
+    // on the page. The JSX already reads "Pair the other device as"; the
+    // caps came from this rule, now a 12/500 label with no transform.
+    proof.inject([".dev-role-choice legend"]);
+    const boxEl = box("dev-role-choice");
+    const legend = document.createElement("legend");
+    boxEl.appendChild(legend);
+    const style = getComputedStyle(legend);
+    expect(style.fontSize).toBe("12px");
+    expect(style.fontWeight).toBe("500");
+    expect(style.textTransform).not.toBe("uppercase");
   });
 
   it("keeps the first card on the shell's 18px rhythm", () => {

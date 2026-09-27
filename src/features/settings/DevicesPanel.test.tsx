@@ -1198,6 +1198,38 @@ describe("devices panel", () => {
     expect(document.activeElement).toBe(confirm);
   });
 
+  it("moves focus to the list when the poll removes a peer with its confirm armed", async () => {
+    // The row unmounts under focus: without a landing spot the browser
+    // drops focus on `<body>` and the tab order resets. The armed row asks
+    // for the paired list, reusing the panel's existing post-commit focus.
+    vi.useFakeTimers();
+    vi.mocked(devicesList)
+      .mockResolvedValueOnce(replyWith({ peers: [CLIENT_PEER] }))
+      .mockResolvedValue(replyWith({ peers: [] }));
+    await renderPanel();
+    await openRowKebab();
+
+    await act(async () => {
+      menuItemByText("Revoke").click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(document.activeElement).not.toBe(document.body);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain("Xiaomi 14");
+    expect(document.activeElement).not.toBe(document.body);
+    expect(headingText()).toContain("Paired devices");
+  });
+
   it("returns focus to the row's kebab on Cancel, never the body", async () => {
     // Disarming unmounts the confirm that holds focus: without a landing
     // spot the browser drops focus on `<body>` and the tab order resets

@@ -231,6 +231,8 @@ interface PeerCardProps {
   error: ErrorSentence | undefined;
   onToggleCap: (cap: Cap, next: boolean) => void;
   onRevoke: () => void;
+  /** The row left with its confirm armed (a poll removed its peer). */
+  onArmedUnmount: () => void;
 }
 
 /**
@@ -252,7 +254,16 @@ function heldCap(row: PeerRow, caps: readonly Cap[]): { cap: Cap; note: string }
 
 /** One paired device: the row (glyph, name, status, kebab) with its
  * capability toggles and its inline revoke underneath. */
-function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCardProps) {
+function PeerCard({
+  row,
+  caps,
+  now,
+  busy,
+  error,
+  onToggleCap,
+  onRevoke,
+  onArmedUnmount,
+}: PeerCardProps) {
   // Which revoke copy is armed on this row, if any. Local to the row so a
   // half-answered revoke on one device is not shown as armed on another.
   const [armed, setArmed] = useState<"revoke" | "lost" | null>(null);
@@ -276,6 +287,22 @@ function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCa
     }
     wasArmedRef.current = armed !== null;
   }, [armed]);
+  // A poll can remove the peer while its confirm holds focus: the row
+  // unmounts under focus, so the panel moves it to the paired list head
+  // through its existing post-commit effect instead of losing it to body.
+  // The mirror lives in an effect (never a render-time ref write) and the
+  // report below subscribes once, so only a real unmount can trigger it —
+  // never a re-render, and never Cancel (which disarms without unmounting).
+  const armedRef = useRef(armed);
+  useEffect(() => {
+    armedRef.current = armed;
+  });
+  useEffect(() => {
+    const report = onArmedUnmount;
+    return () => {
+      if (armedRef.current) report();
+    };
+  }, [onArmedUnmount]);
   return (
     <div className="dev-row-wrap" ref={rowRef}>
       <div className="dev-row">
@@ -546,6 +573,11 @@ export function DevicesPanel() {
   });
 
   const refresh = useCallback(() => setRefreshSeq((seq) => seq + 1), []);
+
+  // Stable across renders: it only records a flag the post-commit effect
+  // consumes, so the row's unmount guard can depend on it without
+  // re-subscribing (and misfiring) on every render.
+  const requestPairedFocus = useCallback(() => requestFocus("paired"), []);
 
   /**
    * Asks for focus to be moved once the card the user acted on is gone. The
@@ -1050,6 +1082,7 @@ export function DevicesPanel() {
             error={rowError?.deviceId === row.deviceId ? rowError.message : undefined}
             onToggleCap={(cap, next) => void toggleCap(row, cap, next)}
             onRevoke={() => void revoke(row)}
+            onArmedUnmount={requestPairedFocus}
           />
         ))}
         {revokedPeers.length === 0 ? null : (

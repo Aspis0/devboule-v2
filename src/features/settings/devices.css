@@ -286,10 +286,9 @@
 
 .dev-role-choice legend {
   padding: 0;
-  color: var(--silence);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .dev-role-option {
