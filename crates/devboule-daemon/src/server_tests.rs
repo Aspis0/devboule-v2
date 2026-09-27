@@ -1732,12 +1732,26 @@ fn a_claude_read_enters_the_version_probe_seam_only_while_the_version_is_unknown
 #[test]
 fn a_disabled_claude_catalog_uses_fallback_without_entering_a_probe() {
     let temp = crate::test_dirs::test_temp_dir("disabled-claude-catalog-gate");
-    std::fs::write(temp.join("claude.exe"), b"not really claude").expect("fake binary");
+    let executable = temp.join("claude.exe");
+    std::fs::write(&executable, b"not really claude").expect("fake binary");
     let state = ServerState::new("disabled-claude-catalog".to_string());
     state
         .provider_switches
         .set("claude", false)
         .expect("disable Claude");
+    let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    assert!(crate::claude_catalog::start_derivation(
+        Arc::new(FixedClaudeCatalog),
+        runtime_dir.clone(),
+        "switch-gate-test".to_string(),
+        move |_| ready_tx.send(()).expect("catalog callback"),
+    ));
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("seed the distinct derived catalog");
+    let fingerprint = executable_fingerprint(&executable).expect("fake binary fingerprint");
+    state.record_provider_cli_version("claude", "switch-gate-test", fingerprint);
     let before = state.version_probe_entry_count();
     let snapshot = state.claude_models_in_paths(std::slice::from_ref(&temp));
     assert_eq!(
@@ -1745,14 +1759,33 @@ fn a_disabled_claude_catalog_uses_fallback_without_entering_a_probe() {
         crate::claude_catalog::ClaudeCatalogState::Provisional
     );
     assert_eq!(
+        snapshot.models,
+        crate::claude_catalog::fallback_models(),
+        "a disabled Claude ignores a cached derived catalog"
+    );
+    assert_eq!(
         state.version_probe_entry_count(),
         before,
         "disabled Claude must use fallback data without starting a probe"
     );
-    let runtime_dir = state.sessions.runtime_dir().to_path_buf();
     drop(state);
     let _ = std::fs::remove_dir_all(&runtime_dir);
     let _ = std::fs::remove_dir_all(&temp);
+}
+
+struct FixedClaudeCatalog;
+
+impl crate::claude_catalog::CatalogSource for FixedClaudeCatalog {
+    fn derive(&self) -> Result<Vec<devboule_protocol::SessionModel>, String> {
+        Ok(vec![devboule_protocol::SessionModel {
+            model_id: "derived-only-model".to_string(),
+            name: "Derived only".to_string(),
+            description: None,
+            context_tokens: None,
+            current_effort: None,
+            efforts: None,
+        }])
+    }
 }
 
 /// The biconditional, on the daemon's actual replies and in both
