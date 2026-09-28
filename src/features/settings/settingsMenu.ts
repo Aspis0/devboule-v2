@@ -77,7 +77,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
         id: "providers",
         label: "Providers",
         intro:
-          "The agent CLIs this daemon can start, and the tools each one offers. An executable is not a login: the status shows the last measured start outcome.",
+          "The agent CLIs this daemon can start, and the tools each one offers. An executable is not a login: the status shows the login check when there is one, else the last start, or that it has not measured one.",
       },
       {
         id: "profiles",

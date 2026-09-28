@@ -44,6 +44,18 @@ interface TabCloseFlowArgs {
   selectSession: (id: string | null) => void;
   clearSelection: () => void;
   addButtonRef: RefObject<HTMLButtonElement | null>;
+  /** The rename half of the tab menu, wired by the caller from the rename
+   * hook: the entries for an anchor and the open for the menu's rename key.
+   * Required: a caller that forgets it must not compile into a menu that
+   * silently lost its rename row. */
+  renameMenu: RenameMenu;
+}
+
+/** The rename half of the tab menu as the caller wires it from the rename
+ * hook. */
+interface RenameMenu {
+  entriesFor: (anchorId: string) => TabMenuEntry[];
+  open: (anchorId: string) => void;
 }
 
 /** A target named at ask time: resolved again, by id AND generation, at the
@@ -151,6 +163,7 @@ export function useTabCloseFlow({
   selectSession,
   clearSelection,
   addButtonRef,
+  renameMenu,
 }: TabCloseFlowArgs): {
   menu: { sessionId: string; entries: TabMenuEntry[] } | null;
   anchorRef: RefObject<HTMLElement | null>;
@@ -168,7 +181,16 @@ export function useTabCloseFlow({
   const [focusRestore, setFocusRestore] = useState<FocusRestore | null>(null);
   const anchorRef = useRef<HTMLElement | null>(null);
 
+  // The rename half, destructured so the callbacks below keep stable deps:
+  // the wrapper the caller passes is a fresh object per render, the functions
+  // inside it are not.
+  const renameEntriesFor = renameMenu?.entriesFor;
+  const openRename = renameMenu?.open;
+
   const openMenuState = menuIsValid(menuState, selection, sessions) ? menuState : null;
+  // Rename sits ahead of the close group on an agent tab (Paseo's order);
+  // a selection menu is close-only. The capability gate lives in the rename
+  // hook's entry builder, not here.
   const menu =
     openMenuState === null
       ? null
@@ -176,10 +198,13 @@ export function useTabCloseFlow({
           sessionId: openMenuState.anchorId,
           entries: openMenuState.viaSelection
             ? [buildSelectionCloseEntry(openMenuState.targets.length)]
-            : buildTabCloseEntries(
-                sessions.findIndex((session) => session.id === openMenuState.anchorId),
-                sessions.length,
-              ),
+            : [
+                ...(renameEntriesFor?.(openMenuState.anchorId) ?? []),
+                ...buildTabCloseEntries(
+                  sessions.findIndex((session) => session.id === openMenuState.anchorId),
+                  sessions.length,
+                ),
+              ],
         };
   const confirm = confirmIsValid(confirmState, sessions) ? confirmState : null;
 
@@ -303,6 +328,10 @@ export function useTabCloseFlow({
         return;
       }
       if (key === "close-selection") return;
+      // Rename is not a close: both entry points open the dialog before this
+      // core runs, so a rename key here is a caller that skipped its own
+      // guard — refused, never fed to the close policy.
+      if (key === "rename") return;
       const closed = sessionsForTabAction(key, sessions, anchorId);
       if (closed.length === 0) return;
       openConfirm({
@@ -324,6 +353,13 @@ export function useTabCloseFlow({
       const open = menuState;
       setMenuState(null);
       if (open === null) return;
+      if (key === "rename") {
+        // Focus the tab before the dialog takes it: the dialog returns focus
+        // to whatever held it when it opened.
+        anchorRef.current?.focus({ preventScroll: true });
+        openRename?.(open.anchorId);
+        return;
+      }
       if (key === "close-selection") {
         // The selection menu ALWAYS asks, even when the roster has shrunk it
         // to one: the ask lists the live set, so the user confirms what is
@@ -344,7 +380,7 @@ export function useTabCloseFlow({
       }
       fireAnchorEntry(open.anchorId, key);
     },
-    [fireAnchorEntry, menuState, openConfirm, selection, sessions],
+    [fireAnchorEntry, menuState, openConfirm, openRename, selection, sessions],
   );
 
   // The pane header's kebab fires through the same policy and confirmation
@@ -353,9 +389,13 @@ export function useTabCloseFlow({
   const activatePaneEntry = useCallback(
     (anchorId: string, key: TabMenuEntry["key"]) => {
       if (key === "close-selection" || key === "delete") return;
+      if (key === "rename") {
+        openRename?.(anchorId);
+        return;
+      }
       fireAnchorEntry(anchorId, key);
     },
-    [fireAnchorEntry],
+    [fireAnchorEntry, openRename],
   );
 
   const confirmClose = useCallback(() => {

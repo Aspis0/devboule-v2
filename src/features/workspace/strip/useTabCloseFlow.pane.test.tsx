@@ -43,6 +43,9 @@ function renderFlow(
       selectSession: () => undefined,
       clearSelection: () => undefined,
       addButtonRef: { current: null },
+      // The explicit no-op: this test has no rename half to wire, and the
+      // required arg makes that a decision rather than a default.
+      renameMenu: { entriesFor: () => [], open: () => undefined },
     });
     useEffect(() => {
       store.flow = flow;

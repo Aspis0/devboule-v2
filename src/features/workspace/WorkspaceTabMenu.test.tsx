@@ -14,6 +14,7 @@ import {
   contextMenuKey,
   defaultSessions,
   dialog,
+  headerMenuSeamFor,
   liveSnapshot,
   menu,
   menuLabels,
@@ -25,9 +26,16 @@ import {
   settleCloseActs,
   shiftF10,
   tabElement,
+  tabTitles,
   terminalSession,
 } from "./bulkCloseHarness";
-import { sessionClose, sessionStop, sessionsList } from "../../lib/tauri";
+import {
+  daemonStatus,
+  sessionClose,
+  sessionSetName,
+  sessionStop,
+  sessionsList,
+} from "../../lib/tauri";
 
 beforeEach(() => {
   beforeEachHarness();
@@ -171,5 +179,167 @@ describe("the tab context menu", () => {
 
     expect(document.querySelector("[role='menu']")).toBeNull();
     expect(document.activeElement).toBe(tabElement("session-2"));
+  });
+});
+
+describe("the tab menu rename", () => {
+  function daemonWithCapabilities(capabilities: string[]): void {
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 42,
+      instanceId: "daemon-test",
+      // The protocol this app speaks: a daemon that completes the handshake
+      // with it is a 12-speaking daemon, which is what makes the advertised
+      // `sessions` capability mean the rename frame.
+      protocolVersion: 12,
+      clients: 1,
+      capabilities,
+      message: null,
+    });
+  }
+
+  // The capability override is per-test: the workspace polls the daemon
+  // status, and a later test in any order must inherit the harness's own
+  // default, not this describe's.
+  beforeEach(() => {
+    daemonWithCapabilities(["sessions"]);
+  });
+
+  afterEach(() => {
+    daemonWithCapabilities(["typed_permissions"]);
+    // The refusal test's rejection outlives its test otherwise — the harness
+    // clears calls, not implementations, and a shuffled later test would
+    // inherit it.
+    vi.mocked(sessionSetName).mockResolvedValue(undefined);
+  });
+
+  function renameField(): HTMLInputElement {
+    const field = dialog().querySelector<HTMLInputElement>("input");
+    if (field === null) throw new Error("rename input did not render");
+    return field;
+  }
+
+  async function fillRename(field: HTMLInputElement, value: string): Promise<void> {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("input value setter did not exist");
+    await act(async () => {
+      setValue.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("offers Rename first on an agent tab when the daemon advertises the capability", async () => {
+    await renderWorkspace();
+
+    await rightClick("agent-one");
+
+    expect(menuLabels()).toEqual([
+      "Rename",
+      "Close to the left",
+      "Close to the right",
+      "Close other tabs",
+      "Close",
+      "Delete",
+    ]);
+  });
+
+  it("hides Rename on a terminal tab", async () => {
+    await renderWorkspace();
+
+    await rightClick("session-2");
+
+    expect(menuLabels()).not.toContain("Rename");
+  });
+
+  it("hides Rename when the daemon does not advertise the capability", async () => {
+    daemonWithCapabilities([]);
+    await renderWorkspace();
+
+    await rightClick("agent-one");
+
+    expect(menuLabels()).not.toContain("Rename");
+  });
+
+  it("renames an agent: the call, then the title from the daemon's push", async () => {
+    await renderWorkspace();
+
+    await rightClick("agent-one");
+    await clickMenuEntry("Rename");
+    expect(renameField().value).toBe("Agent one");
+    await fillRename(renameField(), "Renamed agent");
+    await clickDialogButton("Rename");
+
+    expect(sessionSetName).toHaveBeenCalledWith("agent-one", "Renamed agent");
+    // No optimistic title: the tab keeps the old name until the daemon's
+    // roster push carries the new one.
+    expect(tabTitles().some((title) => title.includes("Agent one"))).toBe(true);
+    expect(tabTitles().some((title) => title.includes("Renamed agent"))).toBe(false);
+
+    await pushSnapshots([
+      {
+        id: "agent-one",
+        workspaceId: "workspace-1",
+        kind: "acp",
+        title: "Agent one",
+        displayName: "Renamed agent",
+        state: { type: "silent", generation: 1 },
+        elapsedMs: 0,
+      },
+    ]);
+
+    expect(tabTitles().some((title) => title.includes("Renamed agent"))).toBe(true);
+    expect(document.activeElement).toBe(tabElement("agent-one"));
+  });
+
+  it("the pane kebab hides Rename on a recovered session", async () => {
+    // The seam's second gate, at the pane: the flow's entry is pinned in
+    // useTabCloseFlow.rename.test.tsx, this is Workspace's own condition.
+    daemonWithCapabilities(["sessions"]);
+    vi.mocked(sessionsList).mockResolvedValue([recoveredAgentSession("agent-one", "Agent one")]);
+    await renderWorkspace();
+
+    expect(headerMenuSeamFor("agent-one")?.onRename ?? null).toBeNull();
+  });
+
+  it("the pane kebab offers Rename on a live session with the capability", async () => {
+    daemonWithCapabilities(["sessions"]);
+    await renderWorkspace();
+
+    expect(typeof headerMenuSeamFor("agent-one")?.onRename).toBe("function");
+  });
+
+  it("hides Rename on a recovered agent — the daemon's road needs a live process", async () => {
+    // The daemon reaches the session record only through a live registry
+    // entry; a journal-replayed row is refused with process_gone. Offering
+    // the entry would be offering a dialog that can only fail.
+    vi.mocked(sessionsList).mockResolvedValue([recoveredAgentSession("agent-one", "Agent one")]);
+    await renderWorkspace();
+
+    await rightClick("agent-one");
+
+    expect(menuLabels()).not.toContain("Rename");
+  });
+
+  // The ended-but-live half of the recovered decision is pinned in
+  // useTabCloseFlow.rename.test.tsx instead: the strip's stripSessions drops
+  // ended rows the daemon still lists, so an ended agent never reaches a
+  // tab to right-click — the entry logic is the flow's to assert.
+
+  it("keeps the draft and shows the daemon's refusal verbatim", async () => {
+    // A refusal the client mirror cannot predict: the session departed
+    // between the click and the call (the daemon's own process-gone words).
+    vi.mocked(sessionSetName).mockRejectedValue({
+      code: "invalid_request",
+      message: "This terminal process is gone.",
+    });
+    await renderWorkspace();
+
+    await rightClick("agent-one");
+    await clickMenuEntry("Rename");
+    await fillRename(renameField(), "Renamed agent");
+    await clickDialogButton("Rename");
+
+    expect(dialog().textContent).toContain("This terminal process is gone.");
+    expect(renameField().value).toBe("Renamed agent");
   });
 });

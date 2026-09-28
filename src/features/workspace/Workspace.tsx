@@ -21,8 +21,10 @@ import { AgentChatSurface } from "./AgentChatSurface";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { useTabSelection } from "./strip/useTabSelection";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
+import { useSessionRename } from "./strip/useSessionRename";
 import { buildTabCloseEntries } from "./strip/tabCloseMenu";
 import { SessionStrip } from "./strip/SessionStrip";
+import { SessionRenameDialog } from "./strip/SessionRenameDialog";
 import { discardPersistedPendingCloses, sharedCloseActions } from "./strip/closeActions";
 import type { CloseIntent } from "./strip/closePolicy";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
@@ -47,6 +49,7 @@ import {
   delegationController,
   type DelegationController,
 } from "../../lib/delegation";
+import { SESSION_RENAME_CAPABILITY } from "../../lib/sessionRename";
 import {
   PermissionCard as WorkspacePermissionCard,
   formatPermissionCommand,
@@ -397,6 +400,8 @@ export function Workspace({
     selectedSessionId,
     selectSession,
   });
+  const renameSupported = daemon.capabilities.includes(SESSION_RENAME_CAPABILITY);
+  const rename = useSessionRename({ sessions: visibleSessions, renameSupported });
   const tabClose = useTabCloseFlow({
     sessions: visibleSessions,
     selectedSessionId,
@@ -405,6 +410,7 @@ export function Workspace({
     selectSession,
     clearSelection: tabSelection.clearSelection,
     addButtonRef,
+    renameMenu: { entriesFor: rename.renameEntriesFor, open: rename.openRename },
   });
   // The roster is the authority on what a close is still hiding: a row it
   // shows as gone, ended, or resumed is confirmed (or moot), and the mark
@@ -1268,6 +1274,15 @@ export function Workspace({
                     visibleSessions.length,
                   ),
                   onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
+                  // Two gates, both daemon-side: the terminal's seam carries
+                  // no rename, and a journal-replayed (recovered) session is
+                  // refused by the daemon's one rename road (it reaches the
+                  // record only through a live process). An ended-but-live
+                  // session renames fine.
+                  onRename:
+                    renameSupported && paneSession.state.type !== "recovered"
+                      ? () => rename.openRename(paneSession.id)
+                      : null,
                 }}
                 deviceNames={peerNames}
                 hasPendingPermission={hasPendingPermission}
@@ -1430,6 +1445,11 @@ export function Workspace({
         onClose={closeProjectDialog}
         onCreate={handleCreateProject}
       />
+
+      {/* Rendered last of the two: both backdrops share z-index 50 and both
+          dialogs are always mounted, so the tie is declaration order — this
+          one sits on top regardless of which opened first. */}
+      <SessionRenameDialog rename={rename.rename} onClose={rename.closeRename} />
     </section>
   );
 }

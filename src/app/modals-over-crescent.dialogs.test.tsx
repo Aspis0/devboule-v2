@@ -16,6 +16,7 @@ import {
 } from "../features/design/DesignSurface";
 import { CloseConfirm } from "../features/workspace/strip/CloseConfirm";
 import { ContextPopover } from "../features/workspace/ContextPopover";
+import { SessionRenameDialog } from "../features/workspace/strip/SessionRenameDialog";
 import {
   ShellWith,
   cleanupModalsDom,
@@ -245,6 +246,35 @@ describe("walking every dialog the source finds", () => {
     });
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onConfirm).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    expect(modalCount()).toBe(0);
+  });
+
+  it("the rename dialog raises the signal, focuses its field, and cancels on Escape", async () => {
+    const onClose = vi.fn();
+    const { container, root } = await mount(
+      <ShellWith>
+        <SessionRenameDialog
+          rename={{ sessionId: "s.4242.7", title: "worker one" }}
+          onClose={onClose}
+        />
+      </ShellWith>,
+    );
+
+    expect(modalCount()).toBe(1);
+    const field = container.querySelector<HTMLInputElement>('[role="dialog"] input');
+    if (field === null) throw new Error("rename field missing");
+    expect(document.activeElement).toBe(field);
+
+    // The shell's protection, not just the token: the band's hover is the
+    // outside press, and a modal holds the surface shut against it.
+    await hoverBand(container);
+    expect(navIsOpen(container)).toBe(false);
+
+    await act(async () => {
+      field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
     expect(modalCount()).toBe(0);
   });

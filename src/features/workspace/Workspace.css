@@ -1573,7 +1573,14 @@
   line-height: 1.55;
 }
 
-.workspace-project-dialog-backdrop {
+/* The modal shell every workspace dialog shares — backdrop, card, header,
+   field label, field, error and actions — declared once for both dialogs. A
+   second dialog that re-declares these is a second place for the type ramp
+   to change and silently miss the other. What genuinely differs (width, the
+   heading's size and margin, the label's top margin) stays on the specific
+   class. */
+.workspace-project-dialog-backdrop,
+.workspace-rename-backdrop {
   position: absolute;
   inset: 0;
   /* Above the crescent band, which sits at z-index 40. */
@@ -1584,10 +1591,8 @@
   background: rgba(var(--ink-rgb), 0.34);
 }
 
-.workspace-project-dialog {
-  width: min(540px, 100%);
-  max-height: calc(100% - 24px);
-  overflow-y: auto;
+.workspace-project-dialog,
+.workspace-rename-dialog {
   padding: 20px;
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -1595,7 +1600,18 @@
   box-shadow: 0 12px 36px rgba(var(--ink-rgb), 0.18);
 }
 
-.workspace-project-dialog-header {
+.workspace-project-dialog {
+  width: min(540px, 100%);
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+}
+
+.workspace-rename-dialog {
+  width: min(440px, 100%);
+}
+
+.workspace-project-dialog-header,
+.workspace-rename-dialog-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -1610,11 +1626,20 @@
   text-transform: uppercase;
 }
 
+.workspace-project-dialog h2,
+.workspace-rename-dialog-header h2 {
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 600;
+}
+
 .workspace-project-dialog h2 {
   margin: 4px 0 0;
-  font-family: "Fraunces", Georgia, serif;
   font-size: 22px;
-  font-weight: 600;
+}
+
+.workspace-rename-dialog-header h2 {
+  margin: 0;
+  font-size: 20px;
 }
 
 .workspace-dialog-close {
@@ -1644,12 +1669,20 @@
   line-height: 1.6;
 }
 
-.workspace-project-input-label {
+.workspace-project-input-label,
+.workspace-rename-input-label {
   display: block;
-  margin: 18px 0 6px;
   color: var(--ink-soft);
   font-size: 11px;
   font-weight: 500;
+}
+
+.workspace-project-input-label {
+  margin: 18px 0 6px;
+}
+
+.workspace-rename-input-label {
+  margin: 14px 0 6px;
 }
 
 .workspace-project-picker-row {
@@ -1669,7 +1702,8 @@
   font-size: 10px;
 }
 
-.workspace-project-dialog input {
+.workspace-project-dialog input,
+.workspace-rename-dialog input {
   width: 100%;
   height: 34px;
   padding: 0 11px;
@@ -1677,12 +1711,24 @@
   background: var(--surface-muted);
   border: 1px solid var(--border-strong);
   border-radius: 9px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
   outline: 0;
 }
 
-.workspace-project-dialog input:focus {
+/* The two fields are different kinds of text: a path is code-like, a name is
+   not, and SPEC principle 2 allows mono only in code, diffs, command chips
+   and terminals. */
+.workspace-project-dialog input {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.workspace-rename-dialog input {
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.workspace-project-dialog input:focus,
+.workspace-rename-dialog input:focus {
   border-color: var(--terracotta);
   box-shadow: 0 0 0 2px var(--terracotta);
 }
@@ -1692,11 +1738,13 @@
   opacity: 1;
 }
 
-.workspace-project-dialog input[aria-invalid="true"] {
+.workspace-project-dialog input[aria-invalid="true"],
+.workspace-rename-dialog input[aria-invalid="true"] {
   border-color: var(--danger);
 }
 
-.workspace-project-error {
+.workspace-project-error,
+.workspace-rename-error {
   margin-top: 6px;
   color: var(--danger-deep);
   font-family: "JetBrains Mono", monospace;
@@ -1704,15 +1752,23 @@
   line-height: 1.5;
 }
 
-.workspace-project-dialog-actions {
+.workspace-project-dialog-actions,
+.workspace-rename-actions {
   display: flex;
   justify-content: flex-end;
   gap: 7px;
   margin-top: 20px;
 }
 
+/* The rename dialog's one-field form sits tighter than the project dialog's. */
+.workspace-rename-actions {
+  margin-top: 18px;
+}
+
 .workspace-project-dialog-actions .workspace-secondary-action,
-.workspace-project-dialog-actions .workspace-primary-action {
+.workspace-project-dialog-actions .workspace-primary-action,
+.workspace-rename-actions .workspace-secondary-action,
+.workspace-rename-actions .workspace-primary-action {
   height: 29px;
   padding: 0 13px;
   border-radius: 9px;

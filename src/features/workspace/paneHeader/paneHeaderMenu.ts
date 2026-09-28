@@ -5,12 +5,17 @@ import type { TabMenuEntry } from "../strip/tabCloseMenu";
 export interface HeaderMenuSeam {
   closeEntries: TabMenuEntry[];
   onCloseEntry: (key: TabMenuEntry["key"]) => void;
+  /** Opens the rename dialog for this header's session. Absent when the
+   * daemon does not advertise the capability that gates the frame — the
+   * entry is hidden, never disabled. */
+  onRename?: (() => void) | null;
 }
 
 export interface PaneHeaderMenu {
   copyPath: string | null;
   closeEntries: TabMenuEntry[];
   onCloseEntry: ((key: TabMenuEntry["key"]) => void) | null;
+  onRename: (() => void) | null;
 }
 
 const PATH_NOTE_LIMIT = 28;
@@ -43,13 +48,15 @@ export function middleTruncate(value: string, maxLength = PATH_NOTE_LIMIT): stri
 /** The header menu with no path row when the row carries no cwd, and no
  * close rows until the workspace wires the seam: entry enablement needs the
  * tab's roster position and firing needs the tab-close flow, both above the
- * surfaces. Null means no kebab — a menu with nothing actionable is dead. */
+ * surfaces. Null means no kebab — a menu with nothing actionable is dead;
+ * a Rename entry alone is actionable. */
 export function headerMenu(
   cwd: string | undefined,
   seam: HeaderMenuSeam | undefined,
 ): PaneHeaderMenu | null {
   const copyPath = !cwd ? null : cwd;
   const closeEntries = seam?.closeEntries ?? [];
-  if (copyPath === null && closeEntries.length === 0) return null;
-  return { copyPath, closeEntries, onCloseEntry: seam?.onCloseEntry ?? null };
+  const onRename = seam?.onRename ?? null;
+  if (copyPath === null && closeEntries.length === 0 && onRename === null) return null;
+  return { copyPath, closeEntries, onCloseEntry: seam?.onCloseEntry ?? null, onRename };
 }

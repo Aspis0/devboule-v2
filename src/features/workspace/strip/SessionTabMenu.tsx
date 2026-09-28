@@ -119,6 +119,10 @@ export function SessionTabMenu({
           >
             {entry.label}
           </button>
+          {entry.separatorAfter ? (
+            // Rename acts on this tab; the entries after it close tabs.
+            <div className="workspace-menu-separator" role="separator" />
+          ) : null}
         </Fragment>
       ))}
     </AnchoredPopover>

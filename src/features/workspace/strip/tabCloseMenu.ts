@@ -6,11 +6,14 @@
 import type { TabCloseAction } from "./bulkCloseSessions";
 
 export interface TabMenuEntry {
-  key: TabCloseAction | "close-selection" | "delete";
+  key: TabCloseAction | "close-selection" | "delete" | "rename";
   label: string;
   disabled: boolean;
   /** Rendered after a separator, in the destructive tone: it destroys. */
   destructive?: boolean;
+  /** Rendered with a separator after it: the entry stands apart from the
+   * close group that follows — Rename acts on one tab, the group closes. */
+  separatorAfter?: boolean;
 }
 
 export function buildTabCloseEntries(index: number, tabCount: number): TabMenuEntry[] {

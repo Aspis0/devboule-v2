@@ -120,6 +120,9 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
   const closes = menu.closeEntries.filter(
     (entry) => entry.key === "right" || entry.key === "others" || entry.key === "close",
   );
+  // The seam's rename callback, captured so the click handler below calls a
+  // narrowed local rather than a property TS will not narrow into a closure.
+  const onRename = menu.onRename;
 
   return (
     <>
@@ -161,7 +164,22 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
                     : "Copy path"}
               </button>
             ) : null}
-            {menu.copyPath !== null ? (
+            {onRename !== null ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="pane-header-menu-item"
+                onClick={() => {
+                  // Focus returns to the kebab as the menu closes; the rename
+                  // dialog captures it there and gives it back on close.
+                  closeToKebab();
+                  onRename();
+                }}
+              >
+                Rename
+              </button>
+            ) : null}
+            {menu.copyPath !== null || onRename !== null ? (
               <div className="workspace-menu-separator" role="separator" />
             ) : null}
             {closes.map((entry) => (

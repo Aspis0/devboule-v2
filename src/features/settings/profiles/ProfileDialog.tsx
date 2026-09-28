@@ -1,15 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { getFocusableElements } from "../../../lib/focusableElements";
 import { useModalOpen } from "../../../lib/modalOpen";
-
-function focusableIn(container: HTMLElement): HTMLElement[] {
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter(
-    (element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true",
-  );
-}
 
 /**
  * The scrim dialog around the profile form, for creating and editing alike.
@@ -82,7 +73,7 @@ export function ProfileDialog({
     const fields = card.querySelectorAll<HTMLElement>(
       "input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
     );
-    (fields[0] ?? focusableIn(card)[0])?.focus();
+    (fields[0] ?? getFocusableElements(card)[0])?.focus();
   }, [open]);
 
   useEffect(() => {
@@ -97,7 +88,7 @@ export function ProfileDialog({
         return;
       }
       if (event.key !== "Tab") return;
-      const focusable = focusableIn(card!);
+      const focusable = getFocusableElements(card!);
       if (focusable.length === 0) {
         event.preventDefault();
         card!.focus();

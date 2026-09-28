@@ -64,6 +64,7 @@ vi.mock("../../lib/tauri", () => ({
   sessionDelete: vi.fn(),
   sessionStop: vi.fn(async () => undefined),
   sessionClose: vi.fn(async () => undefined),
+  sessionSetName: vi.fn(async () => undefined),
   isCommandError: vi.fn(
     (error: unknown) =>
       typeof error === "object" && error !== null && "code" in error && "message" in error,
@@ -90,10 +91,23 @@ vi.mock("../terminal/TerminalSurface", () => ({
   ),
 }));
 
+// The pane's header menu seam, per session: Workspace builds it and the
+// (mocked) surface receives it, so the kebab's wiring is asserted here.
+const headerMenuSeams = vi.hoisted(() => ({
+  bySession: new Map<string, import("./paneHeader/paneHeaderMenu").HeaderMenuSeam | undefined>(),
+}));
+
 vi.mock("./AgentChatSurface", () => ({
-  AgentChatSurface: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="agent-chat-surface">{sessionId}</div>
-  ),
+  AgentChatSurface: ({
+    sessionId,
+    headerMenuSeam,
+  }: {
+    sessionId: string;
+    headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
+  }) => {
+    headerMenuSeams.bySession.set(sessionId, headerMenuSeam);
+    return <div data-testid="agent-chat-surface">{sessionId}</div>;
+  },
 }));
 
 import { projectsList, providersList, sessionsList, workspacesList } from "../../lib/tauri";
@@ -132,6 +146,18 @@ export function recoveredAgentSession(id: string, title: string): Session {
     type: "recovered",
     generation: 1,
     integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+  });
+}
+
+/** An agent whose process exited while this daemon was alive: no process to
+ * close, but the daemon's registry entry is still the live kind, so the
+ * daemon's rename road reaches it. */
+export function endedAgentSession(id: string, title: string): Session {
+  return agentSession(id, title, {
+    type: "ended",
+    generation: 1,
+    code: 0,
+    integrity: { kind: "complete" },
   });
 }
 
@@ -200,6 +226,14 @@ export function tabTitles(): string[] {
   return [...container.querySelectorAll(".workspace-session-tab")].map(
     (tab) => tab.textContent ?? "",
   );
+}
+
+/** The pane header's menu seam for one session — what Workspace wired and
+ * the (mocked) surface received. */
+export function headerMenuSeamFor(
+  sessionId: string,
+): import("./paneHeader/paneHeaderMenu").HeaderMenuSeam | undefined {
+  return headerMenuSeams.bySession.get(sessionId);
 }
 
 export function tabElement(id: string): HTMLButtonElement {

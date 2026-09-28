@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { projectAdd } from "../lib/tauri";
+import { getFocusableElements } from "../lib/focusableElements";
 import { useModalOpen } from "../lib/modalOpen";
 import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import { ErrorText } from "./ErrorText";
@@ -12,16 +13,6 @@ interface NewProjectDialogProps {
   open: boolean;
   onClose: () => void;
   onCreate: (project: Project) => void | Promise<void>;
-}
-
-function getFocusableElements(container: HTMLElement): HTMLElement[] {
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter(
-    (element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true",
-  );
 }
 
 export const NewProjectDialog = memo(function NewProjectDialog({

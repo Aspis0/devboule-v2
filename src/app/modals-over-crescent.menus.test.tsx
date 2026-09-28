@@ -116,6 +116,7 @@ describe("walking every menu the source finds — the band's open is the outside
             copyPath: null,
             closeEntries: [{ key: "close", label: "Close", disabled: false, destructive: true }],
             onCloseEntry: () => undefined,
+            onRename: null,
           }}
         />
       </ShellWith>,
