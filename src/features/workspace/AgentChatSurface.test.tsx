@@ -3270,9 +3270,9 @@ describe("AgentChatSurface", () => {
       expect(row.open).toBe(false);
     }
 
-    // Live finding: a closed inner row's chevron rendered rotated
-    // (matrix(-1,0,0,-1,0,0)) because the group's [open] rule reached its
-    // descendants' summaries. Happy DOM resolves no computed transform on a
+    // A group's [open] rule must not reach its descendants' summaries, or a
+    // closed inner row's chevron renders rotated (matrix(-1,0,0,-1,0,0)).
+    // Happy DOM resolves no computed transform on a
     // generated pseudo-element (probed: ""), so the rule source is asserted:
     // the rotate must hang off the open element's own summary only.
     expect(workspaceCss.rulesFor(".workspace-chat-tool[open] > summary::after")).toContain(
@@ -3902,7 +3902,7 @@ describe("creator permission-request message", () => {
 
     const item = container.querySelector("[data-testid='agent-permission-request']");
     expect(item).not.toBeNull();
-    // The visible note, where nothing used to render.
+    // The visible note.
     const note = item?.querySelector(".workspace-chat-child-said-note");
     expect(note).not.toBeNull();
     expect(note?.textContent).toContain("no quoted block");
