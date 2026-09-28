@@ -337,7 +337,7 @@ describe("AgentChatSurface", () => {
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
     container.remove();
     channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;
@@ -477,7 +477,7 @@ describe("AgentChatSurface", () => {
     expect(container.textContent).toContain("model grok");
     expect(container.textContent).toContain("total 3 tokens");
 
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
     expect(sessionDetach).toHaveBeenCalledWith(41);
   });
 
@@ -504,7 +504,7 @@ describe("AgentChatSurface", () => {
         ?.disabled,
     ).toBe(false);
 
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
     root = createRoot(container);
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
@@ -745,7 +745,8 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelector("[data-testid=session-manifest]")).toBeNull();
+    expect(container.querySelector('[data-testid="provider-model-chip"]')).toBeNull();
+    expect(container.querySelector(".workspace-picker-static")).toBeNull();
     expect(container.textContent).not.toContain("Medium");
     expect(container.querySelector("[data-testid=mode-chip]")).toBeNull();
   });
@@ -1012,11 +1013,12 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const strip = container.querySelector("[data-testid=session-manifest]");
-    expect(strip?.textContent).toContain("grok");
-    expect(chipLabel("model")).toContain("Grok 4.6");
-    const modelChip = container.querySelector<HTMLButtonElement>('[data-testid="model-chip"]');
-    if (modelChip === null) throw new Error("model chip did not render");
+    expect(chipLabel("provider-model")).toContain("grok");
+    expect(chipLabel("provider-model")).toContain("Grok 4.6");
+    const modelChip = container.querySelector<HTMLButtonElement>(
+      '[data-testid="provider-model-chip"]',
+    );
+    if (modelChip === null) throw new Error("provider·model chip did not render");
     await act(async () => modelChip.click());
     const modelMenu = container.querySelector('[aria-label="Model"]');
     expect(modelMenu?.getAttribute("role")).toBe("listbox");
@@ -1050,9 +1052,10 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const strip = container.querySelector("[data-testid=session-manifest]");
-    expect(strip?.textContent).toContain("claude");
-    expect(container.querySelector('[data-testid="model-chip"]')).toBeNull();
+    // One model: the static label, not a one-option picker.
+    const label = container.querySelector(".workspace-picker-static");
+    expect(label?.textContent).toContain("claude");
+    expect(container.querySelector('[data-testid="provider-model-chip"]')).toBeNull();
     expect(container.querySelector('[data-testid="effort-chip"]')).toBeNull();
     expect(container.querySelector(".workspace-composer")?.textContent).toContain("Claude Opus");
   });
@@ -1286,14 +1289,14 @@ describe("AgentChatSurface", () => {
     });
 
     const composer = container.querySelector(".workspace-composer");
-    expect(composer?.querySelector('[data-testid="model-chip"]')).not.toBeNull();
+    expect(composer?.querySelector('[data-testid="provider-model-chip"]')).not.toBeNull();
     expect(composer?.querySelector('[data-testid="effort-chip"]')).not.toBeNull();
-    expect(chipLabel("model")).toContain("Grok 4.6");
-    expect(composer?.querySelector(".workspace-send-action")?.getAttribute("title")).toBe(
-      "Send · Enter (Shift+Enter for a new line)",
-    );
+    expect(chipLabel("provider-model")).toContain("Grok 4.6");
+    const send = composer?.querySelector(".workspace-send-action");
+    expect(send?.getAttribute("aria-label")).toBe("Send");
+    expect(send?.getAttribute("title")).toBe("Send · Enter (Shift+Enter for a new line)");
 
-    await pickFromChip("model", "grok-4.7");
+    await pickFromChip("provider-model", "grok-4.7");
     expect(sessionSetModel).toHaveBeenCalledWith("agent-1", "grok-4.7", undefined);
   });
 
@@ -1358,12 +1361,12 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    await pickFromChip("model", "grok-4.7");
+    await pickFromChip("provider-model", "grok-4.7");
 
     expect(sessionSetModel).toHaveBeenCalledWith("agent-1", "grok-4.7", undefined);
-    const pendingStrip = container.querySelector("[data-testid=session-manifest]");
-    expect(pendingStrip?.getAttribute("aria-busy")).toBe("true");
-    expect(chipLabel("model")).toContain("Grok 4.6");
+    const pendingChip = container.querySelector('[data-testid="provider-model-chip"]');
+    expect(pendingChip?.getAttribute("aria-busy")).toBe("true");
+    expect(chipLabel("provider-model")).toContain("switching to Grok 4.7…");
 
     await act(async () => {
       channelHarness.emit?.({
@@ -1387,9 +1390,9 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    expect(chipLabel("model")).toContain("Grok 4.7");
+    expect(chipLabel("provider-model")).toContain("Grok 4.7");
     expect(
-      container.querySelector("[data-testid=session-manifest]")?.getAttribute("aria-busy"),
+      container.querySelector('[data-testid="provider-model-chip"]')?.getAttribute("aria-busy"),
     ).toBe("false");
   });
 
@@ -1428,7 +1431,7 @@ describe("AgentChatSurface", () => {
       JSON.stringify({ [JSON.stringify(["grok", "grok-4.6"])]: "xhigh" }),
     );
 
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -1482,6 +1485,50 @@ describe("AgentChatSurface", () => {
     expect(
       (sessionSetModel as unknown as Mock).mock.calls.filter(([id]) => id === "pref-agent-2"),
     ).toHaveLength(1);
+  });
+
+  it("attributes a combined session-start switch to the effort trigger, not the model trigger", async () => {
+    setPreferredEffort("grok", "grok-4.6", "xhigh");
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="pref-combined" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+          { modelId: "grok-4.7", name: "Grok 4.7", currentEffort: "high", efforts: [] },
+        ],
+      });
+    });
+    await act(async () => undefined);
+
+    // The auto-apply calls setModel(currentModelId, stored): a combined
+    // switch. The model is not changing, so the pending state belongs to
+    // the effort trigger alone.
+    expect(sessionSetModel).toHaveBeenCalledWith("pref-combined", "grok-4.6", "xhigh");
+    expect(chipLabel("effort")).toContain("switching to Extra High Effort…");
+    expect(container.querySelector('[data-testid="effort-chip"]')?.getAttribute("aria-busy")).toBe(
+      "true",
+    );
+    expect(chipLabel("provider-model")).not.toContain("switching");
+    expect(
+      container.querySelector('[data-testid="provider-model-chip"]')?.getAttribute("aria-busy"),
+    ).toBe("false");
   });
 
   it("skips the stored effort when the manifest's model does not declare it", async () => {
@@ -1553,10 +1600,11 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    await pickFromChip("model", "grok-4.7");
+    await pickFromChip("provider-model", "grok-4.7");
 
-    const label = container.querySelector("[data-testid=session-pending-label]");
-    expect(label?.textContent).toBe("switching to Grok 4.7…");
+    // The pending copy moved off the manifest line into the trigger it replaced,
+    // where it stands in for the model name while the switch is in flight.
+    expect(chipLabel("provider-model")).toContain("switching to Grok 4.7…");
 
     await act(async () => {
       channelHarness.emit?.({
@@ -1585,12 +1633,20 @@ describe("AgentChatSurface", () => {
         ],
       });
     });
-    expect(container.querySelector("[data-testid=session-pending-label]")).toBeNull();
+    expect(chipLabel("provider-model")).not.toContain("switching");
 
     await pickFromChip("effort", "xhigh");
-    expect(container.querySelector("[data-testid=session-pending-label]")?.textContent).toBe(
-      "switching to Extra High Effort…",
+    // The pending copy belongs on the control that is changing: an effort
+    // switch paints it on the effort trigger, and the model trigger stays
+    // out of it.
+    expect(chipLabel("effort")).toContain("switching to Extra High Effort…");
+    expect(container.querySelector('[data-testid="effort-chip"]')?.getAttribute("aria-busy")).toBe(
+      "true",
     );
+    expect(chipLabel("provider-model")).not.toContain("switching");
+    expect(
+      container.querySelector('[data-testid="provider-model-chip"]')?.getAttribute("aria-busy"),
+    ).toBe("false");
   });
 
   it("shows an error item when the model switch invoke rejects", async () => {
@@ -1613,7 +1669,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    await pickFromChip("model", "grok-4.7");
+    await pickFromChip("provider-model", "grok-4.7");
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not switch the model. provider refused",
@@ -1650,7 +1706,7 @@ describe("AgentChatSurface", () => {
     expect(composer?.textContent).toContain("Grok 4.6");
     // The undeclared "turbo" effort must not be presented as current; the chip
     // falls back to its label instead of any offered option's name.
-    expect(chipLabel("effort")).toBe("Thinking effort▾");
+    expect(chipLabel("effort")).toBe("Thinking effort");
     const effortChip = container.querySelector<HTMLButtonElement>('[data-testid="effort-chip"]');
     if (effortChip === null) throw new Error("effort chip did not render");
     await act(async () => effortChip.click());
@@ -1871,7 +1927,7 @@ describe("AgentChatSurface", () => {
     ).toBe(false);
     expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Running");
     expect(container.querySelector(".workspace-composer-hint")).toBeNull();
-    expect(container.querySelector('[data-testid="model-chip"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="provider-model-chip"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="effort-chip"]')).not.toBeNull();
   });
 
@@ -2327,8 +2383,8 @@ describe("AgentChatSurface", () => {
     await act(async () => send.click());
 
     // L2: open the model menu while the session is alive...
-    const chip = container.querySelector<HTMLButtonElement>('[data-testid="model-chip"]');
-    if (chip === null) throw new Error("model chip did not render");
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="provider-model-chip"]');
+    if (chip === null) throw new Error("provider·model chip did not render");
     await act(async () => chip.click());
     expect(container.querySelector('[aria-label="Model"]')).not.toBeNull();
 
@@ -2388,7 +2444,7 @@ describe("AgentChatSurface", () => {
     await act(async () => send.click());
     expect(container.querySelector('button[aria-label="Stop the current turn"]')).not.toBeNull();
 
-    await pickFromChip("model", "grok-4.7");
+    await pickFromChip("provider-model", "grok-4.7");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not switch the model. provider refused",
     );
@@ -3145,7 +3201,7 @@ describe("AgentChatSurface", () => {
       ResizeObserverStub.instances.filter((instance) => instance.observed.includes(content)).length,
     ).toBe(1);
 
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
     expect(observerFor(content)).toBeUndefined();
     expect(observerFor(conversation)).toBeUndefined();
   });
@@ -3686,7 +3742,7 @@ describe("creator permission-request message", () => {
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
     container.remove();
     channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;
@@ -4016,7 +4072,7 @@ describe("creator daemon notice cards", () => {
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
     container.remove();
     channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;
@@ -4263,7 +4319,7 @@ describe("agent-to-agent message cards", () => {
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    await act(async () => root?.unmount());
     container.remove();
     channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;

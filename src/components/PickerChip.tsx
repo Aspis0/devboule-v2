@@ -54,6 +54,12 @@ interface PickerChipProps {
   disabled?: boolean;
   /** What the chip switches, for a chip whose value alone does not say. */
   tooltip?: string;
+  /** Drawn before the current name, joined with " · ": the provider half of
+   * the provider·model chip, which must show both names on one trigger. */
+  prefix?: string;
+  /** Replaces the current name while a switch is in flight, so the pending
+   * target stays visible without a second line above the transcript. */
+  pendingCopy?: string;
 }
 
 /** One chip + listbox picker shared by the mode, model, and effort controls. */
@@ -67,6 +73,8 @@ export function PickerChip({
   dotFor,
   disabled = false,
   tooltip,
+  prefix,
+  pendingCopy,
 }: PickerChipProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -97,7 +105,11 @@ export function PickerChip({
   if (options.length === 0) return null;
 
   const current = options.find((option) => option.id === currentId) ?? null;
-  const shown = current?.name ?? currentId ?? label;
+  const name = pendingCopy ?? current?.name ?? currentId ?? null;
+  const shown =
+    [prefix, name]
+      .filter((part): part is string => part !== undefined && part !== null && part !== "")
+      .join(" · ") || label;
 
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -122,6 +134,7 @@ export function PickerChip({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
+        aria-busy={pendingCopy !== undefined}
         title={tooltip}
         aria-label={tooltip === undefined ? undefined : `${tooltip} (${shown})`}
         disabled={disabled}
@@ -134,9 +147,16 @@ export function PickerChip({
           <span className={dotFor(current.id)} aria-hidden="true" />
         ) : null}
         <span>{shown}</span>
-        <span className="workspace-mode-caret" aria-hidden="true">
-          ▾
-        </span>
+        <svg
+          className="workspace-mode-caret"
+          width={12}
+          height={12}
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
       </button>
       {open ? (
         <div

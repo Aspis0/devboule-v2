@@ -431,40 +431,8 @@
   flex-direction: column;
 }
 
-.workspace-agent-manifest {
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  padding: 0 20px 8px;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-}
-.workspace-agent-manifest select {
-  padding: 1px 4px;
-  color: var(--silence);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-}
-
-.workspace-agent-manifest select:hover {
-  color: var(--ink);
-  border-color: var(--border-strong);
-}
-
-/* A switch is in flight: the strip still shows the last confirmed values. */
-.workspace-agent-manifest-pending {
-  opacity: 0.55;
-}
-
 .workspace-chat-finish,
-.workspace-chat-empty,
-.workspace-composer-hint {
+.workspace-chat-empty {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
@@ -484,8 +452,8 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: 12px;
   line-height: 1.2;
 }
 
@@ -553,8 +521,8 @@
   gap: 7px;
   min-width: 0;
   color: var(--ink-soft);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
 }
 
 .workspace-subagent-row-status {
@@ -603,11 +571,9 @@
 .workspace-chat-label {
   margin-bottom: 3px;
   color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-family: var(--font-ui);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .workspace-chat-assistant .workspace-chat-label {
@@ -1016,17 +982,19 @@
 
 .workspace-chat-empty {
   padding-top: 10px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
 }
 
 .workspace-composer-hint {
   min-width: 0;
   overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.workspace-composer:focus-within {
-  box-shadow: 0 0 0 2px rgba(var(--terracotta-rgb), 0.22);
 }
 
 .workspace-stream-caret {
@@ -1093,15 +1061,27 @@
 .workspace-composer-wrap {
   position: relative;
   flex: none;
-  padding: 10px 18px 14px;
+  padding: 4px 24px 12px;
+}
+
+/* The queued follow-ups sit on the composer's axis: the same 760 column,
+   centred the same way, so a row above the card never drifts off it. */
+.workspace-composer-track {
+  width: 760px;
+  max-width: 100%;
+  margin: 0 auto;
 }
 
 .workspace-command-menu {
   position: absolute;
-  right: 18px;
   bottom: calc(100% - 1px);
-  left: 18px;
+  left: 50%;
   z-index: 2;
+  width: 760px;
+  /* An absolute element's 100% is the wrap's padding box, not its content
+     box: capped at 48 px short, the menu matches the card at every width. */
+  max-width: calc(100% - (var(--space-24) * 2));
+  transform: translateX(-50%);
   display: flex;
   /* A window-height budget, so it is charged to the band like every other one:
      the surface this menu opens inside starts at `--crescent-band`, so 45% of
@@ -1177,14 +1157,22 @@
 }
 
 .workspace-composer {
-  padding: 10px 12px 8px;
-  background: var(--surface-muted);
-  border: 1px solid var(--border-strong);
-  border-radius: 14px;
+  width: 760px;
+  max-width: 100%;
+  margin: 0 auto;
+  /* 24 px horizontally, not the mockup's 16: the rail's text column is
+     inset 24, and the composer's text must sit on it. */
+  padding: 14px 24px 12px;
+  background: var(--panel-composer);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
 }
 
 .workspace-composer:focus-within {
-  border-color: var(--terracotta);
+  border-color: var(--accent);
+  /* The border move alone is 1 px; the ring is the visible focus cue the
+     textarea (outline: 0) and the 1 px border cannot give. */
+  box-shadow: 0 0 0 2px rgba(var(--terracotta-rgb), 0.22);
 }
 
 .workspace-composer textarea {
@@ -1197,8 +1185,8 @@
   outline: 0;
   resize: none;
   overflow-y: hidden;
-  font-size: 12.5px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.45;
 }
 
 .workspace-composer textarea::placeholder {
@@ -1211,8 +1199,8 @@
 .workspace-composer-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 8px;
+  gap: 6px;
+  margin-top: 12px;
 }
 
 .workspace-composer-controls {
@@ -1220,33 +1208,82 @@
   flex: 1;
   align-items: center;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
 }
 
-.workspace-composer .workspace-send-action {
-  flex: none;
-  height: 27px;
-  padding: 0 14px;
-  border-radius: 9px;
-  font-size: 11.5px;
-}
-
+/* The single-model label: the trigger's look without the chevron — same
+   typography, height and radius so it sits in the row identically, but a
+   span: there is nothing to pick, so it must not offer a hover fill.
+   display: block (not inline-flex) so the text is inline content and the
+   ellipsis applies; min-width: 0 lets the flex item shrink to truncate. */
 .workspace-picker-static {
+  display: block;
+  flex: none;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  color: var(--muted);
+  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 28px;
   overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-send-action:disabled {
-  color: var(--silence);
-  background: var(--surface-muted);
-  border-color: var(--silence);
+/* The three action circles: send is the accent one, stop and queue are the
+   quiet outlined pair beside it. */
+.workspace-composer .workspace-send-action,
+.workspace-composer .workspace-stop-action,
+.workspace-composer .workspace-queue-action {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.workspace-composer .workspace-send-action {
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border: 0;
+}
+
+.workspace-composer .workspace-stop-action,
+.workspace-composer .workspace-queue-action {
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+}
+
+.workspace-composer .workspace-stop-action:hover,
+.workspace-composer .workspace-queue-action:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-composer .workspace-send-action:focus-visible,
+.workspace-composer .workspace-stop-action:focus-visible,
+.workspace-composer .workspace-queue-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.workspace-composer .workspace-stop-action:disabled,
+.workspace-composer .workspace-queue-action:disabled {
+  color: var(--muted);
   cursor: not-allowed;
-  opacity: 1;
+}
+
+.workspace-composer .workspace-send-action:disabled {
+  color: var(--muted);
+  background: var(--surface-muted);
+  cursor: not-allowed;
 }
 
 /* Context meter and its popover: the control row's ring between the pickers

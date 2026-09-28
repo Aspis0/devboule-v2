@@ -472,18 +472,18 @@ function confirmedEffort(model: SessionModel | null): string | null {
   return null;
 }
 
-/** What the strip says a pending switch is heading toward, or null. */
-function pendingTargetCopy(
-  manifest: SessionManifest,
-  pending: { modelId?: string; effort?: string; at: number } | null,
-): string | null {
-  if (pending === null) return null;
-  if (pending.modelId !== undefined) {
-    const model = manifest.models.find((entry) => entry.modelId === pending.modelId);
-    return `switching to ${model?.name ?? pending.modelId}…`;
-  }
+/** The sentence for a model switch, naming the model it is heading toward. */
+function pendingModelSentence(manifest: SessionManifest | null, modelId: string): string | null {
+  if (manifest === null) return null;
+  const model = manifest.models.find((entry) => entry.modelId === modelId);
+  return `switching to ${model?.name ?? modelId}…`;
+}
+
+/** The sentence for an effort switch, or null when the model offers no such effort. */
+function pendingEffortSentence(manifest: SessionManifest | null, effortId: string): string | null {
+  if (manifest === null) return null;
   const model = manifestModel(manifest);
-  const effort = model?.efforts?.find((entry) => entry.id === pending.effort);
+  const effort = model?.efforts?.find((entry) => entry.id === effortId);
   return effort === undefined ? null : `switching to ${effort.label}…`;
 }
 
@@ -1024,8 +1024,29 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const efforts = stripModel?.efforts ?? [];
   const modes = manifest?.modes;
   const currentModeId = state.pendingModeId ?? modes?.currentModeId ?? null;
-  const pendingSwitch = state.pendingSwitch !== null;
-  const pendingCopy = manifest === null ? null : pendingTargetCopy(manifest, state.pendingSwitch);
+  const pendingSwitch = state.pendingSwitch;
+  // The pending copy belongs on the control that is changing. A combined
+  // switch — the session-start path calls setModel with both arguments —
+  // paints each control only for the part that differs: the model trigger
+  // when the model changes, the effort trigger when the effort changes.
+  const pendingModelCopy =
+    pendingSwitch !== null &&
+    pendingSwitch.modelId !== undefined &&
+    pendingSwitch.modelId !== manifest?.currentModelId
+      ? pendingModelSentence(manifest, pendingSwitch.modelId)
+      : null;
+  const pendingEffortCopy =
+    pendingSwitch !== null && pendingSwitch.effort !== undefined
+      ? pendingEffortSentence(manifest, pendingSwitch.effort)
+      : null;
+  // The single-model label: the static, non-interactive half of the
+  // provider·model pair, carrying both names the manifest line carried.
+  const staticModelLabel =
+    manifest === null || (stripModel === null && manifest.providerId === undefined)
+      ? null
+      : [manifest.providerId, stripModel?.name]
+          .filter((part): part is string => part !== undefined && part !== null && part !== "")
+          .join(" · ");
   const osGone =
     observedType(observedState) === "ended" || observedType(observedState) === "recovered";
   // The daemon connection is a global fact with its own channel. The gate
@@ -1105,18 +1126,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           ) : null
         }
       />
-      {manifest !== null && (manifest.providerId !== undefined || manifest.models.length > 0) ? (
-        <div
-          className={`workspace-agent-manifest${pendingSwitch ? " workspace-agent-manifest-pending" : ""}`}
-          data-testid="session-manifest"
-          aria-busy={pendingSwitch}
-        >
-          {manifest.providerId !== undefined ? <span>{manifest.providerId}</span> : null}
-          {pendingCopy !== null ? (
-            <span data-testid="session-pending-label">{pendingCopy}</span>
-          ) : null}
-        </div>
-      ) : null}
       <div
         ref={conversationRef}
         className="workspace-conversation workspace-scroll"
@@ -1186,6 +1195,27 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         }
         controls={
           <>
+            {manifest !== null && manifest.models.length > 1 ? (
+              <PickerChip
+                label="Model"
+                options={manifest.models.map((model) => ({
+                  id: model.modelId,
+                  name: model.name,
+                  description: modelOptionDescription(model),
+                }))}
+                currentId={manifest.currentModelId ?? null}
+                onSelect={(modelId) => void sessionRef.current?.setModel(modelId)}
+                chipTestId="provider-model-chip"
+                optionTestId={(id) => `provider-model-option-${id}`}
+                disabled={composerDisabled}
+                prefix={manifest.providerId}
+                pendingCopy={pendingModelCopy ?? undefined}
+              />
+            ) : staticModelLabel !== null ? (
+              <span className="workspace-picker-static" title={staticModelLabel}>
+                {staticModelLabel}
+              </span>
+            ) : null}
             {modes !== undefined ? (
               <PickerChip
                 label="Session mode"
@@ -1217,23 +1247,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                 tooltip="Toggle plan mode"
               />
             ) : null}
-            {manifest !== null && manifest.models.length > 1 ? (
-              <PickerChip
-                label="Model"
-                options={manifest.models.map((model) => ({
-                  id: model.modelId,
-                  name: model.name,
-                  description: modelOptionDescription(model),
-                }))}
-                currentId={manifest.currentModelId ?? null}
-                onSelect={(modelId) => void sessionRef.current?.setModel(modelId)}
-                chipTestId="model-chip"
-                optionTestId={(id) => `model-option-${id}`}
-                disabled={composerDisabled}
-              />
-            ) : stripModel !== null ? (
-              <span className="workspace-picker-static">{stripModel.name}</span>
-            ) : null}
             {manifest !== null && efforts.length > 0 ? (
               <PickerChip
                 label="Thinking effort"
@@ -1252,6 +1265,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                 chipTestId="effort-chip"
                 optionTestId={(id) => `effort-option-${id}`}
                 disabled={composerDisabled}
+                pendingCopy={pendingEffortCopy ?? undefined}
               />
             ) : null}
           </>

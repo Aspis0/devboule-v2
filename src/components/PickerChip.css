@@ -7,24 +7,29 @@
 }
 
 .workspace-mode-chip-trigger {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  color: var(--ink-soft);
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  color: var(--muted);
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 0;
+  border-radius: 6px;
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-family: var(--font-ui);
+  font-size: 12px;
   line-height: 1.2;
 }
 
-.workspace-mode-chip-trigger:hover,
-.workspace-mode-chip-trigger:focus-visible {
+.workspace-mode-chip-trigger:hover {
   color: var(--ink);
-  border-color: var(--border-strong);
+  background: var(--fill-hover);
+}
+
+.workspace-mode-chip-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .workspace-mode-dot {
@@ -55,8 +60,12 @@
 }
 
 .workspace-mode-caret {
-  color: var(--silence);
-  font-size: 9px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .workspace-mode-menu {

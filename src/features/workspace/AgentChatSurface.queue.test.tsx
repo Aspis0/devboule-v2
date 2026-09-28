@@ -211,7 +211,7 @@ describe("AgentChatSurface queue keys", () => {
     pushActivity("working");
     type("follow-up");
 
-    expect(queueAction().textContent).toBe("Queue message");
+    expect(queueAction().getAttribute("aria-label")).toBe("Queue message");
     await act(async () => pressEnter());
     expect(queuedTexts(queue)).toEqual(["follow-up"]);
     expect(sessionSend).not.toHaveBeenCalled();
@@ -285,11 +285,11 @@ describe("AgentChatSurface queue keys", () => {
     type("first");
     await clickSend();
     // The other pane sent nothing, and still sees this pane's send in flight.
-    expect(otherQueueAction()?.textContent).toBe("Queue message");
+    expect(otherQueueAction()?.getAttribute("aria-label")).toBe("Queue message");
 
     await act(async () => acceptSend(true));
     await flush();
-    expect(otherQueueAction()?.textContent).toBe("Queue message");
+    expect(otherQueueAction()?.getAttribute("aria-label")).toBe("Queue message");
     finishTurn();
     await flush();
     expect(otherQueueAction()).toBeNull();
@@ -573,7 +573,7 @@ describe("AgentChatSurface queue keys", () => {
     type("running now");
     await clickSend();
     pushActivity("working");
-    expect(queueAction().textContent).toBe("Queue message");
+    expect(queueAction().getAttribute("aria-label")).toBe("Queue message");
   });
 
   it("keeps the running-turn action button disabled while the composer is empty", async () => {

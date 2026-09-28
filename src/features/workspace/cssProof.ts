@@ -49,6 +49,9 @@ function selectorMatches(ruleSelector: string, target: string): boolean {
     .some((part) => part === target);
 }
 
+/** A font-family declaration naming the mono stack, directly or by token. */
+const MONO_FAMILY = /font-family:[^;]*(?:"JetBrains Mono"|var\(--font-mono\))/;
+
 function darkThemeBodies(css: string): string[] {
   const bodies: string[] = [];
   const headers = /\[data-theme=["']dark["']\]\s*\{/g;
@@ -77,6 +80,8 @@ export function assembleCssProof(
   inject: (targets: readonly string[]) => void;
   /** The selected theme's token value, read from the sheets themselves. */
   token: (name: string) => string | undefined;
+  /** Every assembled rule that declares a mono font-family. */
+  monoDeclarations: { selector: string; body: string }[];
 } {
   if (theme !== "light" && theme !== "dark") {
     throw new Error(`Unsupported CSS proof theme: ${String(theme)}`);
@@ -125,7 +130,16 @@ export function assembleCssProof(
     document.head.appendChild(style);
   }
 
-  return { rulesFor, inject, token: (name: string) => tokens.get(name) };
+  return {
+    rulesFor,
+    inject,
+    token: (name: string) => tokens.get(name),
+    /** Every assembled rule that declares a mono font-family — the walking
+     * test's raw material. The policy (which selectors may be mono) lives in
+     * the test; the parsing lives here, so a walk never depends on a
+     * hand-written target list. */
+    monoDeclarations: allRules.filter((rule) => MONO_FAMILY.test(rule.body)),
+  };
 }
 
 /** Removes every `<style>` an `inject` above added. Call in `afterEach`. */

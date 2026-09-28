@@ -236,7 +236,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   return (
     <div className="workspace-composer-wrap">
-      {queuedTrack}
+      <div className="workspace-composer-track">{queuedTrack}</div>
       <WorkspaceCommandMenu
         open={commandMenuVisible}
         onClose={() => setMenuDismissed(true)}
@@ -276,34 +276,78 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
           {queueAvailable ? (
             <button
               type="button"
-              className="workspace-secondary-action workspace-queue-action"
+              className="workspace-queue-action"
               data-testid="composer-queue-action"
               title={actionLabel}
+              aria-label={actionLabel}
               onClick={runDefaultAction}
               disabled={disabled || !input.trim()}
             >
-              {actionLabel}
+              <svg
+                width={14}
+                height={14}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M12 5v14" />
+                <path d="M5 12h14" />
+              </svg>
             </button>
           ) : null}
           {streaming && onStop ? (
             <button
               type="button"
-              className="workspace-secondary-action workspace-send-action"
+              className="workspace-stop-action"
               aria-label="Stop the current turn"
+              title="Stop"
               onClick={onStop}
               disabled={disabled}
             >
-              Stop
+              <svg
+                width={14}
+                height={14}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <rect x={7} y={7} width={10} height={10} rx={1} />
+              </svg>
             </button>
           ) : (
             <button
               type="button"
-              className="workspace-primary-action workspace-send-action"
+              className="workspace-send-action"
               title="Send · Enter (Shift+Enter for a new line)"
+              aria-label="Send"
               onClick={sendInput}
               disabled={disabled || !input.trim()}
             >
-              Send
+              <svg
+                width={14}
+                height={14}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M12 19V5" />
+                <path d="m5 12 7-7 7 7" />
+              </svg>
             </button>
           )}
         </div>
