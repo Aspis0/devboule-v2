@@ -1,4 +1,5 @@
-// Why: the strip's tab context menu — Paseo's close entries, then our
+// Why: the strip's tab context menu — Paseo's close entries
+// (`packages/app/src/screens/workspace/workspace-tab-menu.ts`), then our
 // Delete after a separator in the destructive tone — rendered on the shared
 // portal, anchored to the right-clicked row, with the "+" menu's keyboard
 // model (menuNav.ts) so the menus cannot drift apart.

@@ -1,6 +1,6 @@
 //! The Changes panel's write acts over one workspace's repository:
 //! stage, unstage, discard and commit — the index and the history, the
-//! physically riskiest slice here, while the owner works in the same
+//! physically riskiest acts here, while the owner works in the same
 //! checkout. Orchestration only: the folder comes from a workspace id
 //! (never a request field), every requested path is confined through the
 //! **two layers the reads use** — [`confined`] for the spelling and
@@ -11,6 +11,11 @@
 //! cross. Against the owner's own git in a terminal the arbiter stays
 //! `index.lock`: whoever arrives second loses in milliseconds with no data
 //! damage, and the sentence says so ([`write_failure`]).
+//!
+//! The discard half is translated from Paseo's `discardChanges`
+//! (Apache-2.0, Copyright (c) 2025-present Mohamed Boudra,
+//! `packages/server/src/utils/checkout-git.ts`): the sequence, the reset
+//! fallback and the rename-token step.
 //!
 //! Three invariants state why this file looks the way it does:
 //!
@@ -28,9 +33,8 @@
 //!   2.54.0).
 //! - **The commit is staged-only**: no `add -A` exists in this module
 //!   (Paseo's `commitChanges` adds everything by default because it has
-//!   no separate stage — this panel does, `DECISIONS-write.md` §2), and
-//!   the message is written by hand: empty after trimming is refused
-//!   before anything spawns.
+//!   no separate stage — this panel does), and the message is written by
+//!   hand: empty after trimming is refused before anything spawns.
 
 use std::path::Path;
 
@@ -63,15 +67,13 @@ const MESSAGE_EMPTY: &str = "the commit message is empty";
 /// fallback is reachable inside the discard, measured: an `HEAD` that does
 /// not resolve makes `reset` exit 128 and the fallback exit 0), so the
 /// sentence admits the stop instead of reporting the failing command as if
-/// nothing had happened. The points it covers, each measured on this
-/// machine: the classification `status` dying at 128 on an unresolvable
-/// `HEAD`; the reply cut — 400 changed paths of ~60 characters produce
-/// 22.000 bytes of `status --porcelain=v1 -z`, past the 16 KiB
-/// accumulator; and `checkout`/`clean` refusing a file (the case
-/// `plan-write.md` §3.3.4 names — the plan's static "the file is in use"
-/// sentence is not in this slice, and the exit code would otherwise be
-/// the whole answer with the index already moved). One sentence for all
-/// four because it claims only what is true at all of them: the discard
+/// nothing had happened. The points it covers: the classification
+/// `status` dying at 128 on an unresolvable `HEAD`; the reply cut — 400
+/// changed paths of ~60 characters produce 22.000 bytes of
+/// `status --porcelain=v1 -z`, past the 16 KiB accumulator; and
+/// `checkout`/`clean` refusing a file, where the exit code would otherwise
+/// be the whole answer with the index already moved. One sentence for all
+/// three because it claims only what is true at all of them: the discard
 /// stopped, and the selection is unstaged. The panel refreshes after
 /// every answer, so the list under the toolbar is already the true state
 /// and a retry finishes the act. `index.lock` keeps its own sentence one
@@ -217,9 +219,8 @@ fn stage(root: &Path, paths: &[String]) -> Result<(), String> {
 /// declared fallback. `git reset HEAD -- <paths>` is the road, and when
 /// it fails (measured: an `HEAD` that does not resolve exits 128, while
 /// git 2.54 exits **0** on a merely unborn branch) the paths come out of
-/// the index directly, Paseo's fallback (`checkout-git.ts:3516`), which
-/// needs no `HEAD` at all. A failure of the fallback itself is reported
-/// as its own command's sentence.
+/// the index directly, Paseo's fallback, which needs no `HEAD` at all. A
+/// failure of the fallback itself is reported as its own command's sentence.
 fn reset_or_unindex(root: &Path, selected: &[&str]) -> Result<(), String> {
     let mut reset = vec!["--literal-pathspecs", "reset", "-q", "HEAD", "--"];
     reset.extend_from_slice(selected);
@@ -241,7 +242,7 @@ fn reset_or_unindex(root: &Path, selected: &[&str]) -> Result<(), String> {
 
 /// Unstage the selection: the index entry goes back to `HEAD` and the
 /// worktree keeps its bytes — the act that loses nothing, which is why it
-/// asks no confirmation (`DECISIONS-write.md` §1).
+/// asks no confirmation.
 fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
@@ -255,16 +256,16 @@ fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
 
 /// Discard the selection — the one act here that **loses data**, hence
 /// the sending screen's own `confirm()` gate (the wire carries none; the
-/// panel asks before it calls, `useWorkspaceGitActions`). Paseo's
-/// sequence, pathspec-scoped at every step (`checkout-git.ts:3503-3567`):
+/// panel asks before it calls, `useWorkspaceGitActions`). The sequence,
+/// pathspec-scoped at every step:
 /// unstage everything, classify the result, restore tracked paths from
 /// the index (= `HEAD` after the reset) and delete untracked ones. The
 /// classification runs **after** the reset on purpose — load-bearing:
 /// a staged new file is `A ` before it and `??` after, and only the
 /// second classification deletes it (Paseo's three truths,
-/// `checkout-git.test.ts:3827`). From the reset onward every failure
-/// answers [`DISCARD_HALF_RUN`]: the index has moved by then, and a bare
-/// exit code would say nothing about that.
+/// `packages/server/src/utils/checkout-git.test.ts`). From the reset
+/// onward every failure answers [`DISCARD_HALF_RUN`]: the index has moved by
+/// then, and a bare exit code would say nothing about that.
 fn discard(root: &Path, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
@@ -310,7 +311,7 @@ fn discard(root: &Path, paths: &[String]) -> Result<(), String> {
 /// tracked, and a rename/copy entry carries its original path as the very
 /// next NUL token — skipped by position, the only thing stopping that
 /// bare second token from being classified as a path of its own
-/// (Paseo's own step, `checkout-git.ts:3540-3544`). Borrowed from
+/// (Paseo's own step). Borrowed from
 /// `stdout`, which the caller still holds.
 fn classify(stdout: &str) -> (Vec<&str>, Vec<&str>) {
     let mut tracked = Vec::new();

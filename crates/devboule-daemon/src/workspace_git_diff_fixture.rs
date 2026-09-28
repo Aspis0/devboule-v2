@@ -14,7 +14,7 @@ pub(super) fn unique_directory(label: &str) -> PathBuf {
 /// line-ending conversion changes what a diff counts, and commit signing can
 /// fail on someone else's key. Hard-requires git — a silent skip would let
 /// every case below pass without running one. Mirrors the fixture of
-/// `workspace_git_status_tests.rs`: two slices, one shape each, neither
+/// `workspace_git_status_tests.rs`: two modules, one shape each, neither
 /// reaching into the other's scaffolding.
 pub(super) struct Repo {
     pub root: PathBuf,

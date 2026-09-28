@@ -123,12 +123,11 @@ impl Drop for PairingSecret {
 
 /// One file the user attached to a prompt, carried as bytes.
 ///
-/// `data` holds the bytes themselves, base64, and never a path. The reason is
-/// the next slice of this feature: two daemons on two devices will relay a
-/// request to each other, and a local file path does not survive that trip.
-/// Keeping the bytes in the message means this field can be forwarded exactly
-/// as it arrives; the file is written to disk by the daemon that is about to
-/// talk to the provider, and never earlier.
+/// `data` holds the bytes themselves, base64, and never a path: two daemons
+/// on two devices will relay a request to each other, and a local file path
+/// does not survive that trip. Keeping the bytes in the message means this
+/// field can be forwarded exactly as it arrives; the file is written to disk
+/// by the daemon that is about to talk to the provider, and never earlier.
 ///
 /// `name` is the user's file name and is display metadata only. It may contain
 /// `..`, a path separator, or a drive letter, so it is never used to build a
@@ -232,7 +231,7 @@ pub struct StoredAttachment {
 ///   Other clients are unaffected. A later attach on the same id replays.
 /// - [`ClientMessage::SessionClose`]: destroy the session. Kill the process
 ///   if any, drop in-memory state, invalidate the id. Unrecoverable except
-///   by loading a *new* session from the journal (M3c).
+///   by loading a *new* session from the journal.
 /// - [`ClientMessage::SessionStop`]: terminate the running process (PTY child
 ///   / ACP agent) **and its descendants** — the session's job object is
 ///   terminated, not just its root, so an agent's children do not outlive the
@@ -242,8 +241,6 @@ pub struct StoredAttachment {
 ///   and MUST bump generation so a reconnecting client cannot treat the new
 ///   stream as the old one.
 ///
-/// M2 already implements detach vs close with this meaning in-process. `stop`
-/// is specified here so M3b does not have to change the protocol's meaning.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(
     tag = "type",
@@ -607,9 +604,10 @@ pub enum ClientMessage {
         idempotency_key: Option<String>,
     },
     /// Commit **what is staged and nothing else** — no `add -A` exists on
-    /// this frame (the divergence from Paseo's `commitChanges`, which
-    /// stages everything because it has no separate stage; this panel
-    /// does, `DECISIONS-write.md` §2), and the message is the caller's
+    /// this frame (the divergence from Paseo's `commitChanges`
+    /// (`packages/server/src/utils/checkout-git.ts`), which stages
+    /// everything because it has no separate stage; this panel
+    /// does), and the message is the caller's
     /// own: empty after trimming is refused before anything spawns —
     /// no message is ever generated. A **write**: same folder resolution,
     /// same probe, same mutex; a hook that dies answers as operation plus
@@ -721,8 +719,8 @@ pub enum ClientMessage {
     /// asks through a native dialog before it sends); a peer holding the
     /// admin capability can send this frame and the daemon acts under that
     /// capability, as behind every administrative door — whether a paired
-    /// device may delete without a dialog is an open product question
-    /// (`DECISIONS-write.md`, for the owner). The daemon re-judges the path
+    /// device may delete without a dialog is an open product question. The
+    /// daemon re-judges the path
     /// with the same guards the reads use — the workspace's own folder
     /// refused, the repository's metadata refused in every spelling, and a
     /// link named as the act's target refused, never followed (where
@@ -939,10 +937,10 @@ pub enum ClientMessage {
         id: u64,
     },
     /// Set the permission-delegation switch. One boolean for the whole daemon:
-    /// there are no per-session grants, no pause and no cap anywhere in this
-    /// slice — a session id can name a stranger's session after a daemon
-    /// restart, so nothing per-session may exist on disk or in memory to
-    /// revoke. `false` is immediate: every delegated answer arriving after it
+    /// there are no per-session grants, no pause and no cap — a session id can
+    /// name a stranger's session after a daemon restart, so nothing
+    /// per-session may exist on disk or in memory to revoke. `false` is
+    /// immediate: every delegated answer arriving after it
     /// is refused, and a card already surfaced to a creator simply stays what
     /// it always was — pending for the human.
     DelegationSet {
@@ -1361,9 +1359,9 @@ impl ClientMessage {
     /// produce an audit row.
     ///
     /// A closed match, because the two failure modes are asymmetric: an audit
-    /// row for a read is a disk sink a `Ping` loop can drive (muse M1), and a
-    /// missing row for a write is an untraceable remote action. Listing every
-    /// variant forces the next one to pick a side.
+    /// row for a read is a disk sink a `Ping` loop can drive, and a missing
+    /// row for a write is an untraceable remote action. Listing every variant
+    /// forces the next one to pick a side.
     pub fn is_state_changing(&self) -> bool {
         match self {
             Self::Hello(_)
@@ -1826,12 +1824,11 @@ pub enum DaemonMessage {
         source: DelegationSource,
     },
     /// The reply to `DelegationSet`, carrying what the daemon **stored** —
-    /// not an echo of the request. The value is the same boolean today, but
-    /// the reply is the one acknowledgement a write gets, so it names the
-    /// stored truth: a client that trusts its own request instead would hold
-    /// a value the daemon does not, and nothing would reveal the disagreement
-    /// until a second client's answer refused (`NOTE-a-write-that-does-not-
-    /// say-what-it-stored.md`, the class, applied here from birth).
+    /// not an echo of the request. The value is the same boolean, but the
+    /// reply is the one acknowledgement a write gets, so it names the stored
+    /// truth: a client that trusts its own request instead would hold a value
+    /// the daemon does not, and nothing would reveal the disagreement until a
+    /// second client's answer refused (the class, applied here).
     DelegationSetOk {
         id: u64,
         enabled: bool,
@@ -1863,13 +1860,13 @@ pub enum DaemonMessage {
 /// answer that is otherwise real; `error` beside `is_git: false` is a
 /// refusal to claim either way.
 ///
-/// **Debt, recorded in the slice-1 fix round:** `error` is free text on a
-/// frame that does **not** pass `redact_for_conn` — that seam rewrites only
-/// `DaemonMessage::Error`, never this variant. Today the reply is behind the
-/// `admin` capability and every sentence is written without a path and
-/// without git's stderr, so nothing leaks; a future lowering of that
-/// capability would let this machine's paths out in silence, and the fix then
-/// belongs in the redaction seam, not in the message writers.
+/// **Debt:** `error` is free text on a frame that does **not** pass
+/// `redact_for_conn` — that seam rewrites only `DaemonMessage::Error`, never
+/// this variant. Today the reply is behind the `admin` capability and every
+/// sentence is written without a path and without git's stderr, so nothing
+/// leaks; a future lowering of that capability would let this machine's paths
+/// out in silence, and the fix then belongs in the redaction seam, not in
+/// the message writers.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceGitStatus {
@@ -1953,8 +1950,8 @@ pub enum WorkspaceGitDiffStatus {
 }
 
 /// One line's role in the diff. Line-level, never word-level: that is the
-/// choice the working diff makes (`plan.md` §4b), the word-level form being
-/// reserved for an agent tool's own diff elsewhere.
+/// choice the working diff makes, the word-level form being reserved for an
+/// agent tool's own diff elsewhere.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceGitDiffLineKind {
@@ -1984,12 +1981,11 @@ pub struct WorkspaceGitDiffLine {
 /// not a repository, the path is outside it, git did not run. An unchanged
 /// file is `ok` with no lines: an empty diff is an answer too.
 ///
-/// **Debt, recorded with `WorkspaceGitStatus` in the slice-1 fix round and
-/// true here too:** `error` is free text on a frame that does **not** pass
-/// `redact_for_conn` — that seam rewrites only `DaemonMessage::Error`. Every
-/// sentence is written without an absolute path and without git's stderr,
-/// and this reply's only caller-supplied text (`path`) is echoed only in its
-/// own field, never in `error`.
+/// **Debt, the same one `WorkspaceGitStatus` records:** `error` is free text
+/// on a frame that does **not** pass `redact_for_conn` — that seam rewrites
+/// only `DaemonMessage::Error`. Every sentence is written without an absolute
+/// path and without git's stderr, and this reply's only caller-supplied text
+/// (`path`) is echoed only in its own field, never in `error`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceGitFileDiff {
@@ -2101,11 +2097,11 @@ pub struct WorkspaceGitCommitEntry {
 /// refusal carries no entries, so the panel may not claim anything about the
 /// folder behind it.
 ///
-/// **Debt, recorded with `WorkspaceGitStatus` in the slice-1 fix round and
-/// true here too:** `error` is free text on a frame that does **not** pass
-/// `redact_for_conn`. Every sentence is written without an absolute path and
-/// without an OS error string, and this reply's only caller-supplied text
-/// (`path`) is echoed only in its own field, never in `error`.
+/// **Debt, the same one `WorkspaceGitStatus` records:** `error` is free text
+/// on a frame that does **not** pass `redact_for_conn`. Every sentence is
+/// written without an absolute path and without an OS error string, and this
+/// reply's only caller-supplied text (`path`) is echoed only in its own
+/// field, never in `error`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceDirectory {
@@ -2126,7 +2122,7 @@ pub struct WorkspaceDirectory {
     /// is not read) or an entry that would not stat. Set, never implied: a
     /// folder holding a link says so instead of looking complete. Two
     /// carve-outs, both deliberate: `.git` is the tree's declared policy
-    /// exclusion (DECISIONS §6), not a hidden entry; and entries past
+    /// exclusion, not a hidden entry; and entries past
     /// `capped` are `capped`'s own confession, not this count's.
     pub skipped: u64,
     /// Why no entries came back, in one synthetic sentence: no absolute
@@ -2612,8 +2608,8 @@ pub struct SelfInfo {
     /// The Noise static public key, base64.
     ///
     /// Always present, even when a projection has nothing to put in it (the
-    /// `Daemon`-role projection sends `""`). The 1b wire contract types every
-    /// one of these fields as required, and it is consumed by TypeScript, which
+    /// `Daemon`-role projection sends `""`). The wire contract types every one
+    /// of these fields as required, and it is consumed by TypeScript, which
     /// has no way to check a key that the daemon chose to omit: the panel reads
     /// `self.addresses.length` unconditionally, so an omitted key is a crash in
     /// the Devices tab rather than a missing value. Withholding is by **value**
@@ -2645,8 +2641,8 @@ pub struct SelfInfo {
 /// One paired device as the Devices panel sees it.
 ///
 /// `role` is the *peer's* role. `binding_kind` is `"tailnet"` today.
-/// `address` is the `ip:port` recorded at pairing (design §8 R4, F-15); the
-/// `whois` check at connect time is the backstop, not the source of truth.
+/// `address` is the `ip:port` recorded at pairing; the `whois` check at
+/// connect time is the backstop, not the source of truth.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerRow {
@@ -2851,15 +2847,15 @@ pub struct ToolPolicyEntry {
 /// the store refuses an enabled pair.
 ///
 /// `model`, `mode_id` and `thinking_option_id` are the provider's own
-/// vocabulary, stored verbatim and bounded by length. The daemon's catalog
+/// vocabulary, stored verbatim and bounded by length. The provider catalog
 /// answers which providers exist — and `agent_profiles.rs` uses exactly that
-/// predicate — but it publishes no per-provider list of models or modes at this
-/// commit (`peer_policy.rs` says so for modes in its own words: "ACP modes are
-/// defined by the agent at runtime"), so a membership test here would be a
-/// second list that could refuse a profile the provider really offers. The
-/// provider refuses an unknown mode or model itself when the creation path asks
-/// it to spawn (`claude_client.rs`, `codex_view.rs`, `pi_client.rs`,
-/// `session.rs`).
+/// predicate — but it publishes no per-provider list of models or modes; the
+/// mode tables it holds serve the preset tests, not a reply. Modes are the
+/// agent's own (`peer_policy.rs`: "ACP modes are defined by the agent at
+/// runtime"), so a membership test here would be a second list that could
+/// refuse a profile the provider really offers. The provider refuses an
+/// unknown mode or model itself when the creation path asks it to spawn
+/// (`claude_client.rs`, `codex_view.rs`, `pi_client.rs`, `session.rs`).
 ///
 /// `tool_overlay` can only ever *remove* tools, for the reason `ToolOverlay`
 /// states in `provider_catalog.rs`: a profile that widened a session's tools
@@ -3135,7 +3131,7 @@ pub struct DaemonStatusBody {
 /// Whether the tailnet listener is up, and why it is not when it is not.
 ///
 /// The addresses and the port are **not** here: they describe where this node
-/// can be reached, which is `SelfInfo`'s business (brief 1b, wire contract).
+/// can be reached, which is `SelfInfo`'s business.
 /// This type answers one question — is the daemon reachable — and carries the
 /// daemon's own reason string when the answer is no.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

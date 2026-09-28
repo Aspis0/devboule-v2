@@ -182,7 +182,7 @@ fn a_path_that_git_does_not_track_is_refused() {
 /// An ignored file exists inside the workspace and is still refused: it is
 /// not a change of the workspace — git lists no record for it and tracks no
 /// diff to give (both halves measured: status empty, `ls-files` empty). The
-/// panel never offers the row either: the slice-1 status does not list
+/// panel never offers the row either: the status list does not list
 /// ignored files.
 #[test]
 fn an_ignored_file_is_refused_because_git_tracks_no_diff_for_it() {
@@ -208,11 +208,11 @@ fn an_ignored_file_is_refused_because_git_tracks_no_diff_for_it() {
 }
 
 /// Mutant `m:f` — drop the symlink refusal. A link inside the checkout that
-/// points outside it used to be opened by the synthesis (git itself refuses
-/// to diff through it — measured: `git diff` on the link's path is empty),
-/// so the target's content came back as `+` lines of a file "of the
-/// workspace". Now the final component is stat'ed without following and the
-/// link itself is refused, before any process or open. Windows-only: the
+/// points outside it is refused before any process or open: the final
+/// component is stat'ed without following, and git itself refuses to diff
+/// through a link (measured: `git diff` on the link's path is empty), so
+/// without the refusal the target's content would come back as `+` lines of
+/// a file "of the workspace". Windows-only: the
 /// symlink API and the gate both live here (measured creatable in this
 /// environment, so the test runs and is not `#[ignore]`).
 #[test]
@@ -242,12 +242,11 @@ fn a_symlink_is_refused_and_its_target_is_never_read() {
 }
 
 /// Mutant `m:f` — drop the walk's link check (`crosses_a_link` gate). A
-/// path behind a directory junction used to be answered by git itself
-/// (`? dirlink/present.txt`, measured — git walks through a reachable
-/// junction) and the synthesis then read the target outside the workspace as
-/// `+` lines. Now every component is stat'ed without following: both the
-/// path whose target exists and the one whose target does not get the same
-/// refusal — no bit about what is outside. Windows-only: junctions come
+/// path behind a directory junction is refused the same way whether the
+/// target exists or not: every component is stat'ed without following, and
+/// git itself walks through a reachable junction (measured: `?
+/// dirlink/present.txt`), so without the walk the target outside the
+/// workspace would be read as `+` lines. Windows-only: junctions come
 /// from `mklink /J`, which needs no privilege (measured).
 #[test]
 #[cfg(windows)]
@@ -330,8 +329,8 @@ fn a_folder_that_does_not_exist_is_refused_without_a_path_in_the_sentence() {
 
 /// The shared probe's two other answers reach this frame with the same
 /// sentences the status list shows: a workspace inside a monorepo is not
-/// its root (the slice-1 review's trap), and a folder with no `.git` is
-/// named as such — never answered with an `ok` diff of the wrong tree.
+/// its root, and a folder with no `.git` is named as such — never answered
+/// with an `ok` diff of the wrong tree.
 #[test]
 fn the_probes_own_refusals_reach_the_diff_with_the_same_sentences() {
     let repo = Repo::new("inside");

@@ -6,7 +6,7 @@ use super::{parse_commit_records, Commit};
 
 /// One record's bytes, spelled the way git emits them: the `\x1e`-separated
 /// header line — sha, short sha, author, ISO date, subject — and nothing
-/// else, since the files array left the frame with the review's P0.
+/// else; the frame carries no files array.
 fn record(sha: &str, short: &str, author: &str, date: &str, subject: &str) -> String {
     format!("\u{1e}{sha}\0{short}\0{author}\0{date}\0{subject}\n")
 }

@@ -42,8 +42,8 @@
 //! # Session identifiers
 //!
 //! A session id is an opaque string that **carries the owner**. New ids use
-//! [`compose_session_id`]: `s.{owner}.{unique}`. The M2 in-process terminal
-//! still mints `session-{pid}-{counter}`; [`validate_session_id`] accepts both.
+//! [`compose_session_id`]: `s.{owner}.{unique}`. The in-process terminal still
+//! mints `session-{pid}-{counter}`; [`validate_session_id`] accepts both.
 //!
 //! # `detach`, `close`, `stop`
 //!
@@ -57,7 +57,7 @@
 //! Replaying across a generation change is a
 //! [`ErrorCode::SessionGenerationMismatch`], never a silent continuation.
 //!
-//! # Screen snapshots (M3.5)
+//! # Screen snapshots
 //!
 //! On attach the daemon sends a [`SessionEvent::Snapshot`] with the current
 //! emulator state instead of replaying past frames. Its `as_of_seq` field
@@ -136,42 +136,18 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 ///
 /// A field added with `#[serde(default)]` can be backward compatible and need
 /// no bump (`cwd`), unless the app depends on the field's semantics. A required
-/// field is a breaking change and requires
-/// bumping both this constant and [`PROTOCOL_MIN_VERSION`] (`created_at_ms`,
-/// `Workspace.path`), and so is a field that changes **type** with the key
-/// kept: 4 → 5 moved `unattended` from an optional JSON boolean to the
-/// `UnattendedState` string written on every `Session` /
-/// `SessionStateSnapshot` frame — `serde(default)` covers an absent key, not
-/// a key present with the wrong type, so a 4-speaking peer passed the old
-/// handshake and died on the first session frame.
+/// field is a breaking change and requires bumping both this constant and
+/// [`PROTOCOL_MIN_VERSION`] (`created_at_ms`, `Workspace.path`), and so is a
+/// field that changes **type** with the key kept: `serde(default)` covers an
+/// absent key, not a key present with the wrong type, so a peer that passed
+/// the old handshake dies on the first frame carrying the new type.
+///
 /// The daemon always serializes the current struct regardless of the agreed
 /// version, so negotiating down does not produce an old-shaped payload;
-/// refusing the handshake is the only protection.
-/// Deliberately unchanged for the three additive Claude task event tags
-/// (`agent_task_started`, `agent_task_notification`, and
-/// `agent_background_tasks_changed`): the daemon and app are shipped together,
-/// and these output-only tags do not change existing request shapes. Revisit
-/// this if peers become independently versioned.
-/// Bumped to 8 for the question kind and the answer door: the app renders
-/// the card from their meaning, and a 7-speaking daemon would drop the text
-/// and answer the question wrongly — mixed dialects must fail the handshake
-/// instead of degrading silently.
-/// Bumped to 9 for the question's `allowOther` gate and `secret` mask: an
-/// 8-speaking app renders an Other door on every question and no mask on
-/// secrets, so it would let a typed label kill an MCP approval and show a
-/// secret in the clear. Same rule: refuse, not degrade.
-/// Bumped to 10 for `AgentProfile.idleCloseMinutes`: the profile struct is
-/// `deny_unknown_fields`, so a 9-speaking daemon would refuse the whole
-/// `AgentProfilesSet` the moment an app saves a non-default idle timer —
-/// the human's edit lost until the daemon restarts. The handshake has to
-/// separate the two builds before that save exists.
-/// Version 11 adds plan permission requests. Version 12 adds provider on/off
-/// switches, the `SessionSetName` session-rename frame, and the negotiated
-/// `provider.auth-check` capability for credential-status checks. Version 13
-/// adds per-session provider features: the `SessionSetFeature` toggle and the
-/// `SessionFeatureState` event, which carry Codex's plan mode. Version 14 adds
-/// the `WorkspaceGitLog` request and its reply, gated on the negotiated
-/// `workspace.git_log` capability — the Changes panel's Commits section.
+/// refusing the handshake is the only protection. The three additive Claude
+/// task event tags (`agent_task_started`, `agent_task_notification`, and
+/// `agent_background_tasks_changed`) are deliberately ungated: these
+/// output-only tags change no request shape.
 pub const PROTOCOL_VERSION: u32 = 14;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
@@ -184,10 +160,10 @@ pub mod caps {
     pub const PING: &str = "ping";
     pub const STATUS: &str = "status";
     pub const SHUTDOWN: &str = "shutdown";
-    /// Session RPCs (create/attach/detach/close/stop/send/…). Advertised
-    /// from M3b so the app and daemon agree to speak them.
+    /// Session RPCs (create/attach/detach/close/stop/send/…), advertised so
+    /// the app and daemon agree to speak them.
     pub const SESSIONS: &str = "sessions";
-    /// Conversation journal. Advertised in M3c.
+    /// Conversation journal.
     pub const JOURNAL: &str = "journal";
 
     /// Plugin-backend tenant. The host grants these at handshake from what
@@ -250,15 +226,14 @@ pub mod caps {
     pub const ATTACHMENTS_READ: &str = "attachments.read";
 
     /// Agents create agents (`devboule_create_agent`) and the finish reports
-    /// that come back (`S5`).
+    /// that come back.
     ///
     /// In both lists for the reason `tool_policy` is: the handshake negotiates
     /// the intersection, so a name only one side offers is never negotiated, and
     /// a client that gates a surface on it would refuse its own requests. The
-    /// name is advertised from the first release of this slice because the tool
-    /// itself is refused on a daemon that predates it — an agent that called it
-    /// would get an unknown tool, which is the honest answer, and the app needs
-    /// no refusal of its own to read `agent_created`/`child_finished`.
+    /// tool itself is refused on a daemon that predates it — an agent that
+    /// called it would get an unknown tool, which is the honest answer, and the
+    /// app needs no refusal of its own to read `agent_created`/`child_finished`.
     pub const AGENT_CREATE: &str = "agent_create";
 
     /// The agent-profile store (`AgentProfilesGet`/`AgentProfilesSet`), the
@@ -272,7 +247,7 @@ pub mod caps {
     /// would then refuse every call against every daemon. Whether a *connection*
     /// may use it is `peer_allows`, not this list: a paired device is refused
     /// `agent_profiles_get`/`agent_profiles_set` unless it holds the `admin`
-    /// capability (the 2026-09-21 revocation of the old global deny list).
+    /// capability.
     pub const AGENT_PROFILES: &str = "agent_profiles";
 
     /// The provider-vocabulary query (`ProviderVocabularyGet`): what one
@@ -318,12 +293,11 @@ pub mod caps {
     /// A dialer must not send that frame to a daemon that predates the
     /// far-sender meaning: the old reader would take the remote sender for a
     /// local one. So `peer_dial` refuses on this name before the frame leaves,
-    /// and that refusal is the name's only reader. No production caller dials
-    /// the frame today — `call_peer`'s one production call sends
-    /// `PeerAgentsList` — so the name is reserved for the caller that will, and
-    /// the guard exists before it does. Whether a device may *receive* an agent
-    /// message is the `send` peer capability, a different mechanism; this name
-    /// is deliberately not one (`PEER_CAPS`).
+    /// and that refusal is the name's only reader: no production caller dials
+    /// the frame — `call_peer`'s one production call sends `PeerAgentsList`.
+    /// Whether a device may *receive* an agent message is the `send` peer
+    /// capability, a different mechanism; this name is deliberately not one
+    /// (`PEER_CAPS`).
     pub const AGENT_MESSAGES: &str = "agent_messages";
 }
 
@@ -515,12 +489,10 @@ pub const fn plugin_frame_limit_for_payload(payload_bytes: usize) -> usize {
     payload_bytes.saturating_add(PLUGIN_FRAME_HEADROOM_BYTES)
 }
 
-// The former DEFAULT_PLUGIN_PAYLOAD_BYTES > MAX_FRAME_BYTES assertion is gone:
-// it was true while plugin Framed still used the daemon cap, so it certified
-// numerical inequality instead of separate pipe boundaries. There is
-// deliberately no compile-time comparison between these values: the plugin
-// pipe's limit is derived above and carried through ClientHello, while daemon
-// Framed::new keeps MAX_FRAME_BYTES.
+// There is deliberately no compile-time comparison between the plugin pipe's
+// limit and the daemon's frame cap: the plugin pipe's limit is derived above
+// and carried through ClientHello, while daemon `Framed::new` keeps
+// `MAX_FRAME_BYTES`.
 const _: () = assert!(
     PLUGIN_PAYLOAD_CEILING_BYTES >= DEFAULT_PLUGIN_PAYLOAD_BYTES,
     "host ceiling must be at least the default budget"
@@ -639,9 +611,8 @@ impl std::io::Write for PayloadLimitSink {
 
 /// Capabilities this crate's daemon and app currently serve.
 ///
-/// Named `m3a_*` because the handshake helpers were introduced in M3a; M3b
-/// adds [`caps::SESSIONS`] without changing the helper names so a peer
-/// built against this crate still calls the same constructors.
+/// The `m3a_*` constructor names are fixed: the list grows under them, so a
+/// peer built against this crate still calls the same constructors.
 pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     let mut capabilities = vec![
         Capability::new(caps::PING),
@@ -698,7 +669,7 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     capabilities
 }
 
-/// Capabilities the M3a app client offers.
+/// Capabilities the app client offers.
 pub fn m3a_client_capabilities() -> Vec<Capability> {
     let mut capabilities = vec![
         Capability::new(caps::PING),
@@ -759,9 +730,8 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     capabilities
 }
 
-/// Capabilities a plugin backend advertises today. The host may grant a
-/// subset. Later plugin work adds names here; unknown names on either side
-/// still complete the handshake.
+/// Capabilities a plugin backend advertises. The host may grant a subset;
+/// unknown names on either side still complete the handshake.
 pub fn plugin_backend_capabilities() -> Vec<Capability> {
     vec![
         Capability::new(caps::PING),
@@ -800,7 +770,7 @@ mod tests {
 
     #[test]
     fn daemon_and_client_advertise_the_tool_policy_capability() {
-        // The capability the two new RPCs are gated on. It has to be in both
+        // The capability the two RPCs are gated on. It has to be in both
         // lists: the handshake negotiates the intersection, so a name only one
         // side offers is never negotiated, and the client helper that refuses
         // `tool_policy_get`/`tool_policy_set` without it would refuse every
@@ -930,10 +900,9 @@ mod tests {
         // negotiates the intersection, so a name only one side offers is never
         // negotiated, and the client helpers that refuse
         // `delegation_get`/`delegation_set` without it would refuse every call.
-        // The switch is the authority gate for delegated permission answers,
-        // so its capability is exactly the kind the `text/markdown` incident
-        // was about: a name missing from either list silently severs the
-        // surface instead of failing loudly.
+        // The switch is the authority gate for delegated permission answers: a
+        // name missing from either list silently severs the surface instead of
+        // failing loudly.
         assert!(m3a_daemon_capabilities()
             .iter()
             .any(|cap| cap.as_str() == caps::PERMISSION_DELEGATION));

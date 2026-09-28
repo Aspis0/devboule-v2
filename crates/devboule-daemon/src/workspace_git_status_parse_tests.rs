@@ -76,8 +76,8 @@ fn the_six_status_words_come_from_the_record_kind_and_the_xy_pair() {
 /// A `2` record, and the bare original path `-z` writes after it: the source
 /// must not become a second row, and it must land in `renamed_from` — the
 /// field the panel's renamed row acts with. Mutant `e:2` — consume that
-/// token without capturing it (its shape before this fix): the row answers
-/// `None` and this equality fails.
+/// token without capturing it: the row answers `None` and this equality
+/// fails.
 #[test]
 fn a_rename_keeps_one_row_and_carries_its_original_path() {
     let stdout = format!("{HEADERS}2 R. N... 100644 100644 100644 a b R100 new.txt\0old.txt\0");

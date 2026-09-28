@@ -4,8 +4,7 @@
 //! [`crate::workspace_git_support`], hand the bytes to [`parse`] and
 //! compose the reply. The folder comes from a workspace id; the caller's
 //! `path` is a relative path this module proves stays inside that folder
-//! before anything is opened or spawned — the `assertWithinWorkspace` of
-//! Paseo's file explorer, in the same role.
+//! before anything is opened or spawned.
 
 use std::path::Path;
 
@@ -30,7 +29,8 @@ mod parse;
 pub(crate) const NOT_A_FILE: &str = "the requested path is a folder, not a file";
 
 /// Bytes of one file this reply will read or diff: Paseo's per-file cap
-/// (`checkout-git.ts:2101`). Past it the file comes back `too_large` with no
+/// (`packages/server/src/utils/checkout-git.ts`). Past it the file comes back
+/// `too_large` with no
 /// lines — refused whole, never cut short. Checked with one `stat` before
 /// any process is spawned; [`parse`] bounds its own read by the same
 /// constant, for the file that grows between the two.
@@ -133,7 +133,7 @@ fn diff_of(root: &Path, requested: &str) -> WorkspaceGitFileDiff {
             // `from_utf8_lossy` only grows or keeps length (an invalid run
             // of at most 3 raw bytes becomes one 3-byte replacement),
             // measured over every 3-, 4- and 5-byte sequence of the
-            // interesting alphabet (`logs/probes-fix-slice2/`): a cut at
+            // interesting alphabet: a cut at
             // cap+1 never comes back at or under the cap. The converse —
             // raw under the cap, string over it — is not a false positive:
             // the string is what would travel. A diff the daemon knows to be

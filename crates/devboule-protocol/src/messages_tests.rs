@@ -327,8 +327,8 @@ fn origin_on_the_wire_is_present_exactly_when_the_state_is_present() {
 
 #[test]
 fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
-    // Brief 1b's wire contract is normative for the frontend, so the field
-    // names are asserted on the serialised JSON, not on the struct.
+    // The field names are asserted on the serialised JSON, not on the
+    // struct.
     let pending = PendingPairing {
         device_id: "dev-2".to_string(),
         display_name: "Phone".to_string(),
@@ -432,9 +432,9 @@ fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
 
     // A projection withholds by **value**, never by key presence.
     //
-    // This is the C4 fix: `addresses`, `port`, `publicKey` and
+    // `addresses`, `port`, `publicKey` and
     // `keyFingerprint` are always in the frame, empty when the projection
-    // has nothing to put in them, because the 1b contract types them as
+    // has nothing to put in them, because the contract types them as
     // required and TypeScript cannot check a key the daemon chose to omit.
     // The panel's identity card reads `self.addresses.length` with no
     // guard, so an omitted key was a crash in the Devices tab whenever
@@ -675,8 +675,8 @@ fn a_new_pairing_is_born_with_every_capability() {
 
 #[test]
 fn remote_state_serialises_exactly_the_agreed_shape() {
-    // Brief 1b's wire contract, pinned here because the frontend is built
-    // against this JSON: `{ state, reason }`, both keys always present.
+    // Pinned here because the frontend is built against this JSON:
+    // `{ state, reason }`, both keys always present.
     let enabled = serde_json::to_value(RemoteState::enabled()).expect("json");
     assert_eq!(
         enabled,
@@ -819,7 +819,7 @@ fn session_send_without_attachments_still_deserializes() {
     // An older client does not know the field at all. Dropping it here
     // would make `serde(default)` on the variant look like it worked while
     // every other builder in this crate still had to pass it: the frame
-    // below is the one a v4 client sends today.
+    // below is the one a client that predates the field sends.
     let frame =
         r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello"}"#;
     let message: ClientMessage = serde_json::from_str(frame).expect("old frame");
@@ -1110,7 +1110,7 @@ fn session_send_with_references_round_trips_beside_inline_attachments() {
 
 #[test]
 fn an_old_send_frame_without_references_still_deserializes() {
-    // `#[serde(default)]` is what keeps recorded journal frames (and v4
+    // `#[serde(default)]` is what keeps recorded journal frames (and older
     // clients) readable without moving the journal version.
     let frame = r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello","attachments":[{"name":"a.png","mimeType":"image/png","data":"AA=="}]}"#;
     let message: ClientMessage = serde_json::from_str(frame).expect("old frame");
@@ -2328,8 +2328,8 @@ fn an_idle_close_round_trip_keeps_zero_and_omits_the_default() {
 /// the identity, `note` and `enabledForAgents` are always there. Older builds
 /// wrote documents carrying only the mandatory keys; such a document loads
 /// unchanged and serialises back to the same shape. Reading an omitted field
-/// without a default blanked the app on a live legacy profile, so this test
-/// is the daemon's half of the agreement.
+/// without a default blanks the app on a legacy profile, so this test is
+/// the daemon's half of the agreement.
 #[test]
 fn a_profile_omits_its_empty_fields_and_never_the_ones_the_app_reads_as_required() {
     let old = serde_json::json!({
@@ -2894,7 +2894,7 @@ fn synthetic_provider_info_round_trips_installed_package_and_latest_version() {
 }
 
 /// `display_name` is one field of `session_create`, camelCase on the wire and
-/// optional: a frame that omits it is still a valid create (S5-09).
+/// optional: a frame that omits it is still a valid create.
 #[test]
 fn session_create_display_name_is_camel_case_and_optional() {
     let named = ClientMessage::SessionCreate {

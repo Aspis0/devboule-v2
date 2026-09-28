@@ -1,7 +1,8 @@
 //! `log_of` over real repositories built in `%TEMP%` — the cases that need
 //! a process; the pure parsing rules live in
 //! `workspace_git_log_parse_tests.rs`. The histories and the classification
-//! rules are Paseo's own (`checkout-git.commits.test.ts`), translated.
+//! rules are Paseo's own
+//! (`packages/server/src/utils/checkout-git.commits.test.ts`), translated.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -668,8 +669,7 @@ fn a_folder_that_is_not_a_repository_is_refused() {
 /// A realistic history fits under the log read's own cap: a hundred
 /// commits with multi-file changes and long subjects — the payload that
 /// the shared 16 KiB ceiling refused whole (measured at ~1,560 bytes per
-/// commit with the files array, ~330 without). This is the boundary the
-/// review asked to be pinned: on the old cap it fails, on the new one the
+/// commit with the files array, ~330 without). The boundary to pin: the
 /// whole history comes back.
 #[test]
 fn a_realistic_history_fits_under_the_reply_cap() {
@@ -678,8 +678,8 @@ fn a_realistic_history_fits_under_the_reply_cap() {
     repo.commit("initial");
     repo.run(&["checkout", "-qb", "feature"]);
     // A hundred commits, each touching three files with a long subject —
-    // the cost driver now that the files array left the frame is the
-    // subject, and these are paragraph-length.
+    // the cost driver is the subject (the frame carries no files array),
+    // and these are paragraph-length.
     let long_subject = ["a long subject line"; 12].join(" ");
     repo.import_linear_history(
         "feature",
@@ -704,7 +704,7 @@ fn a_realistic_history_fits_under_the_reply_cap() {
 
 /// A merge commit is listed like any other: `--diff-merges=first-parent`
 /// is carried in the argv (its diff effect is unobservable without diff
-/// output, but the flag is there for the commit-diff slice that re-adds
+/// output, but the flag is carried for the commit-diff read that re-adds
 /// it), and the merge's subject and position are pinned.
 #[test]
 fn a_merge_commit_is_listed_with_its_subject() {
@@ -736,7 +736,7 @@ fn a_merge_commit_is_listed_with_its_subject() {
 /// The `origin > local` arm of the base resolution: when the remote base
 /// is ahead of the local one, the comparison runs against `origin/<name>`
 /// — Paseo's "recognizes base history on a remote before the feature
-/// branch is pushed", the one arm with no test on the first pass.
+/// branch is pushed".
 #[test]
 fn a_remote_base_ahead_of_the_local_one_is_the_comparison() {
     let repo = Repo::new("origin-ahead");

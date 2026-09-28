@@ -1,11 +1,9 @@
-//! The machinery the workspace slices share: confine a requested path to one
-//! workspace folder without following any link, classify that folder for git,
-//! run git there under the house's timeouts and caps, and speak about failures
-//! without leaking a path or git's stderr. Extracted in the slice-2 round so
-//! the status list and the file diff read the same folder and say the same
-//! sentences, and widened in the slice-4 round so the Files tree refuses a
-//! path with those same sentences — two copies of a sentence a panel shows
-//! would be two truths.
+//! The machinery the workspace git modules share: confine a requested path
+//! to one workspace folder without following any link, classify that folder
+//! for git, run git there under the house's timeouts and caps, and speak
+//! about failures without leaking a path or git's stderr. One
+//! implementation so every reader confines, classifies and answers the same
+//! way — two copies of a sentence a panel shows would be two truths.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -17,9 +15,9 @@ use crate::git::{
 /// A workspace folder below a repository root. Read from a subdirectory,
 /// `git status` and `git diff` answer for the whole repository with paths
 /// relative to that subdirectory, so the panel would show files of other
-/// checkouts. Decided in the slice-1 fix round: refuse and say what the
-/// panel would have shown instead of resolving the top level, which is a
-/// product choice these slices do not make.
+/// checkouts. Refuse and say what the panel would have shown instead of
+/// resolving the top level, which is a product choice these modules do not
+/// make.
 pub(crate) const INSIDE_A_REPOSITORY: &str =
     "this workspace folder is inside a git repository but is not its root; the Changes panel \
      lists changes of the repository, not of this folder";
@@ -32,7 +30,7 @@ pub(crate) const NOT_A_DIRECTORY: &str = "the workspace folder is not a director
 const PROBE_TIMEOUT: &str = "git did not answer within the probe timeout";
 const GIT_UNAVAILABLE: &str = "git could not be run";
 
-/// Refusals of a requested path, shared by every slice that confines one:
+/// Refusals of a requested path, shared by every reader that confines one:
 /// the diff refuses with these words and the Files tree refuses with the
 /// same, so one frame never names a path the other one hides. None of these
 /// sentences contains an absolute path — `error` travels on a wire whose
@@ -212,10 +210,10 @@ pub(crate) enum Walked {
 /// read. Callers pass only a path [`confined`] accepted, and only non-empty:
 /// an empty request is the folder itself, which the listing names before it
 /// walks. A link swapped in between these stats and the caller's open is the
-/// stat→open race, declared with slice 1's stat→read one: no test holds a
-/// swapper still for the read, which still opens the path by name after
-/// this returns. The preview stage closed its half differently — it never
-/// reopens the name **to read or copy bytes**: it proves the swap away on
+/// stat→open race: no test holds a swapper still for the read, which still
+/// opens the path by name after this returns. The preview stage closed its
+/// half differently — it never reopens the name **to read or copy bytes**: it
+/// proves the swap away on
 /// its own handle (the one lookup left by name is a diagnostic stat after
 /// a failed open, which picks a refusal sentence and enables no copy) and
 /// holds the swapper still with two seam tests
@@ -255,15 +253,12 @@ pub(crate) fn crosses_a_link(metadata: &std::fs::Metadata) -> bool {
 }
 
 /// Windows: this half of the refusal does not rest on how a toolchain
-/// labels a junction, because that label has been measured twice on the
-/// same `mklink /J` target with opposite answers: slice 2 recorded lstat
-/// calling one a directory (not `is_symlink`), while this round measures
-/// `is_symlink() = true, is_dir() = false`, attributes `0x410`. Every
+/// labels a junction: that label has been measured both ways on the same
+/// `mklink /J` target — lstat calling one a directory (not `is_symlink`),
+/// and `is_symlink() = true, is_dir() = false`, attributes `0x410`. Every
 /// link-like reparse point carries `FILE_ATTRIBUTE_REPARSE_POINT` (0x400),
 /// so a walk of ordinary components stays inside an ordinary root whichever
-/// label wins — and dropping this arm is measurably a no-op today (mutation
-/// `m:f` half-survived: only the label half kept every test alive), which is
-/// why it stays: declared redundancy over a fact that has flipped once.
+/// label wins.
 #[cfg(windows)]
 fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;

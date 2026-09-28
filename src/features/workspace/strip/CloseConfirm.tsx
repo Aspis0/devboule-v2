@@ -1,7 +1,7 @@
-// Why: the destructive close asks before it acts — Paseo's confirmDialog,
-// our copy; on the same portal as the menus, anchored to the row it came
-// from. Tab and Shift+Tab cycle inside: the ask holds the keyboard until it
-// has an answer.
+// Why: the destructive close asks before it acts — Paseo's `confirmDialog`
+// (`packages/app/src/utils/confirm-dialog.ts`), our copy; on the same portal
+// as the menus, anchored to the row it came from. Tab and Shift+Tab cycle
+// inside: the ask holds the keyboard until it has an answer.
 
 import {
   useEffect,

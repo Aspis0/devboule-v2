@@ -47,8 +47,8 @@ interface WorkspaceComposerProps {
   captureTextarea?: (element: HTMLTextAreaElement | null) => void;
   /** Pickers rendered on the left of the control bar, below the textarea. */
   controls?: ReactNode;
-  /** Context ring for the control bar, between the pickers and the actions —
-      where the composer redesign's attach button will sit beside it. */
+  /** Context ring for the control bar, between the pickers and the
+      actions. */
   contextMeter?: ReactNode;
 }
 
@@ -61,7 +61,9 @@ function commandQuery(input: string): string | null {
 }
 
 /** One step from the highlighted row for an arrow key, wrapping at both ends
- * (Paseo's getNextActiveIndex); with no rows there is no row to move to. */
+ * (Paseo's `getNextActiveIndex`,
+ * `packages/app/src/components/ui/combobox-keyboard.ts`); with no rows there
+ * is no row to move to. */
 function nextCommandIndex(current: number, count: number, key: "ArrowUp" | "ArrowDown"): number {
   if (count <= 0) return current;
   const step = key === "ArrowDown" ? 1 : -1;
@@ -131,9 +133,10 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     else sendInput();
   }, [defaultActionQueues, queueInput, sendInput]);
 
-  // Paseo's runAlternateSendAction: with the queue default the alternate key
-  // sends; with the steer default it queues onto a running turn, and does
-  // nothing when there is no turn to queue onto.
+  // Paseo's `runAlternateSendAction`
+  // (`packages/app/src/composer/input/state.ts`): with the queue default the
+  // alternate key sends; with the steer default it queues onto a running
+  // turn, and does nothing when there is no turn to queue onto.
   const runAlternateAction = useCallback(() => {
     if (enterQueues) {
       sendInput();
@@ -160,7 +163,8 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     commandMenuVisible && activeRow >= 0 ? `${menuId}-option-${activeRow}` : null;
 
   // Paseo resets the highlight on a query change and clamps a row that fell
-  // out of range (use-autocomplete); the Escape's dismissal rides the same line.
+  // out of range (`packages/app/src/hooks/use-autocomplete.ts`); the
+  // Escape's dismissal rides the same line.
   const lastQueryRef = useRef(query);
   useEffect(() => {
     const queryChanged = lastQueryRef.current !== query;
@@ -231,7 +235,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     ],
   );
 
-  // Paseo's submit-button words on the button that does what Enter does.
+  // Paseo's submit-button words
+  // (`packages/app/src/i18n/resources/en.ts`) on the button that does what
+  // Enter does.
   const actionLabel = composerActionLabel(defaultActionQueues);
 
   return (

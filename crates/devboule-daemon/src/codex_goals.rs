@@ -2,11 +2,10 @@
 //! experimental `goals` feature, what that adds to the launch line, and what it
 //! adds to the menu.
 //!
-//! Translated from
-//! `paseo-src/packages/server/src/server/agent/providers/codex-app-server-agent.ts`:
-//! `CODEX_GOALS_MIN_VERSION` :170, `parseCodexVersion` :173-178,
-//! `codexVersionAtLeast` :180-191, `resolveGoalsEnabled` :7031-7053 and the
-//! launcher's `--enable goals` :7089-7091.
+//! Translated from Paseo's `codex-app-server-agent.ts`
+//! (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`):
+//! `CODEX_GOALS_MIN_VERSION`, `parseCodexVersion`, `codexVersionAtLeast`,
+//! `resolveGoalsEnabled` and the launcher's `--enable goals`.
 //!
 //! Both halves are one decision, and it is made once: an older binary gets
 //! neither the flag nor the `goal` menu entry, because the flag is the only
@@ -16,12 +15,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// `CODEX_GOALS_MIN_VERSION` :170. Below it Codex rejects `--enable goals` at
+/// `CODEX_GOALS_MIN_VERSION`. Below it Codex rejects `--enable goals` at
 /// launch, so the flag must not be passed at all.
 const CODEX_GOALS_MIN_VERSION: [u64; 3] = [0, 128, 0];
 
 /// How long one `--version` probe may take. Paseo's is 5 s
-/// (`diagnostic-utils.ts:138-147`), and a probe that outlives it reads as a
+/// (`packages/server/src/server/agent/providers/diagnostic-utils.ts`), and a
+/// probe that outlives it reads as a
 /// binary without the feature.
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -42,7 +42,7 @@ impl Goals {
     }
 
     /// The arguments the launcher adds when the gate passed
-    /// (`spawnAppServer` :7089-7091). None when it did not: an older Codex
+    /// (`spawnAppServer`). None when it did not: an older Codex
     /// refuses the flag outright and the session would not start.
     pub(crate) fn launch_args(self) -> &'static [&'static str] {
         if self.0 {
@@ -60,7 +60,7 @@ impl Goals {
 
     /// Whether this Codex answers the goal requests. A no on any failure — a
     /// missing binary, an unparseable version, a probe that never answered —
-    /// which is Paseo's own answer when the probe throws (:7049-7052).
+    /// which is Paseo's own answer when the probe throws.
     ///
     /// `launch_args` is the argv the session will spawn with, `app-server`
     /// included: where our launch differs from Paseo's, the probe must measure
@@ -86,7 +86,7 @@ impl Goals {
         // re-run on the next create instead of closing the gate for the
         // daemon's life, at the price of a fresh bounded child (up to
         // `VERSION_PROBE_TIMEOUT`) on the creating thread for every create
-        // until one passes. Paseo pays a probe per agent instance (:7031);
+        // until one passes. Paseo pays a probe per agent instance;
         // the success memo keeps that cost off every create once a binary
         // answers.
         if result.enabled() {
@@ -185,8 +185,8 @@ fn version_output(program: &Path, probe_argv: &[String]) -> Option<String> {
     status.success().then_some(output)
 }
 
-/// The argv the launch runs, with `--version` in place of `app-server`:
-/// fix 1's shape, kept because only it measures Codex on shim installs.
+/// The argv the launch runs, with `--version` in place of `app-server`: the
+/// shim's shape, kept because only it measures Codex on shim installs.
 /// A trailing `app-server` is the launch's own flag, so it is dropped; any
 /// other trailing argument is kept, and `--version` goes last either way.
 fn version_probe_argv(launch_args: &[String]) -> Vec<String> {
@@ -198,7 +198,7 @@ fn version_probe_argv(launch_args: &[String]) -> Vec<String> {
     argv
 }
 
-/// `parseCodexVersion` :173-178 + `codexVersionAtLeast` :180-191: the first
+/// `parseCodexVersion` + `codexVersionAtLeast`: the first
 /// `major.minor.patch` run in the output, compared left to right. A version
 /// that cannot be read is not at least anything — Paseo returns false.
 fn version_allows_goals(output: &str) -> bool {
@@ -299,12 +299,12 @@ extra"
 
     #[test]
     fn the_probe_invocation_keeps_a_shim_launch_whole() {
-        // The call-site decision fix2 broke for lack of a pin: a shim-shaped
-        // launch (`node.exe` + a Codex script + `app-server`) must probe as
+        // The call-site decision this test pins: a shim-shaped launch
+        // (`node.exe` + a Codex script + `app-server`) must probe as
         // `node.exe <script> --version`. This runs the same pure invocation
         // `Goals::probe` — and therefore the production `session_goals` line
-        // — runs, so neutering the launch args here (the `&[]` regression)
-        // fails this test without spawning anything.
+        // — so neutering the launch args here (the `&[]` regression) fails
+        // this test without spawning anything.
         let launch = |script: &str| {
             probe_invocation(
                 "C:/shim/node.exe",
@@ -335,8 +335,8 @@ extra"
 
     #[test]
     fn the_probe_argv_trades_app_server_for_version() {
-        // The shim shape fix 1 measured: `node.exe <script> app-server`
-        // probes as `node.exe <script> --version`, never as `node --version`.
+        // The shim shape: `node.exe <script> app-server` probes as
+        // `node.exe <script> --version`, never as `node --version`.
         assert_eq!(
             version_probe_argv(&["C:/node/codex.js".to_string(), "app-server".to_string()]),
             ["C:/node/codex.js", "--version"],
@@ -380,8 +380,8 @@ extra"
         }
         // `rustc 1.x.y` parses above the 0.128.0 minimum. If a second
         // `--version` is ever appended at the spawn site, rustc refuses the
-        // doubled flag and this fails — that is the A1 trap, pinned here
-        // rather than on the argv helper alone.
+        // doubled flag and this fails — that is the exact-flag-twice trap,
+        // pinned here rather than on the argv helper alone.
         assert!(Goals::probe("rustc", &[]).enabled());
         let key = (
             resolved_program_path("rustc"),

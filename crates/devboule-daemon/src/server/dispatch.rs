@@ -1,7 +1,6 @@
-//! Dispatch — pass-3a split of `server.rs`: `dispatch` (whose first
-//! statement is the peer gate) and the routing skeleton of
-//! `dispatch_immediate` (the store domains moved to `stores.rs`; the
-//! vocabulary arm stays a routing call). No body changes.
+//! Dispatch — `dispatch` (whose first statement is the peer gate) and the
+//! routing skeleton of `dispatch_immediate` (the store domains live in
+//! `stores.rs`; the vocabulary arm stays a routing call).
 
 use super::*;
 
@@ -165,7 +164,7 @@ pub(super) fn dispatch(
     }
     // Deliberately do not serialize concurrent updates: this pipe is single-user,
     // the frontend runs one npm update at a time, and npm's global lockfile
-    // serializes racers. Revisit if the daemon becomes multi-client.
+    // serializes racers.
     if let ClientMessage::ProviderUpdate { id, provider_id } = request {
         let worker_state = Arc::clone(state);
         let outbound = Arc::clone(&conn.outbound);
@@ -275,14 +274,13 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::ProjectsList { .. }
         | ClientMessage::ProjectAdd { .. }
         | ClientMessage::WorkspacesList { .. }
-        // A workspace's own frames resolve the journal's workspace row by id —
-        // the four reads (the git status, one file's diff, one folder's
-        // entries, one file's content) and the three write acts of the Files
-        // panel (a rename, a duplicate, the delete) — so all seven ride the
-        // journal capability with the rest of the workspace inventory: the id
-        // is the door, read or write. The preview's stage resolves the row the
-        // same way; its unstage resolves none (it deletes copies the daemon
-        // wrote itself) and rides the same grant as the panel that serves.
+        // A workspace's own frames ride the journal capability with the rest
+        // of the workspace inventory: the workspace id is the door, read or
+        // write. The git frames, the Files panel's tree and the workspace
+        // create and delete all go through the journal's workspace row; the
+        // preview's stage resolves the row the same way, and its unstage
+        // resolves none (it deletes copies the daemon wrote itself) and rides
+        // the same grant as the panel that serves.
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceGitStage { .. }

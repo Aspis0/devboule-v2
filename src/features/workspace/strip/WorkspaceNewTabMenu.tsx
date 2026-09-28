@@ -1,10 +1,11 @@
-// The tab strip's "+" menu: what a new tab can be. Entries in Paseo's order —
-// Agent continues into the provider flow, Terminal creates a plain session of
-// kind "terminal". Slice 3 adds Browser as one more entry in the list. The
-// keyboard lives on the menu element itself: once focus is elsewhere, the
-// keys are not the menu's. The menu renders through AnchoredPopover: a body
-// portal, because the centre panel clipped it at its edge and the resize
-// handle covered its entries when the strip was full.
+// The tab strip's "+" menu: what a new tab can be. Entries in Paseo's order
+// (`packages/app/src/workspace-tabs/launcher/index.tsx`) — Agent continues
+// into the provider flow, Terminal creates a plain session of kind
+// "terminal". The keyboard lives on the menu element itself: once focus is
+// elsewhere, the keys are not the menu's. The menu renders through
+// AnchoredPopover: a body portal, because the centre panel clipped it at
+// its edge and the resize handle covered its entries when the strip was
+// full.
 
 import {
   useCallback,
@@ -88,7 +89,7 @@ export function WorkspaceNewTabMenu({
 
   const firstEntryRef = useRef<HTMLButtonElement>(null);
   // The first entry takes focus WITHOUT scrolling: the portal sits at the
-  // end of document.body, and the scroll a bare focus causes live fired the
+  // end of document.body, and the scroll a bare focus causes the
   // popover's own dismissal as it opened (measured over CDP, 64 ms).
   useEffect(() => {
     if (!open) return;
@@ -119,10 +120,9 @@ export function WorkspaceNewTabMenu({
     onClose();
   }, [onClose, triggerRef]);
 
-  // Open over a viewport that then moves is stale: close (the brief picked
-  // closing over repositioning). Focus is only handed back when it sits
-  // inside the menu that is about to unmount — a resize must not steal it
-  // from wherever the user put it.
+  // Open over a viewport that then moves is stale: close, not reposition.
+  // Focus is only handed back when it sits inside the menu that is about to
+  // unmount — a resize must not steal it from wherever the user put it.
   useEffect(() => {
     if (!open) return;
     window.addEventListener("resize", closeMenu);

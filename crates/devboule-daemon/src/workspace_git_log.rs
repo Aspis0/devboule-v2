@@ -82,8 +82,9 @@ fn log_of(root: &Path, stored_base_ref: Option<&str>) -> WorkspaceGitLog {
     }
     // The stored base is persisted verbatim; a name beginning with `-`
     // would reach git's argv as an option. Paseo's `assertSafeGitRef`
-    // (`worktree-session.ts:393-397`) rejects this value class for the same
-    // reason, and the check runs here — before any argv is built.
+    // (`packages/server/src/server/worktree-session.ts`) rejects this value
+    // class for the same reason, and the check runs here — before any argv is
+    // built.
     if let Some(sentence) = stored_base_ref.and_then(unsafe_base_ref) {
         return build(None, Vec::new(), Some(sentence.to_string()));
     }

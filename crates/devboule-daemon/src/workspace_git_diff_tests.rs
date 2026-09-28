@@ -161,7 +161,7 @@ fn an_unchanged_file_is_an_empty_ok_diff() {
 /// `assume-unchanged` hides the local edit from `git status` (measured), so
 /// no record reaches the classifier; `git ls-files` still tracks the path,
 /// and `ok` with no lines is git's own answer to a path git insists has no
-/// delta — git is the authority for status (DECISIONS §6), and this is that
+/// delta — git is the authority for status, and this is that
 /// authority speaking, not a missing lookup.
 #[test]
 fn an_assume_unchanged_file_stays_an_ok_empty_diff_because_git_tracks_it() {
@@ -187,8 +187,7 @@ fn an_assume_unchanged_file_stays_an_ok_empty_diff_because_git_tracks_it() {
 /// files come back), and the second file's preamble lines fall inside the
 /// first file's hunks — where `--- a/…` parses as a removal. The reply must
 /// name this file alone. (`*` and `?` cannot exist in a Windows file name,
-/// so the bracket pair is the fixture that carries the rule — the same
-/// Windows limit that moved slice 1's rename killer into a literal.)
+/// so the bracket pair is the fixture that carries the rule.)
 #[test]
 fn a_path_with_glob_characters_is_answered_for_that_file_alone() {
     let repo = Repo::new("literal");

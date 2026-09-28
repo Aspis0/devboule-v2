@@ -68,7 +68,7 @@ impl Repo {
     }
 
     /// `git diff --cached --name-only`: the index's own answer to "what is
-    /// staged", read straight — the assertion the brief names.
+    /// staged", read straight.
     fn staged_names(&self) -> String {
         let output = self
             .git(&["diff", "--cached", "--name-only"])
@@ -201,7 +201,7 @@ fn stage_names_a_modified_a_new_and_a_deleted_file_in_the_index() {
     }
 }
 
-/// Mutant `m:5` (the brief's `--` proof) — drop `--` from the argv: git
+/// Mutant `m:5` — drop `--` from the argv: git
 /// reads `-f` as its own force flag, prints "Nothing specified, nothing
 /// added" **and exits 0** (measured), so the success branch passes while
 /// the index stays empty — only this assertion kills it. The literal flag
@@ -317,10 +317,9 @@ fn a_failure_that_is_not_the_lock_is_operation_and_code_without_stderr() {
     assert!(!error.contains("hook exploded"), "stderr leaked: {error}");
 }
 
-/// The unstage's own truth (the brief's "cached vuoto e file ancora
-/// modificato"): the index entry goes back to `HEAD`, the worktree keeps
-/// its bytes. Mutant `u:1` — drop the reset entirely: the path stays
-/// staged and `diff --cached` keeps naming it.
+/// The unstage's own truth: the index entry goes back to `HEAD`, the
+/// worktree keeps its bytes. Mutant `u:1` — drop the reset entirely: the
+/// path stays staged and `diff --cached` keeps naming it.
 #[test]
 fn unstage_empties_the_cached_side_and_keeps_the_worktree_bytes() {
     let repo = Repo::new("unstage");
@@ -345,11 +344,10 @@ fn unstage_empties_the_cached_side_and_keeps_the_worktree_bytes() {
     );
 }
 
-/// The brief's mandated "HEAD non nato" case: `git init`, stage, no
-/// commit — unstage works (measured on git 2.54.0: `reset -q HEAD -- p`
-/// itself exits 0 here and unstages, so this case passes with or without
-/// the fallback; the mutant that kills is the broken-HEAD case below, and
-/// that pairing is declared in the coder report).
+/// The unborn-`HEAD` case: `git init`, stage, no commit — unstage works
+/// (measured on git 2.54.0: `reset -q HEAD -- p` itself exits 0 here and
+/// unstages, so this case passes with or without the fallback; the mutant
+/// that kills is the broken-HEAD case below).
 #[test]
 fn unstage_works_before_the_first_commit() {
     let repo = Repo::new("unborn");
@@ -404,16 +402,14 @@ fn unstage_falls_back_when_head_does_not_resolve() {
     );
 }
 
-/// Discard's three measured truths in one act (Paseo
-/// `checkout-git.test.ts:3827`): the tracked selection returns to `HEAD`
-/// — staged change included: discard discards, it does not merely
-/// unstage (the brief's "staged-only diventa unstaged col contenuto che
-/// resta" is this sequence's state after the reset step only, and the
-/// unstage truth above; through the full sequence the content returns to
-/// `HEAD`, measured twice on git 2.54.0 — declared in the coder report) —
-/// the untracked selection disappears, and an unselected file keeps its
-/// own bytes. Mutant `d:1` — drop the `clean` step: `fresh.txt` survives.
-/// Mutant `d:2` — drop the `checkout` step: `a.txt` keeps its change.
+/// Discard's three measured truths in one act: the tracked
+/// selection returns to `HEAD` — staged change included: discard discards,
+/// it does not merely unstage (the reset step alone is the unstage truth
+/// above; the full sequence returns the content to `HEAD`, measured twice
+/// on git 2.54.0) — the untracked selection disappears, and an unselected
+/// file keeps its own bytes. Mutant `d:1` — drop the `clean` step:
+/// `fresh.txt` survives. Mutant `d:2` — drop the `checkout` step: `a.txt`
+/// keeps its change.
 #[test]
 fn discard_returns_the_tracked_to_head_deletes_the_untracked_and_leaves_the_unselected_alone() {
     let repo = Repo::new("discard");
@@ -620,8 +616,8 @@ fn commit_in_a_folder_without_a_repository_is_refused() {
 /// (both paths: `path` + `renamedFrom`). The old path no longer exists on
 /// disk after `git mv` (the walk allows a missing component), and the
 /// sequence must end where a discard of that row promises: old restored to
-/// its committed content, new gone, status empty — the M3 truth, measured
-/// on git 2.54.0 before this round. Mutant `e:3` — make the selection loop
+/// its committed content, new gone, status empty — measured on git 2.54.0.
+/// Mutant `e:3` — make the selection loop
 /// refuse `Walked::Missing` the way the Files mutations do: the old path
 /// (absent after the move) is refused before any spawn and this
 /// expectation fails.

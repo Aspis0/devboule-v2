@@ -119,7 +119,7 @@ pub(super) enum UntrackedFile {
 }
 
 /// The lines of one untracked file, bounded by [`DIFF_FILE_MAX_BYTES`] the
-/// same way the status slice bounds its line counter. One trailing `\r` is
+/// same way the status reader bounds its line counter. One trailing `\r` is
 /// stripped from each line — the normalization `str::lines()` already gives
 /// git's own output in [`parse_diff`], so a CRLF file reads the same
 /// whether its lines came from git or from the file itself. Bytes otherwise
@@ -150,7 +150,7 @@ pub(super) fn untracked_file(path: &Path) -> UntrackedFile {
             // The size was stat'ed before this file was opened; this guard
             // covers the file that grew in between. No test can hold a
             // writer still — the same declared residual as the status
-            // slice's untracked counter.
+            // reader's untracked counter.
             return UntrackedFile::TooLarge;
         }
     }

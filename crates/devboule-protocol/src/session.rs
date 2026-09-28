@@ -10,8 +10,8 @@ use crate::messages::PeerRole;
 /// connection and must be retained by the client until that observer detaches.
 pub type SubscriptionId = u64;
 
-/// M2 implements Terminal; agent transports are additive serialized variants
-/// without changing the command signatures or existing wire values.
+/// Agent transports are additive serialized variants: they change neither the
+/// command signatures nor the existing wire values.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
@@ -29,8 +29,7 @@ pub enum SessionKind {
 /// and interrupts nothing, and the only interrupt on that route is the
 /// steer-refusal fallback (`session_messaging.rs::send_with_subscription_timeout`).
 /// A caller that means to replace a running turn must send `SessionInterrupt`
-/// itself and wait for that turn's own end — `DECISIONS.md` decision 3, and
-/// review F6 found this comment claiming the opposite of what the code does.
+/// itself and wait for that turn's own end.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActiveTurnBehavior {
@@ -96,8 +95,8 @@ impl SessionOrigin {
     /// is what a provider client writes as a placeholder before the daemon
     /// stamps the session's stored origin on the way out, and what
     /// `SessionRuntime::origin()` falls back to before the registry has
-    /// installed one — the two places that used to invent `local` and so made
-    /// "this machine's own" the answer to a question nobody had asked.
+    /// installed one — neither may answer `local`, which would make "this
+    /// machine's own" the answer to a question nobody had asked.
     pub fn unknown() -> Self {
         Self {
             kind: SessionOriginKind::Unknown,
@@ -201,9 +200,7 @@ pub enum UnattendedState {
 
 /// Public session metadata returned by `session_create` and `sessions_list`.
 ///
-/// `workspace_id` is optional in M2 because workspace lookup is not
-/// implemented yet; the terminal starts in the app process's current
-/// directory.
+/// `workspace_id` is optional: a session may be created without a workspace.
 ///
 /// `state` is the type-system distinction between a live process and a
 /// recovered transcript. A recovered session is not a live one with a
@@ -250,20 +247,19 @@ pub struct Session {
     /// `Default`. A row whose *stored* `origin_kind` column is `NULL` or
     /// unrecognised reads back as [`SessionOriginKind::Unknown`], which is not
     /// local and grants a peer nothing. The asymmetry is deliberate: the wire
-    /// cannot express "absent" without breaking 1b clients, so absence stays
-    /// the historical `local`; the journal can, so it says what it means.
+    /// cannot express "absent" without breaking older clients, so absence
+    /// stays `local`; the journal can, so it says what it means.
     #[serde(default)]
     pub origin: SessionOrigin,
-    /// The name a created agent is shown under (S5-09). Set once at creation
-    /// and never renamable in v1, so it travels with the session row and not
-    /// with the creation request that named it. `#[serde(default)]` for the
-    /// same reason `origin` has it: a client that speaks an older dialect must
-    /// still parse a frame carrying it, and a row written before the field
-    /// existed reads back as `None` — which the app renders as its fallback
-    /// name, never as an empty one.
+    /// The name a created agent is shown under. Set at creation, renameable
+    /// through `SessionSetName` (the daemon's `set_display_name`).
+    /// `#[serde(default)]` for the same reason `origin` has it: a client that
+    /// speaks an older dialect must still parse a frame carrying it, and a row
+    /// written before the field existed reads back as `None` — which the app
+    /// renders as its fallback name, never as an empty one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    /// The session id of the agent that created this one (S5-04). Written by
+    /// The session id of the agent that created this one. Written by
     /// the daemon only: it is deliberately absent from
     /// [`crate::ClientMessage::SessionCreate`], so no client can claim a
     /// parent. `None` for every session a human started, and for rows written
@@ -346,14 +342,14 @@ pub struct SessionStateSnapshot {
     /// omitted it would leave that badge to the next full list.
     #[serde(default)]
     pub origin: SessionOrigin,
-    /// The name a created agent is shown under (S5-09). Carried on every push,
+    /// The name a created agent is shown under. Carried on every push,
     /// because a child created while the app is open arrives as a push-only row
     /// and one that omitted it would stay nameless until the next full list —
     /// which is a list nothing may run again. Absent means "no name of its
     /// own", which the app renders as its fallback, never as an empty name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    /// The session id of the agent that created this one (S5-04). Carried on
+    /// The session id of the agent that created this one. Carried on
     /// every push for the same reason as the name: the row is what the human
     /// sees, and "created by" is part of it. `None` for every session a human
     /// started.
@@ -518,7 +514,7 @@ impl SessionState {
         matches!(self, Self::Live { .. } | Self::Silent { .. })
     }
 
-    /// The A2A word for what this session is doing (`S5-08`). `turn_running` is
+    /// The A2A word for what this session is doing. `turn_running` is
     /// the live runtime's own answer and is only consulted for a live process: a
     /// transcript has no turn to be in the middle of.
     ///
@@ -545,15 +541,15 @@ impl SessionState {
     }
 }
 
-/// The vocabulary a created agent's lifecycle is reported in (`S5-08`).
+/// The vocabulary a created agent's lifecycle is reported in.
 ///
 /// These are A2A's `TaskState` words, reserved here so the daemon never grows a
 /// second name for one fact: `submitted` is accepted-and-not-yet-started,
 /// `working` is running, `input_required` is parked on a card only a human can
 /// answer, and the last three are terminal. The finish report uses the terminal
 /// three today; the roster uses the first three; `rejected` is reserved for a
-/// creation that was refused, which this slice reports as an error sentence and
-/// not as a session state.
+/// creation that was refused, which the daemon reports as an error sentence
+/// and not as a session state.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTaskState {
@@ -583,8 +579,7 @@ impl AgentTaskState {
     }
 }
 
-/// The caps one creation is admitted under, as the creation card states them
-/// (`S5` decision 5).
+/// The caps one creation is admitted under, as the creation card states them.
 ///
 /// Every number is what the daemon holds at the moment the card is composed, so
 /// the human decides against the budget that is actually about to be spent
@@ -603,7 +598,7 @@ pub struct CreateAgentCaps {
 }
 
 /// The `create_agent` payload a creation card carries on top of the ordinary
-/// permission card's fields (`S5` §1).
+/// permission card's fields.
 ///
 /// The card is a [`SessionEvent::PermissionRequest`] and not a variant of its
 /// own: it needs exactly what that variant already provides — a pending entry
@@ -624,23 +619,19 @@ pub struct CreateAgentCard {
     /// profile resolves to is on the card's description; the child's session row
     /// records the profile's stable id, not this.
     ///
-    /// The field was named `preset` until `d5c72a3` renamed it, and creation
-    /// cards are journalled — the alias keeps a card journaled under the old
-    /// word hydrating on replay instead of dropping the whole permission row,
-    /// the same repair the `AgentCreated` sibling carries for the same rename:
-    /// the journal keeps saying what it actually said.
+    /// Creation cards are journalled — the alias keeps a card journaled under
+    /// the old word hydrating on replay instead of dropping the whole
+    /// permission row: the journal keeps saying what it actually said.
     #[serde(alias = "preset")]
     pub profile: String,
     /// The display name the child would be created with.
     pub title: String,
-    /// The tools state the child will start in, as the S1 wire word
+    /// The tools state the child will start in, as the wire word
     /// (`hosted`/`unavailable`/`unverified`). The card promises verification;
-    /// the result and roster report it (S2/S8 precedence rule): a card for an
-    /// MCP-capable family reads `hosted` with "will be verified at start" in
-    /// the description, never bare "has tools"; a card for pi/codex reads
-    /// `unavailable` with the no-tools sentence until S9 flips the gate.
+    /// the result and roster report it: every card reads `hosted` with "will be
+    /// verified at start" in the description.
     ///
-    /// Additive (P1): an older peer's frame without this key decodes to the
+    /// Additive: an older peer's frame without this key decodes to the
     /// tri-state's not-established value — a daemon that never heard of
     /// `ToolsState` has established nothing, so absent renders as the unknown,
     /// never as the benign "no tools".
@@ -649,7 +640,7 @@ pub struct CreateAgentCard {
     pub caps: CreateAgentCaps,
 }
 
-/// The tools word for a card frame that predates it (P1): the tri-state's
+/// The tools word for a card frame that predates it: the tri-state's
 /// not-established value. Lives beside the struct because the protocol crate
 /// owns the wire contract; the daemon's `ToolsState::Unverified.as_str()`
 /// spells the same word, pinned on both sides (daemon walk test + the decode
@@ -658,7 +649,7 @@ fn default_create_card_tools() -> String {
     "unverified".to_string()
 }
 
-/// One part of a finish artifact (`S5` decision 10, A2A §3 `Part`).
+/// One part of a finish artifact (A2A §3 `Part`).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FinishArtifactPart {
@@ -682,7 +673,7 @@ pub struct FinishArtifactPartMetadata {
     pub stored_bytes: u64,
 }
 
-/// One artifact a child's finish delivered (`S5` decision 10): the child's whole
+/// One artifact a child's finish delivered: the child's whole
 /// last `AgentMessage`, deposited in the **creator's** folder.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -708,8 +699,8 @@ pub struct FinishArtifact {
 ///
 /// Permission variants are additive for consumers that ignore unknown event
 /// types, so older clients can continue to consume ordinary session events.
-/// M3.5 uses that freedom: [`SessionEvent::Snapshot`] delivers the
-/// current screen state on attach instead of a replay of past frames.
+/// That freedom is what [`SessionEvent::Snapshot`] uses: the current screen
+/// state, delivered on attach instead of a replay of past frames.
 ///
 /// Attachment variants in this enum are the TypeScript `SessionEvent`
 /// contract. Alignment is enforced by the committed snapshot
@@ -846,9 +837,9 @@ pub enum SessionEvent {
         max_tokens: Option<u64>,
         live: bool,
     },
-    /// The account's plan consumption as the provider pushed it — today only
-    /// Codex `account/rateLimits/updated`, which the wire already carried
-    /// before this variant existed. Account-scoped, not session-scoped: the
+    /// The account's plan consumption as the provider pushed it — Codex
+    /// `account/rateLimits/updated` is the only provider that pushes it.
+    /// Account-scoped, not session-scoped: the
     /// app keeps the latest event per provider id.
     ///
     /// Carries no token counter and no account id — only what the popover
@@ -863,7 +854,7 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credits: Option<PlanCredits>,
     },
-    /// An agent asked for, and got, a child session (`S5` §1).
+    /// An agent asked for, and got, a child session.
     ///
     /// Published and journaled on the **creator's** session, never on the
     /// child: the child's transcript begins with its `initialPrompt`, and the
@@ -884,19 +875,17 @@ pub enum SessionEvent {
         /// from, while this event is the sentence the creator's transcript
         /// shows.
         ///
-        /// This field was written as `preset` before journal v11 and this
-        /// pass's rename, and rows with the old spelling are still on disk, so
-        /// the reader accepts both. A row read back through the alias keeps the
-        /// value it was written with, which is the **preset** the child was
-        /// created under (`worker`, `design`) — a name from the old built-in
-        /// vocabulary, not a profile a human saved. Nothing is rewritten: the
-        /// journal keeps saying what it actually said.
+        /// Rows written under the old spelling are still on disk, so the reader
+        /// accepts both. A row read back through the alias keeps the value it
+        /// was written with, which is the **preset** the child was created
+        /// under (`worker`, `design`) — a built-in name, not a profile a human
+        /// saved. Nothing is rewritten: the journal keeps saying what it
+        /// actually said.
         #[serde(alias = "preset")]
         profile: String,
     },
     /// A created child finished, in structured form, published on the creator
     /// beside the `<devboule-system>` text message that carries the same facts
-    /// (`S5` decision 7 + 10, rev 4).
     ///
     /// Two records, one delivery: the text message is what an agent reads, and
     /// this event is what a surface consumes — the app has no parser for the
@@ -1018,7 +1007,7 @@ pub enum SessionEvent {
         /// its own element: the request's own text must never be able to
         /// imitate it.
         origin: SessionOrigin,
-        /// Present only on a creation card (`S5` §1): the ordinary card fields
+        /// Present only on a creation card: the ordinary card fields
         /// say what is being asked, `options` says allow/deny, and this says
         /// *what* is being created. Absent on every other permission request,
         /// which is why it is an extension of this variant and not a variant of
@@ -1144,8 +1133,8 @@ pub enum SessionEvent {
     SessionsSnapshot {
         sessions: Vec<SessionStateSnapshot>,
     },
-    /// Current screen state, delivered on attach instead of a replay of
-    /// past frames (M3.5). The daemon holds a headless terminal emulator,
+    /// Current screen state, delivered on attach instead of a replay of past
+    /// frames. The daemon holds a headless terminal emulator,
     /// applies every output chunk to it in sequence order, and renders the
     /// visible grid to a canonical ANSI string; the client writes `data`
     /// into its terminal emulator, then restores the cursor and all state from
@@ -1162,11 +1151,7 @@ pub enum SessionEvent {
         ///
         /// The boundary is on **application to the emulator** — not on the
         /// write to the pipe, not on the journal commit, not on receipt by
-        /// the client. The previous design advanced its cursor at
-        /// pipe-write time, which let it claim delivered what was only
-        /// queued; reconnections then produced both duplicates (queued
-        /// chunks replayed) and gaps (queued chunks counted as seen and
-        /// never sent). On the daemon side, capturing this state and
+        /// the client. On the daemon side, capturing this state and
         /// registering a new attachment must happen under the same lock,
         /// or output applied in between lands in neither the snapshot nor
         /// the queued stream.
@@ -1559,7 +1544,7 @@ pub enum UserMessageAuthor {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UserMessageKind {
-    /// A stored row predating this field; retain the legacy text classifier.
+    /// A stored row predating this field.
     #[default]
     Unknown,
     Composer,
