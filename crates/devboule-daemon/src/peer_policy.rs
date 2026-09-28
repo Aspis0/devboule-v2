@@ -7,12 +7,12 @@
 //! `ALL_SAMPLES` iteration would only restate what the compiler already
 //! enforces.
 //!
-//! The operational surface was opened in slices, each act under the capability
-//! that names it (`view`, `send`, `answer_permissions`, `create_sessions`,
-//! `roster` — §8b A9/A11/A12). Everything else used to be refused to every
-//! peer, whatever it held, because no capability named those acts. **That rule
-//! was revoked on 2026-09-21 by the owner**: a paired device is a full client,
-//! and the sixth capability, `admin`, opens the remainder. The one thing that
+//! The operational surface is a set of capabilities (`view`, `send`,
+//! `answer_permissions`, `create_sessions`, `roster` — §8b
+//! A9/A11/A12). Everything else is refused to every peer,
+//! whatever it holds, because no capability names those acts — except the
+//! sixth capability, `admin`, which opens the remainder: a paired device is a
+//! full client. The one thing that
 //! stays local is the permission model itself — pairing, a device's capability
 //! set, and revocation — because a peer that could change this device's
 //! trusted set could let itself in. Scope — *which* sessions an allowed request
@@ -104,13 +104,13 @@ const BUDGET_BYTES_PER_PAGE: u64 = 96 * 1024;
 const BUDGET_INLINE_FRAME_BYTES: u64 = 384 * 1024;
 
 /// The attachment budget of one origin, in stored bytes.
-///
+//
 /// The peer case is the **local derivation reused**, not a second invention:
-/// 200 rendered PDF pages at 96 KiB plus one frame of inline attachments, the
-/// number the brief calls 20 MiB. The peer case is unmeasured, and it must be
+/// 200 rendered PDF pages at 96 KiB plus one frame of inline attachments —
+/// just under 20 MiB. The peer case is unmeasured, and it must be
 /// re-derived the first time a paired device actually sends something rather
 /// than inherited: a phone's working set is not a desktop's.
-///
+//
 /// The counter itself belongs to the peer's deposit branch, keyed on
 /// `OwnerId::user` and walked through the session registry. This function is
 /// where that counter will read its figure, which is why it takes the origin.
@@ -121,7 +121,6 @@ pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
 }
 
 /// May `role`, holding `caps`, send `request`?
-///
 /// `caps` is the peer's own capability set, read from its `peers` row. Seven
 /// names are the wire permission model for a paired device (§8b A9/A11):
 /// `view` (`SessionsList`, `DevicesList`, `SessionAttach`), `send`
@@ -131,13 +130,13 @@ pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
 /// (`SessionCreate`), `roster` (`PeerAgentsList`), `search` (the Oracle tool
 /// at the broker door — it decides no arm here, see [`CAP_SEARCH`]) and
 /// `admin` (everything else this device's app can ask — see [`CAP_ADMIN`],
-/// which is the 2026-09-21 revocation of the old global deny list). A variant
+/// which opens the remaining acts to a peer that holds it). A variant
 /// an operational capability
 /// names is allowed exactly when the peer holds it; a variant no operational
 /// capability names is allowed exactly when the peer holds `admin`. The five
 /// permission-model variants — pairing, a device's capability set, revocation —
 /// are refused to every set, and that is the whole remaining `Deny`.
-///
+//
 /// `role` does not decide permission here: the capability set does. It stays
 /// in the signature because it decides *scope* one layer down (the owner
 /// projection in `server.rs` and the origin branch of `check_user_owner`), and
@@ -156,8 +155,7 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // `SessionsList` and `DevicesList` are how a paired device sees
         // anything at all, so a peer stripped of `view` — only a
         // `Daemon` peer can be, since `validate_caps` will not remove it from a
-        // `Client` — reaches neither. Both were unconditional `Allow` before
-        // the slice-3 fix pass, which made "no capability" a capability.
+        // `Client` — reaches neither.
         ClientMessage::SessionsList { .. } => with_capability(caps, CAP_VIEW),
         // Role-projected at the dispatch site; a `Daemon` peer sees only
         // `{device_id, display_name, role, online}` (design §8b A13).
@@ -172,11 +170,10 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // decided in this arm; the capability set alone decides.
         ClientMessage::PeerAgentsList { .. } => with_capability(caps, CAP_ROSTER),
 
-        // The seven session variants a paired device may reach — five opened by
-        // slice 3, with the deposit and agent-message arms joining later — each
+        // The seven session variants a paired device may reach — each
         // under the capability that names the act. `view` is what makes a peer
         // a viewer at all; it is the one capability `validate_caps` will not
-        // remove from a `Client` (A11). `SessionSend` keeps the peer's own
+        // remove from a `Client`. `SessionSend` keeps the peer's own
         // origin scope; `AgentMessageSend` uses the pairing user's local
         // target scope, because its sender may live on the far device.
         ClientMessage::SessionAttach { .. } => with_capability(caps, CAP_VIEW),
@@ -212,8 +209,7 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // permissions it holds, and one that could change caps or revoke could
         // rewrite the trusted set. `admin` does not open them, deliberately and
         // on the owner's instruction (2026-09-21) — if that changes, it is
-        // their decision to make, and this is the comment that must move with
-        // it.
+// their decision to make, and this is the comment that must move with it.
         ClientMessage::PairingStart { .. } => PeerDecision::Deny("pairing.start"),
         ClientMessage::PairingComplete { .. } => PeerDecision::Deny("pairing.complete"),
         ClientMessage::PairingConfirm { .. } => PeerDecision::Deny("pairing.confirm"),
@@ -252,7 +248,7 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
 
         // Local information: pid, instance id, live counts and the secret-store
         // selector. `Ping` and `DevicesList.self_info` remain what a peer uses
-        // to know this daemon is alive (muse M7, §8b A13); the full answer is
+        // to know this daemon is alive (§8b A13); the full answer is
         // part of the surface `admin` opens.
         ClientMessage::Status { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::DaemonDiagnostics { .. } => with_capability(caps, CAP_ADMIN),
@@ -276,16 +272,15 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // `Invoke` is the wire's generic tenant door — "run this command" — and
         // the daemon's own arm answers it with `Unimplemented`
         // (`dispatch.rs`), because this daemon is not a plugin backend. What the
-        // gate opens here is that refusal, not the app's command surface; if a
-        // future slice serves `Invoke` from this daemon, a peer holding `admin`
-        // reaches whatever it serves. Said plainly rather than left to be
-        // discovered.
+        // gate opens here is that refusal, not the app's command surface; if
+        // `Invoke` is served from this daemon, a peer holding `admin`
+// reaches whatever it serves. Said plainly rather than left to be discovered.
         ClientMessage::Invoke { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::SessionClaim { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::SessionResume { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::SessionReportAgent { .. } => with_capability(caps, CAP_ADMIN),
 
-        // The verbs that were "still outside a peer's reach after slice 3":
+        // The verbs still outside a peer's reach:
         // the same capability, for the same reason — the administrative
         // surface is one grant, not thirty-six.
         ClientMessage::JournalUsage { .. } => with_capability(caps, CAP_ADMIN),
@@ -363,16 +358,16 @@ fn with_capability(caps: &[String], capability: &'static str) -> PeerDecision {
 
 /// Whether `mode_id` is a mode that can run without asking the target
 /// device's user (`DESIGN-remote-agents.md` §8b A5).
-///
+//
 /// Called from the peer gate twice: the audit path (`server.rs::peer_outcome`)
 /// labels a denial that asked for one of these modes `prompt_skipping_refused`,
-/// and slice 3's refusal (`peer_gate::peer_mode_refusal_for_conn`) refuses the request
+/// and the mode refusal (`peer_gate::peer_mode_refusal_for_conn`) refuses the request
 /// outright — a paired device never drives a session that will not ask this
 /// machine's user.
-///
+//
 /// The lists are concrete because "prompt skipping" is per provider and is
 /// not exposed uniformly. Two consequences for the caller:
-///
+//
 /// - Codex `auto` is **not** here: it still prompts, so it is allowed.
 /// - ACP modes are defined by the agent at runtime. This function cannot
 ///   answer for them and returns `false`; A5's ACP rule is the separate
@@ -391,15 +386,15 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
 /// The `unattended` marker for one session: the honest answer to "can this
 /// session pass a permission moment with no human answering", derived from
 /// the mode the daemon **delivered** (`DESIGN-what-unattended-means.md`).
-///
+//
 /// This is the sibling of [`prompt_skipping_mode`] — in the same home, keyed
 /// the same way, and **never merged with it**: a mode can skip prompts for a
 /// peer and still be un-establishable for this marker. The answers are
-/// per-family facts and live in the provider impls (pass 2d); this shim is
+/// per-family facts and live in the provider impls; this shim is
 /// the same signature the birth marker, the child road, the profile
 /// prediction and the tests have always read, now answered through the
 /// registry. The rule, unchanged, in the shape the impls carry it:
-///
+//
 /// - **Route A — the daemon answers itself.** A delivered mode carrying an
 ///   id the daemon's own table answers for that family
 ///   (`provider_catalog::mode_gate_for`) is answered by the daemon's own
@@ -409,9 +404,9 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
 ///   agent clients only, and a terminal has no permission mechanism at all,
 ///   so there is no permission moment for anything to answer and no mode id
 ///   — including a route-A id — can make one exist. The Terminal impl, not
-///   this list, decides a terminal, and it says `no` (audit R2b-1 §3.1: a
-///   terminal created with `mode: "bypass"` used to answer `yes` because
-///   the old check ran first).
+///   this list, decides a terminal, and it says `no` (a
+///   terminal created with `mode: "bypass"` answers `yes` when
+///   the check runs first).
 /// - **Route B — the daemon authored the knob.** For Claude, Codex and Pi
 ///   the dictionary is the client family's own mode table
 ///   (`claude_view::unattended_answer`, `codex_view::unattended_answer`,
@@ -448,7 +443,7 @@ pub fn unattended_mode(
 
 /// §8b A5/R3, the whole rule: why a paired device may not choose `mode_id` for
 /// a `kind` session, or `None` when it may.
-///
+//
 /// For Claude, Codex, Pi and Terminal the answer is the concrete list above.
 /// For ACP it is *every* mode id, including the ones that look like `ask` or
 /// `default`: the agent defines its own modes at run time, this daemon has no
@@ -458,7 +453,7 @@ pub fn unattended_mode(
 /// ("created only in the mode the agent marks as its ask/default"): a remote
 /// ACP create carries no mode at all, so the agent's own default stands, and a
 /// remote `SessionSetMode` never lands.
-///
+//
 /// The reasons are the two audit labels, so the trail says which rule fired.
 pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
     let provider = crate::session::catalog_registry().provider_for_kind(&kind);
@@ -471,22 +466,22 @@ pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
 }
 
 /// What one MCP broker tool performs, in the wire vocabulary this policy judges.
-///
+//
 /// `Judged(requests)` — the tool performs these wire acts on the caller's behalf,
 /// and the door judges each with [`peer_allows`] (first `Deny` wins). The request
 /// fields are placeholders: no `peer_allows` arm reads a field, only the variant
 /// and the capability set, so the decision cannot depend on them.
-///
+//
 /// `Unjudged(reason)` — the tool performs nothing the policy judges, and the
 /// reason says why. The only such tool is the ticked-profile list (below).
-///
+//
 /// `Requires(capability)` — the tool is answered exactly when the caller's
 /// capability set holds that name, and nothing on the wire is judged: the act
 /// has no `ClientMessage` frame, it happens inside the broker. The refusal is
 /// therefore a plain capability refusal and renders with the wire's own
 /// sentence. The tools that answer this way are the Oracle search and the
 /// terminal screen read (below).
-///
+//
 /// `None` (from [`mcp_tool_wire`]) is an unknown tool name — not served by the
 /// broker. The door lets it through to the broker's own `Unknown tool` arm,
 /// which touches nothing; the closed-table test fails for any *served* name
@@ -504,7 +499,7 @@ pub enum McpToolWire {
 
 /// The permission table for the MCP tool door: every served tool's wire
 /// equivalent, in one closed place beside the policy it reuses.
-///
+//
 /// - Roster (`devboule_list_agents`) reads the owner's live agents: the wire
 ///   read `SessionsList`, the act `view` names.
 /// - Devices (`devboule_list_devices`) reads this daemon's paired rows, the
@@ -735,7 +730,6 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         || tool == MCP_IMPORTERS_TOOL
     {
         // The three project-graph tools.
-        //
         // The caller decides the severity, and both categories pass through
         // this one arm. A *local* session already reads the workspace's files
         // (its cwd is the workspace root, and the graph is derived from those
@@ -854,7 +848,7 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
 /// Judge one tool call for a peer with the same function the dispatcher uses:
 /// the policy's first `Deny` payload, or the capability a `Requires` row names
 /// when the caller does not hold it, or `None` when the tool is allowed.
-///
+//
 /// `Unjudged` tools and unknown tool names both allow here: the former perform
 /// nothing judged, the latter fall through to the broker's own `Unknown tool`
 /// refusal, which touches nothing.
@@ -996,8 +990,7 @@ pub(crate) mod tests {
             );
             // `view` alone does not open it, and neither does every other
             // capability together — `admin` included: the roster read is the
-            // one act only its own name reaches, which is why it keeps a switch
-            // of its own.
+            // one act only its own name reaches, which is why it keeps a switch of its own.
             assert_eq!(
                 peer_allows(role, &caps(&[CAP_VIEW]), &roster),
                 PeerDecision::Deny(CAP_ROSTER),
@@ -1019,8 +1012,7 @@ pub(crate) mod tests {
                 peer_allows(role, &caps(&[CAP_ROSTER]), &roster),
                 PeerDecision::Allow
             );
-            // And holding it opens nothing else: the roster read is the act
-            // it names.
+            // And holding it opens nothing else: the roster read is the act it names.
             let send = ClientMessage::AgentMessageSend {
                 id: 1,
                 from_session: "s.a.1".to_string(),
@@ -1146,7 +1138,7 @@ pub(crate) mod tests {
         };
 
         for role in [PeerRole::Client, PeerRole::Daemon] {
-            // No capability at all: every slice-3 act is refused, and the
+            // No capability at all: every refused act is refused, and the
             // refusal names the capability the peer would need.
             let none: Vec<String> = Vec::new();
             assert_eq!(
@@ -1231,9 +1223,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// Every variant that used to be "denied to every role, always" (§8 R1), in
+    /// Every variant denied to every role, always (§8 R1), in
     /// one list: the parity walk's subject.
-    ///
+    //
     /// The list is the old one verbatim — that is the point. **This is the
     /// parity proof at the wire level**: against the default grant of a new
     /// pairing every entry that is not one of the three permission-model acts
@@ -1375,7 +1367,7 @@ pub(crate) mod tests {
                 id: 1,
                 enabled: true,
             },
-            // The rest of the surface that used to be denied to every peer:
+            // The rest of the surface denied to every peer:
             // the session verbs outside the view/send pair, the read half of
             // the deposit, the watch set, the project/workspace/provider
             // reads, the status pair and the journal read. One list, because
@@ -1636,7 +1628,7 @@ pub(crate) mod tests {
         assert!(!prompt_skipping_mode(SessionKind::Terminal, "anything"));
     }
 
-    /// The `unattended` derivation's three arms, each reachable (R2b): route
+    /// The `unattended` derivation's three arms, each reachable: route
     /// A (the broker's own ids), route B (each family's own dictionary), and
     /// the arm the marker exists for — a vocabulary the daemon did not author
     /// answers `unknown`, never `no`, and so does what nobody said.
@@ -1693,7 +1685,7 @@ pub(crate) mod tests {
         // `auto-review` is `unknown`, not `no`: the daemon's own peer gate
         // counts the same id as one that can pass a permission moment with
         // nobody answering (`prompt_skipping_mode`), so the silent row `no`
-        // renders was the wrongly-benign badge (audit R2b-1 §3.3). It is not
+        // renders was the wrongly-benign badge. It is not
         // `yes` either — a model reviewer may hand a moment back.
         assert_eq!(
             unattended_mode(SessionKind::Codex, Some("auto-review")),
@@ -1703,7 +1695,7 @@ pub(crate) mod tests {
         );
         // The empty string is the same absence as `None` — filtered out
         // above — so the three authored families answer with their own
-        // default mode, each of which stops at the human (audit R2b-1 §3.2:
+        // default mode, each of which stops at the human (
         // "the empty string for every family is unknown" is not the rule the
         // code applies; this pins the rule the code applies).
         assert_eq!(
@@ -1790,7 +1782,7 @@ pub(crate) mod tests {
         PeerDecision::Allow
     }
 
-    /// The P0 tool door's closed table: every tool the broker serves has an arm
+    /// The tool door's closed table: every tool the broker serves has an arm
     /// in `mcp_tool_wire` — judged, or explicitly unjudged with its reason.
     /// Removing one arm makes this red: the served list (`MCP_BROKER_TOOLS`) is
     /// the same source the broker's `tools/list` reads, so a tool cannot be
@@ -1827,7 +1819,7 @@ pub(crate) mod tests {
                 None => panic!("{name}: served by the broker but missing from the door table"),
             }
         }
-        // The table the brief convicted on, pinned by name so a rename fails
+        // The table the roster is judged against, pinned by name so a rename fails
         // loudly instead of silently unjudging a tool.
         for expected in [
             crate::provider_catalog::MCP_ROSTER_TOOL,
@@ -1984,7 +1976,7 @@ pub(crate) mod tests {
     /// the caller's workspace stays closed whatever else the device holds
     /// — alone, as the act-named five, or in any combination. Whose workspace
     /// is read comes from the caller's own session row, never from an argument.
-    ///
+    //
     /// The Oracle search rides `search`, not `admin`, since 2026-09-22 (§Q-g):
     /// its row is `Requires(CAP_SEARCH)`, so the `admin` column below does not
     /// describe it — it is asserted apart, in the door test below, against the
@@ -2144,8 +2136,7 @@ pub(crate) mod tests {
                 Some(CAP_ADMIN),
                 "{role:?} without admin must not kill through the tool"
             );
-            // And the parity half: with the whole table no write is refused
-            // at the door.
+            // And the parity half: with the whole table no write is refused at the door.
             for name in [
                 MCP_CREATE_TERMINAL_TOOL,
                 MCP_SEND_TERMINAL_KEYS_TOOL,
@@ -2339,8 +2330,7 @@ pub(crate) mod tests {
                 None,
                 "{role:?} holding the whole table reaches devboule_oracle_search"
             );
-            // `admin` alone is what the old row accepted; it must not be
-            // enough any more.
+            // `admin` alone is what the old row accepted; it must not be enough any more.
             assert_eq!(
                 mcp_tool_denial(role, &caps(&[CAP_ADMIN]), MCP_ORACLE_SEARCH_TOOL),
                 Some(CAP_SEARCH),
@@ -2399,12 +2389,12 @@ pub(crate) mod tests {
     /// per `ClientMessage` variant, holding the decision a peer gets with **no**
     /// capability, with the five **operational** capabilities, and with **all
     /// six**.
-    ///
+    //
     /// The middle column is the negative control and the old world: it is what a
     /// device may do once it holds every act-named capability, and it still
     /// refuses both the administrative surface and the permission model. The
     /// third column is the parity decision — everything but the permission model.
-    ///
+    //
     /// Closed match with no `_` arm, exactly like `peer_allows` itself: a new
     /// variant does not compile until it has a row here. `VARIANT_COUNT` and
     /// `matrix_samples` below are the other half — they fail the test until the
@@ -2426,8 +2416,7 @@ pub(crate) mod tests {
             | ClientMessage::SessionSetMode { .. }
             | ClientMessage::SessionSetFeature { .. } => under(CAP_SEND),
             // A rename is a session write: it rewrites the row the roster
-            // renders, so it needs the capability `SessionSend` needs and
-            // nothing more.
+            // renders, so it needs the capability `SessionSend` needs and nothing more.
             ClientMessage::SessionSetName { .. } => under(CAP_SEND),
             // An agent message is a send: it puts text into a session, so it
             // needs the capability `SessionSend` needs and nothing more.
@@ -2439,8 +2428,7 @@ pub(crate) mod tests {
             // folder nothing on this machine can consume.
             ClientMessage::SessionDeposit { .. } => under(CAP_SEND),
             // The read half of the deposit: a content read, so it rides the
-            // administrative capability — scope still decides which reference
-            // resolves.
+            // administrative capability — scope still decides which reference resolves.
             ClientMessage::SessionAttachmentRead { .. } => administrative(),
             ClientMessage::SessionPermissionRespond { .. } => under(CAP_ANSWER_PERMISSIONS),
             ClientMessage::Status { .. } => administrative(),
@@ -3073,7 +3061,7 @@ pub(crate) mod tests {
     #[test]
     fn both_origins_share_the_derived_attachment_budget() {
         // 200 rendered PDF pages at 96 KiB plus one frame of inline
-        // attachments — the figure the brief names as 20 MiB.
+        // attachments — just under 20 MiB.
         let derived = BUDGET_PAGES_PER_TURN * BUDGET_BYTES_PER_PAGE + BUDGET_INLINE_FRAME_BYTES;
         assert_eq!(budget_for(&SessionOrigin::local()), derived);
         assert_eq!(

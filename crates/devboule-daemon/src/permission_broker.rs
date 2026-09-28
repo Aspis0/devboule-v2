@@ -14,14 +14,14 @@ use super::SessionRuntime;
 
 const MAX_PENDING_ACP_PERMISSIONS: usize = 32;
 /// How many undecided permission cards one paired device may hold at once
-/// across **every** session (`§8b A14`, H2).
-///
+/// across **every** session (`§8b A14`).
+//
 /// A peer's session can raise one card per tool call, and every one of them
 /// lands in the same queue the person at this machine reads. Three is the
 /// design's number: enough for an agent's immediate steps, small enough that a
 /// device cannot turn the desktop into its own approval prompt. The fourth is
 /// refused, not stacked.
-///
+//
 /// The count lives in [`peer_cards`], one map for the whole daemon, not in the
 /// per-session table: a per-broker count gave a device three cards *per
 /// session*, so opening a second session bought it three more, and the third
@@ -30,13 +30,13 @@ const MAX_PENDING_ACP_PERMISSIONS: usize = 32;
 const MAX_PENDING_FOR_PEER: usize = 3;
 
 /// The undecided cards this daemon is holding, per authenticated origin device.
-///
+//
 /// One map for the whole server (this process): the broker table is per
 /// session, and the allowance is per device. The key is the **origin device id
 /// this daemon stamped** on the request (`stamp_origin` writes the session's
 /// stored origin; nothing a caller sends can reach it), which is the same id
 /// `check_user_owner` scopes a `Daemon` peer by.
-///
+//
 /// `OnceLock` rather than a field because the brokers are built inside the
 /// provider clients: the counter has to exist before any of them, and one
 /// process is one daemon with one card allowance.
@@ -53,7 +53,7 @@ fn peer_cards_lock() -> std::sync::MutexGuard<'static, HashMap<String, usize>> {
 
 /// Take one of `MAX_PENDING_FOR_PEER` slots for `device_id`. `false` when the
 /// device is already holding all of them.
-///
+//
 /// Reserved *before* the card is inserted, so the allowance cannot be
 /// overrun by two sessions registering at the same moment.
 fn reserve_peer_card(device_id: &str) -> bool {
@@ -177,8 +177,8 @@ pub(super) enum DelegatedPeek {
     Absent,
 }
 
-/// The gate value for the delegated answer path (`§4.2`).
-///
+/// The gate value for the delegated answer path.
+//
 /// No public constructor: the fields are private and the only constructor is
 /// `checked_delegated`, a private function of this module, whose single call
 /// site is at the end of [`PermissionBroker::answer_delegated`]'s check
@@ -337,8 +337,8 @@ impl PermissionBroker {
         // request becomes pending: the card renders a `peer` origin as its
         // own first line, and the request's own text must never be able to
         // imitate it (§8b A14). The verdict has to be here too — the stored
-        // copy is what the audit row and the replay roads read (review A2a
-        // #4). `publish_agent_event_with_seq` writes both again on the way
+        // copy is what the audit row and the replay roads read.
+        // `publish_agent_event_with_seq` writes both again on the way
         // out, which is what covers publishers that never come through here.
         let request = stamp_origin(request, runtime.origin());
         let mut request = stamp_chooser(request);
@@ -354,11 +354,10 @@ impl PermissionBroker {
         // An id the journal already holds a decision for is DONE: a second
         // card here would show a person an answer that can never be written
         // (the audit row is write-once), and the agent would be told
-        // `cancelled` after the human spent the effort — the live P1
-        // (review-A2a). Refused before the card exists, from the one road
-        // every family registers through: no card, the family's own
-        // cancelled frame, and [`REUSED_ID_NOTICE`] as the transcript's one
-        // notice.
+        // `cancelled` after the human spent the effort. Refused before the
+        // card exists, from the one road every family registers through:
+        // no card, the family's own cancelled frame, and
+        // [`REUSED_ID_NOTICE`] as the transcript's one notice.
         if runtime.permission_already_recorded(&tool_call_id) {
             let _ =
                 runtime.publish_session_notice(REUSED_ID_NOTICE.to_string(), NoticeSeverity::Info);
@@ -418,7 +417,7 @@ impl PermissionBroker {
         // the daemon-wide counter before the card exists, and the counter is
         // keyed by the origin device this request was stamped with, so two
         // devices' sessions never share the allowance and two sessions of one
-        // device never multiply it (H2).
+        // device never multiply it.
         if let Some(device_id) = peer_origin_device(&pending.request) {
             if !reserve_peer_card(&device_id) {
                 return Err(PermissionResponseError::InvalidRequest(format!(
@@ -581,8 +580,8 @@ impl PermissionBroker {
                 // A deny on a CHOOSER with nothing to name: ACP's only
                 // refusal for this request is a cancellation, and the
                 // daemon delivered one — an answer, so the card reads
-                // Denied, not an error and not the queue again (review A2a
-                // #3). Every other unhonored outcome keeps the sentence
+                // Denied, not an error and not the queue again. Every other
+                // unhonored outcome keeps the sentence
                 // saying what the daemon did: the ordinary card disables
                 // Deny whenever the request offers no reject option, so a
                 // chooser's enabled Deny is the only door into this arm.
@@ -624,7 +623,7 @@ impl PermissionBroker {
     }
 
     /// Read one pending card's own options, **without** touching it — the
-    /// check the cancel-trap demands (§0.3: `respond_with_option` with an
+    /// check the cancel-trap demands: `respond_with_option` with an
     /// outcome the card does not support completes the card as cancelled, so
     /// the delegated path validates against the entry before any `respond*`
     /// call).
@@ -655,8 +654,8 @@ impl PermissionBroker {
 
     /// The delegated answer, checks one through six **in order**, and the
     /// only door an agent's answer has to a resolution.
-    ///
-    /// The commission's rule (§4.2): a denial-on-failed-check cannot be
+    //
+    /// The commission's rule: a denial-on-failed-check cannot be
     /// written by accident. The mechanism here is a typestate —
     /// [`CheckedDelegatedCard`] is the only value [`Self::resolve_checked`]
     /// accepts, its fields are private, and its constructor is a private
@@ -666,13 +665,13 @@ impl PermissionBroker {
     /// nowhere to divert into `respond`. The human path
     /// ([`Self::respond_with_option`]) keeps its own shape and its own trap
     /// semantics; the delegated path never reaches it.
-    ///
+    //
     /// The checks themselves are supplied as closures because the facts they
     /// read live one layer up: the switch is the daemon's store (read **at
     /// call time**, never cached — the read-cadence rule at
     /// `delegation_store.rs`), the child link and the peer capability are the
     /// registry's rows. Supplying them is testimony; the behaviour tests
-    /// (C1/C2/C4/C5) hold that testimony to the real wiring.
+    /// hold that testimony to the real wiring.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn answer_delegated(
@@ -702,8 +701,8 @@ impl PermissionBroker {
     /// scan found it; `None` when no live session's table has it, which is
     /// check 3's territory). The single-broker wrapper above is its natural
     /// test seam.
-    ///
-    /// The commission's rule (§4.2): a denial-on-failed-check cannot be
+    //
+    /// The commission's rule: a denial-on-failed-check cannot be
     /// written by accident. The mechanism is a typestate —
     /// [`CheckedDelegatedCard`] is the only value [`PermissionBroker::
     /// resolve_checked`] accepts, its fields are private, and its constructor
@@ -713,13 +712,12 @@ impl PermissionBroker {
     /// it has nowhere to divert into `respond`. The human path
     /// ([`PermissionBroker::respond_with_option`]) keeps its own shape and
     /// its own trap semantics; the delegated path never reaches it.
-    ///
+    //
     /// The facts some checks read live one layer up: the switch is the
     /// daemon's store (read **at call time**, never cached — the read-cadence
     /// rule at `delegation_store.rs`), the child link and the peer
     /// capability are the registry's rows. Supplying them as closures is
-    /// testimony; the behaviour tests (C1/C2/C4/C5) hold that testimony to
-    /// the real wiring.
+    /// testimony; the behaviour tests hold that testimony to / the real wiring.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn answer_delegated_on(
         broker: Option<&PermissionBroker>,
@@ -816,8 +814,7 @@ impl PermissionBroker {
             }
         };
         // Check 4: the card's session is a live child of the caller — the
-        // registry's `created_by` link, identity taken from the bearer
-        // (§0.1), never from the request.
+        // registry's `created_by` link, identity taken from the bearer,
         child_check(&pending.session_id)?;
         // Check 5: a creator whose session belongs to a paired device answers
         // only if that device holds `answer_permissions`.
@@ -1507,7 +1504,7 @@ impl PermissionBroker {
 }
 
 /// The pending permission is no longer waiting, as the observers see it.
-///
+//
 /// The decision kind is not the secret: a text answer names no option, but
 /// the grant it carries is still `allow_once`, and observers must read an
 /// allowed question as allowed — never as unclaimed. Only a grant falls
@@ -1690,7 +1687,7 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
 /// The same event with the daemon's chooser verdict written into it, when it
 /// is a permission request: `Some(true)` exactly when the option set trips the
 /// rule [`options_form_a_chooser`] names, absent otherwise.
-///
+//
 /// Called from `PermissionBroker::register_with`, where the copy the audit row
 /// and the replay roads read becomes pending, and from
 /// `SessionRuntime::publish_agent_event_with_seq` on the way out — the one
@@ -1807,7 +1804,7 @@ fn validate_permission_request(
         validate_permission_field("option kind", &option.kind)?;
         // Two options cannot share the id the answer names: resolution is
         // the first match, so a shared id would tell the agent one thing
-        // about "Beta" and the card another (review A2a #10).
+        // about "Beta" and the card another.
         if option_ids.contains(&option.option_id.as_str()) {
             return Err(PermissionResponseError::InvalidRequest(format!(
                 "permission request has two options with the id '{}'",
@@ -3122,7 +3119,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// The same rule held to the person's own door (review A2a #2): a
+    /// The same rule held to the person's own door: a
     /// durable option the person names is durable in the ledger too, and
     /// the card's resolution reads the granted kind — never a one-shot
     /// constant for a grant that is not one-shot.
@@ -3525,7 +3522,7 @@ mod tests {
 
     /// A device may hold three undecided cards; the fourth is refused rather
     /// than stacked in the queue the person at this machine has to read.
-    ///
+    //
     /// The device id is this test's own: the allowance is now daemon-wide, so
     /// a shared id would let two tests running in parallel spend each other's
     /// slots.
@@ -3565,7 +3562,7 @@ mod tests {
         assert_eq!(peer_card_count(device), 0);
     }
 
-    /// H2: the allowance is the *device's*, so two sessions of one paired
+    /// The allowance is the *device's*, so two sessions of one paired
     /// device share it. Three cards across two sessions, and the fourth is
     /// refused whichever session asks for it.
     #[test]
@@ -3804,7 +3801,7 @@ mod tests {
         assert!(error.to_string().contains("closed"), "{error}");
     }
 
-    /// C6, the mutation that keeps the typestate honest: a validation
+    /// The mutation that keeps the typestate honest: a validation
     /// failure on the delegated path refuses and leaves the card pending —
     /// it never routes into `respond`, which would complete the card as
     /// cancelled and tell the child its answer was cancelled.
@@ -4142,8 +4139,7 @@ mod question_tests {
         );
         // The resolved event for a text answer names no option, but still
         // carries the granted kind: observers read an allowed question as
-        // allowed, while no field carries the person's words to any
-        // subscriber.
+        // allowed, while no field carries the person's words to any subscriber.
         let resolved = super::permission_resolved_event(&pending, None, "allow_once", None);
         match resolved {
             SessionEvent::PermissionResolved {

@@ -1,5 +1,5 @@
-//! Journal domain — pass-3a split of `server.rs`: the `dispatch_journal`
-//! request handler and its usage-shape helper.
+//! Journal domain: the `dispatch_journal` request handler and its
+//! usage-shape helper.
 
 use super::*;
 

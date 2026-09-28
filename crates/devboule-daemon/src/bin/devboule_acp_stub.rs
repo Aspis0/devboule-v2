@@ -21,11 +21,11 @@ fn claude_076_result(session_id: &str) -> Value {
     value["result"].take()
 }
 
-/// The mode block this stub declares when `DEVBOULE_STUB_MODES` is set
-/// (`S5` block 2): the standard ACP shape `acp_view::has_standard_modes` reads.
+/// The mode block this stub declares when `DEVBOULE_STUB_MODES` is set:
+/// the standard ACP shape `acp_view::has_standard_modes` reads.
 ///
 /// The value is a comma-separated list of modes, the **first** being the one
-/// the session is already in. `ask,default` is what the slice-5 tests use: the
+/// the session is already in. `ask,default` is what the tests use: the
 /// preset cells name `default`, the session starts in `ask`, so the daemon has
 /// a real switch to send and the test can see the cell's mode arrive. A block
 /// that already said `default` would prove nothing — the daemon sends
@@ -206,12 +206,12 @@ fn main() -> io::Result<()> {
         || hybrid_effort_only
         || categoryless_options
         || feature_option;
-    // Audit §1 scenario: after a daemon restart the reattach (session/load)
+    // After a daemon restart the reattach (session/load)
     // reply carries modes only — no configOptions, no models. The switch
     // shape must be None and a click must fail loudly.
     let load_modes_only = std::env::var_os("DEVBOULE_STUB_LOAD_MODES_ONLY").is_some();
     let load_models_push = std::env::args().any(|arg| arg == "--load-models-push");
-    // Slice-5 scenario: the agent declares the modes `DEVBOULE_STUB_MODES`
+    // The agent declares the modes `DEVBOULE_STUB_MODES`
     // lists (`ask,default` for the tests) and implements `session/set_mode`
     // for them. A daemon only ever *sends* a mode switch to an agent that
     // declared modes at `session/new` (`acp_view::has_standard_modes` gates
@@ -220,7 +220,7 @@ fn main() -> io::Result<()> {
     // child locally and no test could prove the preset cell's mode reached the
     // provider, and without the second there would be nothing to send.
     let stub_modes: Option<String> = std::env::var("DEVBOULE_STUB_MODES").ok();
-    // Audit §6 scenario: a JSON-RPC success with no parseable catalog.
+    // A JSON-RPC success with no parseable catalog.
     let malformed_config_reply = std::env::var_os("DEVBOULE_STUB_CONFIG_MALFORMED_REPLY").is_some();
     let hybrid_vendor_mismatch = std::env::var_os("DEVBOULE_STUB_HYBRID_VENDOR_MISMATCH").is_some();
     let mut reject_config_once = std::env::var_os("DEVBOULE_STUB_REJECT_CONFIG_ONCE").is_some();
@@ -306,7 +306,7 @@ fn main() -> io::Result<()> {
         }
         let Ok(request) = serde_json::from_str::<Value>(&line) else {
             // A line that is not a request: the stub ignores it (that is what a
-            // real agent does with chatter), but slice-5's tests need to *see*
+            // real agent does with chatter), but the tests need to *see*
             // what arrived when something downstream reports malformed output,
             // so the raw line is kept when a file is named.
             if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_STDIN_FILE") {
@@ -368,8 +368,7 @@ fn main() -> io::Result<()> {
             if chooser_active {
                 // Exactly what the answer carried: the option id the person
                 // picked, or the cancellation — the sentence a live check
-                // reads off the transcript to see which choice the card
-                // actually made.
+                // reads off the transcript to see which choice the card actually made.
                 chooser_active = false;
                 let text = if cancelled {
                     "You cancelled".to_string()
@@ -491,8 +490,7 @@ fn main() -> io::Result<()> {
                 }
                 // A provider that is still starting: the request is read and
                 // nothing is answered. The daemon's bound is then the only
-                // thing that can end the wait, which is what this knob exists
-                // to exercise.
+                // thing that can end the wait, which is what this knob exists to exercise.
                 if std::env::var_os("DEVBOULE_STUB_IGNORE_INITIALIZE").is_some() {
                     continue;
                 }
@@ -537,8 +535,7 @@ fn main() -> io::Result<()> {
                             "code": -32000,
                             "message": "Authentication required: stub credentials expired",
                             // Mirror real peers (qwen): error objects carry
-                            // structured auth payloads the user never needs
-                            // in an error banner.
+                            // structured auth payloads the user never needs in an error banner.
                             "data": {"authMethods": [{"id": "oauth"}]}
                         }),
                     )?;
@@ -627,7 +624,7 @@ fn main() -> io::Result<()> {
                         }
                     })
                 };
-                // The R2a delivery scenario: an agent that declares no model
+                // An agent that declares no model
                 // catalog at all. The daemon's switch shape is then None, and
                 // a profile naming a model must be refused with the absence
                 // sentence instead of being sent and hoped for.
@@ -637,13 +634,11 @@ fn main() -> io::Result<()> {
                     }
                 }
                 if std::env::var_os("DEVBOULE_STUB_OMIT_MODES").is_some() {
-                    // The re-audit's P3-5: the daemon's tick guard has a
-                    // sentence for a handshake that declared no modes the
-                    // daemon can judge, and reaching it needs an agent that
-                    // says nothing about modes at all.
+                    // The daemon's tick guard has a sentence for a handshake
+                    // that declared no modes the daemon can judge, and reaching
+                    // it needs an agent that says nothing about modes at all.
                 } else if let Some(modes) = stub_modes.as_deref() {
-                    // The stub declares the modes the test asked for (`S5`
-                    // block 2's worker cell for this provider), so the daemon's
+                    // The stub declares the modes the test asked for, so the daemon's
                     // `has_standard_modes` is true and the child's creation
                     // really sends `session/set_mode` instead of switching
                     // locally. Without the knob the stub keeps the shape every
@@ -773,8 +768,7 @@ fn main() -> io::Result<()> {
                         .clone()
                         .unwrap_or_else(|| claude_076_result("stub-session"));
                     let payload = if load_modes_only {
-                        // The reattach reply carries modes only; the config
-                        // surface is absent.
+                        // The reattach reply carries modes only; the config surface is absent.
                         json!({
                             "sessionId": "stub-session",
                             "modes": result.get("modes").cloned().unwrap_or(json!({}))
@@ -924,7 +918,7 @@ fn main() -> io::Result<()> {
                 respond(&mut stdout, request.get("id").cloned(), state.clone())?;
             }
             "session/set_mode" => {
-                // The mode switch a slice-5 child's preset cell needs. The
+                // The mode switch a child's preset cell needs. The
                 // daemon only sends this at all when the provider declared
                 // modes at `session/new` (`has_standard_modes` => remote modes),
                 // which the `DEVBOULE_STUB_MODES_DEFAULT` knob below makes the
@@ -959,10 +953,9 @@ fn main() -> io::Result<()> {
             }
             "session/set_model" => {
                 if std::env::var_os("DEVBOULE_STUB_DRIBBLE_SET_MODEL").is_some() {
-                    // The re-audit's P2-3 agent: bytes keep arriving forever
-                    // and none of them is a newline, so the pipe is never
-                    // quiet. A read bound consulted only when the pipe is
-                    // empty never fires; one consulted on every iteration
+                    // Bytes keep arriving forever and none of them is a newline,
+                    // so the pipe is never quiet. A read bound consulted only when
+                    // the pipe is empty never fires; one consulted on every iteration
                     // does. Runs until the refusal teardown kills the child.
                     loop {
                         let _ = stdout.write_all(b" ");
@@ -971,10 +964,9 @@ fn main() -> io::Result<()> {
                     }
                 }
                 if std::env::var_os("DEVBOULE_STUB_IGNORE_SET_MODEL").is_some() {
-                    // The mute agent the re-audit's P2-2 convicts with: the
-                    // switch is taken off the wire and nothing ever comes
-                    // back. Only a deadline on the daemon's read turns this
-                    // into a refusal instead of an eternal wait.
+                    // The mute agent: the switch is taken off the wire and nothing
+                    // ever comes back. Only a deadline on the daemon's read turns
+                    // this into a refusal instead of an eternal wait.
                     continue;
                 }
                 if std::env::var_os("DEVBOULE_STUB_DIE_BEFORE_SET_MODEL_REPLY").is_some() {
@@ -1085,9 +1077,9 @@ fn main() -> io::Result<()> {
             }
             "session/prompt" => {
                 if std::env::var_os("DEVBOULE_ACP_STUB_EXIT_ON_PROMPT").is_some() {
-                    // The child dies the instant its first prompt arrives
-                    // (audit-2 §1, case b): it lived long enough for the
-                    // creation to answer Ok, so this exit is a *child end*.
+                    // The child dies the instant its first prompt arrives:
+                    // It lived long enough for the creation to answer Ok, so this
+                    // exit is a *child end*.
                     return Ok(());
                 }
                 last_prompt_id = request.get("id").and_then(Value::as_u64);
@@ -1161,8 +1153,7 @@ fn main() -> io::Result<()> {
                 if prompt_text.contains("grok-question") {
                     // grok's vendor question carrier, in the enveloped params
                     // shape of the live 1.0.25/26 frame. The unenveloped
-                    // 1.0.40 shape is covered at unit level; the daemon
-                    // accepts both.
+                    // 1.0.40 shape is covered at unit level; the daemon accepts both.
                     grok_request_id = Some(98);
                     grok_seq += 1;
                     let tool_call_id = if reuse_permission_ids {
@@ -1344,8 +1335,8 @@ fn respond(stdout: &mut impl Write, id: Option<Value>, result: Value) -> io::Res
 }
 
 fn emit(stdout: &mut impl Write, value: Value) -> io::Result<()> {
-    // Serialized to a string first so the same bytes can be kept for a test
-    // (`S5` e2e): when the daemon reports malformed output or a missing answer,
+    // Serialized to a string first so the same bytes can be kept for a test:
+    // when the daemon reports malformed output or a missing answer,
     // the question is always *what did the provider actually write*, and this
     // is the only place that knows.
     let text = serde_json::to_string(&value).map_err(io::Error::other)?;
@@ -1456,11 +1447,9 @@ fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
         .get("url")
         .and_then(Value::as_str)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "MCP URL is missing"))?;
-    // A real agent connects to the broker *after* its handshake completes; the
-    // stub used to call in the middle of `session/new`, which is before the
-    // daemon has the session in its registry, so the call was refused and the
-    // session's readiness was never proved. The delay (0 by default, so every
-    // other stub test keeps its timing) lets a test reproduce the real order.
+    // A real agent connects to the broker only after its handshake completes.
+    // The delay (0 by default, so every other stub test keeps its timing) lets a
+    // test reproduce that order.
     let mcp_delay_ms = std::env::var("DEVBOULE_ACP_STUB_MCP_DELAY_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -1600,7 +1589,7 @@ fn write_observation_files() {
     if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_PID_FILE") {
         let _ = std::fs::write(path, std::process::id().to_string());
     }
-    // Every stub process that starts, in order (`S5` e2e): one test spawns a
+    // Every stub process that starts, in order: one test spawns a
     // creator *and* the child it creates, and killing the child is how the
     // reader's EOF path is reached on purpose. The single-pid file above cannot
     // say which of the two is which; this one can, because it keeps both.

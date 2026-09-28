@@ -161,7 +161,7 @@ fn tools_state_tri_state_and_single_computation_point() {
         );
     }
     // Storage starts unknown-as-absent: a fresh runtime reads
-    // Unavailable until registration flips it (S8).
+    // Unavailable until registration flips it.
     let runtime = crate::session::SessionRuntime::new();
     assert_eq!(runtime.tools_state(), ToolsState::Unavailable);
     runtime.set_tools_state(ToolsState::Unverified);
@@ -193,10 +193,10 @@ fn s2_session(kind: devboule_protocol::SessionKind) -> devboule_protocol::Sessio
 
 #[test]
 fn bind_without_registration_is_a_noop() {
-    // S8 bind-split safety: `bind_runtime` without a row touches nothing —
+    // Bind-split safety: `bind_runtime` without a row touches nothing —
     // no bearer, no URL, no state flip. This is what makes the else-branch
     // bind production-identical without a row. (The registered half is
-    // wired by the S9 road test, which drives a minted carrier live.)
+    // wired by the road test, which drives a minted carrier live.)
     let state = ServerState::new("mcp-bind-noop".to_string());
     let runtime = Arc::new(crate::session::SessionRuntime::new());
     state.mcp.bind_runtime("s.nobody.9", &runtime);
@@ -205,9 +205,8 @@ fn bind_without_registration_is_a_noop() {
 
 #[test]
 fn registration_is_a_fact_the_surfaces_read() {
-    // S9: the flipped gate admits every agent kind — Acp AND Codex rows
-    // exist; unknown ids do not. (In parts 1–2 this same test pinned the
-    // closed gate with Codex → None; the flip is the pass.)
+    // The flipped gate admits every agent kind — Acp AND Codex rows
+    // exist; unknown ids do not.
     let state = ServerState::new("mcp-registered-fact".to_string());
     let owner = owner("mcp-user-reg", "mcp-client-reg");
     assert!(!state.mcp.is_registered("s.nobody.1"));
@@ -236,7 +235,7 @@ fn registration_is_a_fact_the_surfaces_read() {
     );
 }
 
-/// Pass 2c: nobody spells the MCP question as a list of kinds any more,
+/// Nobody spells the MCP question as a list of kinds any more,
 /// anywhere. The answers live in the provider impls (`Provider::hosts_mcp`,
 /// `Provider::mcp_gates_first_prompt`) and the broker's two predicates are
 /// shims answering through the registry; the zero counts below pin that no
@@ -271,8 +270,8 @@ fn mcp_predicates_are_provider_facts_not_kind_lists() {
             // exactly the kind of site this walk exists to follow.
             include_str!("session_prompt_planning.rs"),
             include_str!("session_registry_state.rs"),
-            // The resume road's phases, carved out of `session.rs` by the C4
-            // slice: same walk rule as the siblings above.
+            // The resume road's phases, carved out of `session.rs`:
+            // same walk rule as the siblings above.
             include_str!("session_resume.rs"),
         ]
         .map(str::to_string),
@@ -313,7 +312,7 @@ fn mcp_predicates_are_provider_facts_not_kind_lists() {
 
 #[test]
 fn phase0_gate_names_the_decision_it_makes() {
-    // The guard is still the branch that decides. Post-S9 only Terminal
+    // The guard is still the branch that decides. Only Terminal
     // takes `Ok(None)`; every agent kind registers. The sentence it logs
     // names the session id, the kind and provider, and the state
     // `unavailable` with the reason. `eprintln!` output cannot be captured
@@ -353,10 +352,9 @@ fn phase0_gate_names_the_decision_it_makes() {
 
 #[test]
 fn creation_card_promises_tools_honestly_per_provider() {
-    // S9: every agent family hosts a carrier, so every card promises
-    // Hosted with the precedence rule's phrase. (In parts 1–2 pi/codex
-    // promised Unavailable with the no-tools sentence; the flip retires
-    // that branch — the sentence helpers below stay for result/roster.)
+    // Every agent family hosts a carrier, so every card promises
+    // Hosted with the precedence rule's phrase. (The no-tools sentence
+    // helpers below stay for result/roster.)
     // Forbidden state: a card without the verification promise.
     for provider in ["pi", "codex", "claude", "gemini", "grok", "qwen"] {
         assert_eq!(
@@ -424,7 +422,7 @@ fn creation_result_reports_verification_per_state() {
             ),
         }
     }
-    // S8: the wrapper reads the registration FACT, not the kind — a Codex
+    // The wrapper reads the registration FACT, not the kind — a Codex
     // child with a minted carrier reads unverified (establishing), one
     // without reads unavailable. Production-identical while the gate holds.
     let unregistered = created_result(&id, &s2_session(SessionKind::Codex), false);
@@ -443,7 +441,7 @@ fn creation_result_reports_verification_per_state() {
 
 #[test]
 fn protected_bytes_write_is_mode_narrow_and_atomic() {
-    // S4 DACL-order test: the primitive creates narrow and stays narrow.
+    // DACL-order test: the primitive creates narrow and stays narrow.
     // On unix the assertion is the 0o600 mode bit; on Windows the DACL call
     // runs before the first byte (code inspection) and the test pins content
     // + cleanup. Mutation: drop the 0o600 mode (unix) → this test red.
@@ -488,7 +486,7 @@ fn protected_bytes_write_is_mode_narrow_and_atomic() {
 
 #[test]
 fn sweep_removes_legacy_codex_homes_and_keeps_strangers() {
-    // S4 sweep test: stale Claude configs, pi permission/bridge files and
+    // Sweep test: stale Claude configs, pi permission/bridge files and
     // their temps go, plus legacy owned Codex home trees (the `-c` carrier
     // writes no home; the sweep only ever sees leftovers from older builds);
     // a non-matching file — and a non-matching dir — stay. Forbidden states:
@@ -541,7 +539,7 @@ fn sweep_removes_legacy_codex_homes_and_keeps_strangers() {
 
 #[test]
 fn redaction_covers_bearer_and_url_but_not_env_names() {
-    // S4 redaction test: bearer+url vanish from errors/logs for the new
+    // Redaction test: bearer+url vanish from errors/logs for the new
     // carriers too; env names (`DEVBOULE_MCP_TOKEN`, `DEVBOULE_MCP_URL`)
     // carry no secret bytes themselves and pass through.
     let config = McpLaunchConfig {
@@ -562,7 +560,7 @@ fn redaction_covers_bearer_and_url_but_not_env_names() {
     assert!(!redacted.contains("4567"), "endpoint redacted: {redacted}");
     let argv = "pi --mode rpc -e bridge.ts with DEVBOULE_MCP_TOKEN and DEVBOULE_MCP_URL";
     assert_eq!(config.redact_text(argv), argv, "env names are not secrets");
-    // S8: the same cover for the Codex launch line — the URL rides a `-c`
+    // The same cover for the Codex launch line — the URL rides a `-c`
     // override on argv, the bearer value stays in the env, and the env-var
     // names themselves are not secrets.
     let codex_argv = format!(
@@ -585,7 +583,7 @@ fn redaction_covers_bearer_and_url_but_not_env_names() {
 
 #[test]
 fn roster_entries_carry_the_tools_word() {
-    // Roster test with mixed states (and, since S8, mixed kinds — the word
+    // Roster test with mixed states (and mixed kinds — the word
     // is kind-blind by construction): every entry carries `tools`.
     // Forbidden state: one entry with the field dropped (remove the field
     // in the fixture → red).
@@ -1108,7 +1106,7 @@ fn a_journal_row_restriction_reaches_the_broker_registration() {
 
 #[test]
 fn pi_bridge_fetch_hygiene_against_the_real_broker() {
-    // S5/Q1 measurement: the bridge's exact header set against the REAL broker,
+    // The bridge's exact header set against the REAL broker,
     // raw bytes. Dual Accept takes the JSON branch (not SSE framing); the
     // `notifications/initialized` second call is 202-empty (success without a
     // result — never parsed, never failed); RPC errors ride HTTP 200 (a `res.ok`
@@ -1164,7 +1162,7 @@ fn pi_bridge_fetch_hygiene_against_the_real_broker() {
         ("Authorization", bearer.as_str()),
     ];
     // initialize → 200 JSON (raw body opens with `{`: the JSON branch, not
-    // SSE framing — the Q1 dual-Accept verdict).
+    // SSE framing — the dual-Accept verdict).
     let init = raw_post(
         &url,
         &headers_ref,
@@ -1585,7 +1583,7 @@ fn http_bearer_owns_the_filtered_roster_not_tool_arguments() {
     drop(server);
 }
 
-/// The brief's second refusal, measured rather than assumed.
+/// The second refusal, measured rather than assumed.
 ///
 /// A connection owned by a session's Bearer is an MCP connection, and its
 /// only channel into the daemon is a tool *name*: the broker runs in this
@@ -1619,8 +1617,7 @@ fn a_bearers_tool_name_cannot_reach_the_agent_profile_store() {
     // its authority is the `created_by` link, never the name. Every other
     // `profile` spelling must fail this assertion, including one-letter
     // neighbours of the allowed names such as `devboule_agent_profile_get`,
-    // which a substring deny on `agent_profiles`/`set_profile` used to
-    // wave through.
+    // which a substring deny on `agent_profiles`/`set_profile` would wave through.
     for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
         assert!(
             name == &crate::provider_catalog::MCP_LIST_PROFILES_TOOL
@@ -1659,7 +1656,7 @@ fn a_bearers_tool_name_cannot_reach_the_agent_profile_store() {
     // cannot be reached from a bearer, so the only attack is a tool named
     // after it. `delegat` catches every delegation spelling; `grant`
     // catches the vocabulary a per-session or per-creator allow would
-    // reach for, and this slice deliberately has no tool by that name —
+    // reach for, and this build deliberately has no tool by that name —
     // the only thing that answers a card is `devboule_answer_permission`,
     // which matches neither word because it reads the pending table, not
     // the switch.
@@ -1675,7 +1672,7 @@ fn a_bearers_tool_name_cannot_reach_the_agent_profile_store() {
     drop(server);
 }
 
-/// C8, at the two doors an agent's answer has: the schema the model
+/// At the two doors an agent's answer has: the schema the model
 /// reads offers `allow_once` and `deny` and nothing else, and the arm
 /// itself refuses any other outcome string before it looks at a card.
 #[test]
@@ -1747,7 +1744,7 @@ fn the_answer_tool_offers_allow_once_or_deny_and_nothing_else() {
     drop(server);
 }
 
-/// C12, on the answer side: a delegated answer audited with its actor
+/// On the answer side: a delegated answer audited with its actor
 /// session, and a refused answer audited as denied. The rows name the
 /// actor, never the card's contents.
 #[test]
@@ -1825,8 +1822,8 @@ fn an_answer_through_the_tool_is_audited_with_its_actor() {
 }
 
 // -----------------------------------------------------------------------
-// Pass A: `devboule_set_agent_profile` — a creator moves its own live
-// child onto a ticked profile (slice 5b §2).
+// `devboule_set_agent_profile` — a creator moves its own live child onto a
+// ticked profile.
 // -----------------------------------------------------------------------
 
 /// The move tool is listed with the closed schema it documents, and the
@@ -1898,7 +1895,7 @@ fn the_move_tool_is_listed_with_a_closed_schema_and_demands_both_arguments() {
     drop(server);
 }
 
-/// §1.2, at the move surface: unknown, ambiguous and unticked are three
+/// At the move surface: unknown, ambiguous and unticked are three
 /// refusals with three sentences — and the tick is read at the moment of
 /// the call, never from a list cached earlier.
 #[test]
@@ -2037,7 +2034,7 @@ fn the_move_resolvers_unticked_arm_matches_an_nfd_stored_name() {
     }
 }
 
-/// Pass A's audit: a move through the tool names its actor session, and a
+/// A move through the tool names its actor session, and a
 /// refused move is audited as denied — the answer arm's shape, on the move
 /// surface.
 #[test]
@@ -2132,7 +2129,7 @@ fn a_move_through_the_tool_is_audited_with_its_actor() {
 }
 
 // ------------------------------------------------------------------
-// P0 — the broker asks where its caller came from, once, at the door.
+// The broker asks where its caller came from, once, at the door.
 // ------------------------------------------------------------------
 
 /// A `peers` row the door's capability reads can see.
@@ -2171,7 +2168,7 @@ fn local_callers_pass_the_door_for_every_tool() {
 }
 
 /// The Oracle search is the one served tool behind its own capability,
-/// `search` (owner's decision, 2026-09-22, `DECISIONS.md` §Q-g): a peer
+/// `search` (owner's decision, 2026-09-22): a peer
 /// holding `view` but not `search` meets the door's standard capability
 /// refusal — a sentence that **names `search`**, not a hard origin refusal —
 /// while the same peer granted `search` passes the door to the broker. The
@@ -3158,12 +3155,12 @@ fn a_send_that_loses_the_race_to_a_close_gets_the_closed_sentence() {
     journal.shutdown();
 }
 
-/// F4 (MAX RECALL, authority): the tool's act is performed AS the caller.
-/// The send used to act through an unmarked connection, so a peer's
-/// delivery read `local` to the receiving agent (S4-05) and carried the
-/// steer-refusal interrupt authority the wire denies every peer (S4-01).
+/// The tool's act is performed AS the caller.
+/// A send through an unmarked connection read
+/// `local` to the receiving agent and carried the
+/// steer-refusal interrupt authority the wire denies every peer.
 /// The connection now carries the caller's resolved identity: the envelope
-/// arrives naming the device, exactly as the wire's own S4-05 test pins.
+/// arrives naming the device, exactly as the wire's own test pins.
 #[test]
 fn a_peer_tool_send_is_attributed_to_the_peer() {
     let state = ServerState::new("mcp-f4-send".to_string());
@@ -3351,7 +3348,7 @@ fn a_peer_create_is_the_create_act() {
     drop(server);
 }
 
-/// F1 (MAX RECALL, authority), the decided composition stated on the
+/// The decided composition stated on the
 /// consent surface: a peer holding `answer_permissions` may answer its own
 /// creation card, so the card names that device. Without the cap — and for
 /// every local caller — the card says nothing about answering.
@@ -3386,7 +3383,7 @@ fn a_creation_card_names_a_device_that_may_answer_it() {
     assert!(self_answer_note(&state, &McpCaller::Local).is_none());
 }
 
-/// The door reads origin, never kind (S9): a pi-kind caller meets exactly the
+/// The door reads origin, never kind: a pi-kind caller meets exactly the
 /// judgment an ACP-kind caller meets. A peer's pi session without `send` is
 /// refused the create tool with the policy's sentence and spawns nothing;
 /// with `send` it passes the door to the same profile check. A local pi
@@ -3957,7 +3954,7 @@ fn session_exit_wakes_an_mcp_readiness_waiter() {
     assert!(error.message.contains("process exited"));
 }
 
-/// The closed schema (`S5` §2) is the first bound: nothing beyond the seven
+/// The closed schema is the first bound: nothing beyond the seven
 /// parameters the tool publishes, no way to name a mode, and no way to name a
 /// provider or a preset (`create-from-profile`).
 #[test]
@@ -4019,10 +4016,9 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
             json!({"title": "b", "profile": "worker", "initialPrompt": "x", "notifyOnFinish": "yes"}),
             "notifyOnFinish must be a boolean",
         ),
-        // Audit S5-09: a wrong type is an invalid-params error, never a
+        // A wrong type is an invalid-params error, never a
         // silently ignored parameter. A caller that asked for a workspace
-        // and got its word ignored would create a child somewhere it did
-        // not ask for.
+        // and got its word ignored would create a child somewhere it did not ask for.
         (
             json!({"title": "b", "profile": "worker", "initialPrompt": "x", "workspaceId": 5}),
             "workspaceId must be a string",
@@ -4039,8 +4035,8 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
             json!({"title": "b", "profile": "worker", "initialPrompt": "x", "cwd": true}),
             "cwd must be a string",
         ),
-        // The two parameters this slice removed are refused like any other
-        // name the schema does not publish (`S5` §2, rev 9).
+        // The two parameters this build removed are refused like any other
+        // name the schema does not publish.
         (
             json!({"title": "b", "profile": "worker", "initialPrompt": "x", "provider": "claude"}),
             "unknown parameter 'provider'",
@@ -4074,7 +4070,7 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
     assert!(parsed.cwd.is_none());
 }
 
-/// Audit S5-08: the fingerprint is what a retry must match, so it covers
+/// The fingerprint is what a retry must match, so it covers
 /// every field the answer depends on — including the ones that say *where*
 /// the child runs and whether the creator wants to hear about it.
 ///
@@ -4185,7 +4181,7 @@ fn a_creation_fingerprint_covers_workspace_cwd_and_notify() {
     );
 }
 
-/// The overlay is the same rule in both places (`S5` §2 and its checklist):
+/// The overlay is the same rule in both places:
 /// hidden at `tools/list`, refused at `tools/call` — and the roster survives
 /// both, because naming a session is how an agent reports to a human.
 #[test]
@@ -4296,10 +4292,8 @@ fn a_profile_overlay_hides_peer_tools_from_the_child_it_creates() {
     );
 }
 // -----------------------------------------------------------------------
-// `create-from-profile`: resolving a profile, and the sentences a refusal
-// uses (`BRIEF-slice-5.md` §2, rev 9).
+// `create-from-profile`: resolving a profile, and the sentences a refusal uses.
 // -----------------------------------------------------------------------
-
 /// A profile store holding `document`, in a directory of its own.
 ///
 /// The real store, not a fake: the resolution rules are about what the human
@@ -5450,7 +5444,7 @@ fn the_daemon_stamps_its_four_labels_into_the_callers_map() {
     );
 }
 
-/// The A2A result names the task and the context (`S5` §2, decision 8b), with
+/// The A2A result names the task and the context, with
 /// no bookkeeping of the caller's own.
 #[test]
 fn a_creation_result_carries_the_task_id_and_the_context() {
@@ -6125,8 +6119,7 @@ fn agent_status_reads_a_live_child() {
         "no card title: {document}"
     );
     // And the door says the same split: a `view` peer may read this count,
-    // while the list that carries the details is priced at
-    // `answer_permissions`.
+    // while the list that carries the details is priced at `answer_permissions`.
     let view_peer = McpCaller::Peer {
         device_id: "c1a-status-view".to_string(),
         role: crate::peer_policy::PeerRole::Client,

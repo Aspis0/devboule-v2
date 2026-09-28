@@ -55,7 +55,7 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, name: &str) -> Result<Option<Vec<u8>>, SecretStoreError>;
     fn set(&self, name: &str, bytes: &[u8]) -> Result<(), SecretStoreError>;
 }
-// There is deliberately no `delete`. Nothing in this slice retires stored key
+// There is deliberately no `delete`. Nothing retires stored key
 // material: revoking a peer stamps a row in the `peers` table and drops its
 // connections, and the only secret here is this device's own Noise static key,
 // which outlives every pairing. A method with no caller is dead code that
@@ -338,7 +338,7 @@ mod tests {
             Some(&b"0123456789"[..])
         );
         // Overwriting is the only mutation: the store has no delete, because
-        // nothing in this slice retires stored key material.
+        // nothing retires stored key material.
         store.set(NAME, b"second").expect("overwrite");
         assert_eq!(
             store.get(NAME).expect("get").as_deref(),
@@ -398,7 +398,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// F2: `CreateFileW` ignores `lpSecurityDescriptor` on its truncate path, so
+    /// `CreateFileW` ignores `lpSecurityDescriptor` on its truncate path, so
     /// a file that already existed with a wide DACL keeps it unless the DACL is
     /// re-applied after the handle is open.
     #[cfg(windows)]
@@ -413,7 +413,7 @@ mod tests {
         // path, so a pre-existing wide file keeps its DACL unless it is
         // re-applied after the handle opens.
         std::fs::write(&path, b"previous").expect("pre-existing file");
-        // Everyone-full-control, exactly the DACL the finding describes.
+        // Everyone-full-control.
         widen_dacl(&path, "D:(A;;GA;;;WD)");
         assert!(!crate::security::dacl_is_current_user_only(
             &crate::security::dacl_sddl_for_path(&path).expect("dacl"),

@@ -31,8 +31,7 @@ fn node_command() -> std::process::Command {
 
 /// What a `node` spawn failure panics with: the test name, the program
 /// name, the `io::Error` (kind + OS message), and the `PATH` and cwd the
-/// test process saw — the context the old "node is required" message
-/// never gave.
+/// test process saw — the context a "node is required" message never gives.
 fn node_unavailable(test: &str, error: &std::io::Error) -> String {
     format!(
             "node is required for the {test}: could not spawn `node` ({error}; kind={:?}; PATH={:?}; cwd={:?})",
@@ -107,7 +106,7 @@ fn only_our_notify_is_the_permission_channel_ready_signal() {
 
 #[test]
 fn handshake_does_not_require_the_ready_signal() {
-    // A2-13: the suite skips without `node` instead of turning a machine
+    // The suite skips without `node` instead of turning a machine
     // that lacks it into a red build.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
@@ -265,7 +264,7 @@ fn pi_permission_sender_keeps_control_after_failed_write() {
 
 #[test]
 fn pi_auto_answer_failure_still_denies_the_extension_confirm() {
-    // A2-13: a machine without `node` skips this rather than failing it.
+    // A machine without `node` skips this rather than failing it.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
@@ -345,7 +344,7 @@ fn permission_extension_paths_are_unique_per_session() {
 
 #[test]
 fn permission_extension_prompts_unknown_tools_and_allows_confirmed_tools() {
-    // A2-13: a machine without `node` skips this rather than failing it.
+    // A machine without `node` skips this rather than failing it.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
@@ -430,7 +429,7 @@ fn pi_broker_tools_are_unmediated_and_walked() {
         );
     }
     // The rendered set states the fact: the new identifier is present and
-    // the old read-only name survives nowhere.
+    // the read-only name survives nowhere.
     let rendered = super::permission_extension();
     assert!(
         rendered.contains("unmediated"),
@@ -470,7 +469,7 @@ fn pi_broker_tools_are_unmediated_and_walked() {
 
 #[test]
 fn pi_bridge_template_serves_the_broker_tools() {
-    // S5 walking test for the bridge: every served tool's name and verbatim
+    // Walking test for the bridge: every served tool's name and verbatim
     // description reaches the exact string `write_bridge_extension` persists —
     // an eighth tool, or a catalog rewording without a bridge edit, fails.
     // Hygiene markers ride the same test: dual Accept, named timeout, bridge
@@ -523,7 +522,7 @@ fn pi_bridge_template_serves_the_broker_tools() {
     );
     assert!(
         template.contains("mcpRequest(\"tools/list\", {}, undefined)"),
-        "session_start proves in-band with an authenticated tools/list (S8 producer)"
+        "session_start proves in-band with an authenticated tools/list"
     );
     assert!(
         template.contains("process.env.DEVBOULE_MCP_URL")
@@ -533,7 +532,7 @@ fn pi_bridge_template_serves_the_broker_tools() {
     assert!(
         template.contains("Authorization: `Bearer ${MCP_TOKEN}`")
             || template.contains("Authorization\": `Bearer ${MCP_TOKEN}`"),
-        "Bearer flies on every request (spike S5)"
+        "Bearer flies on every request"
     );
     assert!(
         template.contains("payload.error") || template.contains("payload && payload.error"),
@@ -605,7 +604,7 @@ globalThis.fetch = async (_url, options) => new Promise((resolve, reject) => {
 #[test]
 fn pi_bridge_announce_is_detected_not_discovered() {
     // No rpc tool enumeration exists (spike-measured): the notify is the only
-    // out-of-band readiness signal. S8 consumes this plus the in-child round-trip.
+    // out-of-band readiness signal. The consumer uses this plus the in-child round-trip.
     let bridge = serde_json::json!({
         "type": "extension_ui_request",
         "method": "notify",
@@ -625,7 +624,7 @@ fn pi_bridge_announce_is_detected_not_discovered() {
 
 #[test]
 fn pi_spawn_args_put_the_bridge_second_and_keep_callers() {
-    // S5 argv shape: permission first, bridge second (the spike's measured
+    // argv shape: permission first, bridge second (the spike's measured
     // order), everything before `--`, caller forms preserved, token-free.
     let command = PtyCommand::new(
         "pi",
@@ -660,7 +659,7 @@ fn pi_spawn_args_put_the_bridge_second_and_keep_callers() {
 
 #[test]
 fn pi_mcp_launch_separates_env_from_argv() {
-    // S4 seam body: env carries URL + token values, argv carries nothing,
+    // seam body: env carries URL + token values, argv carries nothing,
     // the bridge file exists with the served names, owned_paths names it.
     let dir = crate::test_dirs::test_temp_dir("devboule-pi-mcp-launch");
     let config = crate::mcp_broker::McpLaunchConfig::for_test(
@@ -696,14 +695,14 @@ fn pi_mcp_launch_separates_env_from_argv() {
         .to_string();
     assert!(
         name.starts_with("devboule-pi-bridge-") && name.ends_with(".ts"),
-        "owned bridge name the S4 sweep covers: {name}"
+        "owned bridge name the sweep covers: {name}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn pi_bridge_drives_the_broker_shape_through_a_stub_pi() {
-    // S5 executable analogue of spike S2/S3/S5 (which measured against the
+    // executable analogue of the measured spikes (which measured against the
     // real pi binary + stub broker/model): the persisted bridge file loads in
     // node against a stubbed `pi` object and a stubbed `fetch`, proving the
     // registerTool wiring, the Bearer + dual-Accept + string-body shape, the
@@ -781,7 +780,7 @@ export const Type = {
   for (const name of ["devboule_list_agents", "devboule_list_profiles", "devboule_send_message", "devboule_create_agent", "devboule_set_agent_profile", "devboule_answer_permission"]) {
     if (!tools[name]) { console.error("missing tool " + name); process.exit(12); }
   }
-  // S8 producer: session_start proves in-band with an authenticated tools/list.
+  // session_start proves in-band with an authenticated tools/list.
   const listCalls = calls.filter((call) => {
     try { return JSON.parse(call.body).method === "tools/list"; } catch { return false; }
   });
@@ -817,7 +816,7 @@ export const Type = {
   const outcome = (((tools.devboule_answer_permission.parameters || {}).properties || {}).outcome || {});
   const values = outcome.anyOf ? outcome.anyOf.map((entry) => entry.const) : outcome.enum;
   if (!values || !values.includes("allow_once") || !values.includes("deny")) process.exit(24);
-  // S8 tolerance: a failed startup list breaks nothing — the announce fired and
+  // tolerance: a failed startup list breaks nothing — the announce fired and
   // later calls still work. Refused broker, second startup, must resolve.
   behavior = "refused";
   const notified = notifies.length;
@@ -977,8 +976,8 @@ fn a_turn_end_line_delivers_each_event_exactly_once_across_a_fresh_attach() {
 
 #[test]
 fn pi_bearer_is_redacted_from_stderr_before_delivery() {
-    // Broker-4, pi half: same defect as Codex (a bearer in the child env
-    // since S9), same fix, same proof. No belt here — the
+    // Same defect as Codex (a bearer in the child env),
+    // same fix, same proof. No belt here — the
     // invalid-configuration marker is Codex's sentence, not pi's.
     let broker =
         super::super::permission_broker::PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
@@ -1100,7 +1099,6 @@ fn absent_or_malformed_input_is_not_a_refusal() {
 }
 
 // --- image delivery (the static route) --------------------------------
-//
 // The routing decision lives in `plan_pi_prompt`, tested here against
 // the attachment store directly, without spawning a child — the same
 // arrangement the ACP sibling seam's tests use. The wire shape of one
@@ -1560,7 +1558,7 @@ fn a_control_response_for_an_id_nobody_waits_for_is_ignored() {
 }
 
 /// The refusal Pi sends for a command its build has no handler for, in the
-/// spelling the test passes (A2-11): the script is `FAKE_PI_UNKNOWN_STEER`
+/// spelling the test passes: the script is `FAKE_PI_UNKNOWN_STEER`
 /// with its error message replaced, so the two cases differ in nothing else.
 fn fake_pi_refusing(error: &str) -> String {
     FAKE_PI_UNKNOWN_STEER.replace("Unknown command: steer", error)
@@ -1568,7 +1566,7 @@ fn fake_pi_refusing(error: &str) -> String {
 
 #[test]
 fn a_pi_steer_refusal_is_recognised_whatever_its_case() {
-    // A2-11: what makes the steer unavailable is the app-server saying it
+    // What makes the steer unavailable is the app-server saying it
     // has no such command, not the exact spelling. A case-sensitive match
     // turns `unknown command: steer` into an `Err` — "the steer's fate is
     // unknown" — for a build that said exactly what happened.
@@ -1599,10 +1597,10 @@ fn a_pi_steer_refusal_is_recognised_whatever_its_case() {
 fn a_pi_that_does_not_know_the_steer_command_is_unavailable_rather_than_steered() {
     // The answer Pi sends is the one that decides: a write alone reports
     // that the bytes reached the pipe, which a build without `steer` also
-    // does before it rejects the command (the fix-pass rule for S4-01 on
+    // does before it rejects the command (the rule for
     // this provider). The daemon has to read the answer, so the steer goes
     // through the id-correlated round-trip.
-    // A2-13: the fake Pi is a `node` script, so this skips where there is no
+    // The fake Pi is a `node` script, so this skips where there is no
     // node rather than failing there.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
@@ -1634,7 +1632,7 @@ fn a_pi_that_does_not_know_the_steer_command_is_unavailable_rather_than_steered(
 
 #[test]
 fn a_pi_that_takes_the_steer_is_steered_with_the_frame_the_round_trip_wrote() {
-    // A2-13: the fake Pi is a `node` script, so this skips where there is no
+    // The fake Pi is a `node` script, so this skips where there is no
     // node rather than failing there.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
@@ -1809,7 +1807,7 @@ fn only_the_reply_that_answers_the_live_request_becomes_the_command_list() {
 fn the_static_route_answers_for_the_model_current_at_prompt_time() {
     // The route reads the live catalog rather than a copy taken at spawn:
     // a model switched since then must not be answered for with the inputs
-    // the old model declared. Both directions are pinned here.
+    // the previous model declared. Both directions are pinned here.
     let temp = PlanTempDir::new("route-model");
     let store = AttachmentStore::new(&temp.0);
     let catalog = Arc::new(Mutex::new(capable_catalog()));
@@ -2050,8 +2048,7 @@ mod delivery_tests {
         let validate_delivery = super::super::validate_delivery;
 
         // The table answers `bypass` for the pi family, and only `bypass`:
-        // that intersection is the route a tick rides, so it is asserted,
-        // not assumed.
+        // that intersection is the route a tick rides, so it is asserted, not assumed.
         let vocabulary = ["bypass", "ask"];
         for mode_id in vocabulary {
             if crate::provider_catalog::mode_is_auto_answered(
@@ -2452,8 +2449,7 @@ mod lifecycle_tests {
 
     /// A fake Pi on real pipes. Stdout is deliberately **not** wrapped in
     /// a reader thread here — the `PiStdout` the session reader will
-    /// drain is built inside `spawned_session`, and nothing else reads
-    /// the child.
+    /// drain is built inside `spawned_session`, and nothing else reads the child.
     struct SpawnedPi {
         process: Arc<Mutex<Child>>,
         stdout: ChildStdout,
@@ -2673,7 +2669,7 @@ mod lifecycle_tests {
         false
     }
 
-    /// The answer to F1: the delivery completes because the session
+    /// The answer: the delivery completes because the session
     /// reader — the thread `start_spawned_session` starts, and nothing
     /// else — delivers the switch's answer. The three requests the
     /// switcher writes are on the wire and answered by the time the
@@ -2826,11 +2822,9 @@ mod lifecycle_tests {
             // design: the delete here is refused `SessionNotFound` —
             // the answer `peer_entry` gives every id-addressed peer
             // call for a `Configuring` entry — not the close-first
-            // refusal. The decision, so the next reader does not
-            // relitigate it:
+            // refusal. The decision, so the next reader does not relitigate it:
             // - it is what the variant's own contract says — a
-            //   `Configuring` entry is invisible to every id-addressed
-            //   peer call;
+            //   `Configuring` entry is invisible to every id-addressed peer call;
             // - it does not confirm to a peer that the id exists, and
             //   during the window no peer legitimately holds that id
             //   (the create returns it only after promotion);
@@ -3181,8 +3175,7 @@ mod lifecycle_tests {
         .unwrap_or_else(|error| {
             panic!("a stderr flood before the first answer must not fail the handshake: {error:?}")
         });
-        // The job object ends the fake when the session drops; no reader
-        // runs here.
+        // The job object ends the fake when the session drops; no reader runs here.
         drop(spawned);
         let _ = std::fs::remove_dir_all(&dir);
     }

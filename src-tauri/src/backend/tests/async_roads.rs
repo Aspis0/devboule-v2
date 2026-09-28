@@ -100,24 +100,9 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 /// Every wait goes through the helper, and the total is a declared number —
 /// read from the parsed tree, not from comment-visible text. A road that
 /// starts calling its client directly drops the count; raising it is a
-/// reviewable act, never a silent one. Raised 50 → 51 with
-/// `workspace_file_read` (fetta 1 della sidebar «come Paseo»), then 51 → 53
-/// with `workspace_file_rename` and `workspace_file_duplicate` (fetta 2),
-/// then 53 → 55 with `workspace_file_preview_stage` and
-/// `workspace_file_preview_unstage` (fetta immagini): both wait on the
-/// daemon like every other workspace road. Then 55 → 56 with
-/// `workspace_file_delete` (fetta 3 delle scritture): the delete waits on
-/// the daemon like its two siblings. Then 56 → 57 with the four git
-/// writes (fetta 4 delle scritture): stage, unstage, discard and commit
-/// share one bridge road, so the four add a single helper call. Then 57 → 58
-/// with `session_set_name` (P11 agent titles): the rename waits on the daemon
-/// like the mode switch it sits beside. Then 58 → 60 with the two
-/// protocol-12 roads: `providers_auth_check` (the login check spawns
-/// provider CLIs in the host's credential context, so it must never run on
-/// the UI thread) and `providers_set_enabled` (the switch write waits on
-/// the daemon like every other settings road). Then 60 → 61 with the
-/// protocol-13 road `session_set_feature` (Codex plan mode): the toggle
-/// waits on the daemon like the mode switch it sits beside.
+/// reviewable act, never a silent one. `providers_auth_check` is on the
+/// list for a sharper reason: the login check spawns provider CLIs in the
+/// host's credential context, so it must never run on the UI thread.
 #[test]
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();

@@ -3,18 +3,18 @@
 //! author a profile from real vocabulary instead of free text.
 //!
 //! Spec: `reports/remote-agents/SPEC-provider-vocabulary-query.md` §4-§6.
-//! Pass 1 of the brief lands the wire, the gate, the cache and the one
+//! The query lands the wire, the gate, the cache and the one
 //! provider that costs almost nothing: Claude's models come from the catalog
 //! derivation, which reads the CLI's files on disk. The one process a
 //! Claude read can start is the native version probe, and only while the
 //! installed version is still unknown — the same one-shot probe
 //! `providers_list` starts, and once the version is settled a read costs
 //! file reads only. Every other provider answers `absent` — no source could
-//! answer yet — which is the wire value that makes the form completable for
-//! everyone on day one; pass 2 upgrades three of them to `present` with
-//! spawn probes and changes no shape.
+//! answer yet — which is the wire value that makes the form completable; a
+//! later upgrade can move three of them to `present` with spawn probes and
+//! change no shape.
 //!
-//! Two rules govern this module (`BRIEF-provider-vocabulary-daemon.md`):
+//! Two rules govern this module:
 //!
 //! - **The provider dimension is open.** No provider name lives here: the
 //!   per-family probes are `Provider::vocabulary()` impls (Claude's disk
@@ -52,7 +52,7 @@ const VOCABULARY_CACHE_TTL_MS: u64 = 30 * 60 * 1000;
 const MAX_QUERY_FIELD_BYTES: usize = 128;
 
 /// One cached vocabulary answer.
-///
+//
 /// The key facts are the discovery facts that invalidate the entry: a
 /// discovery pass that changes the executable or the installed version
 /// produces different facts, and the entry simply stops matching — which is
@@ -209,7 +209,7 @@ impl VocabularyCache {
 }
 
 /// The `ProviderVocabularyGet` handler.
-///
+//
 /// An unknown provider id is the caller's mistake and is refused with the
 /// catalog's own refusal sentence — the same walk, and the same sentence,
 /// the profile store refuses a document with. A known provider that cannot
@@ -332,7 +332,7 @@ fn vocabulary_reply(
 }
 
 /// Claude's vocabulary, and the origin honesty the form repeats to a human:
-///
+//
 /// - Models are `provider`-origin when extraction from the CLI bundle worked
 ///   (`Derived`) and `daemon`-origin when the fallback table answered
 ///   (`Provisional`) — the form says so rather than pretending the provider
@@ -371,7 +371,7 @@ fn claude_models_axis(snapshot: crate::claude_catalog::ClaudeCatalogSnapshot) ->
 
 /// The `absent` answer: items empty, origin omitted — both, in both
 /// directions, exactly as the biconditional requires.
-///
+//
 /// Two axes, not three, and that is a cache fact: the features axis is answered
 /// by its own trait method ([`crate::provider::Provider::features`]) and lives in
 /// a cache of its own ([`crate::provider_features::AcpProbeCache`], no TTL) or a
@@ -504,8 +504,7 @@ mod tests {
         );
 
         // The same snapshot shapes `claude_axes` serves, through the real
-        // builder: every axis it produces satisfies the constructor's
-        // biconditional.
+        // builder: every axis it produces satisfies the constructor's biconditional.
         let state = state();
         let (models, modes) = claude_axes(&state);
         assert!(VocabularyModels::new(models.state, models.origin, models.items).is_ok());
@@ -725,8 +724,7 @@ mod tests {
 
     /// `provider` is canonicalised the way the profile store canonicalises
     /// one: trimmed first. The document the app reads promises this, and a
-    /// padded but known id is a provider the catalog publishes, not a
-    /// refusal.
+    /// padded but known id is a provider the catalog publishes, not a / refusal.
     #[test]
     fn a_padded_known_provider_is_trimmed_before_the_catalog_walk() {
         let state = state();

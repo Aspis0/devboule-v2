@@ -150,7 +150,7 @@ fn drain(conn: &crate::session::event_pull::ConnHandle, outcomes: &mut Vec<Strin
 
 #[test]
 fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_prompt_text() {
-    // The brief's third case, driven through the send path: the two native
+    // The third case, driven through the send path: the two native
     // commands go out as pi's own control frames and never as prompts, the
     // input is still recorded, and no turn starts for them — while `/goal x`
     // keeps the ordinary road and lands in the plain-text writer.
@@ -355,7 +355,7 @@ fn the_slash_parse_is_paseos_rule_for_rule() {
 
     // JavaScript's trim() and /\s/ also treat U+FEFF as whitespace and
     // Rust's `char::is_whitespace` does not, so the parse names JavaScript's
-    // set exactly (review A5-2 #7): the separator splits the command, and a
+    // set exactly: the separator splits the command, and a
     // leading U+FEFF is trimmed away before the slash is looked for.
     let feff_separator = parse_slash_invocation("/autocompact\u{FEFF}off").expect("a command");
     assert_eq!(feff_separator.name, "autocompact");
@@ -396,8 +396,9 @@ fn autocompact_resolves_its_argument_the_way_paseo_does() {
         AutoCompactMode::Unknown
     );
     // A trailing U+FEFF is whitespace to JavaScript's trim(), which is what
-    // Paseo's mode parse runs on (`pi/agent.ts:1809`) — the mode still
-    // resolves (review A5-2 #7).
+    // Paseo's mode parse runs on
+    // (`packages/server/src/server/agent/providers/pi/agent.ts`) — the mode still
+    // resolves.
     assert_eq!(
         parse_auto_compact_mode(Some("on\u{FEFF}")),
         AutoCompactMode::Enabled

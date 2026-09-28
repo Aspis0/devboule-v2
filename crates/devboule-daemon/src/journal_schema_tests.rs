@@ -246,7 +246,7 @@ fn legacy_permission_payload() -> Vec<u8> {
     .expect("legacy payload")
 }
 
-/// H8: a second open at v9 runs no migration and moves nothing, and a
+/// A second open at v9 runs no migration and moves nothing, and a
 /// payload that is a permission request by *tag* but not a complete
 /// `SessionEvent` is left byte-for-byte rather than handed an origin the
 /// replay path would still drop.
@@ -295,7 +295,7 @@ fn a_second_open_rewrites_nothing_and_incomplete_events_are_left_alone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// H8: a candidate past the read bound is not read, not rewritten and
+/// A candidate past the read bound is not read, not rewritten and
 /// counted. The row keeps its bytes and its checksum.
 #[test]
 fn a_payload_past_the_read_bound_is_skipped_untouched() {
@@ -734,7 +734,7 @@ fn missing_file_creates_new() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Audit S5-12: a journal written before the columns existed gets them as
+/// A journal written before the columns existed gets them as
 /// NULL, and a row that predates the concept keeps the origin it had.
 ///
 /// The default is deliberately absent rather than invented: a session
@@ -917,7 +917,7 @@ fn version_7_journal_migrates_to_v8_with_peers_audit_and_triggers() {
     assert_eq!(index, 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
-/// L2: the check must be about the trigger's **body**, not its name.
+/// The check must be about the trigger's **body**, not its name.
 ///
 /// This calls `ensure_audit_triggers` directly rather than going through
 /// `Journal::open`, because an open also runs `sweep_audit`, which drops and
@@ -1018,7 +1018,7 @@ fn ensure_audit_triggers_leaves_intact_bodies_alone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Audit S5B-07: a database whose `sessions.display_name` exists with the
+/// A database whose `sessions.display_name` exists with the
 /// wrong type (or the wrong nullability) is refused up front. A presence
 /// check alone would accept it and every read afterwards would answer with
 /// a value this daemon never wrote.
@@ -1044,7 +1044,7 @@ fn a_v9_sessions_table_with_a_wrongly_typed_display_name_is_refused() {
     );
 }
 
-/// The other half of S5B-07: the shape this daemon writes (nullable TEXT,
+/// The other half of the shape check: the shape this daemon writes (nullable TEXT,
 /// no default) is accepted, so the check cannot pass by refusing everything.
 #[test]
 fn the_shape_this_daemon_writes_is_accepted() {
@@ -1240,7 +1240,7 @@ fn a_v11_journal_backfills_true_to_yes_and_false_to_unknown_never_no() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The ordering the pre-stamp guard fixes (audit R2b-1 finding 2): a v11
+/// The ordering the pre-stamp guard fixes: a v11
 /// file that already carries an `unattended_state` column of the wrong
 /// shape is refused with `user_version` still **11**. The open returns
 /// `Err` with or without the guard — the post-commit validation raises

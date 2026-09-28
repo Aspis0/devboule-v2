@@ -47,7 +47,8 @@
 //! refused.** A feature table now exists (`provider_features.rs`) — the same one
 //! the profile form draws its controls from, so this is not a second list — and a
 //! key outside it names a value no child receives. Dropping it is the store's
-//! `D4` rule and Paseo's `pruneFeatureValues`; **refusing** would be wrong here
+//! rule and Paseo's `pruneFeatureValues`
+//! (`packages/app/src/hooks/feature-preferences.ts`); **refusing** would be wrong here
 //! for a reason specific to this file: `check_document` is shared by `load` and
 //! `set`, so a refusal on a stale key would quarantine a person's whole profile
 //! document over one value nothing delivered. An unread ACP provider is left alone
@@ -229,7 +230,7 @@ impl AgentProfilesStore {
     /// The idle-close minutes in force for `profile_id` **now**: the profile's
     /// own field when the document still holds that profile, otherwise the
     /// default. Read at every sweep rather than copied at a child's birth, so
-    /// a settings edit reaches children already running (D5); a child whose
+    /// a settings edit reaches children already running; a child whose
     /// profile no longer exists takes the default rather than a rule no
     /// settings screen can show or change any more.
     pub(crate) fn idle_close_minutes(&self, profile_id: Option<&str>) -> u32 {
@@ -1068,7 +1069,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Pass 2e step 3: a profile naming a live user provider is accepted and
+    /// A profile naming a live user provider is accepted and
     /// canonicalised through the same door as a built-in — the lookup now
     /// walks the registry snapshot's published ids, so what it accepts is
     /// exactly what can spawn. The row goes live through the real seam with
@@ -1483,7 +1484,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&stuck);
     }
 
-    /// The brief's own audit target: a profile file edited by hand to name
+    /// A profile file edited by hand to name
     /// something the daemon cannot use is quarantined and refused whole, never
     /// partially repaired and never guessed at.
     #[test]

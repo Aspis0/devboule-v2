@@ -161,12 +161,14 @@ impl SessionSteerer for UnsupportedSteerer {
     }
 }
 
-/// A provider's own side-effect commands, dispatched before a turn starts
-/// (Paseo `agent-prompt.ts:112-116` → `agent-manager.ts:2353`): the text is
-/// a command the provider executes itself — never written as a prompt, and
-/// no turn begun for it. `handles_out_of_band` recognises the text;
-/// `run_out_of_band` performs it, and a caller runs it only after recording
-/// the input (Paseo records the submitted prompt first, then runs).
+/// A provider's own side-effect commands, dispatched before a turn starts.
+/// Translated from Paseo's agent-prompt
+/// (packages/server/src/server/agent/agent-prompt.ts), which calls
+/// `tryRunOutOfBand` in agent-manager
+/// (packages/server/src/server/agent/agent-manager.ts): the text is a command
+/// the provider executes itself — never written as a prompt, and no turn
+/// begun for it. `handles_out_of_band` recognises the text; `run_out_of_band`
+/// performs it, and a caller runs it only after recording the input.
 pub(crate) trait OutOfBandCommands: Send + Sync {
     fn handles_out_of_band(&self, text: &str) -> bool;
     fn run_out_of_band(&self, text: &str, runtime: &Arc<SessionRuntime>);
@@ -342,9 +344,9 @@ pub(crate) struct SpawnedSession {
     /// road — changes nothing.
     pub(super) pending_codex_verify: Option<codex_client::CodexVerifyBundle>,
     /// A provider's side-effect commands, consulted by a send before a turn
-    /// or a steer is considered (Paseo `agent-prompt.ts:112-116`). `Some`
-    /// only where such commands exist (pi and Codex); every other family
-    /// passes `None`.
+    /// or a steer is considered — translated from Paseo's agent-prompt
+    /// (packages/server/src/server/agent/agent-prompt.ts). `Some` only where
+    /// such commands exist (pi and Codex); every other family passes `None`.
     pub(super) out_of_band: Option<Arc<dyn OutOfBandCommands>>,
 }
 
@@ -438,21 +440,18 @@ pub(super) fn session_metadata_for_resume(
         // The record's own kind, which is the session's kind: it was decided
         // at create and journalled, and a resume does not re-decide it.
         //
-        // Pass 2c derived this from the provider string instead
-        // (`provider_for(&provider).wire_kind()`), to keep a future family's
-        // resume from being reported as ACP. That was wrong, and the MAX
-        // RECALL found why: `provider` is a **string on a row that can
-        // disagree with its own kind**. `DEVBOULE_ACP_PROVIDER_ID` reaches
-        // `command.provider_id` without passing the native-id strip
-        // (`acp_client.rs`), so a journal row can read `kind=acp,
-        // provider=codex` — and deriving from it stamped `Codex` on a session
-        // whose peer is ACP. That is not a label: `start_spawned_session`
-        // installs the stamped kind on the runtime, which then drives
-        // `mcp_gates_first_prompt` (skipping the MCP invariant) and
-        // `event_pull`'s `is_codex` (replaying ACP envelopes through the
-        // Codex view). Reading the record keeps the old constant's answer for
-        // every ACP row AND stays right for a future family, because that
-        // family's rows carry its own kind.
+        // The kind is never derived from the provider string:
+        // `provider` is a **string on a row that can disagree with its own
+        // kind**. `DEVBOULE_ACP_PROVIDER_ID` reaches `command.provider_id`
+        // without passing the native-id strip (`acp_client.rs`), so a journal
+        // row can read `kind=acp, provider=codex` — and deriving from it
+        // stamped `Codex` on a session whose peer is ACP. That is not a
+        // label: `start_spawned_session` installs the stamped kind on the
+        // runtime, which then drives `mcp_gates_first_prompt` (skipping the
+        // MCP invariant) and `event_pull`'s `is_codex` (replaying ACP
+        // envelopes through the Codex view). Reading the record keeps the
+        // old constant's answer for every ACP row AND stays right for a
+        // future family, because that family's rows carry its own kind.
         kind,
         title: record.title.clone(),
         provider: Some(provider),
@@ -463,12 +462,12 @@ pub(super) fn session_metadata_for_resume(
         // Resume does not re-origin a session: the row keeps the device that
         // created it.
         origin: record.origin.clone(),
-        // Both of these are the journal's now (audit S5-12): a resumed session
-        // is the same session, so it comes back under the name the human saw
-        // and with the parent it was created by.
+        // Both of these are the journal's since v10: a resumed session is the same
+        // session, so it comes back under the name the human saw and with the
+        // parent it was created by.
         display_name: record.display_name.clone(),
         created_by: record.created_by.clone(),
-        // And so are the creation-from-profile facts (v11): the profile it was
+        // And so are the creation-from-profile facts, since v11: the profile it was
         // started from, the context it belongs to, the marker it was born with
         // and its labels. A resume is not a creation, so none of them is
         // re-derived here — a child born `yes` comes back `yes` even if its
@@ -552,7 +551,7 @@ pub(super) fn process_gone() -> WireError {
 }
 
 /// The refusal an id-addressed peer call gets when the id names an entry
-/// that is still inside its delivery window (the re-audit's P2-1): the
+/// that is still inside its delivery window: the
 /// session does not exist for its peers until the profile's delivery has
 /// landed, so the honest answer is `SessionNotFound`, not "gone" — nothing
 /// was ever visible to lose.
@@ -567,8 +566,8 @@ pub(super) fn not_found_while_configuring(entry: &RegistryEntry) -> WireError {
 /// The door most id-addressed calls resolve their id through: the
 /// entry must exist, belong to this owner, and be past its delivery window.
 /// A `Configuring` entry answers `SessionNotFound` here, because the session
-/// does not exist for peers until the delivery has landed (the re-audit's
-/// P2-1/P2-2 — the variant's own doc claims this refusal, and this door is
+/// does not exist for peers until the delivery has landed (the variant's
+/// own doc claims this refusal, and this door is
 /// what makes the claim true rather than a per-site edit).
 ///
 /// Two callers do not come through here: `deposit` and `read_attachment`

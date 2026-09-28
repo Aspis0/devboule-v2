@@ -164,7 +164,9 @@ pub(crate) struct CodexState {
     sent_turn_modes: Mutex<HashMap<String, bool>>,
     /// The service tier every `turn/start` carries, set once from the profile's
     /// `fastMode` delivery. Codex's fast mode is Paseo's `serviceTier:
-    /// "fast"` parameter on the turn frame, and the thread keeps no memory of
+    /// "fast"` parameter on the turn frame
+    /// (`packages/server/src/server/agent/providers/codex/app-server-transport.ts`),
+    /// and the thread keeps no memory of
     /// it across turns, so the value lives beside the model and effort the same
     /// parameters are read from and is written on every prompt.
     ///
@@ -173,7 +175,9 @@ pub(crate) struct CodexState {
     /// turn parameter has no "off" spelling to send.
     service_tier: Mutex<Option<String>>,
     /// The mode a `set_mode` applied after `thread/start`, if any. Paseo
-    /// (`hasWorkflowModeOverride`) keeps this set for every later turn; the
+    /// (`hasWorkflowModeOverride`,
+    /// `packages/server/src/server/agent/providers/codex-app-server-agent.ts`)
+    /// keeps this set for every later turn; the
     /// thread already carries the preset, so only an explicit change re-sends
     /// the policy on `turn/start`.
     mode_override: Mutex<Option<String>>,
@@ -259,7 +263,8 @@ impl CodexState {
             .filter_map(|mode| {
                 let name = mode.get("name").and_then(Value::as_str)?;
                 // Paseo keeps an entry with no `mode` key and sends it as
-                // `code`; dropping it would lose a usable mode.
+                // `code` (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`);
+                // dropping it would lose a usable mode.
                 let id = mode
                     .get("mode")
                     .and_then(Value::as_str)
@@ -334,10 +339,11 @@ impl CodexState {
 
     /// The `collaborationMode` one `turn/start` carries, or `None` when no model
     /// is known: the app-server refuses a mode whose `settings` lacks `model`.
-    /// The settings copy Paseo's `resolveCollaborationMode` — the entry's model
-    /// and effort, overridden by the session's configured pair, the thread
-    /// response's model last — minus `developer_instructions`, which this
-    /// daemon sends on no Codex wire.
+    /// The settings copy Paseo's `resolveCollaborationMode`
+    /// (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`) —
+    /// the entry's model and effort, overridden by the session's configured pair,
+    /// the thread response's model last — minus `developer_instructions`, which
+    /// this daemon sends on no Codex wire.
     pub(crate) fn collaboration_mode(&self) -> Option<Value> {
         let enabled = self
             .plan_mode_override
@@ -736,11 +742,9 @@ pub(crate) const DEFAULT_MODE: &str = "auto";
 /// here cannot exist without an answer (the `unattended` field is required
 /// by the type, so there is no fall-through to be silent in), cannot be
 /// offered without being presented, and cannot be presented without
-/// delivering the knob written beside its answer. Before this was one table
-/// the presented list was hand-written literals and the knob was a
-/// wildcard-tailed `match`, so a one-line addition to the table alone made
-/// the marker promise `yes` while the child was delivered `on-request` — an
-/// over-promise on a consent surface, compiler-clean (audit R2b-1 §4.1).
+/// delivering the knob written beside its answer. One table is what keeps the
+/// marker's promise and the child's delivered knob from diverging — a
+/// divergence a compiler cannot see.
 /// This is route-B knowledge and it lives here, in the family that owns
 /// `approvalPolicy`, never in a central table of mode names.
 struct CodexMode {
@@ -810,12 +814,11 @@ const CODEX_MODES: &[CodexMode] = &[
     // permission moment with nobody answering (`prompt_skipping_mode`), so
     // `no` — which renders as *nothing* — is the wrongly-benign badge, and
     // `unknown` is the honest row: a present, softer marker instead of
-    // silence (audit R2b-1 §3.3). It is not `yes` either: a model reviewer
+    // silence. It is not `yes` either: a model reviewer
     // may still hand a moment back to the human, and `approvalPolicy`
     // stays `on-request`, which the coherence test checks against this
     // answer. (The preset refusal list's separate test-only
-    // `mode_is_unattended` also counts it, and the two lists are never
-    // merged.)
+// `mode_is_unattended` also counts it, and the two lists are never merged.)
     CodexMode {
         id: "auto-review",
         unattended: UnattendedState::Unknown,
@@ -877,8 +880,8 @@ pub(crate) fn unattended_answer(delivered_mode: Option<&str>) -> UnattendedState
 /// this table does not carry, so a lookup here can only miss on a code path
 /// that skipped that validation. It fails **closed** — to the row that asks
 /// the human and cannot write — rather than to the permissive
-/// `on-request`+`workspaceWrite` an unauthored id used to inherit through a
-/// wildcard, which is exactly how a marker and a child would diverge.
+/// `on-request`+`workspaceWrite`, which is exactly how a marker and a child
+/// would diverge.
 fn codex_mode(mode_id: &str) -> &'static CodexMode {
     CODEX_MODES
         .iter()
@@ -1119,7 +1122,8 @@ impl CodexView {
     /// that reports during the turn, so `live` is `true`; `model_id` stays
     /// `None` because the frame names no model — its window rides the same
     /// frame (`modelContextWindow`), which is exactly what Paseo uses
-    /// (`codex-app-server-agent.ts:982-999`, `last.totalTokens` as used).
+    /// (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`,
+    /// `last.totalTokens` as used).
     fn note_usage(&mut self, value: Option<&Value>) -> Vec<SessionEvent> {
         let Some(value) = value else {
             return Vec::new();
@@ -1572,8 +1576,8 @@ mod tests {
         assert!(super::validate_mode("read-only").is_ok());
     }
 
-    /// The over-promise the unified table makes inexpressible (audit R2b-1
-    /// §4.1): for every row, the presented manifest carries the id, the name
+    /// The over-promise the unified table makes inexpressible: for every row,
+    /// the presented manifest carries the id, the name
     /// and the description, and the delivered knob agrees with the marker —
     /// `never` (Codex asks nobody) only where the marker says `yes`, and any
     /// other policy wherever the daemon does not claim that certainty, in
@@ -1867,7 +1871,8 @@ mod tests {
         // Capture line 56 — the first `thread/tokenUsage/updated` where the
         // two blocks disagree: `total.totalTokens` 42 231 is the session's
         // running spend, `last.totalTokens` 21 172 the context after this
-        // turn, which is what Paseo reads (`codex-app-server-agent.ts:982-999`).
+        // turn, which is what Paseo reads
+        // (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`).
         // On line 25 the two are equal, so the whole-event test above passes
         // even for a mapper reading `total`; this one does not.
         let frames = fixture_frames(include_str!(

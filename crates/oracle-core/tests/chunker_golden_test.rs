@@ -208,7 +208,7 @@ fn golden_chunks_match_fixture() {
     }
 }
 
-// ── P2-review regression tests ──────────────────────────────────────────────
+// ── Regression tests ─────────────────────────────────────────────────
 
 /// os.walk(followlinks=False) parity: symlink-to-FILE is collected (read
 /// through the link); symlink-to-DIR is never descended into.

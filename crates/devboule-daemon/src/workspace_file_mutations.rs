@@ -37,8 +37,10 @@ use crate::workspace_git_support::{
 use crate::ServerState;
 
 /// The workspace's own folder: the id resolved it, so there is no parent to
-/// act from and no second spelling to give it (Paseo refuses the same three
-/// spellings). Pathless, like every sentence here.
+/// act from and no second spelling to give it — parity with Paseo's
+/// renameExplorerEntry
+/// (packages/server/src/server/file-explorer/service.ts). Pathless, like
+/// every sentence here.
 const THE_ROOT: &str = "the workspace's own folder cannot be renamed, duplicated or deleted";
 const NAME_EMPTY: &str = "the new name is empty";
 const NAME_SEPARATOR: &str = "the new name must not contain a path separator";
@@ -180,10 +182,11 @@ fn vouched_entry(root: &Path, requested: &str) -> Result<(PathBuf, std::fs::Meta
     }
 }
 
-/// The new name, judged the way Paseo judges a created name — trimmed
-/// first, and the trimmed spelling is the one acted on, because validating
-/// one string and storing another would
-/// keep a name the rule never judged. One name: not empty, not `.`/`..`, no
+/// The new name, judged the way Paseo's renameExplorerEntry judges a created
+/// name (packages/server/src/server/file-explorer/service.ts) — trimmed
+/// first, and the trimmed spelling is the one acted on,
+/// because validating one string and storing another would keep a name the
+/// rule never judged. One name: not empty, not `.`/`..`, no
 /// separator, never Win32's silent rewrites, and never the repository's own
 /// metadata folder — the guard the listing runs, on the other end of the
 /// rename.
@@ -265,7 +268,8 @@ fn case_only_of(source: &Path, destination: &Path, new_name: &str) -> bool {
 
 /// The act itself. An entry git tracks is renamed through `git mv`, so the
 /// act arrives in the Changes panel staged — one rename there, not a
-/// deletion beside a stranger (parity with Paseo, `DECISIONS-write.md` §3).
+/// deletion beside a stranger (parity with Paseo's renameExplorerEntry,
+/// packages/server/src/server/file-explorer/service.ts).
 /// A workspace that is not a repository root (no
 /// repository, a folder inside one, or a probe git did not answer) renames on
 /// the filesystem alone: there the Changes panel's own views have the same
@@ -277,8 +281,7 @@ fn case_only_of(source: &Path, destination: &Path, new_name: &str) -> bool {
 /// anything either — both common refusals leave the disk untouched, so the
 /// sentence this road returns (`exit_error`: operation + code, never git's
 /// stderr) is the truth, and the loser of a lock race against the Changes
-/// panel's own 5 s poll is simply whoever arrived second (the per-workspace
-/// write mutex belongs to the git-write slice). What git promises no
+/// panel's own 5 s poll is simply whoever arrived second. What git promises no
 /// atomicity for is the gap between its move and its index commit: a crash
 /// there would leave the file moved on disk with the index on the old
 /// spelling — a deletion beside an untracked name, repaired by `git add` of
@@ -335,8 +338,8 @@ fn rename_on_disk(
 /// `fs::rename` replaces an existing destination on POSIX and on Windows
 /// alike, so the stat in [`renamed`] alone would leave a window — anything
 /// created between that stat and this act would be overwritten in silence,
-/// and the two promises of this slice ("a taken name is refused", "no data
-/// is lost") would be false. The claim is exclusive by construction:
+/// and the two promises ("a taken name is refused", "no data is lost")
+/// would be false. The claim is exclusive by construction:
 /// `hard_link` for a file and `create_dir` for a folder both fail once the
 /// name has appeared, and a failed claim is re-read — the name exists now,
 /// so the honest answer is [`NAME_TAKEN`], never a replacement. Where the
@@ -408,9 +411,10 @@ fn duplicated(root: &Path, requested: &str) -> Result<String, String> {
 }
 
 /// The first free `… copy` / `… copy 2` / `… copy 3` name beside the
-/// original — Paseo's loop, which never overwrites: a name is taken only
-/// after its own stat says something is there, and the
-/// creation below is exclusive anyway.
+/// original — Paseo's loop, which never overwrites
+/// (packages/server/src/server/file-explorer/service.ts): a name is taken
+/// only after its own stat says something is there, and the creation below
+/// is exclusive anyway.
 fn free_copy_name(source: &Path) -> PathBuf {
     let parent = source
         .parent()
@@ -429,9 +433,9 @@ fn free_copy_name(source: &Path) -> PathBuf {
     let extension = match path.extension() {
         // `Path::extension` answers `Some("")` for a name that ends in a dot,
         // and appending that bare dot would spell a candidate Win32 rewrites
-        // on create — the `NAME_TRAILING` class this slice refuses for typed
-        // names. The generated name obeys the same rules: no extension, no
-        // dot. Reachable only where the tree can *see* a dot-terminated
+        // on create — the `NAME_TRAILING` class refused for typed names.
+        // The generated name obeys the same rules: no extension, no dot.
+        // Reachable only where the tree can *see* a dot-terminated
         // name, and on Windows it cannot (the walk stats plain paths, which
         // strip those dots — pinned by its own test), so this guard is
         // structure, not a claim any test here proves.

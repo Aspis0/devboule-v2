@@ -12,7 +12,7 @@ use devboule_protocol::{
 };
 
 /// Kind of a JSON-RPC line. Requests carry a method *and* an id; treating a
-/// request as a response is how the previous dispatcher went mute.
+/// request as a response leaves the dispatcher mute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AcpLineKind {
     Request { method: String },
@@ -580,10 +580,11 @@ pub(crate) fn unmodeled_content_kind(value: &serde_json::Value) -> Option<String
 
 /// What the handshake parse produced: the manifest to publish plus the shape
 /// that produced it. The shape is a BY-PRODUCT of this parse — there is no
-/// second reader of the raw bytes that could disagree with the manifest
-/// (the audit's finding that a separate sniff recorded `VendorModels` for a
-/// hybrid frame whose manifest was built from `configOptions` is closed by
-/// construction).
+/// second reader of the raw bytes that could disagree with the manifest. A
+/// hybrid frame (an empty vendor array plus a populated configOptions model
+/// select) is the case the by-product rule protects: the vendor parse returns
+/// None on an empty catalog, so the config parse produces the manifest — and
+/// the shape must say ConfigOptions, not VendorModels.
 #[derive(Debug, Default)]
 pub(crate) struct HandshakeManifest {
     /// The manifest to publish, if any: a model catalog, or a modes-only
@@ -794,10 +795,10 @@ pub(crate) fn declared_surfaces_from_options(
 /// that is **not** one of the switches the daemon already drives, turned into
 /// a control whose stored key is the option's declared id.
 ///
-/// `taken` is the exclusion the brief's step 1 names: the model and
-/// effort options are the `thinkingOptionId`/`model` fields of a profile
-/// already, and a second control over the same value would be two sources for
-/// one setting, disagreeing silently. `None` entries are slots no switch filled
+/// `taken` is the exclusion: the model and effort options are the
+/// `thinkingOptionId`/`model` fields of a profile already, and a second
+/// control over the same value would be two sources for one setting,
+/// disagreeing silently. `None` entries are slots no switch filled
 /// (an agent with no effort surface leaves the second one empty), so the same
 /// call works for any handshake shape.
 ///
@@ -863,9 +864,10 @@ pub(crate) fn declared_features_from_options(
             .filter_map(|entry| {
                 let value = entry.get("value").and_then(serde_json::Value::as_str)?;
                 // An empty choice is a position the agent declared, not an
-                // absence: Paseo relabels it (`emptyOptionLabel`) rather than
-                // deleting it. Dropping it would hide a value the profile can
-                // hold and `value_fits` would then prune on save.
+                // absence: Paseo relabels it (`emptyOptionLabel`,
+                // packages/server/src/server/agent/providers/acp-agent.ts)
+                // rather than deleting it. Dropping it would hide a value the
+                // profile can hold and `value_fits` would then prune on save.
                 Some(devboule_protocol::VocabularyFeatureOption {
                     label: entry
                         .get("name")
@@ -2227,7 +2229,7 @@ mod tests {
         let shape = handshake.shape.as_ref().expect("hybrid switch shape");
         assert!(shape.model.config.is_some());
         assert!(shape.model.vendor.is_some());
-        // The audit's hybrid case: an EMPTY vendor array plus a populated
+        // The hybrid case: an EMPTY vendor array plus a populated
         // configOptions model select. The vendor parse returns None on an
         // empty catalog, so the config parse produces the manifest — and the
         // shape MUST say ConfigOptions, not VendorModels.

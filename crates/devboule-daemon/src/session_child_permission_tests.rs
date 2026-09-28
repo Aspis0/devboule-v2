@@ -224,9 +224,9 @@ fn the_attention_a_parked_card_raised_clears_when_the_delegated_answer_lands() {
     assert_eq!(
         // Answering a delegated card moves two facts on one row: the attention
         // the card stood under clears, and the turn status stops being `blocked`.
-        // Since the roster began carrying that status (`SessionStateSnapshot::
-        // activity`), the tail is owed one transition per fact rather than one
-        // per moment — the same owner, pushed for each thing that changed.
+        // The roster carries that status (`SessionStateSnapshot::
+        // activity`), so the tail is owed one transition per fact rather than
+        // one per moment — the same owner, pushed for each thing that changed.
         sink_log.lock().expect("sink log").len(),
         2,
         "the tail pushed for the owner: once for the cleared raise, once for the \
@@ -305,7 +305,7 @@ fn a_refused_answer_leaves_the_childs_attention_up() {
 }
 
 /// Mutant: the refusal bound to the pending card's session id instead of
-/// the card id the caller passed — the C3 regression the audit caught. The
+/// the card id the caller passed. The
 /// broker hands check 4 `pending.session_id`; the sentence must name the
 /// tool call id the chain looked the card up by, which is the only card id
 /// the caller has ever seen.
@@ -395,12 +395,12 @@ fn a_card_whose_session_is_not_live_names_the_callers_card_id() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Review A2a P1 — the delegated door's own first-pick: a chooser passes
-/// `select_option` because the FIRST `allow_once` matches, so a creator's
-/// answer would grant an option nobody chose. The MCP tool carries no
-/// option id and the envelope the creator saw lists no options, so no
-/// answer this door can give is explicit: the card is refused here and
-/// stays pending with the person, where the chooser rule says it goes.
+/// The delegated door's own first-pick: a chooser passes `select_option`
+/// because the FIRST `allow_once` matches, so a creator's answer would
+/// grant an option nobody chose. The MCP tool carries no option id and the
+/// envelope the creator saw lists no options, so no answer this door can
+/// give is explicit: the card is refused here and stays pending with the
+/// person, where the chooser rule says it goes.
 #[test]
 fn a_creator_cannot_answer_a_chooser_and_the_card_stays_pending() {
     let (dir, registry, journal) = registry_with_journal();

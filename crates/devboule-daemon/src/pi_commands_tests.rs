@@ -260,7 +260,7 @@ fn the_timeout_decision_gives_each_race_state_its_own_answer() {
 
 #[test]
 fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wait() {
-    // The brief's first case, measured against the stub through the real
+    // The first case, measured against the stub through the real
     // send path: the reply arrives after two
     // `extension_ui_request` frames, and only after the test releases it —
     // which happens after `send_with_subscription` has returned. A send path
@@ -362,7 +362,7 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
 
 #[test]
 fn the_list_refusal_log_never_carries_pis_error_text() {
-    // review A5-2 #9: pi's `error` field is untrusted — a provider or an
+    // pi's `error` field is untrusted — a provider or an
     // extension can put a local path or a config value in it — so the one
     // daemon log line is a fixed sentence plus the text's length.
     let payload = r"C:\Users\dev\secret-config.toml";
@@ -395,7 +395,7 @@ fn the_list_refusal_log_never_carries_pis_error_text() {
 
 #[test]
 fn a_failed_reply_publishes_only_the_seeds_and_the_session_still_turns() {
-    // The brief's second case, half one: `success: false` leaves the list at
+    // The second case, half one: `success: false` leaves the list at
     // the seeds (the waiter asks, logs once, and publishes what pi's reply
     // does not carry), and nothing about the session stops working.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
@@ -463,7 +463,7 @@ fn a_failed_reply_publishes_only_the_seeds_and_the_session_still_turns() {
 
 #[test]
 fn a_reply_that_never_comes_leaves_only_the_seeds() {
-    // The brief's second case, half two: with no answer at all — here, a
+    // The second case, half two: with no answer at all — here, a
     // timeout against a registered waiter nothing ever answers — the list is
     // the seeds, the waiter's registration is cleaned up, and the session
     // keeps publishing what comes after.

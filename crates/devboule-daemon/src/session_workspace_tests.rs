@@ -210,24 +210,17 @@ fn resume_preserves_the_original_created_at_ms() {
 
 #[test]
 fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
-    // Replaces `resume_metadata_kind_follows_the_resolved_provider`, and the
-    // reason is a MAX RECALL finding, so it is written down rather than
-    // quietly swapped.
+    // The resumed kind is the record's own kind, never the provider string:
+    // `provider` is a string on a row that CAN disagree with its own kind.
+    // `DEVBOULE_ACP_PROVIDER_ID` reaches `command.provider_id` without
+    // passing the native-id strip, so a create through the ACP command
+    // override journals `kind=acp, provider=codex`, and deriving from the
+    // provider stamped `Codex` on a session whose peer is ACP — which
+    // `start_spawned_session` then installs on the runtime, weakening the
+    // MCP gate and routing ACP envelopes through the Codex view.
     //
-    // Pass 2c derived the resumed kind from the provider string so a future
-    // family's resume would not be reported as ACP. The audit showed the
-    // premise was false: `provider` is a string on a row that CAN disagree
-    // with its own kind. `DEVBOULE_ACP_PROVIDER_ID` reaches
-    // `command.provider_id` without passing the native-id strip, so a create
-    // through the ACP command override journals `kind=acp, provider=codex`,
-    // and deriving from the provider stamped `Codex` on a session whose peer
-    // is ACP — which `start_spawned_session` then installs on the runtime,
-    // weakening the MCP gate and routing ACP envelopes through the Codex view.
-    //
-    // So the fixture below is the DANGEROUS pair on purpose: the record says
-    // `Acp`, the provider says a native family. The record wins. The old test
-    // asserted the opposite on this very pair, and that is the decision this
-    // one reverses.
+    // The fixture below is the DANGEROUS pair on purpose: the record says
+    // `Acp`, the provider says a native family. The record wins.
     let command = PtyCommand::new(
         "cmd.exe",
         Vec::new(),
@@ -257,8 +250,7 @@ fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
         );
     }
 
-    // And it is not a constant: a row of another kind stamps that kind, which
-    // is what pass 2c wanted and what the provider lookup was reaching for.
+    // And it is not a constant: a row of another kind stamps that kind.
     let record = new_session_record(
         "s.client.2",
         "S-1-5-21-1",
@@ -282,10 +274,10 @@ fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
 /// writes it is `DEVBOULE_ACP_PROVIDER_ID`, which reaches the row's provider
 /// without passing the registry — the override tests all named
 /// `devboule-acp-stub`, which is why the suite never saw the poison. The id
-/// here is `codex`, the native family the MAX RECALL audit caught: `claude`
-/// and `pi` are stripped from a create's own provider field, and a requested
-/// `codex` remaps the whole create to the Codex family, so the env road is
-/// the only way a native id reaches the stamp untouched.
+/// here is `codex`, a native family: `claude` and `pi` are stripped from a
+/// create's own provider field, and a requested `codex` remaps the whole
+/// create to the Codex family, so the env road is the only way a native id
+/// reaches the stamp untouched.
 #[test]
 fn the_acp_command_override_cannot_journal_a_native_provider_id() {
     let state = ServerState::new("acp-native-id-strip".to_string());

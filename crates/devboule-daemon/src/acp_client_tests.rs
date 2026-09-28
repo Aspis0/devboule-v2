@@ -19,7 +19,7 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Pass 2e step 2: a user row resolves through the same named road a
+/// A user row resolves through the same named road a
 /// catalog row rides, to its own argv and env — the row's command is
 /// explicit, so it resolves before the PATH/CDN walk, and the command is
 /// stamped with the id the create named.
@@ -1392,9 +1392,8 @@ fn reader_keeps_dispatching_while_a_host_call_is_blocked() {
     );
 }
 
-/// Audit S5C-04 (the test the last leg owed) and audit-3 S5D-03: a provider
-/// that dies during startup after writing a hundred kilobytes to stderr
-/// cannot push that through the tool caller. The banner fits the bound it
+/// A provider that dies during startup after writing a hundred kilobytes to
+/// stderr cannot push that through the tool caller. The banner fits the bound it
 /// declares — the `…` that marks the cut is inside it, which the multibyte
 /// halves are here to hold it to — and the boundary is still the first thing
 /// a human reads.
@@ -1429,7 +1428,7 @@ fn a_startup_death_banner_is_bounded() {
 /// The default ACP launch route (no `DEVBOULE_ACP_COMMAND`, no named id)
 /// launches the agent the picker chose with the same spawn PATH the named
 /// route applies: a provider found through a registry folder must not launch
-/// with an environment that predates its folder (review #2).
+/// with an environment that predates its folder.
 #[cfg(windows)]
 #[test]
 fn the_default_acp_route_carries_the_spawn_path_of_the_picked_agent() {

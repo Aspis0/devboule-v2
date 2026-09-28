@@ -4,9 +4,8 @@
 //! never inside the workspace. A workspace is a git checkout the user reads
 //! from `git status` and the Changes panel **and now renames and duplicates
 //! from the Files panel and stages, unstages, discards and commits from the
-//! Changes panel — through their own named write requests, and only those**
-//! (the owner reopened that half of the rule on 2026-09-22). The half
-//! this store exists for is unchanged: an attachment written there would
+//! Changes panel — through their own named write requests, and only those**.
+//! The half this store exists for is unchanged: an attachment written there would
 //! appear as the user's own edit and could be committed by accident, so an
 //! agent's payload never enters — the only writes into a workspace are the
 //! user's named actions from the panel.
@@ -34,8 +33,8 @@
 //! store is per-user by construction and the budget needs no key at all. The
 //! constant's name is the wire's; the quantity is the store's.
 //!
-//! There was a key once, and it was wrong. The middle segment of a session id
-//! looked like an owner and is not one: `compose_session_id` fills it from
+//! The middle segment of a session id looked like an owner and is not one:
+//! `compose_session_id` fills it from
 //! `OwnerId::session_token`, which is one *connection's* client token cut to
 //! sixteen characters. One user running two clients would have had two budgets
 //! of twenty megabytes, and two clients whose tokens share sixteen leading
@@ -44,8 +43,8 @@
 //!
 //! The total is held in memory ([`StoreState`]) rather than walked per question:
 //! a forty-page deck is two hundred deposits, and walking the store under its
-//! single write lock would put every session's attachment work behind that walk
-//! (D4 of `DECIDE-deposit-open-questions`). The tree stays the truth. The cache
+//! single write lock would put every session's attachment work behind that
+//! walk. The tree stays the truth. The cache
 //! is derived from it, built by one walk the first time a budget is needed, and
 //! moved by the same guard that moves the files. A folder that walk could not
 //! read makes the total unknown rather than zero, and an unknown total is
@@ -259,8 +258,7 @@ const RESERVED_DEVICE_NAMES: [&str; 22] = [
 /// than a locally convenient one: no path separator, so a join can only append;
 /// no `:`, so there is no drive-relative `C:x` and no NTFS alternate data stream
 /// (`file:stream`); no `\`, which is half of the leading `\\` a UNC path needs.
-/// An id that is a *name* is appended to the root — the property the
-/// two-refusal rule this replaces never established.
+/// An id that is a *name* is appended to the root.
 fn is_session_folder_name(session_id: &str) -> bool {
     if validate_session_id(session_id).is_err() {
         return false;
@@ -350,16 +348,13 @@ impl AttachmentStore {
     /// those three refusals instead of three holes, and an id that names nothing
     /// is already a state all three handle.
     ///
-    /// The comment this replaces said that refusing `.` and `..` "removes the
-    /// only way a session id could name a directory outside the store". That was
-    /// false, and false in the direction that does damage: it was the reason
-    /// nobody looked further. `Path::join` with a *rooted* path does not climb
-    /// out of the base, it **replaces** it — `self.root.join("C:\Windows\Temp")`
-    /// is `C:\Windows\Temp`, and an id like `\\server\share\x` names a share no
-    /// root was ever part of. `.` and `..` were two spellings of the hole among
-    /// many: `a/../..`, `C:x`, an NTFS stream (`file:stream`), the reserved
-    /// device names (`CON`, `NUL`, `COM1`). A rule against a list of spells
-    /// loses that argument eventually, so the rule is an alphabet instead, and
+    /// Refusing `.` and `..` alone does not close the hole: `Path::join` with a
+    /// *rooted* path does not climb out of the base, it **replaces** it —
+    /// `self.root.join("C:\Windows\Temp")` is `C:\Windows\Temp`, and an id
+    /// like `\\server\share\x` names a share no root was ever part of. The
+    /// other spells — `a/../..`, `C:x`, an NTFS stream (`file:stream`), the
+    /// reserved device names (`CON`, `NUL`, `COM1`) — are a list a rule against
+    /// spells loses to eventually, so the rule is an alphabet instead, and
     /// everything outside it is `None`.
     pub(crate) fn session(&self, session_id: &str) -> Option<SessionAttachments> {
         if !self.available {
@@ -480,8 +475,8 @@ impl AttachmentStore {
     /// hands back one entry per removal — `(session id, bytes reclaimed)` — and
     /// the caller, which is the only party that knows which sessions belong to
     /// which device, does the summing. A bare total would be unusable for that
-    /// caller; a count alone is what this used to return while a counter
-    /// elsewhere went on counting bytes the store had already deleted.
+    /// caller; a count alone would leave a counter elsewhere still counting
+    /// bytes the store has already deleted.
     ///
     /// The count is still here, as [`Vec::len`]: a folder that was not a
     /// candidate, one whose removal failed, and one whose name is not a string
@@ -650,9 +645,7 @@ impl AttachmentStore {
             .unwrap_or_else(|error| error.into_inner());
         // The seed, the exists check, the budget check and the write are
         // [`admit_locked`]'s, and they are one function because they are one
-        // order: the inline path used to run its own copy of this sequence with
-        // the budget check missing, which is the whole of what that path got
-        // wrong. One copy of the order cannot drift from itself again.
+        // order: one copy of the order cannot drift from itself.
         admit_locked(&self.root, &mut state, &session.session_id, &path, &stored)?;
         Ok(Deposited {
             digest,
@@ -678,8 +671,8 @@ impl AttachmentStore {
     /// ever built from a hint, so a hint cannot introduce a name the store did
     /// not write.
     ///
-    /// The size is the file's own, read here. D2's rule is that a stored
-    /// attachment's size is the file's to state: the caller compares this
+    /// The size is the file's own, read here: a stored attachment's size is
+    /// the file's to state: the caller compares this
     /// against a reference's `stored_bytes` and refuses a disagreement, and it
     /// cannot compare against a number this function remembered instead of
     /// read. A file that is not there is a refusal, not a size of zero.
@@ -789,8 +782,8 @@ impl AttachmentStore {
     ///
     /// Called with the guard held, so two threads cannot walk at once and the
     /// second caller finds the flag set rather than a second walk. The walk is
-    /// one listing of the store root and one per session folder — the cost D4
-    /// accepts as one-time in exchange for never paying it per deposit.
+    /// one listing of the store root and one per session folder — a one-time
+    /// cost in exchange for never paying it per deposit.
     ///
     /// It rebuilds rather than adds. A write that landed before the first
     /// budget question has already charged itself to a map that had not been
@@ -991,11 +984,7 @@ impl SessionAttachments {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         // The same call, and so the same sequence, as `deposit`: seed, recognise
-        // bytes already held, ask the budget, write. What this path used to do
-        // was charge the total without ever asking it, so an inline attachment —
-        // the `SessionSend` path — could be the bytes that took the store past
-        // `MAX_ATTACHMENT_OWNER_BYTES`: a limit the deposit path enforces and
-        // this one silently spent. The budget is the store's own and is not
+        // bytes already held, ask the budget, write. The budget is the store's own and is not
         // keyed (module header), so there is nothing to pass for it.
         admit_locked(&self.root, &mut guard, &self.session_id, &path, &stored)?;
         Ok(path)
@@ -1068,8 +1057,8 @@ thread_local! {
 /// Give one folder the current user's DACL, with a seam a test can pull.
 ///
 /// The seam is here and not inside [`restrict_to_current_user`] because what
-/// DEP-17 decides is what the walk *does* with a failure, and that decision has
-/// to be reachable on a platform where the call underneath is a no-op: a test
+/// the walk *does* with a failure has to be reachable on a platform where the
+/// call underneath is a no-op: a test
 /// that could only fail a real DACL write would not run on POSIX at all, and the
 /// failure path would then be the one thing nobody exercises.
 fn harden(path: &Path) -> std::io::Result<()> {
@@ -1346,11 +1335,9 @@ fn already_stored(path: &Path) -> Result<bool, WireError> {
 /// in.
 ///
 /// `deposit` and the inline path (`materialize`) both end here, and that is the
-/// point of the function rather than a tidiness: they used to run the sequence
-/// separately, and the inline copy had lost its middle — it charged the bytes of
-/// a write that nothing had checked against the limit, so the path a
-/// `SessionSend` carrying an inline attachment takes could put the store past a
-/// budget the other path respects. One copy of the order cannot drift again.
+/// point of the function rather than a tidiness: one copy of the order cannot
+/// drift, and a second copy that dropped the budget check would let an inline
+/// attachment spend a budget the deposit path enforces.
 ///
 /// The order, and why each step is where it is:
 ///
@@ -1399,7 +1386,7 @@ fn admit_locked(
 /// The bytes an attachment is stored as, and the extension they are stored
 /// under, once the decode and the strip have run.
 ///
-/// The order is the one `materialize` has always used: decode, then check that
+/// The order both writers use: decode, then check that
 /// the label and the bytes agree about whether this is a raster, then strip.
 /// `deposit` runs the same function, so a deposit cannot be the path that skips
 /// one of those steps — a deposit that skipped the agreement check would be the
@@ -1688,7 +1675,7 @@ fn extension_for(mime_type: &str) -> Option<&'static str> {
         "image/png" => Some("png"),
         "image/jpeg" => Some("jpg"),
         "image/svg+xml" => Some("svg"),
-        // The finish report's artifact (`S5` decision 10): a child's last
+        // The finish report's artifact: a child's last
         // message, deposited as one markdown file for the creator.
         "text/markdown" => Some("md"),
         _ => None,
@@ -1769,8 +1756,8 @@ fn find_stored(dir: &Path, digest: &str, hint: Option<&str>) -> Option<PathBuf> 
 ///
 /// Every stored-byte number this file reports comes from here, so the size a
 /// deposit replies with and the size a resolve compares are read the same way —
-/// from the file. A remembered size would be a second copy of the truth, and the
-/// one thing D2 refuses is a copy compared against itself.
+/// from the file. A remembered size would be a second copy of the truth, and a
+/// copy compared against itself is the one thing this store refuses.
 ///
 /// A failure is an `Io` refusal and not a zero: a file whose size cannot be read
 /// is not an empty file, and reporting zero would present a lock, a permission,

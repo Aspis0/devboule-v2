@@ -925,7 +925,7 @@ fn push_dead_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
 }
 
 /// Transcript pull: cursor-based journal/scrollback replay for a recovered
-/// session. This is the M2/M3 replay contract, kept for transcripts only.
+/// session, kept for transcripts only.
 fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
     if pull.runtime.terminal_dead.load(Ordering::Acquire) {
         push_dead_events(session_id, pull, events);

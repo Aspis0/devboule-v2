@@ -102,7 +102,7 @@ fn the_asset_scope_covers_the_daemons_real_previews_folder_and_only_it() {
     // spelling the glob was built from and the spelling on disk must agree).
     let existed_before = previews.exists();
     std::fs::create_dir_all(&previews).expect("create the daemon's previews folder");
-    // A name this run owns, opened `create_new` (review-images §7): a fixed
+    // A name this run owns, opened `create_new`: a fixed
     // name with `write` would truncate whatever a real daemon staged
     // under it, and `create_new` turns a collision into a red test
     // instead of a lost copy.

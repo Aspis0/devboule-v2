@@ -1753,12 +1753,9 @@ fn both_delegation_frames_ride_the_administrative_capability() {
     let _ = std::fs::remove_dir_all(runtime_dir);
 }
 
-/// The parity decision put `DelegationSet` inside a paired device's reach, and
-/// that made the row `stores.rs` wrote false: it claimed the actor was "the
-/// person at this machine" because the gate used to refuse the arm before the
-/// handler ran. The trail now says what the connection proves — a local write
-/// writes the local row, a peer's write carries the peer's device id and role,
-/// and the peer's write is **not** double-written as a local act.
+/// The trail says what the connection proves — a local write writes the
+/// local row, a peer's write carries the peer's device id and role, and the
+/// peer's write is **not** double-written as a local act.
 #[test]
 fn a_peers_delegation_write_is_audited_under_the_peers_identity() {
     let (path, state) = temp_state("delegation-audit");
@@ -1934,8 +1931,8 @@ fn an_unknown_provider_vocabulary_request_is_an_invalid_request() {
     let _ = std::fs::remove_dir_all(runtime_dir);
 }
 
-/// What pass 1 answers, end to end through dispatch, asserted on the
-/// serialised wire:
+/// What the vocabulary read answers, end to end through dispatch, asserted
+/// on the serialised wire:
 ///
 /// - Claude answers `present` on both axes, its models origin following
 ///   the catalog state and its modes `daemon`-origin (the launcher's
@@ -3894,7 +3891,7 @@ fn a_test_built_state_uses_the_file_store_and_never_the_credential_store() {
     drop(state);
     let _ = std::fs::remove_dir_all(path);
 }
-/// M1: the accept path must not hit the journal per accepted socket. The
+/// The accept path must not hit the journal per accepted socket. The
 /// table is loaded once and reused, and every peer mutation drops it so the
 /// next connection sees the change.
 #[test]
@@ -4128,12 +4125,11 @@ fn an_agent_message_from_a_view_only_peer_is_refused() {
 
 /// Every receipt state the frame can answer with, each produced by the path
 /// that produces it: a delivered message, an unknown target, and a paired
-/// device refused a message it may not send (A2-07).
+/// device refused a message it may not send.
 ///
-/// `RejectedUnpaired` stays in the enum but is no longer produced here: an
-/// unpaired connection never reaches this dispatch — the peer gate refuses a
-/// request the device's capability set does not open, before anything looks
-/// at what the request would do — so a refusal that arrives as
+/// `RejectedUnpaired` stays in the enum but is never produced here: an
+/// unpaired source that is not a pairing candidate is closed at the accept
+/// layer, before the Noise handshake, so a refusal that arrives as
 /// `ErrorCode::Unauthorized` is a *denied* caller, not an unpaired one, and
 /// the receipt says what happened rather than blaming the pairing.
 #[test]
@@ -5238,11 +5234,11 @@ fn a_peers_deposit_is_refused_with_the_attachment_sentence() {
 /// with the store's reference, and a frame the wire refuses is still
 /// answered with a sentence rather than with its own contents — `name` and
 /// `mime_type` are unbounded strings inside a frame that may be close to
-/// `MAX_FRAME_BYTES`, and the fallback arm this used to reach formatted the
-/// whole frame — `PromptAttachment`'s own `Debug` prints both — into the
-/// error text. The one field that *must* survive a refusal is the request
-/// `id`: it is the caller's correlation token, and a refusal without it is
-/// a silence.
+/// `MAX_FRAME_BYTES`, and `PromptAttachment`'s own `Debug` prints both
+/// fields, so a `Debug`-based fallback would format the whole frame into
+/// the error text — and no error text names the frame.
+/// The one field that *must* survive a refusal is the request `id`: it is
+/// the caller's correlation token, and a refusal without it is a silence.
 #[test]
 fn a_local_deposit_answers_a_reference_and_a_refusal_echoes_nothing() {
     let (path, state) = temp_state("deposit-handler");

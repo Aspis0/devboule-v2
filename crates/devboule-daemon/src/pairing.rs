@@ -76,7 +76,7 @@ pub const MAX_PENDING_PAIRINGS: usize = 2;
 pub const WRONG_PER_SOURCE: u32 = 3;
 /// Wrong codes in total before the code itself is invalidated. Deliberately
 /// well above [`WRONG_PER_SOURCE`] so one unpaired node cannot lock the
-/// legitimate initiator out (design §8b, muse M9).
+/// legitimate initiator out (design §8b).
 pub const WRONG_TOTAL: u32 = 12;
 /// Pairing attempts one source may make in [`ATTEMPT_WINDOW`].
 pub const ATTEMPTS_PER_SOURCE: usize = 3;
@@ -93,7 +93,7 @@ pub const PAIRING_SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// responder's person is being asked to fill.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(CONFIRM_WINDOW.as_secs() + 10);
 
-/// The two sides' PAKE identity strings. Fixed, as the brief specifies: the
+/// The two sides' PAKE identity strings. Fixed: the
 /// roles do **not** live here, they are bound in the PSK (`psk_info`), which is
 /// what actually has to hold (design §8 R1).
 pub const PAIR_RESPONDER_ID: &[u8] = b"devboule/pair/v1/responder";
@@ -226,7 +226,7 @@ pub fn is_well_formed_code(code: &str) -> bool {
     code.len() == CODE_LEN && code.bytes().all(|byte| CODE_ALPHABET.contains(&byte))
 }
 
-/// Whether this daemon may open a pairing connection to `address` (M2).
+/// Whether this daemon may open a pairing connection to `address`.
 ///
 /// A tailnet address, always. Loopback is additionally accepted in the crate's
 /// own **unit tests**, which drive a responder on `127.0.0.1`; nothing in a
@@ -378,7 +378,7 @@ fn own_payload(
 }
 
 /// The name in a pairing payload is attacker-chosen and ends up on the card a
-/// person reads before accepting, so it is checked at the boundary (M3): both
+/// person reads before accepting, so it is checked at the boundary: both
 /// sides call this immediately after reading the payload, before it can be
 /// displayed, parked or stored.
 fn validate_peer_payload(payload: &PairPayload) -> Result<(), PairingError> {
@@ -690,7 +690,7 @@ impl PairingService {
             .parse()
             .map_err(|_| PairingError::Failed(format!("{address} is not an ip:port")))?;
         // The address is renderer-supplied, so the daemon enforces where it may
-        // connect rather than trusting the panel to have done it (M2). Without
+        // connect rather than trusting the panel to have done it. Without
         // this, a compromised renderer gets the daemon to make a TCP connection
         // anywhere it likes and to send the pairing magic down it.
         if !is_permitted_pairing_target(&remote_addr) {
@@ -762,7 +762,7 @@ impl PairingService {
             .finish(&their_message[..their_len])
             .map_err(|error| PairingError::Failed(error.to_string()))?;
         let mut psk = derive_psk(&spake_key, role, responder_role);
-        // The PAKE output is key material too (L1).
+        // The PAKE output is key material too.
         spake_key.zeroize();
 
         // 3-4: Noise XXpsk3 over the PAKE-derived key. A wrong code derives a
@@ -800,8 +800,7 @@ impl PairingService {
                     .to_string(),
             ));
         }
-        // Validated before it can be shown on this device's card, parked, or
-        // stored (M3).
+        // Validated before it can be shown on this device's card, parked, or stored.
         validate_peer_payload(&peer_payload)?;
 
         // The far side's user answers a `Client` pairing, which can take a
@@ -987,7 +986,7 @@ impl PairingService {
         };
         let mut psk = derive_psk(&spake_key, initiator_role, responder_role);
         // The PAKE output is key material too: the PSK was wiped already, and
-        // this is the other half of the same secret (L1).
+        // this is the other half of the same secret.
         spake_key.zeroize();
 
         // 3–4: Noise XXpsk3 over the PAKE-derived key. A wrong code produces a
@@ -1025,13 +1024,13 @@ impl PairingService {
             ));
         }
         // The name is attacker-chosen and is rendered on the confirmation card,
-        // so it is checked before it can be stored or parked (M3).
+        // so it is checked before it can be stored or parked.
         if let Err(PairingError::Failed(reason)) = validate_peer_payload(&payload) {
             return Err(self.note_wrong(peer_addr.ip(), server, &reason));
         }
 
         // Our own payload, so the initiator can record who it paired with.
-        // Each side sends one (the brief's pairing payload) and the answer
+        // Each side sends one pairing payload and the answer
         // below carries the decision; without this the initiator would have no
         // identity to store but its own.
         write_json(
@@ -1076,7 +1075,7 @@ impl PairingService {
                 address,
             )?;
             upsert_peer(server, record)?;
-            // The row is written, so the code has done its one job (H1).
+            // The row is written, so the code has done its one job.
             self.state
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -1095,7 +1094,7 @@ impl PairingService {
                 if guard.pending.len() >= MAX_PENDING_PAIRINGS {
                     false
                 } else {
-                    // One entry per device (C7). A device cannot be waiting
+                    // One entry per device. A device cannot be waiting
                     // twice for the same pairing: a reconnect from the same
                     // device — the realistic case, since its first socket may
                     // have died — replaces the older entry instead of parking
@@ -1110,8 +1109,7 @@ impl PairingService {
                         .pending
                         .retain(|entry| entry.device_id != payload.device_id);
                     if guard.pending.len() >= MAX_PENDING_PAIRINGS {
-                        // Nothing was parked, so the code is not spent: the
-                        // person can try again.
+                        // Nothing was parked, so the code is not spent: the person can try again.
                         false
                     } else {
                         guard.pending.push(PendingEntry {
@@ -1131,10 +1129,9 @@ impl PairingService {
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         // A parked pairing has spent the code: the exchange
                         // succeeded with this code, and a second candidate must
-                        // not be able to pair from it (H1). The "pairing busy"
+                        // not be able to pair from it. The "pairing busy"
                         // refusal above deliberately does **not** consume it —
-                        // nothing was paired and no entry was written, so the
-                        // person may retry.
+                        // nothing was paired and no entry was written, so the person may retry.
                         guard.consume();
                         true
                     }
@@ -1260,13 +1257,13 @@ fn local_peer_record(
     // Checked again here, at the one function that turns a name into a stored
     // row: the two payload call sites already validated it, and this is what
     // makes "every stored `display_name` passed validation" an invariant of the
-    // storage path rather than of its callers (M3).
+    // storage path rather than of its callers.
     if let Err(reason) = validate_display_name(display_name) {
         return Err(PairingError::Failed(reason));
     }
     // Re-pairing an existing device needs a revoke first (design §8 R8) —
     // **unless the pinned key is the same one**. That exception is what makes a
-    // retry after a half-finished pairing converge instead of wedging (C6):
+    // retry after a half-finished pairing converge instead of wedging:
     // the row write and the answer are two operations, and whichever side fails
     // second leaves one device holding a row while the other does not. Without
     // this, every retry dies here and two perfectly good devices are stuck until

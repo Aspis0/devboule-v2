@@ -30,7 +30,7 @@ pub(super) fn shut_down(state: &Arc<ServerState>, dir: &std::path::Path) {
 /// The row a spawn writes for a session: the notice appends to it, the close
 /// marks it, and the send's refusal reads it back. A fixture without one
 /// makes every journal write in the path under test fail on "no session with
-/// that id", which is a fixture gap, not a finding.
+/// that id".
 pub(super) fn birth_row(
     registry: &SessionRegistry,
     id: &str,

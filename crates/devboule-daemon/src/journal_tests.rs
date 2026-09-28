@@ -5,7 +5,7 @@ use devboule_protocol::TranscriptIntegrity;
 use devboule_protocol::{UserMessageAuthor, UserMessageKind};
 use std::process::Command;
 
-/// §8 R2 / H7: the origin a *row* reads back as. `local` is the pre-v9
+/// §8 R2: the origin a *row* reads back as. `local` is the pre-v9
 /// column default and stays local; a missing or unrecognised `kind` is
 /// `Unknown`, which is not local and names no device. The `Daemon`
 /// ownership arm reads `device_id` and requires `kind == Peer`, so a row
@@ -304,7 +304,7 @@ fn interrupted_loss_keeps_counters_but_not_certification() {
     );
 }
 
-/// Audit S5-12: the name and the parent of an agent-created session are the
+/// The name and the parent of an agent-created session are the
 /// journal's, so a restart brings both back.
 ///
 /// A row with neither stays NULL — every session a human asked for — and
@@ -731,7 +731,7 @@ fn agent_report_survives_replay() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The `preset` → `profile` rename (audit F2): a row journaled before v11
+/// The `preset` → `profile` rename: a row journaled before v11
 /// carries `preset`, and the replay reader parses the payload in one
 /// tolerant `if let Ok` — an unparseable row is dropped with no counter.
 /// The alias on `AgentCreated.profile` is what keeps this row hydrating.
@@ -1490,7 +1490,7 @@ fn peers_round_trip_revoke_and_caps() {
         .expect("get")
         .expect("row")
         .is_revoked());
-    // And a revoked row's capabilities cannot be rewritten (C8).
+    // And a revoked row's capabilities cannot be rewritten.
     assert_eq!(
         journal
             .peer_set_caps("dev-1", vec!["view".into()])
@@ -1711,7 +1711,7 @@ fn session_retention_does_not_touch_audit_rows() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The tri-state ratchet, at the write it lives in (R2b): a row's
+/// The tri-state ratchet, at the write it lives in: a row's
 /// `unattended_state` may move up the order `no < unknown < yes` and never
 /// down, whatever a later upsert carries — a resume rebuilt from an older
 /// row, or an ordinary end marker, must not walk a birth fact backwards.
@@ -2090,7 +2090,7 @@ fn the_nothing_owed_sentinel_cannot_widen_a_page_range() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// M1: the held-id refusal must rest on the constraint code, not the prose.
+/// The held-id refusal must rest on the constraint code, not the prose.
 /// Both errors below come from SQLite itself — no hand-made error value.
 /// A real non-PK failure whose message names the column must not read as
 /// held; a real PK duplicate must.
@@ -2133,7 +2133,7 @@ fn session_id_taken_rests_on_the_constraint_code_not_the_prose() {
     );
 }
 
-/// J3: a birth changes the roster, so it must bump the revision the
+/// A birth changes the roster, so it must bump the revision the
 /// roster cache is keyed on. The older Upsert arm does; the new
 /// CreateSession arm currently does not.
 #[test]
@@ -2289,7 +2289,7 @@ fn peer_handle_announce_and_disown_mark_rules_in_sequence() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// J1: a birth whose caller is gone must not leave a row behind.
+/// A birth whose caller is gone must not leave a row behind.
 ///
 /// A timed-out `create_session` (slow writer, full queue) leaves exactly
 /// this state: the command is queued but the reply receiver is dropped.

@@ -171,7 +171,7 @@ pub(crate) struct SessionRuntime {
     /// by `begin_turn`, and by the `AgentFinished` transition (`finish_turn`).
     /// Holding it across the provider write is what makes steer admission
     /// atomic, so a turn cannot end between the check that admits a steer and
-    /// the write that delivers it (S4-02). A plain `Mutex<()>`: the guarded
+    /// the write that delivers it. A plain `Mutex<()>`: the guarded
     /// value is nothing, so a lock poisoned by a panic cannot leave state
     /// behind that a later lock would have to distrust.
     turn_hold: Mutex<()>,
@@ -233,7 +233,7 @@ pub(crate) struct SessionRuntime {
     /// is not swallowed (the PTY coalescer already notifies the registry).
     pub(crate) roster_notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Called once after an `AgentFinished` is published (never for any other
-    /// event), which is the slice-5 finish report's trigger.
+    /// event): the finish report's trigger.
     ///
     /// It is deliberately not the attention hook: attention is a *priority*
     /// state (`Error` 2 outranks `Finished` 1), so a child whose provider
@@ -433,7 +433,7 @@ struct TurnEndHook {
 ///
 /// The hold is the same lock the `AgentFinished` transition and `begin_turn`
 /// take, so neither a turn ending nor a new turn starting can slip between
-/// `with_active_turn`'s check and the provider write that follows it (S4-02).
+/// `with_active_turn`'s check and the provider write that follows it.
 pub(crate) struct TurnToken<'a> {
     hold: Option<MutexGuard<'a, ()>>,
 }
@@ -1326,7 +1326,7 @@ impl SessionRuntime {
         // The id is built by the publisher, so the event, the transcript and the
         // journal row that links to it (`Steered`) name one message: the caller
         // takes the id back out of the event that was actually published rather
-        // than inventing a second one (A2-10).
+        // than inventing a second one.
         self.publish_journaled_agent_event(|generation, seq| SessionEvent::AgentUserMessage {
             message_id: Some(format!("devboule-user-{generation}-{seq}")),
             text,
@@ -1396,7 +1396,7 @@ impl SessionRuntime {
     ///
     /// `Some(event)` is the event exactly as published — the caller needs the
     /// `message_id` it carries, so the same id can be written into the row that
-    /// links to it (A2-10). `None` means the stream refused it (closed, or the
+    /// links to it. `None` means the stream refused it (closed, or the
     /// lock is gone), which callers report as a degraded session and never as an
     /// error.
     fn publish_journaled_agent_event<F>(&self, build: F) -> Option<SessionEvent>
@@ -1543,7 +1543,7 @@ impl SessionRuntime {
     /// once its write is done).
     ///
     /// `None` means the turn was over — or the process already gone — at the
-    /// moment of admission, so nothing may be written for it (S4-02).
+    /// moment of admission, so nothing may be written for it.
     pub(crate) fn with_active_turn<T>(
         &self,
         expected_turn_id: u64,
@@ -1560,7 +1560,7 @@ impl SessionRuntime {
 
     /// End the turn if one is running, advancing the turn counter. The
     /// transition takes the turn-hold, so a steer admitted for this turn has
-    /// already issued its write by the time the counter moves (S4-02). The
+    /// already issued its write by the time the counter moves. The
     /// hooks run after the hold is released: they take other locks, and this
     /// is the reader thread.
     fn finish_turn(&self) {
@@ -1609,7 +1609,7 @@ impl SessionRuntime {
     }
 
     /// Register a one-shot callback for the end of the turn `expected_turn_id`
-    /// names, but only while that turn is still the running one (S4-03).
+    /// names, but only while that turn is still the running one.
     ///
     /// The check and the registration are one critical section under the same
     /// lock `finish_turn` takes, so a turn that ends between a caller's earlier
@@ -1629,7 +1629,7 @@ impl SessionRuntime {
         Some(self.on_turn_end(callback))
     }
 
-    /// How many boundary hooks are armed on this runtime right now (S4-02).
+    /// How many boundary hooks are armed on this runtime right now.
     /// Test-only: a hook that is never unregistered is invisible from outside.
     #[cfg(test)]
     pub(crate) fn turn_end_hook_count(&self) -> usize {
@@ -1652,11 +1652,11 @@ impl SessionRuntime {
         }
     }
 
-    /// Journal one accepted steer as the `Steered` audit row (S4-12).
+    /// Journal one accepted steer as the `Steered` audit row.
     ///
     /// `message_id` is the id of the `AgentUserMessage` echo this steer also
     /// published — the *same* id, so a reader can pair the transcript message
-    /// with the journal row that recorded the steer (A2-10). It is `None` only
+    /// with the journal row that recorded the steer. It is `None` only
     /// when there was no echo to point at (the stream refused it), never a fresh
     /// id invented here: an id that names nothing would be worse than no id.
     pub(crate) fn journal_steered(&self, message_id: Option<String>, text: String) -> bool {
@@ -2011,10 +2011,9 @@ impl SessionRuntime {
             note,
             artifacts,
         };
-        // Journaled like the creation record (brief §1, audit finding): the
-        // creator's journal is what an unattached Workspace, or one that
-        // restarts, reads the finish out of, so the structured record cannot
-        // live on the stream alone.
+        // Journaled like the creation record: the creator's journal is what
+        // an unattached Workspace, or one that restarts, reads the finish
+        // out of, so the structured record cannot live on the stream alone.
         self.publish_journaled_agent_event(|_, _| event).is_some()
     }
 

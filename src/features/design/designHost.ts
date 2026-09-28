@@ -216,11 +216,10 @@ export interface DesignGenerationResult {
 /**
  * Declared output shape of a generation: a scrolling page or a slide deck.
  * Declared on the wire by the caller, never inferred from the prompt text:
- * inferring a mode from a derived value was tried for the skill mode and
- * rejected — it degraded silently whenever the derived value moved while
- * the UI kept saying something else. Absent means a caller that predates
- * slides and keeps the page behaviour; the surface always states it
- * explicitly, exactly like `grounded` and `folderPath`.
+ * inferring a mode from a derived value is unsafe — it degrades silently
+ * whenever the derived value moves while the UI keeps saying something else. Absent means
+ * a caller that predates slides and keeps the page behaviour; the surface
+ * always states it explicitly, exactly like `grounded` and `folderPath`.
  */
 export type DesignOutputMode = "page" | "slides";
 
@@ -229,15 +228,15 @@ export type DesignOutputMode = "page" | "slides";
  * because they travel as two different things.
  *
  * A raster image is bytes: it is carried base64, the form every provider that
- * accepts an image expects on the wire, matching the `{ data, mimeType }` pair
- * Paseo sends.
+ * accepts an image expects on the wire — the `{ data, mimeType }` pair Paseo
+ * sends (`packages/client/src/daemon-client.ts`).
  *
  * An SVG is not an image here. It is a text document this surface can embed in
- * the HTML it generates, so it is carried as sanitized source. That is a
- * deliberate departure from Paseo, which classifies SVG as a generic file and
- * sends the agent four lines of metadata; this surface generates HTML, and an
- * SVG is something it can use directly. `source` has already been through the
- * sanitizer in `designAttachments.ts` and never travels raw.
+ * the HTML it generates, so it is carried as sanitized source. A deliberate
+ * divergence from Paseo, which classifies SVG as a generic file
+ * (`packages/app/src/attachments/file-types.ts`): this surface generates HTML,
+ * and an SVG is something it can use directly. `source` has already been
+ * through the sanitizer in `designAttachments.ts` and never travels raw.
  *
  * The measured type is the one stored, never the declared one: see the module
  * comment in `designAttachments.ts` for why the bytes decide.
@@ -325,10 +324,10 @@ export interface DesignAttachmentFeedback {
  * Call-time options, never persisted. The skill mode is declared on the wire
  * with the same ids the persisted selection uses (`all` | `manual` | `auto`):
  * the caller knows which mode is active and says so; the host never has to
- * infer intention from the shape of the list. Inference from shape was tried
- * and rejected — a list-coverage heuristic died silently whenever a derived
- * constant moved, misreported a reordered list as a pin, and made callers
- * encode meaning in array length.
+ * infer intention from the shape of the list. Inference from shape is unsafe:
+ * a list-coverage heuristic dies silently whenever a derived constant
+ * moves, misreports a reordered list as a pin, and makes callers encode
+ * meaning in array length.
  *
  * - `{ skillMode: "all" }` — Matched: the host ranks the built-in corpus
  *   against the request text with the deterministic lexical ranker, no model

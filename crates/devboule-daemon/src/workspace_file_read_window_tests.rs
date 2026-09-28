@@ -354,10 +354,9 @@ fn the_window_boundary_is_pinned_at_the_byte() {
     );
 }
 
-/// The case the review asked for by name: a first window ending on the
-/// LAST byte of the cap — newline and all — and a second one starting on
-/// the following line, the two together equal to the file: no line lost,
-/// none repeated, at the exact byte boundary.
+/// A first window ending on the LAST byte of the cap — newline and all —
+/// and a second one starting on the following line, the two together equal
+/// to the file: no line lost, none repeated, at the exact byte boundary.
 #[test]
 fn the_first_window_can_end_on_the_last_cap_byte_and_the_next_starts_the_following_line() {
     let repo = Repo::new("cap-seam");

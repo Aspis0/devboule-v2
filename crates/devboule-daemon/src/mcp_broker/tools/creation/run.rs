@@ -15,13 +15,13 @@ use super::profile::resolve_profile;
 use super::request::{creation_fingerprint, AgentCreateRequest};
 use super::result::created_result;
 
-/// The `devboule_create_agent` tool (`S5` §2 and §3; `create-from-profile`).
+/// The `devboule_create_agent` tool (`create-from-profile`).
 ///
 /// The caller is the session whose Bearer authenticated the connection: the
 /// `registration` is the only identity this function uses, and there is no
 /// `from_session` parameter to lie about.
 ///
-/// The order is the checklist's: resolve the profile the caller named from the
+/// The order: resolve the profile the caller named from the
 /// profiles the human **ticked, read now** (the provider, the model, the mode,
 /// the features and the tool overlay come from there and never from the
 /// caller), reserve the budget, raise the creation card once per creator
@@ -37,10 +37,9 @@ pub(in crate::mcp_broker) fn create_agent(
     request: AgentCreateRequest,
 ) -> Value {
     let creator_id = registration.session_id.clone();
-    // The retry identity, and the payload it must match (`S5` block 7, audit
-    // S5-03 and S5-08).
+    // The retry identity, and the payload it must match.
     //
-    // An MCP `tools/call` has no idempotency parameter — §2's schema is closed
+    // An MCP `tools/call` has no idempotency parameter — the schema is closed
     // and defines none — so the only identity a *retry* has is the frame's own
     // id, which a client reuses when it re-sends a request whose answer it lost.
     // The fingerprint is everything the answer depends on, so a key reused with
@@ -101,7 +100,7 @@ pub(in crate::mcp_broker) fn create_agent(
         Ok(creator) => creator,
         Err(error) => return tool_error(id, &error.message),
     };
-    // Where the child runs, before anything is spent on it (audit S5-05): a
+    // Where the child runs, before anything is spent on it: a
     // workspace is either the caller's own or the call is refused, and the
     // working directory must stay inside it. The card then states the directory
     // the child will really get.
@@ -118,8 +117,8 @@ pub(in crate::mcp_broker) fn create_agent(
         Ok(cwd) => cwd,
         Err(error) => return tool_error(id, &error.message),
     };
-    // The depth comes from the registration, never from the request
-    // (`S5` checklist): a session at depth 2 may not create, whatever it says.
+    // The depth comes from the registration, never from the request:
+    // a session at depth 2 may not create, whatever it says.
     let depth = registration.depth.saturating_add(1);
     if depth > crate::session::MAX_AGENT_DEPTH {
         return tool_error(id, "depth limit; do not retry");
@@ -127,13 +126,13 @@ pub(in crate::mcp_broker) fn create_agent(
     // The device that owns the creator must still be allowed to create
     // sessions: a child of a peer's session is a session on that peer's device,
     // so the gate the peer already passed for its own `SessionCreate` is the
-    // gate its child passes here (`S5` §3, "closed set"). A revoked or
+    // gate its child passes here. A revoked or
     // capability-stripped device fails closed.
     if !creator.may_create_sessions(state) {
         return tool_error(id, "not allowed for this peer");
     }
     // A provider this daemon cannot launch is refused before a session id, a
-    // card or a slot is spent on it (`S5` §2). The provider is the profile's:
+    // card or a slot is spent on it. The provider is the profile's:
     // a creation cannot name one, so this is the only provider that can be
     // missing, and the sentence says what it is about.
     if !provider_is_launchable(&profile.provider) {
@@ -143,17 +142,16 @@ pub(in crate::mcp_broker) fn create_agent(
     // the reservation and before the card: a tick over a mode that asks the
     // human is refused without spending the human's consent on a creation
     // the daemon had already decided to refuse, and without the card reading
-    // "auto accept: Yes (mode ask)" for exactly that configuration (the R2a
-    // audit's F7).
+    // "auto accept: Yes (mode ask)" for exactly that configuration.
     //
-    // The refusal is bounded by **authorship** (the re-audit's P1): this gate
+    // The refusal is bounded by **authorship**: this gate
     // concludes only where the daemon owns the rule. Claude and Pi's tick
     // rule is the daemon's own — start in a mode the broker answers — and
     // the profile's mode is the delivered mode for both. Codex's knob
     // (`full-access`) and every ACP agent's modes are the family's own
     // vocabulary, so the daemon refuses nothing there: the client re-judges
-    // at spawn time, where the delivered mode is the fact. The old shape
-    // judged every provider from the shared table alone and refused a Codex
+    // at spawn time, where the delivered mode is the fact. Judging every
+    // provider from the shared table alone would refuse a Codex
     // `full-access` profile its own client accepts.
     if matches!(
         crate::provider_catalog::judge_auto_accept_tick(
@@ -205,8 +203,8 @@ pub(in crate::mcp_broker) fn create_agent(
     if ticket.card_owed() {
         // The card is raised on the creator's own session, through the same
         // broker entry every other card uses: the same decision frame answers
-        // it, the same per-device budget bounds a peer's, and a refusal leaves
-        // the gate shut (`S5` decision 4).
+        // it, the same per-device budget bounds a peer's, and a refusal leaves the
+        // gate shut.
         if creator_runtime
             .as_ref()
             .and_then(|runtime| runtime.permission_broker())
@@ -287,14 +285,14 @@ pub(in crate::mcp_broker) fn create_agent(
             }
             // The result is remembered, so the key stops being in flight: a
             // client that re-sends now reads the answer above instead of being
-            // told a creation is in progress (`S5-03`).
+            // told a creation is in progress.
             if let Some(hold) = hold.as_mut() {
                 hold.commit();
             }
             created_result(id, &session, state.mcp.is_registered(&session.id))
         }
         // Every refusal above and this failure release the reservation
-        // through the ticket's own `Drop` (audit S5B-02): one release path,
+        // through the ticket's own `Drop`: one release path,
         // taken exactly once, whatever happened.
         Err(error) => tool_error(id, &error.message),
     }
@@ -304,8 +302,8 @@ pub(in crate::mcp_broker) fn create_agent(
 /// a provider can exist: a catalogue row must be found on PATH, while a
 /// user-declared row carries its own argv and is launchable without being on
 /// PATH at all (`acp_client::resolve_named` reads the live registry before the
-/// PATH/CDN walk). Asking PATH alone refused every user provider on this road
-/// while the wire create road spawned it — one provider, two answers,
+/// PATH/CDN walk). Asking PATH alone refuses every user provider on this road
+/// while the wire create road spawns it — one provider, two answers,
 /// depending on which door the caller came through.
 pub(in crate::mcp_broker) fn provider_is_launchable(provider: &str) -> bool {
     crate::session::catalog_registry()

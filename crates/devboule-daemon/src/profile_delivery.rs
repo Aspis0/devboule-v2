@@ -326,7 +326,7 @@ mod tests {
     /// refusal and the delivery cannot disagree about what a tick is. The
     /// tick is a constraint on which mode is delivered — it is never an input
     /// to the `unattended` marker, which the birth derives from the delivered
-    /// mode alone (R2b).
+    /// mode alone.
     #[test]
     fn the_tick_is_only_the_boolean_true() {
         assert!(feature_is_true(

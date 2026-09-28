@@ -1,10 +1,9 @@
-//! Slice 1a end-to-end: two real daemons, a real tailnet link.
+//! Two real daemons, a real tailnet link.
 //!
-//! Everything in S1–S6 is covered without Tailscale; this file is the one test
-//! that needs a running tailscaled, because the listener binds real tailnet
-//! addresses and the binding check calls `whois`. It skips with a clear message
-//! when the listener is not up, so a CI runner without Tailscale reports why
-//! rather than failing.
+//! This file is the suite's only tailscale-bound test: the listener binds
+//! real tailnet addresses and the binding check calls `whois`. It skips with
+//! a clear message when the listener is not up, so a CI runner without
+//! Tailscale reports why rather than failing.
 //!
 //! The test drives two separate daemon processes over their named pipes for
 //! control (pairing, device lists, revocation), and acts as a **peer** itself
@@ -17,9 +16,8 @@
 //!
 //! The pipe is spoken raw (`connect_pipe` + `Framed`) rather than through
 //! `DaemonClient`: this test sends `ClientMessage` variants that
-//! `DaemonClient` has no typed method for yet (the device RPCs are slice 1b's
-//! to add on the client side), and a raw frame keeps the test independent of
-//! that work.
+//! `DaemonClient` has no typed method for yet — the device RPCs among them —
+//! and a raw frame keeps the test independent of the client's typed wrappers.
 
 #![cfg(windows)]
 
@@ -523,7 +521,7 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
         other => panic!("expected PairingPending for a Client pairing, got {other:?}"),
     }
 
-    // A learns about the request by polling `DevicesList`: slice 1a has no push
+    // A learns about the request by polling `DevicesList`: there is no push
     // channel, so this is the only way the card can appear.
     // The park happens on A's side once B's request has crossed the link, so
     // one poll is not enough: ask again until the daemon's own answer names the

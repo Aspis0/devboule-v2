@@ -9,8 +9,9 @@ export interface WorkspaceCommand {
   hint?: string;
 }
 
-/** Paseo's `agentAutocomplete.noCommands`: its list renders this line whenever
- * it has no option to draw, so the menu is never an empty box. */
+/** Paseo's `agentAutocomplete.noCommands`
+ * (`packages/app/src/i18n/resources/en.ts`): its list renders this line
+ * whenever it has no option to draw, so the menu is never an empty box. */
 const NO_COMMANDS_TEXT = "No commands found";
 
 interface WorkspaceCommandMenuProps {
@@ -42,8 +43,8 @@ export function WorkspaceCommandMenu({
   const activeRowRef = useRef<HTMLButtonElement>(null);
   useMenuOpen(open, onClose);
 
-  // Paseo works this offset out inside its own list; a bare scrollIntoView
-  // would walk every scrollable ancestor — transcript and page included.
+  // Scrolling only this list's own box: a bare scrollIntoView would walk
+  // every scrollable ancestor — transcript and page included.
   useEffect(() => {
     if (!open) return;
     const row = activeRowRef.current;

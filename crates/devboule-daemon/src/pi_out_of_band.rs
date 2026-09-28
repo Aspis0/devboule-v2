@@ -18,10 +18,11 @@ use super::PiControl;
 use crate::session::{OutOfBandCommands, SessionRuntime};
 
 /// How long a `compact` round trip may wait: Paseo waits forever
-/// (`JSONL_RPC_NO_TIMEOUT`, `cli-runtime.ts:139-143`) because pi only
+/// (`JSONL_RPC_NO_TIMEOUT`,
+/// `packages/server/src/server/agent/providers/pi/cli-runtime.ts`) because pi only
 /// replies once the compaction is durable — but a child that stops
 /// answering would otherwise pin one worker and its registration for the
-/// session's life, and the review required the bound (review A5-2 #4).
+/// session's life; the bound exists for that silent child.
 /// Five minutes is far longer than a durable compaction, so a real one
 /// never sees it; a silent child's round trip ends in Paseo's failure line
 /// instead of a thread. The same duration bounds a successful run's wait
@@ -56,12 +57,12 @@ fn parse_auto_compact_mode(args: Option<&str>) -> AutoCompactMode {
 /// `outOfBandCompactionStarted` (`:1826,1856-1860`), kept alive by the
 /// reader's observation of pi's own compaction frames the way Paseo keeps
 /// its alive on the `compaction_start`/`compaction_end` events
-/// (`:2344-2356`). A run releases the slot when its RPC settles without the
+/// (`packages/server/src/server/agent/providers/pi/agent.ts`). A run releases the slot when its RPC settles without the
 /// compaction having begun (Paseo's `finally`), when the compaction ends,
 /// or when a started compaction's RPC fails — Paseo's synthetic completed
-/// item does that third one (`:1834-1845`).
-///
-/// Two bounds Paseo has none of: the wait is bounded (review A5-2 #4), so a
+/// item does that third one.
+//
+/// Two bounds Paseo has none of: the wait is bounded, so a
 /// timed-out run's late end is owed to the run that is gone and can never
 /// release the next run; and a successful run whose end never arrives holds
 /// the slot only for the end grace, not the session's life.
@@ -111,8 +112,7 @@ impl CompactGuard {
             if let Some(settled) = run.settled_ok_at {
                 if settled.elapsed() >= state.end_grace {
                     // The successful run's end never arrived: reclaim the
-                    // slot, but owe its late end so it cannot release the
-                    // run that starts now.
+                    // slot, but owe its late end so it cannot release the run that starts now.
                     if run.started {
                         state.owed_ends = state.owed_ends.saturating_add(1);
                     }
@@ -139,7 +139,7 @@ impl CompactGuard {
     /// manual — pi marks the field optional, and Paseo, which reads it only
     /// for the label, releases on any end. An explicitly automatic frame is
     /// someone else's compaction and moves nothing.
-    ///
+    //
     /// Answers whether this end closes a run the transcript already completed
     /// synthetically: its late end leaves neither a row nor an event.
     pub(super) fn observe(&self, line: &Value) -> bool {
@@ -252,7 +252,7 @@ impl PiOutOfBandCommands {
     }
 
     /// The bound a test shortens: the refusal and bound tests would
-    /// otherwise wait the production five minutes (review A5-2 #4). It is
+    /// otherwise wait the production five minutes. It is
     /// also the end grace, so the missing-end test shortens both with one knob.
     #[cfg(test)]
     pub(super) fn with_compact_timeout(mut self, timeout: Duration) -> Self {
@@ -270,10 +270,12 @@ impl PiOutOfBandCommands {
     /// Paseo `pi/agent.ts:1819-1862` `executeCompactCommand`: the guard
     /// first — a second run while one is outstanding is refused with
     /// Paseo's own sentence and writes no rpc (`:1821-1825`, surfaced as
-    /// the client's `[Error] …` line, `agent-manager.ts:2381-2387`) — then
+    /// the client's `[Error] …` line,
+    /// `packages/server/src/server/agent/agent-manager.ts`) — then
     /// the `compact` RPC with the custom instructions when there are any
-    /// (`cli-runtime.ts:139-143`). Progress and completion are pi's own
-    /// compaction frames, which `pi_view` shows (`review A5-2 #2`); this
+    /// (`packages/server/src/server/agent/providers/pi/cli-runtime.ts`).
+    /// Progress and completion are pi's own
+    /// compaction frames, which `pi_view` shows; this
     /// publishes Paseo's failure line, verbatim — preceded by the synthetic
     /// completion sentence when the start was already shown.
     fn run_compact(&self, args: Option<String>, runtime: &Arc<SessionRuntime>) {
@@ -454,7 +456,7 @@ fn spawn_worker(
 
 /// The same, with the thread spawn as a parameter so the no-worker branch —
 /// where the caller takes the answer instead of the worker — is a test that
-/// runs, not a branch that never does (review A5-2 #9).
+/// runs, not a branch that never does.
 #[allow(clippy::too_many_arguments)]
 fn run_out_of_band_request_with(
     control: &Arc<PiControl>,
@@ -526,8 +528,10 @@ fn run_out_of_band_request_with(
 /// `success: false` carries pi's own error text (`jsonl-rpc-process.ts:283-289`
 /// rejects with `response.error`), a closed channel is the reason the reader
 /// woke it with, and every wait is bounded — `compact` at
-/// [`COMPACT_TIMEOUT`], the rest at Paseo's own default (review A5-2 #4
-/// replaced Paseo's `JSONL_RPC_NO_TIMEOUT` for it, `cli-runtime.ts:139-143`).
+/// [`COMPACT_TIMEOUT`], the rest at Paseo's own default (Paseo's
+/// `JSONL_RPC_NO_TIMEOUT`,
+/// `packages/server/src/server/agent/providers/pi/cli-runtime.ts`). The bound
+/// replaces Paseo's `JSONL_RPC_NO_TIMEOUT` for `compact`.
 fn await_out_of_band(
     control: &Arc<PiControl>,
     command: &str,

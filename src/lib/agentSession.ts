@@ -337,8 +337,8 @@ export class AgentSession {
    * reply at the end of the send's own iteration, the published frame in a
    * later one — server/connection.rs), so with two sends in flight the wire
    * order `[A reply][A frame][B reply]` leaves A's twin pending after B has
-   * already settled; one slot cannot hold two same-text twins either
-   * (review-E1-fix2, P2-1 and P2-2). Entries are consumed one per frame by
+   * already settled; one slot cannot hold two same-text twins either.
+   * Entries are consumed one per frame by
    * exact text match; a frame that matches nothing is shown verbatim.
    */
   private readonly pendingSendRejections: string[] = [];
@@ -428,8 +428,7 @@ export class AgentSession {
    * transcript gains one inline user bubble inside the running turn. Bumping
    * the turn counter or appending a second bubble here would split the
    * assistant stream that is still arriving — the sender must not render the
-   * steer twice, and Paseo emits its timeline item when the stream echoes the
-   * steer, not at dispatch.
+   * steer twice.
    *
    * `attachmentReferences` names attachments that already travelled: one entry
    * per deposited page, in the order the pages appear in the composer. The
@@ -1051,8 +1050,7 @@ export class AgentSession {
       case "sessions_snapshot":
       case "snapshot":
       case "agent_reported":
-      // Journaled for audit and not emitted to observers; the transcript gains
-      // steer rendering in slice 4b.
+      // Journaled for audit and not emitted to observers.
       case "steered":
         return;
       case "journal_degraded":

@@ -313,8 +313,8 @@ impl DaemonClient {
                 kind,
                 provider,
                 mode,
-                // A human-started session is named by the daemon's fallback in this
-                // slice: nothing in the app asks for a name yet, and inventing one
+                // A human-started session is named by the daemon's fallback:
+                // nothing in the app asks for a name yet, and inventing one
                 // here would put a second naming path beside the protocol field.
                 display_name: None,
                 idempotency_key,
@@ -1297,7 +1297,7 @@ impl DaemonClient {
     }
 
     /// Revokes one peer: the row is stamped, live connections are dropped, and
-    /// the audit table records it. Returns the row as it now stands.
+    /// the table records it. Returns the row as it now stands.
     pub fn peer_revoke(&self, device_id: &str) -> Result<PeerRow, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::PeerRevoke {

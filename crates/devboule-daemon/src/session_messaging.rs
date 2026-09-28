@@ -310,7 +310,7 @@ impl super::SessionRegistry {
             active_turn_behavior,
             require_attachment: true,
             // The person at this machine, or a paired device: only the former
-            // may have a refused steer fall back to an interrupt (S4-01).
+            // may have a refused steer fall back to an interrupt.
             interrupt_on_steer_refusal: session_origin_for(&conn.conn_peer).is_local(),
             message_slot: None,
             // No preset preamble: a client's prompt is not a creation's.
@@ -417,7 +417,7 @@ impl super::SessionRegistry {
         } else {
             from_session
         };
-        // Target admission and the brake slot are one critical section (A2-05).
+        // Target admission and the brake slot are one critical section.
         // While this holds the session map, no close can take the target out from
         // under the check and no second send of the same sender can take the slot
         // this one is taking: "the target is there and this caller may reach it"
@@ -426,7 +426,7 @@ impl super::SessionRegistry {
         // The brake table's own lock is taken underneath this one — never the
         // other way round — and released with it.
         //
-        // The turn this message joins is *not* snapshotted here (S4-03): the
+        // The turn this message joins is *not* snapshotted here: the
         // reservation below asks the target's runtime for it, in the same critical
         // section `finish_turn` takes, and its answer is what decides steer versus
         // prompt. A turn that ends after that answer cannot make the decision
@@ -492,7 +492,7 @@ impl super::SessionRegistry {
         // The entry point states whether this id is local or far. A far id is
         // namespaced with the authenticated device so a local-looking label
         // cannot masquerade as this daemon's sibling; a local source keeps the
-        // existing local form (S4-05).
+        // existing local form.
         let from_agent = if far_sender {
             format!(
                 "peer:{}/{}",
@@ -521,7 +521,7 @@ impl super::SessionRegistry {
         };
         let envelope = agent_message_envelope(&origin, role, &from_agent, text);
         let internal_conn = ConnHandle::with_peer(0, None);
-        // (S4-10) The slot this delivery holds, so the plain-prompt fallback can
+        // The slot this delivery holds, so the plain-prompt fallback can
         // re-key its boundary if the turn it was admitted into ends first.
         let slot_ref = MessageSlotRef {
             brakes: &self.message_brakes,
@@ -541,7 +541,7 @@ impl super::SessionRegistry {
             owner: &target_owner,
             conn: &internal_conn,
             mcp_timeout: crate::mcp_broker::ready_timeout(),
-            // (S4-03) Steer only if the runtime answered that the turn the
+            // Steer only if the runtime answered that the turn the
             // caller checked was still running when the boundary was registered:
             // that answer, not an earlier look, is what makes the delivery match
             // the decision.
@@ -551,7 +551,7 @@ impl super::SessionRegistry {
             require_attachment: false,
             // The delivery itself is the daemon acting on the caller's behalf,
             // so a refused steer may only interrupt when the caller could have
-            // asked for an interrupt itself (S4-01): a paired device's agent
+            // asked for an interrupt itself: a paired device's agent
             // message must not replace a running turn it may not stop.
             interrupt_on_steer_refusal: caller_origin.is_local(),
             message_slot: Some(&slot_ref),
@@ -588,7 +588,7 @@ impl super::SessionRegistry {
         }
         // The delivery's own id is not what this act answers with: the *sender*
         // is the caller here, and its echo (if any) is published above. The
-        // receiver-side id is nobody's correlation key (S4-09).
+        // receiver-side id is nobody's correlation key.
         result.map(|_| ())
     }
 
@@ -734,7 +734,7 @@ impl super::SessionRegistry {
             ));
         }
         // A steer is text only, and that is refused before a single attachment
-        // byte is planned, decoded or written anywhere (S4-10): the steer
+        // byte is planned, decoded or written anywhere: the steer
         // branch below writes the text into a turn that is already running, and
         // there is no path from an attachment to a provider frame on it. The
         // refusal names the way to send one.
@@ -764,14 +764,14 @@ impl super::SessionRegistry {
             }
         }
         // Paseo calls `tryRunOutOfBand` before `startAgentRunInner` and
-        // `steerOrReplaceActiveRun` (`agent-prompt.ts:110-116`); a picked Codex
+        // `steerOrReplaceActiveRun` — translated from Paseo's agent-prompt
+        // (packages/server/src/server/agent/agent-prompt.ts); a picked Codex
         // prompt or skill is not out-of-band — it stays a turn — and the
         // static plan below expands it against the user's message, ahead of
         // this first-prompt composition, so a later paragraph that merely
         // names a command is never one. Keep this door ahead of composition
         // so out-of-band input remains parseable. Attachment prompts bypass
-        // the out-of-band door because Paseo only resolves string prompts
-        // (:4009).
+        // the out-of-band door because Paseo only resolves string prompts.
         if attachments.is_empty() && attachment_references.is_empty() {
             if let Some(commands) = out_of_band.as_ref() {
                 if commands.handles_out_of_band(text) {
@@ -790,7 +790,7 @@ impl super::SessionRegistry {
             }
         }
         if active_turn_behavior == Some(ActiveTurnBehavior::Steer) && is_agent {
-            // (S4-14) The steer writes into whichever turn is running now, and the
+            // The steer writes into whichever turn is running now, and the
             // admission registered this slot's boundary against the turn that was
             // running then. If that is not the same turn any more, the boundary is
             // re-keyed here — before the steer write, under the brakes lock — so the
@@ -801,7 +801,7 @@ impl super::SessionRegistry {
                 }
             }
             let expected_turn_id = runtime.turn_counter();
-            // Compare-and-deliver (S4-02): the runtime hands the provider
+            // Compare-and-deliver: the runtime hands the provider
             // adapter a token only while the daemon turn the caller checked is
             // still the running one, holding the same lock the `AgentFinished`
             // transition takes across the adapter's write. A turn therefore
@@ -834,12 +834,11 @@ impl super::SessionRegistry {
                     // inside the running turn; `Steered` stays the journal's
                     // audit row for the same text (it is not published to
                     // observers), carrying the echo's own `message_id` so the
-                    // row and the transcript message name one message (A2-10).
+                    // row and the transcript message name one message.
                     // Both are best effort: the provider has already taken the
                     // text, so a recording failure is reported as a degraded
                     // session and never as an error — the caller must not be
-                    // invited to retry a steer that already landed
-                    // (S4-06/S4-09).
+                    // invited to retry a steer that already landed.
                     let echo_message_id =
                         runtime.publish_agent_user_message(text.to_string(), author, message_kind);
                     if echo_message_id.is_none() {
@@ -857,7 +856,7 @@ impl super::SessionRegistry {
                         runtime.request_transition();
                     }
                     // The steer's own echo id is the message the text became,
-                    // so it is what this delivery answers with (audit S5-04):
+                    // so it is what this delivery answers with:
                     // a caller that correlates to it names the message the
                     // creator's transcript actually shows. The joined turn is
                     // running, so the reply says so and the sender leaves it alone.
@@ -872,8 +871,7 @@ impl super::SessionRegistry {
                     // interrupt-and-replace; a paired device gets a refusal,
                     // because interrupting a running turn is the act
                     // `SessionInterrupt` decides and no capability opens it to
-                    // a peer, so a steer must not reach it the long way round
-                    // (S4-01).
+                    // a peer, so a steer must not reach it the long way round.
                     if !interrupt_on_steer_refusal {
                         return Err(WireError::new(
                             ErrorCode::Unauthorized,
@@ -884,7 +882,7 @@ impl super::SessionRegistry {
                     killer.interrupt();
                 }
                 Some(Err(error)) => return Err(error),
-                // (S4-10) The turn ended between the admission and this write: the
+                // The turn ended between the admission and this write: the
                 // text goes as an ordinary prompt. `boundary_reached` is already
                 // set by the fired hook, and the re-key below — which looks at
                 // exactly that flag — moves the slot onto the turn this prompt
@@ -946,7 +944,7 @@ impl super::SessionRegistry {
             });
         let raw_text = text;
         let text = first_prompt.as_deref().unwrap_or(text);
-        // (S4-10, S4-14) The last thing before the write: the slot's boundary must
+        // The last thing before the write: the slot's boundary must
         // be the turn this text actually enters. The admission registered it
         // against the turn that was running then, and that turn can have ended —
         // and another can have started — while the delivery was on its way here.
@@ -1398,7 +1396,7 @@ impl super::SessionRegistry {
 }
 
 /// What one admission answered: the slot it took, and whether the message went
-/// into the target's running turn (S4-03).
+/// into the target's running turn.
 ///
 /// `steered_into_turn` is the *runtime's* answer, taken under the same lock
 /// `finish_turn` takes, not the caller's earlier look: it is what decides steer
@@ -1409,7 +1407,7 @@ impl super::SessionRegistry {
 pub(crate) struct MessageAdmission {
     pub(crate) slot: u64,
     pub(crate) steered_into_turn: bool,
-    /// The turn the admission registered its boundary against (S4-14): the target's
+    /// The turn the admission registered its boundary against: the target's
     /// counter at that moment. The delivery compares it with the turn that is
     /// running when it writes, so a message that ends up in a *different* turn is
     /// re-keyed onto that one instead of staying on the boundary of a turn that has
@@ -1417,8 +1415,7 @@ pub(crate) struct MessageAdmission {
     pub(crate) expected_turn_id: u64,
 }
 
-/// The boundary callback of one slot, with the cell that tells it which hook it is
-/// (S4-15, S5-01).
+/// The boundary callback of one slot, with the cell that tells it which hook it is.
 ///
 /// The callback compares its own hook id — read out of the cell *while it holds the
 /// brakes lock* — with the id the slot currently holds, and acts only when they are
@@ -1434,7 +1431,7 @@ pub(crate) struct MessageAdmission {
 /// value that is already stored. A callback that read the cell before taking the lock
 /// could read the initial `0` in the window between `on_turn_end` returning and the
 /// store, be rejected against the live id, and leave its slot without an effective
-/// boundary until the expiry (S5-01). Both registrations — `reserve_message_brake`
+/// boundary until the expiry. Both registrations — `reserve_message_brake`
 /// and `rearm_message_slot_boundary` — keep the store inside their `brakes` hold.
 ///
 /// A callback that fires before its slot's entry exists finds nothing to act on and
@@ -1452,7 +1449,7 @@ fn message_slot_boundary(
         let brakes = Arc::clone(brakes);
         let from = brake_key.to_string();
         let hook_id = Arc::clone(&hook_id);
-        // (S5-01) The cell is handed to the callback, not a value read here: the
+        // The cell is handed to the callback, not a value read here: the
         // load happens inside `boundary_reached_message_slot`, under the brakes
         // lock, so it cannot observe the window before the registering side stored
         // the id.
@@ -1461,7 +1458,7 @@ fn message_slot_boundary(
     (callback, hook_id)
 }
 
-/// Whether this slot's boundary is stale (S4-14): its admitted turn has already
+/// Whether this slot's boundary is stale: its admitted turn has already
 /// ended, or the runtime has moved on to a different turn than the one the
 /// admission checked.
 ///
@@ -1485,8 +1482,7 @@ fn message_slot_boundary_is_stale(slot: &MessageSlotRef<'_>, entering_turn_id: u
     entry.boundary_reached || entering_turn_id != slot.admitted_turn_id
 }
 
-/// Re-key one slot's boundary onto the turn its text actually enters (S4-10,
-/// S4-14).
+/// Re-key one slot's boundary onto the turn its text actually enters.
 ///
 /// Called by the delivery before the write, under the brakes lock, once the slot's
 /// boundary is known to be stale: the turn the message was admitted into ended —
@@ -1521,7 +1517,7 @@ pub(super) fn rearm_message_slot_boundary(
             previous.off_turn_end(hook);
         }
     }
-    // (S4-15) Registered first, then the id is written back into the cell: the
+    // Registered first, then the id is written back into the cell: the
     // callback compares that id with the one this entry holds, so the hook that
     // was just replaced can no longer unregister its successor.
     let (boundary, hook_id) = message_slot_boundary(slot.brakes, slot.brake_key, slot.slot);
@@ -1531,7 +1527,7 @@ pub(super) fn rearm_message_slot_boundary(
 }
 
 /// Admit one inter-agent message, answering the slot it took and the turn it
-/// joined (S4-03).
+/// joined.
 ///
 /// The brakes are the sender's budget: at most [`MAX_MESSAGE_OUTSTANDING`]
 /// messages in flight, at most [`MAX_MESSAGE_SENT_PER_WINDOW`] inside the
@@ -1545,7 +1541,7 @@ pub(super) fn rearm_message_slot_boundary(
 /// `target` is the runtime whose turn the message joins plus the turn id the
 /// caller checked. The check and the registration are one atomic step on that
 /// runtime, and its answer — not the caller's snapshot — is what decides between
-/// steer and prompt (S4-03). The boundary is armed for either outcome: the turn
+/// steer and prompt. The boundary is armed for either outcome: the turn
 /// the message joined, or the turn the plain prompt it became started.
 ///
 /// `now` is the caller's clock rather than `Instant::now()`, so the two windows
@@ -1560,7 +1556,7 @@ pub(super) fn reserve_message_brake(
     let mut table = brakes
         .lock()
         .map_err(|_| internal("Agent message state is unavailable."))?;
-    // (S4-12, S4-16) The table is swept here, before this sender's own entry is
+    // The table is swept here, before this sender's own entry is
     // touched: a session that closed keeps its recipient window (that is the point
     // — a close-and-resume must not buy a fresh set of three), so something has to
     // age those entries out, and this is the path that sees the whole table with a
@@ -1569,7 +1565,7 @@ pub(super) fn reserve_message_brake(
     // entry with nothing left in it goes.
     //
     // The sweep costs one pass over every other sender while the single brakes lock
-    // is held, so it runs at most once per [`MESSAGE_RATE_WINDOW`] (S4-16) — a
+    // is held, so it runs at most once per [`MESSAGE_RATE_WINDOW`]: a
     // sender that never sweeps cannot make every other sender's admission pay for
     // it. The caller's own entry is still pruned on every reserve, which is what
     // its own braking needs.
@@ -1599,8 +1595,8 @@ pub(super) fn reserve_message_brake(
         brake.sent_in_window = 0;
     }
     // The refusals are *collected* rather than returned on the spot: the expired
-    // hooks from `prune` are unregistered below, after this lock is released
-    // (S4-02), and an early return here would leave them armed on their runtimes
+    // hooks from `prune` are unregistered below, after this lock is released,
+    // and an early return here would leave them armed on their runtimes
     // forever.
     let refused = if brake.outstanding.len() >= MAX_MESSAGE_OUTSTANDING
         || brake.sent_in_window >= MAX_MESSAGE_SENT_PER_WINDOW
@@ -1623,7 +1619,7 @@ pub(super) fn reserve_message_brake(
     } else {
         let slot = brake.next_slot;
         brake.next_slot = brake.next_slot.saturating_add(1);
-        // (S4-03) The turn this message joins and the boundary that releases its
+        // The turn this message joins and the boundary that releases its
         // slot are decided by one atomic step on the runtime: the turn cannot end
         // between the check and the registration without this answering `None`.
         //
@@ -1633,7 +1629,7 @@ pub(super) fn reserve_message_brake(
         // the turn that prompt starts. The expiry is only the fallback for a
         // turn that never ends.
         let mut steered_into_turn = false;
-        // (S4-15) The callback is built once and its id cell filled in as soon as
+        // The callback is built once and its id cell filled in as soon as
         // the runtime answers with the hook it registered; the second arm reads the
         // same cell, so whichever hook is live compares itself against the id this
         // entry ends up holding.
@@ -1689,7 +1685,7 @@ pub(super) fn reserve_message_brake(
     // `boundary_reached_message_slot` uses.
     drop(table);
     // The brake lock is released before any runtime lock is taken: the expiry
-    // hooks go back on their runtimes here, outside it (S4-02), the same order
+    // hooks go back on their runtimes here, outside it, the same order
     // `boundary_reached_message_slot` uses.
     for (runtime, hook) in expired {
         if let Some(runtime) = runtime.upgrade() {
@@ -1708,12 +1704,12 @@ pub(super) fn reserve_message_brake(
 ///
 /// A slot whose delivery has already returned is over and goes here, with its
 /// hook unregistered and its recipient entry dropped once no other slot names
-/// that target (A2-06). One whose delivery is still in flight keeps its place: the message it counts is still being
+/// that target. One whose delivery is still in flight keeps its place: the message it counts is still being
 /// written, and releasing it now would let the next send past the cap this
-/// count exists to keep (A2-05).
+/// count exists to keep.
 ///
-/// `hook_id` is the cell holding the id of the hook this callback was armed as
-/// (S4-15, S5-01). It is loaded *inside* the locked section below — never before —
+/// `hook_id` is the cell holding the id of the hook this callback was armed as.
+/// It is loaded *inside* the locked section below — never before —
 /// so that the registering side's store, which it performs while it holds the same
 /// lock, is always visible here. A callback that ran after the slot was re-keyed
 /// holds the *old* id, while the entry holds the new one: it is a no-op, because
@@ -1730,7 +1726,7 @@ pub(super) fn boundary_reached_message_slot(
         let Ok(mut table) = brakes.lock() else {
             return;
         };
-        // (S5-01) Under the lock: the id the registering side stored before it
+        // Under the lock: the id the registering side stored before it
         // released this same lock, so a turn end dispatched in the window between
         // `on_turn_end` returning and the store cannot be rejected with the initial
         // zero.
@@ -1775,7 +1771,7 @@ pub(super) fn boundary_reached_message_slot(
     }
 }
 
-/// Report one delivery back to the bookkeeping (A2-05).
+/// Report one delivery back to the bookkeeping.
 ///
 /// `delivered` false is a delivery that reached nothing: the slot goes back at
 /// once, because holding a sender's budget for a turn that will never see the
@@ -1829,12 +1825,12 @@ pub(super) fn finish_message_delivery(
     }
 }
 
-/// Forget one session as a *target* (A2-06): every slot pointing at it, and its
-/// recipient entries once they age out of the window (S4-01).
+/// Forget one session as a *target*: every slot pointing at it, and its
+/// recipient entries once they age out of the window.
 ///
 /// Called where the target closes, inside the same session-map critical section
 /// that removes it from the registry, so a send that found the target cannot
-/// reserve a slot for it afterwards (A2-05). A closed target's turn can never
+/// reserve a slot for it afterwards. A closed target's turn can never
 /// end, so its slots would otherwise sit out their whole expiry holding their
 /// senders' budgets for a session that is gone — those go at once.
 ///
@@ -1843,12 +1839,12 @@ pub(super) fn finish_message_delivery(
 /// hand the sender a free slot to reach a fresh agent, which is the rotation the
 /// window exists to stop.
 ///
-/// The closing session's own entry is kept for the same reason (S4-12): closing
+/// The closing session's own entry is kept for the same reason: closing
 /// and resuming the same session id must not buy a fresh set of three recipients
 /// inside the window. Its *slots* go, to this target or to any other — a closed
 /// session will not send again, so those messages have no turn left to be
 /// answered by — and every hook of theirs is collected here and unregistered
-/// below, outside the lock, exactly as expiry does (S4-11).
+/// below, outside the lock, exactly as expiry does.
 ///
 /// The table stays bounded because the expiry sweep inside
 /// [`reserve_message_brake`] drops an entry once its window has aged out.

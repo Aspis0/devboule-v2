@@ -77,7 +77,7 @@ impl PluginRuntime {
                 // A ping would sit unread on the serialized pipe and look like
                 // death; killing it mid-record_scan rolls back the ledger.
                 // This is still a re-acquire of the lease: bump so a delayed
-                // stop(G) from the previous surface cannot match.
+                // stop command from before this re-acquire cannot match.
                 let mut inner = self.lock();
                 if inner
                     .sessions

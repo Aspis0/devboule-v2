@@ -36,9 +36,9 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
         "turn_end" => turn_end(value),
         // Paseo's own words for pi's compaction frames, shown as our
         // transcript's system line — loading, then the manual or automatic
-        // sentence (`pi/agent.ts:2253-2267`; labels at
-        // `packages/app/…/message-compaction-label.ts:14-16`), so a
-        // `/compact` shows progress and completion (review A5-2 #2).
+        // sentence (`packages/server/src/server/agent/providers/pi/agent.ts`;
+        // labels at `packages/app/src/components/message-compaction-label.ts`),
+        // so a `/compact` shows progress and completion.
         "compaction_start" => vec![SessionEvent::SessionNotice {
             text: "Compacting...".to_string(),
             severity: NoticeSeverity::Info,
@@ -66,7 +66,7 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
 
 /// The two built-ins pi's own `get_commands` reply omits — measured: neither
 /// `compact` nor `autocompact` is among the names a live reply returned
-/// (RECON A5-common §A.3) — seeded exactly as Paseo seeds them
+/// — seeded exactly as Paseo seeds them
 /// (`pi/agent.ts:117-130`, merged at `:139-151`), with the argument hints
 /// Paseo gives them.
 pub(crate) fn seeded_commands() -> Vec<AvailableCommandView> {
@@ -126,9 +126,10 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
             continue;
         }
         accepted += 1;
-        // Paseo's nullish fallback (`pi/agent.ts:145` `description ??
-        // source`): `""` is a description and stays; only an absent or null
-        // one falls back to the source (review A5-2 #6).
+        // Paseo's nullish fallback
+        // (`packages/server/src/server/agent/providers/pi/agent.ts`,
+        // `description ?? source`): `""` is a description and stays; only an
+        // absent or null one falls back to the source.
         let description = match entry.get("description") {
             Some(Value::String(description)) => description.clone(),
             _ => match entry.get("source") {
@@ -282,7 +283,7 @@ fn tool_result_text(value: &Value) -> Option<String> {
 /// window comes from the model list into the manifest, not from this
 /// message, so `max_tokens` is absent and the app reads the manifest entry
 /// of this same `model_id`.
-///
+//
 /// `AgentFinished` comes first because the pi client hands its journal
 /// sequence to the first event of a line and the finish is what the
 /// transcript cursor belongs to.
@@ -432,8 +433,8 @@ mod tests {
 
     #[test]
     fn a_get_commands_reply_publishes_its_commands_over_the_two_seeds() {
-        // The reply pi was measured to send (RECON A5-common §A.2): one id,
-        // `command`, `success`, and `data.commands` of name/description/
+        // The reply pi was measured to send: one id,
+        // `command`, `success`, and `data.commands` of name/description
         // source/input.hint entries. Paseo seeds pi's two built-ins itself
         // because the reply omits them (`pi/agent.ts:117-130`); we keep
         // `input.hint`, which Paseo drops (`pi/agent.ts:151`).
@@ -458,7 +459,7 @@ mod tests {
                         // seeds first, in Paseo's order, with their hints;
                         // a name the reply repeats keeps the reply's
                         // description and the seeded hint (the reply never
-                        // carries the built-ins — RECON §A.3 — but if it
+                        // carries the built-ins — but if it
                         // did, its own description still wins).
                         ("compact", "pi's own words", Some("[instructions]")),
                         (
@@ -496,9 +497,10 @@ mod tests {
     fn compaction_frames_show_progress_and_completion_as_paseo_shows_them() {
         // Paseo renders pi's own compaction frames as the transcript's
         // compaction marker: loading → "Compacting...", and on completion
-        // the manual or automatic sentence (`pi/agent.ts:2253-2267`, the
-        // labels at `packages/app/.../message-compaction-label.ts:14-16`).
-        // Our transcript's system line is what can show them (review A5-2 #2).
+        // the manual or automatic sentence
+        // (`packages/server/src/server/agent/providers/pi/agent.ts`, the
+        // labels at `packages/app/src/components/message-compaction-label.ts`).
+        // Our transcript's system line is what can show them.
         let start = parse(r#"{"type":"compaction_start","reason":"manual"}"#);
         let end_manual = parse(r#"{"type":"compaction_end","reason":"manual"}"#);
         let end_auto = parse(r#"{"type":"compaction_end","reason":"threshold"}"#);
@@ -524,8 +526,7 @@ mod tests {
     fn a_reply_copies_at_most_a_thousand_entries() {
         // The reply is parsed synchronously on pi's reader thread; a
         // correctly typed but enormous array must not become an enormous
-        // event (review A5-2 #5): the first thousand entries are copied and
-        // the rest dropped.
+        // event: the first thousand entries are copied and the rest dropped.
         let entries = (0..1005)
             .map(
                 |index| serde_json::json!({ "name": format!("cmd{index}"), "source": "extension" }),
@@ -618,8 +619,8 @@ mod tests {
     #[test]
     fn an_empty_description_stays_empty_the_way_paseos_nullish_fallback_leaves_it() {
         // Paseo falls back to `source` only for nullish descriptions
-        // (`pi/agent.ts:145` `description ?? source`): `""` is a description
-        // and stays (review A5-2 #6).
+        // (`packages/server/src/server/agent/providers/pi/agent.ts`,
+        // `description ?? source`): `""` is a description and stays.
         let reply = parse(
             r#"{"id":"c-6","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"blank","description":"","source":"skill"}]}}"#,
         );

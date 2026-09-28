@@ -107,7 +107,7 @@ fn stub_bin() -> PathBuf {
 ///
 /// `process::id()` plus a per-process counter is not unique across runs:
 /// Windows recycles pids, and `create_dir_all` reuses a directory it finds
-/// without clearing it, so a recycled pid used to hand this run the previous
+/// without clearing it, so a recycled pid would hand this run the previous
 /// run's observation files — which `wait_for_observations` reads whole.
 /// The nonce makes the name unrepeatable; the removal covers the directory a
 /// crashed earlier run could still own.
@@ -162,7 +162,7 @@ impl Harness {
 
     /// A daemon that also gets `extra_env` (and passes it on to its providers).
     ///
-    /// The slice-5 battery's knobs go through here rather than through
+    /// The battery's knobs go through here rather than through
     /// `std::env::set_var`: the process environment is shared with every other
     /// test in this binary, and the battery must not depend on who holds the
     /// file's test lock.
@@ -1010,12 +1010,12 @@ fn acp_chooser_reject_option_by_id_is_journaled_and_resolves_denied() {
 /// A second question under an id whose answer the journal already holds
 /// never becomes a card: the person would answer it and the write-once audit
 /// row could not take the answer, so the agent would be told `cancelled`
-/// after the human spent the effort (the live P1). The repeat is refused
-/// before the card exists — the agent's own refusal frame comes back and the
+/// after the human spent the effort. The repeat is refused before
+/// the card exists — the agent's own refusal frame comes back and the
 /// transcript gets its one plain notice — and the first answer's row is
 /// untouched. The stub asks reused ids only when the test asks for them
-/// (`DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS`), the way it did before every
-/// question carried a fresh id.
+/// (`DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS`); without the knob, every
+/// question carries a fresh id.
 #[test]
 fn acp_reused_answered_question_id_gets_no_card_and_one_plain_notice() {
     let _test_lock = lock_tests();
@@ -1496,7 +1496,7 @@ fn acp_handshake_failure_ends_the_journal_row_and_records_provider_failure() {
     );
     // The stub answers the error and KEEPS RUNNING: the daemon killed it. A
     // post-kill exit read would see our own kill and name this an exited
-    // provider — the vacuous check the re-audit flagged (P3-1's sibling).
+    // provider — a vacuous check.
     assert!(
         !error.to_string().contains("provider exited during startup"),
         "a live agent failing a handshake is not an exited provider: {error}"
@@ -1506,8 +1506,7 @@ fn acp_handshake_failure_ends_the_journal_row_and_records_provider_failure() {
     // or the roster renders a phantom recovered session with zero events.
     // The journal writer is asynchronous and the upsert lands before the
     // end, so a list taken in between shows the row as `Recovered`: poll
-    // until it renders as ended, with a deadline. (CI run 34564790508 caught
-    // the loop breaking on the first sighting, `Recovered { generation: 1, .. }`.)
+    // until it renders as ended, with a deadline.
     let deadline = Instant::now() + Duration::from_secs(10);
     let state = loop {
         let sessions = test.client.sessions_list().expect("sessions list");
@@ -2045,7 +2044,7 @@ fn acp_config_option_categories_are_advisory_and_declared_ids_are_used() {
 #[test]
 fn acp_config_options_switch_fails_loudly_after_a_modes_only_reattach() {
     let _test_lock = lock_tests();
-    // Audit §1: after a daemon restart the reattach (session/load) reply
+    // After a daemon restart the reattach (session/load) reply
     // carries modes only. No switch shape may be recorded, and a click must
     // fail loudly — never fall through to session/set_model.
     let mut test = AcpTest::new_config_options_with(false, true, false);
@@ -2185,9 +2184,9 @@ fn acp_modes_only_reattach_vendor_push_restores_model_switch_surface() {
 #[test]
 fn acp_config_options_malformed_success_reply_uses_requested_value() {
     let _test_lock = lock_tests();
-    // Audit §6: a JSON-RPC success with no parseable catalog still means the
-    // requested value was accepted. Use the requested value, as Paseo does,
-    // rather than silently leaving the old model selected.
+    // A JSON-RPC success with no parseable catalog still means the requested
+    // value was accepted: use the requested value rather than silently
+    // leaving the old model selected.
     let test = AcpTest::new_config_options_with(false, false, true);
     let (session, events) = test.attached_session();
     test.client
@@ -4298,7 +4297,7 @@ fn wait_until_gone(pid: u32) {
 }
 
 // ---------------------------------------------------------------------------
-// Slice 5 end to end: an agent creates an agent, through the daemon's own MCP
+// End to end: an agent creates an agent, through the daemon's own MCP
 // broker, with the stub as the provider on both sides.
 //
 // Two stub capabilities make this possible, both behind knobs that no other
@@ -4322,15 +4321,15 @@ struct Slice5Test {
 impl Drop for Slice5Test {
     fn drop(&mut self) {
         // The observation files live here and `Harness` removes only its own
-        // runtime directory: this is the one fixture that used to leak a
-        // directory per construction (measured: 28 per suite run).
+        // runtime directory: this fixture leaked a directory per construction
+        // (measured: 28 per suite run).
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 /// One profile, as the Settings form saves it: the stub provider, the model
 /// the stub publishes **but does not start on** (`stub-model-new`; the stub's
-/// own default is `stub-model`), the mode the preset cells used to name
+/// own default is `stub-model`), the mode the preset cells name
 /// (`default` — the stub declares `ask,default`), the overlay the caller
 /// passes, and ticked for agents.
 ///
@@ -4393,7 +4392,7 @@ fn with_standing_instructions(
 /// The document the battery's daemon reads at startup: one ticked `worker`
 /// profile, which is what every creation in this file names unless a test says
 /// otherwise. An empty `standingInstructions`, so the first prompt a creation
-/// sends is the preamble and the caller's text, exactly as before this slice.
+/// sends is the preamble and the caller's text.
 fn worker_profile_document() -> serde_json::Value {
     serde_json::json!({
         "profiles": [stub_profile("worker", &[])],
@@ -4767,9 +4766,9 @@ fn wait_for_creation_card(
 }
 
 /// The creation card's own text, off the creator's transcript: what the human
-/// read when the decision was made. The R2a assertions hold the card against
-/// the child's wire — a card a human could approve into an existing child
-/// printed only what the child was delivered.
+/// read when the decision was made. Paired with the assertions that hold the
+/// card against the child's wire — a card a human could approve into an
+/// existing child printed only what the child was delivered.
 fn creation_card_description(events: &Mutex<Vec<SessionEvent>>) -> String {
     events
         .lock()
@@ -4893,7 +4892,7 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     );
 
     // The child is a session of the daemon's own list, named and parented as
-    // the creation said (S5-12 read back through the wire, not the journal).
+    // the creation said — read back through the wire, not the journal.
     let child = test.child_of(&creator.id);
     assert_eq!(child.display_name.as_deref(), Some("builder"));
     assert_eq!(child.created_by.as_deref(), Some(creator.id.as_str()));
@@ -4943,7 +4942,7 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         "the worker cell's mode is what the child was switched to"
     );
 
-    // R2a — what the card printed, the child runs. The fixture deliberately
+    // What the card printed, the child runs. The fixture deliberately
     // saves a model the stub does not start on (`stub-model-new`; the stub's
     // own default is `stub-model`), so an assertion on the child is what
     // makes the delivery real: a daemon that delivered nothing would be
@@ -4963,8 +4962,8 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         "the card names the delivered model and mode: {description}"
     );
     // The stub's `default` mode is a vocabulary the provider authored, so the
-    // card asserts neither direction (R2b): it says cannot-establish, which
-    // is honest, and never the plain "No" the old binary card printed.
+    // card asserts neither direction: it says cannot-establish, which is
+    // honest, and never a plain "No".
     assert!(
         description.contains("auto accept: Cannot establish"),
         "a provider-authored mode is not asserted either way: {description}"
@@ -4999,7 +4998,7 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         "the envelope names the child: {envelope}"
     );
 
-    // S5-04: the two records name one delivery, and that delivery is the
+    // The two records name one delivery, and that delivery is the
     // `<devboule-system>` text the creator's transcript actually holds.
     let (message_id, state, artifacts) = slice5_finished(&transcript);
     assert_eq!(
@@ -5040,7 +5039,7 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     );
 }
 
-/// R2a: the thinking option the card named is delivered on the same wire —
+/// The thinking option the card named is delivered on the same wire —
 /// the effort the child's `session/set_model` request carried is what the
 /// stub writes down, and the card's thinking line names the value the human
 /// approved.
@@ -5077,7 +5076,7 @@ fn the_child_is_delivered_the_thinking_option_the_card_named() {
     );
 }
 
-/// R2a, model axis: a profile naming a model the agent does not publish is
+/// A profile naming a model the agent does not publish is
 /// **refused** — the mismatch sentence, not substituted with the agent's
 /// default. The child never exists, and nothing was sent on the wire.
 #[test]
@@ -5109,7 +5108,7 @@ fn a_profile_naming_a_model_the_agent_does_not_publish_is_refused() {
     );
 }
 
-/// R2a, absence versus mismatch: an agent that declares **no** model surface
+/// An agent that declares **no** model surface
 /// cannot deliver any model at all, so a profile naming one is refused with
 /// the absence sentence — a different answer from an unknown id in a
 /// published list, because there is no list the name could have been a typo
@@ -5141,7 +5140,7 @@ fn an_agent_that_declares_no_model_surface_refuses_a_profile_with_a_model() {
     );
 }
 
-/// R2a, thinking axis: a thinking option outside what the agent declares for
+/// A thinking option outside what the agent declares for
 /// the delivered model is refused with the mismatch sentence.
 #[test]
 fn a_thinking_option_the_agent_does_not_declare_is_refused() {
@@ -5172,7 +5171,7 @@ fn a_thinking_option_the_agent_does_not_declare_is_refused() {
     );
 }
 
-/// R2a F3 — the switch is **confirmed**, not just sent: an agent that
+/// The switch is **confirmed**, not just sent: an agent that
 /// answers the delivered `session/set_model` with an error refuses the
 /// creation. Before the confirm existed, this shape ended with a live child
 /// on the agent's own model, an `AgentError` on a transcript nobody reads at
@@ -5218,8 +5217,7 @@ fn an_agent_that_refuses_the_delivered_model_refuses_the_creation() {
         "the refusal names the model the card promised: {calls:?}"
     );
     // The agent was ALIVE when the daemon tore it down: naming it an exited
-    // provider would be the lie the pre-kill exit read exists to prevent
-    // (the re-audit's P3-1, the direction the old mutation table missed).
+    // provider would be the lie the pre-kill exit read exists to prevent.
     assert!(
         !calls[0].contains("provider exited during startup"),
         "a live agent that refused is not an exited provider: {calls:?}"
@@ -5248,8 +5246,8 @@ fn an_agent_that_refuses_the_delivered_model_refuses_the_creation() {
     }
 }
 
-/// R2a F5 — the delivery refusal's teardown is the handshake's, including
-/// the three behaviours the old copy dropped: an agent that **dies** with
+/// The delivery refusal's teardown is the handshake's, including
+/// three behaviours: an agent that **dies** with
 /// the switch unanswered is named as a provider that exited during startup,
 /// its last stderr line travels with the message, and the whole banner goes
 /// through the same redaction the handshake failure uses.
@@ -5307,25 +5305,22 @@ fn an_agent_that_dies_mid_delivery_is_named_as_an_exited_provider() {
     }
 }
 
-/// R2a, the contradiction — bounded by **authority** (the re-audit's P1):
-/// the pre-card gate refuses only where the daemon owns the tick rule, and
-/// an ACP agent's modes are the agent's own vocabulary, so a ticked profile
-/// naming a non-daemon mode is **not** refused before the card. The client
-/// judges at spawn time, where the delivered mode is the fact: the stub
-/// declares `ask,default` and starts in `ask`, and the daemon's
-/// post-handshake guard refuses the tick over that delivered mode. The
-/// handshake delivers the profile's mode first, so the fact the guard
-/// judges is the mode the child would actually start in.
+/// The contradiction, bounded by **authority**: the pre-card gate refuses
+/// only where the daemon owns the tick rule, and an ACP agent's modes are
+/// the agent's own vocabulary, so a ticked profile naming a non-daemon mode
+/// is **not** refused before the card. The client judges at spawn time,
+/// where the delivered mode is the fact: the stub declares `ask,default`
+/// and starts in `ask`, and the daemon's post-handshake guard refuses the
+/// tick over that delivered mode. The handshake delivers the profile's mode
+/// first, so the fact the guard judges is the mode the child would actually
+/// start in.
 ///
-/// What the previous shape of this test caught that this one cannot, and
-/// what this one catches back: the old test pinned the pre-card refusal of
-/// an ACP-family creation over a non-daemon mode id — a pin this must not
-/// keep, because that same refusal convicted Codex `full-access` profiles
-/// the Codex client itself accepts. If the too-wide gate returns, this test
-/// goes red from the other direction: the card is never raised (the
-/// `allow_creation_card` below times out) and no delivery ever runs. The
-/// ACP guard's own sentence — unasserted since the old contradiction test
-/// replaced it (the re-audit's P3-5) — is asserted here again, at its real
+/// The pre-card refusal of an ACP-family creation over a non-daemon mode id
+/// is deliberately not asserted here: that same refusal convicted Codex
+/// `full-access` profiles the Codex client itself accepts. If the too-wide
+/// gate returns, this test goes red from the other direction: the card is
+/// never raised (the `allow_creation_card` below times out) and no delivery
+/// ever runs. The ACP guard's own sentence is asserted here, at its real
 /// site.
 #[test]
 fn an_auto_accept_tick_over_the_delivered_asking_mode_is_refused_by_the_delivery() {
@@ -5446,7 +5441,7 @@ fn a_ticked_profile_over_an_agent_with_no_modes_is_refused_at_the_handshake() {
     }
 }
 
-/// The re-audit's P2-2: the creation-time confirm carries a deadline. An
+/// The creation-time confirm carries a deadline. An
 /// agent that takes the switch off the wire and never answers cannot hold
 /// the creation — the child, the reservation and the caller's tool call —
 /// forever: the tool call comes back inside the bound with an `Io` refusal,
@@ -5499,7 +5494,7 @@ fn an_agent_that_ignores_the_model_switch_cannot_hang_the_creation() {
     }
 }
 
-/// The re-audit's P2-3, as a test: an agent that keeps the pipe non-empty
+/// An agent that keeps the pipe non-empty
 /// without ever writing a newline. A read bound consulted only when the
 /// pipe is quiet never fires against this agent; the bound must hold while
 /// bytes keep coming, and the refusal must name the wait the same way the
@@ -5552,7 +5547,7 @@ fn an_agent_that_dribbles_without_a_newline_cannot_hang_the_creation() {
     }
 }
 
-/// R2a, the identity the refusal buys: a tick over a mode the daemon's own
+/// The identity the refusal buys: a tick over a mode the daemon's own
 /// broker answers admits the creation, the child starts in that mode, and the
 /// marker on the child is the fact the human ticked for — the delivered mode
 /// and the marker are the same fact.
@@ -5639,7 +5634,7 @@ fn a_feature_key_the_agent_never_declared_is_named_as_a_condition_on_the_card() 
         "the old promise-nothing sentence is gone: {description}"
     );
     // An uninterpreted key is not a tick — and the provider-authored mode is
-    // not asserted either way (R2b): the line says cannot-establish.
+    // not asserted either way: the line says cannot-establish.
     assert!(
         description.contains("auto accept: Cannot establish"),
         "a stored value is not a tick, and the mode is not judged by name: {description}"
@@ -5870,7 +5865,7 @@ fn slice5_creator_with_a_creation(
     (test, creator, events)
 }
 
-/// Audit S5-01 end to end: a child whose process exits on its own — the reader
+/// A child whose process exits on its own — the reader
 /// reaching EOF — gives its slot back.
 ///
 /// The slot is measured where the daemon states it: a second creator's card
@@ -5888,7 +5883,7 @@ fn a_child_that_exits_by_eof_gives_its_slot_back() {
     let first_events = test.attach(&first);
     test.allow_creation_card(&first.id, &first_events);
     // The creation record arrives on the creator's subscription *before* the
-    // child produces anything (audit S5-10), and it carries the child's id: the
+    // child produces anything, and it carries the child's id: the
     // whole test can run without another client request, so the subscription is
     // never competing with one for the connection.
     let child_id = {
@@ -5953,7 +5948,7 @@ fn a_child_that_exits_by_eof_gives_its_slot_back() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // Audit S5B-11: an end by EOF owes the creator the *report*, not only the
+    // An end by EOF owes the creator the *report*, not only the
     // slot. Both records, and the structured one carries the id the text
     // message beside it really has.
     let report_deadline = Instant::now() + Duration::from_secs(45);
@@ -6110,7 +6105,7 @@ fn a_creation_naming_an_uninstalled_provider_is_refused() {
     );
 }
 
-/// Audit S5B-03: a child stopped *with its transcript kept* reaches EOF, and
+/// A child stopped *with its transcript kept* reaches EOF, and
 /// that end owes the creator the report and the slot while the row stays.
 #[test]
 fn a_child_stopped_with_its_transcript_kept_is_reported_and_gives_its_slot_back() {
@@ -6150,7 +6145,7 @@ fn a_child_stopped_with_its_transcript_kept_is_reported_and_gives_its_slot_back(
         "the stopped child's record carries the id of the text report"
     );
 
-    // S5B-03: the transcript stays, so the row stays — and it is ended.
+    // The transcript stays, so the row stays — and it is ended.
     assert!(
         wait_for_session_ended(&test, &child_id, Duration::from_secs(45)),
         "a stopped child keeps its row"
@@ -6461,15 +6456,13 @@ fn a_resumed_session_does_not_re_inject_the_standing_instructions() {
         .session_send(&session.id, "second prompt")
         .expect("send the prompt after the resume");
 
-    // Since `905d70b` a fresh attach replays the whole transcript across
-    // generations, pre-resume history included: this stream carries
-    // generation 1's "Always answer …\n\nfirst prompt" and generation 1's
-    // own `end_turn`, so neither a finished event nor a `last()` read can
-    // tell the live turn from the replay — which is exactly how this test
-    // used to pass and fail on the weather. The one event only the
-    // post-resume turn can supply is its own user message: no earlier
-    // generation ever contained "second prompt". Its arrival is the
-    // delivery signal.
+    // A fresh attach replays the whole transcript across generations,
+    // pre-resume history included: this stream carries generation 1's
+    // "Always answer …\n\nfirst prompt" and generation 1's own
+    // `end_turn`, so neither a finished event nor a `last()` read can tell
+    // the live turn from the replay. The one event only the post-resume
+    // turn can supply is its own user message: no earlier generation ever
+    // contained "second prompt". Its arrival is the delivery signal.
     wait_for(&after, Duration::from_secs(45), |events| {
         events.iter().any(|event| {
             matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "second prompt")
@@ -6562,8 +6555,8 @@ fn the_standing_instructions_reach_the_design_host() {
 }
 
 /// The other half of the same rule: with no standing instructions the first
-/// prompt is exactly what it was before this slice — no separator, no blank
-/// line, nothing.
+/// prompt is the caller's text alone — no separator, no blank line,
+/// nothing.
 #[test]
 fn empty_standing_instructions_leave_the_first_prompt_alone() {
     let _lock = lock_tests();
@@ -6619,7 +6612,7 @@ fn empty_standing_instructions_leave_the_first_prompt_alone() {
 /// (`sessions_list`) *and* the journal row, which is what the name claims —
 /// `sessions_list` alone serves a live child from its in-memory birth
 /// metadata and would pass against the pre-tri-state journal, so the durable
-/// half is asserted against the stored row (audit R2b-1 §8.2).
+/// half is asserted against the stored row.
 #[test]
 fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
     let _lock = lock_tests();
@@ -6735,8 +6728,8 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
     );
 }
 
-/// The restart is the one path a durable format exists for (audit R2b-1
-/// §8.3): after the daemon process is replaced, the child's marker is read
+/// The restart is the one path a durable format exists for:
+/// after the daemon process is replaced, the child's marker is read
 /// back from the journal on **both** post-restart surfaces — the recovered
 /// roster row, and the resumed session whose metadata comes from
 /// `session_metadata_for_resume` copying `record.unattended_state`. A resume
@@ -6856,8 +6849,8 @@ fn renaming_a_profile_does_not_change_what_a_running_child_was_started_from() {
         "the running child still says which profile made it, not what it is called now"
     );
 
-    // The name is not a fact about the child either: a creation that names the
-    // name it used to have is refused as unknown.
+    // The name is not a fact about the child either: a creation that names
+    // the pre-rename name is refused as unknown.
     let second = test.creator_session();
     let _ = test.attach(&second);
     // Every stub process in this test appends to the one observation file, in
@@ -7084,11 +7077,10 @@ fn a_mute_provider_is_refused_by_the_first_answer_budget_and_says_which_one_fire
 /// the stub's own record of a `session/set_config_option` naming both — not a
 /// call into a pure helper.
 ///
-/// The first draft of this slice pinned `declared_feature_frames` alone, so a
-/// route that stopped calling the delivery left those green while every child
-/// started on the provider's default. Only a wire assertion can see that, and it
-/// earned its keep: the arms of `apply_profile_delivery` that skip a model switch
-/// also skipped the feature delivery until this test refused to pass.
+/// A frame count alone cannot see a route that stops calling the delivery:
+/// the arms of `apply_profile_delivery` that skip a model switch also skip
+/// the feature delivery, and only a wire assertion catches that — every
+/// child starts on the provider's default while the frames stay green.
 #[test]
 fn a_created_child_receives_its_profiles_declared_feature() {
     let _lock = lock_tests();
@@ -7126,12 +7118,13 @@ fn a_created_child_receives_its_profiles_declared_feature() {
 
 /// The probe closes the session it opened when the agent advertises
 /// `sessionCapabilities.close` — Paseo's `closeProbe` gate
-/// (`acp-agent.ts:1441`) — and never sends it when the agent does not. Killing
-/// the process is not the equivalent: an agent that persists sessions past
-/// process exit keeps an orphan per settings-panel open, in the user's history
-/// or spending a session quota. An agent that did not offer the verb answers
-/// `session/close` with a method-not-found error, so sending one would be a log
-/// line and no cleanup.
+/// (packages/server/src/server/agent/providers/acp-agent.ts) — and never
+/// sends it when the agent does not. Killing the process is not the
+/// equivalent: an agent that persists sessions past process exit keeps an
+/// orphan per settings-panel open, in the user's history or spending a
+/// session quota. An agent that did not offer the verb answers
+/// `session/close` with a method-not-found error, so sending one would be a
+/// log line and no cleanup.
 #[test]
 fn the_feature_probe_closes_its_session_only_when_the_agent_advertises_close() {
     let _lock = lock_tests();

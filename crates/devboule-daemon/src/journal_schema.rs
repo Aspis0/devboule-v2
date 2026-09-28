@@ -147,8 +147,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             }
         }
         if version < 10 {
-            // The display name and the parent of an agent-created session
-            // (audit S5-12). NULL is the honest default for both: every row
+            // The display name and the parent of an agent-created session.
+            // NULL is the honest default for both: every row
             // that predates the concept has no name a human chose and no
             // creator, and a surface that finds NULL falls back to the title
             // exactly as it did before these columns existed.
@@ -187,7 +187,7 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             }
         }
         if version < 12 {
-            // The `unattended` marker becomes three-valued (R2b). The boolean
+            // The `unattended` marker becomes three-valued. The boolean
             // column stays exactly as v11 left it — same shape, same `MAX`
             // ratchet — because a written row's meaning must not be rewritten
             // by an upgrade; the tri-state travels in its own column, encoded
@@ -223,7 +223,7 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                 );
             }
             // Every shape the post-commit validation judges is judged **before**
-            // the stamp (audit R2b-1 finding 2): all five columns exist by now —
+            // the stamp: all five columns exist by now —
             // just added, or pre-existing with a name that collides — and if any
             // shape is not the one this daemon writes, the open must leave the
             // file at `user_version` 11. Stamping and committing first would
@@ -254,8 +254,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             if !session_has_column(&tx, "depth")? {
                 tx.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER", [])?;
             }
-            // The pre-stamp guard, same ordering as v12 (audit R2b-1 finding
-            // 2): a colliding shape must leave the file at 12, openable by
+            // The pre-stamp guard, same ordering as v12: a colliding shape
+            // must leave the file at 12, openable by
             // the previous build, rather than stamped 13 and openable by
             // none.
             validate_v13_columns(&tx)?;
@@ -304,8 +304,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
         tx.commit()?;
     }
     validate_v6_schema(&conn)?;
-    // The two slice-5 columns are checked by shape rather than by presence
-    // (audit S5B-07) — see [`validate_agent_columns`].
+    // The two agent columns are checked by shape rather than by presence
+    // — see [`validate_agent_columns`].
     validate_agent_columns(&conn)?;
     // The same rule for the five the v11/v12 migrations add — see
     // [`validate_profile_columns`]..
@@ -349,8 +349,8 @@ fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalEr
     table_has_column(conn, "sessions", column)
 }
 
-/// The two columns the slice-5 migration adds must have the *shape* the daemon
-/// writes into them, not merely be present (audit S5B-07).
+/// The two columns the agent migration adds must have the *shape* the daemon
+/// writes into them, not merely be present.
 ///
 /// `TEXT`, nullable, no default. A v9 database that happens to carry a
 /// `display_name INTEGER NOT NULL DEFAULT 'x'` passes a presence check and then
@@ -799,8 +799,8 @@ BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;";
 /// SQLite stores a trigger's `sql` text with its own whitespace, so a byte
 /// comparison against our own literal would fail on a database this daemon
 /// created. What has to hold is the event, the table and the action: a body
-/// that lost any of them is a tampered or neutered trigger and is replaced
-/// (L2). `RAISE(IGNORE)` and an empty body both fail this.
+/// that lost any of them is a tampered or neutered trigger and is replaced.
+/// `RAISE(IGNORE)` and an empty body both fail this.
 const AUDIT_TRIGGER_REQUIRED: [&str; 3] = ["on audit", "raise(abort", "audit is append-only"];
 
 /// `stored` is the trigger's own `sql` text; `event` is `"before delete"` or
@@ -824,7 +824,7 @@ fn ensure_audit_triggers(conn: &Connection) -> Result<(), JournalError> {
         ("audit_no_delete", AUDIT_NO_DELETE_SQL, "before delete"),
         ("audit_no_update", AUDIT_NO_UPDATE_SQL, "before update"),
     ] {
-        // The **body** is checked, not just the name (L2). A trigger that
+        // The **body** is checked, not just the name. A trigger that
         // exists but whose body was replaced — by a tampered database, or by a
         // `DROP`+`CREATE` with `RAISE(IGNORE)` or no body at all — would pass a
         // name-only check while leaving the audit table deletable.
@@ -854,8 +854,8 @@ fn ensure_audit_triggers(conn: &Connection) -> Result<(), JournalError> {
 /// transaction that deletes the aged rows, applies the per-device cap, and
 /// recreates them. Returns `(deleted_by_age, deleted_by_cap)`.
 ///
-/// Both deletes are single statements. The per-device cap used to be one
-/// `DELETE ... NOT IN (...)` per distinct `device_id`, which is `O(devices)`
+/// Both deletes are single statements. A per-device cap of one
+/// `DELETE ... NOT IN (...)` per distinct `device_id` is `O(devices)`
 /// full scans and, on the writer thread, a stall proportional to the number
 /// of peers; the window function does it in one pass and uses
 /// `audit(device_id, id)` to partition.

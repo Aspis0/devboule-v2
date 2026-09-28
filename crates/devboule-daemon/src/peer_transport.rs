@@ -3,7 +3,7 @@
 //! One listener per tailnet address, and every byte on it inside a Noise
 //! session. The transport is a trait because a relay will be one later
 //! (`DESIGN-remote-agents.md` §2 D2b); only the tailnet implementation exists
-//! in this slice.
+//! today.
 //!
 //! # Wire framing on the peer transport
 //!
@@ -42,7 +42,7 @@ use crate::peer_policy::{ConnPeer, PeerRole, TransportBinding};
 use crate::server::{handle_client, ClientKind, ServerState};
 
 /// The steady-state handshake. Separate from the pairing pattern by name *and*
-/// by prologue, so the two transcripts cannot be confused (muse M6).
+/// by prologue, so the two transcripts cannot be confused.
 pub const PEER_PROLOGUE: &[u8] = b"devboule-peer-v1";
 pub const PAIR_PROLOGUE: &[u8] = b"devboule-pair-v1";
 pub const PEER_NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
@@ -92,7 +92,7 @@ pub const RATE_BURST: f64 = 50.0;
 
 /// The idle budget for one read on a remote connection, used when a caller does
 /// not supply its own deadline.
-///
+//
 /// A paired peer holds its connection open between requests, so this must not
 /// be short; but it must exist, because a half-open peer (a machine that was
 /// powered off without closing its sockets) otherwise holds one of
@@ -281,7 +281,7 @@ impl NoiseReader {
     }
 
     /// Plaintext bytes for the caller's frame buffer. `0` means end of stream.
-    ///
+    //
     /// One call reads as many Noise messages as it takes to produce a byte or
     /// to see a real close: an empty message (a frame boundary or, later,
     /// padding) must not read as end-of-stream. The ciphertext is read
@@ -401,7 +401,7 @@ impl NoiseWriter {
 }
 
 /// Complete a Noise `XX` handshake as the responder.
-///
+//
 /// The handshake messages use the same length framing as the transport, so the
 /// whole peer link is one wire shape. `.prologue` is mandatory: it is what
 /// separates the pairing transcript from the steady-state one beyond the
@@ -430,7 +430,7 @@ pub fn responder_handshake(
 
 /// Complete a Noise handshake as the initiator: the pairing exchange, and any
 /// dial to a device already paired with.
-///
+//
 /// `remote_static` is the key the caller demands the far end prove, and this
 /// function ENFORCES it. Handing it to snow does not: `remote_public_key` only
 /// seeds the expected key, and plain `XX` overwrites that seed with whatever
@@ -438,7 +438,7 @@ pub fn responder_handshake(
 /// happily against key B. Measured 2026-09-17, the first time any caller
 /// passed `Some`. The check is here rather than at the call site because a
 /// pin every caller has to remember is a pin the next caller will forget.
-///
+//
 /// `None` means the caller has no key yet and authenticates by other means:
 /// pairing derives a PSK from the spoken code, and the PSK is what fails when
 /// the code is wrong.
@@ -521,7 +521,7 @@ pub fn split_session(
 // ---------------------------------------------------------------------------
 
 /// The non-revoked rows of `peers`, loaded once per accepted connection.
-///
+//
 /// Addresses and pinned keys both come from here: the address decides which
 /// path a connection takes *before any byte is read*, and the pinned key
 /// decides whether the Noise handshake authenticated anybody.
@@ -558,7 +558,7 @@ impl PeerTable {
 
     /// Whether `address` belongs to a peer that was revoked. Kept distinct from
     /// `UnknownSource` because the two mean different things in the trail: a
-    /// revoked row is a device this daemon used to trust, an unknown one is a
+    /// revoked row is a device this daemon no longer trusts, an unknown one is a
     /// stranger.
     pub fn revoked_address(&self, address: &IpAddr) -> bool {
         self.rows
@@ -577,8 +577,8 @@ impl PeerTable {
     }
 }
 
-/// A transport that accepts loopback and pins a fixed binding, so S5, S6 and
-/// the accept-loop tests can be exercised with no Tailscale. Test-only: the
+/// A transport that accepts loopback and pins a fixed binding, so the
+/// accept-loop tests can be exercised with no Tailscale. Test-only: the
 /// production transport is [`Tailnet`].
 #[cfg(test)]
 pub struct TestTransport {
@@ -621,7 +621,7 @@ impl PeerTransport for TestTransport {
 
 /// Whether `address` is a tailnet address, or loopback in this crate's own unit
 /// tests.
-///
+//
 /// The single place the test-only loopback allowance lives. Two callers depend on
 /// it: the pairing-target check in `pairing.rs` (the in-process responder listens
 /// on `127.0.0.1`) and the pairing-candidate check in the accept path. Nothing in
@@ -658,7 +658,7 @@ impl PeerListener {
 
     /// Non-blocking accept across every bound address. `WouldBlock` means
     /// nothing is pending on any of them.
-    ///
+    //
     /// The accepted stream is returned **blocking**, whatever the listener's
     /// mode is.
     pub fn accept(&mut self) -> io::Result<(TcpStream, SocketAddr)> {
@@ -678,8 +678,7 @@ impl PeerListener {
                     // handshake, the pairing exchange and the whole connection
                     // loop. Setting it back here is the one place that can be
                     // correct for all of them, and it is also why the
-                    // non-blocking listener is not observable outside this
-                    // method.
+                    // non-blocking listener is not observable outside this method.
                     stream.set_nonblocking(false)?;
                     return Ok((stream, addr));
                 }
@@ -811,7 +810,7 @@ impl PeerTransport for Tailnet {
 
     fn pre_noise_filter(&self, peer: &SocketAddr, peers: &PeerTable) -> Result<(), RejectReason> {
         // Order matters for the trail: a revoked address is a device this
-        // daemon used to trust, an out-of-range address is not a tailnet source
+        // daemon no longer trusts, an out-of-range address is not a tailnet source
         // at all, and only then is anything else a stranger.
         if peers.by_address(&peer.ip()).is_some() {
             return Ok(());
@@ -854,7 +853,7 @@ pub fn compose_peer_address(ip: IpAddr, port: u16) -> String {
 
 /// Whether `address` is inside a tailnet range: Tailscale allocates from
 /// `100.64.0.0/10` for IPv4 and `fd7a:115c:a1e0::/48` for IPv6.
-///
+//
 /// This is a pre-filter, not authentication: the source address is trivially
 /// spoofable on a shared segment, and the pinned Noise static key is what
 /// actually authenticates. It exists so a non-tailnet source is refused before
@@ -880,7 +879,7 @@ pub fn is_tailnet_address(address: &IpAddr) -> bool {
 // point that matters is this trait, which `Tailnet` implements and which a
 // future `Relay` would implement the same way. The design's normative content
 // for the relay — the binding becomes the relay account and the pinned Noise
-// static keys remain the only authentication (§8 R10) — belongs with the slice
+// static keys remain the only authentication (§8 R10) — belongs with the build
 // that writes it.
 
 pub fn peer_port() -> u16 {
@@ -889,13 +888,13 @@ pub fn peer_port() -> u16 {
 
 /// The parsing rule for `DEVBOULE_PEER_PORT`, split out so it can be tested
 /// **without mutating the process environment**.
-///
-/// The test used to `set_var`/`remove_var` a process-global, which is a race
+//
+/// A `set_var`/`remove_var` on the process environment is a race
 /// against every other test that reads it: `peer_port()` is on the listener's
 /// path, so any future test that starts a listener would have seen a port it did
 /// not ask for. A pure function removes the race instead of serialising around
 /// it.
-///
+//
 /// A missing value, a value that is not a number, and `0` all mean "use the
 /// default": zero is not a port a listener can bind meaningfully, and silently
 /// binding an arbitrary ephemeral port would make the address the panel shows
@@ -1046,7 +1045,7 @@ impl Drop for HandshakeGuard {
     }
 }
 
-/// Token bucket for one remote connection's requests (muse M1). `Local`
+/// Token bucket for one remote connection's requests. `Local`
 /// connections are never limited.
 pub struct TokenBucket {
     tokens: f64,
@@ -1078,9 +1077,9 @@ impl TokenBucket {
 // Pairing seam
 // ---------------------------------------------------------------------------
 
-/// What the accept loop needs from pairing (S6). Kept behind a trait so the
-/// transport compiles and is tested with no pairing at all, and so S6 adds the
-/// state machine without changing this file's accept order.
+/// What the accept loop needs from pairing. Kept behind a trait so the
+/// transport compiles and is tested with no pairing at all, and so the state
+/// machine can be added without changing this file's accept order.
 pub trait PairingHook: Send + Sync {
     /// Whether a code is active. This is the whole of step 2's second branch:
     /// with no active code a non-peer source is closed before any read.
@@ -1090,7 +1089,7 @@ pub trait PairingHook: Send + Sync {
     fn housekeeping(&self, now: Instant);
 
     /// Step 3's pairing path. Runs on its own thread; the socket is owned here.
-    ///
+    //
     /// `in_flight` is the pairing handshake slot the accept loop took for this
     /// connection. The implementation drops it as soon as the exchange stops
     /// being a handshake — which for a parked `Client` pairing is *before* it
@@ -1139,7 +1138,7 @@ impl PairingHook for PairingDisabled {
 
 /// The `daemon-peer-accept` thread. Polls the listener non-blocking and uses
 /// the idle tick for pairing housekeeping, so one loop serves both.
-///
+//
 /// Runs `handle_client` for an authenticated peer on its own thread, exactly
 /// as the pipe accept loop does: one connection never blocks the next.
 pub fn accept_peers(
@@ -1164,8 +1163,7 @@ pub fn accept_peers(
             Ok(accepted) => accepted,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 // Finished per-connection threads are reaped here, so a daemon
-                // under connection churn cannot accumulate join handles for its
-                // whole uptime.
+                // under connection churn cannot accumulate join handles for its whole uptime.
                 threads.retain(|handle| !handle.is_finished());
                 std::thread::sleep(HOUSEKEEPING_TICK);
                 continue;
@@ -1192,8 +1190,8 @@ pub fn accept_peers(
         // Everything from here on runs on the connection's own thread: the
         // peer-table read, the pre-Noise filter, the `DBP1` peek, and the
         // decision about which handshake budget to spend. None of it can block
-        // the accept loop, which is the point (M1): a candidate that connects
-        // and never writes used to park this thread inside `peek_magic` for the
+        // the accept loop, which is the point: a candidate that connects
+        // and never writes would park this thread inside `peek_magic` for the
         // whole peek budget, delaying every other accept behind it.
         let transport_for_task = Arc::clone(&transport);
         let state_for_task = Arc::clone(&state);
@@ -1236,16 +1234,16 @@ pub fn accept_peers(
 }
 
 /// Steps 2–6 for one accepted connection, on its own thread.
-///
+//
 /// The order is the design's (§7 condition 1, §8 R4) and is deliberately
 /// unchanged from when it ran inline; only the thread it runs on has moved:
-///
+//
 /// 2. the peer table decides whether this source is a peer or a pairing
 ///    candidate, **before any read**;
 /// 3. only a candidate is peeked for `DBP1`;
 /// 4. the matching in-flight handshake budget is spent;
 /// 5. an authenticated peer is served, or the pairing exchange is run.
-///
+//
 /// Anything that is neither a peer nor a candidate is closed here, with no
 /// read, no wait and no audit row.
 fn dispatch_peer_connection(
@@ -1256,7 +1254,7 @@ fn dispatch_peer_connection(
     peer_addr: SocketAddr,
     state: &Arc<ServerState>,
 ) {
-    // Step 2. The table is cached in the daemon (M1), so this is a mutex read
+    // Step 2. The table is cached in the daemon, so this is a mutex read
     // rather than a journal round trip per accepted socket.
     let peers = match state.peer_table() {
         Ok(peers) => peers,
@@ -1275,8 +1273,7 @@ fn dispatch_peer_connection(
             }
         };
         if let Err(error) = serve_noise_peer(transport, stream, peer_addr, &peers, state) {
-            // No identity in the line: it is attacker-adjacent input on this
-            // path.
+            // No identity in the line: it is attacker-adjacent input on this path.
             eprintln!("daemon peer connection ended: {error}");
         }
         drop(guard_handshake);
@@ -1284,8 +1281,7 @@ fn dispatch_peer_connection(
     }
 
     if pairing.is_active() {
-        // Step 2b: a pairing candidate must be a tailnet source too (C11).
-        //
+        // Step 2b: a pairing candidate must be a tailnet source too.
         // Without this, an off-tailnet source was *peeked* while a code was
         // active — up to four bytes read and, if it said `DBP1`, a full
         // SPAKE2+Noise exchange — which is exactly what design §7 condition 1
@@ -1326,7 +1322,7 @@ fn dispatch_peer_connection(
 }
 
 /// `peek` the four magic bytes without consuming them, under `deadline`.
-///
+//
 /// The deadline is armed here rather than by the caller so this can never be
 /// reached with an unbounded socket: a source that connects and then says
 /// nothing must not park the accept loop.

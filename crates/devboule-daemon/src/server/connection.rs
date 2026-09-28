@@ -84,9 +84,9 @@ pub(crate) fn handle_client(
         },
     };
     if client_hello.owner != true_owner {
-        // Redacted, not printed: this line used to carry the user SID and, on
-        // a peer connection, `peer_<device_id>` — both of which §8 R7 keeps out
-        // of logs. The mismatch is still diagnosable; the identities are not in
+        // Redacted, not printed: the user SID and, on
+        // a peer connection, `peer_<device_id>` both stay out
+        // of logs (§8 R7). The mismatch is still diagnosable; the identities are not in
         // the file.
         eprintln!(
             "client hello owner label {} did not match the connection peer {}",
@@ -132,8 +132,8 @@ pub(crate) fn handle_client(
     // request it makes is that user's request: the registry's owner-user filter
     // is then the whole scope (§8b A3), and it is also what makes a
     // peer-created session appear in the desktop's list. A `Daemon` peer keeps
-    // the `peer_<device_id>` identity slice 1 gave it, so the same filter
-    // scopes it to the sessions it created (R2).
+    // the `peer_<device_id>` identity, so the same filter
+    // scopes it to the sessions it created.
     let owner = match &conn_peer {
         Some(ConnPeer::Remote {
             role: PeerRole::Client,
@@ -168,7 +168,7 @@ pub(crate) fn handle_client(
     let mut pending_events = VecDeque::new();
     let mut pending_state_events = VecDeque::new();
     let mut pending_replies = VecDeque::new();
-    // Remote connections are rate limited; a local pipe is not (muse M1).
+    // Remote connections are rate limited; a local pipe is not.
     let is_remote = matches!(conn.conn_peer, Some(ConnPeer::Remote { .. }));
     let mut bucket = TokenBucket::new(Instant::now());
     // A revocation must drop a live connection, so the connection registers
@@ -218,8 +218,7 @@ pub(crate) fn handle_client(
                 };
                 let close_request = matches!(&request, ClientMessage::SessionClose { .. });
                 if is_remote && !bucket.take(Instant::now()) {
-                    // Exactly one audit row, then close: the audit table must
-                    // not amplify a flood.
+                    // Exactly one audit row, then close: the audit table must not amplify a flood.
                     if let Some(ConnPeer::Remote {
                         device_id, role, ..
                     }) = &conn.conn_peer
@@ -313,8 +312,7 @@ pub(crate) fn handle_client(
                 let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
                 // Control/lifecycle replies retain the flush barrier. It makes
                 // the acknowledgement visible before teardown or a shutdown
-                // disconnect; the event stream below must never use that
-                // barrier per frame.
+                // disconnect; the event stream below must never use that barrier per frame.
                 framed.send(&redact_for_conn(&conn, reply))?;
                 crate::rpc_trace::daemon_event("reply", trace_name, trace_id, conn.id, &[]);
                 if shutting_down {
@@ -371,7 +369,7 @@ pub(crate) fn handle_client(
     // already queued when the flag went up. Skipping the flush is what makes
     // "revoked" hold at the last place a frame could still leave, and the
     // detach below then runs with no write between it and the end of the
-    // connection (H3, §8b A4).
+    // connection (`DESIGN-remote-agents.md` §8b A4).
     let revoked = close_requested
         .as_ref()
         .is_some_and(|close| close.load(Ordering::SeqCst));
@@ -389,7 +387,7 @@ pub(crate) fn handle_client(
     state.unregister_remote_conn(conn.id);
     // The device is gone, so the permission cards it was holding can no longer
     // be answered by it: whatever slots it still held go back to the
-    // daemon-wide allowance (H2).
+    // daemon-wide allowance.
     if let Some(device_id) = conn.conn_peer.as_ref().and_then(ConnPeer::device_id) {
         crate::session::release_peer_cards(device_id);
     }
@@ -404,7 +402,7 @@ pub(crate) fn handle_client(
 /// frame could still leave afterwards. Refilling and draining here would hand a
 /// device the user has just disowned every event that was pending at the moment
 /// of revocation, so a revoked connection sends none of them: the queues die
-/// with the connection (H3, `DESIGN-remote-agents.md` §8b A4).
+/// with the connection (`DESIGN-remote-agents.md` §8b A4).
 pub(super) fn flush_final_events(
     framed: &Framed,
     conn: &ConnHandle,

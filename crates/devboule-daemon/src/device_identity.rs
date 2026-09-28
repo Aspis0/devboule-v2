@@ -110,7 +110,7 @@ pub struct DeviceFile {
 /// The remote-listener state, as this daemon tracks it internally. Serialised
 /// through [`RemoteState::to_wire`]: the addresses and port are part of this
 /// node's reachability but do **not** belong on the wire's `remote` object
-/// (brief 1b's contract puts them in `SelfInfo`).
+/// (`SelfInfo` carries them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemoteState {
     Disabled(String),
@@ -323,9 +323,9 @@ fn load(
     let public_key = decode_public_key(&file.public_key)?;
     Ok(DeviceIdentity {
         device_id: file.device_id,
-        // Sanitised on the way in as well: a hand-edited `device.json` is one
-        // of the ways a bad name could otherwise reach `SelfInfo` and every
-        // future pairing payload (M3).
+        // Sanitised on the way in as well: a hand-edited `device.json` is one of
+        // the ways a bad name could otherwise reach `SelfInfo` and every future
+        // pairing payload.
         display_name: display_name_or_fallback(&file.display_name),
         public_key,
         key_fingerprint: file.key_fingerprint,
@@ -356,8 +356,8 @@ fn create(
     let device_id = uuid::Uuid::new_v4().to_string();
     let created_at = created_at_stamp();
     // Sanitised, not rejected: an unusable hostname must not stop the daemon
-    // from having an identity, and it must not put a name on the wire that the
-    // far side will refuse (M3).
+    // from having an identity, and it must not put a name on the wire that the far
+    // side will refuse.
     let display_name = display_name_or_fallback(&hostname());
     let key_fingerprint = key_fingerprint(&public_key);
     let file = DeviceFile {
@@ -435,7 +435,7 @@ fn unix_millis() -> u64 {
 /// rejects `createdAt == 0` as "not written by this daemon", so writing a zero
 /// would produce a `device.json` that this same loader refuses on every start —
 /// a machine with a badly skewed clock would be unable to use its own identity
-/// until the clock was fixed (C12). One millisecond past the epoch is a value
+/// until the clock was fixed. One millisecond past the epoch is a value
 /// the validator accepts and no real daemon start can produce by accident.
 fn created_at_stamp() -> u64 {
     unix_millis().max(1)
@@ -452,11 +452,10 @@ fn hostname() -> String {
 /// The machine's name on platforms that are not Windows yet.
 ///
 /// `HOSTNAME` is a shell variable: a GUI-launched process normally does not have
-/// it, which is why the previous version presented every such device as
-/// "unknown" (C13). That string is not cosmetic — it is the half of the pairing
-/// confirmation card that is not the fingerprint — so the file the OS keeps is
-/// read as a fallback. The daemon does not run on these platforms yet (slice 6),
-/// and no new dependency is added for it.
+/// it, which is why reading the file the OS keeps matters. That string is not
+/// cosmetic — it is the half of the pairing confirmation card that is not the
+/// fingerprint — so the file the OS keeps is read as a fallback. The daemon
+/// does not run on these platforms yet, and no new dependency is added for it.
 #[cfg(not(windows))]
 fn hostname() -> String {
     for path in ["/etc/hostname", "/proc/sys/kernel/hostname"] {
@@ -660,7 +659,7 @@ mod tests {
 
     #[test]
     fn a_malformed_envelope_is_not_reported_as_key_missing() {
-        // F4: a truncated or version-shifted secret must fail loudly with the
+        // A truncated or version-shifted secret must fail loudly with the
         // store kind and the remedy in the message. Mapping it to
         // `KeyMissing` would make the daemon mint a new identity and orphan
         // every pairing this device has.

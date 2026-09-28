@@ -84,12 +84,11 @@ pub async fn workspace_git_status(
 /// plus three commands at 60 s each (`git status` for the path, `git diff
 /// HEAD`, and the one declared `--cached` fallback in a repository with no
 /// commit). Outside those four calls sits the one wait nobody bounds: the
-/// synthesis of an untracked file reads the filesystem with **no timeout at
-/// all** — inherited from slice 1, declared there (its review, §4.1). On a
-/// checkout that slow or a file that hangs, the caller times out at 30 s
-/// while the daemon finishes, and the residual is accepted and stated
-/// rather than hidden. The wait leaves the window's thread the way the
-/// other long roads do.
+/// synthesis of an untracked file reads the filesystem with **no timeout
+/// at all**. On a checkout that slow or a file that hangs, the caller times
+/// out at 30 s while the daemon finishes, and the residual is accepted and
+/// stated rather than hidden. The wait leaves the window's thread the way
+/// the other long roads do.
 #[tauri::command]
 pub async fn workspace_git_diff(
     bridge: State<'_, DaemonBridge>,

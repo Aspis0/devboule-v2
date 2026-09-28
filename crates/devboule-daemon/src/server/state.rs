@@ -178,13 +178,11 @@ pub struct ServerState {
     remote: Mutex<RemoteState>,
     /// Live remote connections, so revocation can close them immediately.
     remote_conns: Mutex<HashMap<u64, (String, Arc<AtomicBool>)>>,
-    /// The `peers` snapshot the accept path filters on, cached (M1).
-    ///
-    /// The previous behaviour loaded the whole table from the journal for every
-    /// accepted socket, so a burst of connects was a burst of journal RPCs on
-    /// the writer thread. The cache is refreshed by every peer mutation and
-    /// expires on its own, so it cannot serve a stale answer after a pairing or
-    /// a revoke, and cannot serve one forever if a mutation path is ever missed.
+    /// The `peers` snapshot the accept path filters on, cached: a burst of
+    /// connects would otherwise be a burst of journal RPCs on the writer
+    /// thread. The cache is refreshed by every peer mutation and expires on
+    /// its own, so it cannot serve a stale answer after a pairing or a revoke,
+    /// and cannot serve one forever if a mutation path is ever missed.
     peer_table: Mutex<PeerTableView>,
     /// Serialises the *load* of the peer table, without being held while the
     /// journal is queried.
@@ -1292,16 +1290,15 @@ impl ServerState {
     /// test-built identity is written to `<runtime dir>/secrets/noise-static.bin`
     /// and dies with that directory.
     ///
-    /// Measured, before this: a test that reached `device_identity()` got the
-    /// OS credential store instead, keyed by the hash of that same temp dir, and
-    /// nothing ever removed the entry. One `cargo test -p devboule-daemon` run
-    /// left 146 `noise-static-<16 hex>` entries in the real Windows Credential
-    /// Manager; after ~6 runs (869 entries) `CredWrite` started failing with
-    /// `Windows error code 8`, which turned six pairing/transport/server tests
-    /// red on `credential store failure`. The credential store is not a
-    /// behaviour under test here: this key is per-test scratch, and the file
-    /// store is the one the integration tests and a headless daemon already use
-    /// (`DEVBOULE_SECRET_STORE=file`).
+    /// Measured: the OS credential store keys entries by the hash of the
+    /// test's own temp dir, and nothing ever removes them — one `cargo test
+    /// -p devboule-daemon` run left 146 `noise-static-<16 hex>` entries in
+    /// the real Windows Credential Manager, and past ~6 runs (869 entries)
+    /// `CredWrite` fails with `Windows error code 8`, which fails pairing,
+    /// transport and server tests on `credential store failure`. The
+    /// credential store is not a behaviour under test here: this key is
+    /// per-test scratch, and the file store is the one the integration tests
+    /// and a headless daemon already use (`DEVBOULE_SECRET_STORE=file`).
     #[cfg(test)]
     fn initial_secret_store(dir: &Path) -> OnceLock<(Arc<dyn SecretStore>, &'static str)> {
         let store: Arc<dyn SecretStore> = Arc::new(crate::secret_store::FileStore::new(dir));
@@ -1340,7 +1337,7 @@ impl ServerState {
         journal.peers_list().map_err(|error| error.to_string())
     }
 
-    /// The cached `peers` table the accept path filters on (M1).
+    /// The cached `peers` table the accept path filters on.
     ///
     /// Loaded at most once per [`PEER_TABLE_TTL`], and dropped by every peer
     /// mutation, so the cost of accepting a connection is a mutex read rather
@@ -1504,7 +1501,7 @@ impl ServerState {
     /// The capability set of one paired device, read from its `peers` row.
     ///
     /// Resolved once per connection, not once per request: the journal is the
-    /// slow path this design keeps out of dispatch (muse M1), and a
+    /// slow path this design keeps out of dispatch, and a
     /// `PeerSetCaps` closes that device's live connections, so a running
     /// connection can never hold a capability the row no longer grants.
     ///

@@ -162,8 +162,9 @@ fn workspace_document(record: &WorkspaceRecord) -> Value {
     })
 }
 
-/// `devboule_create_workspace` takes Paseo's shape with our stricter rule:
-/// the project is the caller's own, and no path is accepted at all.
+/// `devboule_create_workspace` takes Paseo's shape
+/// (`packages/server/src/server/agent/tools/paseo-tools.ts`) with our stricter
+/// rule: the project is the caller's own, and no path is accepted at all.
 #[derive(Debug)]
 struct CreateRequest {
     isolation: WorkspaceIsolation,

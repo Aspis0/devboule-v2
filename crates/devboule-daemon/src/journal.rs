@@ -12,7 +12,7 @@
 //! tail is unverifiable. Nothing here claims completeness except an
 //! orderly close.
 //!
-//! Schema notes for M6: `events.kind` is an open string (`output`, `exit`,
+//! Schema notes: `events.kind` is an open string (`output`, `exit`,
 //! later `turn` / `permission`). Additive columns on `sessions` and the
 //! empty `turns` / `permissions` tables mean agent history does not require
 //! a migration that rewrites terminal rows.
@@ -238,7 +238,6 @@ pub struct SessionRecord {
     /// workspace was started from. `None` for every row that predates v15,
     /// which is the honest "nobody recorded it": such a row resumes exactly
     /// as it did before the column existed.
-    ///
     /// This is not a second source of truth for a workspace session: the
     /// workspace is resolved from its id, as it always was. It is the only
     /// record at all for a session that has no workspace — and the one fact
@@ -246,7 +245,7 @@ pub struct SessionRecord {
     /// refused in words instead of in a provider's crash.
     pub cwd: Option<String>,
     pub kind: SessionKind,
-    /// Catalog provider id used to start an ACP/Claude session. NULL means
+    /// Catalog provider id that starts an ACP/Claude session. NULL means
     /// this row predates provider persistence or was not resumable.
     pub provider: Option<String>,
     pub title: String,
@@ -285,14 +284,12 @@ pub struct SessionRecord {
     /// made the row; read by the peer gate and the permission card's
     /// provenance line. Every row that predates v9 is `local`.
     pub origin: SessionOrigin,
-    /// The name the human reads for this session (`S5` decision 9b, audit
-    /// S5-12). NULL for a session created without one and for every row that
-    /// predates v10: the surfaces fall back to the title, exactly as they did
-    /// before the column existed.
+    /// The name the human reads for this session. NULL for a session created
+    /// without one and for every row that predates v10: the surfaces fall back
+    /// to the title.
     pub display_name: Option<String>,
-    /// The session that created this one, when an agent did (`S5` decision 9a).
-    /// NULL for a session a human asked for, and for every row that predates
-    /// v10.
+    /// The session that created this one, when an agent did. NULL for a session
+    /// a human asked for, and for every row that predates v10.
     pub created_by: Option<String>,
     /// The profile this session was created from, by its stable **id** — the
     /// one value a rename cannot change. NULL for a session a human started
@@ -306,10 +303,10 @@ pub struct SessionRecord {
     /// answering, as the tri-state [`UnattendedState`] knows it. Derived once,
     /// by the creation that delivered the mode, and never re-derived:
     /// un-ticking the profile afterwards does not change the row.
-    ///
+    //
     /// The boolean `unattended` **column** stays beside the tri-state
     /// `unattended_state` column this value is stored in: it is ratcheted by
-    /// the same `MAX` as before and absorbs the `yes` half for rows written
+    /// the same `MAX` and absorbs the `yes` half for rows written
     /// before v12, so a database this daemon upgrades never has a rewritten
     /// column. The v12 backfill maps an old `1` to `yes` and an old `0` to
     /// **`unknown`** — never `no`: the old bool never distinguished "we knew
@@ -326,7 +323,7 @@ pub struct SessionRecord {
     /// cell — never a recorded value, since every write carries a definite
     /// overlay — and only the resume path judges it; the roster reads the
     /// cell but decides nothing from it.
-    ///
+    //
     /// `pub(crate)` while the sibling fields are `pub`: the overlay type
     /// itself is crate-internal, and widening it for one field would grow
     /// the crate's API for nothing the app ever names.
@@ -387,7 +384,7 @@ impl WorkspaceRecord {
 }
 
 /// One paired device, as stored in `peers`.
-///
+//
 /// `role` is `client` or `daemon` (the CHECK constraint holds the same set).
 /// `caps` is a JSON array of capability names. `paired_by_user` is **this**
 /// daemon's own user SID at pairing time, written by this side: it is never
@@ -428,8 +425,7 @@ impl PeerRecord {
 
     /// Whether `address` is this peer's stored address. Numeric comparison,
     /// so `100.64.0.1` and `100.64.0.10` cannot match each other. Used by the
-    /// pre-Noise filter, which is the only check that runs before a byte is
-    /// read.
+    /// pre-Noise filter, which is the only check that runs before a byte is read.
     pub fn owns_address(&self, address: &std::net::IpAddr) -> bool {
         self.address_ip()
             .map(|owned| owned == *address)
@@ -531,7 +527,7 @@ impl SessionRecord {
             elapsed_ms: None,
             created_at_ms: self.created_at_ms,
             origin: self.origin.clone(),
-            // Both are the row's now (audit S5-12): a transcript recovered
+            // Both are the row's: a transcript recovered
             // after a restart lists under the name the human saw and keeps the
             // parent it was created by.
             display_name: self.display_name.clone(),
@@ -556,7 +552,7 @@ impl SessionRecord {
 
     /// The context this session belongs to: the row's own value when it has one,
     /// and its own id otherwise.
-    ///
+    //
     /// The second half is the rule [`Session::context_id`] states for a session
     /// no other session created, and it is applied here rather than written into
     /// the v11 migration because a row that predates the column has no creator
@@ -634,7 +630,7 @@ struct DropCounters {
 }
 
 /// Live counters of the journal writer, process-wide.
-///
+//
 /// The pair `(failed_frames, committed_frames < accepted_frames)` is what
 /// makes two otherwise-identical-looking losses distinguishable while the
 /// daemon is alive: output dropped knowing it (counted in `failed_frames`,
@@ -756,8 +752,7 @@ enum JournalCmd {
     },
     /// The resume road's disown mark: the provider refused this handle.
     /// `expected` names the refused handle, so a concurrent respawn's NEWER
-    /// handle is never silenced; the refused handle itself is never
-    /// destroyed.
+    /// handle is never silenced; the refused handle itself is never destroyed.
     MarkPeerSessionDisowned {
         session_id: String,
         expected: String,
@@ -1227,9 +1222,9 @@ impl Journal {
 
     /// A `devboule_set_agent_profile` move's recording, and nothing else: the
     /// child's `profile_id` column and the `unattended` ratchet.
-    ///
+    //
     /// Two columns, two rules, both the row's own:
-    ///
+    //
     /// - `profile_id` is `COALESCE(?, profile_id)` — a move that records a
     ///   profile overwrites, and one that must record **no** profile change
     ///   (the partial failure: the mode landed, the model ask was refused)
@@ -1239,12 +1234,12 @@ impl Journal {
     ///   (sessions.unattended, excluded.unattended)` and its tri-state twin. A
     ///   child that was able to run unattended keeps the marker whatever it is
     ///   moved onto later; that fact cannot be un-lived.
-    ///
+    //
     /// This is control traffic and waits, like `record_permission`: the tool's
     /// answer means the row says what the move did. A journal that cannot take
     /// the write degrades the recording; the asks that already landed cannot
     /// be undone by refusing to write them down.
-    ///
+    //
     /// A targeted UPDATE rather than an upsert of a rebuilt record: the
     /// full-row upsert overwrites `status`, `generation`, `last_seq` and
     /// `created_at_ms` from the record, and a caller holding only wire
@@ -1390,10 +1385,8 @@ impl Journal {
         })
     }
 
-    /// Mark a peer revoked. `Ok(false)` means there was nothing to revoke
-    /// (unknown device, or already revoked).
-    /// Mark a peer revoked. The outcome distinguishes a row that was revoked
-    /// from one that was already revoked and from one that does not exist (C9).
+    /// Mark a peer revoked. The outcome distinguishes a row that was updated
+    /// from one that is already revoked and from one that does not exist.
     pub fn peer_revoke(&self, device_id: &str, at: i64) -> Result<PeerMutation, JournalError> {
         self.rpc(|reply| JournalCmd::PeerRevoke {
             device_id: device_id.to_string(),
@@ -1402,7 +1395,7 @@ impl Journal {
         })
     }
 
-    /// Replace a peer's capability set. A revoked row is refused (C8).
+    /// Replace a peer's capability set. A revoked row is refused.
     pub fn peer_set_caps(
         &self,
         device_id: &str,
@@ -1556,7 +1549,7 @@ impl Journal {
     /// Enqueue `Shutdown` past the data-queue cap. Data producers are
     /// bounded by `reserve_slot` so a flooded queue degrades instead of
     /// growing; a control command must not share that fate. `shutdown`
-    /// used to reserve a data slot with a 200 ms budget and discard the
+    /// reserves a data slot with a 200 ms budget and discards the
     /// failure, so a saturated queue meant the command never entered, the
     /// writer never exited, and `shutdown` returned with the SQLite
     /// connection still open. The slot counter is still incremented (the
@@ -1589,7 +1582,7 @@ impl Journal {
     /// journal already holds is refused instead of merged, and the answer
     /// reaches the caller — a create that cannot own its id fails loudly
     /// here, before anything spawns against it.
-    ///
+    //
     /// One round trip, not two: the writer checkpoints inline (best effort),
     /// so a checkpoint stall never turns a landed row into a reported
     /// failure. A birth that times out leaves no row — the writer deletes
@@ -2002,8 +1995,7 @@ fn journal_loop(
                 match &result {
                     Err(error) => on_write_error(error),
                     // The name is roster-visible, so a changed one moves the
-                    // revision by the handle's rule above; an unchanged write
-                    // costs no rebuild.
+                    // revision by the handle's rule above; an unchanged write costs no rebuild.
                     Ok(true) => {
                         session_set_revision.fetch_add(1, Ordering::AcqRel);
                     }
@@ -2514,10 +2506,9 @@ fn upsert_peer(conn: &Connection, record: &PeerRecord) -> Result<PeerRecord, Jou
 
 /// What one peer mutation did.
 ///
-/// `revoke_peer` and `set_peer_caps` both used to answer a bare `bool`, which
-/// made "there is no such row" and "the row is already revoked" the same answer
-/// — and the dispatch site rendered both as "No such peer", which is a lie in
-/// the second case (C9). The caller can now say which happened.
+/// `revoke_peer` and `set_peer_caps` answer a `PeerMutation` so that "there is
+/// no such row" and "the row is already revoked" stay distinct: the dispatch
+/// site must not answer "No such peer" for a peer that exists and is revoked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerMutation {
     /// The row was changed.
@@ -2561,7 +2552,7 @@ fn set_peer_caps(
 ) -> Result<PeerMutation, JournalError> {
     let caps = serde_json::to_string(caps)
         .map_err(|error| JournalError::InvalidRequest(error.to_string()))?;
-    // The revoked filter is the point (C8): a revoked row is a device this
+    // The revoked filter is the point: a revoked row is a device this
     // daemon no longer trusts, and rewriting its capabilities would leave the
     // stored state at odds with the panel's "Revoked" story — and would silently
     // revive the old capability set if the row is ever re-paired without a
@@ -2868,7 +2859,7 @@ fn unattended_state_from_rank(rank: i64) -> UnattendedState {
 
 /// The labels column: one JSON object, and `{}` for a session that carries none
 /// (which is every session a human started).
-///
+//
 /// A map whose encoding fails is written as `{}` rather than as a half-object:
 /// nothing reads a label to decide anything, so the worst case is a display that
 /// shows no labels — never a session that cannot be listed.
@@ -2883,7 +2874,7 @@ fn labels_json(labels: &std::collections::BTreeMap<String, String>) -> String {
 /// overlay": a birth with no restriction writes the same bytes a pre-v13
 /// row already has, so absence keeps meaning absence and no backfill can
 /// manufacture a restriction nobody recorded.
-///
+//
 /// The encoding cannot fail for the names this function is given, and the
 /// failure is still loud: a restriction silently unwritten would read back
 /// as no restriction, which is the open direction the read side refuses.
@@ -3399,7 +3390,7 @@ fn origin_kind_str(origin: &SessionOrigin) -> &'static str {
 }
 
 /// The origin one row carries.
-///
+//
 /// `peer` is the only kind that names a device, so it is the only one that
 /// opens anything to a peer: the `Daemon` branch of `check_user_owner` matches
 /// on `origin.device_id`, and a row whose `kind` is missing or is a spelling
@@ -3407,7 +3398,7 @@ fn origin_kind_str(origin: &SessionOrigin) -> &'static str {
 /// — not `local`. `local` is written by every pre-v9 row's `DEFAULT`, and it
 /// is a *claim* about who owns the session that only this machine's own user
 /// may act on; a `NULL` or unreadable column is not that claim.
-///
+//
 /// A `peer` row missing its device id keeps `kind = peer` with no device, which
 /// refuses for the same reason: an origin that cannot name the device that
 /// asked is not authority for any device.
@@ -3520,7 +3511,7 @@ pub fn new_session_record(
         peer_session_id: None,
         origin: SessionOrigin::local(),
         // A caller that wants either of these sets them on the record it gets
-        // back (`S5` decision 9); a row with no name and no parent is the
+        // back; a row with no name and no parent is the
         // honest default for a session a human asked for.
         display_name: None,
         created_by: None,
@@ -3558,13 +3549,13 @@ pub(crate) enum OriginBackfill {
     /// The bytes are not a complete `SessionEvent` — leave them and count them.
     Unreadable,
     /// Larger than [`MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES`]: never read at all,
-    /// left byte-for-byte and counted (H8).
+    /// left byte-for-byte and counted.
     Oversized,
 }
 
-/// The largest stored payload the v9 backfill will look at (H8).
-///
-/// The migration runs at startup, before anything serves, and it used to read
+/// The largest stored payload the v9 backfill will look at.
+//
+/// The migration runs at startup, before anything serves, and it reads
 /// every `agent_report` payload into memory to decide what to do with it. One
 /// mebibyte is far above any real permission request (the field caps in
 /// `permission_broker.rs` are kilobytes) and bounds what a hostile or damaged
@@ -3573,14 +3564,14 @@ pub(crate) const MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES: usize = 1024 * 1024;
 
 /// The payload with a `local` origin written into it, when it is a permission
 /// request stored before the field existed.
-///
+//
 /// The v9 migration (`journal_schema.rs`) calls this so that old data is made
 /// *valid* rather than left to degrade at replay — `origin` is required on the
 /// wire, and a pre-origin payload would be dropped by hydration and flagged by
 /// the live replay. `local` is a fact about those rows, not a guess: the daemon
 /// that wrote them had no paired devices.
-///
-/// Two bounds, both of them H8. The payload is read at all only under
+//
+/// Two bounds. The payload is read at all only under
 /// [`MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES`], and it is rewritten only when the
 /// **complete** `SessionEvent` it claims to be deserializes: a JSON object
 /// tagged `permission_request` whose event fields are wrong is a row replay

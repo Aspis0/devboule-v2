@@ -157,9 +157,9 @@ fn an_oversized_deposit_is_refused_by_the_wire_before_the_store_writes_anything(
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// HND-01: a close that lands between the ownership check and the store write
-/// must not leave a folder behind. The error alone would not say so — the
-/// orphan is the finding, so both halves are asserted.
+/// A close that lands between the ownership check and the store write must
+/// not leave a folder behind. The error alone would not say so — the orphan
+/// is the half only the filesystem can answer, so both halves are asserted.
 #[test]
 fn a_close_inside_a_deposit_is_refused_and_leaves_no_orphan_folder() {
     let (dir, registry, journal) = tmp_delete_registry();

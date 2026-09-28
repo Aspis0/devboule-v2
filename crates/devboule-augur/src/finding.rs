@@ -23,9 +23,9 @@ impl FindingId {
     }
 
     /// Port of v1 `compute_sin_id`. Evidence normalisation is per-rule.
-    /// Fields are length-prefixed so a `0x1f` inside a field cannot forge
-    /// a neighbour. Two byte-identical secrets in one file share this id:
-    /// they are one finding with more than one location.
+    /// Fields are length-prefixed so a `0x1f` inside a field cannot forge a
+    /// neighbour. Two byte-identical secrets in one file share this id: they
+    /// are one finding, at more than one location.
     pub fn of(rule: &str, file: &Path, line: Option<usize>, evidence: &str) -> Self {
         let line_token = if line_is_decorative(rule) {
             String::new()
@@ -146,8 +146,8 @@ fn fold_platform(path: &Path) -> PathBuf {
 }
 
 /// Evidence normalisation is per-rule, at the same choke point as the line.
-/// The v1 folded case and whitespace because evidence was a source excerpt.
-/// A secret *is* the matched value: case is identity, not cosmetics.
+/// A source excerpt folds case and whitespace; a secret *is* the matched
+/// value: case is identity, not cosmetics.
 fn evidence_key(rule: &str, evidence: &str) -> String {
     if evidence_is_verbatim(rule) {
         evidence.to_string()
@@ -446,8 +446,9 @@ impl Finding {
 }
 
 /// Collapse findings that share an id into one, keeping every location.
-/// The v1 ledger did last-wins on duplicate ids; with the line dropped for
-/// secrets that would forget a real place. One problem, many positions.
+/// Last-wins would forget a real place: secret findings carry no line, so a
+/// later duplicate with no line overwrites a real location. One problem, many
+/// positions.
 pub(crate) fn coalesce(findings: Vec<Finding>) -> Vec<Finding> {
     let mut order: Vec<String> = Vec::new();
     let mut by_id: std::collections::HashMap<String, Finding> = std::collections::HashMap::new();

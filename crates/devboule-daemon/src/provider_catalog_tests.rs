@@ -1106,9 +1106,8 @@ fn npx_wrapper_argv_is_node_and_npx_cli_not_cmd() {
 fn npx_wrapper_real_launcher_shape_unwraps_to_node_and_npx_cli_js() {
     // Uses the real npm launcher shape (npx.cmd as shipped by npm 10.x),
     // NOT the per-package cmd-shim shape. The per-package shape test
-    // above passed before the fix; this test with the REAL launcher
-    // shape is the one that was red because the old code did not
-    // recognize it.
+    // above passes without the fix; this test with the REAL launcher
+    // shape is the one that pins it: the code must recognize it.
     let dir = temporary_directory("npx-real-launcher");
     fs::create_dir_all(dir.join("node_modules").join("npm").join("bin")).expect("npm bin");
     File::create(dir.join("node.exe")).expect("node");
@@ -1216,7 +1215,7 @@ fn npx_wrapper_command_is_none_when_npx_is_absent_from_path() {
 /// the lookup does not serve, or the reverse.
 #[test]
 fn the_canonical_id_agrees_with_the_tool_lookup() {
-    // S9: pi and codex are served rows now (carriers S5/S6, verified S7/S8).
+    // pi and codex are served rows, each through its own carrier.
     for spelling in [
         "claude", "CLAUDE", "Claude", "grok", "GROK", "Grok", "pi", "PI", "Pi", "codex", "CODEX",
         "Codex",
@@ -1314,8 +1313,8 @@ fn every_catalog_provider_has_a_cell_and_only_design_has_an_overlay() {
     for preset in super::AGENT_PRESETS {
         for provider in &providers {
             // Every provider the catalog publishes has a cell in every
-            // preset, the debug-only rows included (audit S5B-08): those
-            // are the rows the slice-5 battery drives, so a preset that
+            // preset, the debug-only rows included: those
+            // are the rows the battery drives, so a preset that
             // stopped naming one fails here rather than in the battery.
             assert!(
                 super::resolve_agent_preset(preset.id, provider).is_ok(),
@@ -1486,7 +1485,7 @@ fn preambles_hold_no_instruction_to_write_files() {
     }
 }
 /// The `unattended` derivation is keyed on **authorship**, never on a
-/// provider name, and never on the profile's `autoAccept` tick (R2b): the
+/// provider name, and never on the profile's `autoAccept` tick: the
 /// delivered mode is what the birth judges, route A is the daemon's own
 /// broker list, route B is each client family's own dictionary, and a
 /// vocabulary the daemon did not author answers `unknown`. The old test
@@ -1545,8 +1544,7 @@ fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
     // unlike the catalog row match, which is documented
     // case-insensitive — so a differently spelled name derives under ACP
     // and answers `unknown`. That asymmetry is deliberate and pinned:
-    // the failure direction is an uncertainty, never a false certainty
-    // (audit R2b-1 §5.1).
+    // the failure direction is an uncertainty, never a false certainty.
     assert_eq!(
         prediction("Claude", "default"),
         UnattendedState::Unknown,
@@ -1578,8 +1576,7 @@ fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
     // the peer gate counts it as a mode that can pass a permission moment
     // with nobody answering (`prompt_skipping_mode`), so `no` — which
     // renders as nothing — is the wrongly-benign badge; and it is not
-    // `yes`, because a model reviewer may hand a moment back (audit
-    // R2b-1 §3.3).
+    // `yes`, because a model reviewer may hand a moment back.
     assert_eq!(
         prediction("codex", "auto-review"),
         UnattendedState::Unknown,
@@ -1716,7 +1713,7 @@ fn ticked() -> serde_json::Map<String, serde_json::Value> {
         .to_owned()
 }
 
-/// The pre-card tick judgement (the re-audit's P1): a verdict that
+/// The pre-card tick judgement: a verdict that
 /// refuses exists only where the daemon owns the rule — Claude and Pi —
 /// and the daemon's own table always concludes *satisfied*, never
 /// refused. `full-access` now rides that table (Codex never asks there),
@@ -1768,7 +1765,7 @@ fn the_pre_card_tick_judgement_refuses_only_where_the_daemon_owns_the_rule() {
     }
     // The families that own their knob: no pre-card conclusion at all —
     // for every id the daemon's own table does not carry. (`full-access`
-    // used to be the conviction here; it now rides the table above.)
+    // is not a pre-card conclusion; it rides the table above.)
     for provider in [
         "codex",
         "devboule-acp-stub",
@@ -1788,7 +1785,7 @@ fn the_pre_card_tick_judgement_refuses_only_where_the_daemon_owns_the_rule() {
 /// judgement: every `SessionKind` arm of `judge_auto_accept_tick` has a
 /// pinned verdict, reached through each kind's own provider spelling,
 /// so a family's verdict is a recorded decision rather than whatever a
-/// wildcard happened to return (the re-audit's P2-5). The match in
+/// wildcard happened to return. The match in
 /// `judge_auto_accept_tick` spells every arm with no wildcard, so
 /// adding a sixth family is a compile error before this test can even
 /// run — and this test then forces whoever adds it to write down what
@@ -1832,7 +1829,7 @@ fn every_session_kind_has_a_pinned_pre_card_tick_verdict() {
 
 /// The published schema of `devboule_create_agent` cannot express a provider,
 /// a preset, a model, a mode or a feature: what an agent cannot say is what no
-/// check of ours can get wrong (`S5` §2 rev 9).
+/// check of ours can get wrong.
 #[test]
 fn the_create_agent_schema_cannot_express_a_provider_or_a_preset() {
     let schema = super::agent_create_input_schema();

@@ -16,9 +16,7 @@ use super::read::{ordered, read, MAX_ENTRIES};
 ///
 /// The metadata folder is created as **`.GIT`**, not `.git`: NTFS matches
 /// names case-insensitively, so the two spellings are the same directory and
-/// this fixture is the listing-side half of the spelling-blind rule. Before
-/// that rule this test went **red** on this machine — `.GIT` was listed —
-/// (log `fix-slice4-r1-red.txt`).
+/// this fixture is the listing-side half of the spelling-blind rule.
 #[test]
 fn git_is_excluded_and_every_other_entry_lists_folders_first_in_byte_order() {
     let folder = Folder::new("rules");

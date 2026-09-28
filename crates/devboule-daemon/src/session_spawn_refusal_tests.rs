@@ -8,7 +8,7 @@
 use super::*;
 
 /// The refused spawn's journal row is ended **by the time the refusal
-/// returns** (the R2a audit's F8): the row was written Live before the
+/// returns**: the row was written Live before the
 /// spawn, and an end left to a fire-and-forget thread is an end a daemon
 /// death in that window undoes — the row would come back `status=live`
 /// and resurrect a phantom recovered session. The spawn here fails on a
@@ -128,7 +128,7 @@ fn a_refused_spawn_ends_its_row_async_without_blocking_the_caller() {
     }
 }
 
-/// The health recorder's class line (the R2a audit's F6): a refusal the
+/// The health recorder's class line: a refusal the
 /// profile alone decides — an unknown model or mode, an `autoAccept`
 /// contradiction, an agent refusing the delivered switch — is
 /// `InvalidRequest` and says nothing about the provider; a provider or
@@ -165,13 +165,12 @@ fn ticked_features() -> serde_json::Map<String, serde_json::Value> {
         .to_owned()
 }
 
-/// The crossing the re-audit's P1 found missing: the pre-card gate and
-/// the clients' own spawn-time tick rules, asserted against each other
-/// over the daemon's mode vocabulary plus the provider-authored ids the
-/// audit named. The invariant that convicts the old gate is exact — a
-/// pair the pre-card gate refuses must be a pair the client that will
-/// speak for the child also refuses — and for Claude and pi, whose tick
-/// rule is the daemon's own, the two verdicts must agree outright.
+/// The pre-card gate and the clients' own spawn-time tick rules, asserted
+/// against each other over the daemon's mode vocabulary plus the
+/// provider-authored ids. The invariant is exact — a pair the pre-card gate
+/// refuses must be a pair the client that will speak for the child also
+/// refuses — and for Claude and pi, whose tick rule is the daemon's own,
+/// the two verdicts must agree outright.
 #[test]
 fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
     use crate::provider_catalog::{judge_auto_accept_tick, AutoAcceptTick};
@@ -213,7 +212,7 @@ fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
             );
             // The gate is exact where the rule is the daemon's own: a
             // silent gate over a refused pair would move the
-            // contradiction behind the consent card (the R2a audit's F7).
+            // contradiction behind the consent card.
             if provider != "codex" {
                 assert_eq!(
                     pre_card_refuses, spawn_refuses,
@@ -238,8 +237,8 @@ fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
     );
 }
 
-/// The convention the F6 classifier rests on, asserted against the
-/// **producers** and not hand-built errors (the re-audit's P3-3): every
+/// The convention the classifier rests on, asserted against the
+/// **producers** and not hand-built errors: every
 /// creation-time refusal a client can make from the profile alone is
 /// `InvalidRequest`, so `spawn_failure_is_provider_health` reads false
 /// for it. A client that reclassified one of these as `Io` would flip

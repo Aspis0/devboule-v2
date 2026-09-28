@@ -223,7 +223,8 @@ impl ClaudeView {
     /// first, then init names it never listed, appended bare in init order.
     /// Either reading alone republishes nothing; both derivations stay
     /// order-deterministic, live and on replay alike. No `/rewind`: Paseo
-    /// synthesizes it next to a native rewind road it backs it with, and no
+    /// synthesizes it next to a native rewind road it backs it with
+    /// (`packages/server/src/server/agent/providers/claude/agent.ts`), and no
     /// such road exists here — the menu shows what the CLI lists.
     fn merge_with_published(
         &self,
@@ -245,8 +246,8 @@ impl ClaudeView {
     }
 
     /// The handshake's `commands`: name, description and argument hint per
-    /// entry (aliases and builtin have no menu field; Paseo maps the same
-    /// three). The bound counts accepted entries, like the init's.
+    /// entry (aliases and builtin have no menu field). The bound counts
+    /// accepted entries, like the init's.
     fn commands_from_initialize(envelope: &Value) -> Option<Vec<AvailableCommandView>> {
         if envelope.get("type").and_then(Value::as_str) != Some("control_response") {
             return None;
@@ -256,8 +257,9 @@ impl ClaudeView {
             return None;
         }
         let entries = response.get("response")?.get("commands")?.as_array()?;
-        // Paseo keeps the first row per name (`listCommands`); later rows
-        // with a repeated name never reach the menu.
+        // Paseo keeps the first row per name (`listCommands`,
+        // `packages/server/src/server/agent/providers/claude/agent.ts`); later
+        // rows with a repeated name never reach the menu.
         let mut seen: HashSet<&str> = HashSet::new();
         let mut commands = Vec::new();
         for entry in entries.iter().take(MAX_INSPECTED_COMMANDS) {
@@ -297,12 +299,11 @@ impl ClaudeView {
     }
 
     /// `slash_commands` off the init frame: a flat array of names carrying
-    /// no descriptions and no hints (RECON A5-common §C), so each publishes
+    /// no descriptions and no hints, so each publishes
     /// with the empty description `AvailableCommandView` requires. The field
     /// is cwd-dependent and not every build sends it; absent means no event,
     /// so the menu keeps whatever it had. `terminal_slash_commands` is a
-    /// separate list the CLI answers itself and is deliberately not
-    /// published.
+    /// separate list the CLI answers itself and is deliberately not / published.
     fn slash_commands_from(envelope: &Value) -> Option<Vec<AvailableCommandView>> {
         // Both bounds: at most this many raw entries inspected on the reader
         // thread, at most a thousand accepted names in the event (review
@@ -950,24 +951,25 @@ fn spawn_depth(envelope: &Value) -> Option<u32> {
 /// the transcript line renders — the top-level object, which is what the CLI
 /// bills for the turn — and the context total the meter shows.
 ///
-/// The meter's number is Paseo's `readActiveUsageTokens`: the four-counter
-/// sum (`readUsageTokenTotal`, `providers/claude/agent.ts:1846-1868`) over
-/// the **last** entry of `usage.iterations[]` (`readLastUsageIteration`,
-/// `:1832-1843`), falling back to the top-level object only when the frame
-/// carries no iterations (their legacy branch at `:1972-1975`). The
-/// distinction is the whole point: one turn can make several API calls, each
-/// re-sending the conversation, so the top level is the turn's billing while
-/// the last iteration is what sits in the context window. Claude bills the
-/// cache separately, so `input_tokens` alone would understate either number
-/// badly — the cache counters and the response are part of the context.
+/// The meter's number is Paseo's `readActiveUsageTokens`
+/// (`packages/server/src/server/agent/providers/claude/agent.ts`): the
+/// four-counter sum (`readUsageTokenTotal`) over the **last** entry of
+/// `usage.iterations[]` (`readLastUsageIteration`), falling back to the
+/// top-level object only when the frame carries no iterations (their legacy
+/// branch). The distinction is the whole point: one turn can make several API
+/// calls, each re-sending the conversation, so the top level is the turn's
+/// billing while the last iteration is what sits in the context window. Claude
+/// bills the cache separately, so `input_tokens` alone would understate either
+/// number badly — the cache counters and the response are part of the context.
 struct ClaudeUsage {
     turn: TurnUsage,
     context_used: Option<u64>,
 }
 
 /// The meter's reading off one `usage` object: Paseo's `readUsageTokenTotal`
-/// over the entry their `readLastUsageIteration` would pick. `None` when the
-/// sum is 0 — their `total > 0` gate — so an all-zero frame claims no
+/// over the entry their `readLastUsageIteration` would pick
+/// (`packages/server/src/server/agent/providers/claude/agent.ts`). `None` when
+/// the sum is 0 — their `total > 0` gate — so an all-zero frame claims no
 /// reading instead of claiming an empty window.
 fn context_used_from_claude(usage: &Value) -> Option<u64> {
     let source = usage
@@ -1221,7 +1223,7 @@ mod tests {
     }
 
     /// The shape of a real init envelope with its command list, invented
-    /// values throughout (RECON A5-common §C): every key the measured init
+    /// values throughout: every key the measured init
     /// carries, none of the probe's paths, user names, project names or
     /// session ids. `slash_commands` is a flat array of names — no
     /// descriptions, no hints — and `terminal_slash_commands` is a separate
@@ -1315,7 +1317,7 @@ mod tests {
     #[test]
     fn the_init_command_list_copies_at_most_a_thousand_names() {
         // A correctly typed but enormous array must not become an enormous
-        // event (review A5-2 #5): the first thousand names are copied into
+        // event: the first thousand names are copied into
         // the view and the rest dropped.
         let mut envelope = init_frame_with_slash_commands();
         let names = (0..1005)
@@ -1355,8 +1357,10 @@ mod tests {
     #[test]
     fn initialize_response_publishes_commands_with_descriptions_and_hints() {
         // What Paseo fills its menu from before the first prompt
-        // (`q.supportedCommands()`): names with their descriptions and
-        // argument hints — the init frame's flat names carry neither.
+        // (`q.supportedCommands(),
+        // `packages/server/src/server/agent/providers/claude/agent.ts`): names
+        // with their descriptions and argument hints — the init frame's flat
+        // names carry neither.
         let mut mapper = ClaudeView::new(None);
         match mapper.ingest(&initialize_response()).as_slice() {
             [SessionEvent::AvailableCommands { commands }] => {
@@ -1403,9 +1407,8 @@ mod tests {
     #[test]
     fn init_with_new_names_merges_over_the_handshake_list() {
         // Union, not intersection: the handshake's entries first with their
-        // words, then init names it never listed, appended bare in init
-        // order. Paseo dedups the same way (`listCommands`); the wire order
-        // stays, unsorted.
+        // words, then init names it never listed, appended bare in init order.
+        // The wire order stays, unsorted.
         let mut mapper = ClaudeView::new(None);
         let _ = mapper.ingest(&initialize_response());
         let events = mapper.ingest(&init_frame_with_slash_commands());
@@ -1445,7 +1448,7 @@ mod tests {
     fn handshake_names_the_init_omits_stay_on_the_menu() {
         // The other direction of the union: an init carrying only `clear`
         // republishes nothing, so the handshake's `compact` and `usage` stay
-        // listed with their words. The old intersection dropped them.
+        // listed with their words.
         let mut mapper = ClaudeView::new(None);
         let _ = mapper.ingest(&initialize_response());
         let mut init = init_frame();
@@ -1460,7 +1463,7 @@ mod tests {
     #[test]
     fn a_failed_initialize_leaves_no_list() {
         // An older CLI's error, like its silence, only costs the early list:
-        // the init frame stays the list's source, as before.
+        // the init frame stays the list's source.
         let mut mapper = ClaudeView::new(None);
         let refused = json!({
             "type": "control_response",
@@ -1926,8 +1929,8 @@ mod tests {
 
     #[test]
     fn one_assistant_envelope_carrying_all_blocks_emits_the_answer_once() {
-        // The shape the positional mapping assumed: both blocks streamed, then
-        // a single final envelope whose `content` array carries them together.
+        // Both blocks streamed, then a single final envelope whose
+        // `content` array carries them together.
         let (texts, thoughts) = fed_texts(&[
             json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_all", "model": "claude-haiku-4-5"}}}),
             json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}}),
@@ -1963,14 +1966,14 @@ mod tests {
 
     #[test]
     fn a_redelivered_identical_block_text_is_emitted_again_rather_than_lost() {
-        // The pre-fix matcher let one stream block confirm every envelope
-        // block that asked, which kept this sequence silent — and also
+        // One stream block satisfies at most one envelope
+        // block: a matcher that let one stream block confirm every envelope
+        // block that asked kept this sequence silent — and also
         // swallowed a genuine second block with the same text
         // (`two_identical_blocks_in_one_envelope_emit_both`). The two shapes
         // are the same bytes to a text matcher: the envelope block either
         // emits or is dropped, and the dropped side is the one nothing
-        // notices. One stream block now satisfies at most one envelope
-        // block, so this envelope emits again — visible duplication beats
+        // notices. This envelope therefore emits again — visible duplication beats
         // silent loss.
         let (texts, thoughts) = fed_texts(&[
             json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_redelivery", "model": "claude-opus-5"}}}),
@@ -1988,9 +1991,7 @@ mod tests {
         // The matcher picks a stream block by declared kind and streamed
         // prefix alone, so two envelope blocks carrying the same text
         // collapsed onto the one streamed block and the second was silently
-        // dropped: the raw envelope in the journal kept it, the derived view
-        // lost it. The positional matcher before that emitted the second
-        // block whole, because nothing it looked up had been streamed.
+        // dropped: the raw envelope in the journal kept it, the derived view lost it.
         let (texts, thoughts) = fed_texts(&[
             json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_twin", "model": "claude-opus-5"}}}),
             json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}}),
@@ -2037,7 +2038,7 @@ mod tests {
     #[test]
     fn content_block_stop_drops_the_block_text() {
         // A stream whose message id never arrives — `note_message` returns
-        // before either retain runs — used to hold every block's full
+        // before either retain runs — would hold every block's full
         // accumulated text for the daemon's lifetime. The stop each block
         // sends, after its confirmation, is what ends it.
         let mut mapper = view();
@@ -2466,7 +2467,7 @@ mod tests {
         // Source: reports/foundations/wire/E1.jsonl lines 17 and 54 — two
         // `result` envelopes of ONE session (44e75940…), copied verbatim into
         // fixtures/wire/claude-e1-results.jsonl. Every captured frame has
-        // exactly one iteration, equal to the top level (E1–E4 checked), so
+        // exactly one iteration, equal to the top level, so
         // these two pin the summands — the cache counters included — while
         // the constructed turn below pins WHICH entry is read.
         let frames: Vec<Value> = include_str!("../fixtures/wire/claude-e1-results.jsonl")
@@ -2507,7 +2508,7 @@ mod tests {
     #[test]
     fn a_multi_iteration_turn_reads_the_last_iteration_not_the_turn_total() {
         // No capture in reports/foundations/wire has usage.iterations longer
-        // than one (E1–E4 checked), so the turn below is CONSTRUCTED from the
+        // than one, so the turn below is CONSTRUCTED from the
         // two measured iterations of E1:17/:54: the entries are verbatim and
         // the top level is their element-wise sum — the shape of a turn that
         // made two API calls, where the top level is the turn's billing and

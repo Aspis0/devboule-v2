@@ -873,9 +873,9 @@ impl DaemonBridge {
     /// The shared state behind this handle, for a command body that moves
     /// into `off_main_thread`: the closure cannot borrow `State`, so the
     /// command clones this `Arc` first and the bridge calls run inside the
-    /// closure. The per-operation wrappers that used to sit here lived on
-    /// `&self` and could not cross that boundary. Named `shared`, not
-    /// `inner`: `State::inner` already exists and would take the call.
+    /// closure. Per-operation wrappers on `&self` cannot cross that
+    /// boundary. Named `shared`, not `inner`:
+    /// `State::inner` already exists and would take the call.
     pub(crate) fn shared(&self) -> Arc<BridgeInner> {
         Arc::clone(&self.inner)
     }
@@ -1124,8 +1124,8 @@ impl BridgeInner {
                 .unwrap_or_else(|err| err.into_inner())
                 .clone();
             // Every caller forgets its id before the detach goes out and never
-            // retries it, so a mapping kept past a failed detach had no reader
-            // and only grew the table (review fix-7 finding 7).
+            // retries it, so a mapping kept past a failed detach has no
+            // reader and only grows the table.
             self.attachments.remove(subscription_id);
             (session_id, client.ok_or(DaemonError::ConnectionLost)?)
         };

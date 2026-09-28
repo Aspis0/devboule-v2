@@ -3,8 +3,8 @@ use crate::raster_metadata::clean_png;
 use devboule_protocol::ClientMessage;
 
 // ------------------------------------------------------------------
-// Slice 5b — the delegation switch's reader side: the delegated
-// answer, the surfacing envelope, and the snapshot facts.
+// The delegation switch's reader side: the delegated answer, the
+// surfacing envelope, and the snapshot facts.
 // ------------------------------------------------------------------
 
 /// A live agent session that is somebody's child, with a display name.
@@ -124,8 +124,8 @@ pub(super) fn answer(
 }
 
 // ------------------------------------------------------------------
-// Pass A — `devboule_set_agent_profile`: a creator moves its own live
-// child onto a ticked profile (slice 5b §2).
+// `devboule_set_agent_profile`: a creator moves its own live child onto a
+// ticked profile.
 // ------------------------------------------------------------------
 
 /// A switcher the move tests can watch and aim: both asks counted, in
@@ -2258,9 +2258,9 @@ fn request_provided_npx_id_still_resolves_past_env_gate() {
 /// It is not a hand-written claim: the test below derives it from
 /// `peer_policy::peer_allows`, so a path may only be identity-free while
 /// **no** role holding **any** capability set can reach the act it serves.
-/// `set_mode` left this list in the slice-3 fix pass: `SessionSetMode` is
-/// under `CAP_SEND`, so a paired device can reach it and the call site has
-/// to carry the requestor's identity (§8b A3/A4/A5, H5).
+/// `SessionSetMode` is under `CAP_SEND`, so a paired device can reach it
+/// and the call site has to carry the requestor's identity (§8b A3/A4/A5,
+/// H5).
 const IDENTITY_FREE_PATHS: [&str; 2] = ["stop", "set_model"];
 
 /// A connection that speaks for a paired device, as `server.rs` builds one.
@@ -2432,7 +2432,7 @@ fn ownership_paths(
         // `close` is destructive, and this vector is evaluated eagerly and in
         // order: it goes last, or every row behind it would run against the
         // session it just removed, answer `SessionNotFound`, and satisfy the
-        // positive loops' "not `Unauthorized`" for the wrong reason (HND-03).
+        // positive loops' "not `Unauthorized`" for the wrong reason.
         (
             "close",
             registry.close(id, owner, &conn.conn_peer).map(|_| ()),
@@ -2522,7 +2522,7 @@ fn agent_message_brakes_limit_rate_and_distinct_recipients() {
     );
 }
 
-/// S4-03: both windows must let go. A slot a target never answered expires,
+/// Both windows must let go. A slot a target never answered expires,
 /// and the recipient set is a sliding window rather than a permanent one.
 #[test]
 fn an_expired_slot_is_released_and_a_recipient_leaves_the_window() {
@@ -2584,7 +2584,7 @@ fn a_client_peer_reaches_only_the_paired_users_sessions() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// HND-03: `ownership_paths` builds a `vec![...]`, so its rows are evaluated
+/// `ownership_paths` builds a `vec![...]`, so its rows are evaluated
 /// eagerly and in order. `close` removes the session, so a `close` row that
 /// is not last makes every row behind it answer `SessionNotFound` — which the
 /// positive loops read as "not `Unauthorized`" and which therefore proves
@@ -2633,7 +2633,7 @@ fn every_ownership_path_before_close_runs_on_a_live_session() {
         all.len() >= 10,
         "the loop has to walk the table, not a subset: {all:?}"
     );
-    // Measured, not assumed (HND-03): with `close` last, the rows that used
+    // Measured, not assumed: with `close` last, the rows that used
     // to sit behind it answer about the session rather than about its
     // absence. `interrupt` and `set_mode` say the kind cannot do that, and
     // `deposit` succeeds — three answers that were all `SessionNotFound`
@@ -2732,8 +2732,8 @@ fn a_daemon_peer_is_scoped_by_origin_and_delivers_agent_messages() {
 /// One arm per `ClientMessage` variant, **no `_` arm**: the same shape as
 /// `peer_policy::matrix_row`, and the compiler is the proof — a new variant
 /// does not build until it says whether it names a session. `path_requests`
-/// below is derived from these answers, so the pairing is no longer written
-/// by hand and a new frame cannot be dropped silently.
+/// below is derived from these answers, so the pairing is not written by
+/// hand and a new frame cannot be dropped silently.
 ///
 /// `SessionStop` answers with two paths because one frame has two registry
 /// entry points (`stop`, `stop_with_subscription`) and the harness walks
@@ -3326,7 +3326,7 @@ fn resolved_cards(conn: &ConnHandle) -> Vec<String> {
         .collect()
 }
 
-/// S4-02, the race this fix is about: a turn ends while a steer is being
+/// The race this test is about: a turn ends while a steer is being
 /// admitted. The runtime hands the steerer its token under the same lock the
 /// `AgentFinished` transition takes, so the end of the turn cannot land
 /// between the check and the write — the finish is blocked until the write
@@ -3725,7 +3725,7 @@ fn a_turn_that_ended_before_admission_is_sent_as_a_plain_message() {
 
 #[test]
 fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
-    // S4-01: a local caller keeps the interrupt-and-replace fallback. A
+    // A local caller keeps the interrupt-and-replace fallback. A
     // paired device does not get it, because interrupting the turn is the
     // act `SessionInterrupt` decides and no capability opens that to a peer.
     let (dir, registry, journal) = tmp_delete_registry();
@@ -3784,9 +3784,11 @@ fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
 
 /// The wire carries the daemon's chooser verdict: a request whose option
 /// set trips Paseo's rule (the same kind offered twice — allow **or**
-/// reject) is marked so the app renders one control per option, while an
-/// ordinary pair and a set of distinct kinds are left unmarked. The app
-/// must never re-derive the rule from the option list — the daemon says it.
+/// reject), translated from `isACPChooserRequest`
+/// (packages/server/src/server/agent/providers/acp-agent.ts), is marked so
+/// the app renders one control per option, while an ordinary pair and a set
+/// of distinct kinds are left unmarked. The app must never re-derive the
+/// rule from the option list — the daemon says it.
 #[test]
 fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {
     let (broker, _sent) = permission_broker::test_broker();
@@ -3871,7 +3873,7 @@ fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {
     );
 }
 
-/// S4-06: cards are cancelled only once the provider has taken the text.
+/// Cards are cancelled only once the provider has taken the text.
 /// A steer that failed leaves the turn — and its cards — exactly as they
 /// were, and the caller sees the failure.
 #[test]
@@ -4074,7 +4076,7 @@ fn a_refused_steer_leaves_the_pending_cards_to_the_turn_that_is_still_running() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-07/S4-12: an accepted steer is echoed into the session's transcript
+/// An accepted steer is echoed into the session's transcript
 /// as the event every accepted input publishes, and journaled as `Steered`.
 #[test]
 fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
@@ -4141,7 +4143,7 @@ fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
         .0
         .clone()
         .expect("the echo names the message it published");
-    // A2-10: the journal row carries the *same* id as the echo, so the row
+    // The journal row carries the *same* id as the echo, so the row
     // and the transcript message are one message rather than two that a
     // reader has to guess between.
     journal.flush().expect("flush the journal");
@@ -4164,7 +4166,7 @@ fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-10: a steer is text only, and the refusal comes before any attachment
+/// A steer is text only, and the refusal comes before any attachment
 /// byte is planned, decoded, materialized or written.
 #[test]
 fn a_steer_with_an_attachment_is_refused_before_anything_decodes_it() {
@@ -4208,7 +4210,7 @@ fn a_steer_with_an_attachment_is_refused_before_anything_decodes_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-06/S4-09: after the provider has taken the text, a recording failure
+/// After the provider has taken the text, a recording failure
 /// is a degraded session — never an error the caller could retry into a
 /// second steer.
 #[test]
@@ -4279,7 +4281,7 @@ fn agent_message_slots(brakes: &Arc<Mutex<MessageBrakeTable>>, from_session: &st
         .unwrap_or(0)
 }
 
-/// The number of recipients one sender's window is holding (A2-06).
+/// The number of recipients one sender's window is holding.
 fn agent_message_recipients(brakes: &Arc<Mutex<MessageBrakeTable>>, from_session: &str) -> usize {
     brakes
         .lock()
@@ -4290,12 +4292,12 @@ fn agent_message_recipients(brakes: &Arc<Mutex<MessageBrakeTable>>, from_session
 }
 
 /// How many senders the brake table still has an entry for. A sender with
-/// nothing in flight and no recipient left must not keep one (A2-06).
+/// nothing in flight and no recipient left must not keep one.
 fn agent_message_brake_entries(brakes: &Arc<Mutex<MessageBrakeTable>>) -> usize {
     brakes.lock().expect("brakes").len()
 }
 
-/// The hook id one slot currently holds armed, if any (S4-15).
+/// The hook id one slot currently holds armed, if any.
 fn agent_message_release_hook(
     brakes: &Arc<Mutex<MessageBrakeTable>>,
     from_session: &str,
@@ -4315,7 +4317,6 @@ fn agent_message_release_hook(
 }
 
 /// Whether one slot is waiting on a boundary that has already arrived
-/// (S4-10/S4-14).
 fn agent_message_boundary_reached(
     brakes: &Arc<Mutex<MessageBrakeTable>>,
     from_session: &str,
@@ -4329,7 +4330,7 @@ fn agent_message_boundary_reached(
         .is_some_and(|entry| entry.boundary_reached)
 }
 
-/// How many global sweeps the table has run (S4-16).
+/// How many global sweeps the table has run.
 fn agent_message_sweep_count(brakes: &Arc<Mutex<MessageBrakeTable>>) -> u64 {
     brakes.lock().expect("brakes").sweeps
 }
@@ -4337,12 +4338,12 @@ fn agent_message_sweep_count(brakes: &Arc<Mutex<MessageBrakeTable>>) -> u64 {
 /// An agent message that panics between its admission and its delivery still
 /// gives the sender's slot back.
 ///
-/// The plain statements the window used to be released on are skipped by the
-/// unwind, so the slot stays counted — and the only thing that would end it is
-/// the expiry sweep, which no later admission has to run for up to
-/// `MESSAGE_SLOT_EXPIRY`. The guard releases it on the way out instead. The
-/// recipient entry stays, deliberately: the window is the fan-out brake
-/// (S4-01) and outlives the slot it was counted for.
+/// The plain release statements are skipped by the unwind, so the slot stays
+/// counted — and the only thing that would end it is the expiry sweep,
+/// which no later admission has to run for up to `MESSAGE_SLOT_EXPIRY`.
+/// The guard releases it on the way out instead. The recipient entry
+/// stays, deliberately: the window is the fan-out brake and
+/// outlives the slot it was counted for.
 #[test]
 fn a_panicking_agent_message_delivery_releases_the_brake_slot() {
     let (dir, registry, journal) = tmp_delete_registry();
@@ -4381,7 +4382,7 @@ fn a_panicking_agent_message_delivery_releases_the_brake_slot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-03: the slot a message holds ends with the turn that message went into,
+/// The slot a message holds ends with the turn that message went into,
 /// so a sender whose messages have been answered can send again.
 ///
 /// Here the turn is already running, so that is the turn the two messages
@@ -4476,7 +4477,7 @@ fn a_failed_delivery_gives_the_sender_s_slot_back() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A2-05: the boundary (the target's turn ending) and the delivery returning
+/// The boundary (the target's turn ending) and the delivery returning
 /// are two different moments, and a slot is over only when both have passed.
 ///
 /// Releasing it at the boundary hands the sender back a place it has not
@@ -4497,7 +4498,7 @@ fn an_admitted_message_still_counts_until_its_delivery_returns() {
         );
     }
     let target = registry.runtime("s.msg.b").expect("the target runtime");
-    // The turn is running, and it is the turn this admission is for (S4-03).
+    // The turn is running, and it is the turn this admission is for.
     target.begin_turn();
     let admission = reserve_message_brake(
         &registry.message_brakes,
@@ -4544,7 +4545,7 @@ fn an_admitted_message_still_counts_until_its_delivery_returns() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-01: the three-recipient window is the fan-out brake, and it is *time*
+/// The three-recipient window is the fan-out brake, and it is *time*
 /// based. Releasing every slot — each one by the turn it joined ending — must
 /// not hand the sender a fresh place to reach a fourth agent inside the
 /// window; only the window ageing out does that.
@@ -4647,7 +4648,7 @@ fn the_recipient_window_survives_its_slots_ending() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A2-06: a target that closes takes every entry that names it with it.
+/// A target that closes takes every entry that names it with it.
 #[test]
 fn closing_a_target_forgets_the_message_brake_entries_that_name_it() {
     let (dir, registry, journal) = tmp_delete_registry();
@@ -4673,7 +4674,7 @@ fn closing_a_target_forgets_the_message_brake_entries_that_name_it() {
 
     // The target is a sender too, so closing it must take its own budget with
     // it: a closed session can never write again, and with a time-based
-    // window nothing else would ever age that entry out (A2-06).
+    // window nothing else would ever age that entry out.
     reserve_message_brake(
         &registry.message_brakes,
         "s.msg.b",
@@ -4712,7 +4713,7 @@ fn closing_a_target_forgets_the_message_brake_entries_that_name_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A2-05: the target check and the slot reservation are one critical section.
+/// The target check and the slot reservation are one critical section.
 ///
 /// With the brake table held by the test, a send that has found its target
 /// must still be holding the session map while it waits for its slot — the
@@ -4775,7 +4776,7 @@ fn the_target_check_and_the_slot_reservation_are_one_critical_section() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-02: a slot that expires gives its one-shot *hook* back too.
+/// A slot that expires gives its one-shot *hook* back too.
 ///
 /// `prune` answers with the hooks of the slots it ended, and this pass's
 /// predecessor dropped that answer on the floor: a target that never ends a
@@ -4830,7 +4831,7 @@ fn an_expired_slot_unregisters_its_boundary_hook() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-03: a finish that lands between the caller's look and the registration
+/// A finish that lands between the caller's look and the registration
 /// is *observed*, so the message goes as a plain prompt — and that prompt's
 /// turn is what ends the slot.
 ///
@@ -4929,7 +4930,7 @@ fn a_finish_before_the_registration_sends_a_prompt_whose_turn_ends_the_slot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-03 at the reservation itself: the answer to "is the turn the caller
+/// At the reservation itself: the answer to "is the turn the caller
 /// checked still running" is the one the slot is booked with.
 ///
 /// With the snapshot deciding, this reservation reports
@@ -4983,7 +4984,7 @@ fn a_turn_that_ended_before_the_registration_is_not_joined() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-10: the turn can end between the boundary registration and the delivery.
+/// The turn can end between the boundary registration and the delivery.
 /// The delivery then writes a plain prompt — and that prompt's turn is the
 /// boundary the slot has to end on, not the turn that is gone.
 ///
@@ -5076,7 +5077,7 @@ fn a_turn_that_ends_before_the_delivery_keeps_the_slot_until_the_prompt_ends() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-11: a session that closes takes its own outstanding slots with it — and
+/// A session that closes takes its own outstanding slots with it — and
 /// their hooks off the targets they were armed on, including a target this
 /// close does not even name.
 #[test]
@@ -5130,7 +5131,7 @@ fn closing_a_sender_unregisters_the_hooks_of_its_other_messages() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-12: closing and resuming the same session id does not buy a fresh
+/// Closing and resuming the same session id does not buy a fresh
 /// recipient window.
 #[test]
 fn a_closed_and_resumed_sender_keeps_its_recipient_window() {
@@ -5190,7 +5191,7 @@ fn a_closed_and_resumed_sender_keeps_its_recipient_window() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-14: the admitted turn can end and another can start before the delivery
+/// The admitted turn can end and another can start before the delivery
 /// looks. Steering into the turn that is running is the right delivery; the
 /// slot's boundary has to follow the text into it.
 #[test]
@@ -5281,7 +5282,7 @@ fn a_slot_that_enters_a_newer_turn_keeps_exactly_one_boundary() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-15: the callback of a hook that has been replaced is a no-op.
+/// The callback of a hook that has been replaced is a no-op.
 ///
 /// `fire_turn_end_hooks` invokes a drained callback outside the hook lock, so
 /// the old boundary can arrive after the delivery re-keyed the slot. Without the
@@ -5367,7 +5368,7 @@ fn a_replaced_boundary_callback_leaves_the_new_hook_alone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S4-16: the global sweep runs at most once per rate window.
+/// The global sweep runs at most once per rate window.
 ///
 /// The sweep walks every other sender's entry under the single brakes lock, so
 /// it is a per-window cost; the caller's own entry is still pruned on every

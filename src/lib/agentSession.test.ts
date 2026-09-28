@@ -926,10 +926,10 @@ describe("ACP agent session", () => {
   });
 
   it("keeps a terminal session terminal when a switch is refused after the view died", async () => {
-    // D1: exit ends the session, but the pickers stay live (the composer
+    // Exit ends the session, but the pickers stay live (the composer
     // renders its controls unconditionally), and a switch refused after the
-    // fatal failure used to lower `error` back to `idle` — re-enabling input
-    // on a session no event will ever speak for again.
+    // fatal failure must not lower `error` back to `idle` — that would
+    // re-enable input on a session no event will ever speak for again.
     const harness = makeHarness();
     await harness.session.start();
     await harness.session.send("Keep going");
@@ -952,7 +952,7 @@ describe("ACP agent session", () => {
   });
 
   it("does not collapse a running turn when a switch is refused", async () => {
-    // D3: a refused switch is not a turn failure. Collapsing the turn here
+    // A refused switch is not a turn failure. Collapsing the turn here
     // dropped the Stop button while the agent kept working, and the next Enter
     // found no running turn to steer into.
     const harness = makeHarness();
@@ -976,7 +976,7 @@ describe("ACP agent session", () => {
   });
 
   it("holds a fatal status when a late agent_finished arrives", async () => {
-    // E1: a queued `exit` latches the status at `error`; a stale
+    // A queued `exit` latches the status at `error`; a stale
     // `agent_finished` arriving after it must not lower the session back to
     // `idle` — that re-enables input on a view no event can speak for.
     const harness = makeHarness();
@@ -992,7 +992,7 @@ describe("ACP agent session", () => {
   });
 
   it("leaves the joined turn running when a steer is refused", async () => {
-    // E2: the daemon's turn keeps running when a steer is refused, so the
+    // The daemon's turn keeps running when a steer is refused, so the
     // sentence is recorded and the turn is left alone. Ending it made the
     // next chunk open a fresh turn and split the answer mid-sentence.
     const harness = makeHarness();
@@ -1062,8 +1062,8 @@ describe("ACP agent session", () => {
     });
   });
 
-  // Pins pre-existing behaviour: the old unconditional fail() ended the
-  // session on an attach failure too, so this does not exercise the split.
+  // Pins pre-existing behaviour: an attach failure ends the session, so
+  // this does not exercise the fail/failSession split.
   it("ends the session when the attach itself fails", async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === "session_attach") throw new Error("no such session");
@@ -1123,7 +1123,7 @@ describe("ACP agent session", () => {
   });
 
   it("supersedes a clean finish when the session is later recovered", async () => {
-    // H6: `closed` reads Stopped and `error` reads Failed in the header —
+    // `closed` reads Stopped and `error` reads Failed in the header —
     // materially different. A clean exit that is later revealed to be a
     // takeover (`recovered`) must supersede the finish, or the session reads
     // "Stopped" forever.
@@ -1145,7 +1145,7 @@ describe("ACP agent session", () => {
   });
 
   it("never relabels a failure as a clean finish", async () => {
-    // H6, the other direction: `error` is the latched verdict for a gone view,
+    // The other direction: `error` is the latched verdict for a gone view,
     // and a later clean `exit` must not downgrade it to `closed` — the two
     // render differently and the failure is what happened.
     const harness = makeHarness();
@@ -1896,8 +1896,7 @@ describe("ACP agent session", () => {
   it("schedules the delegated mirror on the default finish path only", async () => {
     // The default path records the history entry AND schedules the panel
     // mirror; an `onChildFinished` override (the history reopen) suppresses
-    // both, so a replayed finish neither re-dates the history nor yanks the
-    // panel.
+    // both, so a replayed finish neither re-dates the history nor yanks the panel.
     mirrorMocks.scheduleDelegatedDesignMirror.mockClear();
     historyMocks.recordChildFinishedHistory.mockClear();
     const harness = makeHarness();
@@ -2187,13 +2186,9 @@ describe("creator permission-request envelope", () => {
   });
 
   it("never lets the excerpt past the chat: transcriptItems drops the permission item wholesale", async () => {
-    // Rewritten by the fix pass. The old version of this test only asserted
-    // that `recordChildFinishedHistory` was not called — a function reachable
-    // solely from the `child_finished` branch, so an `agent_user_message`
-    // could never reach it and the test could not fail. The real privacy
-    // guard is `transcriptItems` (agentHost.ts), whose output is what
-    // designHost persists as the design transcript; this test runs the guard
-    // itself over the state the envelope produced.
+    // The real privacy guard is `transcriptItems` (agentHost.ts), whose
+    // output is what designHost persists as the design transcript; this test
+    // runs the guard itself over the state the envelope produced.
     historyMocks.recordChildFinishedHistory.mockClear();
     const harness = makeHarness();
     await harness.session.start();
@@ -2549,9 +2544,9 @@ describe("one entry per failed send", () => {
   });
 
   it("shows a held frame whose text differs from the rejection — a permission failure is never swallowed", async () => {
-    // Scenario A of review-E1-fix1 #2: the bridge's pre-flight refuses the
-    // send and publishes nothing, while the read loop's permission failure
-    // rode in during the flight. Exact-text matching keeps it.
+    // The bridge's pre-flight refuses the send and publishes nothing, while
+    // the read loop's permission failure rode in during the flight.
+    // Exact-text matching keeps it.
     const harness = makeHarness();
     await harness.session.start();
     let settleSend: ((value: unknown) => void) | undefined;
@@ -2691,8 +2686,8 @@ describe("one entry per failed send", () => {
   // each send's reply is written before that send's agent_error frame (the
   // reply at the end of the send's own iteration, the frame pulled in a later
   // one — server/connection.rs), so with two sends in flight the order is
-  // [A reply][A frame][B reply](…[B frame]). Each of the three fails on
-  // 6e75a85, where one memory slot cannot survive this order.
+  // [A reply][A frame][B reply](…[B frame]). Each of the three would catch
+  // a one-slot pending list that cannot hold two same-text twins in this order.
 
   it("gives one entry when [A reply][A frame][B reply] has A failing and B succeeding", async () => {
     const harness = makeHarness();

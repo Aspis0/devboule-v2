@@ -21,7 +21,7 @@ use crate::session::SessionRuntime;
 /// runtime is built with `DEFAULT_PI_RPC_TIMEOUT_MS` = 60 s
 /// (`pi/agent.ts:107,1236-1243`) and that is what its `get_commands`,
 /// `set_auto_compaction` and `get_state` calls wait. pi's own measured
-/// latency fits inside it (RECON A5-common §A.7: "tens of seconds", one
+/// latency fits inside it ("tens of seconds", one
 /// successful reply inside a 120 s window).
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -141,8 +141,8 @@ fn on_commands_timeout(reply: &PiCommandsReply, timeout: Duration) -> Option<Str
 
 /// The one line a refused `get_commands` leaves in the daemon log. Extracted
 /// so its shape can be pinned: pi's error field is not ours to log verbatim —
-/// a provider or extension can put a local path or a config value in it
-/// (review A5-2 #9) — so the line is a fixed sentence plus the text's length.
+/// a provider or extension can put a local path or a config value in it —
+/// so the line is a fixed sentence plus the text's length.
 fn refusal_log_line(error: &str) -> String {
     format!(
         "pi get_commands was refused (pi's error text was {} characters long)",
@@ -190,8 +190,8 @@ pub(super) fn parse_slash_invocation(text: &str) -> Option<SlashInvocation> {
 /// JavaScript's whitespace set (ECMA-262 WhiteSpace + LineTerminator): it
 /// includes U+FEFF and excludes U+0085, both of which differ from Rust's
 /// `char::is_whitespace`. Paseo's parse runs on JS `trim()` and `/\s/`
-/// (`pi/agent.ts:1802-1811`), so ours matches that set — not Rust's
-/// (review A5-2 #7).
+/// (`packages/server/src/server/agent/providers/pi/agent.ts`), so ours matches
+/// that set — not Rust's.
 fn is_js_space(character: char) -> bool {
     matches!(
         character,

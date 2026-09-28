@@ -174,9 +174,9 @@ mod tests {
     use super::*;
 
     /// Every invariant the rest of this module depends on, over every geometry
-    /// and every chunk height that can occur, rather than the handful a reviewer
-    /// would think to try. 12 x 2001 plans is instant, and it is the difference
-    /// between believing the arithmetic and knowing it.
+    /// and every chunk height that can occur, rather than the handful a
+    /// reader would think to try. 12 x 2001 plans is instant, and it is the
+    /// difference between believing the arithmetic and knowing it.
     #[test]
     fn the_plan_holds_for_every_geometry_and_every_chunk_height() {
         for windows in 1..=12usize {

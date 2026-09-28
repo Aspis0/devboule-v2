@@ -1123,7 +1123,7 @@ fn at_most_two_pairings_park_and_a_third_is_answered_busy() {
     assert_eq!(RejectKind::PairingBusy.reason(), "pairing busy");
     drop(sends);
 }
-/// H1: a code is single use (design §8 R8). The first candidate pairs, and
+/// A code is single use (design §8 R8). The first candidate pairs, and
 /// the same code is refused for a second one — one observed code must not
 /// pair every device that presents it during the five minutes it is shown.
 ///
@@ -1185,8 +1185,7 @@ fn a_code_pairs_only_once() {
         "a Client pairing is reported pending, got {first:?}"
     );
 
-    // Wait for the responder to park it, which is the moment it spends the
-    // code.
+    // Wait for the responder to park it, which is the moment it spends the code.
     let deadline = Instant::now() + bound::THREAD;
     loop {
         if service_b.pending_snapshot().len() == 1 {
@@ -1261,7 +1260,7 @@ fn a_code_pairs_only_once() {
     let _ = std::fs::remove_dir_all(&dir_c);
 }
 
-/// M2: the daemon refuses to open a pairing connection to anything but a
+/// The daemon refuses to open a pairing connection to anything but a
 /// tailnet address, so a renderer-supplied address cannot make it probe
 /// arbitrary hosts.
 #[test]
@@ -1298,7 +1297,7 @@ fn a_pairing_target_must_be_a_tailnet_address() {
     ));
 }
 
-/// The end-to-end form of the M2 check: `complete` refuses a non-tailnet
+/// The end-to-end form of the tailnet check: `complete` refuses a non-tailnet
 /// address without opening a socket at all, with a message a person can act
 /// on.
 #[test]
@@ -1327,7 +1326,7 @@ fn pairing_complete_refuses_a_non_tailnet_address() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// M3: a payload whose `display_name` cannot be shown is refused at the
+/// A payload whose `display_name` cannot be shown is refused at the
 /// boundary, before anything is stored or parked.
 #[test]
 fn a_payload_name_that_cannot_be_shown_is_refused() {
@@ -1363,7 +1362,7 @@ fn a_payload_name_that_cannot_be_shown_is_refused() {
     assert!(validate_peer_payload(&payload(&at_bound)).is_ok());
 }
 
-/// M3: the storage choke point refuses a bad name too, so "every stored
+/// The storage choke point refuses a bad name too, so "every stored
 /// `display_name` passed validation" holds even for a caller that skipped
 /// the payload check.
 #[test]
@@ -1386,7 +1385,7 @@ fn a_peer_record_refuses_a_name_that_cannot_be_shown() {
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
 }
-/// C6: finishing a pairing must be idempotent for the device that is
+/// Finishing a pairing must be idempotent for the device that is
 /// already half-paired. The responder writes its row and the initiator
 /// writes its own on a background thread; whichever fails second leaves one
 /// side holding a row and the other not, and before this fix every retry
@@ -1435,7 +1434,7 @@ fn re_pairing_with_the_same_key_finishes_the_pairing() {
     );
 
     // A different key is still refused: that is the credential changing,
-    // which needs a revoke first (design §8 R8 / F-19).
+    // which needs a revoke first (design §8 R8).
     let substituted = local_peer_record(
         &server,
         id,
@@ -1455,7 +1454,7 @@ fn re_pairing_with_the_same_key_finishes_the_pairing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// C7: at most one pending entry per device. Two parks for the same device
+/// At most one pending entry per device. Two parks for the same device
 /// happened when a second code was shown while the first park was still
 /// inside its 60 s window, and the panel then rendered two confirm cards for
 /// one device while `confirm` removed only the first match.
@@ -1478,7 +1477,7 @@ fn a_second_park_for_the_same_device_replaces_the_first() {
 
     // Two codes, two connections, both parked by the same device A. The
     // second code is what makes a second park possible at all: the first is
-    // spent by the first park (H1).
+    // spent by the first park.
     let (code_one, _) = service_b.start(PeerRole::Client).expect("code one");
     let responder_service = Arc::clone(&service_b);
     let responder_transport = Arc::clone(&transport);
