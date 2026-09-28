@@ -1,7 +1,7 @@
 // Why: one place decides what each close entry actually closes — the strip's
 // visible order, the anchor tab exclusive for left/right/others (Paseo's
-// slicing in workspace-screen.tsx), and a multi-selection intersected with
-// what is on screen.
+// slicing in packages/app/src/screens/workspace/workspace-screen.tsx), and a
+// multi-selection intersected with what is on screen.
 
 import type { Session } from "../../../types/ipc";
 

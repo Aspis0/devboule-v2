@@ -199,11 +199,11 @@ export function useTabCloseFlow({
     setConfirmState(null);
   }
 
-  // Paseo's rule for the tab that takes over when a close took the active
-  // one (getCloseSuccessorTabId, applied to the closed set): the nearest
-  // survivor to the RIGHT of the closed active tab, else the nearest to the
-  // left; with none left, no active tab — the empty state. Every close path
-  // goes through this, not just the bulk ones.
+  // Translated from Paseo's getCloseSuccessorTabId, applied to the closed
+  // set: the tab that takes over when a close took the active one is the
+  // nearest survivor to the RIGHT of the closed active tab, else the nearest
+  // to the left; with none left, no active tab — the empty state. Every close
+  // path goes through this, not just the bulk ones.
   const finishClose = useCallback(
     (closedIds: readonly string[]) => {
       if (selectedSessionId === null || !closedIds.includes(selectedSessionId)) {

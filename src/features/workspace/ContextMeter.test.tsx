@@ -224,10 +224,8 @@ describe("the context popover", () => {
   });
 
   it("shows no plan section at all when the session has no plan reading", async () => {
-    // `null` is "no reading" — a session that predates A3 or has had no
-    // frame yet — not "the provider cannot": Codex reports plan usage, this
-    // session simply has none. Paseo's tooltip-section.tsx renders nothing
-    // for a missing reading (`if (!usage) return null;`), divider included.
+    // `null` is "no reading" — a session that has had no plan frame yet, not
+    // "the provider cannot": Codex reports plan usage, this session has none.
     const host = await render(
       meter({
         usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }),
@@ -242,8 +240,8 @@ describe("the context popover", () => {
   });
 
   it("keeps the countdown moving while the popover sits open", async () => {
-    // F10: the copy is computed from a clock the popover owns; without the
-    // timer it would freeze at whatever "resets in" said when it opened.
+    // The countdown copy is computed from a clock the popover owns; without
+    // the timer it would freeze at whatever "resets in" said when it opened.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     try {
       const nowSeconds = Math.floor(Date.now() / 1000);
@@ -271,7 +269,7 @@ describe("the context popover", () => {
 
   it("draws the panel from the body, outside the pane that would clip it", async () => {
     // The live check: `.workspace-center-panel` has `overflow: hidden` and
-    // cut the old in-pane popover at 974 px, losing its right edge and the
+    // would clip an in-pane popover at 974 px, losing its right edge and the
     // "resets in …" labels. A body child cannot be clipped by that pane.
     const host = await render(meter({ usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }) }));
     const popover = await openPopover(host);
@@ -364,7 +362,7 @@ describe("placeContextPopover", () => {
 describe("binding the meter to its session", () => {
   it("re-renders from the session's usage lane alone", async () => {
     // The surface re-renders on `subscribe`; this component must move on
-    // `subscribeUsage` — the two lanes are the whole F5 fix.
+    // `subscribeUsage` — the two lanes are the whole point.
     let notifyUsage: (() => void) | null = null;
     let stored: ContextUsage | null = null;
     const source: UsageSource = {

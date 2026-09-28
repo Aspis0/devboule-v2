@@ -1,8 +1,7 @@
 /**
  * The terminal's rows/columns arithmetic, pure so the contract is testable:
  * a content box holds whole cells, and a partial row or column never counts —
- * counting it is exactly the clipped-prompt defect this module exists to keep
- * dead (fix pass 1: the fit counted the host's padding as content).
+ * counting it clips the prompt, because the fit counts the host's padding as content.
  */
 export interface FitBox {
   width: number;

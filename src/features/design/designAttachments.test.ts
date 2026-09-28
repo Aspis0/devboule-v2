@@ -436,8 +436,8 @@ describe("nothing is dropped without a reason", () => {
 
   it("recognizes the same SVG on a second import", async () => {
     // An SVG is stored with the length of its sanitized source and checked against
-    // the same number, so the second drop of the same file is a duplicate — not, as
-    // an earlier version had it, a silently re-added attachment.
+    // the same number, so the second drop of the same file is a duplicate, never
+    // a silently re-added attachment.
     const file = svgFile("logo.svg", '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>');
     const first = await importDesignAttachments([file], []);
     const second = await importDesignAttachments([file], first.attachments);
@@ -1087,8 +1087,8 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     const [one, two, plain] = result.attachments;
     // The rule the pills, the removal control and the page budget all read: one
     // key for a document's pages, and a file's own id for everything else. Two
-    // two-page documents used to spend four of the composer's four slots because
-    // this counted attachments instead — while the row showed two pills.
+    // two-page documents are two pills, not four attachments — the row shows
+    // two pills while the attachment count would spend four of the four slots.
     expect(attachmentPillKey(one)).toBe(attachmentPillKey(two));
     expect(attachmentPillKey(one)).not.toBe(one.id);
     expect(attachmentPillKey(plain)).toBe(plain.id);
@@ -1164,9 +1164,8 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     const result = await importDesignAttachments([pdfFile("deck.pdf")], []);
 
     // A page the composer manufactured is an attachment like any other, and the
-    // ceiling the user's own files are held to holds it too. This test used to
-    // assert the opposite — that such a page travels — which certified the hole
-    // the wire's own 144 KiB limit closes by refusing the whole run.
+    // ceiling the user's own files are held to holds it too — the wire's own
+    // 144 KiB limit closes the hole by refusing the whole run.
     expect(result.attachments.map((attachment) => attachment.name)).toEqual([
       "deck.pdf page 2 of 2",
     ]);
@@ -1451,9 +1450,9 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     );
 
     // Forty is the ceiling, and it is what decides here: forty worst-case pages
-    // are 3.8 MiB against a 20 MiB store. The two terms that used to decide it —
-    // 256 KiB of inline budget, which was two pages — no longer bound a document
-    // at all, because a page is deposited rather than framed.
+    // are 3.8 MiB against a 20 MiB store. The two terms that bounded a document
+    // before deposits — 256 KiB of inline budget, which was two pages — no
+    // longer bound it at all, because a page is deposited rather than framed.
     expect(pdfPageBudget([])).toEqual({ pages: DESIGN_PDF_MAX_PAGES, blockedBy: null });
     expect(pdfPageBudget([raster(MAX_ATTACHMENT_BYTES, "a.png")])).toEqual({
       pages: DESIGN_PDF_MAX_PAGES,

@@ -137,8 +137,8 @@ describe("AgentChatSurface queue rows", () => {
       queue.add("hold this", []);
     });
     await startTurn();
-    // The roster says a turn owns the session — the owner's one input to whether
-    // a press interrupts first (fix-4: no second path guesses from frames).
+    // The roster says a turn owns the session — the owner's one input to
+    // whether a press interrupts first.
     queue.setTurnStatus("working");
 
     await act(async () => rowButton(rows()[0], "queue-steer").click());
@@ -146,7 +146,7 @@ describe("AgentChatSurface queue rows", () => {
     expect(sessionInterrupt).toHaveBeenCalledTimes(1);
     expect(sessionInterrupt).toHaveBeenCalledWith("agent-1", 41);
     // The row waits: the cancel is only dispatched, and a send that followed it
-    // straight away could reach a provider that has not stopped (review F6).
+    // straight away could reach a provider that has not stopped.
     expect(sessionSend).toHaveBeenCalledTimes(1);
     expect(rows()).toHaveLength(1);
 

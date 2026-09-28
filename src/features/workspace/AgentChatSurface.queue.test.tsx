@@ -251,8 +251,7 @@ describe("AgentChatSurface queue keys", () => {
     expect(sessionSend).toHaveBeenCalledTimes(1);
 
     // Refused: no turn opens and no roster edge comes. The settle is the edge,
-    // so "second" goes rather than sitting on an idle row (review fix-7
-    // finding 1a, finding 11).
+    // so "second" goes rather than sitting on an idle row.
     await act(async () => refuseSend(new Error("refused")));
     await flush();
     expect(sessionSend).toHaveBeenCalledTimes(2);
@@ -285,8 +284,7 @@ describe("AgentChatSurface queue keys", () => {
     );
     type("first");
     await clickSend();
-    // The other pane sent nothing, and still sees this pane's send in flight
-    // (review fix-7 finding 4).
+    // The other pane sent nothing, and still sees this pane's send in flight.
     expect(otherQueueAction()?.textContent).toBe("Queue message");
 
     await act(async () => acceptSend(true));
@@ -332,9 +330,9 @@ describe("AgentChatSurface queue keys", () => {
     const queue = await renderSurface();
     type("running now");
     await clickSend();
-    // The daemon's row for a session that has just taken a prompt says "working",
-    // and the owner writes that reading onto the queue: it is the only thing a
-    // steer defers to now (fix-4's single rule).
+    // The daemon's row for a session that has just taken a prompt says
+    // "working", and the owner writes that reading onto the queue: it is the
+    // only thing a steer defers to now.
     pushActivity("working");
 
     type("jump in");
@@ -344,7 +342,7 @@ describe("AgentChatSurface queue keys", () => {
     expect(sessionInterrupt).toHaveBeenCalledWith("agent-1", 41);
     // The steer is ordered: the cancel goes out and the text waits at the front
     // of the queue, because the interrupt RPC answers when the cancel is
-    // dispatched, not when the provider stopped (review F6).
+    // dispatched, not when the provider stopped.
     expect(sessionSend).toHaveBeenCalledTimes(1);
     expect(queuedTexts(queue)).toEqual(["jump in"]);
     expect(rows()).toHaveLength(1);
@@ -357,7 +355,7 @@ describe("AgentChatSurface queue keys", () => {
     expect(vi.mocked(sessionSend).mock.calls[1]?.[2]).toBe("jump in");
     // The retry identity rides the wire: this session, this queue item, and
     // this item's own nonce — the part that keeps a later queue for the same
-    // session out of the first one's receipt (review fix-1 P2-3).
+    // session out of the first one's receipt.
     expect(vi.mocked(sessionSend).mock.calls[1]?.[6]).toMatch(/^agent-1\.queued-1\.[0-9a-f-]{36}$/);
     expect(queuedTexts(queue)).toEqual([]);
     expect(textarea().value).toBe("");
@@ -367,23 +365,23 @@ describe("AgentChatSurface queue keys", () => {
     const queue = await renderSurface();
     type("running now");
     await clickSend();
-    // The daemon's row for a session that has just taken a prompt says "working",
-    // and the owner writes that reading onto the queue: it is the only thing a
-    // steer defers to now (fix-4's single rule).
+    // The daemon's row for a session that has just taken a prompt says
+    // "working", and the owner writes that reading onto the queue: it is the
+    // only thing a steer defers to now.
     pushActivity("working");
     type("jump in");
     await act(async () => pressEnter(true));
     await flush();
     vi.mocked(sessionSend).mockRejectedValueOnce(new Error("the session refused the steer"));
 
-    // The row turns idle and the owner hands the queue that edge (fix-4).
+    // The row turns idle and the owner hands the queue that edge.
     pushActivity("idle");
     await flush();
 
     expect(queuedTexts(queue)).toEqual(["jump in"]);
     const note = rows()[0].querySelector('[role="alert"]');
     expect(note?.textContent).toBe(SEND_FAILED);
-    // One alert per failure (review F16): the row is where it is said, and the
+    // One alert per failure: the row is where it is said, and the
     // composer line stays empty.
     expect(queueError()).toBeNull();
     expect(textarea().value).toBe("");
@@ -397,8 +395,8 @@ describe("AgentChatSurface queue keys", () => {
     await act(async () => pressEnter());
     await flush();
 
-    // Review F9: the composer cleared as soon as the send was called, and the
-    // refusal left it empty with nothing back. The text is where the user left it.
+    // A refused send leaves the text in the composer: the user typed it, and
+    // the refusal says why it did not go.
     expect(textarea().value).toBe("too big");
     expect(document.activeElement).toBe(textarea());
   });
@@ -408,9 +406,9 @@ describe("AgentChatSurface queue keys", () => {
     const queue = await renderSurface();
     type("running now");
     await clickSend();
-    // The daemon's row for a session that has just taken a prompt says "working",
-    // and the owner writes that reading onto the queue: it is the only thing a
-    // steer defers to now (fix-4's single rule).
+    // The daemon's row for a session that has just taken a prompt says
+    // "working", and the owner writes that reading onto the queue: it is the
+    // only thing a steer defers to now.
     pushActivity("working");
 
     type("from enter");
@@ -421,7 +419,7 @@ describe("AgentChatSurface queue keys", () => {
     expect(sessionSend).toHaveBeenCalledTimes(1);
     expect(queuedTexts(queue)).toEqual(["from enter"]);
 
-    // The row turns idle and the owner hands the queue that edge (fix-4).
+    // The row turns idle and the owner hands the queue that edge.
     pushActivity("idle");
     await flush();
     expect(sessionSend).toHaveBeenCalledTimes(2);
@@ -452,9 +450,9 @@ describe("AgentChatSurface queue keys", () => {
     const queue = await renderSurface();
     type("running now");
     await clickSend();
-    // The daemon's row for a session that has just taken a prompt says "working",
-    // and the owner writes that reading onto the queue: it is the only thing a
-    // steer defers to now (fix-4's single rule).
+    // The daemon's row for a session that has just taken a prompt says
+    // "working", and the owner writes that reading onto the queue: it is the
+    // only thing a steer defers to now.
     pushActivity("working");
     updateSurfaceProps({ hasPendingPermission: true });
 
@@ -468,24 +466,22 @@ describe("AgentChatSurface queue keys", () => {
     expect(sessionInterrupt).toHaveBeenCalledTimes(1);
     expect(queuedTexts(queue)).toEqual(["behind a card"]);
 
-    // The row turns idle and the owner hands the queue that edge (fix-4).
+    // The row turns idle and the owner hands the queue that edge.
     pushActivity("idle");
     await flush();
     expect(queuedTexts(queue)).toEqual([]);
     expect(sessionSend).toHaveBeenCalledTimes(2);
   });
 
-  // Review F18: the properties the deleted steer-echo test used to pin — one
-  // bubble per message, one answer, no turn split in two — now belong to the
-  // path the app actually takes: a queued item sent by the drain, echoed by the
-  // daemon, rendered once.
+  // One bubble per message, one answer, no turn split in two: a queued
+  // item sent by the drain, echoed by the daemon, rendered once.
   it("renders a drained queue item once, with one answer and no split turn", async () => {
     const queue = await renderSurface();
     type("running now");
     await clickSend();
-    // The daemon's row for a session that has just taken a prompt says "working",
-    // and the owner writes that reading onto the queue: it is the only thing a
-    // steer defers to now (fix-4's single rule).
+    // The daemon's row for a session that has just taken a prompt says
+    // "working", and the owner writes that reading onto the queue: it is the
+    // only thing a steer defers to now.
     pushActivity("working");
     await act(async () => {
       harness.emit?.({

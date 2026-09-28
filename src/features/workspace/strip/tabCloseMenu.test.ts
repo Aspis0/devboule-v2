@@ -1,7 +1,6 @@
-// The tab context menu's entries: Paseo's four close entries in Paseo's
-// order (workspace-tab-menu.test.ts:47-56 is the order's source), our Delete
-// after them in the destructive tone, and the rule for when each one has
-// nothing to act on.
+// The tab context menu's entries: the four close entries in order (the order
+// is pinned by workspace-tab-menu.test.ts), our Delete after them in the
+// destructive tone, and the rule for when each one has nothing to act on.
 
 import { describe, expect, it } from "vitest";
 import { buildSelectionCloseEntry, buildTabCloseEntries } from "./tabCloseMenu";

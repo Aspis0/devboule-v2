@@ -2,9 +2,8 @@
 // strip's overflow contract — shrink toward the 96 px floor, then scroll —
 // and fails when one of them is deleted; it cannot see a clipped pixel.
 // happy-dom computes no layout, and a programmatic `.click()`
-// bypasses hit-testing — which is how the old hover pills stayed green while
-// owning none of their own pixels (D8, night field test of 18 September), until
-// they covered a tab's label and an ordinary click archived it. Whether the
+// bypasses hit-testing — so a clipped pixel cannot be seen in this test,
+// only a deleted declaration. Whether the
 // close chip covers what it should and nothing else stays a live check.
 
 import { readFileSync } from "node:fs";
@@ -171,8 +170,10 @@ describe("the session strip", () => {
   });
 
   it("keeps the close chip a narrow trailing overlay that hides unclickable", () => {
-    // Paseo's chip: ~48 px on the row's right edge — never a full-width hit
-    // area over the label — and hidden means a pointer cannot reach it.
+    // Paseo's chip (tabTrailingOverlay in
+    // packages/app/src/screens/workspace/workspace-desktop-tabs-row.tsx): 48 px on the
+    // row's right edge — never a full-width hit area over the label — and hidden means a
+    // pointer cannot reach it.
     const chip = ruleBody(".workspace-session-chip");
     expect(chip).toContain("width: 48px;");
     expect(chip).toContain("pointer-events: none;");

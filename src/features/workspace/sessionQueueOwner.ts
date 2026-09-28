@@ -4,35 +4,35 @@ import type { MessageQueue, MessageQueueHost } from "./messageQueue";
 import { createQueueSender } from "./queueSender";
 import { SESSION_NOT_RUNNING } from "./queueStatus";
 /**
- * The queue's owner for the whole app run: one queue per session id, held here
- * rather than in a component, so leaving the Workspace, switching to another tab,
- * or a refresh that rebuilds the tab strip cannot destroy a message the user
- * queued (review F1, F2, F3, F13). Paseo keeps its queue on the app-level session
- * store for the same reason (`stores/session-store.ts:419-423`).
+ * The queue's owner for the whole app run: one queue per session id, held
+ * here rather than in a component, so leaving the Workspace, switching to
+ * another tab, or a refresh that rebuilds the tab strip cannot destroy a
+ * message the user queued — Paseo keeps its queue on the app-level session
+ * store for the same reason (packages/app/src/stores/session-store.ts).
  *
  * **What may send, and when.** Paseo drains on the open-to-idle edge
- * (`runtime/host-runtime.ts:2074`) and on every synchronized timeline that finds
- * the agent idle (`timeline/viewed-timeline-sync.ts:246-296`). The edge is the
- * queue's own (`turnActive` falling); the snapshot is every roster push, which
- * is always the daemon's full list (`workspaceSessions.ts`'s `applySnapshot`),
- * so the arm is per push, not once per connection. A repeated idle push neither
- * duplicates a send in flight nor re-cancels a refused head's ladder.
+ * (packages/app/src/runtime/host-runtime.ts)
+ * and on every synchronized timeline that finds the agent idle
+ * (packages/app/src/timeline/viewed-timeline-sync.ts). The edge is the queue's own
+ * (`turnActive` falling); the snapshot is every roster push, always the daemon's
+ * full list (`workspaceSessions.ts`'s `applySnapshot`), so the arm is per push,
+ * not per connection. A repeated idle push neither duplicates a send in flight
+ * nor re-cancels a refused head's ladder.
  *
  * There is no second send path. A queue's host is `queueSender.ts` — a
- * subscription attached for the message and let go afterwards — unless a chat
- * surface has bound its own controller, which the surface hands back when it
- * unmounts. The
- * app never infers a turn from replayed frames, so nothing here waits on a
- * replay, bounds a slot count, or wonders whether the last `agent_finished` it
- * saw was history: those were the headless bearer, and every re-review of them
- * found a way for it to be wrong.
+ * subscription attached for the message and let go afterwards — unless a
+ * chat surface has bound its own controller, which the surface hands back
+ * when it unmounts. The app never infers a turn from replayed frames — the
+ * headless bearer is not a reliable turn signal — so nothing here waits on
+ * a replay, bounds a slot count, or wonders whether the last
+ * `agent_finished` it saw was history.
  *
- * **When a queue ends.** A row the full push no longer names, or the app's own
- * close, archive or delete (`closeSession`). A row `stripSessions` hides, a list
- * refresh, and any state the push still carries — including
- * `recovered`, a daemon death this app survived — discard nothing (review fix-1
- * P1-2). A discarded queue is never handed out again, so the half-dead state
- * review F8 found cannot be reached.
+ * **When a queue ends.** A row the full push no longer names, or the
+ * app's own close, archive or delete (`closeSession`). A row `stripSessions`
+ * hides, a list refresh, and any state the push still carries — including
+ * `recovered`, a daemon death this app survived — discard nothing. A
+ * discarded queue is never handed out again, so a half-dead state — a queue
+ * of sends whose session is gone — cannot be reached.
  */
 
 interface Entry {
@@ -69,10 +69,10 @@ export function createSessionQueueOwner(
   deps: SessionQueueOwnerDeps = { newSender: (sessionId) => createQueueSender(sessionId) },
 ): SessionQueueOwner {
   const entries = new Map<string, Entry>();
-  /** The last row each session carried, cached even before it has a queue: a
-   * queue opened mid-turn must know the turn is open before the next push, since
-   * its composer's Queue offer and a press read it. Paseo needs no such cache:
-   * its directory row is there before its queue is. */
+  /** The last row each session carried, cached even before it has a queue:
+   * a queue opened mid-turn must know the turn is open before the next
+   * push, since its composer's Queue offer and a press read it. Paseo needs
+   * no such cache: its directory row is there before its queue is. */
   const statuses = new Map<
     string,
     { activity: AgentActivityState | null; state: Session["state"] }
@@ -96,8 +96,8 @@ export function createSessionQueueOwner(
 
   function discard(sessionId: string, entry: Entry): void {
     // Out of the map first: `queue.discard()` notifies its listeners
-    // synchronously, and nothing may answer a notice from a queue that has
-    // already been given away (review fix-2 finding 2).
+    // synchronously, and nothing may answer a notice from a queue that
+    // has already been given away — queueFor would mint one for a dead session.
     entries.delete(sessionId);
     entry.queue.discard();
   }
@@ -139,7 +139,7 @@ export function createSessionQueueOwner(
         const next = row.activity ?? null;
         // Three readings of one field, all written before anything may act on
         // them: the note for a session with no process to send into (`unknown`
-        // is that state, not merely an absent status — review fix-4 finding 5),
+        // is that state, not merely an absent status —
         // and the status the queue's press and ladder defer to.
         entry.queue.setSendPath(noProcess(next, row.state) ? SESSION_NOT_RUNNING : null);
         entry.queue.setTurnStatus(next);

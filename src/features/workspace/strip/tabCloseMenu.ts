@@ -1,7 +1,7 @@
 // Why: the tab context menu as data — Paseo's four close entries in Paseo's
-// order (pinned by workspace-tab-menu.test.ts:47-56), then our Delete after
-// a separator in the destructive tone, and when each entry has nothing to
-// act on — so the menu only renders rows.
+// order (the order is pinned by workspace-tab-menu.test.ts), our Delete
+// after a separator in the destructive tone, and when each entry has nothing
+// to act on — so the menu only renders rows.
 
 import type { TabCloseAction } from "./bulkCloseSessions";
 

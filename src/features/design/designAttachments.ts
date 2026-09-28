@@ -32,8 +32,7 @@ import { rasterMetadataNotice, stripRasterMetadata } from "./rasterMetadata";
  * wins over any declaration that disagrees. A declaration is used for one thing
  * only: wording a rejection a user can act on.
  *
- * The second: SVG is text here, not an image. Paseo classifies SVG as a generic
- * file and sends the agent four lines of metadata; this surface generates HTML
+ * The second: SVG is text here, not an image. This surface generates HTML
  * and can embed an SVG into it verbatim, so an SVG is an active document that
  * must be sanitized before it is ever echoed back into a page.
  *
@@ -69,15 +68,14 @@ export const ATTACHMENT_INPUT_ACCEPT = [...ACCEPTED_ATTACHMENT_MIME_TYPES, "appl
 );
 
 /**
- * 128 KiB. Motivated, not copied from Paseo's 50 MB, because the two situations
- * differ: Paseo streams attachments into its own store, while ours has a hard
- * ceiling downstream. An artifact larger than `MAX_ARTIFACT_BYTES` (256 KiB) is
+ * 128 KiB. For an inlined image the binding ceiling is the artifact, not the
+ * attachment: an artifact larger than `MAX_ARTIFACT_BYTES` (256 KiB) is
  * refused with "Artifact too large to display", and when the agent inlines an
  * imported image as a `data:` URI, base64 inflates it by 4/3. 128 KiB of PNG
  * becomes 170.7 KiB of base64, leaving ~85 KiB of the artifact budget for the
- * page itself; a whole page's markup runs 20-60 KiB, so one inlined image still
- * fits. Two would not — that is a real limit, and when it is crossed the surface
- * already says so. The relationship is asserted in designAttachments.test.ts.
+ * page itself; a whole page's markup runs 20-60 KiB, so one inlined image
+ * still fits. Two would not — that is a real limit, and when it is crossed the
+ * surface already says so. The relationship is asserted in designAttachments.test.ts.
  */
 export const MAX_ATTACHMENT_BYTES = 128 * 1024;
 
@@ -229,12 +227,12 @@ function listWithAnd(items: readonly string[]): string {
  * about that file, naming what was taken out of it.
  *
  * The reasons in `SVG_SANITIZER_RULES` argue the rule to whoever maintains the
- * sanitizer, and they used to be what the user read — six lines of security
- * reasoning printed under a dropped logo, which answers a question nobody asked.
- * Someone who has just attached a file wants to know one thing: whether their
- * file survived intact, and if not, what is gone. The rules are named rather
- * than summarized, because "some unsafe elements were removed" would be shorter
- * and would hide which parts of the drawing will not be there.
+ * sanitizer; the notice is one sentence, because six lines of security
+ * reasoning under a dropped logo answer a question nobody asked. Someone who
+ * has just attached a file wants to know one thing: whether their file survived
+ * intact, and if not, what is gone. The rules are named rather than summarized,
+ * because "some unsafe elements were removed" would be shorter and would hide
+ * which parts of the drawing will not be there.
  *
  * Rules are listed in the order they are declared, so the same input always
  * reads the same way, and each is named once however many times it fired.
@@ -735,9 +733,9 @@ function pillCount(attachments: readonly DesignAttachment[]): number {
  * than picked: flat vector decks encode to ~31 KiB a page at scale 1.0,
  * photographic plates to ~79 KiB.
  *
- * The two terms that used to bound this — `MAX_ATTACHMENT_TOTAL_BYTES` (256 KiB)
- * and the per-page reading of `MAX_ATTACHMENT_COUNT` — are gone from the
- * arithmetic, and deliberately not replaced by a smaller one. A page does not
+ * `MAX_ATTACHMENT_TOTAL_BYTES` (256 KiB) and the per-page reading of
+ * `MAX_ATTACHMENT_COUNT` are gone from the arithmetic, and deliberately not
+ * replaced by a smaller one. A page does not
  * ride in the frame that carries the prompt any more: it is deposited, one frame
  * each, and the prompt names it by reference. The store's budget is read here
  * anyway, because a composer that somehow holds the owner's whole 20 MiB must

@@ -1,4 +1,4 @@
-// Why: the confirmations' words in one place — Paseo's titles verbatim, its
+// Why: the confirmations' words in one place — Paseo's titles verbatim, the
 // counting line adapted only where our semantics differ: for us a terminal
 // close is an archive (session_stop), so the process stops and every message
 // stays in History, where Paseo destroys the closed terminal.
@@ -43,8 +43,8 @@ export function bulkCloseMessage(counts: BulkCloseCounts): string {
   return `This will archive ${agents} agent(s).`;
 }
 
-/** A single terminal close: Paseo's title verbatim; the message adapted to
- * what our close is — an archive, so the messages stay. */
+/** A single terminal close: Paseo's title verbatim; the message adapted to what our
+ * close is — an archive, so the messages stay, where Paseo destroys the closed terminal. */
 export function closeTerminalConfirm(): { title: string; message: string; confirmLabel: string } {
   return {
     title: "Close terminal?",

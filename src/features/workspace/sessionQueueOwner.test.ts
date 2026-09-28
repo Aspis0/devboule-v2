@@ -48,7 +48,7 @@ describe("the queue owner and the roster's turn status", () => {
 
   it("drains a queue born idle after the first push on the next idle push", async () => {
     // Every push is the daemon's full roster, so every push is the snapshot
-    // Paseo's per-sync arm drains on — not only the first (review fix-7 finding 2).
+    // the drain arms on — not only the first.
     const { owner, probe } = harness();
     owner.onRosterPush([sessionOf("s.a", { activity: "idle" })]);
     const queue = owner.queueFor("s.a");
@@ -197,7 +197,7 @@ describe("the queue owner and the roster's turn status", () => {
     queue.add("through the restart", []);
 
     // The daemon died: the row is a transcript and carries no status. The text
-    // stays, and the row says why nothing has gone (review fix-1 P1-2).
+    // stays, and the row says why nothing has gone.
     owner.onRosterPush([sessionOf("s.a", { state: RECOVERED })]);
     await flush();
     expect(texts(queue)).toEqual(["through the restart"]);

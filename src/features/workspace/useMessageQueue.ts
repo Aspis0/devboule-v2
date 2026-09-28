@@ -79,8 +79,8 @@ export function useMessageQueue(
   );
 
   // Paseo's Edit: the composer gets the text only once the row is out. An id
-  // the queue no longer holds says so — silently doing nothing (review P2-4)
-  // left the user's click with no answer at all.
+  // the queue no longer holds says so — silently doing nothing would leave the
+  // user's click with no answer at all.
   const editRow = useCallback(
     (id: string) => {
       if (queue === null) return;
@@ -96,7 +96,7 @@ export function useMessageQueue(
   );
 
   // A delete that finds nothing has already reached its goal — the row is not
-  // queued — so there is nothing to report (review P2-4).
+  // queued — so there is nothing to report.
   const deleteRow = useCallback(
     (id: string) => {
       if (queue === null) return;
@@ -116,8 +116,8 @@ export function useMessageQueue(
   );
 
   // A refused send stays on its row — the snapshot carries the reason — and the
-  // row is the only place it is said. A second alert beside the composer for
-  // the same failure was review F16's duplicate, so this call reports nothing.
+  // row is the only place it is said. A second alert beside the composer would
+  // duplicate the row's own, so this call reports nothing.
   const steerRow = useCallback(
     (id: string) => {
       if (queue === null) return;

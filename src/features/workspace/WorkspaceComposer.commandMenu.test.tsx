@@ -244,8 +244,8 @@ describe("the open menu's keys", () => {
   });
 
   it("sends on Enter when the open menu has no row to give", async () => {
-    // Paseo hands the key back untouched when it has no option, so a menu
-    // with nothing to complete never traps Enter.
+    // A menu with nothing to complete must not trap Enter: the key goes back
+    // untouched, and onSend fires with the text as typed.
     await renderComposer();
     await drive.type("/zzz");
 

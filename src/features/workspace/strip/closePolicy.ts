@@ -1,13 +1,13 @@
 // Why: one place decides when a close asks first — Paseo's policy on our
-// model (workspace-screen.tsx:2505-2570), sharpened by the fix-3 live
-// finding: the daemon turns a Running stream into Silent after an
-// output-silence threshold alone (session_runtime.rs mark_silent_if_due), so
-// `silent` is NOT idle — an agent in a long tool call can be silent and
-// still working. The roster carries no field that states a turn has ended,
-// so the policy asks for EVERY agent with a process (`live` or `silent`);
-// an agent without one (`ended`, `recovered`) closes without asking. A
-// delete — which destroys the session — always asks. When in doubt, ask: an
-// extra confirmation is cheap, stopping a working agent is not.
+// model (packages/app/src/screens/workspace/workspace-screen.tsx). The
+// daemon turns a Running stream into Silent after an output-silence
+// threshold alone (session_runtime.rs mark_silent_if_due), so `silent` is
+// NOT idle — an agent in a long tool call can be silent and still working.
+// The roster carries no field that states a turn has ended, so the policy
+// asks for EVERY agent with a process (`live` or `silent`); an agent without
+// one (`ended`, `recovered`) closes without asking. A delete — which
+// destroys the session — always asks. When in doubt, ask: an extra
+// confirmation is cheap, stopping a working agent is not.
 
 import { isAgentKind, type Session } from "../../../types/ipc";
 

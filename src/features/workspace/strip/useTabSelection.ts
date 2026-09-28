@@ -1,4 +1,4 @@
-// Why: multi-select is ours (Paseo has none) — this owns the selection's
+// Why: multi-select is ours, not translated — this owns the selection's
 // state, its click grammar (Ctrl/Cmd toggles, Shift ranges from the active
 // tab, plain click and Escape clear), and the polite announcement of its
 // size; the strip only wires the handlers.

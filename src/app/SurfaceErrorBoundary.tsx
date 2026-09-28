@@ -11,15 +11,12 @@ interface SurfaceErrorBoundaryState {
   error: string | null;
 }
 
-// Translates Paseo's SurfaceErrorBoundary
-// (packages/app/src/plugins/surface-error-boundary.tsx:23-56) to React DOM:
-// one broken surface degrades alone while the shell and the other surfaces
-// keep working. The only reset is the call-site key, which remounts the
-// boundary on navigation; Retry only clears the error, and the children mount
-// fresh anyway because React unmounts the failed subtree when it catches.
-// Paseo's default fallback prints the raw message as the sentence (:45); ours
-// keeps the message in a details box, per this app's ErrorText convention
-// that raw exception text never reads as the sentence.
+// Translated from Paseo's SurfaceErrorBoundary
+// (packages/app/src/plugins/surface-error-boundary.tsx) to React DOM:
+// one broken surface degrades alone; the shell and the other surfaces keep
+// working. Retry only clears the error — the reset is the call-site key, which
+// remounts the boundary on navigation. Raw exception text never reads as the
+// sentence, so the message stays in a details box.
 export class SurfaceErrorBoundary extends Component<
   SurfaceErrorBoundaryProps,
   SurfaceErrorBoundaryState

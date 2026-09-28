@@ -1,4 +1,4 @@
-// A failed head does not freeze the queue in silence (review F7): the failure
+// A failed head does not freeze the queue in silence: the failure
 // re-arms the drain on a bounded ladder, each rung carrying the same retry
 // identity, and when the ladder runs out the row says so and waits for the
 // user. Fake timers move the clock; no test here sleeps.
@@ -105,8 +105,8 @@ describe("a failed head item", () => {
   });
 
   it("repeated idle snapshots neither re-send the head nor cancel its rung", async () => {
-    // Every roster push is a snapshot that reads idle; the refusal's ladder owns
-    // the head until a rung fires (review fix-2 finding 4).
+    // Every roster push is a snapshot that reads idle; the refusal's ladder
+    // owns the head until a rung fires.
     await flushQueueTurns();
     for (let round = 0; round < 10; round += 1) harness.queue.notifyIdle();
     await flushQueueTurns();

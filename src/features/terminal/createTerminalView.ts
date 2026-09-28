@@ -30,8 +30,8 @@ function paletteColor(host: HTMLElement, variable: string): string {
  * testable. The ground is `--terminal-ground` — the one surface the host and
  * frame paint — for the background, the block cursor's under-colour and black;
  * anything else lets the viewport's own fill diverge from the frame and show
- * as a line at the box's edge (fix pass 2's measured 1px black line). Accent
- * and tones flip with `[data-theme="dark"]`.
+ * as a line at the box's edge — a measured 1px black line. Accent and tones
+ * flip with `[data-theme="dark"]`.
  */
 export function terminalTheme(color: (variable: string) => string) {
   return {
@@ -166,7 +166,7 @@ export function createTerminalView(
 
   // FitAddon reads the host's border box and subtracts only the terminal
   // element's own padding, so any padding it counts as content overfills the
-  // box and clips the last row and column (fix pass 1's measured defect). The
+  // box and clips the last row and column. The
   // host is padding-free by contract now; this re-check measures the rendered
   // screen against the host's content box and re-fits through the pure
   // arithmetic if it ever overflows again, so a future box or addon change
@@ -244,8 +244,8 @@ export function createTerminalView(
   terminal.open(host);
   // The construction-time palette read can race the stylesheet: until the
   // tokens resolve, every variable reads empty and xterm paints its default
-  // black viewport — the line that showed at the box's edge (fix pass 2). By
-  // open the document is styled, so the theme is applied again from the same
+  // black viewport — the same measured 1px line at the box's edge. By open
+  // the document is styled, so the theme is applied again from the same
   // tokens.
   reapplyTheme();
   // A hidden host can have zero dimensions; ResizeObserver will retry later.

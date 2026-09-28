@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
 
 // The tab's trailing "×" and its neighbouring paths: a plain click selects
-// and fires nothing (the P0 defect this shape exists to kill), the chip runs
-// the close policy, a middle click closes, and an older build's persisted
-// undo records are startup litter. Hit areas are wiring + CSS here; only the
-// live check sees pixels.
+// and fires nothing; the chip runs the close policy; a middle click closes;
+// an older build's persisted undo records are startup litter. Hit areas are
+// wiring + CSS here; only the live check sees pixels.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import {
@@ -51,10 +50,9 @@ describe("the close chip", () => {
 
     await plainClick("session-2");
 
-    // The P0 defect — a hover hit area owning the click and archiving the
-    // tab — is dead: the click selects, the tab stays, the daemon hears
-    // nothing. That the chip never covers the label is its 48 px CSS rule
-    // (pinned by the strip source test) and, in the end, the live check.
+    // A hover hit area must not own the click: the click selects, the tab stays,
+    // the daemon hears nothing. That the chip never covers the label is its 48
+    // px CSS rule (pinned by the strip source test); the live check sees pixels.
     expect(tabElement("session-2").getAttribute("aria-selected")).toBe("true");
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
@@ -159,7 +157,7 @@ describe("the close chip", () => {
   it("a close takes the queued messages with the tab", async () => {
     // The daemon keeps a closed session's journal row, so its queue would
     // outlive the tab on the absence rule alone: the act that removed the
-    // session is the word that its text goes too (review fix-1 P1-2).
+    // session is the word that its text goes too.
     vi.mocked(sessionsList).mockResolvedValue([
       recoveredAgentSession("agent-old", "Old transcript"),
       terminalSession("session-2", "shell two"),

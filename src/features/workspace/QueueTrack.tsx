@@ -6,10 +6,11 @@ import "./QueueTrack.css";
 /**
  * The queued follow-up rows above the composer (Paseo's place): the text on
  * at most two lines, and per row Steer (send now — it interrupts the turn),
- * Edit (Paseo's: the row leaves the queue and its content goes back into the
- * composer), Delete, and reorder — by dragging the row, or Alt+Arrow on a
- * focused row. A send the daemon refused leaves its reason on the row.
- * Nothing renders while the queue is empty.
+ * Edit (Paseo's: the row leaves the queue and its content goes back into
+ * the composer), Delete, and reorder — by dragging the row, or Alt+Arrow on
+ * a focused row. A send the daemon refused leaves its reason on the row —
+ * nothing renders while the queue is empty, and an emptied track under the
+ * user's focus hands that focus to the composer.
  */
 
 const REORDER_HINT_ID = "workspace-queue-reorder-hint";
@@ -89,7 +90,7 @@ export const QueueTrack = memo(function QueueTrack({
     // directions: the row you released the mouse on ends up just below it.
     // `move` counts the destination in the list the dragged row has already
     // left, so moving down subtracts that step back — and a row dropped on the
-    // one directly under it does not move at all (review F15).
+    // one directly under it does not move at all.
     onMove(id, from >= 0 && from < droppedOn ? droppedOn - 1 : droppedOn);
   }
 
@@ -108,8 +109,8 @@ export const QueueTrack = memo(function QueueTrack({
     <>
       {/* The reorder instruction is for the screen reader, not the eye: said
         once, outside the list, and named by every row's `aria-describedby`.
-        Inside the list it was a non-`listitem` child of `role=list`, and the
-        whole tutorial was read out attached to every row (review F14). */}
+        Inside the list it would be a non-`listitem` child of `role=list`, and
+        the whole tutorial would be read out attached to every row. */}
       <span id={REORDER_HINT_ID} className="workspace-queue-hint">
         Press Alt with ArrowUp or ArrowDown to move the focused queued message; a row can also be
         dragged onto another.

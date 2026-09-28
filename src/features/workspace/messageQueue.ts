@@ -3,12 +3,11 @@ import type { AgentActivityState, PromptAttachment } from "../../types/ipc";
 /**
  * The one frontend door to a session's queue of follow-up messages: the rows
  * above the composer, the Enter-to-queue key, and the composer's steer all
- * read through it and nothing else. The queue lives **in the app**, as in
- * Paseo (`DECISIONS.md` 2026-09-24) — and it is owned for the life of the app
- * by `sessionQueueOwner.ts`, not by whichever surface happens to be on screen,
- * so leaving the Workspace or switching tabs cannot destroy a message the user
- * queued. In memory only, never written to disk: it dies with the app. The one
- * implementation is `inMemoryMessageQueue.ts`.
+ * read through it and nothing else. The queue lives **in the app** — and it is
+ * owned for the life of the app by `sessionQueueOwner.ts`, not by whichever
+ * surface happens to be on screen, so leaving the Workspace or switching tabs
+ * cannot destroy a message the user queued. In memory only, never written to
+ * disk: it dies with the app. The one implementation is `inMemoryMessageQueue.ts`.
  *
  * What an implementation owes the hook (`useMessageQueue`):
  *
@@ -90,10 +89,11 @@ export interface MessageQueue {
   /**
    * Send one queued item now, by name. The text goes to the front of the queue
    * so it is the next thing out; with a turn running the interrupt goes first
-   * and the send waits for `turnActive` to fall (decision 3). One send is on
-   * the wire per session, so a press that lands while a drain holds it is
-   * remembered and goes next. Resolves either way: a refusal is reported on the
-   * row it left behind, never as a second alert.
+   * and the send waits for `turnActive` to fall — the drain opens only on an
+   * idle roster, so the turn must end first. One send is on the wire per
+   * session, so a press that lands while a drain holds it is remembered and
+   * goes next. Resolves either way: a refusal is reported on the row it left
+   * behind, never as a second alert — the composer line stays empty.
    */
   sendNow(id: string): Promise<void>;
   /**
@@ -132,7 +132,7 @@ export interface MessageQueue {
    * The owner's side of one fact: why this queue cannot send right now, or
    * `null` when nothing stands in its way. The head row carries the sentence
    * while it has no refusal of its own to show, so a queue that cannot reach the
-   * daemon is never a silent list (review fix-1 P2-4).
+   * daemon is never a silent list.
    */
   setSendPath(note: string | null): void;
   /**

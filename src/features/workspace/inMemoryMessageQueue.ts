@@ -10,21 +10,19 @@ import { createTurnReplyHolds } from "./turnReplyHolds";
 
 /** What a refused send says. It is said once, on the row it left behind: the
  * session has already put the daemon's own reason in the transcript, and a
- * second alert beside the composer was review F16's duplicate. */
+ * second alert beside the composer would only duplicate it. */
 export const SEND_FAILED = "The message was not sent.";
 
 const NOTHING_TO_QUEUE = "There is nothing to queue.";
 const NOTHING_TO_SEND = "There is nothing to send.";
 
 /**
- * How long a failed head waits before it tries again (review F7). Paseo waits
- * in silence for the next idle signal, and `RECON-paseo-queue.md` §6 takeaway
- * 4 calls that a message-loss-shaped bug rather than a design to copy: with no
- * turn running, no idle signal is coming. So a failure re-arms the drain a
- * bounded number of times and then stops, leaving `SEND_FAILED` on the row for
- * the user to press again. Every attempt carries the item's own idempotency
- * key, so a rung whose reply was lost is answered from the daemon's receipt
- * rather than run a second time (review F4).
+ * How long a failed head waits before it tries again. Waiting in silence for the
+ * next idle signal would lose the message: with no turn running, no idle signal
+ * is coming. So a failure re-arms the drain a bounded number of times and then
+ * stops, leaving `SEND_FAILED` on the row for the user to press again. Every
+ * attempt carries the item's own idempotency key, so a rung whose reply was lost
+ * is answered from the daemon's receipt rather than run a second time.
  */
 const RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 15_000];
 
@@ -37,9 +35,7 @@ function fresh(item: QueuedMessage): QueuedMessage {
 
 /**
  * The app's queue of unsent follow-ups: one FIFO list per session, in memory
- * only, with one send on the wire at a time — Paseo's ownership and its
- * requeue-at-front (`RECON-paseo-queue.md` §3), ours where Paseo sits silent
- * (§6 takeaway 4).
+ * only, with one send on the wire at a time.
  *
  * A reply-confirmed send has a bounded hold under its own send key. A roster
  * working-to-idle edge, finish event, disconnect, stop, non-running state, or
@@ -47,11 +43,10 @@ function fresh(item: QueuedMessage): QueuedMessage {
  * no pending send or hold.
  *
  * `idPrefix` — the session id — namespaces each item's retry identity, and the
- * random suffix makes that identity unique to *this item in this queue
- * instance*: item ids alone count from one again when a queue is replaced, and
- * the daemon's receipt lives for fifteen minutes, so a resumed session's first
- * queued message would otherwise be answered from, or collide with, the old
- * queue's first send (review fix-1 P2-3).
+ * random suffix makes it unique to *this item in this queue instance*: item
+ * ids alone count from one again when a queue is replaced, and the daemon's
+ * receipt lives for fifteen minutes, so a resumed session's first queued message
+ * would otherwise be answered from, or collide with, the old queue's first send.
  */
 export function createInMemoryMessageQueue(
   idPrefix: string,
@@ -70,7 +65,7 @@ export function createInMemoryMessageQueue(
   /** One send on the wire per session. Taken before the item leaves the list
    * and held across the whole attempt, so neither a second idle signal nor a
    * row's Send can start a twin, and the list is never briefly "done" while
-   * the send still needs its bearer (review F5, fix-1 P1-1). */
+   * the send still needs its bearer. */
   let sendInFlight = false;
   /** Unique identities distinguish concurrent composer sends. */
   let nextSubmissionId = 1;
@@ -86,11 +81,11 @@ export function createInMemoryMessageQueue(
   /** `discard` ran: the session is gone, and an answer to a send that was in
    * flight at that moment must not put its item back into an empty queue. */
   let discarded = false;
-  /** Why the owner says the queue cannot send. The note belongs to the queue,
-   * not to a row, so the row carrying it is tracked apart: whichever row is head
-   * wears it, and a row that stopped being head stops wearing it (review fix-2
-   * finding 3). A refusal outranks it — the refusal is a fact about one row, the
-   * note a fact about this moment. */
+  /** Why the owner says the queue cannot send. The note belongs to the queue, not
+   * to a row, so the row carrying it is tracked apart: whichever row is head wears
+   * it, and a row that stopped being head stops wearing it. A refusal outranks it
+   * — the refusal is a fact about one row, the note a fact about this moment.
+   */
   let sendPathNote: string | null = null;
   let nextId = 1;
 
@@ -100,8 +95,7 @@ export function createInMemoryMessageQueue(
 
   /** Move the note onto whoever is head now, and off every row that stopped
    * being head or whose queue can send again. A refusal outranks the note: it
-   * is a fact about one row, and the note is a fact about this moment (review
-   * fix-2 finding 3). */
+   * is a fact about one row, and the note is a fact about this moment. */
   function stampNote(): void {
     const next = items.map((entry, index) => {
       const worn = entry.error;
@@ -132,7 +126,7 @@ export function createInMemoryMessageQueue(
     clearTimeout(retryTimer);
     retryTimer = null;
     // A spent ladder is an end of the need, and the owner's release rule reads
-    // only what a delivery tells it (review fix-2 finding 7).
+    // only what a delivery tells it.
     push();
   }
 
@@ -164,7 +158,7 @@ export function createInMemoryMessageQueue(
 
   /** A refused head belongs to its ladder while a rung is counting down, and to
    * the user once the ladder is spent: a full push says nothing new about why
-   * it was refused, and must not re-cancel the rung (review fix-2 finding 4). */
+   * it was refused, and must not re-cancel the rung. */
   function ladderOwnsHead(): boolean {
     return headRefused && (retryTimer !== null || retriesUsed >= RETRY_DELAYS_MS.length);
   }
@@ -231,7 +225,7 @@ export function createInMemoryMessageQueue(
     // only a re-delivery tells the owner the bearer may go.
     push();
     // An accepted send whose turn already ended leaves the roster idle, so the
-    // predicate falls here (review fix-7 finding 1b). A refusal is its ladder's.
+    // predicate falls here. A refusal is its ladder's.
     if (sent) void drain();
     else armRetry();
   }
@@ -251,7 +245,7 @@ export function createInMemoryMessageQueue(
    * first, so it is the next thing out whatever it interrupted. While
    * `turnActive` it waits there for the predicate to fall, because the
    * interrupt RPC answers when the cancel is *dispatched*, not when the
-   * provider has stopped (review F6).
+   * provider has stopped — the interrupt returning is not the turn ending.
    */
   async function sendRow(id: string): Promise<void> {
     const found = items.find((entry) => entry.id === id);
@@ -280,7 +274,7 @@ export function createInMemoryMessageQueue(
       return;
     }
     // Only a turn the roster reports can be interrupted. A send of ours still
-    // in flight has no turn to cancel yet (review fix-7 finding 3), and an
+    // in flight has no turn to cancel yet, and an
     // absent or no-process reading names none.
     if (status === "working" || status === "blocked") await host.interrupt();
   }
@@ -299,9 +293,9 @@ export function createInMemoryMessageQueue(
       items = [...items, newItem(trimmed, attachments)];
       push();
       // A refused head starts its ladder over rather than dying on the rung it
-      // had reached: the user just added to this queue, and a queue they can
-      // see must not sit frozen waiting for an idle signal a refusal already
-      // proved is not coming (review F7).
+      // had reached: the user just added to this queue, and a queue they can see
+      // must not sit frozen waiting for an idle signal a refusal already proved
+      // is not coming — the ladder is bounded, and the row says so.
       if (headRefused && retryTimer === null) armRetry();
     },
 
@@ -401,8 +395,7 @@ export function createInMemoryMessageQueue(
       wantedAfterSend = null;
       // The send in flight belongs to a session that is gone: its answer will
       // arrive at a queue that wants nothing, so it is ended here rather than
-      // left to re-drive a drain on a queue nobody owns any more (review fix-2
-      // finding 2).
+      // left to re-drive a drain on a queue nobody owns any more.
       sendInFlight = false;
       retriesUsed = 0;
       headRefused = false;

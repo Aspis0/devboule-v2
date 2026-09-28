@@ -1,12 +1,11 @@
 import type { WorkspaceGitRow } from "../../types/ipc";
 
 /**
- * The flat status rows grouped into a folder tree with aggregated stats.
- * One O(n) pass over the reply's rows: the daemon's order is the display
- * order, folders opening in first-appearance position, files and folders
- * interleaved as they arrive — nothing here sorts, the wire stays the
- * authority. Each folder carries its subtree's FULL sums, collapsed or
- * not (Paseo's `diff-tree.ts` keeps the same guarantee), and any `capped`
+ * The flat status rows grouped into a folder tree with aggregated stats. One
+ * O(n) pass over the reply's rows: the daemon's order is the display order,
+ * folders opening in first-appearance position, files and folders interleaved
+ * as they arrive — nothing here sorts, the wire stays the authority. Each
+ * folder carries its subtree's FULL sums, collapsed or not, and any `capped`
  * row in the subtree marks every ancestor: those sums are floors.
  */
 export interface ChangesTreeFile {

@@ -91,9 +91,7 @@ describe("SurfaceErrorBoundary", () => {
     expect(mounts).toBe(1);
 
     // The update throws: React unmounts the failed subtree as it catches —
-    // Paseo asserts the same cleanup count
-    // (surface-error-boundary.test.tsx:68-69) — so the retry below cannot be
-    // a re-render of the old instance.
+    // so the retry below cannot be a re-render of the old instance.
     broken = true;
     await act(async () => {
       root.render(<Harness />);

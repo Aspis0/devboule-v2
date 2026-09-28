@@ -7,13 +7,14 @@ import { lookedAtSessionId } from "./presence";
  * reason, the decision of when an OS toast may fire, what the toast says,
  * and the one place that sends it.
  *
- * The gate is Paseo's per-agent rule (`session-context.tsx:279-284`): a
- * raise is announced unless the user is looking at THIS session — the window
- * actively seen AND this session the one this window shows. Which rows the
- * tab strip draws is not the question the gate asks, so nothing here is
- * parked or flushed: a raise for a session in another workspace announces
- * while this window stays focused, and its toast quotes only what this window
- * holds for it (see `heldContentForSession`).
+ * The gate is Paseo's per-agent rule
+ * (packages/app/src/contexts/session-context.tsx): a raise is
+ * announced unless the user is looking at THIS session — the window actively
+ * seen AND this session the one this window shows. Which rows the tab strip
+ * draws is not the question the gate asks, so nothing here is parked or
+ * flushed: a raise for a session in another workspace announces while this
+ * window stays focused, and its toast quotes only what this window holds for
+ * it (see `heldContentForSession`).
  */
 
 /**
@@ -160,9 +161,8 @@ export function toastContent(
  * only from what the app holds right now: a pending permission card, and the
  * last assistant message of a transcript on screen. A session the window does
  * not render gets no content at all, so its toast carries the title and the
- * reason only. (Paseo builds the body from the raising agent's own stream,
- * which its store always carries; this app holds words for the rows on screen
- * alone, so a raise elsewhere must not be dressed up in words it never had.)
+ * reason only. (This app holds words for the rows on screen alone, so a
+ * raise elsewhere must not be dressed up in words it never had.)
  */
 export function heldContentForSession(
   inThisWindow: boolean,
@@ -236,24 +236,22 @@ export function setAttentionHeldContentProvider(
 
 /**
  * The last raise a toast announced, per session — Paseo's `attentionNotifiedRef`
- * (`session-context.tsx:285-291`), and written in Paseo's place: only AFTER the
- * gate let the raise out. A raise the gate held back is therefore NOT recorded,
- * so it stays due and a later publication of the same event can still reach the
- * user once they look away (the review's P1).
+ * (`session-context.tsx`), and written in Paseo's place: only AFTER the gate
+ * let the raise out. A raise the gate held back is therefore NOT recorded, so
+ * it stays due and a later publication of the same event can still reach
+ * the user once they look away from the session.
  */
 const lastFired = new Map<string, Attention>();
 
 /**
- * Raises currently inside their own window read. Paseo needs no such marker: its
- * window answer is `AppState.currentState`, synchronous, so one event's gate and
- * record are a single step. Ours awaits the OS, and a roster is re-published
- * constantly, so two publications of one session can interleave — without this
- * marker a duplicate pair of toasts lands, and a delayed older snapshot can
- * claim before the newer raise it should never have outrun.
+ * Raises currently inside their own window read. Paseo needs no such marker —
+ * its window answer is synchronous — while ours awaits the OS, and a roster is
+ * re-published constantly, so two publications of one session can interleave —
+ * without this marker a duplicate pair of toasts lands, and a delayed older
+ * snapshot can claim before the newer raise it should never have outrun.
  *
- * A publication the gate holds back CLEARS its marker on the way out. That is
- * the whole of the P1 fix stated the other way round: nothing is left claimed
- * for a raise nobody saw, so the next publication of it is judged afresh.
+ * A publication the gate holds back CLEARS its marker on the way out: nothing is left
+ * claimed for a raise nobody saw, so the next publication of it is judged afresh.
  */
 const judging = new Map<string, Attention>();
 
@@ -382,12 +380,11 @@ export function productionOnWindowFocusChange(
 
 /**
  * The production toast path, called by the roster controller with every
- * publication of a raise. Paseo's order (`session-context.tsx:279-291`): the
- * gate FIRST, and the dedupe record only after it — a raise the gate held back
- * is not consumed, so a later publication announces it once the user looks
- * away. A send that throws waits once for `TOAST_RETRY_DELAY_MS` and tries
- * again; a second failure is dropped — the raise was announced as far as this
- * app can push it.
+ * publication of a raise. Paseo's order (`session-context.tsx`): the gate runs
+ * FIRST and the dedupe record only after it — a raise the gate held back is not
+ * consumed, so a later publication announces it once the user looks away. A send
+ * that throws waits once for `TOAST_RETRY_DELAY_MS` and tries again; a second
+ * failure is dropped — the raise was announced as far as this app can push it.
  */
 export function fireAttentionToast(
   sessionId: string,
@@ -420,8 +417,8 @@ export function fireAttentionToast(
       // be in the tray, so behave as if they are not.
       snapshot = { visible: false, focused: false, minimized: false };
     }
-    // Paseo's gate, both halves read at the moment of decision — the user may
-    // have reached this session, or left it, while the window was being asked.
+    // Paseo's gate (`session-context.tsx`), both halves read at the moment of decision —
+    // the user may have reached this session, or left it, while the window was being asked.
     const mayAnnounce = toastGate(snapshot, sessionId, lookedAtSessionId());
     if (judging.get(sessionId) === attention) judging.delete(sessionId);
     if (!mayAnnounce) {
@@ -429,11 +426,11 @@ export function fireAttentionToast(
       // and the next publication of it is judged from scratch.
       return;
     }
-    // Paseo's dedupe does the recording here — after the gate, before the send,
-    // and with no await between the test and the write, so two publications of
-    // one raise cannot both land: the first has covered the second's answer by
-    // then, and a raise the session moved past while this one waited fails the
-    // same test.
+    // Paseo's dedupe (`session-context.tsx`) does the recording here — after
+    // the gate, before the send, and with no await between the test and the
+    // write, so two publications of one raise cannot both land: the first has
+    // covered the second's answer by then, and a raise the session moved past
+    // while this one waited fails the same test.
     if (!raiseIsOfferable(sessionId, attention)) return;
     // The master switch again, after the async hops: the user may have
     // switched it off while the window was being asked. Suppressed here

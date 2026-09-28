@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// Multi-select (ours — Paseo has none): the click grammar, the polite
+// Multi-select (ours, not translated): the click grammar, the polite
 // announcement, and the selection's own close, which always asks about the
 // live set. The menu's entries, the chip and the outcomes have their own
 // files.

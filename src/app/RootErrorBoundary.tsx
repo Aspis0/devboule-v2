@@ -9,8 +9,9 @@ interface RootErrorBoundaryState {
   error: string | null;
 }
 
-// Paseo formats any caught value into renderable text (root-error-details.ts).
-// Ours only ever sees render-phase throws, so a small local formatter covers it.
+// Paseo formats any caught value into renderable text
+// (packages/app/src/components/root-error-details.ts); ours only ever sees
+// render-phase throws, so a small local formatter covers it.
 function formatRenderError(value: unknown): string {
   if (value instanceof Error) {
     const headline = `${value.name}: ${value.message}`;
@@ -28,16 +29,12 @@ function formatRenderError(value: unknown): string {
   }
 }
 
-// Translates Paseo's RootErrorBoundary
-// (packages/app/src/components/root-error-boundary.tsx:25-43): the whole app
-// sits below it, and the fallback carries the details because a packaged
-// Tauri window has no visible console to read them from. One deliberate
-// change: Reload is a real document reload. A generation-key remount cannot
-// recover a failed lazy() import — React caches the rejection forever (the
-// lazy payload keeps _status = 2 and every later render re-throws _result) —
-// and Paseo's reload (packages/app/src/root-app.tsx:20-32, a key bump plus a safe route) has
-// the same gap. window.location.reload recovers both cases, so there is
-// exactly one recovery mechanism and the copy promises nothing else.
+// Translated from Paseo's RootErrorBoundary
+// (packages/app/src/components/root-error-boundary.tsx): the whole app sits
+// below it, and the fallback carries the details because a packaged Tauri
+// window has no visible console to read them from. Reload is a real document
+// reload: a key-bump remount cannot recover a failed lazy() import — React
+// caches the rejection forever — so there is exactly one recovery mechanism.
 export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErrorBoundaryState> {
   state: RootErrorBoundaryState = { error: null };
 
@@ -46,8 +43,8 @@ export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErr
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo): void {
-    // Console only, as Paseo does — it has no remote reporting either. The log
-    // carries the error and its component stack and nothing else.
+    // Console only — no remote reporting. The log carries the error and its
+    // component stack and nothing else.
     console.error("[RootErrorBoundary] Unhandled render error", {
       error: formatRenderError(error),
       componentStack: info.componentStack,
@@ -62,9 +59,9 @@ export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErr
   }
 }
 
-// Paseo's copy (packages/app/src/i18n/resources/en.ts:1478-1481) with our
-// name; the last body sentence is ours, because a document reload always
-// boots the default surface and the copy must say where the user lands.
+// Paseo's copy (packages/app/src/i18n/resources/en.ts) with our name; the
+// last body sentence is ours: a document reload always boots the default
+// surface, and the copy must say where the user lands.
 function RootErrorFallback({ error }: { error: string }): ReactNode {
   return (
     <div className="root-fallback" role="alert">
@@ -76,8 +73,9 @@ function RootErrorFallback({ error }: { error: string }): ReactNode {
         </p>
         <h2 className="root-fallback-details-label">Details</h2>
         <pre className="root-fallback-details">{error}</pre>
-        {/* Paseo's compact-footer idiom (root-error-boundary.tsx:97, footer at :148-154):
-            Reload is pinned so it never scrolls away at high zoom. */}
+        {/* Paseo's compact-footer idiom
+            (packages/app/src/components/root-error-boundary.tsx): Reload is
+            pinned so it never scrolls away at high zoom. */}
         <div className="root-fallback-footer">
           <button
             type="button"

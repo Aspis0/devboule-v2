@@ -586,8 +586,8 @@ describe("Workspace sessions", () => {
     // The user clicks a row (automatic navigation stands down), then a
     // daemon restart restores a session that lives in the OTHER workspace:
     // the reconnect must re-arm selection-to-workspace navigation so the
-    // restored session is not discarded (review: userNavigatedRef never
-    // reset).
+    // restored session is not discarded — the reconnect resets the flag
+    // that stood the navigation down, and the restored selection is honoured.
     vi.useFakeTimers();
     try {
       let answer!: (status: DaemonStatus) => void;
@@ -644,9 +644,9 @@ describe("Workspace sessions", () => {
     // Two populated workspaces: A (workspace-1) is shown, B (workspace-2)
     // has its own live session. The daemon pushes a restored selection that
     // lives in B. One reconciliation must move the workspace AND keep the
-    // session — the old two-effect version scheduled the switch while the
+    // session — two effects would schedule the switch while the
     // strip-follow, still closing over A's strip, pulled A's first tab back,
-    // and the two kept reversing each other.
+    // and the two would keep reversing each other.
     vi.useFakeTimers();
     try {
       let answer!: (status: DaemonStatus) => void;
@@ -1522,7 +1522,7 @@ describe("Workspace sessions", () => {
 
   it("a project with no local workspace mints one, selects it, and starts the agent there", async () => {
     // The reuse policy only mints when the project has no local workspace;
-    // this pins the success path of that fallback (review P3).
+    // this pins the success path of that fallback.
     vi.mocked(workspacesList).mockResolvedValue([]);
     vi.mocked(workspaceCreate).mockResolvedValue(createdWorkspace);
     vi.mocked(providersList).mockResolvedValue({
@@ -1548,19 +1548,14 @@ describe("Workspace sessions", () => {
   });
 
   it("the double-mint guard holds while the first create is pending: clicks inside the real window mint once", async () => {
-    // The review's window: providers resolve, the first workspaceCreate is
-    // still pending, and a second click arrives. Releasing the guard at
-    // provider resolution would mint a second look-alike workspace here.
+    // The window: providers resolve, the first workspaceCreate is still
+    // pending, and a second click arrives — releasing the guard at provider
+    // resolution would mint a second look-alike workspace here.
     vi.mocked(workspacesList).mockResolvedValue([]);
-    // Providers resolve immediately; the workspaceCreate below is what stays
-    // pending (the review's window: providers resolved, create in flight,
-    // second click arrives).
     vi.mocked(providersList).mockResolvedValue({
       providers: [{ ...grokProvider, protocol: "acp" }],
       unreadableDirs: 0,
     });
-    // The first create stays pending: this is the window where an early
-    // guard release would mint a second look-alike workspace.
     const pendingCreate = deferred<IpcWorkspace>();
     vi.mocked(workspaceCreate).mockImplementationOnce(() => pendingCreate.promise);
     root = createRoot(container);
@@ -2076,8 +2071,8 @@ describe("Workspace sessions", () => {
       queueA.add("second after", []);
     });
 
-    // Settings takes the screen: the Workspace unmounts, and with the old
-    // ownership every queue in it went with it (review F1).
+    // Settings takes the screen: the Workspace unmounts, and every queue in it
+    // stays — ownership is app-level, not the screen's.
     await act(async () => root.unmount());
     expect(queuedTexts(queueA)).toEqual(["first after", "second after"]);
 
@@ -2099,9 +2094,9 @@ describe("Workspace sessions", () => {
   });
 
   it("sends the last message you queued, not the ones behind it", async () => {
-    // Review fix-1 P1-1: the queue released its own bearer on the way to
-    // sending the only row it had, so the last message of a background tab was
-    // the one that never arrived. One row is the case that catches it.
+    // The queue must not release its own bearer on the way to sending the only
+    // row it had: the last message of a background tab is the one that would
+    // never arrive. One row is the case that catches it.
     vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
     root = createRoot(container);
     await act(async () => {
@@ -2174,14 +2169,13 @@ describe("Workspace sessions", () => {
 
     // A reconnect goes straight through the list, and the tab strip's derived
     // list drops the row with it. A list is not the daemon's word that a
-    // session is gone, so the queue stands (review F2).
+    // session is gone, so the queue stands.
     vi.mocked(sessionsList).mockResolvedValue([]);
     await act(async () => sharedSessionController().refresh());
     expect(queuedTexts(queueA)).toEqual(["kept across a list"]);
 
-    // The full push no longer names it: closed, archived or deleted, and the
-    // queue goes with its session, as Paseo's does when an agent leaves the
-    // directory.
+    // The full push no longer names it: closed, archived or deleted — the
+    // session is gone, so the queue goes with it.
     await pushRoster([]);
     expect(queuedTexts(queueA)).toEqual([]);
   });
@@ -2453,9 +2447,8 @@ describe("Workspace sessions", () => {
   });
 
   it("keeps a card the backend resolved without a UI click, unnamed — it does not vanish as if you answered", async () => {
-    // Rewritten by the fix pass. The old test pinned the deletion: a
-    // resolution with no `answeredBy` removed the card as if a person had
-    // answered it. The wire's silence is not a person — the card stays,
+    // A resolution with no `answeredBy` must not remove the card as if a person
+    // had answered it. The wire's silence is not a person — the card stays,
     // unnamed, and only the human's Clear removes it.
     root = createRoot(container);
     await act(async () => {
@@ -3342,9 +3335,9 @@ describe("delegation on the roster", () => {
   });
 
   it("reports a refused take-back on the roster surface, where the click happened", async () => {
-    // Audit 3 F4: the refusal's sentence existed only on the Settings tab —
-    // the roster's button vanished and came back with no word on the surface
-    // the human clicked. The re-read the refusal schedules is held back so
+    // The refusal's sentence belongs on the roster surface, where the click
+    // happened — not only on the Settings tab, where the button vanished and
+    // came back with no word. The re-read the refusal schedules is held back so
     // the sentence's standing time is under the test's hand.
     const get = vi
       .fn()
@@ -3376,11 +3369,10 @@ describe("delegation on the roster", () => {
   });
 
   it("offers the take-back while the delegation answer is unknown, and the click still writes", async () => {
-    // Audit 3 F2 with F5: the control that stops delegation must not be
-    // gated on the panel's belief — a failed read leaves the app knowing
-    // nothing, and that is exactly when a human may need to act. The write
-    // needs no stored answer: `false` can only reduce what the daemon
-    // exercises (see `setEnabled` in `lib/delegation.ts`).
+    // The control that stops delegation must not be gated on the panel's belief
+    // — a failed read leaves the app knowing nothing, and that is exactly when
+    // a human may need to act. The write needs no stored answer: `false` can
+    // only reduce what the daemon exercises (see `setEnabled` in `lib/delegation.ts`).
     const set = vi.fn(async () => undefined);
     const delegation = createDelegationController({
       get: vi.fn(async () => {
@@ -3410,11 +3402,11 @@ describe("delegation on the roster", () => {
   });
 
   it("re-reads the switch when the daemon restarts, and the take-back follows the fresh answer", async () => {
-    // Audit 3 F2: nothing re-read the setting after the first load, so a
-    // daemon restart that reloads `delegation.json` left the roster's belief
-    // stale forever — here the restart is even invisible to the poll (no
-    // disconnected gap): only the instance id changes. The controller must
-    // re-ask, and the row's control must follow the fresh answer.
+    // Nothing re-read the setting after the first load, so a daemon restart
+    // that reloads `delegation.json` left the roster's belief stale forever —
+    // here the restart is even invisible to the poll (no disconnected gap):
+    // only the instance id changes. The controller must re-ask, and the
+    // row's control must follow the fresh answer.
     vi.useFakeTimers();
     try {
       const statusFor = (instanceId: string): DaemonStatus => ({
@@ -3627,7 +3619,7 @@ describe("delegation on the roster", () => {
   it("renders allow_always as ALLOWED by its creator — never as a denial", async () => {
     // The daemon's auto-accept path prefers allow_once and falls back to
     // allow_always, so a delegated answer is exactly where allow_always
-    // arrives; the old two-way branch rendered it, and an absent kind, as
+    // arrives; a two-way branch would render it, and an absent kind, as
     // "Denied by its creator".
     vi.mocked(sessionCreate).mockResolvedValue({
       ...acpSession("session-created", "agent two"),
@@ -3663,7 +3655,7 @@ describe("delegation on the roster", () => {
   });
 
   it("keeps a fully unnamed resolution on screen as its own state instead of deleting the card", async () => {
-    // answeredBy null (the daemon said nobody): the old path deleted the card
+    // answeredBy null (the daemon said nobody) must not delete the card
     // as if a person had answered it. Silence is not a person.
     vi.mocked(sessionCreate).mockResolvedValue({
       ...acpSession("session-created", "agent two"),

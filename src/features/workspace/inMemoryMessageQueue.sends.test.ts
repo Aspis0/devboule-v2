@@ -1,9 +1,8 @@
 // The sends a user asks for directly: a row's Send and the composer's steer.
 // Both interrupt a running turn FIRST and then wait for the daemon's own
-// turn-over before anything goes out (decision 3, review F6); one send is on
-// the wire per session, so a press that lands during a drain goes next, not
-// alongside it (review F5); and a refusal is reported on the row, never as a
-// second alert (review F16).
+// turn-over before anything goes out; one send is on the wire per session, so
+// a press that lands during a drain goes next, not alongside it; and a
+// refusal is reported on the row, never as a second alert.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInMemoryMessageQueue, SEND_FAILED } from "./inMemoryMessageQueue";
 import { createQueueHarness, flushQueueTurns } from "./queueHarness";
@@ -29,7 +28,7 @@ describe("in-memory queue steer", () => {
     await harness.queue.steer("steer this", []);
     // The interrupt is out and nothing else is: the cancel RPC answers when the
     // cancel is dispatched, and a send straight after it could reach a
-    // provider that has not stopped (review F6).
+    // provider that has not stopped.
     expect(harness.actions).toEqual(["interrupt"]);
 
     harness.status = "idle";
@@ -127,8 +126,8 @@ describe("the predicate falling while our own send was in flight", () => {
     harness.queue.notifyIdle(); // an idle push while our send is unanswered
     expect(harness.actions).toEqual([]);
 
-    // Refused: no turn ever opened, so no roster edge is coming. The settle is
-    // the edge (review fix-7 finding 1a).
+    // Refused: no turn ever opened, so no roster edge is coming — the settle
+    // of the unanswered send is the edge that moves the row.
     harness.queue.submissionSettled(sendId);
     await flushQueueTurns();
     expect(harness.actions).toEqual(["send:follow-up"]);
@@ -144,7 +143,7 @@ describe("the predicate falling while our own send was in flight", () => {
     await flushQueueTurns();
     expect(harness.actions).toEqual([]);
 
-    harness.queue.submissionSettled(sendId); // review fix-7 finding 1b
+    harness.queue.submissionSettled(sendId);
     await flushQueueTurns();
     expect(harness.actions).toEqual(["send:follow-up"]);
   });
@@ -154,7 +153,7 @@ describe("the predicate falling while our own send was in flight", () => {
     harness.queue.add("pressed", []);
     const sendId = harness.queue.submissionStarted();
 
-    // No turn the roster reports, so nothing to cancel (review fix-7 finding 3).
+    // No turn the roster reports, so nothing to cancel.
     await harness.queue.sendNow("queued-1");
     expect(harness.actions).toEqual([]);
     expect(harness.texts()).toEqual(["pressed"]);
@@ -229,8 +228,8 @@ describe("in-memory queue send-now", () => {
     harness.status = "idle";
     harness.failNextSend = true;
 
-    // No rejection: the row is the report, and a second alert beside the
-    // composer for the same failure was review F16's duplicate.
+    // No rejection: the row is the report; a second alert beside the
+    // composer would duplicate the row's own.
     await expect(harness.queue.sendNow("queued-1")).resolves.toBeUndefined();
     await flushQueueTurns();
     const waiting = harness.current();
@@ -265,7 +264,7 @@ describe("in-memory queue send-now", () => {
 
   it("a press while the roster says a turn is open interrupts and waits", async () => {
     // The other half of the same rule: the row is what the queue defers to, so
-    // a cancel is never raced by the send that follows it (review F6).
+    // a cancel is never raced by the send that follows it.
     const harness = createQueueHarness();
     harness.status = "working";
     harness.queue.add("pressed", []);

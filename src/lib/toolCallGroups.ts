@@ -6,10 +6,10 @@ export type ToolChatItem = Extract<AgentChatItem, { role: "tool" }>;
  * A run of consecutive groupable tool calls, rendered as one collapsible row.
  *
  * Grouping follows Paseo's `prepareGroupedHistory`
- * (`packages/app/src/tool-calls/detail-level/grouping.ts:115-148`): consecutive
- * groupable tools accumulate into a pending run and any other item flushes it.
- * The id is the first item's id, so it stays stable while streaming appends
- * tools to the end of the run.
+ * (packages/app/src/tool-calls/detail-level/grouping.ts): consecutive
+ * groupable tools accumulate into a pending run and any other item flushes
+ * it. The id is the first item's id, so it stays stable while streaming
+ * appends tools to the end of the run.
  */
 export interface ToolCallGroup {
   kind: "tool-group";
@@ -25,12 +25,11 @@ export function isToolCallGroup(entry: AgentChatItem | ToolCallGroup): entry is 
 }
 
 /**
- * Paseo's `isGroupableToolCall` (`grouping.ts:85-90`) excludes the `plan`
- * detail type and the `speak` tool name. Here `kind === "plan"` is the plan
- * exclusion and `kind === "question"` keeps answered cards out of runs,
- * so the transcript's only copy of a question and its answer is never
- * buried in a collapsed group. `speak` has no equivalent — no other tool
- * kind maps to it.
+ * Paseo's `isGroupableToolCall` (packages/app/src/tool-calls/detail-level/grouping.ts)
+ * excludes the `plan` detail type and the `speak` tool name; this surface
+ * excludes `plan` and `question` instead, so the transcript's only copy of a
+ * question and its answer is never buried in a collapsed group — the
+ * `question` exclusion is ours alone.
  */
 export function isGroupableToolCall(item: AgentChatItem): item is ToolChatItem {
   if (item.role !== "tool") return false;
@@ -42,11 +41,9 @@ export function isGroupableToolCall(item: AgentChatItem): item is ToolChatItem {
  * Batch consecutive groupable tools into runs. A run never mixes depths: a
  * tool joins the pending run only when its `parentToolUseId` and `spawnDepth`
  * equal the run's first item's, so parent-level and subagent rows never share
- * a collapsed wrapper. A run of one stays a plain item: unlike Paseo's
- * overview level (which wraps even single calls in a group object — see
- * `projection.test.ts` "builds a loading aggregate for a one-call run"),
- * this surface has no detail-level switch, so a one-item group would only
- * add a useless collapsed wrapper around a single row.
+ * a collapsed wrapper. A run of one stays a plain item: this surface has no
+ * detail-level switch, so a one-item group would only add a useless wrapper
+ * around a single row — collapsing one row saves nothing.
  */
 export function groupToolCalls(items: AgentChatItem[]): Array<AgentChatItem | ToolCallGroup> {
   const output: Array<AgentChatItem | ToolCallGroup> = [];
@@ -99,14 +96,11 @@ export interface ToolCallGroupSummary {
 
 /**
  * Count a run the way Paseo's `buildOverviewGroup`
- * (`packages/app/src/tool-calls/detail-level/overview/model.ts:31-79`) does:
- * edited and read files dedupe by path, everything else counts calls. The
- * `paseoCalls` bucket has no equivalent here and is omitted; `fetch` falls
+ * (packages/app/src/tool-calls/detail-level/overview/model.ts) does: edited
+ * and read files dedupe by path, everything else counts calls. The
+ * `paseoCallCount` bucket has no equivalent here and is omitted; `fetch` falls
  * into `otherToolCount` exactly as Paseo's unbucketed `fetch` detail type
- * does. Paseo keys by `detail.filePath`, which its protocol always provides
- * for edit/read details, and has no unkeyed branch and no summary fallback
- * (`buildOverviewGroup` returns the six counts unconditionally); a
- * location-less edit/read here cannot name a file, so it counts as another
+ * does. A location-less edit/read cannot name a file, so it counts as another
  * tool instead of guessing by title.
  */
 export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGroupSummary {
@@ -147,9 +141,9 @@ function pluralize(count: number, one: string, other: string): string {
 
 /**
  * Join summary parts the way Paseo's `useOverviewSummary` + `joinSummaryParts`
- * (`packages/app/src/tool-calls/detail-level/overview/view.tsx:24-60`) do:
- * two parts join with "and", three or more use ", " with "and" before the
- * last, and the first character is uppercased.
+ * (packages/app/src/tool-calls/detail-level/overview/view.tsx) do: two parts
+ * join with "and", three or more use ", " with "and" before the last, and
+ * the first character is uppercased.
  */
 function joinSummaryParts(parts: string[], conjunction: string): string {
   if (parts.length === 0) return "";
@@ -177,7 +171,6 @@ export function summarizeToolCallGroup(items: readonly ToolChatItem[]): string {
     if (count > 0) parts.push(pluralize(count, one, other));
   }
   // Every item lands in exactly one bucket, so a group (always 2+ items)
-  // always yields at least one part. There is no `"N tool calls"`
-  // fallback — Paseo has none either.
+  // always yields at least one part. There is no `"N tool calls"` fallback.
   return joinSummaryParts(parts, "and");
 }

@@ -3,8 +3,7 @@
 // The tab strip's "+" menu: what a new tab can be. Pins the menu's contents
 // (exactly Agent, Terminal, in Paseo's order), the Terminal entry's create
 // call, selection and in-flight disabling, Escape focus return, and the Agent
-// entry's unchanged provider flow (moved here from Workspace.test.tsx, where
-// the "+" went straight to that flow). Focus: a menu-created terminal gets
+// entry's unchanged provider flow. Focus: a menu-created terminal gets
 // the surface's autofocus request, a cancelled picker hands focus back to
 // "+", and a successful create never takes it. Strip scroll: the selected
 // tab is brought into view — geometry stubbed, happy-dom computes no layout.
@@ -696,8 +695,8 @@ describe("the + new-tab menu", () => {
 
     const menu = document.querySelector("[role='menu']");
     expect(menu).not.toBeNull();
-    // The portal, not the strip's overflow: the centre panel clipped the old
-    // menu and the resize handle covered its entries.
+    // The portal, not the strip's overflow: the centre panel's overflow would
+    // clip an in-pane menu, and the resize handle would cover its entries.
     expect(container.querySelector("[role='menu']")).toBeNull();
     expect(container.contains(menu)).toBe(false);
 
@@ -857,7 +856,7 @@ describe("the + new-tab menu", () => {
     await act(async () => homeRow.click());
     expect(container.querySelector("#workspace-session-tab-session-2")).not.toBeNull();
 
-    // And the autofocus regression the old test pinned stays fixed: the
+    // And the autofocus trap stays shut: the
     // request was armed for workspace-1's create, the user navigated away,
     // so the terminal must not take focus when its tab is opened.
     const tab = container.querySelector<HTMLButtonElement>("#workspace-session-tab-session-2");
@@ -974,9 +973,9 @@ describe("the + new-tab menu", () => {
     // The anchor: the "+" button near the right edge, strip height.
     const add = addButton(container);
     add.getBoundingClientRect = () => ({ ...stubRect(788, 24), top: 17, bottom: 42, y: 17 });
-    // The popover: a block child of body fills the body (the review's wrong
-    // width); only once position: fixed and max-width are applied does it
-    // shrink-wrap. The stub reports which state it is measured in.
+    // The popover: a block child of body fills the body; only once
+    // position: fixed and max-width are applied does it shrink-wrap. The stub
+    // reports which state it is measured in.
     const originalRect = Element.prototype.getBoundingClientRect;
     Element.prototype.getBoundingClientRect = function (this: Element) {
       if (this instanceof HTMLElement && this.classList.contains("workspace-surface-menu")) {
@@ -1020,7 +1019,8 @@ describe("the + new-tab menu", () => {
     });
 
     // The anchor is not outside its own popover's world: pressing it again
-    // must not dismiss the flow and restart it (the old wrapper contained it).
+    // must not dismiss the flow and restart it — event containment is what
+    // keeps the press from reaching the dismiss layer.
     expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
   });
 
@@ -1514,7 +1514,7 @@ describe("the empty pane's outline action (static CSS contract)", () => {
   it("is an outline action in both themes: no fill, a line border, ink text", () => {
     expect(block, "the .workspace-empty-action rule is missing").not.toBe("");
     // No declared fill means the browser's own button grey paints the pill —
-    // a light block with light text in the dark theme (fix pass 2, dark-01).
+    // a light block with light text in the dark theme.
     expect(block).toContain("background: transparent");
     expect(block).toContain("border: 1px solid var(--line-strong)");
     expect(block).toContain("color: var(--ink)");

@@ -666,9 +666,8 @@ describe("the toast gate is Paseo's rule", () => {
 
   it("announces one raise once, however often the roster re-publishes it", async () => {
     // The away case, twice over: the controller offers the standing raise on
-    // every application (Paseo's notifier is fed by the events themselves), and
-    // the notifier's own record — the one that was never written for a raise the
-    // gate suppressed — is what keeps this to one toast.
+    // every application, and the notifier's own record — never written for a
+    // raise the gate suppressed — is what keeps this to one toast.
     const send = vi.fn(async (_content: ToastContent) => undefined);
     const { release } = harness(send, hiddenInTray);
     reportSelection("agent-one");
@@ -684,9 +683,8 @@ describe("the toast gate is Paseo's rule", () => {
   });
 
   it("announces a raise the gate suppressed once the user has looked away", async () => {
-    // The review's P1: Paseo records ONLY after its gate, so a raise held back
-    // for a user who was looking at it stays due — and the next publication of
-    // the same event announces it once they have switched away. The controller
+    // A raise the gate held back stays due: the next publication of
+    // the same event announces it once the user has switched away. The controller
     // offers that publication because it no longer filters the raise itself.
     const send = vi.fn(async (_content: ToastContent) => undefined);
     const { controller, release } = harness(send, onScreenFocused);
@@ -707,9 +705,8 @@ describe("the toast gate is Paseo's rule", () => {
 
   it("announces one of two publications in flight for the same raise", async () => {
     // The window answer is an await, so two publications of one raise can be in
-    // flight together. Paseo's record is written after the gate; the two
-    // continuations still cannot both toast, because the claim test and the
-    // write share no await. Deferred reads make that interleaving real.
+    // flight together. The two continuations still cannot both toast, because
+    // the claim test and the write share no await — deferred reads make it real.
     const { windowState, resolveNext } = deferredWindowState();
     const send = vi.fn(async (_content: ToastContent) => undefined);
     const { release } = harness(send, windowState);

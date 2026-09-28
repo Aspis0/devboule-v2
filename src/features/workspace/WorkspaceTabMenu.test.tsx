@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The tab context menu: Paseo's close entries, our Delete after a separator,
+// The tab context menu: the close entries, our Delete after a separator,
 // the three ways to open it — including a right-click anywhere on the row —
 // and the dismissals that restore focus. The chip, the selection grammar and
 // the close outcomes have their own files.
