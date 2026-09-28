@@ -61,7 +61,7 @@ fn parse_auto_compact_mode(args: Option<&str>) -> AutoCompactMode {
 /// compaction having begun (Paseo's `finally`), when the compaction ends,
 /// or when a started compaction's RPC fails — Paseo's synthetic completed
 /// item does that third one.
-//
+///
 /// Two bounds Paseo has none of: the wait is bounded, so a
 /// timed-out run's late end is owed to the run that is gone and can never
 /// release the next run; and a successful run whose end never arrives holds
@@ -139,7 +139,7 @@ impl CompactGuard {
     /// manual — pi marks the field optional, and Paseo, which reads it only
     /// for the label, releases on any end. An explicitly automatic frame is
     /// someone else's compaction and moves nothing.
-    //
+    ///
     /// Answers whether this end closes a run the transcript already completed
     /// synthetically: its late end leaves neither a row nor an event.
     pub(super) fn observe(&self, line: &Value) -> bool {

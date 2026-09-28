@@ -283,7 +283,7 @@ fn tool_result_text(value: &Value) -> Option<String> {
 /// window comes from the model list into the manifest, not from this
 /// message, so `max_tokens` is absent and the app reads the manifest entry
 /// of this same `model_id`.
-//
+///
 /// `AgentFinished` comes first because the pi client hands its journal
 /// sequence to the first event of a line and the finish is what the
 /// transcript cursor belongs to.

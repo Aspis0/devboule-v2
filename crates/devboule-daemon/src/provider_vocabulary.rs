@@ -52,7 +52,7 @@ const VOCABULARY_CACHE_TTL_MS: u64 = 30 * 60 * 1000;
 const MAX_QUERY_FIELD_BYTES: usize = 128;
 
 /// One cached vocabulary answer.
-//
+///
 /// The key facts are the discovery facts that invalidate the entry: a
 /// discovery pass that changes the executable or the installed version
 /// produces different facts, and the entry simply stops matching — which is
@@ -209,7 +209,7 @@ impl VocabularyCache {
 }
 
 /// The `ProviderVocabularyGet` handler.
-//
+///
 /// An unknown provider id is the caller's mistake and is refused with the
 /// catalog's own refusal sentence — the same walk, and the same sentence,
 /// the profile store refuses a document with. A known provider that cannot
@@ -332,7 +332,7 @@ fn vocabulary_reply(
 }
 
 /// Claude's vocabulary, and the origin honesty the form repeats to a human:
-//
+///
 /// - Models are `provider`-origin when extraction from the CLI bundle worked
 ///   (`Derived`) and `daemon`-origin when the fallback table answered
 ///   (`Provisional`) — the form says so rather than pretending the provider
@@ -371,7 +371,7 @@ fn claude_models_axis(snapshot: crate::claude_catalog::ClaudeCatalogSnapshot) ->
 
 /// The `absent` answer: items empty, origin omitted — both, in both
 /// directions, exactly as the biconditional requires.
-//
+///
 /// Two axes, not three, and that is a cache fact: the features axis is answered
 /// by its own trait method ([`crate::provider::Provider::features`]) and lives in
 /// a cache of its own ([`crate::provider_features::AcpProbeCache`], no TTL) or a

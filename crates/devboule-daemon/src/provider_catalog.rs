@@ -71,7 +71,7 @@ pub struct KnownAgent {
 }
 
 /// Agents currently relevant to the provider catalog.
-//
+///
 /// Keep one row per agent so adding a known CLI does not require changing the
 /// discovery algorithm.
 /// Measured CLI 2.1.260 stream-json host-permission launch. Empty
@@ -214,7 +214,7 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[
 const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
 
 /// Every tool the daemon's MCP broker can serve, in `tools/list` order.
-//
+///
 /// One source of truth for the broker's `tools/list` body and for the
 /// `ProviderInfo.tools` the Settings panel renders, so the panel and the wire
 /// cannot disagree about a tool's name or its description.
@@ -358,7 +358,7 @@ pub const MCP_LIST_DEVICES_TOOL: &str = "devboule_list_devices";
 pub const MCP_LIST_PEER_AGENTS_TOOL: &str = "devboule_list_peer_agents";
 pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
 /// The creation tool.
-//
+///
 /// Served to every MCP-capable provider, like the two above, but **not**
 /// deliberately set in the always-on list that protects the roster: the tool
 /// policy puts it
@@ -368,7 +368,7 @@ pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
 pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
 /// The move tool: a creator moves its own live child
 /// onto a named ticked profile.
-//
+///
 /// Served to every MCP-capable provider, subject to the provider tool policy
 /// like `devboule_create_agent`. The name carries "profile" on purpose — it is
 /// the one write-shaped companion to the create tool on this surface — but the
@@ -377,7 +377,7 @@ pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
 /// authority for the move is the `created_by` link, never the name.
 pub const MCP_SET_AGENT_PROFILE_TOOL: &str = "devboule_set_agent_profile";
 /// The delegated permission answer.
-//
+///
 /// Served to every MCP-capable provider, subject to the provider tool policy
 /// like `devboule_send_message` and `devboule_create_agent`: a stored policy
 /// may take the answer tool away from a provider, and taking it away is the
@@ -394,7 +394,7 @@ pub const MCP_ANSWER_PERMISSION_TOOL: &str = "devboule_answer_permission";
 pub const MCP_ACTIVITY_TOOL: &str = "devboule_agent_activity";
 /// The stop tool: a creator stops one of its own live children — the
 /// process tree dies, the row and its transcript stay (`session.rs::stop`).
-//
+///
 /// Served to every MCP-capable provider, subject to the provider tool policy
 /// like `devboule_send_message`: a stored policy may take supervision away,
 /// and taking it away is the safe direction. The act is destructive, so the
@@ -410,7 +410,7 @@ pub const MCP_CLOSE_AGENT_TOOL: &str = "devboule_close_agent";
 /// The cancel tool: a creator interrupts the current turn of one of its own
 /// live children and keeps the child — the soft verb between doing nothing
 /// and [`MCP_STOP_AGENT_TOOL`].
-//
+///
 /// Served to every MCP-capable provider, subject to the provider tool policy
 /// like `devboule_send_message`: a stored policy may take supervision away,
 /// and taking it away is the safe direction. The child's parked permission
@@ -422,7 +422,7 @@ pub const MCP_CANCEL_AGENT_TOOL: &str = "devboule_cancel_agent";
 /// The pending-permission list: the cards the caller's own live children are
 /// parked on right now — a pull beside the push envelope, so a coordinator
 /// can recover a `cardId` it was never surfaced.
-//
+///
 /// Served to every MCP-capable provider, subject to the provider tool policy
 /// like `devboule_send_message`. A read of one's own children: it lists while
 /// the human's delegation switch is off, because the switch gates answering,
@@ -436,13 +436,13 @@ pub const MCP_LIST_PENDING_PERMISSIONS_TOOL: &str = "devboule_list_pending_permi
 /// is parked on. A closed child answers from its stored row with no pending
 /// permissions; anything that is not the caller's own child reads as not
 /// found.
-//
+///
 /// Served to every MCP-capable provider, subject to the provider tool policy
 /// like `devboule_send_message`. A read like the roster — the peer door
 /// judges it as the wire's `SessionsList`, the act `view` names.
 pub const MCP_GET_AGENT_STATUS_TOOL: &str = "devboule_get_agent_status";
 /// The read-only profile-list tool (`create-from-profile`).
-//
+///
 /// Served to every MCP-capable provider, and **always on**, like the roster
 /// tool: the creation tool names a profile and nothing else, so a caller that
 /// cannot list the profiles cannot create anything at all. That is the same
@@ -453,7 +453,7 @@ pub const MCP_GET_AGENT_STATUS_TOOL: &str = "devboule_get_agent_status";
 pub const MCP_LIST_PROFILES_TOOL: &str = "devboule_list_profiles";
 /// The three project-graph tools: the code-knowledge graph the indexer writes
 /// for the calling session's own workspace, read-only.
-//
+///
 /// The graph is derived from the files of a workspace, and a local agent
 /// already reads those files (its cwd is that workspace), so the tools hand it
 /// no reach it did not have; a paired device's agent does not read this
@@ -470,7 +470,7 @@ pub const MCP_IMPORTS_TOOL: &str = "devboule_project_imports";
 pub const MCP_IMPORTERS_TOOL: &str = "devboule_project_importers";
 /// The semantic search tool: the Oracle index of the calling session's own
 /// workspace, read by meaning, served by the desktop app's engine.
-//
+///
 /// Same door verdict as the three graph tools it complements — and with the
 /// stronger premise: it ships source snippets (content), not topology, so it
 /// rides the same administrative capability rather than a weaker one. The
@@ -481,7 +481,7 @@ pub const MCP_IMPORTERS_TOOL: &str = "devboule_project_importers";
 pub const MCP_ORACLE_SEARCH_TOOL: &str = "devboule_oracle_search";
 /// The workspace inventory read: the workspaces of the calling session's own
 /// project, scoped through its session row.
-//
+///
 /// A read like the roster, subject to the provider tool policy like
 /// `devboule_send_message` — a stored policy may take the inventory away,
 /// and taking it away is the safe direction. The sibling checkouts it names
@@ -490,7 +490,7 @@ pub const MCP_ORACLE_SEARCH_TOOL: &str = "devboule_oracle_search";
 pub const MCP_LIST_WORKSPACES_TOOL: &str = "devboule_list_workspaces";
 /// The workspace write: a new checkout inside the calling session's own
 /// project, behind the first-use human card.
-//
+///
 /// Served to every MCP-capable provider, subject to the provider tool policy
 /// like `devboule_create_agent`, and denied to the design preset outright:
 /// a design child commissions no checkouts. The door judges it as the wire's
@@ -505,7 +505,7 @@ pub const MCP_CREATE_WORKSPACE_TOOL: &str = "devboule_create_workspace";
 pub const MCP_LIST_TERMINALS_TOOL: &str = "devboule_list_terminals";
 /// The terminal screen read: the visible grid of one in-scope running
 /// terminal, as plain text with no escape sequence and no scrollback.
-//
+///
 /// Same policy subject as [`MCP_LIST_TERMINALS_TOOL`], and the stronger
 /// premise: a screen is content — it can hold a prompt, a token or a
 /// password — so the peer door requires the administrative capability for
@@ -522,7 +522,7 @@ pub const MCP_CAPTURE_TERMINAL_TOOL: &str = "devboule_capture_terminal";
 pub const MCP_ARCHIVE_WORKSPACE_TOOL: &str = "devboule_archive_workspace";
 /// The terminal write that opens a shell: a terminal in the calling
 /// session's own workspace, behind the terminal-write first-use card.
-//
+///
 /// Same policy subject as [`MCP_LIST_TERMINALS_TOOL`] — disableable per
 /// provider and per profile, never always-on — and denied to the design
 /// preset outright, which commissions no shells. The workspace is the
@@ -534,7 +534,7 @@ pub const MCP_ARCHIVE_WORKSPACE_TOOL: &str = "devboule_archive_workspace";
 pub const MCP_CREATE_TERMINAL_TOOL: &str = "devboule_create_terminal";
 /// The terminal write that types into a pty: Paseo's `{terminalId, keys,
 /// literal}` shape, resolved to bytes by the same token map.
-//
+///
 /// The stronger premise of the three writes: what it refuses to reach is a
 /// provider's stdin, so the `kind == Terminal` gate answers an agent
 /// session's id exactly like an unknown id — "No session with that id." —
@@ -547,7 +547,7 @@ pub const MCP_CREATE_TERMINAL_TOOL: &str = "devboule_create_terminal";
 pub const MCP_SEND_TERMINAL_KEYS_TOOL: &str = "devboule_send_terminal_keys";
 /// The terminal write that ends a terminal: the process tree dies and the
 /// live session goes, while the journal row and the transcript stay.
-//
+///
 /// Same gate, same refusal and same card as
 /// [`MCP_SEND_TERMINAL_KEYS_TOOL`], then the registry's own close path. An
 /// agent session is never killable through this tool; the peer door judges
@@ -556,12 +556,12 @@ pub const MCP_SEND_TERMINAL_KEYS_TOOL: &str = "devboule_send_terminal_keys";
 pub const MCP_KILL_TERMINAL_TOOL: &str = "devboule_kill_terminal";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`].
-//
+///
 /// Closed on purpose. `additionalProperties: false` is the schema's half of a
 /// two-part rule: the broker refuses an unknown parameter by name, and the
 /// broker's own list of known parameters is read *out of this document* — so a
 /// parameter can never be described here and unchecked there.
-//
+///
 /// There is deliberately no `provider`, `model`, `mode`, `settings`, `features`
 /// or `preset`: a profile the human wrote and ticked is the only way to say what
 /// to run, and what an agent cannot express is what no check can get wrong.
@@ -608,7 +608,7 @@ pub(crate) fn agent_create_input_schema() -> serde_json::Value {
 }
 
 /// The `tools/list` input schema of [`MCP_SET_AGENT_PROFILE_TOOL`].
-//
+///
 /// Closed on purpose, like [`agent_create_input_schema`], and rhyming with the
 /// landed create schema: the profile argument is the profile's **name**, the
 /// same way `devboule_create_agent` names one. There is deliberately no
@@ -637,7 +637,7 @@ pub(crate) fn agent_set_profile_input_schema() -> serde_json::Value {
 }
 
 /// The `tools/list` input schema of [`MCP_ACTIVITY_TOOL`].
-//
+///
 /// Closed on purpose, like the create schema: the child is named by id or
 /// display name (the broker resolves both, like `devboule_send_message`'s
 /// `to_agent`), and `limit` is optional. Identity is never a parameter — it
@@ -665,7 +665,7 @@ pub(crate) fn agent_activity_input_schema() -> serde_json::Value {
 
 /// The `tools/list` input schema shared by [`MCP_STOP_AGENT_TOOL`] and
 /// [`MCP_CLOSE_AGENT_TOOL`].
-//
+///
 /// One schema, not two: the verbs differ in what they do, not in what they
 /// accept, and sharing keeps that fact load-bearing. Closed on purpose, like
 /// the create schema; there is deliberately no caller or creator parameter —
@@ -687,7 +687,7 @@ pub(crate) fn agent_end_input_schema() -> serde_json::Value {
 
 /// The `tools/list` input schema shared by [`MCP_CANCEL_AGENT_TOOL`] and
 /// [`MCP_GET_AGENT_STATUS_TOOL`].
-//
+///
 /// One schema, not two: both name one of the caller's own children, and
 /// sharing keeps that fact load-bearing. Closed on purpose, like the create
 /// schema; there is deliberately no caller or creator parameter — identity is
@@ -709,7 +709,7 @@ pub(crate) fn agent_id_input_schema() -> serde_json::Value {
 }
 
 /// The `tools/list` input schema of [`MCP_LIST_PEER_AGENTS_TOOL`].
-//
+///
 /// Closed on purpose, like the create schema: the device is named by the id
 /// `devboule_list_devices` answered, and nothing else is a parameter. There
 /// is deliberately no user, owner or scope argument — whose roster the
@@ -731,7 +731,7 @@ pub(crate) fn peer_agents_input_schema() -> serde_json::Value {
 }
 
 /// The `tools/list` input schema of [`MCP_CAPTURE_TERMINAL_TOOL`].
-//
+///
 /// Closed on purpose, like the other read schemas: the terminal is named by
 /// the id `devboule_list_terminals` answered, and `lines` is optional. There
 /// is deliberately no workspace, owner or path parameter — the scope is the
@@ -760,7 +760,7 @@ pub(crate) fn terminal_capture_input_schema() -> serde_json::Value {
 }
 
 /// Which providers can be served the broker's tools, keyed by catalog id.
-//
+///
 /// All four session families host carriers — ACP and Claude,
 /// plus `codex` (`-c mcp_servers` overrides on the launch line) and `pi`
 /// (RPC bridge) with post-spawn verification. A provider absent
@@ -794,12 +794,12 @@ pub fn mcp_tools_for(agent_id: &str) -> Vec<devboule_protocol::ToolDescriptor> {
 }
 
 /// The session kind a provider's sessions are created as.
-//
+///
 /// One match, in the catalog, because the two must agree: `claude` is the
 /// stream-json kind, `codex` the app-server kind, `pi` the RPC kind, and every
 /// other provider a created session may name is ACP. `resolve_session_provider`
 /// reads the pair back and would refuse a `claude` sent as ACP.
-//
+///
 /// This is also the **one place a provider name is consulted on the
 /// `unattended` marker's path**: the birth, the consent
 /// card and `list_profiles` all resolve the kind here before
@@ -835,13 +835,13 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 /// may be derived from it** (rev 11: the provider axis is open, so no new
 /// table, `match` or constant may grow from a list of provider or mode names —
 /// the next providers are queued and some will be user-defined).
-//
+///
 /// Written as a refusal list rather than an allow list, and the reason is the
 /// decision's own: the modes a session nobody is watching may not be in have
 /// names, and a new mode a provider adds is judged by them rather than by
 /// whether someone remembered to add it to a table.
 /// / Three sources, all named:
-//
+///
 /// - the per-family automatic ids the daemon itself answers a permission
 ///   request in ([`mode_gate_for`]);
 /// - Codex's own unattended pair: `full-access` is `approvalPolicy: never`, and
@@ -849,7 +849,7 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 /// - Claude's `acceptEdits`, which approves every edit tool without prompting,
 ///   and its `auto`, which is a model-reviewed approvals mode — the same act
 ///   Codex spells `auto-review`.
-//
+///
 /// Codex's `auto` is deliberately **not** on the list: it is `on-request` plus
 /// `workspaceWrite`, which is exactly the mode decision 2 allows. Aliases
 /// resolve first, so an alias cannot reach a mode its provider's own spelling
@@ -932,7 +932,7 @@ pub(crate) fn mode_is_auto_answered(
 
 /// The pre-card verdict on an `autoAccept` tick against the profile's own
 /// mode, split by who owns the mode id.
-//
+///
 /// The distinction is **authorship**, and it is the same one
 /// `peer_policy::unattended_mode` draws for the birth marker: a mode id this
 /// daemon did not author is a fact this daemon cannot state, and a gate that
@@ -971,7 +971,7 @@ pub(crate) enum AutoAcceptTick {
 
 /// The pre-card judgement of an `autoAccept` tick against the profile's own
 /// mode, split into the authorship [`AutoAcceptTick`] names.
-//
+///
 /// [`mode_gate_for`] is still the only mode table this reads. A
 /// non-table id no longer licenses "asks the human": that reading is a fact
 /// about vocabulary the
@@ -1014,7 +1014,7 @@ pub(crate) fn judge_auto_accept_tick(
 
 /// The one feature key that means "approve my permission prompts"
 /// (`create-from-profile`).
-//
+///
 /// Paseo spells the toggle `Auto Accept`, and this is the only spelling read:
 /// the features map is otherwise free-form and nothing consults it, so a second
 /// accepted spelling would be a second vocabulary for one meaning.
@@ -1023,7 +1023,7 @@ pub(crate) const AUTO_ACCEPT_FEATURE: &str = "autoAccept";
 
 /// The exact id the catalog publishes for `agent_id`, when it publishes tools
 /// under any spelling of it.
-//
+///
 /// The row match above is case-insensitive — a caller that spells a provider
 /// `CLAUDE` is naming the same provider — while everything keyed by a provider
 /// id (the tool policy file, `ProviderInfo.tools`) is keyed by the exact string.
@@ -1055,7 +1055,7 @@ impl PartialEq for ToolOverlay {
 }
 
 /// The tool-policy overlay a creation applies to the sessions it makes.
-//
+///
 /// An overlay can only ever *remove* tools. There is no field that grants one,
 /// because a preset that widened a session's tools would be a second policy
 /// authority beside the stored `ToolPolicyEntry` the human edits; the overlay
@@ -1069,7 +1069,7 @@ pub(crate) struct ToolOverlay {
 }
 
 /// Where an overlay's deny list comes from.
-//
+///
 /// Two sources, one type, because both have to be consulted at the same two
 /// places (`tools/list` and `tools/call`): a preset's own table, which the
 /// catalog's constants hold and which must stay `const` for the preset table to
@@ -1148,7 +1148,7 @@ impl ToolOverlay {
     }
 
     /// The names this overlay denies, for the tests that must see them.
-    //
+    ///
     /// A view, not a field: the two sources hold their names differently, and a
     /// test that walked `disabled` directly would be testing the representation
     /// rather than the rule.
@@ -1170,7 +1170,7 @@ impl ToolOverlay {
 
 /// One provider's row in a preset: the mode the child is created in and the
 /// overlay applied to it.
-//
+///
 /// A cell is a *promise* about a provider, and the daemon keeps it only where
 /// it can: the mode is applied through the provider's own mode switch, and the
 /// overlay only reaches a provider whose sessions are given an MCP connection
@@ -1209,7 +1209,7 @@ pub(crate) const AGENT_PRESET_WORKER: &str = "worker";
 pub(crate) const AGENT_PRESET_DESIGN: &str = "design";
 
 /// The one preamble both presets carry.
-//
+///
 /// It asks for the result in the final message and says nothing about files:
 /// the finish hook deposits that message by itself, so a
 /// preamble that told the child to write files would be asking for the same
@@ -1220,7 +1220,7 @@ pub(crate) const AGENT_PREAMBLE: &str =
     "You were created by another agent; report your result in your final message.";
 
 /// The `worker` cells: the allowed mode of each catalog provider, no overlay.
-//
+///
 /// The modes are the ones decision 2 measured as allowed — pi `ask` (the only
 /// non-`bypass` mode pi has), Codex `auto` (`on-request` + `workspaceWrite`,
 /// no network), Claude `default`, ACP `default` for the ACP providers the
@@ -1263,7 +1263,7 @@ const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
 ];
 
 /// The `design` cells: the same modes, with the design overlay.
-//
+///
 /// There is no Design preamble to copy and none is invented here: the Design
 /// instructions are composed per request by the app and travel in
 /// `initialPrompt`. A frozen copy in the catalog would be a second source of
@@ -1372,7 +1372,7 @@ pub(crate) fn catalog_reserved_names() -> Vec<&'static str> {
 /// alias of it — now owned, because the catalogue is no longer compile-time
 /// closed: a user row that is live in the registry snapshot canonicalises
 /// like any other provider id.
-//
+///
 /// The walk is the snapshot's **published** ids — the entries, i.e. rows
 /// that bind an implementation and can spawn — never the raw `user_rows`
 /// alone: a profile cannot name a provider nothing can spawn (the
@@ -1381,7 +1381,7 @@ pub(crate) fn catalog_reserved_names() -> Vec<&'static str> {
 /// `provider.rs`'s tests). Built-in ids and aliases answer first, exactly as
 /// before this pass; a live user row answers only where nothing matched
 /// before.
-//
+///
 /// `mcp_catalog_id` answers only for MCP-capable providers, which is the wrong
 /// set here: a profile may name any installed provider, so this walks the whole
 /// catalog instead.
@@ -1433,7 +1433,7 @@ pub(crate) fn agent_preset(preset_id: &str) -> Option<&'static AgentPreset> {
 }
 
 /// Resolve one `(preset, provider)` cell, or the sentence that refuses it.
-//
+///
 /// The refusals are decision 2's, in the order the caller can fix them: the
 /// preset is ours, the provider is the catalog's, and the mode is the one the
 /// catalog says that provider runs watched by a human. A provider the catalog
@@ -1472,14 +1472,14 @@ pub(crate) fn resolve_agent_preset(
 
 /// The cells a **debug** build accepts for the test-only providers, and the
 /// whole of the seam they need.
-//
+///
 /// `devboule-acp-stub` is the integration stub binary: it is the only provider
 /// in this tree that implements `session/set_mode`, so it is what makes a child
 /// creation measurable end to end, including the mode the preset cell names.
 /// `devboule-absent-probe` names a binary that cannot exist anywhere, and is
 /// how `provider not installed` is reached without depending on what happens to
 /// be installed on the machine running the tests.
-//
+///
 /// Neither is in [`AGENT_PRESETS`]: the release table has six cells per preset
 /// (`the_release_table_never_names_a_test_provider`), the release build has no
 /// `test_only_cell` at all, and a release daemon therefore refuses both with
@@ -1538,7 +1538,7 @@ const REGISTRY_NATIVE_CHAT_COVERAGE: &[(&str, &str)] = &[
 ];
 
 /// Explicit product policy for selecting the default ACP provider.
-//
+///
 /// This is deliberately separate from `KNOWN_AGENTS` layout: on 2026-09-04,
 /// grok was the only ACP agent verified to complete a working session on this
 /// machine; qwen completed the handshake but declares its ACP flag deprecated.
@@ -1584,7 +1584,7 @@ impl InstallChannel {
 }
 
 /// Direct CreateProcess program plus arguments that must precede ACP/user args.
-//
+///
 /// A native CLI (`claude.exe`, `grok.exe`) has an empty `prefix_args`. An
 /// unwrapped npm cmd-shim is `node` plus the package script path.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2358,7 +2358,7 @@ fn split_quoted_dp0_path(input: &str) -> Option<(&str, &str)> {
 /// script variable from `%~dp0`, then invokes
 /// `"%NODE_VAR%" "%SCRIPT_VAR%" %*`. Measured on this machine for npx.cmd
 /// (npm 10.x).
-//
+///
 /// Recognized by the `SET "NODE_EXE=%~dp0\node.exe"` (or `%dp0%`) line.
 fn is_npm_launcher_shim(contents: &str) -> bool {
     let lower = contents.to_ascii_lowercase();
@@ -2369,13 +2369,13 @@ fn is_npm_launcher_shim(contents: &str) -> bool {
 }
 
 /// Relative script path from an npm launcher shim, if recognized.
-//
+///
 /// Parses `SET "VAR=%~dp0\..."` assignments to find the node executable
 /// variable (value ends in `node.exe`) and the script variable (value ends in
 /// `.js`). Then looks for the final invocation line
 /// `"%NODE_VAR%" "%SCRIPT_VAR%" %*` and returns the relative path from the
 /// last static `%~dp0` / `%dp0%` assignment for the script variable.
-//
+///
 /// The FOR /F dynamic override (if present) is intentionally ignored — the
 /// static `%~dp0\node_modules\npm\bin\npx-cli.js` always exists in a real npm
 /// install and is the correct fallback.

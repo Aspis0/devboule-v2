@@ -303,7 +303,7 @@ pub struct SessionRecord {
     /// answering, as the tri-state [`UnattendedState`] knows it. Derived once,
     /// by the creation that delivered the mode, and never re-derived:
     /// un-ticking the profile afterwards does not change the row.
-    //
+    ///
     /// The boolean `unattended` **column** stays beside the tri-state
     /// `unattended_state` column this value is stored in: it is ratcheted by
     /// the same `MAX` and absorbs the `yes` half for rows written
@@ -323,7 +323,7 @@ pub struct SessionRecord {
     /// cell — never a recorded value, since every write carries a definite
     /// overlay — and only the resume path judges it; the roster reads the
     /// cell but decides nothing from it.
-    //
+    ///
     /// `pub(crate)` while the sibling fields are `pub`: the overlay type
     /// itself is crate-internal, and widening it for one field would grow
     /// the crate's API for nothing the app ever names.
@@ -384,7 +384,7 @@ impl WorkspaceRecord {
 }
 
 /// One paired device, as stored in `peers`.
-//
+///
 /// `role` is `client` or `daemon` (the CHECK constraint holds the same set).
 /// `caps` is a JSON array of capability names. `paired_by_user` is **this**
 /// daemon's own user SID at pairing time, written by this side: it is never
@@ -552,7 +552,7 @@ impl SessionRecord {
 
     /// The context this session belongs to: the row's own value when it has one,
     /// and its own id otherwise.
-    //
+    ///
     /// The second half is the rule [`Session::context_id`] states for a session
     /// no other session created, and it is applied here rather than written into
     /// the v11 migration because a row that predates the column has no creator
@@ -630,7 +630,7 @@ struct DropCounters {
 }
 
 /// Live counters of the journal writer, process-wide.
-//
+///
 /// The pair `(failed_frames, committed_frames < accepted_frames)` is what
 /// makes two otherwise-identical-looking losses distinguishable while the
 /// daemon is alive: output dropped knowing it (counted in `failed_frames`,
@@ -1222,9 +1222,9 @@ impl Journal {
 
     /// A `devboule_set_agent_profile` move's recording, and nothing else: the
     /// child's `profile_id` column and the `unattended` ratchet.
-    //
+    ///
     /// Two columns, two rules, both the row's own:
-    //
+    ///
     /// - `profile_id` is `COALESCE(?, profile_id)` — a move that records a
     ///   profile overwrites, and one that must record **no** profile change
     ///   (the partial failure: the mode landed, the model ask was refused)
@@ -1234,12 +1234,12 @@ impl Journal {
     ///   (sessions.unattended, excluded.unattended)` and its tri-state twin. A
     ///   child that was able to run unattended keeps the marker whatever it is
     ///   moved onto later; that fact cannot be un-lived.
-    //
+    ///
     /// This is control traffic and waits, like `record_permission`: the tool's
     /// answer means the row says what the move did. A journal that cannot take
     /// the write degrades the recording; the asks that already landed cannot
     /// be undone by refusing to write them down.
-    //
+    ///
     /// A targeted UPDATE rather than an upsert of a rebuilt record: the
     /// full-row upsert overwrites `status`, `generation`, `last_seq` and
     /// `created_at_ms` from the record, and a caller holding only wire
@@ -1582,7 +1582,7 @@ impl Journal {
     /// journal already holds is refused instead of merged, and the answer
     /// reaches the caller — a create that cannot own its id fails loudly
     /// here, before anything spawns against it.
-    //
+    ///
     /// One round trip, not two: the writer checkpoints inline (best effort),
     /// so a checkpoint stall never turns a landed row into a reported
     /// failure. A birth that times out leaves no row — the writer deletes
@@ -2859,7 +2859,7 @@ fn unattended_state_from_rank(rank: i64) -> UnattendedState {
 
 /// The labels column: one JSON object, and `{}` for a session that carries none
 /// (which is every session a human started).
-//
+///
 /// A map whose encoding fails is written as `{}` rather than as a half-object:
 /// nothing reads a label to decide anything, so the worst case is a display that
 /// shows no labels — never a session that cannot be listed.
@@ -2874,7 +2874,7 @@ fn labels_json(labels: &std::collections::BTreeMap<String, String>) -> String {
 /// overlay": a birth with no restriction writes the same bytes a pre-v13
 /// row already has, so absence keeps meaning absence and no backfill can
 /// manufacture a restriction nobody recorded.
-//
+///
 /// The encoding cannot fail for the names this function is given, and the
 /// failure is still loud: a restriction silently unwritten would read back
 /// as no restriction, which is the open direction the read side refuses.
@@ -3390,7 +3390,7 @@ fn origin_kind_str(origin: &SessionOrigin) -> &'static str {
 }
 
 /// The origin one row carries.
-//
+///
 /// `peer` is the only kind that names a device, so it is the only one that
 /// opens anything to a peer: the `Daemon` branch of `check_user_owner` matches
 /// on `origin.device_id`, and a row whose `kind` is missing or is a spelling
@@ -3398,7 +3398,7 @@ fn origin_kind_str(origin: &SessionOrigin) -> &'static str {
 /// — not `local`. `local` is written by every pre-v9 row's `DEFAULT`, and it
 /// is a *claim* about who owns the session that only this machine's own user
 /// may act on; a `NULL` or unreadable column is not that claim.
-//
+///
 /// A `peer` row missing its device id keeps `kind = peer` with no device, which
 /// refuses for the same reason: an origin that cannot name the device that
 /// asked is not authority for any device.
@@ -3554,7 +3554,7 @@ pub(crate) enum OriginBackfill {
 }
 
 /// The largest stored payload the v9 backfill will look at.
-//
+///
 /// The migration runs at startup, before anything serves, and it reads
 /// every `agent_report` payload into memory to decide what to do with it. One
 /// mebibyte is far above any real permission request (the field caps in
@@ -3564,13 +3564,13 @@ pub(crate) const MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES: usize = 1024 * 1024;
 
 /// The payload with a `local` origin written into it, when it is a permission
 /// request stored before the field existed.
-//
+///
 /// The v9 migration (`journal_schema.rs`) calls this so that old data is made
 /// *valid* rather than left to degrade at replay — `origin` is required on the
 /// wire, and a pre-origin payload would be dropped by hydration and flagged by
 /// the live replay. `local` is a fact about those rows, not a guess: the daemon
 /// that wrote them had no paired devices.
-//
+///
 /// Two bounds. The payload is read at all only under
 /// [`MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES`], and it is rewritten only when the
 /// **complete** `SessionEvent` it claims to be deserializes: a JSON object
