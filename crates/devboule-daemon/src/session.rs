@@ -2140,8 +2140,8 @@ impl SessionRegistry {
         // column is three different things: no `created_by` reads as no
         // delegation (the root lineage), no overlay refuses the resume with
         // an `Internal` error naming `sessions.overlay`, and no depth
-        // substitutes `MAX_AGENT_DEPTH` — the most permissive value, which
-        // is the one substitution this comment exists to make visible.
+        // substitutes `MAX_AGENT_DEPTH`, which fails closed: a session at the
+        // cap may not create children.
         // Whether the creator is live decides only the bookkeeping in
         // `readmit_agent_child` below, never the powers. The *quiet*
         // preference is still not persisted: a resume reports its end.
