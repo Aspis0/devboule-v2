@@ -7,17 +7,17 @@ use super::super::event_pull::ConnHandle;
 use super::super::permission_broker::PermissionBroker;
 use super::super::session_runtime::SessionRuntime;
 use super::{
-    carried_image_paths, codex_delivery, codex_local_image_entry, command_prompt_input,
-    empty_commands, initialize_params, interrupt_params, mcp_launch, mode_values,
-    notification_frame, plan_codex_prompt, request_frame, send_interrupt_request,
-    steer_params_if_current, thread_resume_params, thread_start_params, turn_id_from_response,
-    turn_start_params, turn_start_params_for_prompt, turn_start_params_with_images,
-    turn_steer_params, validate_mode, CodexCommands, CodexReader, CodexRequests, CodexSteerer,
-    ThreadRoad,
+    approved_plan_prompt, carried_image_paths, codex_delivery, codex_local_image_entry,
+    command_prompt_input, empty_commands, initialize_params, interrupt_params, mcp_launch,
+    mode_values, notification_frame, plan_codex_prompt, request_frame, send_interrupt_request,
+    send_turn_start, steer_params_if_current, thread_resume_params, thread_start_params,
+    turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
+    turn_start_params_with_images, turn_steer_params, validate_mode, with_collaboration_mode,
+    CodexCommands, CodexReader, CodexRequests, CodexStaticPrompt, CodexSteerer, ThreadRoad,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
-    catalog_from_response, fixture_frames, CodexState, CodexStdout, CodexView,
+    catalog_from_response, fixture_frames, CodexCatalog, CodexState, CodexStdout, CodexView,
 };
 use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
 use crate::session::ReaderDispatch;
@@ -66,6 +66,656 @@ fn codex_modes_use_the_measured_policy_shapes() {
         .clone()
     );
     assert!(validate_mode("bypass").is_err());
+}
+
+#[test]
+fn plan_toggle_selects_plan_and_default_collaboration_modes_per_turn() {
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{"id":"fake-model","isDefault":true}]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                {"name":"Plan","mode":"plan","model":"plan-model","reasoning_effort":"high"},
+                {"name":"Default","mode":"default","model":"default-model","reasoning_effort":null}
+            ]
+        }))
+        .expect("modes");
+
+    assert_eq!(state.plan_mode_override(), Some(false));
+    let default_before_toggle = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert_eq!(
+        default_before_toggle["collaborationMode"]["mode"],
+        "default"
+    );
+    // No session model is configured yet, so the entry's own values are the
+    // settings: the app-server refuses a mode whose settings lack `model`.
+    assert_eq!(
+        default_before_toggle["collaborationMode"]["settings"],
+        serde_json::json!({ "model": "default-model" })
+    );
+
+    state.set_plan_mode(true).expect("plan toggle");
+    let plan = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert_eq!(plan["collaborationMode"]["mode"], "plan");
+    assert_eq!(
+        plan["collaborationMode"]["settings"],
+        serde_json::json!({ "model": "plan-model", "reasoning_effort": "high" })
+    );
+
+    state.set_plan_mode(false).expect("plan off");
+    let default = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert_eq!(default["collaborationMode"]["mode"], "default");
+    assert_eq!(
+        default["collaborationMode"]["settings"],
+        serde_json::json!({ "model": "default-model" })
+    );
+}
+
+#[test]
+fn configured_model_and_effort_override_the_list_entry() {
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [
+                { "id": "fake-model", "isDefault": true },
+                {
+                    "id": "configured-model",
+                    "supportedReasoningEfforts": [{ "reasoningEffort": "medium" }]
+                }
+            ]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan", "model": "entry-plan-model", "reasoning_effort": "high" },
+                { "name": "Default", "mode": "default", "model": "entry-default-model", "reasoning_effort": "low" }
+            ]
+        }))
+        .expect("modes");
+    state
+        .set_model(Some("configured-model"), Some("medium"))
+        .expect("configured pair");
+    state.set_plan_mode(true).expect("plan on");
+    let plan = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert_eq!(
+        plan["collaborationMode"]["settings"],
+        serde_json::json!({ "model": "configured-model", "reasoning_effort": "medium" })
+    );
+    state.set_plan_mode(false).expect("plan off");
+    let default = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert_eq!(
+        default["collaborationMode"]["settings"],
+        serde_json::json!({ "model": "configured-model", "reasoning_effort": "medium" })
+    );
+}
+
+#[test]
+fn thread_response_model_fills_settings_when_the_entry_has_none() {
+    // The frame shape the installed app-server sends: entries without a
+    // `model` key, and the model the `thread/start` response carries — the
+    // only model a session that named none has.
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "thread-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan" },
+                { "name": "Default", "mode": "default" }
+            ]
+        }))
+        .expect("modes");
+    state.set_plan_mode(true).expect("plan on");
+    let plan = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert_eq!(
+        plan["collaborationMode"]["settings"],
+        serde_json::json!({ "model": "thread-model" })
+    );
+    state.set_plan_mode(false).expect("plan off");
+    let default = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert_eq!(
+        default["collaborationMode"]["settings"],
+        serde_json::json!({ "model": "thread-model" })
+    );
+}
+
+#[test]
+fn a_turn_keeps_the_mode_its_own_response_recorded() {
+    // The measured wire answers `turn/start` before it notifies
+    // `turn/started`: the response records the mode, and the notification's
+    // queue pop must not overwrite it.
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "fake-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan" },
+                { "name": "Auto", "mode": "auto" }
+            ]
+        }))
+        .expect("modes");
+    state.set_plan_mode(true).expect("plan on");
+    let params = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    state.record_turn_start(
+        "turn-start-request",
+        state.is_plan_collaboration_mode(
+            params["collaborationMode"]["mode"]
+                .as_str()
+                .expect("sent mode"),
+        ),
+    );
+
+    let response = serde_json::json!({
+        "id": "turn-start-request",
+        "result": { "turn": { "id": "turn-id" } }
+    });
+    assert_eq!(
+        state.resolve_turn_start(&response),
+        Some(("turn-id".to_string(), true))
+    );
+    state.assign_next_turn_mode("turn-id");
+    assert_eq!(
+        state.sent_mode_for_turn("turn-id"),
+        Some(true),
+        "the notification does not pop a queue the response already answered"
+    );
+}
+
+#[test]
+fn two_outstanding_turns_each_keep_their_own_mode() {
+    // Turn B is a plan turn, turn C is not; both are in flight together. The
+    // interleaved order — B's response, then B's notification, then C's — is
+    // the one that steals a mode without the guard.
+    for order in ["interleaved", "responses-first", "notifications-first"] {
+        let state = CodexState::new(
+            "thread".to_string(),
+            catalog_from_response(&serde_json::json!({
+                "data": [{ "id": "fake-model", "isDefault": true }]
+            }))
+            .expect("catalog"),
+            "auto",
+        );
+        state
+            .set_collaboration_modes(&serde_json::json!({
+                "data": [
+                    { "name": "Plan", "mode": "plan" },
+                    { "name": "Auto", "mode": "auto" }
+                ]
+            }))
+            .expect("modes");
+        state.set_plan_mode(true).expect("plan on for B");
+        let plan_params = with_collaboration_mode(
+            turn_start_params("thread", "plan", None, None, None, None),
+            &state,
+        );
+        state.record_turn_start(
+            "request-b",
+            state.is_plan_collaboration_mode(
+                plan_params["collaborationMode"]["mode"]
+                    .as_str()
+                    .expect("plan mode"),
+            ),
+        );
+        state.set_plan_mode(false).expect("plan off for C");
+        let default_params = with_collaboration_mode(
+            turn_start_params("thread", "default", None, None, None, None),
+            &state,
+        );
+        state.record_turn_start(
+            "request-c",
+            state.is_plan_collaboration_mode(
+                default_params["collaborationMode"]["mode"]
+                    .as_str()
+                    .expect("off mode"),
+            ),
+        );
+
+        let response_b = serde_json::json!({
+            "id": "request-b",
+            "result": { "turn": { "id": "turn-b" } }
+        });
+        let response_c = serde_json::json!({
+            "id": "request-c",
+            "result": { "turn": { "id": "turn-c" } }
+        });
+        match order {
+            "interleaved" => {
+                state.resolve_turn_start(&response_b);
+                state.assign_next_turn_mode("turn-b");
+                state.assign_next_turn_mode("turn-c");
+                state.resolve_turn_start(&response_c);
+            }
+            "responses-first" => {
+                state.resolve_turn_start(&response_b);
+                state.resolve_turn_start(&response_c);
+                state.assign_next_turn_mode("turn-b");
+                state.assign_next_turn_mode("turn-c");
+            }
+            _ => {
+                state.assign_next_turn_mode("turn-b");
+                state.assign_next_turn_mode("turn-c");
+                state.resolve_turn_start(&response_b);
+                state.resolve_turn_start(&response_c);
+            }
+        }
+        assert_eq!(
+            state.sent_mode_for_turn("turn-b"),
+            Some(true),
+            "{order}: turn B keeps its plan mode"
+        );
+        assert_eq!(
+            state.sent_mode_for_turn("turn-c"),
+            Some(false),
+            "{order}: turn C keeps its off mode"
+        );
+    }
+}
+
+#[test]
+fn an_entry_without_a_mode_key_is_kept_and_sent_as_code() {
+    // The plan entry has no mode key (sent as `code`); the off entry names
+    // one, so the two do not collapse and the feature stays supported.
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "fake-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan" },
+                { "name": "Default", "mode": "default" }
+            ]
+        }))
+        .expect("modes");
+
+    assert!(
+        state.supports_plan_mode(),
+        "a name with no mode key is still a mode"
+    );
+    state.set_plan_mode(true).expect("plan on");
+    assert_eq!(
+        state.collaboration_mode().expect("plan mode")["mode"],
+        "code",
+        "Paseo sends a mode-less entry as code"
+    );
+}
+
+#[test]
+fn plan_and_off_resolving_to_the_same_mode_id_is_not_supported() {
+    // Two mode-less entries collapse to the same id, so plan and off would
+    // be indistinguishable: no toggle, and no collaborationMode on any turn.
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "fake-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan" },
+                { "name": "Default" }
+            ]
+        }))
+        .expect("modes");
+
+    assert!(
+        !state.supports_plan_mode(),
+        "plan and off are the same mode, so there is no plan mode"
+    );
+    assert!(state.plan_feature_state().is_none(), "no toggle is offered");
+    assert!(
+        state.set_plan_mode(true).is_err(),
+        "the toggle cannot even be turned on"
+    );
+    let params = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert!(
+        params.get("collaborationMode").is_none(),
+        "no collaborationMode is sent when plan and off are the same mode"
+    );
+}
+
+#[test]
+fn no_model_anywhere_sends_no_collaboration_mode_and_offers_no_toggle() {
+    let state = CodexState::new("thread".to_string(), CodexCatalog::empty(), "auto");
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan" },
+                { "name": "Default", "mode": "default" }
+            ]
+        }))
+        .expect("modes");
+    assert!(!state.supports_plan_mode(), "no model, no plan toggle");
+    assert!(state.plan_feature_state().is_none());
+    assert!(
+        state.set_plan_mode(false).is_err(),
+        "the toggle cannot even be turned off by the setter"
+    );
+    let params = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    assert!(
+        params.get("collaborationMode").is_none(),
+        "a turn is never sent a mode the app-server would refuse"
+    );
+}
+
+#[test]
+fn a_turn_start_carries_a_model_inside_its_collaboration_settings() {
+    // End to end against the fake app-server: the frame the send road writes
+    // is recorded, and the recorded settings must carry the model the
+    // installed app-server demands.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-turn-settings");
+    let turn_params = dir.join("turn-params.jsonl");
+    let mut child = fake_codex_child_recording(&[("FAKE_CODEX_TURN_PARAMS", turn_params.clone())]);
+    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "fake-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan" },
+                { "name": "Default", "mode": "default" }
+            ]
+        }))
+        .expect("modes");
+    state.set_plan_mode(true).expect("plan on");
+    let params = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    send_turn_start(&stdin, &AtomicU64::new(1), &state, params).expect("the turn frame is written");
+    // The reply comes only after the handler recorded the frame, so reading
+    // it is the synchronization — and the fake accepting the mode is itself
+    // the verdict the installed app-server gave live.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let line = stdout
+        .next_line(deadline)
+        .expect("the fake answers")
+        .expect("a line");
+    let reply: serde_json::Value = serde_json::from_str(&line).expect("json");
+    assert!(
+        reply.get("error").is_none(),
+        "the fake app-server accepts the mode: {reply}"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    let recorded = std::fs::read_to_string(&turn_params).expect("the child recorded the turn");
+    let sent: serde_json::Value = serde_json::from_str(recorded.trim()).expect("one recorded turn");
+    assert_eq!(
+        sent["collaborationMode"]["settings"]["model"],
+        serde_json::json!("fake-model"),
+        "the app-server refuses a mode whose settings lack model"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_fake_app_server_refuses_a_collaboration_mode_without_a_model() {
+    // The fake is an honest gate: it answers the frame the installed app-server
+    // answers with -32600, so the recorded-params test above cannot pass
+    // against a fake that accepts anything.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-fake-refusal");
+    let mut child = fake_codex_child();
+    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "fake-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan" },
+                { "name": "Default", "mode": "default" }
+            ]
+        }))
+        .expect("modes");
+    state.set_plan_mode(true).expect("plan on");
+    let mut params = turn_start_params("thread", "p", None, None, None, None);
+    params["collaborationMode"] = state.collaboration_mode().expect("plan mode");
+    params["collaborationMode"]["settings"] = serde_json::json!({});
+    send_turn_start(&stdin, &AtomicU64::new(1), &state, params).expect("written");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let line = stdout
+        .next_line(deadline)
+        .expect("the fake answers")
+        .expect("a line");
+    let reply: serde_json::Value = serde_json::from_str(&line).expect("json");
+    assert_eq!(reply["error"]["code"], serde_json::json!(-32600));
+    assert!(reply["error"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("model"));
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plan_mode_matches_names_without_a_default_entry() {
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "fake-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Read only", "mode": "read-only-mode" },
+                { "name": "Auto", "mode": "automatic-mode" }
+            ]
+        }))
+        .expect("modes");
+
+    assert!(state.supports_plan_mode());
+    state.set_plan_mode(true).expect("enable plan");
+    assert_eq!(
+        state.collaboration_mode().expect("plan mode")["mode"],
+        "read-only-mode"
+    );
+    state.set_plan_mode(false).expect("disable plan");
+    assert_eq!(
+        state.collaboration_mode().expect("off mode")["mode"],
+        "automatic-mode"
+    );
+
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan" },
+                { "name": "Review", "mode": "review-mode" }
+            ]
+        }))
+        .expect("fallback modes");
+    state.set_plan_mode(false).expect("off mode");
+    assert_eq!(
+        state.collaboration_mode().expect("first non-plan mode")["mode"],
+        "review-mode"
+    );
+}
+
+#[test]
+fn plan_card_uses_mode_sent_before_a_toggle_echo_arrives() {
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "fake-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan" },
+                { "name": "Auto", "mode": "auto" }
+            ]
+        }))
+        .expect("modes");
+    state.set_plan_mode(true).expect("plan on at send");
+    let params = with_collaboration_mode(
+        turn_start_params("thread", "p", None, None, None, None),
+        &state,
+    );
+    state.record_turn_start(
+        "turn-start-request",
+        state.is_plan_collaboration_mode(
+            params["collaborationMode"]["mode"]
+                .as_str()
+                .expect("sent mode"),
+        ),
+    );
+    state.set_plan_mode(false).expect("toggle before echo");
+
+    let response = serde_json::json!({
+        "id": "turn-start-request",
+        "result": { "turn": { "id": "turn-id" } }
+    });
+    state.assign_next_turn_mode("turn-id");
+    assert_eq!(state.resolve_turn_start(&response), None);
+    let mut view = CodexView::new(None);
+    view.set_plan_mode(state.sent_mode_for_turn("turn-id").expect("sent mode"));
+    view.set_capture_plan(true);
+    view.ingest(&serde_json::json!({
+        "method": "item/completed",
+        "params": { "item": { "type": "plan", "text": "Sent plan" } }
+    }));
+    assert_eq!(
+        view.take_completed_plan(&serde_json::json!({ "turn": { "status": "completed" } })),
+        Some(crate::codex_view::PlanCompletion::Card(
+            "Sent plan".to_string()
+        ))
+    );
+}
+
+#[test]
+fn failed_approved_plan_send_restores_mode_and_records_transcript_error() {
+    let state = Arc::new(CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "fake-model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    ));
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                { "name": "Plan", "mode": "plan" },
+                { "name": "Auto", "mode": "auto" }
+            ]
+        }))
+        .expect("modes");
+    state.set_plan_mode(true).expect("plan enabled");
+    let prompt = CodexStaticPrompt::new(
+        Arc::new(Mutex::new(None)),
+        Arc::new(AtomicU64::new(1)),
+        Arc::clone(&state),
+        empty_commands(),
+    );
+    let runtime = Arc::new(SessionRuntime::new());
+
+    prompt.send_approved_plan("## Steps\n\n- Build", &runtime);
+
+    assert!(state.plan_mode_enabled(), "failed send restores plan mode");
+    assert!(
+        runtime.last_seq() >= 3,
+        "feature changes and error are recorded"
+    );
+    assert!(matches!(
+        runtime.attention(),
+        Some(raised)
+            if matches!(
+                raised.reason,
+                devboule_protocol::AttentionReason::Error
+            )
+    ));
+}
+
+#[test]
+fn approved_plan_uses_the_implementation_prompt_verbatim() {
+    assert_eq!(
+        approved_plan_prompt("## Steps\n\n- Build"),
+        "The user approved the plan. Implement it now. Do not restate or revise the plan unless blocked.\n\nApproved plan:\n\n## Steps\n\n- Build\n\nCarry out the work, make the necessary code changes, and verify the result."
+    );
 }
 
 #[test]
@@ -238,21 +888,31 @@ fn unknown_server_request_gets_a_method_not_supported_error() {
         "data": [{ "id": "model", "isDefault": true }]
     }))
     .expect("catalog");
+    let state = Arc::new(CodexState::new("thread".to_string(), catalog, "auto"));
+    let commands = empty_commands();
+    let next_id = Arc::new(AtomicU64::new(1));
+    let plan_prompt = Arc::new(super::CodexStaticPrompt::new(
+        Arc::clone(&stdin),
+        Arc::clone(&next_id),
+        Arc::clone(&state),
+        Arc::clone(&commands),
+    ));
     let mut reader = CodexReader {
-        commands: empty_commands(),
+        commands,
         available_commands: None,
         buffer: Vec::new(),
         discarding_oversized_line: false,
         deferred: Vec::new(),
         manifest: None,
-        state: Arc::new(CodexState::new("thread".to_string(), catalog, "auto")),
+        state,
         view: CodexView::new(None),
         permission_broker: Arc::clone(&broker),
         response_ids: Arc::new(Mutex::new(HashMap::new())),
         stdin,
-        next_id: Arc::new(AtomicU64::new(1)),
+        next_id,
         requests: Arc::new(CodexRequests::new()),
         compactions: crate::codex_compaction::CodexCompactions::default(),
+        plan_prompt,
     };
     let runtime = Arc::new(SessionRuntime::new());
     let request = serde_json::json!({
@@ -614,21 +1274,32 @@ fn a_codex_steer_is_not_left_waiting_when_the_app_server_ends() {
         requests: Arc::clone(&requests),
         commands: empty_commands(),
     };
+    let state = state_on_turn("turn-3");
+    let commands = empty_commands();
+    let stdin = Arc::new(Mutex::new(None));
+    let next_id = Arc::new(AtomicU64::new(1));
+    let plan_prompt = Arc::new(super::CodexStaticPrompt::new(
+        Arc::clone(&stdin),
+        Arc::clone(&next_id),
+        Arc::clone(&state),
+        Arc::clone(&commands),
+    ));
     let mut reader = CodexReader {
-        commands: empty_commands(),
+        commands,
         available_commands: None,
         buffer: Vec::new(),
         discarding_oversized_line: false,
         deferred: Vec::new(),
         manifest: None,
-        state: state_on_turn("turn-3"),
+        state,
         view: CodexView::new(None),
         permission_broker: PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
         response_ids: Arc::new(Mutex::new(HashMap::new())),
-        stdin: Arc::new(Mutex::new(None)),
-        next_id: Arc::new(AtomicU64::new(1)),
+        stdin,
+        next_id,
         requests: Arc::clone(&requests),
         compactions: crate::codex_compaction::CodexCompactions::default(),
+        plan_prompt,
     };
     // The reader runs the real end-of-transport path: read to EOF, then
     // `finish`, which is where the waiters are failed.
@@ -1051,6 +1722,7 @@ fn codex_mcp_timeout_is_finite_and_fits_instant_on_every_platform() {
 const FAKE_CODEX_HANDSHAKE: &str = r#"
 const methods = process.env.FAKE_CODEX_METHODS || "";
 const handles = process.env.FAKE_CODEX_RESUME_HANDLES || "";
+const turnParams = process.env.FAKE_CODEX_TURN_PARAMS || "";
 let buf = "";
 process.stdin.on("data", (chunk) => {
   buf += chunk.toString();
@@ -1063,16 +1735,39 @@ process.stdin.on("data", (chunk) => {
     try { msg = JSON.parse(line); } catch { continue; }
     if (msg.id === undefined || msg.id === null) continue;
     if (methods) require("fs").appendFileSync(methods, msg.method + "\n");
+    if (turnParams && msg.method === "turn/start") {
+      require("fs").appendFileSync(turnParams, JSON.stringify(msg.params) + "\n");
+    }
     if (handles && msg.method === "thread/resume") {
       const handle = msg.params && msg.params.threadId;
       require("fs").appendFileSync(handles, (handle === undefined ? "missing" : handle) + "\n");
     }
     let result = {};
+    let error = null;
     if (msg.method === "initialize") result = { userAgent: "fake-codex" };
     else if (msg.method === "model/list") result = { data: [{ id: "fake-model", isDefault: true }] };
+    else if (msg.method === "collaborationMode/list") {
+      if (process.env.FAKE_CODEX_NO_COLLABORATION_MODE === "1") {
+        error = { code: -32601, message: "method not supported" };
+      } else result = { data: [
+        { name: "Plan", mode: "plan", model: "fake-model", reasoning_effort: null },
+        { name: "Default", mode: "default", model: "fake-model", reasoning_effort: null }
+      ] };
+    }
     else if (msg.method === "thread/start") result = { thread: { id: "thread-fake" } };
     else if (msg.method === "thread/resume") result = { thread: { id: "thread-resumed" } };
-    process.stdout.write(JSON.stringify({ id: msg.id, result }) + "\n");
+    else if (msg.method === "turn/start") {
+      // The installed app-server refuses a collaborationMode whose settings
+      // lack `model` (-32600); the fake refuses exactly that frame. A turn
+      // with no collaborationMode at all is legal and runs.
+      const mode = msg.params && msg.params.collaborationMode;
+      const settings = mode && mode.settings;
+      const model = settings && settings.model;
+      if (mode && (typeof model !== "string" || model.length === 0)) {
+        error = { code: -32600, message: "Invalid request: missing field `model`" };
+      } else result = { turn: { id: "turn-fake" } };
+    }
+    process.stdout.write(JSON.stringify(error ? { id: msg.id, error } : { id: msg.id, result }) + "\n");
   }
 });
 "#;
@@ -1125,6 +1820,42 @@ fn codex_handshake_starts_a_thread_on_the_fresh_road() {
     let _ = child.kill();
     let _ = child.wait();
     assert_eq!(handshake.thread_id, "thread-fake");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unsupported_collaboration_mode_list_keeps_the_codex_session_available() {
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-no-collaboration-modes");
+    let mut child = std::process::Command::new("node")
+        .args(["-e", FAKE_CODEX_HANDSHAKE])
+        .env("FAKE_CODEX_NO_COLLABORATION_MODE", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("node is required for the fake Codex handshake");
+    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
+    let handshake = super::perform_handshake(
+        &mut stdout,
+        &stdin,
+        &AtomicU64::new(1),
+        &dir,
+        "auto",
+        ThreadRoad::Fresh,
+    )
+    .expect("an unsupported optional list does not block startup");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(handshake.thread_id, "thread-fake");
+    assert_eq!(
+        handshake.collaboration_modes,
+        serde_json::json!({"data": []})
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1223,7 +1954,12 @@ fn codex_resume_spawn_sends_only_the_handle_and_returns_the_thread() {
     let methods: Vec<&str> = seen.lines().collect();
     assert_eq!(
         methods,
-        ["initialize", "model/list", "thread/resume"],
+        [
+            "initialize",
+            "model/list",
+            "collaborationMode/list",
+            "thread/resume"
+        ],
         "a resume sends the handle and nothing else"
     );
     let sent = std::fs::read_to_string(&handles_file).expect("the child recorded its handles");
@@ -1265,6 +2001,10 @@ process.stdin.on("data", (chunk) => {
     let result = {};
     if (msg.method === "initialize") result = { userAgent: "fake-argv" };
     else if (msg.method === "model/list") result = { data: [{ id: "fake-model", isDefault: true }] };
+    else if (msg.method === "collaborationMode/list") result = { data: [
+      { name: "Plan", mode: "plan", model: "fake-model", reasoning_effort: null },
+      { name: "Default", mode: "default", model: "fake-model", reasoning_effort: null }
+    ] };
     else if (msg.method === "thread/start") result = { thread: { id: "thread-argv" } };
     process.stdout.write(JSON.stringify({ id: msg.id, result }) + "\n");
   }
@@ -2014,6 +2754,10 @@ process.stdin.on("data", (chunk) => {
     const reply = (result) => process.stdout.write(JSON.stringify({ id: msg.id, result }) + "\n");
     if (msg.method === "initialize") reply({ userAgent: "fake-road" });
     else if (msg.method === "model/list") reply({ data: [{ id: "fake-model", isDefault: true }] });
+    else if (msg.method === "collaborationMode/list") reply({ data: [
+      { name: "Plan", mode: "plan", model: "fake-model", reasoning_effort: null },
+      { name: "Default", mode: "default", model: "fake-model", reasoning_effort: null }
+    ] });
     else if (msg.method === "thread/start") reply({ thread: { id: "thread-road" } });
     else if (msg.method === "mcpServerStatus/list") {
       const golden = { data: [{ name: "devboule", runtimeStatus: null, tools: { t: {} }, toolsError: null }] };

@@ -141,6 +141,7 @@ vi.mock("../../lib/tauri", () => ({
   sessionInterrupt: vi.fn(async () => undefined),
   sessionSetModel: vi.fn(async () => undefined),
   sessionSetMode: vi.fn(async () => undefined),
+  sessionSetFeature: vi.fn(async () => undefined),
   isCommandError: (error: unknown): boolean =>
     typeof error === "object" &&
     error !== null &&
@@ -157,6 +158,7 @@ import {
   sessionSend,
   sessionSetMode,
   sessionSetModel,
+  sessionSetFeature,
 } from "../../lib/tauri";
 import { setPreferredEffort } from "../../lib/modelPrefs";
 import { AgentChatSurface, composerDisabledReason, excerptRenderFor } from "./AgentChatSurface";
@@ -1099,6 +1101,61 @@ describe("AgentChatSurface", () => {
     expect(options[1].getAttribute("aria-selected")).toBe("false");
     expect(menu?.textContent).toContain("Plan without touching files");
     expect(menu?.textContent).toContain("Apply file edits without asking");
+  });
+
+  it("shows and switches plan mode only after the provider declares it", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelector('[data-testid="plan-mode-chip"]')).toBeNull();
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_feature_state",
+        featureId: "planMode",
+        enabled: false,
+      });
+    });
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="plan-mode-chip"]');
+    if (chip === null) throw new Error("plan mode chip did not render");
+    expect(chip.textContent).toContain("Off");
+    await act(async () => chip.click());
+    const on = container.querySelector<HTMLButtonElement>('[data-testid="plan-mode-option-on"]');
+    if (on === null) throw new Error("plan mode option did not render");
+    await act(async () => on.click());
+
+    expect(sessionSetFeature).toHaveBeenCalledWith("agent-1", "planMode", true);
+    expect(chip.textContent).toContain("Off");
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_feature_state",
+        featureId: "planMode",
+        enabled: true,
+      });
+    });
+    expect(chip.textContent).toContain("On");
+  });
+
+  it("names what the plan mode chip switches", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_feature_state",
+        featureId: "planMode",
+        enabled: false,
+      });
+    });
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="plan-mode-chip"]');
+    if (chip === null) throw new Error("plan mode chip did not render");
+
+    expect(chip.getAttribute("aria-label")).toBe("Toggle plan mode (Plan: Off)");
+    expect(chip.title).toBe("Toggle plan mode");
+    expect(chip.textContent).toContain("Plan: Off");
   });
 
   it("selects a mode optimistically and calls sessionSetMode before the manifest lands", async () => {

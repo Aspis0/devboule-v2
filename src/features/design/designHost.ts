@@ -462,4 +462,5 @@ export interface DesignAgentSession {
   subscribe(listener: () => void): () => void;
   setModel(modelId?: string, effort?: string): Promise<void>;
   setMode(modeId: string): Promise<void>;
+  setFeature(featureId: string, enabled: boolean): Promise<void>;
 }

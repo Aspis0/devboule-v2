@@ -19,6 +19,7 @@ import { parseAgentPermissionRequest } from "./agentPermissionRequest";
 import { parseAgentDaemonNotice, type AgentDaemonNotice } from "./agentDaemonNotice";
 import { parseAgentPeerMessage, type AgentPeerOrigin } from "./agentPeerMessage";
 import { recordPlanUsage } from "./planUsageStore";
+import { isToolRunningStatus } from "../features/workspace/interruptedTool";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -153,6 +154,7 @@ export interface AgentSessionState {
    */
   contextUsage: ContextUsage | null;
   manifest: SessionManifest | null;
+  features?: Record<string, boolean>;
   /** A model/effort switch sent to the daemon that no manifest confirmed yet. */
   pendingSwitch: { modelId?: string; effort?: string; at: number } | null;
   /** A mode switch shown optimistically until the next manifest confirms it. */
@@ -209,6 +211,7 @@ const INITIAL_STATE: AgentSessionState = {
   lastFinished: null,
   contextUsage: null,
   manifest: null,
+  features: {},
   pendingSwitch: null,
   pendingModeId: null,
   journalLoss: null,
@@ -306,6 +309,12 @@ export class AgentSession {
   /** Context readings have their own lane (see `subscribeUsage`). */
   private readonly usageListeners = new Set<() => void>();
   private readonly blocks = new Map<string, number>();
+  /**
+   * The newest row of each tool id, whatever turn it opened in. An update
+   * always lands there; a call lands there too unless it starts a new row
+   * (`startsNewToolRow`).
+   */
+  private readonly toolRows = new Map<string, string>();
   private readonly activeBlocks = new Map<string, string>();
   private activeRole: MessageRole | null = null;
   private nextItemId = 1;
@@ -680,6 +689,24 @@ export class AgentSession {
     this.armModeTimeout();
   }
 
+  async setFeature(featureId: string, enabled: boolean): Promise<void> {
+    if (this.disposed || !this.started || !this.attached || this.state.status === "closed") return;
+    if (!featureId || this.state.features?.[featureId] === undefined) return;
+    try {
+      await this.deps.invoke("session_set_feature", {
+        id: this.deps.sessionId,
+        featureId,
+        enabled,
+      });
+    } catch (error) {
+      const mapped = errorSentence(error);
+      this.noteError(
+        `Could not switch the feature. ${mapped.sentence}`,
+        mapped.detail ?? undefined,
+      );
+    }
+  }
+
   private handleAgentUserMessage(
     event: Extract<SessionEvent, { type: "agent_user_message" }>,
   ): void {
@@ -964,8 +991,14 @@ export class AgentSession {
         this.update({ manifest: event, pendingSwitch, pendingModeId });
         return;
       }
+      case "session_feature_state":
+        this.update({ features: { ...this.state.features, [event.featureId]: event.enabled } });
+        return;
       case "agent_tool_call":
-        this.ensureTurn();
+        if (this.startsNewToolRow(event.toolCallId)) {
+          this.toolRows.delete(event.toolCallId);
+          this.ensureTurn();
+        }
         this.appendTool(
           event.toolCallId,
           event.title,
@@ -978,7 +1011,9 @@ export class AgentSession {
         );
         return;
       case "agent_tool_update":
-        this.ensureTurn();
+        // Only an id no row carries opens a turn: a card answered after its
+        // turn finished updates that turn's row and leaves the turn finished.
+        if (!this.toolRows.has(event.toolCallId)) this.ensureTurn();
         this.updateTool(
           event.toolCallId,
           event.status,
@@ -1218,6 +1253,21 @@ export class AgentSession {
     if (!this.turnOpen) this.beginTurn();
   }
 
+  /**
+   * Whether a tool call gets a row of its own. A known id whose row still
+   * runs, or sits in the running turn, is the same call announced again; a
+   * known id whose row finished outside the running turn is a new call that
+   * reuses the id: not every provider's ids are proven unique for a session.
+   */
+  private startsNewToolRow(toolCallId: string): boolean {
+    const key = this.toolRows.get(toolCallId);
+    if (key === undefined) return true;
+    const index = this.blocks.get(key);
+    const item = index === undefined ? undefined : this.state.items[index];
+    if (item?.role !== "tool" || isToolRunningStatus(item.status)) return false;
+    return !(this.turnOpen && key === `tool:${this.turn}:${toolCallId}`);
+  }
+
   private appendText(
     role: MessageRole,
     messageId: string | null,
@@ -1261,13 +1311,16 @@ export class AgentSession {
     locations?: ToolLocation[],
     output = "",
   ): void {
-    // A tool-call item is a transcript boundary. Tool updates for an existing
-    // item mutate it in place and must not close text that arrived afterward.
-    this.closeActiveBlocks();
-    const key = `tool:${this.turn}:${toolCallId}`;
+    const currentKey = `tool:${this.turn}:${toolCallId}`;
+    const key = this.toolRows.get(toolCallId) ?? currentKey;
+    // A tool-call item is a transcript boundary in its own turn. Tool updates
+    // for an existing item mutate it in place and must not close text that
+    // arrived afterward.
+    if (key === currentKey) this.closeActiveBlocks();
     const index = this.blocks.get(key);
     if (index === undefined) {
       this.blocks.set(key, this.state.items.length);
+      this.toolRows.set(toolCallId, key);
       this.update({
         items: [
           ...this.state.items,
@@ -1305,7 +1358,7 @@ export class AgentSession {
     locations?: ToolLocation[],
     title?: string,
   ): void {
-    const key = `tool:${this.turn}:${toolCallId}`;
+    const key = this.toolRows.get(toolCallId) ?? `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
     const nextTitle = typeof title === "string" && title.length > 0 ? title : undefined;
     if (index === undefined) {

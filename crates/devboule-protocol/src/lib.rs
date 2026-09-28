@@ -166,8 +166,10 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// separate the two builds before that save exists.
 /// Version 11 adds plan permission requests. Version 12 adds provider on/off
 /// switches, the `SessionSetName` session-rename frame, and the negotiated
-/// `provider.auth-check` capability for credential-status checks.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// `provider.auth-check` capability for credential-status checks. Version 13
+/// adds per-session provider features: the `SessionSetFeature` toggle and the
+/// `SessionFeatureState` event, which carry Codex's plan mode.
+pub const PROTOCOL_VERSION: u32 = 13;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.

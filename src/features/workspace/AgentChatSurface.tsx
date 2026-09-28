@@ -15,6 +15,7 @@ import {
   sessionDetach,
   sessionInterrupt,
   sessionSend,
+  sessionSetFeature,
   sessionSetMode,
   sessionSetModel,
   type SubscriptionId,
@@ -214,6 +215,13 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
   }
   if (command === "session_set_mode") {
     return sessionSetMode(id, typeof args?.modeId === "string" ? args.modeId : "") as Promise<T>;
+  }
+  if (command === "session_set_feature") {
+    return sessionSetFeature(
+      id,
+      typeof args?.featureId === "string" ? args.featureId : "",
+      args?.enabled === true,
+    ) as Promise<T>;
   }
   if (command === "session_interrupt")
     return sessionInterrupt(id, args?.subscriptionId as SubscriptionId) as Promise<T>;
@@ -1192,6 +1200,21 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                 optionTestId={(id) => `mode-option-${id}`}
                 dotFor={modeDotClass}
                 disabled={composerDisabled}
+              />
+            ) : null}
+            {state.features?.planMode !== undefined ? (
+              <PickerChip
+                label="Plan mode"
+                options={[
+                  { id: "on", name: "Plan: On" },
+                  { id: "off", name: "Plan: Off" },
+                ]}
+                currentId={state.features?.planMode ? "on" : "off"}
+                onSelect={(id) => void sessionRef.current?.setFeature("planMode", id === "on")}
+                chipTestId="plan-mode-chip"
+                optionTestId={(id) => `plan-mode-option-${id}`}
+                disabled={composerDisabled}
+                tooltip="Toggle plan mode"
               />
             ) : null}
             {manifest !== null && manifest.models.length > 1 ? (

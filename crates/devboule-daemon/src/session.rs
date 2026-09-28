@@ -2563,8 +2563,9 @@ impl SessionRegistry {
                         ErrorCode::InvalidRequest
                     }
                     // Register-time only: `respond_with_option` cannot
-                    // return it, spelled so the match stays exhaustive.
-                    permission_broker::PermissionResponseError::AlreadyRecorded => {
+                    // return them, spelled so the match stays exhaustive.
+                    permission_broker::PermissionResponseError::AlreadyRecorded
+                    | permission_broker::PermissionResponseError::CapabilityNotSupported => {
                         ErrorCode::InvalidRequest
                     }
                     permission_broker::PermissionResponseError::Io(_) => ErrorCode::Io,
@@ -3492,6 +3493,54 @@ impl SessionRegistry {
             return;
         }
         session.metadata.display_name = previous;
+    }
+
+    pub fn set_feature(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        feature_id: &str,
+        enabled: bool,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        if feature_id.is_empty() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "A feature is required.",
+            ));
+        }
+        let (switcher, runtime) = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, &conn.conn_peer)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
+            if !session.metadata.kind.is_agent() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Only agent sessions support runtime features.",
+                ));
+            }
+            let switcher = session
+                .switcher
+                .as_ref()
+                .map(|switcher| switcher.clone_switcher())
+                .ok_or_else(|| {
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "This provider does not support runtime features.",
+                    )
+                })?;
+            (switcher, Arc::clone(&session.runtime))
+        };
+        switcher.set_feature(feature_id, enabled)?;
+        if let Some(event) = switcher.feature_state(feature_id) {
+            let _ = runtime.publish_daemon_event(event);
+        }
+        Ok(())
     }
 
     fn validate_claude_effort(

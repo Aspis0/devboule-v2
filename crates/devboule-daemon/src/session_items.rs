@@ -180,6 +180,15 @@ pub(crate) trait ModelSwitcher: Send + Sync {
             "This provider does not support switching the session mode.",
         ))
     }
+    fn set_feature(&self, _feature_id: &str, _enabled: bool) -> Result<(), WireError> {
+        Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "This provider does not support runtime features.",
+        ))
+    }
+    fn feature_state(&self, _feature_id: &str) -> Option<SessionEvent> {
+        None
+    }
     fn manifest(&self) -> Option<SessionEvent> {
         None
     }

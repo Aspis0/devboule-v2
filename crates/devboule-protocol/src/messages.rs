@@ -421,6 +421,12 @@ pub enum ClientMessage {
         session_id: String,
         display_name: String,
     },
+    SessionSetFeature {
+        id: u64,
+        session_id: String,
+        feature_id: String,
+        enabled: bool,
+    },
     SessionPermissionRespond {
         id: u64,
         session_id: String,
@@ -1102,6 +1108,7 @@ impl ClientMessage {
             | Self::SessionSetModel { id, .. }
             | Self::SessionSetMode { id, .. }
             | Self::SessionSetName { id, .. }
+            | Self::SessionSetFeature { id, .. }
             | Self::SessionPermissionRespond { id, .. }
             | Self::SessionReportAgent { id, .. }
             | Self::SessionsList { id }
@@ -1217,6 +1224,7 @@ impl ClientMessage {
             | Self::SessionSetModel { .. }
             | Self::SessionSetMode { .. }
             | Self::SessionSetName { .. }
+            | Self::SessionSetFeature { .. }
             | Self::SessionReportAgent { .. }
             | Self::SessionsList { .. }
             | Self::SessionsWatch { .. }
@@ -1282,6 +1290,7 @@ impl ClientMessage {
             Self::SessionSetModel { .. } => "SessionSetModel",
             Self::SessionSetMode { .. } => "SessionSetMode",
             Self::SessionSetName { .. } => "SessionSetName",
+            Self::SessionSetFeature { .. } => "SessionSetFeature",
             Self::SessionPermissionRespond { .. } => "SessionPermissionRespond",
             Self::SessionReportAgent { .. } => "SessionReportAgent",
             Self::SessionsList { .. } => "SessionsList",
@@ -1385,6 +1394,7 @@ impl ClientMessage {
             | Self::SessionSetModel { .. }
             | Self::SessionSetMode { .. }
             | Self::SessionSetName { .. }
+            | Self::SessionSetFeature { .. }
             | Self::SessionPermissionRespond { .. }
             | Self::SessionReportAgent { .. }
             | Self::SessionsUnwatch { .. }

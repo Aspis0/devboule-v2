@@ -427,6 +427,7 @@ function fakeAgentSession(initialState: AgentSessionState) {
     setMode: vi.fn(async (modeId: string) => {
       updateState({ ...state, pendingModeId: modeId });
     }),
+    setFeature: vi.fn(async () => undefined),
   };
   return { session, updateState };
 }

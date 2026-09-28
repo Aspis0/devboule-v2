@@ -52,6 +52,8 @@ interface PickerChipProps {
   dotFor?: (id: string) => string;
   /** Terminal-session guard: the chip must be unclickable, not merely styled. */
   disabled?: boolean;
+  /** What the chip switches, for a chip whose value alone does not say. */
+  tooltip?: string;
 }
 
 /** One chip + listbox picker shared by the mode, model, and effort controls. */
@@ -64,6 +66,7 @@ export function PickerChip({
   optionTestId,
   dotFor,
   disabled = false,
+  tooltip,
 }: PickerChipProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -94,6 +97,7 @@ export function PickerChip({
   if (options.length === 0) return null;
 
   const current = options.find((option) => option.id === currentId) ?? null;
+  const shown = current?.name ?? currentId ?? label;
 
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -118,6 +122,8 @@ export function PickerChip({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
+        title={tooltip}
+        aria-label={tooltip === undefined ? undefined : `${tooltip} (${shown})`}
         disabled={disabled}
         onClick={() => {
           if (disabled) return;
@@ -127,7 +133,7 @@ export function PickerChip({
         {current !== null && dotFor !== undefined ? (
           <span className={dotFor(current.id)} aria-hidden="true" />
         ) : null}
-        <span>{current?.name ?? currentId ?? label}</span>
+        <span>{shown}</span>
         <span className="workspace-mode-caret" aria-hidden="true">
           ▾
         </span>

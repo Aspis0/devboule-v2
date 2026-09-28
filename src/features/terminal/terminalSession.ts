@@ -540,6 +540,8 @@ export class TerminalSession {
         break;
       case "session_manifest":
         break;
+      case "session_feature_state":
+        break;
       default: {
         const unknownEvent: never = event;
         this.showError(

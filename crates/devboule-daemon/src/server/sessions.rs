@@ -377,6 +377,18 @@ pub(super) fn dispatch_session(
                 .set_display_name(&session_id, owner, &display_name, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
+        ClientMessage::SessionSetFeature {
+            id,
+            session_id,
+            feature_id,
+            enabled,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .set_feature(&session_id, owner, &feature_id, enabled, conn)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
         ClientMessage::SessionPermissionRespond {
             id,
             session_id,

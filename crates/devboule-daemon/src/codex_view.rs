@@ -1,5 +1,6 @@
 //! Translate Codex app-server notifications into Devboule agent events.
 
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ChildStdout;
@@ -140,9 +141,27 @@ impl CodexCatalog {
     }
 }
 
+#[cfg(test)]
+impl CodexCatalog {
+    /// A catalog with no model at all: the degenerate session for which a
+    /// collaboration mode's settings cannot name one.
+    pub(crate) fn empty() -> Self {
+        Self {
+            models: Vec::new(),
+            current_model_id: String::new(),
+            current_effort: None,
+        }
+    }
+}
+
 pub(crate) struct CodexState {
     thread_id: String,
     mode_id: Mutex<String>,
+    collaboration_modes: Mutex<HashMap<String, (String, Value)>>,
+    plan_mode_override: Mutex<Option<bool>>,
+    pending_turn_modes: Mutex<HashMap<String, bool>>,
+    turn_start_order: Mutex<VecDeque<String>>,
+    sent_turn_modes: Mutex<HashMap<String, bool>>,
     /// The service tier every `turn/start` carries, set once from the profile's
     /// `fastMode` delivery. Codex's fast mode is Paseo's `serviceTier:
     /// "fast"` parameter on the turn frame, and the thread keeps no memory of
@@ -159,6 +178,11 @@ pub(crate) struct CodexState {
     /// the policy on `turn/start`.
     mode_override: Mutex<Option<String>>,
     catalog: Mutex<CodexCatalog>,
+    /// The session's configured model and effort — the profile's choice, or a
+    /// later model change's — apart from the catalog's pair, which the thread
+    /// response or the handshake default also writes.
+    configured_model: Mutex<Option<String>>,
+    configured_effort: Mutex<Option<String>>,
     turn_id: Mutex<Option<String>>,
 }
 
@@ -167,9 +191,16 @@ impl CodexState {
         Self {
             thread_id,
             mode_id: Mutex::new(mode_id.to_string()),
+            collaboration_modes: Mutex::new(HashMap::new()),
+            plan_mode_override: Mutex::new(None),
+            pending_turn_modes: Mutex::new(HashMap::new()),
+            turn_start_order: Mutex::new(VecDeque::new()),
+            sent_turn_modes: Mutex::new(HashMap::new()),
             service_tier: Mutex::new(None),
             mode_override: Mutex::new(None),
             catalog: Mutex::new(catalog),
+            configured_model: Mutex::new(None),
+            configured_effort: Mutex::new(None),
             turn_id: Mutex::new(None),
         }
     }
@@ -207,6 +238,253 @@ impl CodexState {
 
     pub(crate) fn mode_id(&self) -> Option<String> {
         self.mode_id.lock().ok().map(|mode| mode.clone())
+    }
+
+    pub(crate) fn plan_mode_enabled(&self) -> bool {
+        self.plan_mode_override
+            .lock()
+            .ok()
+            .and_then(|enabled| *enabled)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn set_collaboration_modes(&self, response: &Value) -> Result<(), WireError> {
+        let modes = response
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let named_modes = modes
+            .iter()
+            .filter_map(|mode| {
+                let name = mode.get("name").and_then(Value::as_str)?;
+                // Paseo keeps an entry with no `mode` key and sends it as
+                // `code`; dropping it would lose a usable mode.
+                let id = mode
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("code")
+                    .to_string();
+                Some((name.to_ascii_lowercase(), (id, mode.clone())))
+            })
+            .collect::<Vec<_>>();
+        let plan = named_modes
+            .iter()
+            .find(|(name, _)| name.contains("plan") || name.contains("read"));
+        let off = named_modes
+            .iter()
+            .find(|(name, _)| name.contains("auto") || name.contains("code"))
+            .or_else(|| {
+                named_modes
+                    .iter()
+                    .find(|(name, _)| !name.contains("plan") && !name.contains("read"))
+            });
+        // Two mode-less entries collapse to the same id, so plan and off
+        // would be indistinguishable: no toggle, and no collaborationMode.
+        let parsed = plan
+            .zip(off)
+            .filter(|(plan, off)| plan.1 .0 != off.1 .0)
+            .map(|(plan, off)| {
+                HashMap::from([
+                    ("plan".to_string(), plan.1.clone()),
+                    ("off".to_string(), off.1.clone()),
+                ])
+            })
+            .unwrap_or_default();
+        *self
+            .collaboration_modes
+            .lock()
+            .map_err(|_| catalog_error("collaboration mode state is unavailable"))? = parsed;
+        if self.supports_plan_mode() {
+            let mut plan_mode = self
+                .plan_mode_override
+                .lock()
+                .map_err(|_| catalog_error("collaboration mode state is unavailable"))?;
+            if plan_mode.is_none() {
+                *plan_mode = Some(false);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn supports_plan_mode(&self) -> bool {
+        self.model_is_known()
+            && self
+                .collaboration_modes
+                .lock()
+                .is_ok_and(|modes| modes.contains_key("plan") && modes.contains_key("off"))
+    }
+
+    /// Whether the session has a model to name inside a collaboration mode's
+    /// `settings`. The catalog's current pair is the profile's choice, else
+    /// the thread response's, else the handshake's default — so an empty one
+    /// means no model is known at all, and the plan toggle stays unoffered
+    /// rather than offering turns the app-server would refuse.
+    pub(crate) fn model_is_known(&self) -> bool {
+        !self.model_and_effort().0.is_empty()
+    }
+
+    pub(crate) fn plan_feature_state(&self) -> Option<SessionEvent> {
+        self.supports_plan_mode()
+            .then(|| SessionEvent::SessionFeatureState {
+                feature_id: crate::provider_features::PLAN_MODE_FEATURE.to_string(),
+                enabled: self.plan_mode_enabled(),
+            })
+    }
+
+    /// The `collaborationMode` one `turn/start` carries, or `None` when no model
+    /// is known: the app-server refuses a mode whose `settings` lacks `model`.
+    /// The settings copy Paseo's `resolveCollaborationMode` — the entry's model
+    /// and effort, overridden by the session's configured pair, the thread
+    /// response's model last — minus `developer_instructions`, which this
+    /// daemon sends on no Codex wire.
+    pub(crate) fn collaboration_mode(&self) -> Option<Value> {
+        let enabled = self
+            .plan_mode_override
+            .lock()
+            .ok()
+            .and_then(|enabled| *enabled)?;
+        let name = if enabled { "plan" } else { "off" };
+        let (configured_model, configured_effort) = (
+            self.configured_model.lock().ok()?.clone(),
+            self.configured_effort.lock().ok()?.clone(),
+        );
+        let (thread_model, _) = self.model_and_effort();
+        let (mode, entry) = self.collaboration_modes.lock().ok()?.get(name)?.clone();
+        let model = configured_model
+            .filter(|model| !model.is_empty())
+            .or_else(|| {
+                entry
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|model| !model.is_empty())
+                    .map(str::to_string)
+            })
+            .or_else(|| (!thread_model.is_empty()).then_some(thread_model))?;
+        let mut settings = serde_json::Map::new();
+        settings.insert("model".to_string(), Value::String(model));
+        let effort = configured_effort
+            .filter(|effort| !effort.is_empty())
+            .or_else(|| {
+                entry
+                    .get("reasoning_effort")
+                    .and_then(Value::as_str)
+                    .filter(|effort| !effort.is_empty())
+                    .map(str::to_string)
+            });
+        if let Some(effort) = effort {
+            settings.insert("reasoning_effort".to_string(), Value::String(effort));
+        }
+        Some(serde_json::json!({
+            "mode": mode,
+            "settings": settings,
+        }))
+    }
+
+    pub(crate) fn is_plan_collaboration_mode(&self, mode: &str) -> bool {
+        self.collaboration_modes
+            .lock()
+            .ok()
+            .and_then(|modes| modes.get("plan").map(|(plan_mode, _)| plan_mode == mode))
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn plan_mode_override(&self) -> Option<bool> {
+        self.plan_mode_override
+            .lock()
+            .ok()
+            .and_then(|enabled| *enabled)
+    }
+
+    pub(crate) fn set_plan_mode(&self, enabled: bool) -> Result<(), WireError> {
+        if !self.supports_plan_mode() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Codex has not advertised plan mode for this session.",
+            ));
+        }
+        *self
+            .plan_mode_override
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "Codex feature state is unavailable."))? =
+            Some(enabled);
+        Ok(())
+    }
+
+    pub(crate) fn record_turn_start(&self, request_id: &str, mode: bool) {
+        if let Ok(mut pending) = self.pending_turn_modes.lock() {
+            pending.insert(request_id.to_string(), mode);
+        }
+        if let Ok(mut order) = self.turn_start_order.lock() {
+            order.push_back(request_id.to_string());
+        }
+    }
+
+    pub(crate) fn forget_turn_start(&self, request_id: &str) {
+        if let Ok(mut pending) = self.pending_turn_modes.lock() {
+            pending.remove(request_id);
+        }
+        if let Ok(mut order) = self.turn_start_order.lock() {
+            order.retain(|id| id != request_id);
+        }
+    }
+
+    pub(crate) fn resolve_turn_start(&self, response: &Value) -> Option<(String, bool)> {
+        let id = response.get("id")?.as_str()?;
+        let mode = self.pending_turn_modes.lock().ok()?.remove(id)?;
+        if let Ok(mut order) = self.turn_start_order.lock() {
+            order.retain(|pending_id| pending_id != id);
+        }
+        let turn_id = response
+            .pointer("/result/turn/id")
+            .and_then(Value::as_str)?;
+        self.sent_turn_modes
+            .lock()
+            .ok()?
+            .insert(turn_id.to_string(), mode);
+        Some((turn_id.to_string(), mode))
+    }
+
+    pub(crate) fn assign_next_turn_mode(&self, turn_id: &str) {
+        // The measured wire answers `turn/start` before it notifies
+        // `turn/started`, so a turn that already carries its mode from its own
+        // response keeps it; the queue is the fallback for a response that
+        // never arrived. Popping here would steal a later turn's mode.
+        if self.sent_mode_for_turn(turn_id).is_some() {
+            return;
+        }
+        let request_id = self
+            .turn_start_order
+            .lock()
+            .ok()
+            .and_then(|mut order| order.pop_front());
+        let Some(request_id) = request_id else {
+            return;
+        };
+        let mode = self
+            .pending_turn_modes
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&request_id));
+        if let Some(mode) = mode {
+            if let Ok(mut sent) = self.sent_turn_modes.lock() {
+                sent.insert(turn_id.to_string(), mode);
+            }
+        }
+    }
+
+    pub(crate) fn sent_mode_for_turn(&self, turn_id: &str) -> Option<bool> {
+        self.sent_turn_modes
+            .lock()
+            .ok()
+            .and_then(|modes| modes.get(turn_id).copied())
+    }
+
+    pub(crate) fn clear_turn_mode(&self, turn_id: &str) {
+        if let Ok(mut modes) = self.sent_turn_modes.lock() {
+            modes.remove(turn_id);
+        }
     }
 
     pub(crate) fn model_and_effort(&self) -> (String, Option<String>) {
@@ -309,6 +587,18 @@ impl CodexState {
                 .then_some(previous_effort)
                 .flatten()
         });
+        // A collaboration mode's settings name the configured model first, so
+        // a model change is the one a later turn's settings carry.
+        if let Some(model_id) = model_id {
+            if let Ok(mut configured) = self.configured_model.lock() {
+                *configured = Some(model_id.to_string());
+            }
+        }
+        if let Some(effort) = effort {
+            if let Ok(mut configured) = self.configured_effort.lock() {
+                *configured = Some(effort.to_string());
+            }
+        }
         Ok(())
     }
 
@@ -680,10 +970,22 @@ pub(crate) fn permission_request_event(params: &Value, file_change: bool) -> Opt
     })
 }
 
+/// What one root `turn/completed` does with the plan text captured for it.
+#[derive(Debug, PartialEq)]
+pub(crate) enum PlanCompletion {
+    /// Held for the approval card: plan mode on and a clean completion.
+    Card(String),
+    /// No card will fire, so the text folds into the plain plan row.
+    Row(String),
+}
+
 pub(crate) struct CodexView {
     cwd: Option<PathBuf>,
     usage: Option<TurnUsage>,
     context_window_update: Option<u64>,
+    plan_mode: bool,
+    capture_plan: bool,
+    latest_plan: Option<String>,
 }
 
 impl CodexView {
@@ -692,6 +994,35 @@ impl CodexView {
             cwd,
             usage: None,
             context_window_update: None,
+            plan_mode: false,
+            capture_plan: true,
+            latest_plan: None,
+        }
+    }
+
+    pub(crate) fn set_plan_mode(&mut self, enabled: bool) {
+        self.plan_mode = enabled;
+    }
+
+    pub(crate) fn set_capture_plan(&mut self, capture: bool) {
+        self.capture_plan = capture;
+    }
+
+    pub(crate) fn take_completed_plan(&mut self, params: &Value) -> Option<PlanCompletion> {
+        let plan = std::mem::take(&mut self.latest_plan)?;
+        if !self.plan_mode {
+            // Plan mode off: the plain plan row already carried the text.
+            return None;
+        }
+        if plan.trim().is_empty() {
+            return None;
+        }
+        if params.pointer("/turn/status").and_then(Value::as_str) == Some("completed") {
+            Some(PlanCompletion::Card(plan))
+        } else {
+            // The row was suppressed for the card that will not come, so the
+            // text still reaches the transcript here.
+            Some(PlanCompletion::Row(plan))
         }
     }
 
@@ -701,6 +1032,18 @@ impl CodexView {
         };
         let params = value.get("params").unwrap_or(&Value::Null);
         match method {
+            "turn/started" => {
+                if self.capture_plan {
+                    self.latest_plan = None;
+                }
+                Vec::new()
+            }
+            "turn/plan/updated" => {
+                if self.capture_plan {
+                    self.latest_plan = plan_steps_text(params.get("plan"));
+                }
+                Vec::new()
+            }
             "item/agentMessage/delta" => {
                 delta_event(params, "AgentMessage", "itemId", "delta", |id, text| {
                     SessionEvent::AgentMessage {
@@ -723,8 +1066,8 @@ impl CodexView {
             }
             "item/commandExecution/outputDelta" => tool_delta(params, "execute"),
             "item/fileChange/outputDelta" => tool_delta(params, "edit"),
-            "item/started" => item_event(params.get("item"), false, self.cwd.as_deref()),
-            "item/completed" => item_event(params.get("item"), true, self.cwd.as_deref()),
+            "item/started" => self.item_event(params.get("item"), false),
+            "item/completed" => self.item_event(params.get("item"), true),
             "thread/tokenUsage/updated" => self.note_usage(params.get("tokenUsage")),
             "account/rateLimits/updated" => {
                 plan_usage(params.get("rateLimits")).into_iter().collect()
@@ -743,6 +1086,28 @@ impl CodexView {
                 .unwrap_or_default(),
             _ => Vec::new(),
         }
+    }
+
+    fn item_event(&mut self, item: Option<&Value>, completed: bool) -> Vec<SessionEvent> {
+        if item
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str)
+            == Some("plan")
+        {
+            if self.capture_plan {
+                if let Some(text) = item
+                    .and_then(|item| item.get("text"))
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    self.latest_plan = Some(text.to_string());
+                }
+            }
+            if self.plan_mode && self.capture_plan {
+                return Vec::new();
+            }
+        }
+        item_event(item, completed, self.cwd.as_deref())
     }
 
     pub(crate) fn take_context_window_update(&mut self) -> Option<u64> {
@@ -791,6 +1156,17 @@ impl CodexView {
             None => Vec::new(),
         }
     }
+}
+
+fn plan_steps_text(value: Option<&Value>) -> Option<String> {
+    let steps = value?.as_array()?;
+    let text = steps
+        .iter()
+        .filter_map(|step| step.get("step").and_then(Value::as_str))
+        .map(|step| format!("- {step}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
 }
 
 #[cfg(test)]
@@ -921,6 +1297,39 @@ fn item_event(
         return Vec::new();
     };
     match item.get("type").and_then(Value::as_str) {
+        Some("plan") => {
+            if completed {
+                vec![SessionEvent::AgentToolUpdate {
+                    tool_call_id: id.to_string(),
+                    status: item.get("status").and_then(Value::as_str).map(status_name),
+                    text: item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_string),
+                    title: Some("Plan".to_string()),
+                    kind: Some("plan".to_string()),
+                    locations: None,
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                }]
+            } else {
+                vec![SessionEvent::AgentToolCall {
+                    tool_call_id: id.to_string(),
+                    title: "Plan".to_string(),
+                    status: item
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(status_name)
+                        .unwrap_or_else(|| "in_progress".to_string()),
+                    kind: Some("plan".to_string()),
+                    locations: None,
+                    subagent_type: None,
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                }]
+            }
+        }
         Some("commandExecution") => {
             let kind = Some("execute".to_string());
             if completed {
@@ -992,6 +1401,27 @@ fn item_event(
     }
 }
 
+/// The complete plain plan row a plan-off plan item produces, for a turn whose
+/// plan item was suppressed by plan mode: the call, then the terminal update
+/// carrying the text. `item_event` is that path's own builder, so the row is
+/// the same shape whether plan mode was on or off — never a lone update with
+/// no status, which the app would strand at "running".
+pub(crate) fn plain_plan_row_events(tool_call_id: &str, text: &str) -> Vec<SessionEvent> {
+    let started = serde_json::json!({ "id": tool_call_id, "type": "plan" });
+    item_event(Some(&started), false, None)
+        .into_iter()
+        .chain(plan_text_update(tool_call_id, text))
+        .collect()
+}
+
+/// The completed half of a plain plan row. A completed plan item frame
+/// carries no status, so neither does this: the row keeps whatever status it
+/// already has.
+pub(crate) fn plan_text_update(tool_call_id: &str, text: &str) -> Vec<SessionEvent> {
+    let completed = serde_json::json!({ "id": tool_call_id, "type": "plan", "text": text });
+    item_event(Some(&completed), true, None)
+}
+
 fn first_change_path(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<String> {
     let changes = value?.as_array()?;
     let path = changes
@@ -1057,7 +1487,12 @@ fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent>
 }
 
 #[cfg(test)]
+#[path = "codex_plan_view_tests.rs"]
+mod plan_tests;
+
+#[cfg(test)]
 mod tests {
+
     use super::{
         catalog_from_response, events_from_envelope, fixture_frames, permission_request_event,
         CodexState, CodexView,

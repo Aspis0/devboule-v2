@@ -39,6 +39,7 @@ use devboule_protocol::{
 /// profile's own `features` map already uses (`autoAccept`), so the wire and
 /// the stored key cannot disagree about one more spelling.
 pub(crate) const FAST_MODE_FEATURE: &str = "fastMode";
+pub(crate) const PLAN_MODE_FEATURE: &str = "planMode";
 
 /// The label both fast-mode rows carry. Paseo's is `Fast` in both tables.
 const FAST_MODE_LABEL: &str = "Fast";
@@ -121,17 +122,24 @@ pub(crate) fn claude_declarations() -> Vec<VocabularyFeature> {
     vec![auto_accept(), fast_mode(CLAUDE_FAST_MODE_MODELS)]
 }
 
-/// The Codex table: the tick, and fast mode on the listed models.
-///
-/// Paseo's Codex table also carries `plan_mode`. It has **no row here**, for
-/// the rule at the head of this file: Paseo applies plan mode by picking a
-/// `collaborationMode` named `plan` out of the list the app-server reports,
-/// and this daemon's Codex client reads no such list and sends no such
-/// parameter — its mode vocabulary (`codex_view::CODEX_MODES`) is an
-/// approval-policy and sandbox table. Offering `planMode` would save a key no
-/// frame carries.
+/// The Codex table: model-gated fast inference and runtime plan mode.
 pub(crate) fn codex_declarations() -> Vec<VocabularyFeature> {
-    vec![auto_accept(), fast_mode(CODEX_FAST_MODE_MODELS)]
+    vec![
+        auto_accept(),
+        fast_mode(CODEX_FAST_MODE_MODELS),
+        plan_mode(),
+    ]
+}
+
+fn plan_mode() -> VocabularyFeature {
+    VocabularyFeature {
+        id: PLAN_MODE_FEATURE.to_string(),
+        label: "Plan mode".to_string(),
+        author: VocabularyOrigin::Daemon,
+        control: VocabularyFeatureControl::Toggle,
+        options: Vec::new(),
+        models: None,
+    }
 }
 
 /// The Pi table: the tick alone. Paseo's pi client returns an empty list;
@@ -372,7 +380,11 @@ mod tests {
         );
         assert_eq!(
             ids(codex_declarations()),
-            [tick.to_string(), FAST_MODE_FEATURE.to_string()]
+            [
+                tick.to_string(),
+                FAST_MODE_FEATURE.to_string(),
+                PLAN_MODE_FEATURE.to_string()
+            ]
         );
         assert_eq!(
             ids(acp_declarations(vec![feature("engine")])),

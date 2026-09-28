@@ -151,7 +151,8 @@ pub(super) fn peer_refusal_before_mode(
         ClientMessage::SessionAttach { session_id, .. }
         | ClientMessage::SessionSend { session_id, .. }
         | ClientMessage::SessionSetMode { session_id, .. }
-        | ClientMessage::SessionSetName { session_id, .. } => {
+        | ClientMessage::SessionSetName { session_id, .. }
+        | ClientMessage::SessionSetFeature { session_id, .. } => {
             state.sessions.session_scope(session_id, owner, conn_peer)
         }
         // An agent message names two sessions and its *target* is the one that
@@ -286,6 +287,7 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::SessionSetModel { .. } => None,
         // A rename names a session and a name, never a mode: nothing to vet.
         ClientMessage::SessionSetName { .. } => None,
+        ClientMessage::SessionSetFeature { .. } => None,
         ClientMessage::SessionPermissionRespond { .. } => None,
         ClientMessage::SessionReportAgent { .. } => None,
         ClientMessage::SessionsList { .. } => None,
@@ -521,6 +523,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionSetModel { session_id, .. }
         | ClientMessage::SessionSetMode { session_id, .. }
         | ClientMessage::SessionSetName { session_id, .. }
+        | ClientMessage::SessionSetFeature { session_id, .. }
         | ClientMessage::SessionPermissionRespond { session_id, .. }
         | ClientMessage::SessionReportAgent { session_id, .. }
         | ClientMessage::SessionDelete { session_id, .. } => Some(session_id.clone()),

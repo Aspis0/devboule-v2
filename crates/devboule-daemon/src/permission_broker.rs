@@ -100,6 +100,18 @@ fn release_card_slot(request: &SessionEvent) {
     }
 }
 
+/// Whether one pending card is a plan approval — the only kind a new prompt
+/// dismisses (Paseo's `dismissPendingPlanApprovals` filter).
+fn is_plan_request(request: &SessionEvent) -> bool {
+    matches!(
+        request,
+        SessionEvent::PermissionRequest {
+            kind: Some(PermissionRequestKind::Plan),
+            ..
+        }
+    )
+}
+
 pub(super) const MAX_ACP_PERMISSION_FIELD_BYTES: usize = 8 * 1024;
 pub(super) const MAX_ACP_PERMISSION_OPTIONS: usize = 32;
 /// How many questions one `question` request may carry. Claude's
@@ -238,6 +250,10 @@ pub(super) enum PermissionResponseError {
     /// transcript's one notice. The caller sends its cancelled frame and
     /// adds no second message.
     AlreadyRecorded,
+    /// The card was raised and then withdrawn because no observer can take
+    /// it: the broker's cancel is the one completion, journalled as
+    /// `capability_not_supported`. The caller adds no second terminal row.
+    CapabilityNotSupported,
     Io(io::Error),
 }
 
@@ -247,6 +263,9 @@ impl fmt::Display for PermissionResponseError {
             Self::NotFound => formatter.write_str("permission request is no longer pending"),
             Self::InvalidRequest(message) => formatter.write_str(message),
             Self::AlreadyRecorded => formatter.write_str(REUSED_ID_NOTICE),
+            Self::CapabilityNotSupported => {
+                formatter.write_str("no observer can take this permission card")
+            }
             Self::Io(error) => write!(
                 formatter,
                 "could not answer ACP permission request: {error}"
@@ -945,15 +964,41 @@ impl PermissionBroker {
     /// Soft interrupt: complete every pending request as cancelled but leave
     /// the broker open, so later turns can register new permissions.
     pub(super) fn cancel_pending(&self) {
+        self.cancel_pending_with_outcome(PlanCancellation::Other, false);
+    }
+
+    pub(super) fn cancel_pending_for_new_prompt(&self) {
+        // Paseo's dismissPendingPlanApprovals: a new prompt dismisses plan
+        // cards only; every other kind stays pending for the person.
+        self.cancel_pending_with_outcome(PlanCancellation::NewPrompt, true);
+    }
+
+    pub(super) fn cancel_pending_for_steer(&self) {
+        self.cancel_pending_with_outcome(PlanCancellation::Steer, false);
+    }
+
+    fn cancel_pending_with_outcome(&self, reason: PlanCancellation, plan_only: bool) {
         let pending = self
             .pending
             .lock()
-            .map(|mut table| table.entries.drain().map(|(_, pending)| pending).collect())
+            .map(|mut table| {
+                let mut keep = Vec::new();
+                let mut dismiss = Vec::new();
+                for (id, card) in table.entries.drain() {
+                    if plan_only && !is_plan_request(&card.request) {
+                        keep.push((id, card));
+                    } else {
+                        dismiss.push(card);
+                    }
+                }
+                table.entries.extend(keep);
+                dismiss
+            })
             .unwrap_or_else(|_| Vec::new());
         for card in &pending {
             release_card_slot(&card.request);
         }
-        self.complete_cancelled(pending);
+        self.complete_cancelled(pending, reason);
     }
 
     /// Tear the session down: no later request may register.
@@ -969,19 +1014,25 @@ impl PermissionBroker {
         for card in &pending {
             release_card_slot(&card.request);
         }
-        self.complete_cancelled(pending);
+        self.complete_cancelled(pending, PlanCancellation::Other);
     }
 
-    fn complete_cancelled(&self, pending: Vec<Arc<PendingPermission>>) {
+    fn complete_cancelled(&self, pending: Vec<Arc<PendingPermission>>, reason: PlanCancellation) {
         for pending in pending {
             // Before the resolved publish, so no push re-broadcasts the
             // standing attention: the drain already took every card.
             Self::clear_attention_after_withdrawal(&pending);
+            let is_plan = is_plan_request(&pending.request);
+            let journal_outcome = match (is_plan, reason) {
+                (true, PlanCancellation::NewPrompt) => "dismissed_by_new_prompt",
+                (true, PlanCancellation::Steer) => "dismissed_by_steer",
+                _ => "cancelled",
+            };
             let _ = self.complete(
                 &pending,
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
                 None,
-                "cancelled",
+                journal_outcome,
                 None,
             );
         }
@@ -1189,10 +1240,15 @@ impl PermissionBroker {
                 ..
             } = &pending.request
             {
-                let outcome = match selected_option.map(|option| option.option_id.as_str()) {
-                    Some("implement" | "implement_bypass") => PlanOutcome::Approved,
-                    Some(_) => PlanOutcome::Rejected,
-                    None => PlanOutcome::Withdrawn,
+                let outcome = match journal_outcome {
+                    "dismissed_by_new_prompt" => PlanOutcome::Dismissed,
+                    "dismissed_by_steer" => PlanOutcome::Steered,
+                    "superseded_by_newer_plan" => PlanOutcome::Superseded,
+                    _ => match selected_option.map(|option| option.option_id.as_str()) {
+                        Some("implement" | "implement_bypass") => PlanOutcome::Approved,
+                        Some(_) => PlanOutcome::Rejected,
+                        None => PlanOutcome::Withdrawn,
+                    },
                 };
                 publish_plan_outcome(&runtime, pending, outcome);
             }
@@ -1303,6 +1359,15 @@ impl PermissionBroker {
         }
     }
 
+    /// Whether one card id is still waiting for an answer. The reader's
+    /// duplicate-completion no-op reads it before it raises a second card
+    /// for a turn that already has one.
+    pub(crate) fn has_pending(&self, tool_call_id: &str) -> bool {
+        self.pending
+            .lock()
+            .is_ok_and(|table| table.entries.contains_key(tool_call_id))
+    }
+
     pub(super) fn pending_len(&self) -> usize {
         self.pending
             .lock()
@@ -1348,7 +1413,58 @@ impl PermissionBroker {
         self.wait_for_decision(&pending)
     }
 
-    fn wait_for_decision(&self, pending: &PendingPermission) -> HostDecision {
+    pub(super) fn register_host_plan(
+        self: &Arc<Self>,
+        request: SessionEvent,
+        runtime: &Arc<SessionRuntime>,
+    ) -> Result<Arc<PendingPermission>, PermissionResponseError> {
+        let older = self
+            .pending
+            .lock()
+            .map(|mut table| {
+                let ids = table
+                    .entries
+                    .iter()
+                    .filter(|(_, pending)| {
+                        pending.session_id == runtime.session_id
+                            && matches!(
+                                &pending.request,
+                                SessionEvent::PermissionRequest {
+                                    kind: Some(PermissionRequestKind::Plan),
+                                    ..
+                                }
+                            )
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>();
+                ids.into_iter()
+                    .filter_map(|id| table.entries.remove(&id))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for pending in &older {
+            release_card_slot(&pending.request);
+            Self::clear_attention_after_withdrawal(pending);
+            let _ = self.complete(
+                pending,
+                serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                None,
+                "superseded_by_newer_plan",
+                None,
+            );
+        }
+        let pending = self.register_host(request, runtime)?;
+        if runtime.permission_delivery_enabled() == Some(false) {
+            // The cancel is the card's one completion and the one journal
+            // row; the caller adds no second terminal status for this id.
+            let _ = self.cancel(&pending.tool_call_id, &pending, "capability_not_supported");
+            return Err(PermissionResponseError::CapabilityNotSupported);
+        }
+        let _ = runtime.publish_agent_event(pending.request.clone(), None);
+        Ok(pending)
+    }
+
+    pub(super) fn wait_for_decision(&self, pending: &PendingPermission) -> HostDecision {
         let (done, wake) = &*pending.done;
         let Ok(mut completed) = done.lock() else {
             return HostDecision::Cancelled;
@@ -1444,10 +1560,20 @@ fn permission_answered_event(
     }
 }
 
+#[derive(Clone, Copy)]
+enum PlanCancellation {
+    Other,
+    NewPrompt,
+    Steer,
+}
+
 enum PlanOutcome {
     Approved,
     Rejected,
     Withdrawn,
+    Dismissed,
+    Steered,
+    Superseded,
 }
 
 impl PlanOutcome {
@@ -1456,6 +1582,12 @@ impl PlanOutcome {
             Self::Approved => ("completed", "Approved"),
             Self::Rejected => ("failed", "Rejected"),
             Self::Withdrawn => ("cancelled", "Withdrawn"),
+            Self::Dismissed => ("cancelled", "Dismissed by a new prompt"),
+            Self::Steered => (
+                "cancelled",
+                "The user answered with a message instead of approving the plan.",
+            ),
+            Self::Superseded => ("cancelled", "Superseded by a newer plan"),
         }
     }
 }
@@ -1484,6 +1616,36 @@ fn publish_plan_outcome(
         if !published {
             eprintln!("could not publish the completed plan row");
         }
+    }
+}
+
+pub(super) fn plan_permission_request(tool_call_id: &str, plan: &str) -> SessionEvent {
+    SessionEvent::PermissionRequest {
+        tool_call_id: tool_call_id.to_string(),
+        title: "Plan".to_string(),
+        description: None,
+        command: None,
+        args: None,
+        cwd: None,
+        env: None,
+        options: vec![
+            PermissionOption {
+                option_id: "deny".to_string(),
+                name: "Reject".to_string(),
+                kind: "reject_once".to_string(),
+            },
+            PermissionOption {
+                option_id: "implement".to_string(),
+                name: "Implement".to_string(),
+                kind: "allow_once".to_string(),
+            },
+        ],
+        origin: SessionOrigin::local(),
+        create_agent: None,
+        is_chooser: Some(false),
+        kind: Some(PermissionRequestKind::Plan),
+        plan: Some(crate::plan_text::bound_plan_text(plan)),
+        questions: None,
     }
 }
 
@@ -1990,8 +2152,8 @@ mod tests {
     use super::SessionRuntime;
     use super::{
         peer_card_count, permission, permission_path, permission_plan, permission_with_kinds,
-        test_broker, PermissionBroker, PermissionOption, PermissionSender, MAX_ACP_PERMISSION_ARGS,
-        MAX_PENDING_ACP_PERMISSIONS, MAX_PENDING_FOR_PEER,
+        test_broker, HostDecision, PermissionBroker, PermissionOption, PermissionSender,
+        MAX_ACP_PERMISSION_ARGS, MAX_PENDING_ACP_PERMISSIONS, MAX_PENDING_FOR_PEER,
     };
     use crate::journal::Journal;
     use devboule_protocol::{
@@ -2619,6 +2781,179 @@ mod tests {
             }
             assert!(sent.lock().expect("sender").is_empty());
         }
+    }
+
+    #[test]
+    fn plan_request_is_a_person_facing_implement_or_reject_card() {
+        let plan = super::plan_permission_request("codex-plan-1", "## Steps\\n\\n- Build");
+        let SessionEvent::PermissionRequest {
+            tool_call_id,
+            options,
+            kind,
+            is_chooser,
+            plan,
+            ..
+        } = plan
+        else {
+            panic!("plan permission request");
+        };
+        assert_eq!(tool_call_id, "codex-plan-1");
+        assert_eq!(kind, Some(devboule_protocol::PermissionRequestKind::Plan));
+        assert_eq!(is_chooser, Some(false));
+        assert_eq!(plan.as_deref(), Some("## Steps\\n\\n- Build"));
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| (option.name.as_str(), option.kind.as_str()))
+                .collect::<Vec<_>>(),
+            [("Reject", "reject_once"), ("Implement", "allow_once")]
+        );
+    }
+
+    #[test]
+    fn plan_registration_is_synchronous_supersedes_and_allows_one_implement() {
+        let (broker, _) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        let older = broker
+            .register_host_plan(permission_plan("older-plan"), &runtime)
+            .expect("older plan registers before its waiter exists");
+        assert_eq!(broker.pending_ids(), ["older-plan".to_string()]);
+        let waiting_broker = Arc::clone(&broker);
+        let older_wait = thread::spawn(move || waiting_broker.wait_for_decision(&older));
+
+        let pending = broker
+            .register_host_plan(permission_plan("newer-plan"), &runtime)
+            .expect("newer plan registers");
+        assert_eq!(broker.pending_ids(), ["newer-plan".to_string()]);
+        assert_eq!(
+            older_wait.join().expect("older waiter"),
+            HostDecision::Cancelled
+        );
+        assert_eq!(
+            super::PlanOutcome::Superseded.status_and_title(),
+            ("cancelled", "Superseded by a newer plan")
+        );
+
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let waiting_broker = Arc::clone(&broker);
+        let sent = Arc::clone(&sends);
+        let implement = thread::spawn(move || {
+            if waiting_broker.wait_for_decision(&pending) == HostDecision::Allow {
+                sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        broker
+            .respond_with_option(
+                "newer-plan",
+                PermissionOutcome::AllowOnce,
+                Some("implement".to_string()),
+                None,
+            )
+            .expect("first Implement answer");
+        assert!(broker
+            .respond_with_option(
+                "newer-plan",
+                PermissionOutcome::AllowOnce,
+                Some("implement".to_string()),
+                None,
+            )
+            .is_err());
+        implement.join().expect("implementation waiter");
+        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_steer_uses_plan_specific_withdrawal_wording() {
+        let (broker, _) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        let pending = broker
+            .register_host_plan(permission_plan("steered-plan"), &runtime)
+            .expect("plan registers");
+        broker.cancel_pending_for_steer();
+
+        assert_eq!(broker.pending_len(), 0);
+        assert_eq!(broker.wait_for_decision(&pending), HostDecision::Cancelled);
+        assert_eq!(
+            super::PlanOutcome::Steered.status_and_title(),
+            (
+                "cancelled",
+                "The user answered with a message instead of approving the plan."
+            )
+        );
+    }
+
+    #[test]
+    fn a_new_prompt_dismisses_only_plan_cards() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                1,
+                super::plan_permission_request("plan-card", "Plan text"),
+                &runtime,
+            )
+            .expect("register plan");
+        broker
+            .register(2, super::permission("command-card"), &runtime)
+            .expect("register command");
+
+        broker.cancel_pending_for_new_prompt();
+
+        assert_eq!(
+            broker.pending_len(),
+            1,
+            "a new prompt leaves every non-plan card pending"
+        );
+        let sent = sent.lock().expect("sender");
+        assert_eq!(sent.len(), 1, "only the plan card is answered");
+        assert_eq!(sent[0].1["outcome"]["outcome"], "cancelled");
+        assert_eq!(
+            super::PlanOutcome::Dismissed.status_and_title(),
+            ("cancelled", "Dismissed by a new prompt")
+        );
+        drop(sent);
+        // The command card is still answerable: the person can still allow or
+        // deny it, and the answer reaches the provider.
+        broker
+            .respond_with_option(
+                "command-card",
+                PermissionOutcome::AllowOnce,
+                Some("allow".to_string()),
+                None,
+            )
+            .expect("the kept command card still answers");
+        assert_eq!(broker.pending_len(), 0);
+    }
+
+    #[test]
+    fn a_new_prompt_dismisses_a_pending_plan_and_keeps_the_broker_open() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                1,
+                super::plan_permission_request("pending-plan", "Plan text"),
+                &runtime,
+            )
+            .expect("register plan");
+
+        broker.cancel_pending_for_new_prompt();
+
+        assert_eq!(broker.pending_len(), 0);
+        let sent = sent.lock().expect("sender");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1["outcome"]["outcome"], "cancelled");
+        assert_eq!(
+            super::PlanOutcome::Dismissed.status_and_title(),
+            ("cancelled", "Dismissed by a new prompt")
+        );
+        broker
+            .register(
+                2,
+                super::plan_permission_request("next-plan", "Next"),
+                &runtime,
+            )
+            .expect("new prompt does not close the broker");
     }
 
     /// `full-access` is Codex's own spelling, answered for Codex only: an

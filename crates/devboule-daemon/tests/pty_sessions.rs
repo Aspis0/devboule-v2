@@ -343,6 +343,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::PermissionResolved { .. }
         | SessionEvent::PermissionAnswered { .. }
         | SessionEvent::SessionManifest { .. }
+        | SessionEvent::SessionFeatureState { .. }
         | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentCreated { .. }
         | SessionEvent::ChildFinished { .. }
@@ -757,6 +758,7 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::PermissionAnswered { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
             | SessionEvent::ChildFinished { .. }
@@ -1109,6 +1111,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::PermissionAnswered { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
             | SessionEvent::ChildFinished { .. }
@@ -1790,6 +1793,7 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::PermissionResolved { .. }
         | SessionEvent::PermissionAnswered { .. }
         | SessionEvent::SessionManifest { .. }
+        | SessionEvent::SessionFeatureState { .. }
         | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentCreated { .. }
         | SessionEvent::ChildFinished { .. }
@@ -2201,6 +2205,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::PermissionResolved { .. }
         | SessionEvent::PermissionAnswered { .. }
         | SessionEvent::SessionManifest { .. }
+        | SessionEvent::SessionFeatureState { .. }
         | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentCreated { .. }
         | SessionEvent::ChildFinished { .. }
@@ -2586,6 +2591,7 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::PermissionAnswered { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
             | SessionEvent::ChildFinished { .. }
@@ -2865,6 +2871,7 @@ fn journal_growth_after_13mb_flood() {
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::PermissionAnswered { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
             | SessionEvent::ChildFinished { .. }
@@ -3172,6 +3179,7 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::PermissionAnswered { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
             | SessionEvent::ChildFinished { .. }

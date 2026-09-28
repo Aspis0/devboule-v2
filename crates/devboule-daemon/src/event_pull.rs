@@ -477,6 +477,7 @@ impl ConnHandle {
                 | SessionEvent::PermissionResolved { .. }
                 | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionManifest { .. }
+                | SessionEvent::SessionFeatureState { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. } => {

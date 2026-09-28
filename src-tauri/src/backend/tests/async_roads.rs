@@ -115,12 +115,14 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 /// protocol-12 roads: `providers_auth_check` (the login check spawns
 /// provider CLIs in the host's credential context, so it must never run on
 /// the UI thread) and `providers_set_enabled` (the switch write waits on
-/// the daemon like every other settings road).
+/// the daemon like every other settings road). Then 60 → 61 with the
+/// protocol-13 road `session_set_feature` (Codex plan mode): the toggle
+/// waits on the daemon like the mode switch it sits beside.
 #[test]
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 60,
+        scan.helper_calls, 61,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

@@ -47,28 +47,39 @@ fn question_reader(
     broker: Arc<PermissionBroker>,
     response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
 ) -> CodexReader {
+    let state = Arc::new(crate::codex_view::CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "model", "isDefault": true }]
+        }))
+        .expect("catalog"),
+        "auto",
+    ));
+    let commands = empty_commands();
+    let stdin = Arc::new(Mutex::new(None));
+    let next_id = Arc::new(AtomicU64::new(1));
+    let plan_prompt = Arc::new(super::CodexStaticPrompt::new(
+        Arc::clone(&stdin),
+        Arc::clone(&next_id),
+        Arc::clone(&state),
+        Arc::clone(&commands),
+    ));
     CodexReader {
-        commands: empty_commands(),
+        commands,
         available_commands: None,
         buffer: Vec::new(),
         discarding_oversized_line: false,
         deferred: Vec::new(),
         manifest: None,
-        state: Arc::new(crate::codex_view::CodexState::new(
-            "thread".to_string(),
-            catalog_from_response(&serde_json::json!({
-                "data": [{ "id": "model", "isDefault": true }]
-            }))
-            .expect("catalog"),
-            "auto",
-        )),
+        state,
         view: CodexView::new(None),
         permission_broker: Arc::clone(&broker),
         response_ids,
-        stdin: Arc::new(Mutex::new(None)),
-        next_id: Arc::new(AtomicU64::new(1)),
+        stdin,
+        next_id,
         requests: Arc::new(CodexRequests::new()),
         compactions: crate::codex_compaction::CodexCompactions::default(),
+        plan_prompt,
     }
 }
 

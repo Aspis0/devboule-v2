@@ -356,6 +356,18 @@ pub async fn session_set_name(
 }
 
 #[tauri::command]
+pub async fn session_set_feature(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    feature_id: String,
+    enabled: bool,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_set_feature(&id, &feature_id, enabled)).await
+}
+
+#[tauri::command]
 pub async fn session_close(
     bridge: State<'_, DaemonBridge>,
     id: String,

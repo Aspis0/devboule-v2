@@ -613,6 +613,12 @@ export interface SessionManifest {
   modes?: SessionModeState;
 }
 
+export interface SessionFeatureState {
+  type: "session_feature_state";
+  featureId: string;
+  enabled: boolean;
+}
+
 /** One rate-limit window a plan-usage frame actually carried (protocol
  * `PlanWindow`). `durationMins` labels the window — Codex sends 300 for the
  * 5-hour window and 10080 for the weekly one. `resetsAt` is Unix seconds. */
@@ -1345,6 +1351,7 @@ export type SessionEvent =
   | PermissionResolved
   | PermissionAnswered
   | SessionManifest
+  | SessionFeatureState
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }
   | { type: "recovered"; integrity: UnverifiableTranscriptIntegrity }

@@ -232,6 +232,11 @@
     "type": "recovered"
   },
   {
+    "enabled": false,
+    "featureId": "planMode",
+    "type": "session_feature_state"
+  },
+  {
     "models": [],
     "type": "session_manifest"
   },

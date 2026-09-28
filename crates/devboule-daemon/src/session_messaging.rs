@@ -826,7 +826,7 @@ impl super::SessionRegistry {
                     // a refusal the local fallback's own `interrupt()` clears
                     // them, and each provider's killer does the same.
                     if let Some(permission_broker) = runtime.permission_broker() {
-                        permission_broker.cancel_pending();
+                        permission_broker.cancel_pending_for_steer();
                     }
                     // The steered text is echoed into the session's own
                     // transcript as the `AgentUserMessage` every accepted input
@@ -1118,6 +1118,9 @@ impl super::SessionRegistry {
         let mut delivered_message_id: Option<String> = None;
         if has_prompt {
             if let Some(runtime) = agent_runtime.as_ref() {
+                if let Some(broker) = runtime.permission_broker() {
+                    broker.cancel_pending_for_new_prompt();
+                }
                 // The journal records `prompt`: on the fallback path that is
                 // the same string the writer got (the user's text plus one
                 // path per attachment); on the structured path it is the

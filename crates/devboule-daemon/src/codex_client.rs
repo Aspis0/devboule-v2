@@ -20,6 +20,7 @@ use super::codex_input_requests::{
 };
 use super::codex_questions::dispatch_question;
 use super::permission_broker::{PermissionBroker, PermissionResponseError};
+use super::session_prompt_planning::PlannedStaticPrompt;
 use super::session_runtime::SessionRuntime;
 use super::{
     write_child_stdin, ModelSwitcher, OutOfBandCommands, PtyCommand, ReaderDispatch, SessionKiller,
@@ -321,6 +322,19 @@ pub(crate) fn seed_fast_mode(
     Ok(())
 }
 
+pub(crate) fn seed_plan_mode(
+    state: &Arc<CodexState>,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    if let Some(true) = crate::profile_delivery::toggle_value(
+        &delivery.features,
+        crate::provider_features::PLAN_MODE_FEATURE,
+    )? {
+        state.set_plan_mode(true)?;
+    }
+    Ok(())
+}
+
 /// The Codex carrier seam (S4 shape, S6 body — the provider-trait signatures
 /// verbatim, so adoption is a move): the broker's server rides the app-server
 /// launch line as `-c mcp_servers.<name>.url=...` overrides, with the bearer
@@ -590,6 +604,13 @@ fn spawn_codex(
         terminate_shared_process(&process);
         return Err(error);
     }
+    if let Err(error) = state
+        .set_collaboration_modes(&handshake.collaboration_modes)
+        .and_then(|()| seed_plan_mode(&state, &delivery))
+    {
+        terminate_shared_process(&process);
+        return Err(error);
+    }
     let peer_session_id = state.thread_id();
     // One registration table for the requests this client awaits answers to
     // (A2-03), shared by the steerer that registers and the reader that
@@ -656,6 +677,7 @@ fn spawn_codex(
         next_id,
         requests,
         compactions: crate::codex_compaction::CodexCompactions::default(),
+        plan_prompt: Arc::clone(&static_prompt),
     };
     Ok(SpawnedSession {
         process_job,
@@ -918,6 +940,22 @@ impl ModelSwitcher for CodexSwitcher {
         self.state.set_mode(mode_id)
     }
 
+    fn set_feature(&self, feature_id: &str, enabled: bool) -> Result<(), WireError> {
+        if feature_id != crate::provider_features::PLAN_MODE_FEATURE {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Codex does not declare that runtime feature.",
+            ));
+        }
+        self.state.set_plan_mode(enabled)
+    }
+
+    fn feature_state(&self, feature_id: &str) -> Option<SessionEvent> {
+        (feature_id == crate::provider_features::PLAN_MODE_FEATURE)
+            .then(|| self.state.plan_feature_state())
+            .flatten()
+    }
+
     fn manifest(&self) -> Option<SessionEvent> {
         Some(self.state.manifest())
     }
@@ -953,6 +991,16 @@ pub(crate) struct CodexStaticPrompt {
     commands: Arc<CodexCommands>,
 }
 
+fn approved_plan_prompt(plan: &str) -> String {
+    [
+        "The user approved the plan. Implement it now. Do not restate or revise the plan unless blocked.",
+        "Approved plan:",
+        plan,
+        "Carry out the work, make the necessary code changes, and verify the result.",
+    ]
+    .join("\n\n")
+}
+
 impl CodexStaticPrompt {
     fn new(
         stdin: Arc<Mutex<Option<ChildStdin>>>,
@@ -965,6 +1013,52 @@ impl CodexStaticPrompt {
             next_id,
             state,
             commands,
+        }
+    }
+
+    fn send_approved_plan(&self, plan: &str, runtime: &Arc<SessionRuntime>) {
+        if let Err(error) = self.state.set_plan_mode(false) {
+            runtime.publish_agent_error(error.message);
+            return;
+        }
+        if let Some(feature) = self.state.plan_feature_state() {
+            let _ = runtime.publish_daemon_event(feature);
+        }
+        let text = approved_plan_prompt(plan);
+        let prompt = CodexPlannedPrompt {
+            stdin: Arc::clone(&self.stdin),
+            next_id: Arc::clone(&self.next_id),
+            state: Arc::clone(&self.state),
+            plan: CodexPromptPlan {
+                fallback_text: text.clone(),
+                image_paths: Vec::new(),
+                command_input: None,
+            },
+        };
+        if let Err(error) = prompt.send() {
+            let _ = self.state.set_plan_mode(true);
+            if let Some(feature) = self.state.plan_feature_state() {
+                let _ = runtime.publish_daemon_event(feature);
+            }
+            runtime.publish_agent_error(error.message);
+            return;
+        }
+        // Paseo shows no user-message item for its implementation prompt
+        // (the follow-up path emits no timeline item), so the daemon-composed
+        // line is journalled as the agent's own, never the person's words.
+        if runtime
+            .publish_agent_user_message(
+                text,
+                devboule_protocol::UserMessageAuthor::Agent,
+                devboule_protocol::UserMessageKind::Composer,
+            )
+            .is_none()
+        {
+            runtime.mark_journal_degraded();
+        }
+        runtime.begin_turn();
+        if runtime.clear_attention() {
+            runtime.request_transition();
         }
     }
 }
@@ -1031,7 +1125,8 @@ struct CodexPlannedPrompt {
 impl CodexPlannedPrompt {
     /// The `turn/start` params this prompt sends: the model, effort and policy
     /// override are read at send time, the way the writer reads them, so a
-    /// model switched between prompt and send is not sent a stale name.
+    /// model switched between prompt and send is not sent a stale name. The
+    /// collaboration mode is applied once, inside the params builder.
     fn params(&self) -> Value {
         let mut params = turn_start_params_for_prompt(
             &self.state,
@@ -1071,13 +1166,7 @@ impl super::PlannedStaticPrompt for CodexPlannedPrompt {
     }
 
     fn send(&self) -> Result<(), WireError> {
-        send_request(
-            &self.stdin,
-            &self.next_id,
-            "turn/start",
-            self.params(),
-            "Codex",
-        )
+        send_turn_start(&self.stdin, &self.next_id, &self.state, self.params())
     }
 }
 
@@ -1129,10 +1218,7 @@ impl Write for CodexWriter {
         // the text-only `turn/start`, unchanged.
         let (model, effort) = self.state.model_and_effort();
         let policy_mode = self.state.mode_override();
-        send_request(
-            &self.stdin,
-            &self.next_id,
-            "turn/start",
+        let params = with_collaboration_mode(
             turn_start_params(
                 &self.state.thread_id(),
                 &text,
@@ -1141,9 +1227,9 @@ impl Write for CodexWriter {
                 effort.as_deref(),
                 self.state.service_tier().as_deref(),
             ),
-            "Codex",
-        )
-        .map_err(wire_to_io)
+            &self.state,
+        );
+        send_turn_start(&self.stdin, &self.next_id, &self.state, params).map_err(wire_to_io)
     }
 }
 
@@ -1348,6 +1434,7 @@ impl SessionKiller for CodexKiller {
 struct Handshake {
     thread_id: String,
     catalog: CodexCatalog,
+    collaboration_modes: Value,
     deferred: Vec<Value>,
 }
 
@@ -1394,6 +1481,16 @@ fn perform_handshake(
         &mut deferred,
     )?;
     let mut catalog = catalog_from_response(&models_response)?;
+    let collaboration_modes = request_response(
+        stdout,
+        stdin,
+        next_id,
+        "collaborationMode/list",
+        serde_json::json!({}),
+        deadline,
+        &mut deferred,
+    )
+    .unwrap_or_else(|_| serde_json::json!({ "data": [] }));
     let (method, params) = match road {
         ThreadRoad::Fresh => ("thread/start", thread_start_params(cwd, mode_id)),
         ThreadRoad::Resuming(thread_id) => ("thread/resume", thread_resume_params(thread_id)),
@@ -1417,6 +1514,7 @@ fn perform_handshake(
     Ok(Handshake {
         thread_id,
         catalog,
+        collaboration_modes,
         deferred,
     })
 }
@@ -1481,6 +1579,23 @@ fn send_request(
 ) -> Result<(), WireError> {
     let id = format!("d-{}", next_id.fetch_add(1, Ordering::Relaxed));
     send_frame(stdin, &request_frame(&id, method, params), label)
+}
+
+fn send_turn_start(
+    stdin: &Mutex<Option<ChildStdin>>,
+    next_id: &AtomicU64,
+    state: &CodexState,
+    params: Value,
+) -> Result<(), WireError> {
+    let id = format!("d-{}", next_id.fetch_add(1, Ordering::Relaxed));
+    let plan_mode = params
+        .pointer("/collaborationMode/mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| state.is_plan_collaboration_mode(mode));
+    state.record_turn_start(&id, plan_mode);
+    send_frame(stdin, &request_frame(&id, "turn/start", params), "Codex").inspect_err(|_| {
+        state.forget_turn_start(&id);
+    })
 }
 
 fn request_frame(id: &str, method: &str, params: Value) -> Value {
@@ -1656,7 +1771,7 @@ fn turn_start_params_for_prompt(
     let (model, effort) = state.model_and_effort();
     let policy_mode = state.mode_override();
     let service_tier = state.service_tier();
-    turn_start_params_with_images(
+    let params = turn_start_params_with_images(
         &state.thread_id(),
         text,
         image_paths,
@@ -1664,7 +1779,15 @@ fn turn_start_params_for_prompt(
         Some(&model),
         effort.as_deref(),
         service_tier.as_deref(),
-    )
+    );
+    with_collaboration_mode(params, state)
+}
+
+fn with_collaboration_mode(mut params: Value, state: &CodexState) -> Value {
+    if let Some(mode) = state.collaboration_mode() {
+        params["collaborationMode"] = mode;
+    }
+    params
 }
 
 /// Prompt plan for one Codex send: the text plus one `localImage` path per
@@ -1838,6 +1961,7 @@ struct CodexReader {
     next_id: Arc<AtomicU64>,
     requests: Arc<CodexRequests>,
     compactions: crate::codex_compaction::CodexCompactions,
+    plan_prompt: Arc<CodexStaticPrompt>,
 }
 
 impl CodexReader {
@@ -1846,11 +1970,57 @@ impl CodexReader {
     }
 
     fn dispatch_value(&mut self, value: Value, runtime: &Arc<SessionRuntime>) {
+        let method = value.get("method").and_then(Value::as_str);
+        let params = value.get("params").unwrap_or(&Value::Null);
+        let root_thread = crate::codex_compaction::is_root_thread(params, &self.state.thread_id());
+        self.view.set_capture_plan(root_thread);
+        // For a root `turn/completed`, the plan events go out BEFORE the frame's
+        // envelope: live they precede its AgentFinished, and the card's
+        // journalled rows carry lower seqs than it, so the rebuild keeps that
+        // order.
+        let completed_plan = (method == Some("turn/completed") && root_thread)
+            .then(|| self.view.take_completed_plan(params))
+            .flatten();
+        if let Some(completion) = completed_plan {
+            let plan_turn_id = params
+                .pointer("/turn/id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            match completion {
+                crate::codex_view::PlanCompletion::Card(plan) if !plan_turn_id.is_empty() => {
+                    self.request_plan_card(plan, &plan_turn_id, runtime);
+                }
+                crate::codex_view::PlanCompletion::Card(text)
+                | crate::codex_view::PlanCompletion::Row(text) => {
+                    let plan_row_id = if plan_turn_id.is_empty() {
+                        format!("{}-plan", self.next_id.fetch_add(1, Ordering::Relaxed))
+                    } else {
+                        format!("{plan_turn_id}-plan")
+                    };
+                    // Live only: the journal already holds the plan item's own
+                    // frames, which re-derive this row on replay.
+                    for event in crate::codex_view::plain_plan_row_events(&plan_row_id, &text) {
+                        let _ = runtime.publish_agent_event(event, None);
+                    }
+                }
+            }
+        }
         let event_seq = runtime.journal_agent_envelope(&value);
+        if method == Some("turn/started") && root_thread {
+            if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
+                self.state.assign_next_turn_mode(turn_id);
+            }
+            let sent_mode = params
+                .pointer("/turn/id")
+                .and_then(Value::as_str)
+                .and_then(|turn_id| self.state.sent_mode_for_turn(turn_id))
+                .unwrap_or(false);
+            self.view.set_plan_mode(sent_mode);
+        }
         // Answered here rather than in the view: one of the two compaction
         // channels is keyed by the thread this session owns, and the pair has
         // to be counted against each other.
-        let method = value.get("method").and_then(Value::as_str);
         if matches!(
             method,
             Some("thread/compacted" | "item/started" | "item/completed")
@@ -1898,6 +2068,9 @@ impl CodexReader {
                     for event in self.compactions.turn_ended() {
                         let _ = runtime.publish_daemon_event(event);
                     }
+                    if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
+                        self.state.clear_turn_mode(turn_id);
+                    }
                 }
             } else if let Some(id) = value.get("id") {
                 let _ = send_frame(&self.stdin, &method_not_supported_frame(id), "Codex");
@@ -1907,6 +2080,11 @@ impl CodexReader {
             // waiter that registered that id before anything else looks at it
             // (A2-03). A response whose id matches no waiter is ignored.
             self.requests.deliver(&value);
+            if let Some((turn_id, plan_mode)) = self.state.resolve_turn_start(&value) {
+                if self.state.current_turn().as_deref() == Some(&turn_id) {
+                    self.view.set_plan_mode(plan_mode);
+                }
+            }
             if let Some(turn_id) = turn_id_from_response(&value) {
                 self.state.set_turn(Some(turn_id));
             }
@@ -1957,6 +2135,73 @@ impl CodexReader {
             let manifest = runtime.store_session_manifest(self.state.manifest());
             self.publish(runtime, manifest, seq.take().or(event_seq));
         }
+    }
+
+    fn request_plan_card(&self, plan: String, turn_id: &str, runtime: &Arc<SessionRuntime>) {
+        // The card is keyed on the plan item's own id, so the card's row and
+        // the re-derived plain row are one row, live and on replay. Turn ids
+        // are unique across the thread's life, so a completion that carried no
+        // turn id raises no card at all.
+        if turn_id.is_empty() {
+            return;
+        }
+        // Deliberately the app-server's own item id, not a daemon namespace:
+        // the only item it can name is this plan, which is the card.
+        let card_id = format!("{turn_id}-plan");
+        let request = super::permission_broker::plan_permission_request(&card_id, &plan);
+        let plan = match &request {
+            SessionEvent::PermissionRequest {
+                plan: Some(plan), ..
+            } => plan.clone(),
+            _ => return,
+        };
+        // A duplicate completion for a turn whose card is already raised is a
+        // no-op: no new row, no failed, no notice.
+        if runtime.permission_already_recorded(&card_id)
+            || self.permission_broker.has_pending(&card_id)
+        {
+            return;
+        }
+        // The row exists before the card is answerable, so a resolved card is
+        // never stranded at in_progress.
+        let _ = runtime.publish_daemon_event(SessionEvent::AgentToolCall {
+            tool_call_id: card_id.clone(),
+            title: "Plan".to_string(),
+            status: "in_progress".to_string(),
+            kind: Some("plan".to_string()),
+            locations: None,
+            subagent_type: None,
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        });
+        let broker = Arc::clone(&self.permission_broker);
+        let prompt = Arc::clone(&self.plan_prompt);
+        let runtime = Arc::clone(runtime);
+        let pending = match broker.register_host_plan(request, &runtime) {
+            Ok(pending) => pending,
+            Err(_) => {
+                // The text folds into the row already published, with no
+                // status of its own: the broker's cancel is the card's one
+                // completion where there is one, and otherwise the row reads
+                // as the plan-off path's. Live only, as the folded row above.
+                // The broker's refusal sentences name a question, so the notice
+                // carries its own plan wording.
+                for event in crate::codex_view::plan_text_update(&card_id, &plan) {
+                    let _ = runtime.publish_agent_event(event, None);
+                }
+                let _ = runtime.publish_session_notice(
+                    "The plan card could not be raised, so the plan was not held for approval."
+                        .to_string(),
+                    NoticeSeverity::Warning,
+                );
+                return;
+            }
+        };
+        std::thread::spawn(move || {
+            if broker.wait_for_decision(&pending) == super::permission_broker::HostDecision::Allow {
+                prompt.send_approved_plan(&plan, &runtime);
+            }
+        });
     }
 
     /// The broker-side handle for one parked Codex input request, built
@@ -2030,6 +2275,9 @@ impl ReaderDispatch for CodexReader {
         if let Some(manifest) = self.manifest.take() {
             let manifest = runtime.store_session_manifest(manifest);
             self.publish(runtime, manifest, None);
+            if let Some(feature) = self.state.plan_feature_state() {
+                let _ = runtime.publish_daemon_event(feature);
+            }
             // The command list must be an AgentReport row: replay has no
             // Codex envelope from which to reconstruct a filesystem-only list.
             if let Some(commands) = self.available_commands.take() {
@@ -2185,6 +2433,46 @@ mod input_test_support;
 #[cfg(test)]
 #[path = "codex_client_questions_tests.rs"]
 mod question_tests;
+
+/// Shared harness for the plan-card reader tests below.
+#[cfg(test)]
+#[path = "codex_client_plan_card_test_support.rs"]
+mod plan_card_test_support;
+
+/// The plan rows the app builds from the daemon's events.
+#[cfg(test)]
+#[path = "codex_client_plan_rows_test_support.rs"]
+mod plan_rows_test_support;
+
+/// The plan card's reader wiring and event order.
+#[cfg(test)]
+#[path = "codex_client_plan_card_reader_tests.rs"]
+mod plan_card_reader_tests;
+
+/// What a client attaching after a plan turn is sent.
+#[cfg(test)]
+#[path = "codex_client_plan_card_attach_tests.rs"]
+mod plan_card_attach_tests;
+
+/// A card answered as soon as it is answerable.
+#[cfg(test)]
+#[path = "codex_client_plan_card_answer_tests.rs"]
+mod plan_card_answer_tests;
+
+/// The card's id: keyed on the plan item's own id across two spawns.
+#[cfg(test)]
+#[path = "codex_client_plan_card_ids_tests.rs"]
+mod plan_card_ids_tests;
+
+/// Duplicate completions and the row a refused registration leaves.
+#[cfg(test)]
+#[path = "codex_client_plan_card_duplicates_tests.rs"]
+mod plan_card_duplicates_tests;
+
+/// The implementation prompt's journal author.
+#[cfg(test)]
+#[path = "codex_client_plan_card_author_tests.rs"]
+mod plan_card_author_tests;
 
 /// `mcpServer/elicitation/request` approvals.
 #[cfg(test)]

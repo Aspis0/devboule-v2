@@ -2176,6 +2176,12 @@ fn invalid_session_mode_is_rejected_without_changing_the_manifest() {
     assert_eq!(error.code, ErrorCode::InvalidRequest);
     assert_eq!(runtime.session_manifest(), before);
     assert_eq!(calls.load(Ordering::Acquire), 0);
+    let error = registry
+        .set_feature(session_id, &owner, "planMode", true, &ConnHandle::new(1))
+        .expect_err("a provider without the feature must refuse the setter");
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.message.contains("does not support runtime features"));
+    assert_eq!(runtime.session_manifest(), before);
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -2352,6 +2358,10 @@ fn ownership_paths(
         (
             "set_display_name",
             registry.set_display_name(id, owner, "worker", conn),
+        ),
+        (
+            "set_feature",
+            registry.set_feature(id, owner, "planMode", true, conn),
         ),
         (
             "resize",
@@ -2748,6 +2758,7 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::SessionSetModel { .. } => Some(&["set_model"]),
         ClientMessage::SessionSetMode { .. } => Some(&["set_mode"]),
         ClientMessage::SessionSetName { .. } => Some(&["set_display_name"]),
+        ClientMessage::SessionSetFeature { .. } => Some(&["set_feature"]),
         ClientMessage::SessionResize { .. } => Some(&["resize"]),
         ClientMessage::SessionAttach { .. } => Some(&["attach"]),
         ClientMessage::SessionClaim { .. } => Some(&["claim"]),

@@ -869,6 +869,7 @@ impl SessionRuntime {
                 | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::SessionManifest { .. }
+                | SessionEvent::SessionFeatureState { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. }
                 | SessionEvent::ContextUsage { .. }
@@ -2818,6 +2819,7 @@ impl SessionRuntime {
                 | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::SessionManifest { .. }
+                | SessionEvent::SessionFeatureState { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. }
                 | SessionEvent::AgentReported { .. }

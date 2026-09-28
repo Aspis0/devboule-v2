@@ -256,6 +256,10 @@ fn session_event_samples() -> Vec<SessionEvent> {
             models: Vec::new(),
             modes: None,
         },
+        SessionFeatureState => SessionEvent::SessionFeatureState {
+            feature_id: "planMode".to_string(),
+            enabled: false,
+        },
         AgentReported => SessionEvent::AgentReported {
             seq: 0,
             source: String::new(),

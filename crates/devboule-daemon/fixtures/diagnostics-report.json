@@ -1,7 +1,7 @@
 {
   "daemon": {
     "version": "0.1.0",
-    "protocolVersion": 12,
+    "protocolVersion": 13,
     "pid": 54596,
     "uptimeMs": 20651,
     "clients": 1,

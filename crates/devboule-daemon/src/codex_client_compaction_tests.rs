@@ -52,6 +52,14 @@ fn started_reader(
         outcome.live_agent_replay,
     );
     let state = thread_state();
+    let stdin = Arc::new(Mutex::new(None));
+    let next_id = Arc::new(AtomicU64::new(1));
+    let plan_prompt = Arc::new(super::CodexStaticPrompt::new(
+        Arc::clone(&stdin),
+        Arc::clone(&next_id),
+        Arc::clone(&state),
+        Arc::clone(&commands),
+    ));
     let reader = CodexReader {
         available_commands: Some(SessionEvent::AvailableCommands {
             commands: commands.views(),
@@ -65,10 +73,11 @@ fn started_reader(
         view: CodexView::new(None),
         permission_broker: PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
         response_ids: Arc::new(Mutex::new(HashMap::new())),
-        stdin: Arc::new(Mutex::new(None)),
-        next_id: Arc::new(AtomicU64::new(1)),
+        stdin,
+        next_id,
         requests: Arc::new(CodexRequests::new()),
         compactions: crate::codex_compaction::CodexCompactions::default(),
+        plan_prompt,
     };
     (reader, runtime, conn)
 }

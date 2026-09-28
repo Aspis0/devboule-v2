@@ -556,6 +556,7 @@ fn send_pending_event(
             SessionEvent::PermissionResolved { .. } => " permission_resolved".to_string(),
             SessionEvent::PermissionAnswered { .. } => " permission_answered".to_string(),
             SessionEvent::SessionManifest { .. } => " session_manifest".to_string(),
+            SessionEvent::SessionFeatureState { .. } => " session_feature_state".to_string(),
             SessionEvent::SessionNotice { .. } => " session_notice".to_string(),
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
             SessionEvent::AgentCreated { .. } => " agent_created".to_string(),

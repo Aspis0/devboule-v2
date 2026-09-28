@@ -1081,6 +1081,10 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         modes: Option<SessionModeStateView>,
     },
+    SessionFeatureState {
+        feature_id: String,
+        enabled: bool,
+    },
     /// An external process (agent hook or our stub) announced itself on
     /// the daemon pipe. `seq` is the journal/stream sequence of this
     /// record; `report_seq` is the hook's own monotonic counter, which

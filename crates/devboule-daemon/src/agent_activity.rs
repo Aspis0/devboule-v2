@@ -117,6 +117,7 @@ pub fn event_kind(event: &SessionEvent) -> &'static str {
         SessionEvent::PermissionResolved { .. } => "permission_resolved",
         SessionEvent::PermissionAnswered { .. } => "permission_answered",
         SessionEvent::SessionManifest { .. } => "session_manifest",
+        SessionEvent::SessionFeatureState { .. } => "session_feature_state",
         SessionEvent::AgentReported { .. } => "agent_reported",
         SessionEvent::Snapshot { .. } => "snapshot",
         SessionEvent::Exit { .. } => "exit",

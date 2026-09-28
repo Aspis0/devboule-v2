@@ -318,6 +318,7 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::SessionSetModel { .. }
         | ClientMessage::SessionSetMode { .. }
         | ClientMessage::SessionSetName { .. }
+        | ClientMessage::SessionSetFeature { .. }
         | ClientMessage::SessionPermissionRespond { .. }
         | ClientMessage::SessionsList { .. }
         | ClientMessage::SessionsWatch { .. }

@@ -175,6 +175,7 @@ export type CommandArgs = {
   session_set_model: { id: Id; modelId?: string; effort?: string };
   session_set_mode: { id: Id; modeId: string };
   session_set_name: { id: Id; displayName: string };
+  session_set_feature: { id: Id; featureId: string; enabled: boolean };
   session_permission_respond: {
     id: Id;
     subscriptionId: SubscriptionId;
@@ -291,6 +292,7 @@ type CommandResults = {
   session_set_model: void;
   session_set_mode: void;
   session_set_name: void;
+  session_set_feature: void;
   session_permission_respond: void;
   session_presence: void;
   session_resize: void;
@@ -444,6 +446,7 @@ export const COMMAND_ARG_KEYS = {
   session_set_model: ["id", "modelId", "effort"],
   session_set_mode: ["id", "modeId"],
   session_set_name: ["id", "displayName"],
+  session_set_feature: ["id", "featureId", "enabled"],
   session_permission_respond: [
     "id",
     "subscriptionId",
@@ -822,6 +825,9 @@ export const sessionSetMode = (id: Id, modeId: string) =>
  */
 export const sessionSetName = (id: Id, displayName: string) =>
   invokeTyped("session_set_name", { id, displayName });
+
+export const sessionSetFeature = (id: Id, featureId: string, enabled: boolean) =>
+  invokeTyped("session_set_feature", { id, featureId, enabled });
 export const sessionPermissionRespond = (
   id: Id,
   subscriptionId: SubscriptionId,

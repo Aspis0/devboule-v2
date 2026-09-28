@@ -586,6 +586,25 @@ impl DaemonClient {
         }
     }
 
+    pub fn session_set_feature(
+        &self,
+        session_id: &str,
+        feature_id: &str,
+        enabled: bool,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionSetFeature {
+            id,
+            session_id: session_id.to_string(),
+            feature_id: feature_id.to_string(),
+            enabled,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     #[cfg(feature = "server")]
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
         self.session_send_with_subscription(
