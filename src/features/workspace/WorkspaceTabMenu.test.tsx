@@ -13,6 +13,7 @@ import {
   clickMenuEntry,
   contextMenuKey,
   defaultSessions,
+  DIALOG_SELECTOR,
   dialog,
   headerMenuSeamFor,
   liveSnapshot,
@@ -116,7 +117,7 @@ describe("the tab context menu", () => {
     await clickMenuEntry("Close");
     await settleCloseActs();
 
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
     expect(document.querySelector("#workspace-session-tab-agent-old")).toBeNull();
   });
@@ -129,6 +130,10 @@ describe("the tab context menu", () => {
     const confirm = dialog();
     expect(confirm.textContent).toContain("Delete “shell two”?");
     expect(confirm.textContent).toContain("destroys the session");
+    // Delete destroys: the sole affirmative is the filled danger.
+    const confirmButton = confirm.querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
+    expect(confirmButton?.textContent).toBe("Delete");
+    expect(confirmButton?.classList.contains("confirm-dialog-confirm-danger")).toBe(true);
 
     await clickDialogButton("Cancel");
     expect(vi.mocked(sessionClose)).not.toHaveBeenCalled();
@@ -141,6 +146,22 @@ describe("the tab context menu", () => {
     expect(vi.mocked(sessionClose)).toHaveBeenCalledWith("session-2");
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
     expect(document.querySelector("#workspace-session-tab-session-2")).toBeNull();
+  });
+
+  it("Enter on the opened delete ask activates Cancel: nothing is destroyed", async () => {
+    await renderWorkspace();
+
+    await rightClick("session-2");
+    await clickMenuEntry("Delete");
+    // The ask opens with Cancel focused.
+    const focused = document.activeElement;
+    expect(focused?.textContent).toBe("Cancel");
+    await act(async () => {
+      focused!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    // No Enter handler confirms: the key alone changes nothing.
+    expect(vi.mocked(sessionClose)).not.toHaveBeenCalled();
+    expect(document.querySelector(DIALOG_SELECTOR)).not.toBeNull();
   });
 
   it("the menu survives a harmless republication of the same rows", async () => {

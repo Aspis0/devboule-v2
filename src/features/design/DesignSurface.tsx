@@ -4613,7 +4613,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             ? globalThis.document.activeElement
             : null;
       const escapeOwner = focusTarget?.closest<HTMLElement>(
-        '[role="dialog"], [role="listbox"], [role="group"][aria-label]',
+        '[role="dialog"], [role="alertdialog"], [role="listbox"], [role="group"][aria-label]',
       );
       if (escapeOwner) return;
       event.preventDefault();

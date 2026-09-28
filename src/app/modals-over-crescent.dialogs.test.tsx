@@ -14,7 +14,7 @@ import {
   DesignSkillModeControl,
   DesignToolbar,
 } from "../features/design/DesignSurface";
-import { CloseConfirm } from "../features/workspace/strip/CloseConfirm";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ContextPopover } from "../features/workspace/ContextPopover";
 import { SessionRenameDialog } from "../features/workspace/strip/SessionRenameDialog";
 import {
@@ -222,12 +222,12 @@ describe("walking every dialog the source finds", () => {
     const onCancel = vi.fn();
     const onConfirm = vi.fn();
     const { root } = await mount(
-      <CloseConfirm
+      <ConfirmDialog
         open
-        anchorRef={nullRef<HTMLButtonElement>()}
         title="Close tab"
         message="3 unsaved changes?"
         confirmLabel="Close tab"
+        tone="danger"
         onConfirm={onConfirm}
         onCancel={onCancel}
       />,
@@ -235,14 +235,15 @@ describe("walking every dialog the source finds", () => {
 
     expect(modalCount()).toBe(1);
     // The ask portals to document.body, outside the container.
-    const primary = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    if (primary === null) throw new Error("confirm primary action missing");
-    expect(document.activeElement).toBe(primary);
+    const cancel = document.querySelector<HTMLButtonElement>(".confirm-dialog-cancel");
+    if (cancel === null) throw new Error("confirm cancel action missing");
+    // Cancel holds initial focus: Enter on a destructive ask must not destroy.
+    expect(document.activeElement).toBe(cancel);
 
-    // The ask's Escape lives on its portal root, so the key has to come from
+    // The ask's Escape lives on its card, so the key has to come from
     // the focused button and bubble up to it.
     await act(async () => {
-      primary.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+      cancel.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
     });
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onConfirm).not.toHaveBeenCalled();

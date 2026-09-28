@@ -7,7 +7,7 @@ import { act } from "react";
 import { NewProjectDialog } from "../components/NewProjectDialog";
 import {
   ShellWith,
-  ShellWithCloseConfirm,
+  ShellWithConfirmDialog,
   ShellWithProjectDialog,
   cleanupModalsDom,
   hoverBand,
@@ -80,19 +80,20 @@ describe("the shell with a modal open (real modal, real shell)", () => {
     await act(async () => root.unmount());
   });
 
-  it("a portaled dialog holds the band shut too — the destructive close confirm", async () => {
+  it("a portaled dialog holds the band shut too — the destructive confirm dialog", async () => {
     const onCancel = vi.fn();
-    const { container, root } = await mount(<ShellWithCloseConfirm onCancel={onCancel} />);
+    const { container, root } = await mount(<ShellWithConfirmDialog onCancel={onCancel} />);
 
     expect(modalCount()).toBe(1);
     await hoverBand(container);
     expect(navIsOpen(container)).toBe(false);
 
     // Its own Escape cancels the ask, and the band works again afterwards.
-    const primary = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    if (primary === null) throw new Error("confirm primary action missing");
+    const cancel = document.querySelector<HTMLButtonElement>(".confirm-dialog-cancel");
+    if (cancel === null) throw new Error("confirm cancel action missing");
+    expect(document.activeElement).toBe(cancel);
     await act(async () => {
-      primary.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+      cancel.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
     });
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(modalCount()).toBe(0);

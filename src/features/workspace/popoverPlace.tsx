@@ -22,6 +22,8 @@ import { createPortal } from "react-dom";
 export const POPOVER_MARGIN = 8;
 /** The gap the popover keeps off its anchor, on whichever side it opens. */
 const ANCHOR_GAP = 6;
+/** Anchored popovers sit at 100: above the workspace dialogs at 50, below the confirm dialog at 110. */
+export const ANCHORED_POPOVER_Z_INDEX = 100;
 /** The subagent menu's own ceiling: the old sheet capped it at 280 px and scrolled inside. */
 const MENU_MAX_HEIGHT = 280;
 
@@ -164,7 +166,7 @@ export function AnchoredPopover({
     root.style.maxHeight = `${placed.maxHeight}px`;
     // Above the resize handles: the portal is a body child, and the explicit
     // number keeps it above any stacking context the app root may create.
-    root.style.zIndex = "100";
+    root.style.zIndex = String(ANCHORED_POPOVER_Z_INDEX);
     root.style.minWidth = "220px";
   }, [anchorRef, openAbove]);
 

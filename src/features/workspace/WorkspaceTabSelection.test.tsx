@@ -11,6 +11,7 @@ import {
   beforeEachHarness,
   clickDialogButton,
   clickMenuEntry,
+  DIALOG_SELECTOR,
   dialog,
   liveRegion,
   liveSnapshot,
@@ -127,9 +128,23 @@ describe("multi-select", () => {
     await clickMenuEntry("Close 2 tabs");
     await clickDialogButton("Cancel");
 
-    // The selection ends only when the ask is CONFIRMED. A cancel — or an
-    // Escape, or a dismissal — leaves it and its announcement standing.
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    // The selection ends only when the ask is CONFIRMED — a cancel leaves it
+    // exactly as it was.
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
+    expect(liveRegion()?.textContent).toBe("2 tabs selected");
+    expect(tabElement("agent-one").className).toContain("workspace-session-tab-multiselected");
+    expect(tabElement("session-2").className).toContain("workspace-session-tab-multiselected");
+    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
+
+    // Escape, the ask's other way out: the same leave-it-standing.
+    await rightClick("session-2");
+    await clickMenuEntry("Close 2 tabs");
+    const primary = dialog().querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
+    if (primary === null) throw new Error("confirm primary action missing");
+    await act(async () => {
+      primary.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    });
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     expect(liveRegion()?.textContent).toBe("2 tabs selected");
     expect(tabElement("agent-one").className).toContain("workspace-session-tab-multiselected");
     expect(tabElement("session-2").className).toContain("workspace-session-tab-multiselected");
@@ -172,8 +187,13 @@ describe("multi-select", () => {
     expect(confirm.textContent).toContain(
       "This will archive 1 agent(s) and archive 1 terminal(s).",
     );
+    // The counted ask's label matches its title, and the destructive sole
+    // affirmative is the filled danger.
+    const confirmButton = confirm.querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
+    expect(confirmButton?.textContent).toBe("Close 2 tabs");
+    expect(confirmButton?.classList.contains("confirm-dialog-confirm-danger")).toBe(true);
 
-    await clickDialogButton("Close");
+    await clickDialogButton("Close 2 tabs");
     await settleCloseActs();
 
     expect(vi.mocked(sessionStop)).toHaveBeenCalledTimes(2);
@@ -194,9 +214,12 @@ describe("multi-select", () => {
     // straight at the daemon.
     const confirm = dialog();
     expect(confirm.textContent).toContain("Close 1 tab?");
+    expect(confirm.querySelector<HTMLButtonElement>(".confirm-dialog-confirm")?.textContent).toBe(
+      "Close 1 tab",
+    );
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
 
-    await clickDialogButton("Close");
+    await clickDialogButton("Close 1 tab");
     await settleCloseActs();
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("session-2");
   });

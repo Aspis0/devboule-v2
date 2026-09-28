@@ -1,9 +1,10 @@
-// Why: the confirmations' words in one place — Paseo's titles verbatim, the
-// counting line adapted only where our semantics differ: for us a terminal
-// close is an archive (session_stop), so the process stops and every message
-// stays in History, where Paseo destroys the closed terminal.
+// Why: the confirmations' words in one place — Paseo's titles where they are
+// ours, adapted where our semantics differ: for us a terminal close is an
+// archive (session_stop), so the process stops and every message stays in
+// History, where Paseo destroys the closed terminal.
 
 import { isAgentKind, type Session } from "../../../types/ipc";
+import { sessionHasHumanTitle, sessionKindWord, sessionTitle } from "../workspaceSessions";
 
 interface BulkCloseCounts {
   agents: number;
@@ -29,7 +30,13 @@ export function bulkActionTitle(action: "left" | "right" | "others"): string {
 /** Our own title: Paseo has no multi-select. The live set is what is asked
  * about, even when a roster change shrank the selection to one. */
 export function bulkSelectionTitle(count: number): string {
-  return `Close ${count} tab${count === 1 ? "" : "s"}?`;
+  return `${bulkSelectionConfirmLabel(count)}?`;
+}
+
+/** The counted ask's confirm label: its title without the question mark —
+ * the button matches what the title asks. */
+export function bulkSelectionConfirmLabel(count: number): string {
+  return `Close ${count} tab${count === 1 ? "" : "s"}`;
 }
 
 export function bulkCloseMessage(counts: BulkCloseCounts): string {
@@ -43,11 +50,29 @@ export function bulkCloseMessage(counts: BulkCloseCounts): string {
   return `This will archive ${agents} agent(s).`;
 }
 
-/** A single terminal close: Paseo's title verbatim; the message adapted to what our
- * close is — an archive, so the messages stay, where Paseo destroys the closed terminal. */
-export function closeTerminalConfirm(): { title: string; message: string; confirmLabel: string } {
+/** What an ask quotes: a shown title that only repeats the kind's default
+ * word is the daemon's stamp, not a name. */
+function quotableTitle(session: Session): string | null {
+  if (!sessionHasHumanTitle(session)) return null;
+  const shown = sessionTitle(session);
+  if (shown.trim().toLowerCase() === sessionKindWord(session.kind).toLowerCase()) return null;
+  return shown;
+}
+
+/** A single terminal close: the title names the shell the tab shows — the
+ * tab's own title, so the ask and the chip never name one terminal two ways.
+ * A shell that never set a title, or one still carrying the daemon's
+ * kind-word stamp, has no name to quote: the ask reads
+ * `Close terminal?`, never the machine's kind-and-id fallback. */
+export function closeTerminalConfirm(session: Session): {
+  title: string;
+  message: string;
+  confirmLabel: string;
+} {
+  const quoted = quotableTitle(session);
+  const title = quoted !== null ? `Close terminal “${quoted}”?` : "Close terminal?";
   return {
-    title: "Close terminal?",
+    title,
     message: "The process stops and every message stays in History.",
     confirmLabel: "Close",
   };
@@ -68,14 +93,21 @@ export function archiveRunningAgentConfirm(): {
   };
 }
 
-/** A delete destroys the session — the tab pill's own words, reused. */
-export function deleteSessionConfirm(title: string): {
+/** A delete destroys the session: a named session is quoted, a nameless one
+ * — or one still carrying the daemon's kind-word stamp — reads
+ * `Delete terminal?` / `Delete agent?`, never the machine fallback. */
+export function deleteSessionConfirm(session: Session): {
   title: string;
   message: string;
   confirmLabel: string;
 } {
+  const quoted = quotableTitle(session);
+  const title =
+    quoted !== null
+      ? `Delete “${quoted}”?`
+      : `Delete ${sessionKindWord(session.kind).toLowerCase()}?`;
   return {
-    title: `Delete “${title}”?`,
+    title,
     message: "This destroys the session and stops its running process immediately.",
     confirmLabel: "Delete",
   };

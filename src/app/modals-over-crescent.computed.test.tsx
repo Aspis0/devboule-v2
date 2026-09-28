@@ -17,7 +17,7 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { act, useRef } from "react";
+import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,7 @@ vi.mock("../features/plugins/install", () => ({ chooseAndInstall: vi.fn() }));
 vi.mock("../features/design/DesignHistoryList", () => ({ DesignHistoryList: () => null }));
 
 import { assembleCssProof, removeCssProof } from "../features/workspace/cssProof";
+import { ANCHORED_POPOVER_Z_INDEX } from "../features/workspace/popoverPlace";
 import { NewProjectDialog } from "../components/NewProjectDialog";
 import { ProfileDialog } from "../features/settings/profiles/ProfileDialog";
 import { buildSkillBlock } from "../features/design/skillLoader";
@@ -38,7 +39,7 @@ import {
   DesignToolbar,
 } from "../features/design/DesignSurface";
 import { DesignFolderControl } from "../features/design/DesignFolderControl";
-import { CloseConfirm } from "../features/workspace/strip/CloseConfirm";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ContextPopover } from "../features/workspace/ContextPopover";
 
 const rootDir = resolve(import.meta.dirname, "../..");
@@ -156,21 +157,17 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function CloseConfirmWithAnchor() {
-  const anchorRef = useRef<HTMLButtonElement>(null);
+function ConfirmDialogStandalone() {
   return (
-    <>
-      <button type="button" ref={anchorRef} />
-      <CloseConfirm
-        open
-        anchorRef={anchorRef}
-        title="Close tab"
-        message="3 unsaved changes?"
-        confirmLabel="Close tab"
-        onConfirm={() => undefined}
-        onCancel={() => undefined}
-      />
-    </>
+    <ConfirmDialog
+      open
+      title="Close tab"
+      message="3 unsaved changes?"
+      confirmLabel="Close tab"
+      tone="danger"
+      onConfirm={() => undefined}
+      onCancel={() => undefined}
+    />
   );
 }
 
@@ -329,15 +326,19 @@ describe("every dialog outranks the crescent and no ancestor traps it", () => {
     await act(async () => root.unmount());
   });
 
-  it("the portaled close confirm", async () => {
-    // A real anchor: the popover's inline z-index is set while placing, so
-    // an anchorless mount would read as undeclared.
-    const { root, start } = await mountDialog(<CloseConfirmWithAnchor />, (root) =>
-      root.querySelector(".workspace-surface-menu"),
+  it("the portaled confirm dialog", async () => {
+    // The backdrop, not the card: the card's own box carries no z-index —
+    // the backdrop's does, and it is the box the band would have to beat.
+    const { root, start } = await mountDialog(<ConfirmDialogStandalone />, (root) =>
+      root.querySelector(".confirm-dialog-backdrop"),
     );
     const chain = computedChain(start);
     expectUnbornByTheBand(chain);
     expect(Number(chain[0]!.style.zIndex)).toBeGreaterThan(CRESCENT_Z);
+    // The destructive ask must also paint over the anchored popovers, whose
+    // layer is the inline number in popoverPlace — read here as the constant
+    // both places share, so a renumber on either side fails loudly.
+    expect(Number(chain[0]!.style.zIndex)).toBeGreaterThan(ANCHORED_POPOVER_Z_INDEX);
     await act(async () => root.unmount());
   });
 

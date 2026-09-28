@@ -52,7 +52,7 @@ function stripComments(source: string): string {
 }
 
 const DIALOG_RENDER =
-  /(?<!\[)role="dialog"|(?<!\[)role='dialog'|role=\{[^}]*"dialog"|aria-modal=\{|aria-modal="true"|aria-modal='true'|role:\s*"dialog"/;
+  /(?<!\[)role="dialog"|(?<!\[)role='dialog'|(?<!\[)role="alertdialog"|(?<!\[)role='alertdialog'|role=\{[^}]*"dialog"|aria-modal=\{|aria-modal="true"|aria-modal='true'|role:\s*"dialog"/;
 const MENU_RENDER =
   /(?<!\[)role="menu"|(?<!\[)role='menu'|(?<!\[)role="menuitem"|(?<!\[)role='menuitem'|(?<!\[)role="listbox"|(?<!\[)role='listbox'|role=\{[^}]*"(menu|menuitem|listbox)"/;
 
@@ -137,6 +137,19 @@ describe("the scan's own rules", () => {
 
   it("a single-quoted role is a dialog", () => {
     expect(renderingsIn("<div role='dialog' />", DIALOG_RENDER)).toHaveLength(1);
+  });
+
+  it("an alertdialog role is a dialog", () => {
+    expect(renderingsIn('<div role="alertdialog" />', DIALOG_RENDER)).toHaveLength(1);
+    expect(renderingsIn("<div role='alertdialog' />", DIALOG_RENDER)).toHaveLength(1);
+  });
+
+  it("an alertdialog query string is not a surface", () => {
+    expect(renderingsIn("el.closest('[role=\"alertdialog\"]')", DIALOG_RENDER)).toEqual([]);
+  });
+
+  it("a menu role is not a dialog", () => {
+    expect(renderingsIn('<div role="menu" />', DIALOG_RENDER)).toEqual([]);
   });
 
   it("a createElement role is a dialog", () => {

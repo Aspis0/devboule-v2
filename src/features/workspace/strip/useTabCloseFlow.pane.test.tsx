@@ -55,6 +55,7 @@ function renderFlow(
       <div data-testid="close-confirm">
         <span data-testid="close-confirm-title">{confirm.title}</span>
         <span data-testid="close-confirm-label">{confirm.confirmLabel}</span>
+        <span data-testid="close-confirm-tone">{confirm.tone}</span>
         <span data-testid="close-confirm-targets">
           {confirm.targets.map((target) => target.id).join(" ")}
         </span>
@@ -112,8 +113,13 @@ describe("activatePaneEntry", () => {
     expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toBe(
       "Archive running agent?",
     );
+    // Every ask the flow raises is a destructive act: the sole affirmative is
+    // the filled danger.
+    expect(host.querySelector("[data-testid='close-confirm-tone']")?.textContent).toBe("danger");
     expect(onClose).not.toHaveBeenCalled();
-    await act(async () => root.unmount());
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("fires at once for a session with no process, with no ask", async () => {
@@ -176,8 +182,11 @@ describe("activatePaneEntry", () => {
     expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toContain(
       "Delete",
     );
+    expect(host.querySelector("[data-testid='close-confirm-tone']")?.textContent).toBe("danger");
     expect(onClose).not.toHaveBeenCalled();
-    await act(async () => root.unmount());
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("opens the selection confirm from the tab menu's selection entry", async () => {

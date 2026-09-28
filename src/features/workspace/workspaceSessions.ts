@@ -174,14 +174,30 @@ export function sessionDotTone(state: unknown): "green" | "terracotta" | "border
 export function sessionTitle(
   session: Pick<Session, "id" | "title" | "kind" | "displayName">,
 ): string {
-  const displayName = session.displayName?.trim();
-  if (displayName) return displayName;
-  const title = session.title.trim();
-  if (title) return title;
+  if (sessionHasHumanTitle(session)) {
+    return session.displayName?.trim() || session.title.trim();
+  }
   // The id fallback bounds by grapheme clusters, like the permission card's
   // answerer head: a unit-based cut halves an astral scalar and renders
   // U+FFFD in the strip.
-  return `${isAgentKind(session.kind) ? "Agent" : "Terminal"} ${boundByGraphemes(session.id, 8)}`;
+  return `${sessionKindWord(session.kind)} ${boundByGraphemes(session.id, 8)}`;
+}
+
+/**
+ * The kind's default word: the daemon stamps it as the title when no name is
+ * given (`birth_stamps` in session_create.rs), so an unnamed session still has
+ * a tab label — and a shown title that only repeats it is no one's name.
+ */
+export function sessionKindWord(kind: SessionKind): "Agent" | "Terminal" {
+  return isAgentKind(kind) ? "Agent" : "Terminal";
+}
+
+/** Whether the session carries a name a human gave it — a display name set
+ * by whoever created it, or the shell's own title — as opposed to the
+ * kind-and-id fallback `sessionTitle` uses when neither is set.
+ */
+export function sessionHasHumanTitle(session: Pick<Session, "title" | "displayName">): boolean {
+  return Boolean(session.displayName?.trim()) || session.title.trim().length > 0;
 }
 
 /**

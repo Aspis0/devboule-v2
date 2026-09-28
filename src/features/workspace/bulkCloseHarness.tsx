@@ -292,8 +292,11 @@ export function menu(): HTMLElement {
   return found;
 }
 
+/** The open dialog: the close confirm (an alertdialog) or the rename (a dialog). */
+export const DIALOG_SELECTOR = "[role='dialog'], [role='alertdialog']";
+
 export function dialog(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[role="dialog"]');
+  const found = document.querySelector<HTMLElement>(DIALOG_SELECTOR);
   if (found === null) throw new Error("confirmation dialog did not render");
   return found;
 }

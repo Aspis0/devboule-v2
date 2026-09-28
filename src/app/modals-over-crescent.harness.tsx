@@ -13,7 +13,7 @@ vi.mock("../features/plugins/install", () => ({ chooseAndInstall: vi.fn() }));
 vi.mock("../features/design/DesignHistoryList", () => ({ DesignHistoryList: () => null }));
 
 import { NewProjectDialog } from "../components/NewProjectDialog";
-import { CloseConfirm } from "../features/workspace/strip/CloseConfirm";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useAppStore } from "../store/appStore";
 import { Shell } from "./Shell";
 
@@ -74,16 +74,16 @@ export function nullRef<T extends HTMLElement>(): RefObject<T | null> {
 }
 
 /** The destructive ask in the shell, with the state its parent would own. */
-export function ShellWithCloseConfirm({ onCancel }: { onCancel: () => void }) {
+export function ShellWithConfirmDialog({ onCancel }: { onCancel: () => void }) {
   const [open, setOpen] = useState(true);
   return (
     <ShellWith>
-      <CloseConfirm
+      <ConfirmDialog
         open={open}
-        anchorRef={nullRef<HTMLButtonElement>()}
         title="Close tab"
         message="3 unsaved changes?"
         confirmLabel="Close tab"
+        tone="danger"
         onConfirm={() => undefined}
         onCancel={() => {
           onCancel();

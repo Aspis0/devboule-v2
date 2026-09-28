@@ -8,13 +8,13 @@ import {
   type RefObject,
 } from "react";
 import type { Session } from "../../../types/ipc";
+import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { sessionDelegationTakeBack, sessionOriginBadge } from "../workspaceSessions";
 import type { useTabCloseFlow } from "./useTabCloseFlow";
 import type { useTabSelection } from "./useTabSelection";
 import { useSelectedTabVisible } from "./stripScroll";
 import { SessionTabMenu } from "./SessionTabMenu";
 import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
-import { CloseConfirm } from "./CloseConfirm";
 import { chipDisplay } from "./stripDisplay";
 import { useStripFade } from "./useStripFade";
 import { useStripKeyboard } from "./useStripKeyboard";
@@ -220,12 +220,12 @@ export function SessionStrip({
         onEntry={tabClose.activateEntry}
         onClose={tabClose.closeMenu}
       />
-      <CloseConfirm
+      <ConfirmDialog
         open={tabClose.confirm !== null}
-        anchorRef={tabClose.anchorRef}
         title={tabClose.confirm?.title ?? ""}
         message={tabClose.confirm?.message ?? ""}
         confirmLabel={tabClose.confirm?.confirmLabel ?? ""}
+        tone={tabClose.confirm?.tone ?? "danger"}
         onConfirm={tabClose.confirmClose}
         onCancel={tabClose.cancelClose}
       />

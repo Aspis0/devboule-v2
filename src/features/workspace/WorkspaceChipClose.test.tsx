@@ -13,6 +13,7 @@ import {
   chipButton,
   chipClick,
   clickDialogButton,
+  DIALOG_SELECTOR,
   dialog,
   middleClick,
   plainClick,
@@ -55,7 +56,7 @@ describe("the close chip", () => {
     // px CSS rule (pinned by the strip source test); the live check sees pixels.
     expect(tabElement("session-2").getAttribute("aria-selected")).toBe("true");
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     expect(document.body.textContent).not.toContain("didn't go through");
   });
 
@@ -83,14 +84,51 @@ describe("the close chip", () => {
 
     // A terminal's close is destructive: the ask stands between the click
     // and the daemon, and nothing fires without it.
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).not.toBeNull();
     const confirm = dialog();
-    expect(confirm.textContent).toContain("Close terminal?");
+    // The title names the shell the tab shows — the tab's own title.
+    expect(confirm.textContent).toContain("Close terminal “shell two”?");
+    expect(confirm.textContent).toContain("The process stops and every message stays in History.");
+    // The destructive sole affirmative is the filled danger.
+    const confirmButton = confirm.querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
+    expect(confirmButton?.classList.contains("confirm-dialog-confirm-danger")).toBe(true);
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
 
     await clickDialogButton("Close");
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("session-2");
     expect(document.querySelector("#workspace-session-tab-session-2")).toBeNull();
+  });
+
+  it("the ask owns the chord and Delete: the tab does not move and no second ask opens", async () => {
+    await renderWorkspace();
+    await plainClick("session-2");
+    await chipClick("session-2");
+
+    const confirm = dialog();
+    expect(confirm.textContent).toContain("Close terminal “shell two”?");
+    const selectedBefore = tabElement("session-2").getAttribute("aria-selected");
+
+    // Both keys from inside the ask, where the user's hands are while it
+    // stands: the chord must die at the dialog, and Delete must not reach a
+    // chip behind the scrim.
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "]", altKey: true, shiftKey: true, bubbles: true }),
+      );
+    });
+    expect(tabElement("session-2").getAttribute("aria-selected")).toBe(selectedBefore);
+    expect(document.activeElement).toBe(
+      confirm.querySelector<HTMLButtonElement>(".confirm-dialog-cancel"),
+    );
+
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    // The same ask still stands: nothing closed, and no second ask replaced it.
+    expect(dialog().textContent).toContain("Close terminal “shell two”?");
+    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
   });
 
   it("a silent agent asks before it is archived: silence is not idleness", async () => {
@@ -120,7 +158,7 @@ describe("the close chip", () => {
 
     await chipClick("agent-old");
 
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     await settleCloseActs();
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
     expect(document.querySelector("#workspace-session-tab-agent-old")).toBeNull();
@@ -138,6 +176,9 @@ describe("the close chip", () => {
     const confirm = dialog();
     expect(confirm.textContent).toContain("Archive running agent?");
     expect(confirm.textContent).toContain("This agent is still running");
+    // Archiving a running agent is the destructive sole affirmative: filled danger.
+    const confirmButton = confirm.querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
+    expect(confirmButton?.classList.contains("confirm-dialog-confirm-danger")).toBe(true);
 
     await clickDialogButton("Cancel");
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
@@ -149,7 +190,7 @@ describe("the close chip", () => {
 
     await middleClick("agent-one");
 
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).not.toBeNull();
     expect(dialog().textContent).toContain("Archive running agent?");
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
   });
@@ -181,7 +222,7 @@ describe("the close chip", () => {
     await chipClick("session-2");
     await clickDialogButton("Cancel");
 
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     expect(document.activeElement).toBe(tabElement("session-2"));
   });
 

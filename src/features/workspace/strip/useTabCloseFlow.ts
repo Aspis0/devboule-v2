@@ -14,6 +14,7 @@ import {
   archiveRunningAgentConfirm,
   bulkActionTitle,
   bulkCloseMessage,
+  bulkSelectionConfirmLabel,
   bulkSelectionTitle,
   closeTerminalConfirm,
   countSessions,
@@ -70,6 +71,9 @@ interface CloseConfirmState {
   title: string;
   message: string;
   confirmLabel: string;
+  /** The affirmative's fill. Every ask the flow raises is a destructive act
+   * (close, archive, delete), so the sole affirmative is the filled danger. */
+  tone: "danger" | "accent";
   targets: readonly ConfirmTarget[];
   /** The ask acts on the multi-selection: confirming it ends the selection. */
   actsOnSelection?: boolean;
@@ -279,10 +283,16 @@ export function useTabCloseFlow({
           kind: "archive",
           targets: [targetOf(row)],
           ...archiveRunningAgentConfirm(),
+          tone: "danger",
         });
         return;
       }
-      openConfirm({ kind: "archive", targets: [targetOf(row)], ...closeTerminalConfirm() });
+      openConfirm({
+        kind: "archive",
+        targets: [targetOf(row)],
+        ...closeTerminalConfirm(row),
+        tone: "danger",
+      });
     },
     [finishClose, onClose, openConfirm, restoreOnFailure, sessions],
   );
@@ -325,7 +335,8 @@ export function useTabCloseFlow({
         openConfirm({
           kind: "delete",
           targets: [targetOf(row)],
-          ...deleteSessionConfirm(sessionTitle(row)),
+          ...deleteSessionConfirm(row),
+          tone: "danger",
         });
         return;
       }
@@ -339,6 +350,7 @@ export function useTabCloseFlow({
       openConfirm({
         kind: "archive",
         targets: closed.map(targetOf),
+        tone: "danger",
         title: bulkActionTitle(key),
         message: bulkCloseMessage(countSessions(closed)),
         confirmLabel: "Close",
@@ -373,9 +385,10 @@ export function useTabCloseFlow({
         openConfirm({
           kind: "archive",
           targets: closed.map(targetOf),
+          tone: "danger",
           title: bulkSelectionTitle(closed.length),
           message: bulkCloseMessage(countSessions(closed)),
-          confirmLabel: "Close",
+          confirmLabel: bulkSelectionConfirmLabel(closed.length),
           actsOnSelection: true,
         });
         return;

@@ -14,6 +14,7 @@ import {
   bulkErrorBlock,
   clickDialogButton,
   clickMenuEntry,
+  DIALOG_SELECTOR,
   dialog,
   liveSnapshot,
   modifiedClick,
@@ -89,7 +90,7 @@ describe("the counted ask", () => {
 
     await clickDialogButton("Cancel");
 
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     // Nothing was fired, so the right-clicked tab is still there to take
     // focus back.
     expect(document.activeElement).toBe(tabElement("session-3"));
@@ -133,12 +134,14 @@ describe("the counted ask", () => {
       liveSnapshot("session-3", "shell three"),
     ]);
 
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     await settleCloseActs();
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
   });
 
-  it("the confirmation closes on window resize", async () => {
+  it("the confirmation survives a window resize — it is centred, not anchored", async () => {
+    // The anchored popover died with its anchor's move; the centred dialog
+    // has no anchor to go stale, so a resize leaves the ask standing.
     await renderWorkspace();
     await rightClick("session-3");
     await clickMenuEntry("Close other tabs");
@@ -146,7 +149,7 @@ describe("the counted ask", () => {
 
     await resizeWindow();
 
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(dialog()).toBeTruthy();
     await settleCloseActs();
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
   });
@@ -155,28 +158,28 @@ describe("the counted ask", () => {
     await renderWorkspace();
     await rightClick("session-3");
     await clickMenuEntry("Close other tabs");
-    // The ask opens with its primary button focused.
-    expect(document.activeElement?.textContent).toBe("Close");
-
-    await act(async () => {
-      dialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
-    });
+    // The ask opens with Cancel focused: Enter must never destroy.
     expect(document.activeElement?.textContent).toBe("Cancel");
 
     await act(async () => {
       dialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
     });
-    // Cycled: Tab from the last button lands back on the first.
     expect(document.activeElement?.textContent).toBe("Close");
+
+    await act(async () => {
+      dialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    });
+    // Cycled: Tab from the last button lands back on the first.
+    expect(document.activeElement?.textContent).toBe("Cancel");
 
     await act(async () => {
       dialog().dispatchEvent(
         new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }),
       );
     });
-    expect(document.activeElement?.textContent).toBe("Cancel");
+    expect(document.activeElement?.textContent).toBe("Close");
     // The ask is still standing, and still the only ask.
-    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(document.querySelectorAll(DIALOG_SELECTOR)).toHaveLength(1);
   });
 });
 
@@ -300,7 +303,7 @@ describe("a refused close", () => {
       liveSnapshot("agent-one", "Agent one", "acp"),
       liveSnapshot("session-3", "shell three"),
     ]);
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
 
     // The same row returns with the SAME id and generation — reopened from
     // History, say. The old ask stays dead; no new action, no new ask.
@@ -310,7 +313,7 @@ describe("a refused close", () => {
       liveSnapshot("session-3", "shell three"),
     ]);
 
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     await settleCloseActs();
     expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
   });
@@ -352,7 +355,13 @@ describe("what is active afterwards", () => {
 
     await rightClick("session-2");
     await clickMenuEntry("Close 3 tabs");
-    await clickDialogButton("Close");
+    // The counted ask's label matches its title: Close 3 tabs.
+    const confirm = dialog();
+    expect(confirm.textContent).toContain("Close 3 tabs?");
+    const confirmButton = confirm.querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
+    expect(confirmButton?.textContent).toBe("Close 3 tabs");
+    expect(confirmButton?.classList.contains("confirm-dialog-confirm-danger")).toBe(true);
+    await clickDialogButton("Close 3 tabs");
     await settleCloseActs();
 
     expect(vi.mocked(sessionStop)).toHaveBeenCalledTimes(3);

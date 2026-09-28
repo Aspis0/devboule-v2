@@ -117,7 +117,9 @@ export function useStripKeyboard({
           tag === "SELECT" ||
           target.isContentEditable ||
           target.closest(".workspace-terminal-shell") !== null ||
-          target.closest('[role="menu"], [role="dialog"], [role="listbox"]') !== null
+          target.closest(
+            '[role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]',
+          ) !== null
         ) {
           return;
         }
