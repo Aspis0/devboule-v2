@@ -4,7 +4,11 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceDirectory, WorkspaceFileEntry } from "../../types/ipc";
+import type {
+  WorkspaceDirectory,
+  WorkspaceFileEntry,
+  WorkspaceFileMutation,
+} from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   workspaceFilesList: vi.fn(),
@@ -15,15 +19,12 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 // The confirmation belongs to the one act that loses data: the delete's gate
-// lives inside `deleteEntry`, and this mock answers `false` on purpose —
-// were the gate ever dropped from that road, the No-answers-nothing case
-// below would die first. The two acts that lose no data must never reach it
-// at all, which their own tests assert.
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  confirm: vi.fn(async () => false),
-}));
-
-import { confirm } from "@tauri-apps/plugin-dialog";
+// lives inside `deleteEntry`, and these tests drive our dialog instead of
+// a native mock — were the gate ever dropped from that road, the
+// dialog-absence assertions below would die first. The two acts that lose
+// no data must never raise it at all, which their own tests assert.
+import { ConfirmProvider } from "../../components/ConfirmHost";
+import { useAppStore } from "../../store/appStore";
 import {
   workspaceFileDelete,
   workspaceFileDuplicate,
@@ -63,6 +64,7 @@ describe("FilesFileActions", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    useAppStore.setState({ modalOpenTokens: new Set() });
     rootEntries = [entry("src", "dir"), entry("README.md", "file", 12)];
     vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) => {
       if (path === "") return Promise.resolve(listing(rootEntries));
@@ -91,13 +93,15 @@ describe("FilesFileActions", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    useAppStore.setState({ modalOpenTokens: new Set() });
     vi.clearAllMocks();
   });
 
   async function render(ui: ReactNode) {
     root = createRoot(container);
     await act(async () => {
-      root.render(ui);
+      root.render(<ConfirmProvider>{ui}</ConfirmProvider>);
     });
   }
 
@@ -125,6 +129,51 @@ describe("FilesFileActions", () => {
     if (item === undefined) throw new Error(`menu item did not render: ${label}`);
     await act(async () => {
       item.click();
+    });
+  }
+
+  /** The standing ask, portaled to the body — never inside the panel. */
+  function confirmDialog(): HTMLElement {
+    const found = document.querySelector<HTMLElement>(".confirm-dialog");
+    if (found === null) throw new Error("confirm dialog did not render");
+    return found;
+  }
+
+  function affirmative(): HTMLButtonElement {
+    const found = document.querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
+    if (found === null) throw new Error("confirm button did not render");
+    return found;
+  }
+
+  function dialogBody(): string {
+    return confirmDialog().querySelector(".confirm-dialog-body")?.textContent ?? "";
+  }
+
+  async function answerConfirm(): Promise<void> {
+    await act(async () => {
+      affirmative().click();
+    });
+  }
+
+  async function answerCancel(): Promise<void> {
+    const found = document.querySelector<HTMLButtonElement>(".confirm-dialog-cancel");
+    if (found === null) throw new Error("cancel button did not render");
+    await act(async () => {
+      found.click();
+    });
+  }
+
+  async function escapeAsk(): Promise<void> {
+    await act(async () => {
+      confirmDialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+  }
+
+  async function scrimAsk(): Promise<void> {
+    await act(async () => {
+      document
+        .querySelector<HTMLElement>(".confirm-dialog-backdrop")!
+        .dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
   }
 
@@ -169,7 +218,8 @@ describe("FilesFileActions", () => {
     expect(vi.mocked(workspaceFileRename).mock.calls).toEqual([
       [WORKSPACE, "README.md", "GUIDE.md"],
     ]);
-    expect(vi.mocked(confirm)).not.toHaveBeenCalled();
+    // Rename asks for nothing: only delete raises the dialog.
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
     // The parent folder is re-read through the same guarded reader — the
     // tree shows the act's result without a manual refresh.
     expect(vi.mocked(workspaceFilesList).mock.calls).toContainEqual([WORKSPACE, ""]);
@@ -192,7 +242,8 @@ describe("FilesFileActions", () => {
     await act(async () => undefined);
 
     expect(vi.mocked(workspaceFileDuplicate).mock.calls).toEqual([[WORKSPACE, "README.md"]]);
-    expect(vi.mocked(confirm)).not.toHaveBeenCalled();
+    // Duplicate asks for nothing: only delete raises the dialog.
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
     expect(container.textContent).toContain("README copy.md");
     expect(alertText()).toBeNull();
   });
@@ -235,7 +286,7 @@ describe("FilesFileActions", () => {
 
     expect(alertText()).toBe("the daemon did not answer");
     expect(renameInput().value).toBe("GUIDE.md");
-    expect(vi.mocked(confirm)).not.toHaveBeenCalled();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
   });
 
   it("abandons the rename on Escape without touching the wire", async () => {
@@ -288,7 +339,7 @@ describe("FilesFileActions", () => {
     expect(libRow.getAttribute("aria-expanded")).toBe("true");
     expect(container.textContent).toContain("index.ts");
     expect(container.querySelector('[title="src"]')).toBeNull();
-    expect(vi.mocked(confirm)).not.toHaveBeenCalled();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
   });
 
   // The selection follows the entry it points at: renaming the selected
@@ -327,27 +378,327 @@ describe("FilesFileActions", () => {
     expect(selected?.getAttribute("title")).toBe("GUIDE.md");
   });
 
-  // The slice's own shape (plan-write §2.4): a No at the confirmation stops
-  // EVERYTHING — no command reaches the wire, and the tree is not even
+  // The slice's own shape (plan-write §2.4): choosing Delete raises our
+  // dialog, and while the ask stands unanswered no command has reached the
+  // wire. A No stops EVERYTHING — no command, and the tree is not even
   // re-read, because nothing happened to re-read. Kills the mutation that
   // drops the confirmation gate from `deleteEntry`.
-  it("asks before deleting, and a No stops everything before the wire", async () => {
-    vi.mocked(confirm).mockResolvedValue(false);
+  it("asks through our dialog, and a No stops everything before the wire", async () => {
     await render(<FilesSurface workspaceId={WORKSPACE} />);
 
     await openMenu("README.md");
     await menuItem("Delete");
-    await act(async () => undefined);
 
-    expect(vi.mocked(confirm)).toHaveBeenCalledTimes(1);
+    const card = confirmDialog();
+    expect(card.querySelector(".confirm-dialog-title")?.textContent).toBe("Delete “README.md”");
+    expect(dialogBody()).toContain("README.md");
+    expect(dialogBody()).toContain("This cannot be undone.");
+    expect(affirmative().textContent).toBe("Delete");
+    expect(confirmDialog().querySelector(".confirm-dialog-cancel")?.textContent).toBe("Keep it");
+    expect(affirmative().classList.contains("confirm-dialog-confirm-danger")).toBe(true);
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+
+    await answerCancel();
     expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
     expect(vi.mocked(workspaceFilesList).mock.calls).toEqual([[WORKSPACE, ""]]);
     expect(container.textContent).toContain("README.md");
     expect(alertText()).toBeNull();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+  });
+
+  // Escape and the scrim decline the same way: no wire, no re-read.
+  it("Escape and the scrim decline the delete", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    await escapeAsk();
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+    expect(vi.mocked(workspaceFilesList).mock.calls).toEqual([[WORKSPACE, ""]]);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    await scrimAsk();
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+    expect(vi.mocked(workspaceFilesList).mock.calls).toEqual([[WORKSPACE, ""]]);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    expect(container.textContent).toContain("README.md");
+  });
+
+  // Unmounting with the ask standing (a workspace or panel switch remounts
+  // the host) declines it: no wire, and the modal token goes with the dialog.
+  it("unmounting with the ask standing declines it and leaks no modal", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    expect(document.querySelector(".confirm-dialog")).not.toBeNull();
+    await act(async () => {
+      root.unmount();
+    });
+
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+    expect(useAppStore.getState().modalOpenTokens.size).toBe(0);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+  });
+
+  // The ask borrows focus and hands it back: Cancel lands on the row's
+  // menu trigger the menu opened from — the dialog stays mounted and
+  // closes through its `open` prop, so its own trigger return runs.
+  it("Cancel hands focus back to the row's menu trigger", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
+    );
+    if (trigger === null) throw new Error("the row trigger did not render");
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    expect(document.activeElement).toBe(document.querySelector(".confirm-dialog-cancel"));
+
+    await answerCancel();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  // A mouse press moves focus onto the menu item before the click reaches
+  // it; the item dies with the menu, so without the trigger's pre-focus
+  // the dialog would capture a gone element and strand focus on <body>.
+  it("returns focus to the trigger even when the menu item held focus at the ask", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
+    );
+    if (trigger === null) throw new Error("the row trigger did not render");
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu("README.md");
+    const item = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((button) => button.textContent === "Delete");
+    if (item === undefined) throw new Error("delete menu item did not render");
+    await act(async () => {
+      item.focus();
+    });
+    await menuItem("Delete");
+
+    await answerCancel();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  // A landed delete takes its own row with it: the re-read drops the
+  // entry, the trigger is gone, and focus parks on the panel — never body.
+  it("a confirmed delete that takes its row parks focus on the panel", async () => {
+    vi.mocked(workspaceFileDelete).mockImplementation(async () => {
+      rootEntries = rootEntries.filter((item) => item.path !== "README.md");
+      return { newPath: null, error: null };
+    });
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
+    );
+    if (trigger === null) throw new Error("the row trigger did not render");
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    await answerConfirm();
+    await act(async () => undefined);
+
+    expect(vi.mocked(workspaceFileDelete)).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain("README.md");
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    const panel = container.querySelector<HTMLElement>(".workspace-files");
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  // The real order: the wire answers on its own latency and the parent
+  // re-read lands after it — two separate commits, not one. The arm must
+  // survive the flip on the stale tree and settle the row-gone case onto
+  // the panel once the re-read arrives.
+  it("a slow confirmed delete that takes its row lands on the panel once the re-read lands", async () => {
+    let wireDone = false;
+    let releaseRoot: ((value: WorkspaceDirectory) => void) | null = null;
+    vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) => {
+      if (path === "src") return Promise.resolve(listing([entry("src/index.ts", "file", 6)]));
+      if (!wireDone || path !== "") return Promise.resolve(listing(rootEntries));
+      return new Promise<WorkspaceDirectory>((resolve) => {
+        releaseRoot = resolve;
+      });
+    });
+    let resolveWire: ((value: WorkspaceFileMutation) => void) | null = null;
+    vi.mocked(workspaceFileDelete).mockImplementation(
+      () =>
+        new Promise<WorkspaceFileMutation>((resolve) => {
+          resolveWire = resolve;
+        }),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
+    );
+    if (trigger === null) throw new Error("the row trigger did not render");
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    await answerConfirm();
+    expect(vi.mocked(workspaceFileDelete)).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    // The dialog unregistered before the wire started: the park reads a
+    // count without the ask in it.
+    expect(useAppStore.getState().modalOpenTokens.size).toBe(0);
+    const panel = container.querySelector<HTMLElement>(".workspace-files");
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+
+    await act(async () => {
+      wireDone = true;
+      resolveWire!({ newPath: null, error: null });
+    });
+    await act(async () => undefined);
+    // The flip lands on the stale tree first: the repair borrows the row's
+    // own trigger back until the re-read arrives.
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => {
+      rootEntries = rootEntries.filter((item) => item.path !== "README.md");
+      releaseRoot!(listing(rootEntries));
+    });
+    await act(async () => undefined);
+    expect(container.textContent).not.toContain("README.md");
+    expect(document.activeElement).toBe(panel);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  // No ask at all: a refresh that takes the focused row still lands on
+  // the panel — the rescue answers every rows change, not just an act's.
+  it("a refresh that takes the focused row lands on the panel with no ask behind it", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
+    );
+    if (trigger === null) throw new Error("the row trigger did not render");
+    await act(async () => {
+      trigger.focus();
+    });
+
+    rootEntries = rootEntries.filter((item) => item.path !== "README.md");
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => undefined);
+    expect(container.textContent).not.toContain("README.md");
+    const panel = container.querySelector<HTMLElement>(".workspace-files");
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  // The rescue answers only for a focus the removal stranded: a row that
+  // leaves while focus sits on an outside control moves nothing.
+  it("moves no focus when the row leaves while focus is outside the panel", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const elsewhere = document.createElement("button");
+    elsewhere.textContent = "elsewhere";
+    document.body.appendChild(elsewhere);
+    await act(async () => {
+      elsewhere.focus();
+    });
+
+    rootEntries = rootEntries.filter((item) => item.path !== "README.md");
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => undefined);
+    expect(container.textContent).not.toContain("README.md");
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
+  // A nested delete re-reads its own parent folder, never the root: the
+  // landing must answer to the whole cell map, not to the root's entries.
+  it("a slow confirmed delete of a nested file lands on the panel once its folder is re-read", async () => {
+    let wireDone = false;
+    let releaseDeep: ((value: WorkspaceDirectory) => void) | null = null;
+    vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) => {
+      if (path === "") return Promise.resolve(listing(rootEntries));
+      if (path === "src")
+        return Promise.resolve(
+          listing([entry("src/index.ts", "file", 6), entry("src/deep", "dir")]),
+        );
+      if (path === "src/deep") {
+        if (!wireDone) return Promise.resolve(listing([entry("src/deep/file.ts", "file", 4)]));
+        return new Promise<WorkspaceDirectory>((resolve) => {
+          releaseDeep = resolve;
+        });
+      }
+      return Promise.resolve(listing([]));
+    });
+    let resolveWire: ((value: WorkspaceFileMutation) => void) | null = null;
+    vi.mocked(workspaceFileDelete).mockImplementation(
+      () =>
+        new Promise<WorkspaceFileMutation>((resolve) => {
+          resolveWire = resolve;
+        }),
+    );
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src/deep"]')!.click();
+    });
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '.workspace-tree-menu-trigger[aria-label="file.ts actions"]',
+    );
+    if (trigger === null) throw new Error("the nested row trigger did not render");
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu("src/deep/file.ts");
+    await menuItem("Delete");
+    expect(dialogBody()).toContain("src/deep/file.ts");
+    await answerConfirm();
+    expect(vi.mocked(workspaceFileDelete)).toHaveBeenCalledWith(WORKSPACE, "src/deep/file.ts");
+    const panel = container.querySelector<HTMLElement>(".workspace-files");
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+
+    await act(async () => {
+      wireDone = true;
+      resolveWire!({ newPath: null, error: null });
+    });
+    await act(async () => undefined);
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => {
+      releaseDeep!(listing([]));
+    });
+    await act(async () => undefined);
+    expect(container.querySelector('[title="src/deep/file.ts"]')).toBeNull();
+    expect(document.activeElement).toBe(panel);
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it("deletes once confirmed: the parent is re-read and a dead selection drops its preview", async () => {
-    vi.mocked(confirm).mockResolvedValue(true);
     // The mock plays daemon AND disk: the entry is gone, so the parent
     // re-read below must not find it any more.
     vi.mocked(workspaceFileDelete).mockImplementation(async () => {
@@ -367,7 +718,8 @@ describe("FilesFileActions", () => {
 
     await openMenu("README.md");
     await menuItem("Delete");
-    await act(async () => undefined);
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+    await answerConfirm();
 
     expect(vi.mocked(workspaceFileDelete).mock.calls).toEqual([[WORKSPACE, "README.md"]]);
     expect(container.textContent).not.toContain("README.md");
@@ -380,7 +732,6 @@ describe("FilesFileActions", () => {
   });
 
   it("deleting a folder takes the selection under it and names the folder in the confirmation", async () => {
-    vi.mocked(confirm).mockResolvedValue(true);
     vi.mocked(workspaceFileDelete).mockImplementation(async (_workspaceId, path) => {
       rootEntries = rootEntries.filter((item) => item.path !== path);
       rootEntries = rootEntries.filter((item) => !item.path.startsWith(`${path}/`));
@@ -403,7 +754,9 @@ describe("FilesFileActions", () => {
 
     await openMenu("src");
     await menuItem("Delete");
-    await act(async () => undefined);
+    expect(dialogBody()).toContain("src");
+    expect(dialogBody()).toContain("folder");
+    await answerConfirm();
 
     expect(vi.mocked(workspaceFileDelete).mock.calls).toEqual([[WORKSPACE, "src"]]);
     expect(container.querySelector(".workspace-diff-card")).toBeNull();
@@ -413,51 +766,78 @@ describe("FilesFileActions", () => {
   // for — a folder deletion takes everything inside it, and the text the
   // user confirms must say so, not just "this entry".
   it("names the entry in the confirmation, differently for a file and a folder", async () => {
-    vi.mocked(confirm).mockResolvedValue(false);
     await render(<FilesSurface workspaceId={WORKSPACE} />);
 
     await openMenu("README.md");
     await menuItem("Delete");
-    const fileCalls = vi.mocked(confirm).mock.calls;
-    expect(fileCalls).toHaveLength(1);
-    const fileMessage = fileCalls[0][0];
+    const fileMessage = dialogBody();
     expect(fileMessage).toContain("README.md");
     expect(fileMessage).toContain("file");
+    await answerCancel();
 
     await openMenu("src");
     await menuItem("Delete");
-    const folderCalls = vi.mocked(confirm).mock.calls;
-    expect(folderCalls).toHaveLength(2);
-    const folderMessage = folderCalls[1][0];
+    const folderMessage = dialogBody();
     expect(folderMessage).toContain("src");
     expect(folderMessage).toContain("folder");
     expect(folderMessage).not.toBe(fileMessage);
+    await answerCancel();
     expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+  });
+
+  // Two levels deep the body still names the full workspace-relative
+  // path, not just the basename: a message built from the entry name
+  // would fail the containment below.
+  it("names the full nested path in the delete question", async () => {
+    vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) => {
+      if (path === "") return Promise.resolve(listing(rootEntries));
+      if (path === "src")
+        return Promise.resolve(
+          listing([entry("src/index.ts", "file", 6), entry("src/deep", "dir")]),
+        );
+      if (path === "src/deep")
+        return Promise.resolve(listing([entry("src/deep/file.ts", "file", 4)]));
+      if (path === "lib") return Promise.resolve(listing([entry("lib/index.ts", "file", 6)]));
+      return Promise.resolve(listing([]));
+    });
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src/deep"]')!.click();
+    });
+
+    await openMenu("src/deep/file.ts");
+    await menuItem("Delete");
+    expect(dialogBody()).toContain("src/deep/file.ts");
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+    await answerCancel();
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
   });
 
   it("shows a delete refusal under the toolbar and refreshes the tree anyway", async () => {
     const refusal = "the workspace's own folder cannot be renamed, duplicated or deleted";
-    vi.mocked(confirm).mockResolvedValue(true);
     vi.mocked(workspaceFileDelete).mockResolvedValue({ newPath: null, error: refusal });
     await render(<FilesSurface workspaceId={WORKSPACE} />);
     const reads = vi.mocked(workspaceFilesList).mock.calls.length;
 
     await openMenu("README.md");
     await menuItem("Delete");
-    await act(async () => undefined);
+    await answerConfirm();
 
     expect(alertText()).toBe(refusal);
     expect(vi.mocked(workspaceFilesList).mock.calls.length).toBe(reads + 1);
   });
 
   it("shows a transport failure after a confirmed delete the same way", async () => {
-    vi.mocked(confirm).mockResolvedValue(true);
     vi.mocked(workspaceFileDelete).mockRejectedValue(new Error("the daemon did not answer"));
     await render(<FilesSurface workspaceId={WORKSPACE} />);
 
     await openMenu("README.md");
     await menuItem("Delete");
-    await act(async () => undefined);
+    await answerConfirm();
 
     expect(alertText()).toBe("the daemon did not answer");
     // The parent was re-read despite the dead transport: the act may have

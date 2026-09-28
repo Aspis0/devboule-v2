@@ -304,6 +304,13 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   background: var(--fill-hover);
 }
 
+/* The panel root is a programmatic focus landing, never a tab stop: no
+   ring on the root itself. The selector matches the root only, never its
+   children, so their own focus styles are untouched. */
+.workspace-files:focus {
+  outline: none;
+}
+
 /* The tree is a nested disclosure list. Depth pads the buttons inline
    (the Changes tree's 14px precedent), so the rules below only reset the
    list shape and wear the mockup's look over the moved bones. */

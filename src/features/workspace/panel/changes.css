@@ -14,6 +14,13 @@
   min-height: 100%;
 }
 
+/* The root is a programmatic focus landing, never a tab stop: no ring on
+   the root itself. The selector matches the root only, never its
+   children, so their own focus styles are untouched. */
+.workspace-changes:focus {
+  outline: none;
+}
+
 /* Loading, no workspace, not a repository, clean tree: the panel's own words
    for what is true. The wire's sentences use `.workspace-changes-error`. */
 .workspace-changes-state {

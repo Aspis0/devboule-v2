@@ -635,7 +635,7 @@ export const workspaceGitUnstage = (workspaceId: Id, paths: string[]) =>
 /**
  * Discard paths — the act that loses data: the selection returns to `HEAD`
  * and untracked paths are deleted. The confirmation is the panel's own
- * gate (its writer hook asks through the native dialog before the one
+ * gate (its writer hook asks through our ConfirmDialog before the one
  * caller in this app reaches this road), never a check the road itself
  * performs — the same discipline as `workspaceFileDelete`.
  */
@@ -730,7 +730,7 @@ export const workspaceFileDuplicate = (workspaceId: Id, path: string) =>
 /**
  * Delete one workspace entry — the act that loses data, and the only one
  * of the group that asks first: the confirmation is the Files screen's
- * own (its writer hook asks through the native dialog before the one
+ * own (its writer hook asks through our ConfirmDialog before the one
  * caller in this app reaches this road), never a check the road itself
  * performs. The daemon re-judges the path with every guard the reads
  * use, and a success carries nothing to name — the entry is gone.

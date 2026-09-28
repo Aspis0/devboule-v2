@@ -184,6 +184,66 @@ describe("the modal contract", () => {
     expect(baseProps.onConfirm).not.toHaveBeenCalled();
   });
 
+  // The second half of a double-click must neither cancel nor move focus:
+  // preventing the press's default keeps focus inside the card. happy-dom
+  // performs no focus update on mousedown, so only the prevention half is
+  // pinned here — the focus half was measured in a real browser.
+  it("ignores the second press of a double-click on the scrim", async () => {
+    await renderDialog();
+    const second = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      detail: 2,
+    });
+    await act(async () => {
+      backdrop().dispatchEvent(second);
+    });
+    expect(baseProps.onCancel).not.toHaveBeenCalled();
+    expect(baseProps.onConfirm).not.toHaveBeenCalled();
+    expect(second.defaultPrevented).toBe(true);
+    await act(async () => {
+      backdrop().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, detail: 1 }));
+    });
+    expect(baseProps.onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("kills a held Enter or Space instead of answering on auto-repeat", async () => {
+    await renderDialog();
+    const repeatEnter = new KeyboardEvent("keydown", {
+      key: "Enter",
+      repeat: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      cancelButton().dispatchEvent(repeatEnter);
+    });
+    expect(repeatEnter.defaultPrevented).toBe(true);
+    const repeatSpace = new KeyboardEvent("keydown", {
+      key: " ",
+      repeat: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      cancelButton().dispatchEvent(repeatSpace);
+    });
+    expect(repeatSpace.defaultPrevented).toBe(true);
+    expect(baseProps.onCancel).not.toHaveBeenCalled();
+    expect(baseProps.onConfirm).not.toHaveBeenCalled();
+
+    const firstEnter = new KeyboardEvent("keydown", {
+      key: "Enter",
+      repeat: false,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      cancelButton().dispatchEvent(firstEnter);
+    });
+    expect(firstEnter.defaultPrevented).toBe(false);
+  });
+
   it("returns focus to the element that opened it, whichever way the ask ends", async () => {
     function Harness() {
       const [open, setOpen] = useState(false);

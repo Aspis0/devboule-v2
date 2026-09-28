@@ -1,7 +1,7 @@
 import { useCallback } from "react";
-import { confirm } from "@tauri-apps/plugin-dialog";
 import { workspaceFileDelete, workspaceFileDuplicate, workspaceFileRename } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { useConfirmAsk } from "../../components/ConfirmHost";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 
 /**
@@ -35,10 +35,10 @@ export interface WorkspaceFileActions {
   duplicateEntry: (entry: WorkspaceFileEntry) => Promise<ErrorSentence | null>;
   /**
    * Delete one entry — the one act that loses data, and the one this hook
-   * gates: the native `confirm()` stands between the click and the wire,
-   * and a declined confirmation resolves `null` with **zero** calls made.
-   * On success the entry is gone and the selection is too, if it pointed
-   * at (or under) what was deleted.
+   * gates: our `ConfirmDialog` (through the host's `ask`) stands between
+   * the click and the wire, and a declined ask resolves `null` with
+   * **zero** calls made. On success the entry is gone and the selection
+   * is too, if it pointed at (or under) what was deleted.
    */
   deleteEntry: (entry: WorkspaceFileEntry) => Promise<ErrorSentence | null>;
 }
@@ -50,23 +50,24 @@ function parentOf(path: string): string {
 }
 
 /**
- * The confirmation's own words: they name the entry and say what the act
- * is, differently for a file and a folder — a folder deletion takes
- * everything inside it, and the user answers for that, not for a row.
+ * The confirmation's own words: they name the entry's workspace-relative
+ * path and say what the act is, differently for a file and a folder — a
+ * folder deletion takes everything inside it, and the user answers for
+ * that, not for a row.
  */
 function confirmationMessage(entry: WorkspaceFileEntry): string {
   return entry.kind === "dir"
-    ? `Delete the folder "${entry.name}" and everything inside it? This cannot be undone.`
-    : `Delete the file "${entry.name}"? This cannot be undone.`;
+    ? `Delete the folder “${entry.path}” and everything inside it? This cannot be undone.`
+    : `Delete the file “${entry.path}”? This cannot be undone.`;
 }
 
 /**
  * The Files panel's three write acts — rename, duplicate, delete. The two
  * that lose no data ask no confirmation, here or anywhere on their road
  * (the decision record says the confirmation belongs to what disappears);
- * the delete does, and its gate is structural: `confirm()` is awaited
+ * the delete does, and its gate is structural: `ask()` is awaited
  * inside this hook, before any command is imported toward the wire, so no
- * caller of `deleteEntry` can skip it. A declined confirmation is a quiet
+ * caller of `deleteEntry` can skip it. A declined ask is a quiet
  * no-op — not an error, and not a refresh: nothing happened.
  *
  * After an act the refresh is exact: the parent folder is re-read (its
@@ -84,6 +85,7 @@ function confirmationMessage(entry: WorkspaceFileEntry): string {
  */
 export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileActions {
   const { workspaceId, refreshPath, rekey, selection, select, deselect } = context;
+  const ask = useConfirmAsk();
 
   const renameEntry = useCallback(
     async (entry: WorkspaceFileEntry, name: string): Promise<ErrorSentence | null> => {
@@ -111,7 +113,7 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
         }
         return null;
       } catch (cause: unknown) {
-        // Transport lost after the ask: the act may have happened — same
+        // Transport lost mid-act: the act may have happened — same
         // reason, same refresh.
         refreshPath(parentOf(entry.path));
         return errorSentence(cause);
@@ -140,10 +142,10 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
       if (workspaceId === null) return { sentence: "No workspace is selected.", detail: null };
       // The gate: nothing below runs unless the user answers yes — a No
       // reaches no command, and refreshes nothing, because nothing changed.
-      const confirmed = await confirm(confirmationMessage(entry), {
-        title: `Delete ${entry.name}`,
-        kind: "warning",
-        okLabel: "Delete",
+      const confirmed = await ask({
+        title: `Delete “${entry.name}”`,
+        message: confirmationMessage(entry),
+        confirmLabel: "Delete",
         cancelLabel: "Keep it",
       });
       if (!confirmed) return null;
@@ -159,13 +161,13 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
         }
         return null;
       } catch (cause: unknown) {
-        // Transport lost after the ask: the act may have happened — same
+        // Transport lost mid-act: the act may have happened — same
         // reason, same refresh.
         refreshPath(parentOf(entry.path));
         return errorSentence(cause);
       }
     },
-    [deselect, refreshPath, selection, workspaceId],
+    [ask, deselect, refreshPath, selection, workspaceId],
   );
 
   return { renameEntry, duplicateEntry, deleteEntry };

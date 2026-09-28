@@ -11,6 +11,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { ErrorText } from "../../components/ErrorText";
+import { ConfirmProvider } from "../../components/ConfirmHost";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
@@ -1433,14 +1434,20 @@ export function Workspace({
                     body and offset together: drafts, menus, errors and scroll
                     all start clean. */}
               <SurfaceErrorBoundary surfaceLabel={selectedSurface.name}>
-                {selectedSurface.render({
-                  workspaceId: selectedWorkspace,
-                  // The one fact the Changes panel gates on, computed from
-                  // the daemon status this component already holds — a
-                  // panel reads it here instead of polling for its own.
-                  canListCommits:
-                    daemon.state === "connected" && daemon.capabilities.includes(WORKSPACE_GIT_LOG),
-                })}
+                {/* The destructive asks' host: inside the keyed body, so a
+                    panel or workspace switch unmounts it and declines a
+                    standing ask instead of acting behind the new panel. */}
+                <ConfirmProvider>
+                  {selectedSurface.render({
+                    workspaceId: selectedWorkspace,
+                    // The one fact the Changes panel gates on, computed from
+                    // the daemon status this component already holds — a
+                    // panel reads it here instead of polling for its own.
+                    canListCommits:
+                      daemon.state === "connected" &&
+                      daemon.capabilities.includes(WORKSPACE_GIT_LOG),
+                  })}
+                </ConfirmProvider>
               </SurfaceErrorBoundary>
             </div>
           </div>

@@ -1,5 +1,4 @@
 import { useCallback } from "react";
-import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   workspaceGitCommit,
   workspaceGitDiscard,
@@ -7,6 +6,7 @@ import {
   workspaceGitUnstage,
 } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { useConfirmAsk } from "../../components/ConfirmHost";
 
 /**
  * What the reader hands the writer: the refresh every act owes the panel
@@ -32,9 +32,10 @@ export interface WorkspaceGitActions {
   unstage: (paths: string[]) => Promise<ErrorSentence | null>;
   /**
    * Discard a row's paths — the one act of the four that loses data, and
-   * the one this hook gates: the native `confirm()` stands between the
-   * click and the wire, and a declined confirmation resolves `null` with
-   * **zero** calls made and nothing refreshed, because nothing happened.
+   * the one this hook gates: our `ConfirmDialog` (through the host's
+   * `ask`) stands between the click and the wire, and a declined ask
+   * resolves `null` with **zero** calls made and nothing refreshed,
+   * because nothing happened.
    */
   discard: (paths: string[]) => Promise<ErrorSentence | null>;
   /** Commit what is staged, with this hand-written message. */
@@ -44,9 +45,9 @@ export interface WorkspaceGitActions {
 /**
  * The Changes panel's four write acts — stage, unstage, discard, commit.
  * Only discard asks: it is the act where something disappears (the rule
- * `DECISIONS-write.md` §1), and the gate is structural — `confirm()` is
+ * `DECISIONS-write.md` §1), and the gate is structural — `ask()` is
  * awaited inside this hook, before any command is imported toward the
- * wire, so no caller of `discard` can skip it. A declined confirmation is
+ * wire, so no caller of `discard` can skip it. A declined ask is
  * a quiet no-op: no wire, no refresh, no error.
  *
  * After an act the refresh is immediate and unconditional — success **or**
@@ -59,6 +60,7 @@ export interface WorkspaceGitActions {
  */
 export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGitActions {
   const { workspaceId, refresh } = context;
+  const ask = useConfirmAsk();
 
   // The git wire answers with the daemon's own sentence (or null on
   // success) — already human words; give them the sentence's shape.
@@ -77,7 +79,7 @@ export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGit
         refresh();
         return error;
       } catch (cause: unknown) {
-        // Transport lost after the ask: the act may have happened — same
+        // Transport lost mid-act: the act may have happened — same
         // reason, same refresh.
         refresh();
         return errorSentence(cause);
@@ -109,20 +111,17 @@ export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGit
       // reaches no command and refreshes nothing, because nothing changed.
       // Every path the act will touch is named in the question — for a
       // renamed row that is both sides of the rename.
-      const named = paths.map((entry) => `"${entry}"`).join(" and ");
-      const confirmed = await confirm(
-        `Discard every uncommitted change to ${named}? This cannot be undone.`,
-        {
-          title: "Discard changes",
-          kind: "warning",
-          okLabel: "Discard",
-          cancelLabel: "Keep them",
-        },
-      );
+      const named = paths.map((entry) => `“${entry}”`).join(" and ");
+      const confirmed = await ask({
+        title: "Discard changes",
+        message: `Discard every uncommitted change to ${named}? This cannot be undone.`,
+        confirmLabel: "Discard",
+        cancelLabel: "Keep them",
+      });
       if (!confirmed) return null;
       return run(() => asSentence(workspaceGitDiscard(workspaceId, paths)));
     },
-    [asSentence, run, workspaceId],
+    [ask, asSentence, run, workspaceId],
   );
 
   const commit = useCallback(

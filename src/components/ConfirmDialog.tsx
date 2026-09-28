@@ -1,7 +1,7 @@
 // Why: the destructive ask's shell — Paseo's `confirmDialog`
 // (`packages/app/src/utils/confirm-dialog.ts`) rebuilt as the redesign's
 // centred modal: the same ask and the same two answers, over a scrim instead
-// of anchored to the tab it came from. Git Discard and file delete (C3) ask
+// of anchored to the tab it came from. Git Discard and file delete ask
 // through this dialog too, so it lives beside the other shared components,
 // not in the strip.
 
@@ -17,6 +17,9 @@ interface ConfirmDialogProps {
   title: string;
   message: string;
   confirmLabel: string;
+  /** The safe answer's label. The destructive pair names what saying no
+   * keeps; every other ask reads `Cancel`. */
+  cancelLabel?: string;
   /** The affirmative's fill. Filled `--danger` only when this is the dialog's
    * sole affirmative and the act is destructive — close, archive, delete;
    * every other act is the filled accent. One affirmative slot: a dialog with
@@ -31,6 +34,7 @@ export function ConfirmDialog({
   title,
   message,
   confirmLabel,
+  cancelLabel = "Cancel",
   tone,
   onConfirm,
   onCancel,
@@ -70,6 +74,13 @@ export function ConfirmDialog({
   if (!open) return null;
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // Held Enter or Space would re-fire the focused Cancel the moment an
+    // ask opens onto it — the first press still answers, the auto-repeat
+    // dies here, before the button's own activation.
+    if (event.repeat && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      return;
+    }
     if (event.key === "Escape") {
       // The strip's selection listens on window for its own Escape: the ask's
       // must end here, never clear the selection behind the scrim.
@@ -100,8 +111,17 @@ export function ConfirmDialog({
       className="confirm-dialog-backdrop"
       onMouseDown={(event) => {
         // The scrim is the cancel target and the card is not: a press that
-        // ends on the card must still be able to confirm.
-        if (event.target === event.currentTarget) onCancel();
+        // ends on the card must still be able to confirm. A press with
+        // detail above one is the second half of a double-click — the ask
+        // opened under it, and answering no to that is never the intent.
+        // Its default action would still move focus out of the card onto
+        // the body, leaving the standing ask without the keyboard: prevent
+        // that and keep focus where it is.
+        if (event.target !== event.currentTarget || event.detail > 1) {
+          if (event.detail > 1) event.preventDefault();
+          return;
+        }
+        onCancel();
       }}
     >
       <div
@@ -126,7 +146,7 @@ export function ConfirmDialog({
             className="confirm-dialog-cancel"
             onClick={onCancel}
           >
-            Cancel
+            {cancelLabel}
           </button>
           <button
             type="button"

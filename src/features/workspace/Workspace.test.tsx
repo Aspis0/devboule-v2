@@ -44,6 +44,11 @@ vi.mock("../../lib/tauri", () => ({
     rows: [],
     error: null,
   })),
+  // The Changes panel's destructive act, through the confirm host: the
+  // placement tests below read this spy while the ask stands.
+  workspaceGitDiscard: vi.fn(async () => null),
+  // The Files panel's destructive act, through the same host.
+  workspaceFileDelete: vi.fn(async () => ({ newPath: null, error: null })),
   workspaceGitDiff: vi.fn(async () => ({
     path: "src/writer.ts",
     isNew: false,
@@ -297,6 +302,9 @@ import {
   projectsList,
   providersList,
   workspaceCreate,
+  workspaceFileDelete,
+  workspaceFilesList,
+  workspaceGitDiscard,
   workspaceGitStatus,
   workspacesList,
   sessionCreate,
@@ -3280,6 +3288,109 @@ describe("Workspace sessions", () => {
     expect(provenance?.textContent).toBe("Device: Xiaomi 14 · Role: client");
     // The card must never fall back to the raw device id.
     expect(provenance?.textContent).not.toContain("device-phone");
+  });
+
+  // The confirm host's placement: both destructive asks reach the dialog
+  // through the real Workspace with no hand wrapper — removing the
+  // provider from Workspace must make these fail (proven by removal).
+  describe("the destructive asks' host", () => {
+    const dirtyChanges: WorkspaceGitStatus = {
+      isGit: true,
+      dirty: true,
+      branch: "main",
+      totals: { additions: 3, deletions: 0 },
+      rows: [
+        {
+          path: "notes/todo.md",
+          additions: 3,
+          deletions: 0,
+          status: "untracked",
+          capped: false,
+        },
+      ],
+      error: null,
+    };
+
+    it("reaches Discard through the real Workspace: the dialog stands and the wire stays quiet", async () => {
+      vi.mocked(workspaceGitStatus).mockResolvedValue(dirtyChanges);
+      root = createRoot(container);
+      await act(async () => root.render(<Workspace />));
+      await act(async () => undefined);
+
+      const trigger = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="notes/todo.md actions"]',
+      );
+      if (trigger === null) throw new Error("the changed row's menu trigger did not render");
+      await act(async () => {
+        trigger.click();
+      });
+      const item = container.querySelector<HTMLElement>('[role="menuitem"]');
+      if (item === null) throw new Error("the discard menu item did not render");
+      await act(async () => {
+        item.click();
+      });
+
+      // No hand wrapper anywhere above: this dialog came from the provider
+      // Workspace mounts, and the wire heard nothing while it stands.
+      const card = document.querySelector(".confirm-dialog");
+      if (card === null) throw new Error("the discard ask did not render a dialog");
+      expect(card.querySelector(".confirm-dialog-title")?.textContent).toBe("Discard changes");
+      expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>(".confirm-dialog-cancel")!.click();
+      });
+      expect(document.querySelector(".confirm-dialog")).toBeNull();
+      expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+    });
+
+    it("reaches file Delete through the real Workspace: the dialog stands and the wire stays quiet", async () => {
+      vi.mocked(workspaceFilesList).mockResolvedValue({
+        path: "",
+        entries: [{ path: "README.md", name: "README.md", kind: "file", size: 12 }],
+        capped: false,
+        skipped: 0,
+        error: null,
+      });
+      root = createRoot(container);
+      await act(async () => root.render(<Workspace />));
+      await act(async () => undefined);
+
+      const filesTab = container.querySelector<HTMLButtonElement>(
+        'button[role="tab"][data-panel-tab="files"]',
+      );
+      if (filesTab === null) throw new Error("the Files panel tab did not render");
+      await act(async () => {
+        filesTab.click();
+      });
+      await act(async () => undefined);
+
+      const trigger = container.querySelector<HTMLButtonElement>(
+        '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
+      );
+      if (trigger === null) throw new Error("the file row's menu trigger did not render");
+      await act(async () => {
+        trigger.click();
+      });
+      const item = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+      ).find((button) => button.textContent === "Delete");
+      if (item === undefined) throw new Error("the delete menu item did not render");
+      await act(async () => {
+        item.click();
+      });
+
+      const card = document.querySelector(".confirm-dialog");
+      if (card === null) throw new Error("the delete ask did not render a dialog");
+      expect(card.querySelector(".confirm-dialog-title")?.textContent).toBe("Delete “README.md”");
+      expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>(".confirm-dialog-cancel")!.click();
+      });
+      expect(document.querySelector(".confirm-dialog")).toBeNull();
+      expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -8,6 +8,7 @@ import { useWorkspaceChanges, type ChangesReply } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import { useWorkspaceGitActions } from "./useWorkspaceGitActions";
 import { useWorkspaceCommits } from "./useWorkspaceCommits";
+import { useAskFocus } from "./useAskFocus";
 import { ErrorText } from "../../components/ErrorText";
 import { ChangesTreeView } from "./ChangesTreeView";
 import { CommitsList } from "./CommitsList";
@@ -302,7 +303,7 @@ function DiffCard({ path, diff }: { path: string; diff: ChangesReply<WorkspaceGi
  * the owner overturned DECISIONS §4 on 2026-09-22 the panel also **writes**:
  * Stage and Unstage on every row, Discard inside the row's menu, Commit
  * over a hand-written message. Discard is the one act that asks first —
- * the native `confirm()` inside the writer hook stands between the click
+ * our `ConfirmDialog` (through the confirm host) stands between the click
  * and the wire, and a No reaches no command; the commit is **staged
  * only** (no `add -A` exists behind this panel, `DECISIONS-write.md` §2)
  * and no message is ever generated. Every act refreshes the panel
@@ -343,6 +344,9 @@ export const ChangesSurface = memo(function ChangesSurface({
   // One act at a time: the rows and the commit row stay answering while the
   // wire decides, so a double click cannot fire two writes into the index.
   const [acting, setActing] = useState(false);
+  // The focus the discard ask borrows: the menu anchor it returns to, and
+  // the panel landing when a landed discard takes its own row with it.
+  const { armAsk, menuAnchorRef, panelRef } = useAskFocus(reply?.rows ?? null, acting);
   const [message, setMessage] = useState("");
   const caveat = caveatOf(reply);
   const notice = caveat ?? status.failure;
@@ -384,13 +388,25 @@ export const ChangesSurface = memo(function ChangesSurface({
       // comes back belongs under the switch, not under a menu that
       // has gone.
       setMenuPath(null);
+      // The menu's trigger takes focus back before the ask opens: a mouse
+      // press already moved focus onto the menu item, which dies with the
+      // menu — the dialog must capture the trigger, not it.
+      menuAnchorRef.current?.focus({ preventScroll: true });
+      armAsk();
       void runAct(discard(paths));
     },
-    [runAct, discard],
+    [runAct, discard, menuAnchorRef, armAsk],
   );
-  const toggleMenu = useCallback((path: string): void => {
-    setMenuPath((current) => (current === path ? null : path));
-  }, []);
+  const toggleMenu = useCallback(
+    (path: string): void => {
+      // The trigger's own click still holds focus here; the menu item the
+      // ask opens from will not.
+      if (document.activeElement instanceof HTMLElement)
+        menuAnchorRef.current = document.activeElement;
+      setMenuPath((current) => (current === path ? null : path));
+    },
+    [menuAnchorRef],
+  );
   const runCommit = (): void => {
     void (async () => {
       const error = await runAct(commit(message));
@@ -413,7 +429,17 @@ export const ChangesSurface = memo(function ChangesSurface({
   }, [refresh, refreshCommits]);
 
   return (
-    <div className="workspace-changes">
+    // tabIndex -1 keeps the panel out of the tab order: focus() lands
+    // here only when a confirmed act took its own trigger with it. The
+    // region name is what a screen reader announces on that landing; the
+    // root itself paints no ring (panel/changes.css), only its children do.
+    <div
+      ref={panelRef}
+      tabIndex={-1}
+      role="region"
+      aria-label="Changes"
+      className="workspace-changes"
+    >
       {notice !== null ? (
         <div className="workspace-changes-error" role="alert">
           {typeof notice === "string" ? (

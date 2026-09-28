@@ -5,6 +5,7 @@ import { FilesTreeView, type FilesRenaming } from "./FilesTreeView";
 import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
 import { useWorkspaceFilePreview } from "./useWorkspaceFilePreview";
 import { useWorkspaceFiles } from "./useWorkspaceFiles";
+import { useAskFocus } from "./useAskFocus";
 import { ErrorText } from "../../components/ErrorText";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import "./panel/files.css";
@@ -87,8 +88,8 @@ function FilesToolbar({ onRefresh }: { onRefresh: () => void }) {
  * loading/error row under an expanded folder, the clicked file's preview
  * below it (loading / text / staged image, video or PDF / binary / too
  * large / the refusal's sentence, one screen each), and each row's own
- * menu (Rename, Duplicate, and Delete behind the native confirmation the
- * one act that loses data owes), the inline rename it starts, and a
+ * menu (Rename, Duplicate, and Delete behind our confirmation dialog —
+ * the one act that loses data owes it), the inline rename it starts, and a
  * write's refusal under the toolbar as the alert it is. The confirmation
  * lives in the writer hook, not here — the row menu can reach the delete
  * only through it. Rename and duplicate lose no data, so they ask for
@@ -135,14 +136,26 @@ export const FilesSurface = memo(function FilesSurface({
   // One act at a time: the menu and the rename input stay answering while
   // the wire decides, so a double click cannot fire two renames.
   const [acting, setActing] = useState(false);
+  // The focus the delete ask borrows: the menu anchor it returns to, and
+  // the panel landing when a landed delete takes its own row with it. The
+  // whole cell map, not the root's entries: a nested delete re-reads its
+  // own parent folder, and the root key would never change for it.
+  const { armAsk, menuAnchorRef, panelRef } = useAskFocus(cells, acting);
 
   const refreshAll = (): void => {
     refresh();
     refreshPreview();
   };
-  const toggleMenu = useCallback((path: string): void => {
-    setMenuPath((current) => (current === path ? null : path));
-  }, []);
+  const toggleMenu = useCallback(
+    (path: string): void => {
+      // The trigger's own click still holds focus here; the menu item the
+      // ask opens from will not.
+      if (document.activeElement instanceof HTMLElement)
+        menuAnchorRef.current = document.activeElement;
+      setMenuPath((current) => (current === path ? null : path));
+    },
+    [menuAnchorRef],
+  );
   const startRename = useCallback((entry: WorkspaceFileEntry): void => {
     setMenuPath(null);
     setRenaming({ path: entry.path, value: entry.name });
@@ -193,13 +206,18 @@ export const FilesSurface = memo(function FilesSurface({
       setMenuPath(null);
       setActionError(null);
       setActing(true);
+      // The menu's trigger takes focus back before the ask opens: a mouse
+      // press already moved focus onto the menu item, which dies with the
+      // menu — the dialog must capture the trigger, not it.
+      menuAnchorRef.current?.focus({ preventScroll: true });
+      armAsk();
       void (async () => {
         const error = await deleteEntry(entry);
         setActing(false);
         if (error !== null) setActionError(error);
       })();
     },
-    [deleteEntry],
+    [deleteEntry, menuAnchorRef, armAsk],
   );
 
   const root = cells[""] ?? null;
@@ -213,7 +231,11 @@ export const FilesSurface = memo(function FilesSurface({
   const listId = useId();
 
   return (
-    <div className="workspace-files">
+    // tabIndex -1 keeps the panel out of the tab order: focus() lands
+    // here only when a confirmed act took its own trigger with it. The
+    // region name is what a screen reader announces on that landing; the
+    // root itself paints no ring (panel/files.css), only its children do.
+    <div ref={panelRef} tabIndex={-1} role="region" aria-label="Files" className="workspace-files">
       {workspaceId !== null ? (
         // No workspace, no refresh: with nothing to read, a control that
         // cannot do anything is a small lie (the Changes panel's fix, R5).

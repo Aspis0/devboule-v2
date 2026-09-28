@@ -39,8 +39,9 @@ What is wired and what is not:
   panel also **writes four named acts** — the owner reopened DECISIONS §4
   on 2026-09-22: **Stage** and **Unstage** on every row, **Discard** in
   the row's menu, and **Commit** in the toolbar over a hand-written
-  message. Only Discard asks first: the native `confirm()` inside
-  `useWorkspaceGitActions.ts` stands between the click and the wire, and
+  message. Only Discard asks first: our `ConfirmDialog` (through the
+  confirm host's `ask` in `useWorkspaceGitActions.ts`) stands between the
+  click and the wire, and
   a No reaches no command; the commit is **staged only** — no `add -A`
   exists behind this panel — and no message is ever generated. Every act
   refreshes the panel immediately, whatever the answer, and a refusal
@@ -88,8 +89,8 @@ What is wired and what is not:
   **staged**, and a duplicate that never overwrites (`a copy`, `a copy 2`,
   …). **Delete is the one act that loses data, and the only one that asks
   first** — and the asking is this screen's own gate, not anything the
-  wire carries: the native dialog (`confirm` of
-  `@tauri-apps/plugin-dialog`) names the entry — a folder's question says
+  wire carries: our `ConfirmDialog` (through the confirm host's `ask`)
+  names the entry's path — a folder's question says
   everything inside it goes — and a No stops everything before any
   command exists. The daemon refuses a link named **as the entry**, never
   following it; a link **inside** a deleted folder is removed as an

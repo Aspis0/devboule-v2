@@ -23,15 +23,12 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 // The confirmation belongs to the one act that loses data: the discard's
-// gate lives inside `discard`, and this mock answers `false` on purpose —
-// were the gate ever dropped from that road, the No-answers-nothing case
-// below would die first. Stage, unstage and commit must never reach it at
-// all, which their own assertions here prove.
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  confirm: vi.fn(async () => false),
-}));
-
-import { confirm } from "@tauri-apps/plugin-dialog";
+// gate lives inside `discard`, and these tests drive our dialog instead of
+// a native mock — were the gate ever dropped from that road, the
+// dialog-absence assertions below would die first. Stage, unstage and
+// commit must never raise it at all, which their own assertions here prove.
+import { ConfirmProvider } from "../../components/ConfirmHost";
+import { useAppStore } from "../../store/appStore";
 import {
   workspaceGitCommit,
   workspaceGitDiff,
@@ -116,6 +113,7 @@ describe("ChangesSurface actions", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    useAppStore.setState({ modalOpenTokens: new Set() });
     vi.mocked(workspaceGitStatus).mockResolvedValue(dirtyReply());
     vi.mocked(workspaceGitDiff).mockResolvedValue(diffReply());
     vi.mocked(workspaceGitStage).mockResolvedValue(null);
@@ -123,19 +121,20 @@ describe("ChangesSurface actions", () => {
     vi.mocked(workspaceGitDiscard).mockResolvedValue(null);
     vi.mocked(workspaceGitCommit).mockResolvedValue(null);
     vi.mocked(workspaceGitLog).mockResolvedValue(logReply());
-    vi.mocked(confirm).mockResolvedValue(false);
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    useAppStore.setState({ modalOpenTokens: new Set() });
     vi.clearAllMocks();
   });
 
   async function render(ui: ReactNode) {
     root = createRoot(container);
     await act(async () => {
-      root.render(ui);
+      root.render(<ConfirmProvider>{ui}</ConfirmProvider>);
     });
   }
 
@@ -162,40 +161,520 @@ describe("ChangesSurface actions", () => {
     expect(container.querySelector('[role="menu"]')).not.toBeNull();
   }
 
-  // The brief's §2.4 form, on the discard: mock `confirm` → false → wire
-  // spy not called, the row intact, and NOTHING refreshed (a No means
-  // nothing happened, so even the status re-read would be a lie). Then
-  // true → called exactly once, with this row's path, and the immediate
-  // refresh the brief demands. Mutation that kills the first half: drop
-  // the gate from `discard` (call the command directly) — the false case
-  // fails on the very first `not.toHaveBeenCalled`.
-  it("a declined confirmation reaches no wire and changes nothing, an accepted one acts once", async () => {
+  /** The standing ask, portaled to the body — never inside the panel. */
+  function confirmDialog(): HTMLElement {
+    const found = document.querySelector<HTMLElement>(".confirm-dialog");
+    if (found === null) throw new Error("confirm dialog did not render");
+    return found;
+  }
+
+  function affirmative(): HTMLButtonElement {
+    const found = document.querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
+    if (found === null) throw new Error("confirm button did not render");
+    return found;
+  }
+
+  function cancel(): HTMLButtonElement {
+    const found = document.querySelector<HTMLButtonElement>(".confirm-dialog-cancel");
+    if (found === null) throw new Error("cancel button did not render");
+    return found;
+  }
+
+  /** Choose Discard behind the open menu — the ask stands unanswered. */
+  async function chooseDiscard(): Promise<void> {
+    await act(async () => {
+      container.querySelector<HTMLElement>('[role="menuitem"]')?.click();
+    });
+  }
+
+  async function answerConfirm(): Promise<void> {
+    await act(async () => {
+      affirmative().click();
+    });
+  }
+
+  async function answerCancel(): Promise<void> {
+    await act(async () => {
+      cancel().click();
+    });
+  }
+
+  async function escapeAsk(): Promise<void> {
+    await act(async () => {
+      confirmDialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+  }
+
+  async function scrimAsk(): Promise<void> {
+    await act(async () => {
+      document
+        .querySelector<HTMLElement>(".confirm-dialog-backdrop")!
+        .dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+  }
+
+  // The gate is structural: choosing Discard raises our dialog, and while
+  // the ask stands unanswered no command has reached the wire — the discard
+  // spy stays quiet beside the open dialog. Mutation that kills it: drop
+  // the ask from `discard` (call the command directly) — the wire assertion
+  // below fails on the open ask.
+  it("asks through our dialog and calls no wire before the answer", async () => {
     await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
     // The tree shows the basename; the full path rides the row's title.
     expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
     await openMenu();
-    await act(async () => {
-      container.querySelector<HTMLElement>('[role="menuitem"]')?.click();
-    });
+    await chooseDiscard();
 
-    expect(vi.mocked(confirm)).toHaveBeenCalledTimes(1);
+    const card = confirmDialog();
+    expect(card.querySelector(".confirm-dialog-title")?.textContent).toBe("Discard changes");
+    expect(card.querySelector(".confirm-dialog-body")?.textContent).toContain(ROW_PATH);
+    expect(card.querySelector(".confirm-dialog-body")?.textContent).toContain(
+      "This cannot be undone.",
+    );
+    expect(affirmative().textContent).toBe("Discard");
+    expect(cancel().textContent).toBe("Keep them");
+    expect(affirmative().classList.contains("confirm-dialog-confirm-danger")).toBe(true);
     expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
+  });
+
+  // Every way out but the affirmative declines: no wire, not even a
+  // refresh (a No means nothing happened, so even the status re-read would
+  // be a lie), the row intact, the ask gone.
+  it("Cancel, Escape and the scrim decline: no wire, no refresh, the row intact", async () => {
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+
+    await openMenu();
+    await chooseDiscard();
+    await answerCancel();
+    expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+    expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
     expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
-    vi.mocked(confirm).mockResolvedValue(true);
+    await openMenu();
+    await chooseDiscard();
+    await escapeAsk();
+    expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+    expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+
+    await openMenu();
+    await chooseDiscard();
+    await scrimAsk();
+    expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+    expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
+  });
+
+  // The ask borrows focus and hands it back: Cancel lands on the row's
+  // menu trigger the menu opened from — the dialog stays mounted and
+  // closes through its `open` prop, so its own trigger return runs.
+  it("Cancel hands focus back to the row's menu trigger", async () => {
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu();
+    await chooseDiscard();
+    expect(document.activeElement).toBe(cancel());
+
+    await answerCancel();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  // A mouse press moves focus onto the menu item before the click reaches
+  // it; the item dies with the menu, so without the trigger's pre-focus
+  // the dialog would capture a gone element and strand focus on <body>.
+  it("returns focus to the trigger even when the menu item held focus at the ask", async () => {
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu();
+    const item = container.querySelector<HTMLElement>('[role="menuitem"]');
+    if (item === null) throw new Error("discard menu item did not render");
+    await act(async () => {
+      item.focus();
+    });
+    await chooseDiscard();
+    expect(document.activeElement).toBe(cancel());
+
+    await answerCancel();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  // A landed discard can take its own row with it: the refresh re-reads
+  // clean, the trigger is gone, and focus parks on the panel — never body.
+  it("a confirmed discard that empties the tree parks focus on the panel", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValueOnce(dirtyReply());
+    vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply());
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu();
+    await chooseDiscard();
+    await answerConfirm();
+    await act(async () => undefined);
+
+    expect(vi.mocked(workspaceGitDiscard)).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).toBeNull();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    const panel = container.querySelector<HTMLElement>(".workspace-changes");
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  // A slow act parks focus on the panel for the whole wire latency —
+  // never on the body — and hands it back to the surviving trigger once
+  // the refresh lands. The status mock answers fresh objects per read, the
+  // way the daemon's replies always do, so the refresh changes identity.
+  it("a slow act parks on the panel and returns focus to the row", async () => {
+    vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(dirtyReply()));
+    let resolveWire: ((value: string | null) => void) | null = null;
+    vi.mocked(workspaceGitDiscard).mockImplementation(
+      () =>
+        new Promise<string | null>((resolve) => {
+          resolveWire = resolve;
+        }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu();
+    await chooseDiscard();
+    await answerConfirm();
+    expect(vi.mocked(workspaceGitDiscard)).toHaveBeenCalledTimes(1);
+    const panel = container.querySelector<HTMLElement>(".workspace-changes");
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+
+    await act(async () => {
+      resolveWire!(null);
+    });
+    await act(async () => undefined);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  // The real order: the wire answers on its own latency and the re-read
+  // lands after it — two separate commits, not one. The arm must survive
+  // the flip on the stale rows and settle the row-gone case onto the panel
+  // once the re-read arrives. A harness that answers both at once batches
+  // them into one commit and never exercises this.
+  it("a slow confirmed discard that takes its row lands on the panel once the re-read lands", async () => {
+    let wireDone = false;
+    let releaseRefresh: ((value: WorkspaceGitStatus) => void) | null = null;
+    vi.mocked(workspaceGitStatus).mockImplementation(
+      () =>
+        new Promise<WorkspaceGitStatus>((resolve) => {
+          if (!wireDone) resolve(dirtyReply());
+          else releaseRefresh = resolve;
+        }),
+    );
+    let resolveWire: ((value: string | null) => void) | null = null;
+    vi.mocked(workspaceGitDiscard).mockImplementation(
+      () =>
+        new Promise<string | null>((resolve) => {
+          resolveWire = resolve;
+        }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu();
+    await chooseDiscard();
+    await answerConfirm();
+    expect(vi.mocked(workspaceGitDiscard)).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    // The dialog unregistered before the wire started: the park reads a
+    // count without the ask in it.
+    expect(useAppStore.getState().modalOpenTokens.size).toBe(0);
+    const panel = container.querySelector<HTMLElement>(".workspace-changes");
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+
+    await act(async () => {
+      wireDone = true;
+      resolveWire!(null);
+    });
+    await act(async () => undefined);
+    // The flip lands on the stale tree first: the repair borrows the row's
+    // own trigger back until the re-read arrives.
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => {
+      releaseRefresh!(statusReply());
+    });
+    await act(async () => undefined);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).toBeNull();
+    expect(document.activeElement).toBe(panel);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  // The live shape behind this pass: the act's own re-read still lists
+  // the row — the arm settles on a survivor — and a later refresh takes
+  // it. The repair had put focus back on the trigger, so the removal
+  // strands it; the panel root reclaims it with no arm behind it.
+  it("a row that survives the act but leaves on a later refresh lands on the panel", async () => {
+    let phase: "before" | "reread" | "after" = "before";
+    let releaseReread: ((value: WorkspaceGitStatus) => void) | null = null;
+    vi.mocked(workspaceGitStatus).mockImplementation(() => {
+      if (phase === "before") return Promise.resolve(dirtyReply());
+      if (phase === "reread")
+        return new Promise<WorkspaceGitStatus>((resolve) => {
+          releaseReread = resolve;
+        });
+      return Promise.resolve(statusReply());
+    });
+    let resolveWire: ((value: string | null) => void) | null = null;
+    vi.mocked(workspaceGitDiscard).mockImplementation(
+      () =>
+        new Promise<string | null>((resolve) => {
+          resolveWire = resolve;
+        }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu();
+    await chooseDiscard();
+    phase = "reread";
+    await answerConfirm();
+    const panel = container.querySelector<HTMLElement>(".workspace-changes");
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+
+    await act(async () => {
+      resolveWire!(null);
+    });
+    await act(async () => undefined);
+    // The flip lands on the stale tree first: the repair borrows the
+    // row's own trigger back until the re-read arrives.
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => {
+      releaseReread!(dirtyReply());
+    });
+    await act(async () => undefined);
+    // The row survives the act: still listed, still focused, the arm
+    // spent on a survivor.
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    // A later refresh takes the row: no arm is left, and the panel root
+    // reclaims the stranded focus anyway.
+    phase = "after";
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => undefined);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).toBeNull();
+    expect(document.activeElement).toBe(panel);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  // A modal holding the keyboard vetoes the rescue: the row leaves under
+  // it and focus stays where the removal dropped it.
+  it("moves no focus when the row leaves while a modal is open", async () => {
+    vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(dirtyReply()));
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+    await act(async () => {
+      useAppStore.setState({ modalOpenTokens: new Set(["probe-modal"]) });
+    });
+
+    vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(statusReply()));
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => undefined);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement).not.toBe(container.querySelector(".workspace-changes"));
+  });
+
+  // Some engines report a focused removal as a focusout onto the body
+  // instead of no event at all: the stash must survive that report, so
+  // the rescue still reclaims the panel when the next tree lands.
+  it("reclaims the panel when a removal reports its focusout onto the body", async () => {
+    vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(dirtyReply()));
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+    await act(async () => {
+      trigger.dispatchEvent(
+        new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }),
+      );
+    });
+
+    vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(statusReply()));
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => undefined);
+    expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector(".workspace-changes"));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  // A focus the person moved mid-act is theirs: resolving the wire must
+  // not yank it back to the row.
+  it("leaves a focus the person moved mid-act where they put it", async () => {
+    vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(dirtyReply()));
+    let resolveWire: ((value: string | null) => void) | null = null;
+    vi.mocked(workspaceGitDiscard).mockImplementation(
+      () =>
+        new Promise<string | null>((resolve) => {
+          resolveWire = resolve;
+        }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
+    await act(async () => {
+      trigger.focus();
+    });
+
+    await openMenu();
+    await chooseDiscard();
+    await answerConfirm();
+    expect(document.activeElement).toBe(container.querySelector(".workspace-changes"));
+
+    const elsewhere = document.createElement("button");
+    elsewhere.textContent = "elsewhere";
+    document.body.appendChild(elsewhere);
+    await act(async () => {
+      elsewhere.focus();
+    });
+    await act(async () => {
+      resolveWire!(null);
+    });
+    await act(async () => undefined);
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
+  // A rows change with no ask behind it — a menu opened and dismissed, a
+  // poll re-read landing different rows — moves no focus. The Refresh
+  // click is dispatched, not clicked, so the harness moves no focus of
+  // its own: the only focus change this test could see is the hook's.
+  it("moves no focus for a rows change with no ask behind it", async () => {
+    vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(dirtyReply()));
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+
     await openMenu();
     await act(async () => {
-      container.querySelector<HTMLElement>('[role="menuitem"]')?.click();
+      button(`button[aria-label="${ROW_PATH} actions"]`).click();
     });
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    vi.mocked(workspaceGitStatus).mockImplementation(() =>
+      Promise.resolve(
+        statusReply({
+          dirty: true,
+          totals: { additions: 1, deletions: 0 },
+          rows: [row({ path: "other/file.md", additions: 1 })],
+        }),
+      ),
+    );
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => undefined);
+    expect(container.querySelector(`.workspace-file-change[title="other/file.md"]`)).not.toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  // The discard question names the full workspace-relative path, two
+  // levels deep: a body built from the basename would fail this.
+  it("names the full nested path in the discard question", async () => {
+    const nested = "src/deep/file.ts";
+    vi.mocked(workspaceGitStatus).mockImplementation(() =>
+      Promise.resolve(
+        statusReply({
+          dirty: true,
+          totals: { additions: 1, deletions: 0 },
+          rows: [row({ path: nested, additions: 1 })],
+        }),
+      ),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+
+    await openMenu(nested);
+    await chooseDiscard();
+    expect(confirmDialog().querySelector(".confirm-dialog-body")?.textContent).toContain(nested);
+    expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+    await answerConfirm();
+    expect(vi.mocked(workspaceGitDiscard)).toHaveBeenCalledWith(WORKSPACE, [nested]);
+  });
+
+  // The affirmative acts exactly once, with this row's path, and the
+  // immediate refresh the panel owes follows without any timer being
+  // advanced (the poll is 5 s; this test runs in milliseconds).
+  it("the affirmative discards once and re-reads the status immediately", async () => {
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+
+    await openMenu();
+    await chooseDiscard();
+    expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+    await answerConfirm();
 
     expect(vi.mocked(workspaceGitDiscard)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(workspaceGitDiscard)).toHaveBeenCalledWith(WORKSPACE, [ROW_PATH]);
-    // The immediate refresh after the act — the second status read exists
-    // without any timer being advanced (the poll is 5 s; this test runs
-    // in milliseconds).
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+  });
+
+  // Unmounting with the ask standing (a workspace or panel switch remounts
+  // the host) declines it: no wire, and the modal token goes with the dialog.
+  it("unmounting with the ask standing declines it and leaks no modal", async () => {
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+
+    await openMenu();
+    await chooseDiscard();
+    expect(document.querySelector(".confirm-dialog")).not.toBeNull();
+    await act(async () => {
+      root.unmount();
+    });
+
+    expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+    expect(useAppStore.getState().modalOpenTokens.size).toBe(0);
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
   });
 
   // The brief's second UI case: after Stage the panel re-reads at once and
@@ -213,7 +692,7 @@ describe("ChangesSurface actions", () => {
       button(`button[title="Stage ${ROW_PATH}"]`).click();
     });
 
-    expect(vi.mocked(confirm)).not.toHaveBeenCalled();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
     expect(vi.mocked(workspaceGitStage)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(workspaceGitStage)).toHaveBeenCalledWith(WORKSPACE, [ROW_PATH]);
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
@@ -259,22 +738,24 @@ describe("ChangesSurface actions", () => {
       "notes/todo-v1.md",
     ]);
 
-    vi.mocked(confirm).mockResolvedValue(true);
     await openMenu("notes/todo-v2.md");
-    await act(async () => {
-      container.querySelector<HTMLElement>('[role="menuitem"]')?.click();
-    });
+    await chooseDiscard();
+    // The question itself names the file the user never clicked: both
+    // sides are about to disappear — and nothing has reached the wire yet.
+    expect(confirmDialog().querySelector(".confirm-dialog-body")?.textContent).toContain(
+      "notes/todo-v1.md",
+    );
+    expect(confirmDialog().querySelector(".confirm-dialog-body")?.textContent).toContain(
+      "notes/todo-v2.md",
+    );
+    expect(vi.mocked(workspaceGitDiscard)).not.toHaveBeenCalled();
+    await answerConfirm();
 
     expect(vi.mocked(workspaceGitDiscard)).toHaveBeenCalledWith(WORKSPACE, [
       "notes/todo-v2.md",
       "notes/todo-v1.md",
     ]);
-    // The question itself names the file the user never clicked: both
-    // sides are about to disappear.
-    expect(vi.mocked(confirm)).toHaveBeenCalledWith(
-      expect.stringContaining("notes/todo-v1.md"),
-      expect.anything(),
-    );
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
   });
 
   // Commit's own discipline at the keyboard: an empty message never
@@ -308,7 +789,8 @@ describe("ChangesSurface actions", () => {
 
     expect(vi.mocked(workspaceGitCommit)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(workspaceGitCommit)).toHaveBeenCalledWith(WORKSPACE, "say what changed");
-    expect(vi.mocked(confirm)).not.toHaveBeenCalled();
+    // Commit asks for nothing: only discard raises the dialog.
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
     expect(container.querySelector<HTMLInputElement>('[aria-label="Commit message"]')?.value).toBe(
       "",
     );
