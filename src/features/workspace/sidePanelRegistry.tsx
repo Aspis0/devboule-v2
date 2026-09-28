@@ -14,6 +14,12 @@ export interface SidePanelContext {
    * process (`src/types/ipc.ts` declares `Workspace.path` display-only).
    */
   workspaceId: string | null;
+  /**
+   * Whether the running daemon can list a workspace's history — the one
+   * fact the Changes panel gates on, as a primitive so the surface's
+   * memo holds. Workspace computes it from the status it already holds.
+   */
+  canListCommits: boolean;
 }
 
 export interface SidePanelEntry {
@@ -41,7 +47,9 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     icon: "changes",
     // The counts live in R7b's branch row, read off the panel's own poll via
     // changesBadgeLabel — never on the tab (no room at 300 px).
-    render: ({ workspaceId }) => <ChangesSurface workspaceId={workspaceId} />,
+    render: ({ workspaceId, canListCommits }) => (
+      <ChangesSurface workspaceId={workspaceId} canListCommits={canListCommits} />
+    ),
   },
   {
     id: "design",

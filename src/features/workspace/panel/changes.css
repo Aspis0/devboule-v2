@@ -1,5 +1,6 @@
 /* The Changes panel body (R7b): branch row, Uncommitted|Commits switch, folder tree,
-   file rows, commit row and the inline diff card. Moved byte-identical out of
+   file rows, commit row, the inline diff card and the Commits history list.
+   Moved byte-identical out of
    Workspace.css so the panel owns its rules the way strip/strip.css owns the
    strip's; loaded by ChangesSurface itself, which the import graph places
    BEFORE Workspace.css (registry chain at Workspace.tsx:16 vs :80 — though
@@ -523,4 +524,79 @@ ul.workspace-changes-tree {
 .workspace-commit-button:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+/* The Commits list (R7d): the branch's own commits — Paseo's section
+   filters the base half out, and so does this panel. The mockup draws no
+   commit rows, so the row follows the tree's h24 — [sha mono 12]
+   [subject 13, truncated][author + relative time 12 muted]. UI text
+   throughout; only the sha is mono, the way a commit id is code. */
+.workspace-commits {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.workspace-commits-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.workspace-commits-sha {
+  flex: none;
+  width: 70px;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.workspace-commits-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+}
+
+.workspace-commits-meta {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* A long author yields to the subject, never the other way round. */
+.workspace-commits-author {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Loading and the empty answer: the panel's own quiet sentences, the
+   same voice as the tree's states. */
+.workspace-commits-state {
+  padding: 10px;
+  color: var(--silence);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* The cut-short footnote: the list stands beside the sentence, never
+   instead of it. */
+.workspace-commits-note {
+  padding: 2px 6px 10px;
+  color: var(--silence);
+  font-size: 12px;
+  line-height: 1.55;
 }

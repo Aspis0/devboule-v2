@@ -4,7 +4,13 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceGitFileDiff, WorkspaceGitRow, WorkspaceGitStatus } from "../../types/ipc";
+import type {
+  WorkspaceGitCommitEntry,
+  WorkspaceGitFileDiff,
+  WorkspaceGitLog,
+  WorkspaceGitRow,
+  WorkspaceGitStatus,
+} from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   workspaceGitStatus: vi.fn(),
@@ -13,6 +19,7 @@ vi.mock("../../lib/tauri", () => ({
   workspaceGitUnstage: vi.fn(),
   workspaceGitDiscard: vi.fn(),
   workspaceGitCommit: vi.fn(),
+  workspaceGitLog: vi.fn(),
 }));
 
 // The confirmation belongs to the one act that loses data: the discard's
@@ -29,6 +36,7 @@ import {
   workspaceGitCommit,
   workspaceGitDiff,
   workspaceGitDiscard,
+  workspaceGitLog,
   workspaceGitStage,
   workspaceGitStatus,
   workspaceGitUnstage,
@@ -39,6 +47,28 @@ import { ChangesSurface } from "./ChangesSurface";
 
 const WORKSPACE = "workspace-git-actions-subject";
 const ROW_PATH = "notes/todo.md";
+
+function commitEntry(overrides: Partial<WorkspaceGitCommitEntry> = {}): WorkspaceGitCommitEntry {
+  return {
+    sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    shortSha: "a1b2c3d",
+    subject: "Add the thing",
+    authorName: "gualt",
+    authorDate: "2026-09-01T10:00:00+00:00",
+    isOnRemote: true,
+    isOnBase: false,
+    ...overrides,
+  };
+}
+
+function logReply(overrides: Partial<WorkspaceGitLog> = {}): WorkspaceGitLog {
+  return {
+    baseRef: "origin/main",
+    commits: [commitEntry()],
+    error: null,
+    ...overrides,
+  };
+}
 
 function statusReply(overrides: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
   return {
@@ -92,6 +122,7 @@ describe("ChangesSurface actions", () => {
     vi.mocked(workspaceGitUnstage).mockResolvedValue(null);
     vi.mocked(workspaceGitDiscard).mockResolvedValue(null);
     vi.mocked(workspaceGitCommit).mockResolvedValue(null);
+    vi.mocked(workspaceGitLog).mockResolvedValue(logReply());
     vi.mocked(confirm).mockResolvedValue(false);
   });
 
@@ -139,7 +170,7 @@ describe("ChangesSurface actions", () => {
   // the gate from `discard` (call the command directly) — the false case
   // fails on the very first `not.toHaveBeenCalled`.
   it("a declined confirmation reaches no wire and changes nothing, an accepted one acts once", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
     // The tree shows the basename; the full path rides the row's title.
     expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
@@ -175,7 +206,7 @@ describe("ChangesSurface actions", () => {
   it("stages without asking and re-reads the status immediately, not on the poll", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(dirtyReply());
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(statusReply());
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
     expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
     await act(async () => {
@@ -215,7 +246,7 @@ describe("ChangesSurface actions", () => {
         rows: [renamed],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
     expect(
       container.querySelector('.workspace-file-change[title="notes/todo-v2.md"]'),
     ).not.toBeNull();
@@ -252,7 +283,7 @@ describe("ChangesSurface actions", () => {
   // sent verbatim, and a landed commit clears the field so the next one
   // starts honest.
   it("refuses an empty commit message at the toolbar and sends a written one verbatim", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const commit = commitButton();
     expect(commit.disabled).toBe(true);
@@ -281,5 +312,29 @@ describe("ChangesSurface actions", () => {
     expect(container.querySelector<HTMLInputElement>('[aria-label="Commit message"]')?.value).toBe(
       "",
     );
+  });
+
+  // R7d: a commit is history the moment it lands — the Commits view's
+  // list is stale whether or not that view is the one on screen, so the
+  // read is repeated beside the status refresh the act already owes.
+  it("refetches the history after a commit lands", async () => {
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    expect(vi.mocked(workspaceGitLog)).not.toHaveBeenCalled();
+
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Commit message"]');
+    if (input === null) throw new Error("no message field");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    if (setter === undefined) throw new Error("no value setter");
+    await act(async () => {
+      setter.call(input, "ship it");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      commitButton().click();
+    });
+
+    expect(vi.mocked(workspaceGitCommit)).toHaveBeenCalledWith(WORKSPACE, "ship it");
+    expect(vi.mocked(workspaceGitLog)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(workspaceGitLog)).toHaveBeenCalledWith(WORKSPACE);
   });
 });

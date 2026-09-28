@@ -7,8 +7,10 @@ import type {
 import { useWorkspaceChanges, type ChangesReply } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import { useWorkspaceGitActions } from "./useWorkspaceGitActions";
+import { useWorkspaceCommits } from "./useWorkspaceCommits";
 import { ErrorText } from "../../components/ErrorText";
 import { ChangesTreeView } from "./ChangesTreeView";
+import { CommitsList } from "./CommitsList";
 import { changesBranchLabel, changesTotalsLabel } from "./changesBadge";
 import "./panel/changes.css";
 
@@ -18,6 +20,13 @@ interface ChangesSurfaceProps {
    * settles — a panel with no workspace reads nothing and says so.
    */
   workspaceId: string | null;
+  /**
+   * Whether the running daemon can list this workspace's history, from
+   * the registry context — a primitive, so the memo holds. Workspace
+   * computes it from the status it already holds; the panel adds no poll
+   * of its own.
+   */
+  canListCommits: boolean;
   /**
    * Slice 8's hand-off: open a file as a diff tab. Optional until that tab
    * kind exists — the pencil that calls it renders only beside it.
@@ -140,20 +149,27 @@ function BranchRow({
 }
 
 /**
- * Uncommitted | Commits. Uncommitted is the tree below; Commits is an
- * honest empty state — its data needs a daemon history command that does
- * not exist yet, so the view holds no rows, real or invented.
+ * Uncommitted | Commits. Uncommitted is the tree below; Commits is the
+ * branch's history (`CommitsList`). The Commits segment hides itself when
+ * the daemon cannot list history — Paseo's section returns null when its
+ * capability is missing — so the switch never offers a trip that would be
+ * refused.
  */
 function ChangesViewSwitch({
   view,
   onChange,
+  commitsHidden,
 }: {
   view: ChangesPanelView;
   onChange: (view: ChangesPanelView) => void;
+  commitsHidden: boolean;
 }) {
+  const candidates: readonly ChangesPanelView[] = commitsHidden
+    ? ["uncommitted"]
+    : ["uncommitted", "commits"];
   return (
     <div className="workspace-changes-seg" role="group" aria-label="Changes view">
-      {(["uncommitted", "commits"] as const).map((candidate) => (
+      {candidates.map((candidate) => (
         <button
           key={candidate}
           type="button"
@@ -297,21 +313,13 @@ function DiffCard({ path, diff }: { path: string; diff: ChangesReply<WorkspaceGi
  */
 export const ChangesSurface = memo(function ChangesSurface({
   workspaceId,
+  canListCommits,
   onOpenFile,
 }: ChangesSurfaceProps) {
   const { status, diff, selection, select, refresh } = useWorkspaceChanges(workspaceId);
   const { stage, unstage, discard, commit } = useWorkspaceGitActions({ workspaceId, refresh });
   const [view, setView] = useState<ChangesPanelView>("uncommitted");
-  const [menuPath, setMenuPath] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<ErrorSentence | null>(null);
-  // One act at a time: the rows and the commit row stay answering while the
-  // wire decides, so a double click cannot fire two writes into the index.
-  const [acting, setActing] = useState(false);
-  const [message, setMessage] = useState("");
   const reply = status.reply;
-  const caveat = caveatOf(reply);
-  const notice = caveat ?? status.failure;
-  const loading = workspaceId !== null && reply === null && status.failure === null;
   // The chrome (branch row, switch) stands on any answer that names the
   // checkout — rows, a clean tree, a withheld list, or a caveat: all four
   // keep isGit with a branch that still stands. Only a folder that is not
@@ -319,6 +327,26 @@ export const ChangesSurface = memo(function ChangesSurface({
   // zeros for an unknown tree, and a caveat with no rows claims nothing
   // below its sentence.
   const chrome = reply !== null && reply.isGit;
+  const {
+    supported,
+    log,
+    failure,
+    refresh: refreshCommits,
+  } = useWorkspaceCommits(workspaceId, view === "commits" && chrome, canListCommits);
+  // The Commits segment hides itself when the daemon cannot list history
+  // (Paseo's `unsupported` → `return null`): a control that would answer
+  // nothing is not drawn as one. The view falls back with it, so a daemon
+  // that loses the capability mid-view leaves the person on the tree.
+  const showCommits = view === "commits" && supported;
+  const [menuPath, setMenuPath] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorSentence | null>(null);
+  // One act at a time: the rows and the commit row stay answering while the
+  // wire decides, so a double click cannot fire two writes into the index.
+  const [acting, setActing] = useState(false);
+  const [message, setMessage] = useState("");
+  const caveat = caveatOf(reply);
+  const notice = caveat ?? status.failure;
+  const loading = workspaceId !== null && reply === null && status.failure === null;
 
   /** One act, one shape: clear the previous refusal, hold the controls
    * while the wire decides, and surface a refusal as the alert under the
@@ -366,9 +394,23 @@ export const ChangesSurface = memo(function ChangesSurface({
   const runCommit = (): void => {
     void (async () => {
       const error = await runAct(commit(message));
-      if (error === null) setMessage("");
+      if (error === null) {
+        setMessage("");
+        // The commit is history now: the Commits view's list is stale the
+        // moment it lands, whether or not that view is the one on screen.
+        refreshCommits();
+      }
     })();
   };
+
+  /** The panel's refresh button owes both halves their read: the status
+   * and selected diff below, and the history the Commits view shows —
+   * refreshing only the visible half would leave the other one stale
+   * behind a control that said "refresh". */
+  const refreshAll = useCallback((): void => {
+    refresh();
+    refreshCommits();
+  }, [refresh, refreshCommits]);
 
   return (
     <div className="workspace-changes">
@@ -424,19 +466,18 @@ export const ChangesSurface = memo(function ChangesSurface({
         </>
       ) : !chrome ? null : (
         <>
-          <BranchRow branch={reply.branch} totals={changesTotalsLabel(reply)} onRefresh={refresh} />
-          <ChangesViewSwitch view={view} onChange={setView} />
-          {view === "commits" ? (
-            <div className="workspace-panel-empty">
-              <h2 className="workspace-panel-empty-title">Commits</h2>
-              <p className="workspace-panel-empty-intro">
-                History of this branch will appear here.
-              </p>
-              <p className="workspace-panel-empty-note">
-                Listing history needs a command the daemon does not have yet, so this view stays
-                empty on purpose.
-              </p>
-            </div>
+          <BranchRow
+            branch={reply.branch}
+            totals={changesTotalsLabel(reply)}
+            onRefresh={refreshAll}
+          />
+          <ChangesViewSwitch
+            view={showCommits ? "commits" : "uncommitted"}
+            onChange={setView}
+            commitsHidden={!supported}
+          />
+          {showCommits ? (
+            <CommitsList log={log} failure={failure} />
           ) : (
             <>
               {/* A caveat distrusts part of this reply, never all of it:

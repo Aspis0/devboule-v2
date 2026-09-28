@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { groupByDay, historyRowMatches, relativeTime } from "./historyGrouping";
+import { relativeTime } from "../../lib/relativeTime";
+import { groupByDay, historyRowMatches } from "./historyGrouping";
 
 const now = new Date(2026, 8, 4, 12, 0, 0, 0).getTime();
 

@@ -6,14 +6,21 @@ import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceGitFileDiff, WorkspaceGitRow, WorkspaceGitStatus } from "../../types/ipc";
+import type {
+  WorkspaceGitCommitEntry,
+  WorkspaceGitFileDiff,
+  WorkspaceGitLog,
+  WorkspaceGitRow,
+  WorkspaceGitStatus,
+} from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   workspaceGitStatus: vi.fn(),
   workspaceGitDiff: vi.fn(),
+  workspaceGitLog: vi.fn(),
 }));
 
-import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
+import { workspaceGitDiff, workspaceGitLog, workspaceGitStatus } from "../../lib/tauri";
 import { ChangesSurface } from "./ChangesSurface";
 import { assembleCssProof, removeCssProof } from "./cssProof";
 
@@ -26,6 +33,28 @@ function read(path: string): string {
 }
 
 const WORKSPACE = "workspace-changes-tree-subject";
+
+function commitEntry(overrides: Partial<WorkspaceGitCommitEntry> = {}): WorkspaceGitCommitEntry {
+  return {
+    sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    shortSha: "a1b2c3d",
+    subject: "Add the thing",
+    authorName: "gualt",
+    authorDate: "2026-09-01T10:00:00+00:00",
+    isOnRemote: true,
+    isOnBase: false,
+    ...overrides,
+  };
+}
+
+function logReply(overrides: Partial<WorkspaceGitLog> = {}): WorkspaceGitLog {
+  return {
+    baseRef: "origin/main",
+    commits: [commitEntry()],
+    error: null,
+    ...overrides,
+  };
+}
 
 function statusReply(overrides: Partial<WorkspaceGitStatus> = {}): WorkspaceGitStatus {
   return {
@@ -67,6 +96,7 @@ describe("ChangesSurface R7b panel body", () => {
     root = undefined;
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply());
     vi.mocked(workspaceGitDiff).mockResolvedValue(diffReply());
+    vi.mocked(workspaceGitLog).mockResolvedValue(logReply());
   });
 
   afterEach(async () => {
@@ -113,7 +143,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 96, deletions: 41 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     expect(branchRow().textContent).toContain("feature/redesign");
     expect(branchRow().textContent).toContain("+96 −41");
@@ -126,7 +156,7 @@ describe("ChangesSurface R7b panel body", () => {
   it("shows no totals on a clean tree: the sentence already says it", async () => {
     // Live fix (dark screenshot 01): "+0 −0" beside the branch on an
     // empty tree is noise — "No uncommitted changes" is the whole story.
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     expect(container.textContent).toContain("No uncommitted changes in this workspace.");
     expect(branchRow().textContent).toContain("main");
@@ -144,7 +174,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 2 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
     expect(branchRow().textContent).toContain("(detached)");
 
     vi.mocked(workspaceGitStatus).mockResolvedValue(
@@ -155,7 +185,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 2 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
     expect(branchRow().textContent).toContain("No branch");
   });
 
@@ -167,7 +197,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 96, deletions: 41, capped: true })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
     expect(branchRow().textContent).toContain("≈+96 −41");
   });
 
@@ -175,7 +205,7 @@ describe("ChangesSurface R7b panel body", () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({ dirty: true, branch: "main", totals: { additions: 0, deletions: 0 } }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     // The header facts survive the cap (workspace_git_status.rs:60-63), so
     // the branch name stands — but no totals and no tree, never zeros.
@@ -196,7 +226,7 @@ describe("ChangesSurface R7b panel body", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const tree = container.querySelector(".workspace-changes-tree");
     if (tree === null) throw new Error("tree did not render");
@@ -242,7 +272,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const stage = container.querySelector<HTMLButtonElement>('button[title="Stage src/a.ts"]');
     if (stage === null) throw new Error("Stage button did not render");
@@ -283,7 +313,7 @@ describe("ChangesSurface R7b panel body", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const folder = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.getAttribute("aria-label") === "Collapse src",
@@ -324,7 +354,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "notes/todo.md", additions: 7, status: "untracked" })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const stats = container.querySelector(".workspace-file-change-stats-is-add");
     if (stats === null) throw new Error("add-tone stats did not render");
@@ -336,7 +366,10 @@ describe("ChangesSurface R7b panel body", () => {
     expect(container.querySelector(".workspace-diff-lines")).not.toBeNull();
   });
 
-  it("keeps the Commits view an honest empty state with no controls", async () => {
+  // R7d: the Commits view is wired to the history read — it holds the
+  // bridge answer's rows, and still no tree controls and no commit row,
+  // which belong to the Uncommitted side.
+  it("puts the history answer's rows in the Commits view, with no tree controls", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({
         dirty: true,
@@ -344,7 +377,15 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    vi.mocked(workspaceGitLog).mockResolvedValue(
+      logReply({
+        commits: [
+          commitEntry({ shortSha: "a1b2c3d", subject: "Add the thing" }),
+          commitEntry({ shortSha: "b2c3d4e", subject: "Base history", isOnBase: true }),
+        ],
+      }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const commits = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.textContent === "Commits",
@@ -353,7 +394,10 @@ describe("ChangesSurface R7b panel body", () => {
     await act(async () => {
       commits.click();
     });
-    expect(container.textContent).toContain("History of this branch will appear here");
+    expect(container.querySelector(".workspace-commits-row")).not.toBeNull();
+    expect(container.textContent).toContain("a1b2c3d");
+    // The base branch's history is filtered out, not dimmed.
+    expect(container.textContent).not.toContain("Base history");
     expect(container.querySelector(".workspace-file-change")).toBeNull();
     expect(container.querySelector(".workspace-commit-row")).toBeNull();
 
@@ -365,6 +409,60 @@ describe("ChangesSurface R7b panel body", () => {
       uncommitted.click();
     });
     expect(container.querySelector(".workspace-file-change")).not.toBeNull();
+    expect(container.querySelector(".workspace-commits-row")).toBeNull();
+  });
+
+  // R7d: the row's fonts, from the real sheets in bundle order — the sha
+  // is code (mono), the subject is UI text at 13, the meta 12 muted.
+  it("paints the commit row's sha mono and its subject in the UI font", async () => {
+    const { inject } = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/workspace/Workspace.css"),
+      read("src/features/workspace/panel/changes.css"),
+      read("src/features/workspace/strip/strip.css"),
+      read("src/features/workspace/panel/panel.css"),
+    ]);
+    inject([
+      ".workspace-commits",
+      ".workspace-commits-row",
+      ".workspace-commits-sha",
+      ".workspace-commits-subject",
+      ".workspace-commits-meta",
+      ".workspace-commits-state",
+      ".workspace-commits-note",
+    ]);
+    vi.mocked(workspaceGitLog).mockResolvedValue(
+      logReply({
+        error: "git log produced more than the reply cap; the oldest commits are missing",
+        commits: [commitEntry({ shortSha: "a1b2c3d", subject: "Add the thing" })],
+      }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((candidate) => candidate.textContent === "Commits")
+        ?.click();
+    });
+
+    const sha = container.querySelector<HTMLElement>(".workspace-commits-sha");
+    if (sha === null) throw new Error("sha did not render");
+    expect(getComputedStyle(sha).fontFamily).toContain("JetBrains Mono");
+    expect(getComputedStyle(sha).fontSize).toBe("12px");
+    const subject = container.querySelector<HTMLElement>(".workspace-commits-subject");
+    if (subject === null) throw new Error("subject did not render");
+    expect(getComputedStyle(subject).fontFamily).not.toContain("JetBrains Mono");
+    expect(getComputedStyle(subject).fontSize).toBe("13px");
+    const meta = container.querySelector<HTMLElement>(".workspace-commits-meta");
+    if (meta === null) throw new Error("meta did not render");
+    expect(getComputedStyle(meta).fontSize).toBe("12px");
+    const row = container.querySelector<HTMLElement>(".workspace-commits-row");
+    if (row === null) throw new Error("row did not render");
+    expect(getComputedStyle(row).height).toBe("24px");
+    // The state and the cut-short note sit at the brief's 12 px floor.
+    const note = container.querySelector<HTMLElement>(".workspace-commits-note");
+    if (note === null) throw new Error("cut-short note did not render");
+    expect(getComputedStyle(note).fontSize).toBe("12px");
   });
 
   it("puts the commit row last with the message field, and refresh as a quiet icon button", async () => {
@@ -375,7 +473,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const commitRow = container.querySelector(".workspace-commit-row");
     if (commitRow === null) throw new Error("commit row did not render");
@@ -409,7 +507,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a b/f.ts", additions: 1 }), row({ path: "a-b/g.ts", additions: 1 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const groups = Array.from(container.querySelectorAll(".workspace-changes-tree ul[id]"));
     expect(groups).toHaveLength(2);
@@ -436,7 +534,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
     expect(container.querySelector("[aria-current]")).toBeNull();
 
     await act(async () => {
@@ -458,7 +556,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 9 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     expect(branchRow().textContent).toContain("≈+9 −0");
     const folderStats = container.querySelector(".workspace-changes-folder-stats");
@@ -481,7 +579,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     // Collapse first: the state to preserve is one a re-render could lose.
     const toggle = container.querySelector<HTMLButtonElement>('button[aria-expanded="true"]');
@@ -513,7 +611,9 @@ describe("ChangesSurface R7b panel body", () => {
       }),
     );
     const onOpenFile = vi.fn();
-    await render(<ChangesSurface workspaceId={WORKSPACE} onOpenFile={onOpenFile} />);
+    await render(
+      <ChangesSurface workspaceId={WORKSPACE} canListCommits={true} onOpenFile={onOpenFile} />,
+    );
     expect(container.querySelector('[aria-label="Open diff in a tab"]')).toBeNull();
 
     await act(async () => {
@@ -576,7 +676,7 @@ describe("ChangesSurface R7b panel body", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const branch = branchRow();
     expect(getComputedStyle(branch).fontSize).toBe("12px");
@@ -624,7 +724,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     const seg = container.querySelector<HTMLElement>(".workspace-changes-seg");
     if (seg === null) throw new Error("switch did not render");
@@ -648,7 +748,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
 
     // The root is a flex column carrying the row to the bottom; the row
     // itself sticks to the scrollport's bottom edge while the tree

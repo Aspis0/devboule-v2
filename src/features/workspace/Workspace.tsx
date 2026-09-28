@@ -95,6 +95,8 @@ type ActiveSidePanel = SidePanelEntry["id"];
  */
 type ProviderAnchor = { kind: "project"; projectId: string } | { kind: "strip" };
 const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
+/** The negotiated capability the Changes panel's history read is gated on. */
+const WORKSPACE_GIT_LOG = "workspace.git_log";
 
 export { WorkspacePermissionCard, formatPermissionCommand };
 
@@ -1433,6 +1435,11 @@ export function Workspace({
               <SurfaceErrorBoundary surfaceLabel={selectedSurface.name}>
                 {selectedSurface.render({
                   workspaceId: selectedWorkspace,
+                  // The one fact the Changes panel gates on, computed from
+                  // the daemon status this component already holds — a
+                  // panel reads it here instead of polling for its own.
+                  canListCommits:
+                    daemon.state === "connected" && daemon.capabilities.includes(WORKSPACE_GIT_LOG),
                 })}
               </SurfaceErrorBoundary>
             </div>

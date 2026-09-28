@@ -6,7 +6,8 @@ import type { JournalSessionUsage, JournalUsage, Session } from "../../types/ipc
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
 import { sessionTitle } from "../workspace/workspaceSessions";
-import { groupByDay, historyRowMatches, relativeTime } from "./historyGrouping";
+import { relativeTime } from "../../lib/relativeTime";
+import { groupByDay, historyRowMatches } from "./historyGrouping";
 import "./history.css";
 
 export interface HistoryPanelProps {
