@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useMenuOpen } from "../../lib/menuOpen";
+import { scrollRowIntoView } from "../../lib/scrollRowIntoView";
 
 /** A command the daemon published: the name that goes into the text, and the
  * words that sell it. */
@@ -50,12 +51,7 @@ export function WorkspaceCommandMenu({
     const row = activeRowRef.current;
     const list = listRef.current;
     if (row === null || list === null) return;
-    const rowTop = row.offsetTop;
-    const rowBottom = rowTop + row.offsetHeight;
-    const viewTop = list.scrollTop;
-    const viewBottom = viewTop + list.clientHeight;
-    if (rowTop < viewTop) list.scrollTop = rowTop;
-    else if (rowBottom > viewBottom) list.scrollTop = rowBottom - viewBottom;
+    scrollRowIntoView(list, row);
   }, [activeIndex, commands.length, open]);
 
   if (!open) return null;

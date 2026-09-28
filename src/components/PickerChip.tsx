@@ -7,6 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { useMenuOpen } from "../lib/menuOpen";
+import { scrollRowIntoView } from "../lib/scrollRowIntoView";
 import { POPOVER_MARGIN, placePopover } from "../features/workspace/popoverPlace";
 import "./PickerChip.css";
 
@@ -42,19 +43,6 @@ interface PickerOption {
   id: string;
   name: string;
   description?: string;
-}
-
-/** Scrolls a row visible inside the menu's own box, the way the command menu
- * does: the transcript above the menu must not move. (The target for a row
- * below the window is its bottom minus the window height — not minus the
- * window bottom, which already contains the current scroll.) */
-function scrollRowIntoView(list: HTMLElement, row: HTMLElement): void {
-  const rowTop = row.offsetTop;
-  const rowBottom = rowTop + row.offsetHeight;
-  const viewTop = list.scrollTop;
-  const viewBottom = viewTop + list.clientHeight;
-  if (rowTop < viewTop) list.scrollTop = rowTop;
-  else if (rowBottom > viewBottom) list.scrollTop = rowBottom - list.clientHeight;
 }
 
 /** The menu's side and cap, reusing the anchored popovers' arithmetic on an
