@@ -81,13 +81,8 @@ export function StripChip({
         />
         <StripKindMark kind={session.kind} />
         <span className="workspace-tab-label">{title}</span>
-        {display.words !== null ? (
-          <span className="workspace-tab-attention">{display.words}</span>
-        ) : (
-          // The states that lost their painted words keep them here: heard,
-          // never seen, so the accessible name still carries the state.
-          <span className="workspace-sr-only">{display.stateLine}</span>
-        )}
+        {/* Heard, never seen: a chip paints a dot tone, never a sentence. */}
+        <span className="workspace-sr-only">{display.stateLine}</span>
       </button>
       {/* The description lives beside the button, never inside it: a
           described-by span inside the button would join the accessible

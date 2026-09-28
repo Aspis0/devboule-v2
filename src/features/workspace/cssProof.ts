@@ -10,7 +10,7 @@
 
 export type CssTheme = "light" | "dark";
 
-interface CssRule {
+export interface CssRule {
   selector: string;
   body: string;
 }
@@ -42,7 +42,7 @@ function parseRules(css: string): CssRule[] {
   return rules;
 }
 
-function selectorMatches(ruleSelector: string, target: string): boolean {
+export function selectorMatches(ruleSelector: string, target: string): boolean {
   return ruleSelector
     .split(",")
     .map((part) => part.trim())
@@ -51,6 +51,110 @@ function selectorMatches(ruleSelector: string, target: string): boolean {
 
 /** A font-family declaration naming the mono stack, directly or by token. */
 const MONO_FAMILY = /font-family:[^;]*(?:"JetBrains Mono"|var\(--font-mono\))/;
+
+function isIdentChar(char: string): boolean {
+  return /[\w-]/.test(char);
+}
+
+function splitSelectorList(selector: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let part = "";
+  for (const char of selector) {
+    if (char === "(") depth += 1;
+    else if (char === ")") depth -= 1;
+    if (char === "," && depth === 0) {
+      parts.push(part.trim());
+      part = "";
+      continue;
+    }
+    part += char;
+  }
+  parts.push(part.trim());
+  return parts.filter((candidate) => candidate.length > 0);
+}
+
+function strongerSpec(
+  left: readonly [number, number, number],
+  right: readonly [number, number, number],
+): boolean {
+  return (
+    left[0] > right[0] ||
+    (left[0] === right[0] && (left[1] > right[1] || (left[1] === right[1] && left[2] > right[2])))
+  );
+}
+
+function specificityOfPart(part: string): [number, number, number] {
+  let ids = 0;
+  let classes = 0;
+  let types = 0;
+  let i = 0;
+  while (i < part.length) {
+    const char = part[i];
+    if (char === "#" || char === ".") {
+      // The name that follows is part of the same simple selector.
+      i += 1;
+      while (i < part.length && isIdentChar(part[i])) i += 1;
+      if (char === "#") ids += 1;
+      else classes += 1;
+    } else if (char === "[") {
+      classes += 1;
+      const close = part.indexOf("]", i + 1);
+      i = close < 0 ? part.length : close + 1;
+    } else if (char === ":") {
+      if (part[i + 1] === ":") {
+        types += 1;
+        i += 2;
+        while (i < part.length && isIdentChar(part[i])) i += 1;
+      } else {
+        let j = i + 1;
+        while (j < part.length && isIdentChar(part[j])) j += 1;
+        const name = part.slice(i + 1, j);
+        if (part[j] === "(") {
+          let depth = 1;
+          let k = j + 1;
+          while (k < part.length && depth > 0) {
+            if (part[k] === "(") depth += 1;
+            else if (part[k] === ")") depth -= 1;
+            k += 1;
+          }
+          const argument = part.slice(j + 1, k - 1);
+          if (name === "has" || name === "is" || name === "not") {
+            const argSpec = specificity(argument);
+            ids += argSpec[0];
+            classes += argSpec[1];
+            types += argSpec[2];
+          } else if (name !== "where") {
+            classes += 1;
+          }
+          i = k;
+        } else {
+          classes += 1;
+          i = j;
+        }
+      }
+    } else if (isIdentChar(char)) {
+      types += 1;
+      while (i < part.length && isIdentChar(part[i])) i += 1;
+    } else {
+      // Combinators and the universal selector carry no specificity.
+      i += 1;
+    }
+  }
+  return [ids, classes, types];
+}
+
+/** Specificity (a, b, c) of a selector list — its most specific part — per
+ * CSS Selectors 4: :has() and :is() contribute their most specific argument,
+ * :not() its own, :where() nothing. */
+export function specificity(selector: string): [number, number, number] {
+  let best: [number, number, number] = [0, 0, 0];
+  for (const part of splitSelectorList(selector)) {
+    const spec = specificityOfPart(part);
+    if (strongerSpec(spec, best)) best = spec;
+  }
+  return best;
+}
 
 function darkThemeBodies(css: string): string[] {
   const bodies: string[] = [];
@@ -82,6 +186,8 @@ export function assembleCssProof(
   token: (name: string) => string | undefined;
   /** Every assembled rule that declares a mono font-family. */
   monoDeclarations: { selector: string; body: string }[];
+  /** Every parsed rule of the assembled sheet, in sheet order. */
+  rules: readonly CssRule[];
 } {
   if (theme !== "light" && theme !== "dark") {
     throw new Error(`Unsupported CSS proof theme: ${String(theme)}`);
@@ -139,6 +245,7 @@ export function assembleCssProof(
      * the test; the parsing lives here, so a walk never depends on a
      * hand-written target list. */
     monoDeclarations: allRules.filter((rule) => MONO_FAMILY.test(rule.body)),
+    rules: allRules,
   };
 }
 

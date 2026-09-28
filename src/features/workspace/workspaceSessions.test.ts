@@ -635,10 +635,10 @@ describe("workspace session controller", () => {
       attention: { reason: "permission", atMs: 7 },
     });
     // And both surfaces read the kept values: the idle row is still, the
-    // working row pulses, the asking row keeps its approval word.
+    // working row pulses, the asking row keeps its approval line.
     expect(chipDisplay(kept.get("idle-1")!).pulse).toBe(false);
     expect(chipDisplay(kept.get("work-1")!).pulse).toBe(true);
-    expect(chipDisplay(kept.get("ask-1")!).words).toBe("Needs your approval");
+    expect(chipDisplay(kept.get("ask-1")!).detailLines).toContain("Needs your approval");
     const ask = kept.get("ask-1")!;
     expect(headerDisplay(ask.state, ask.elapsedMs, "idle", ask.activity, ask.attention).word).toBe(
       "Needs your approval",

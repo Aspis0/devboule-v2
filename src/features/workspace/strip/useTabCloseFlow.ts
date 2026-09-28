@@ -109,7 +109,9 @@ function resolveConfirm(
     if (row === undefined || row.state.generation !== target.generation) {
       skipped.push({
         id: target.id,
-        title: row?.title ?? target.id,
+        // The one name rule, like every other surface: a row that still
+        // exists is named, never shown as a raw id or an empty string.
+        title: row === undefined ? target.id : sessionTitle(row),
         generation: target.generation,
       });
       continue;

@@ -15,11 +15,10 @@ function base(overrides: Partial<Session> = {}): Session {
 }
 
 describe("chipDisplay", () => {
-  it("marks a running session with the pulse and no chip words", () => {
+  it("marks a running session with the pulse and no painted words", () => {
     const display = chipDisplay(base({ activity: "working" }));
     expect(display.dot).toBe("live");
     expect(display.pulse).toBe(true);
-    expect(display.words).toBeNull();
     expect(display.tooltip).toContain("Running");
   });
 
@@ -29,7 +28,6 @@ describe("chipDisplay", () => {
     );
     expect(display.dot).toBe("idle");
     expect(display.pulse).toBe(false);
-    expect(display.words).toBeNull();
     expect(display.tooltip).toContain("no output for 4 minutes");
     expect(display.tooltip).not.toContain("Quiet 4 m");
     expect(display.tooltip).toContain("may still be working");
@@ -39,7 +37,6 @@ describe("chipDisplay", () => {
     const display = chipDisplay(
       base({ state: { type: "silent", generation: 2 }, elapsedMs: null }),
     );
-    expect(display.words).toBeNull();
     expect(display.tooltip).toContain("Quiet");
     expect(display.tooltip).not.toContain("unknown");
   });
@@ -51,7 +48,6 @@ describe("chipDisplay", () => {
       }),
     );
     expect(stopped.dot).toBe("ended");
-    expect(stopped.words).toBeNull();
     expect(stopped.tooltip).toContain("Stopped");
     expect(stopped.tooltip).not.toContain("ended");
 
@@ -99,7 +95,6 @@ describe("chipDisplay", () => {
       }),
     );
     expect(display.dot).toBe("recovered");
-    expect(display.words).toBeNull();
     expect(display.tooltip).toContain("Recovered");
     expect(display.tooltip).toContain("restart");
     expect(display.tooltip).toContain("could not be checked");
@@ -108,31 +103,29 @@ describe("chipDisplay", () => {
   it("names an unknown state instead of dropping it", () => {
     const display = chipDisplay(base({ state: { type: "nope" } as unknown as Session["state"] }));
     expect(display.dot).toBe("unknown");
-    expect(display.words).toBeNull();
     expect(display.tooltip).toContain("Status unknown");
   });
 
-  it("keeps Needs your approval as the only words on the chip", () => {
+  it("keeps Needs your approval in the description, never painted on the chip", () => {
     const permission = chipDisplay(base({ attention: { reason: "permission", atMs: 7 } }));
     expect(permission.dot).toBe("attention");
-    expect(permission.words).toBe("Needs your approval");
+    expect(permission.detailLines).toContain("Needs your approval");
     expect(permission.tooltip).toContain("Needs your approval");
 
     const finished = chipDisplay(base({ attention: { reason: "finished", atMs: 7 } }));
     expect(finished.dot).toBe("attention");
-    expect(finished.words).toBeNull();
+    expect(finished.detailLines).toContain("Done");
     expect(finished.tooltip).toContain("Done");
 
     const error = chipDisplay(base({ attention: { reason: "error", atMs: 7 } }));
     expect(error.dot).toBe("attention");
-    expect(error.words).toBeNull();
+    expect(error.detailLines).toContain("Failed");
     expect(error.tooltip).toContain("Failed");
   });
 
   it("paints unattended sessions purple with the birth fact in the tooltip", () => {
     const display = chipDisplay(base({ unattended: "yes" }));
     expect(display.dot).toBe("unattended");
-    expect(display.words).toBeNull();
     expect(display.tooltip).toContain("auto-accepting");
   });
 
@@ -144,12 +137,12 @@ describe("chipDisplay", () => {
     expect(display.tooltip).toContain("Running");
     expect(display.tooltip).toContain("Needs your approval");
     expect(display.tooltip).toContain("auto-accepting");
+    expect(display.detailLines).toContain("Needs your approval");
   });
 
   it("treats a null attention like an absent one instead of throwing", () => {
     const display = chipDisplay(base({ attention: null as unknown as Session["attention"] }));
     expect(display.dot).toBe("live");
-    expect(display.words).toBeNull();
     expect(display.tooltip).toContain("Running");
   });
 
@@ -184,7 +177,7 @@ describe("chipDisplay", () => {
       }),
     );
     expect(display.dot).toBe("attention");
-    expect(display.words).toBe("Needs your approval");
+    expect(display.detailLines).toContain("Needs your approval");
     expect(display.tooltip).toContain("Recovered");
     expect(display.tooltip).toContain("Needs your approval");
   });

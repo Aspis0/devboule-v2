@@ -2,15 +2,15 @@ import type { Session } from "../../../types/ipc";
 import { sessionDelegationBadges, UNATTENDED_BADGE_LABEL } from "../workspaceSessions";
 import { rosterStateDisplay, type ChipDot, type RosterStateDisplay } from "../sessionStateDisplay";
 
-/** Everything a chip shows besides its label: the dot, its pulse, the one
- * words case, the state line that names it to assistive tech, the detail
- * lines that follow, and the tooltip that joins them for the mouse. */
+/** Everything a chip shows besides its label: the dot, its pulse, the
+ * state line that names it to assistive tech, the detail lines that
+ * follow, and the tooltip that joins them for the mouse. The chip paints
+ * no words at all — a state is a dot tone, never a sentence — so the
+ * state line lives in the tab's accessible name and the details in its
+ * description, never on the glass. */
 export interface ChipDisplay {
   dot: ChipDot;
   pulse: boolean;
-  /** Only "Needs your approval" ever renders on the chip; every other state
-   * speaks through the dot and the tooltip. */
-  words: string | null;
   /** The state in plain words; always the tooltip's first line. */
   stateLine: string;
   /** Everything after the state line: attention, unattended, delegation. */
@@ -22,9 +22,10 @@ function stateLine(session: Session): RosterStateDisplay {
   return rosterStateDisplay(session.state, session.elapsedMs, session.activity);
 }
 
-/** The chip's dot, words and tooltip for one roster row. Attention outranks
+/** The chip's dot and tooltip for one roster row. Attention outranks
  * unattended on the dot; the tooltip keeps every true line, starting with
- * the state — a recovered session with an ask stays recovered in words. */
+ * the state — a recovered session with an ask stays recovered in the
+ * state line. */
 export function chipDisplay(session: Session): ChipDisplay {
   const detailLines: string[] = [];
   // A null on the wire is absence, not attention: serde's default for an
@@ -33,13 +34,11 @@ export function chipDisplay(session: Session): ChipDisplay {
   const base = stateLine(session);
   let dot: ChipDot = base.dot;
   let pulse = base.pulse;
-  let words: string | null = null;
 
   if (attention !== undefined) {
     dot = "attention";
     pulse = false;
     if (attention.reason === "permission") {
-      words = "Needs your approval";
       detailLines.push("Needs your approval");
     } else if (attention.reason === "finished") {
       detailLines.push("Done");
@@ -65,7 +64,6 @@ export function chipDisplay(session: Session): ChipDisplay {
   return {
     dot,
     pulse,
-    words,
     stateLine: base.line,
     detailLines,
     tooltip: [base.line, ...detailLines].join("\n"),

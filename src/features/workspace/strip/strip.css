@@ -112,9 +112,13 @@
   outline-offset: -1px;
 }
 
+/* flex: none — the label shrinks to make room (its min-width is 0 by
+   design); the dot keeps its 6 px at every chip width, or the only
+   attention cue vanishes on the longest titles. */
 .workspace-session-tab .workspace-status-dot {
   width: 6px;
   height: 6px;
+  flex: none;
 }
 
 /* The spec's dot tones. Live breathes through the shared pulse; recovered
@@ -168,27 +172,16 @@
   white-space: nowrap;
 }
 
-/* The spec's hover treatment: when the × shows, the label fades its own
-   tail. The mask alone does it — paint-only, so hover changes no flex
-   base size and the strip never reflows under the pointer. (A hover-only
-   padding here would grow every mid-width chip 16 px on hover and on Tab.) */
-.workspace-session-row:hover .workspace-tab-label,
-.workspace-session-row:focus-within .workspace-tab-label {
-  -webkit-mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
-  mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
-}
-
-/* The one chip that still uses words: a session asking for an action. */
-.workspace-tab-attention {
-  flex: none;
-  padding: 1px 7px;
-  border: 1px solid var(--ochre);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--ochre-deep);
-  font-size: 10px;
-  font-weight: 600;
-  white-space: nowrap;
+/* The spec's hover treatment: when the × shows, the label reserves the
+   ×'s 16 px and fades its own tail under it, so the × never sits on the
+   label's last letters. The fade reaches 22 px — the 16 px reservation
+   plus the text's own tail — so the words dissolve into the scrim.
+   Hover only: arrow keys move real focus, and a focus reservation
+   would grow the chip and shift the strip on every press. */
+.workspace-session-row:hover .workspace-tab-label {
+  padding-right: 16px;
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 22px), transparent);
 }
 
 .workspace-session-add {
@@ -303,16 +296,28 @@
 }
 
 .workspace-session-row:hover .workspace-session-chip::before,
-.workspace-session-row:focus-within .workspace-session-chip::before {
+.workspace-session-row:has(.workspace-session-tab:focus-visible) .workspace-session-chip::before {
   background: linear-gradient(to right, transparent 0%, var(--fill-chip-hover) 60%);
 }
 
+/* The selected scrim stops on the selection fill — the hover gradient
+   would paint a hard-edged block of the wrong colour over it. The
+   focus-visible reveal outranks this rule on specificity, so the
+   keyboard path needs the stronger variant below. */
 .workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before {
   background: linear-gradient(to right, transparent 0%, var(--selection) 60%);
 }
 
+.workspace-session-row:has(.workspace-session-tab-selected):has(
+    .workspace-session-tab:focus-visible
+  )
+  .workspace-session-chip::before {
+  background: linear-gradient(to right, transparent 0%, var(--selection) 60%);
+}
+
 .workspace-session-row:hover .workspace-session-chip,
-.workspace-session-row:focus-within .workspace-session-chip {
+.workspace-session-row:focus-within .workspace-session-chip,
+.workspace-session-row:has(.workspace-session-tab:focus-visible) .workspace-session-chip {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;

@@ -178,15 +178,16 @@ describe("the strip and the header agree on roster states and approval", () => {
       const header = headerDisplay(state, elapsedMs, "idle", activity, undefined);
       expect(header.tone).toBe(toneFor[chip.dot as keyof typeof toneFor]);
       expect(header.pulse).toBe(chip.pulse);
-      expect(chip.words).toBeNull();
     }
   });
 
   it("agrees with the chip on a permission row", () => {
     const chip = chipDisplay(cleanRow(LIVE, 0, "blocked", permission()));
     const header = headerDisplay(LIVE, 0, "idle", "blocked", permission());
-    expect(chip.words).toBe("Needs your approval");
-    expect(header.word).toBe(chip.words);
+    // The chip's detail line and the header's word are the same sentence:
+    // the chip paints the dot, the header paints the words.
+    expect(chip.detailLines).toContain(header.word);
+    expect(header.word).toBe("Needs your approval");
     expect(header.tone).toBe("attention");
     expect(header.pulse).toBe(chip.pulse);
     expect(header.tooltip).toContain("Needs your approval");

@@ -8,6 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { assembleCssProof, selectorMatches, specificity } from "../cssProof";
 
 const css = readFileSync(new URL("./strip.css", import.meta.url), "utf8");
 const tsx = readFileSync(new URL("./SessionStrip.tsx", import.meta.url), "utf8");
@@ -24,6 +25,35 @@ function ruleBody(selector: string): string {
 function declaredValue(body: string, property: string): string | undefined {
   return body.match(new RegExp(`^\\s*${property}\\s*:\\s*([^;]+);`, "m"))?.[1]?.trim();
 }
+
+/** Lexicographic comparison of (a, b, c) specificity tuples. */
+function stronger(
+  left: readonly [number, number, number],
+  right: readonly [number, number, number],
+): boolean {
+  return (
+    left[0] > right[0] ||
+    (left[0] === right[0] && (left[1] > right[1] || (left[1] === right[1] && left[2] > right[2])))
+  );
+}
+
+/** The pseudo-classes that gate the close chip's reveal and scrim. */
+const revealTriggers = [":hover", ":focus-within", ":focus-visible"];
+
+/** Whether a selected variant applies on a reveal's path: its own triggers
+ * must be a subset of the reveal's — a trigger-free variant applies in
+ * every state, while one that adds a trigger the reveal does not have
+ * never applies on the reveal's path. */
+function coversReveal(selector: string, reveal: string): boolean {
+  return revealTriggers
+    .filter((trigger) => selector.includes(trigger))
+    .every((trigger) => reveal.includes(trigger));
+}
+
+// The sheet's own rules through the feature's parser — the same lookup
+// the computed proof injects — so a comment cannot fold into a selector
+// and an at-rule cannot collapse into a bare rule.
+const { rulesFor, rules } = assembleCssProof([css]);
 
 describe("the session strip", () => {
   it("clips tabs that overflow instead of wrapping them", () => {
@@ -76,14 +106,12 @@ describe("the session strip", () => {
     };
     for (const fadeSide of ["left", "right"]) {
       expect(side(fadeSide)).toContain("-webkit-mask-image:");
-      expect(side(fadeSide)).toContain("mask-image:");
       expect(side(fadeSide)).toContain("36px");
     }
     const both = css.match(
       /\.workspace-session-tabs-scroll\[data-fade-left="true"\]\[data-fade-right="true"\] \{([\s\S]*?)\n\}/,
     )?.[1];
     expect(both).toContain("-webkit-mask-image:");
-    expect(both).toContain("mask-image:");
   });
 
   it("paints every dot tone from its own rule", () => {
@@ -103,24 +131,17 @@ describe("the session strip", () => {
     }
   });
 
-  it("resolves selected+multiselected+hover to the selection fill on chip and scrim", () => {
-    // All three hover-capable chip rules share specificity (0,2,0), and
-    // both scrim rules share (0,3,1): ties break by source order. The
-    // multi hover must sit before the selected hover so a both-classes
-    // chip agrees with its scrim (selection), while a multi-only chip
-    // still takes the hover fill from the earlier plain hover rule.
+  it("resolves a hovered selected or multi-selected chip to the selection fill", () => {
+    // All three hover-capable chip rules share specificity (0,2,0), so
+    // ties break by source order: the multi hover must sit before the
+    // selected hover, or a both-classes chip on hover takes the hover
+    // fill and loses its selected identity. A multi-only chip still
+    // takes the hover fill from the earlier plain hover rule.
     const multiHoverAt = css.indexOf(".workspace-session-tab-multiselected:hover");
     const selectedHoverAt = css.indexOf(".workspace-session-tab-selected:hover");
     expect(multiHoverAt).toBeGreaterThan(-1);
     expect(selectedHoverAt).toBeGreaterThan(-1);
     expect(multiHoverAt).toBeLessThan(selectedHoverAt);
-    const hoverScrimAt = css.indexOf(
-      ".workspace-session-row:hover .workspace-session-chip::before",
-    );
-    const selectedScrimAt = css.indexOf(
-      ".workspace-session-row:has(.workspace-session-tab-selected)",
-    );
-    expect(selectedScrimAt).toBeGreaterThan(hoverScrimAt);
   });
 
   it("keeps the hover look on multi-selected chips, chip and scrim alike", () => {
@@ -134,31 +155,61 @@ describe("the session strip", () => {
     expect(css).not.toContain(":has(.workspace-session-tab-multiselected)");
   });
 
-  it("fades the label's tail under the close overlay on hover", () => {
-    // The hover treatment is the right mask alone: adding padding here
-    // would change the chip's flex base size and reflow the strip.
-    // happy-dom has no layout; this pins the declarations, and the live
-    // window judges the pixels.
-    const hovered = css.match(
-      /\.workspace-session-row:hover \.workspace-tab-label,[\s\S]*?\{([\s\S]*?)\n\}/,
-    )?.[1];
-    expect(hovered).not.toContain("padding");
+  it("reserves the ×'s 16 px and fades the label's tail under the close overlay", () => {
+    // The spec's hover treatment: the label reserves the ×'s 16 px — so
+    // the × never sits on its last letters — and fades its own tail
+    // under the scrim. happy-dom has no layout, so the reflow itself is
+    // a live check; this pins the selector the reflow depends on.
+    const hovered = rulesFor(".workspace-session-row:hover .workspace-tab-label");
+    expect(hovered).toContain("padding-right: 16px;");
     expect(hovered).toContain("mask-image:");
     expect(hovered).toContain("-webkit-mask-image:");
+    // Focus reserves nothing: arrow keys move real focus, and a focus
+    // reservation would grow the chip and shift the strip on every
+    // press. Selection never reserves: the same padding on a selected
+    // chip would grow it 16 px and shift every chip after it.
+    expect(rulesFor(".workspace-session-row:focus-within .workspace-tab-label")).toBe("");
+    expect(
+      rulesFor(".workspace-session-row:has(.workspace-session-tab-selected) .workspace-tab-label"),
+    ).toBe("");
   });
 
   it("fades the close scrim instead of painting an opaque block", () => {
-    // The overlay's ground is a gradient to transparent, per chip state,
-    // so the fading label shows through it toward the ×.
-    const hoverScrim = css.match(
-      /\.workspace-session-row:hover \.workspace-session-chip::before,[\s\S]*?\{([\s\S]*?)\n\}/,
-    )?.[1];
+    // The overlay's ground is a gradient to transparent on hover and
+    // keyboard focus, so the fading label shows through it toward the ×.
+    // A selected chip's scrim stops on the selection fill instead: the
+    // hover gradient would paint a hard-edged block of the wrong colour
+    // across the selected chip, in both themes.
+    const hoverScrim = rulesFor(".workspace-session-row:hover .workspace-session-chip::before");
     expect(hoverScrim).toContain("linear-gradient");
     expect(hoverScrim).toContain("transparent");
-    const selectedScrim = ruleBody(
+    const selectedScrim = rulesFor(
       ".workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before",
     );
     expect(selectedScrim).toContain("linear-gradient");
+    expect(selectedScrim).toContain("var(--selection)");
+    // The selected fill has to win on both reveal paths, and the cascade
+    // decides on specificity, not on the rule's text: the hover reveal is
+    // (0,3,1) and the focus-visible reveal is (0,4,1), so each path needs
+    // a selected variant that applies on it and is at least as strong —
+    // and later in the sheet when they tie.
+    for (const reveal of [
+      ".workspace-session-row:hover .workspace-session-chip::before",
+      ".workspace-session-row:has(.workspace-session-tab:focus-visible) " +
+        ".workspace-session-chip::before",
+    ]) {
+      const revealIndex = rules.findIndex((rule) => selectorMatches(rule.selector, reveal));
+      expect(revealIndex).toBeGreaterThan(-1);
+      const revealSpec = specificity(reveal);
+      const winner = rules.find((rule, index) => {
+        if (!rule.selector.includes(":has(.workspace-session-tab-selected)")) return false;
+        if (!coversReveal(rule.selector, reveal)) return false;
+        const spec = specificity(rule.selector);
+        return !stronger(revealSpec, spec) && (stronger(spec, revealSpec) || index > revealIndex);
+      });
+      expect(winner).toBeDefined();
+      expect(winner?.body).toContain("var(--selection)");
+    }
   });
 
   it("sets the session count in sans metadata type, never mono", () => {
@@ -178,10 +229,29 @@ describe("the session strip", () => {
     expect(chip).toContain("width: 48px;");
     expect(chip).toContain("pointer-events: none;");
     expect(chip).toContain("visibility: hidden;");
-    const shown = css.match(
-      /\.workspace-session-row:hover \.workspace-session-chip,\n\.workspace-session-row:focus-within \.workspace-session-chip \{([\s\S]*?)\n\}/,
-    )?.[1];
+    // The × takes pointer events on hover, on keyboard focus, and on any
+    // focus within — a touch or pen tap focuses the chip, and those
+    // pointers have no hover to fall back on. A selected chip keeps the
+    // overlay hidden, so its whole label stays clickable until one of
+    // those reveals it.
+    const shown = rulesFor(".workspace-session-row:hover .workspace-session-chip");
     expect(shown).toContain("pointer-events: auto;");
+    const focused = rulesFor(
+      ".workspace-session-row:has(.workspace-session-tab:focus-visible) .workspace-session-chip",
+    );
+    expect(focused).toContain("pointer-events: auto;");
+    // The tap's reveal sets no box property, so it cannot reflow the
+    // strip: the label's 16 px reservation stays hover-only above.
+    const tapped = rulesFor(".workspace-session-row:focus-within .workspace-session-chip");
+    expect(tapped).toContain("pointer-events: auto;");
+    expect(tapped).not.toContain("padding");
+    expect(tapped).not.toContain("mask");
+    expect(tapped).not.toContain("width");
+    expect(
+      rulesFor(
+        ".workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip",
+      ),
+    ).toBe("");
   });
 
   it("stays a single row", () => {

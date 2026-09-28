@@ -113,12 +113,16 @@ vi.mock("../terminal/TerminalSurface", () => ({
 }));
 
 // What the mocked chat surface was handed, per session: the workspace's
-// queue prop is asserted through it (identity, one per session, discard).
+// queue prop is asserted through it (identity, one per session, discard),
+// and the title prop — the pane header's only input — is captured so a test
+// can prove the tab's label and the header's title are one string.
 const surfaceQueues = vi.hoisted(() => ({ bySession: new Map<string, unknown>() }));
+const surfaceTitles = vi.hoisted(() => ({ bySession: new Map<string, string>() }));
 
 vi.mock("./AgentChatSurface", () => ({
   AgentChatSurface: ({
     sessionId,
+    title,
     auxiliary,
     hasPendingPermission,
     queue,
@@ -126,6 +130,7 @@ vi.mock("./AgentChatSurface", () => ({
     onPermissionResolved,
   }: {
     sessionId: string;
+    title?: string;
     auxiliary?: ReactNode;
     hasPendingPermission?: boolean;
     queue?: unknown;
@@ -137,6 +142,7 @@ vi.mock("./AgentChatSurface", () => ({
     onPermissionResolved?: (sessionId: string, resolution: PermissionResolved) => void;
   }) => {
     surfaceQueues.bySession.set(sessionId, queue);
+    surfaceTitles.bySession.set(sessionId, title ?? "");
     return (
       <div data-testid="agent-chat-surface">
         {sessionId}
@@ -520,6 +526,7 @@ describe("Workspace sessions", () => {
     sender = createSenderProbe();
     sharedSessionQueueOwner({ newSender: sender.newSender });
     surfaceQueues.bySession.clear();
+    surfaceTitles.bySession.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);
@@ -2865,9 +2872,14 @@ describe("Workspace sessions", () => {
       expect(findTab("agent finished").getAttribute("title")).toContain("Done");
       expect(findTab("agent error").querySelector(".workspace-tab-attention")).toBeNull();
       expect(findTab("agent error").getAttribute("title")).toContain("Failed");
-      expect(
-        findTab("agent permission").querySelector(".workspace-tab-attention")?.textContent,
-      ).toBe("Needs your approval");
+      // The permission ask paints no words — the ochre dot is the whole of
+      // it — so the reason is heard in the description, never seen.
+      const permission = findTab("agent permission");
+      expect(permission.querySelector(".workspace-tab-attention")).toBeNull();
+      const describedBy = permission.getAttribute("aria-describedby");
+      expect(describedBy).not.toBeNull();
+      const provenance = container.querySelector(`#${CSS.escape(describedBy!)}`);
+      expect(provenance?.textContent).toContain("Needs your approval");
       const quiet = findTab("agent quiet");
       expect(quiet.querySelector(".workspace-tab-attention")).toBeNull();
     });
@@ -2885,10 +2897,15 @@ describe("Workspace sessions", () => {
       const tab = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")][0];
       if (tab === undefined) throw new Error("attention tab did not render");
       // The tab has no aria-label override, so its accessible name is built
-      // from its text content — which must carry the reason, not just a colour.
+      // from its text content — the label plus the sr-only state — and the
+      // reason itself describes the chip from beside the button.
       expect(tab.getAttribute("aria-label")).toBeNull();
       expect(tab.textContent).toContain("agent blocked");
-      expect(tab.textContent).toContain("Needs your approval");
+      expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe("Running");
+      const describedBy = tab.getAttribute("aria-describedby");
+      expect(describedBy).not.toBeNull();
+      const provenance = container.querySelector(`#${CSS.escape(describedBy!)}`);
+      expect(provenance?.textContent).toContain("Needs your approval");
     });
   });
 
@@ -3152,7 +3169,59 @@ describe("Workspace sessions", () => {
     expect(tab.title).not.toContain("input_required");
   });
 
-  it("leaves a parked session's reason to the attention pill", async () => {
+  it("the tab and the header read the same title", async () => {
+    // The daemon's first-prompt auto-title lands on the roster row's own
+    // name, pushed after the session was created nameless. The tab's label
+    // and the pane header's title are the same string from the same
+    // function — one name rule, two surfaces. This pins the plumbing; it
+    // cannot catch a label collapsed to 0 px inside the chip, which is
+    // what the live screenshots showed and what the strip's CSS fixes
+    // address.
+    const autoTitle = "Plan how to create hello.txt in this folder containing the word hi.";
+    vi.mocked(sessionsList).mockResolvedValue([acpSession("session-auto", "")]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>("#workspace-session-tab-session-auto");
+      if (found === null) throw new Error("auto-titled session's tab did not render");
+      return found;
+    });
+    // The push is how the auto-title arrives: the daemon names the row from
+    // its first prompt and pushes the roster.
+    const listener = vi.mocked(createSessionStateChannel).mock.calls[0]?.[0] as
+      | ((snapshots: SessionStateSnapshot[]) => void)
+      | undefined;
+    await act(async () => {
+      listener?.([
+        {
+          id: "session-auto",
+          workspaceId: "workspace-1",
+          kind: "acp",
+          title: "",
+          state: { type: "live", generation: 1 },
+          elapsedMs: 0,
+          displayName: autoTitle,
+        },
+      ]);
+    });
+
+    const relabeled = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>(
+        "#workspace-session-tab-session-auto .workspace-tab-label",
+      );
+      if (found?.textContent === autoTitle) return found;
+      throw new Error("tab label did not take the auto-title");
+    });
+    expect(relabeled.textContent).toBe(autoTitle);
+    // The header's only input is the title prop the workspace passes the
+    // chat surface — the same string, from the same function.
+    expect(surfaceTitles.bySession.get("session-auto")).toBe(autoTitle);
+  });
+
+  it("leaves a parked session's reason to the attention's own words", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       {
         ...acpSession("human-1", "my agent"),
@@ -3173,9 +3242,14 @@ describe("Workspace sessions", () => {
     expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
     expect(tab.title ?? "").not.toContain("created by");
     expect(tab.title ?? "").not.toContain("input_required");
-    // The one roster-level fact behind a parked card is the attention the daemon
-    // raises, and this is the words that name it — the words a person reads.
-    expect(tab.querySelector(".workspace-tab-attention")?.textContent).toBe("Needs your approval");
+    // The one roster-level fact behind a parked card is the attention the
+    // daemon raises. The chip paints its dot; the words that name it are
+    // heard in the description, never painted over the label.
+    expect(tab.querySelector(".workspace-tab-attention")).toBeNull();
+    const describedBy = tab.getAttribute("aria-describedby");
+    expect(describedBy).not.toBeNull();
+    const provenance = container.querySelector(`#${CSS.escape(describedBy!)}`);
+    expect(provenance?.textContent).toContain("Needs your approval");
   });
 
   it("names the peer device on the permission card's provenance line", async () => {

@@ -148,10 +148,52 @@ describe("SessionStrip", () => {
     }
   });
 
-  it("keeps Needs your approval as the one chip that still uses words", () => {
+  it("paints a tab with attention in label only: the state is heard, never seen", () => {
+    // The spec's chip is dot + kind mark + label + hover × — a state is a
+    // dot tone, never a sentence. The permission ask is the ochre dot; its
+    // words live in the accessible name and the description beside the tab.
     renderStrip([session("a", "agent a", { attention: { reason: "permission", atMs: 1 } })], "a");
     const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
-    expect(tab.querySelector(".workspace-tab-attention")?.textContent).toBe("Needs your approval");
+    expect(tab.querySelector(".workspace-tab-attention")).toBeNull();
+    const label = tab.querySelector(".workspace-tab-label");
+    expect(label?.textContent).toBe("agent a");
+    // The button's children are exactly the chip's four parts — dot, mark,
+    // label, and the sr-only state the chip's CSS hides. A fifth child
+    // (a pill, a badge) would paint words the spec does not allow.
+    expect([...tab.children].map((child) => child.className)).toEqual([
+      expect.stringContaining("workspace-status-dot"),
+      "strip-kind",
+      "workspace-tab-label",
+      "workspace-sr-only",
+    ]);
+    const state = tab.querySelector(".workspace-sr-only");
+    expect(state?.textContent).toBe("Running");
+    // And the ask itself describes the chip, from beside the button.
+    const describedBy = tab.getAttribute("aria-describedby");
+    expect(describedBy).not.toBeNull();
+    const provenance = container!.querySelector<HTMLElement>(`#${CSS.escape(describedBy!)}`);
+    expect(provenance?.textContent).toContain("Needs your approval");
+  });
+
+  it("drops the ask's description when the attention clears", () => {
+    // The description span lives only while there is something to
+    // describe: a roster push that clears the attention must take the
+    // span and the reference with it, or a screen reader keeps
+    // announcing a resolved ask. A local session with no ask and no
+    // creator has nothing to describe — an originless one always carries
+    // the "origin unknown" line, so the local origin is the empty case.
+    const local = { origin: { kind: "local" as const } };
+    const props = renderStrip(
+      [session("a", "agent a", { ...local, attention: { reason: "permission", atMs: 1 } })],
+      "a",
+    );
+    const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
+    expect(tab.getAttribute("aria-describedby")).not.toBeNull();
+    props.rerender([session("a", "agent a", local)], "a");
+    expect(tab.getAttribute("aria-describedby")).toBeNull();
+    // The state line stays: only the provenance span is gone.
+    expect(container!.querySelector("#workspace-session-tab-a-provenance")).toBeNull();
+    expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe("Running");
   });
 
   it("moves origin and creator into the tooltip", () => {
