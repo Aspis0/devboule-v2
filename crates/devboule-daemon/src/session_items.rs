@@ -161,15 +161,14 @@ impl SessionSteerer for UnsupportedSteerer {
     }
 }
 
-/// A provider's own side-effect commands, dispatched before a turn starts:
-/// Paseo's agent-prompt
-/// (packages/server/src/server/agent/agent-prompt.ts) calls `tryRunOutOfBand`,
-/// which records the submitted prompt before the command runs
-/// (packages/server/src/server/agent/agent-manager.ts). The text is a command
+/// A provider's own side-effect commands, dispatched before a turn starts.
+/// Translated from Paseo's agent-prompt
+/// (packages/server/src/server/agent/agent-prompt.ts), which calls
+/// `tryRunOutOfBand` in agent-manager
+/// (packages/server/src/server/agent/agent-manager.ts): the text is a command
 /// the provider executes itself — never written as a prompt, and no turn
 /// begun for it. `handles_out_of_band` recognises the text; `run_out_of_band`
-/// performs it, and a caller runs it only after the submitted prompt is
-/// recorded inside it.
+/// performs it, and a caller runs it only after recording the input.
 pub(crate) trait OutOfBandCommands: Send + Sync {
     fn handles_out_of_band(&self, text: &str) -> bool;
     fn run_out_of_band(&self, text: &str, runtime: &Arc<SessionRuntime>);

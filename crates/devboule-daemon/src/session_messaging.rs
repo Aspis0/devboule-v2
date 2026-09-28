@@ -1415,8 +1415,7 @@ pub(crate) struct MessageAdmission {
     pub(crate) expected_turn_id: u64,
 }
 
-/// The boundary callback of one slot, with the cell that tells it which hook it is
-
+/// The boundary callback of one slot, with the cell that tells it which hook it is.
 ///
 /// The callback compares its own hook id — read out of the cell *while it holds the
 /// brakes lock* — with the id the slot currently holds, and acts only when they are
@@ -1566,7 +1565,7 @@ pub(super) fn reserve_message_brake(
     // entry with nothing left in it goes.
     //
     // The sweep costs one pass over every other sender while the single brakes lock
-    // is held, so it runs at most once per [`MESSAGE_RATE_WINDOW`] — a
+    // is held, so it runs at most once per [`MESSAGE_RATE_WINDOW`]: a
     // sender that never sweeps cannot make every other sender's admission pay for
     // it. The caller's own entry is still pruned on every reserve, which is what
     // its own braking needs.
@@ -1709,8 +1708,8 @@ pub(super) fn reserve_message_brake(
 /// written, and releasing it now would let the next send past the cap this
 /// count exists to keep.
 ///
-/// `hook_id` is the cell holding the id of the hook this callback was armed as
-///. It is loaded *inside* the locked section below — never before —
+/// `hook_id` is the cell holding the id of the hook this callback was armed as.
+/// It is loaded *inside* the locked section below — never before —
 /// so that the registering side's store, which it performs while it holds the same
 /// lock, is always visible here. A callback that ran after the slot was re-keyed
 /// holds the *old* id, while the entry holds the new one: it is a no-op, because

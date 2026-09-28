@@ -50,8 +50,8 @@ impl WindowsPathSource for RegistryPathSource {
 /// reads `raw`, so a user's PATH is never rewritten to the disk's case.
 /// `canonicalised` is false exactly when no resolver opened the entry,
 /// and those entries are counted in
-/// `PathSnapshot::canonicalize_failures` instead of silently behaving
-/// like the pre-fix bug.
+/// `PathSnapshot::canonicalize_failures` instead of silently answering
+/// with the plain spelling.
 #[derive(Clone, Debug)]
 struct DirEntry {
     raw: PathBuf,

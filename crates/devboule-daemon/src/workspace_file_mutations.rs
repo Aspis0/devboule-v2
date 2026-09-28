@@ -183,7 +183,8 @@ fn vouched_entry(root: &Path, requested: &str) -> Result<(PathBuf, std::fs::Meta
 }
 
 /// The new name, judged the way Paseo's renameExplorerEntry judges a created
-/// name — trimmed first, and the trimmed spelling is the one acted on,
+/// name (packages/server/src/server/file-explorer/service.ts) — trimmed
+/// first, and the trimmed spelling is the one acted on,
 /// because validating one string and storing another would keep a name the
 /// rule never judged. One name: not empty, not `.`/`..`, no
 /// separator, never Win32's silent rewrites, and never the repository's own

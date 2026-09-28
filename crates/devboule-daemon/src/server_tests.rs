@@ -5235,7 +5235,8 @@ fn a_peers_deposit_is_refused_with_the_attachment_sentence() {
 /// answered with a sentence rather than with its own contents — `name` and
 /// `mime_type` are unbounded strings inside a frame that may be close to
 /// `MAX_FRAME_BYTES`, and `PromptAttachment`'s own `Debug` prints both
-/// fields, so no error text names the frame.
+/// fields, so a `Debug`-based fallback would format the whole frame into
+/// the error text — and no error text names the frame.
 /// The one field that *must* survive a refusal is the request `id`: it is
 /// the caller's correlation token, and a refusal without it is a silence.
 #[test]

@@ -1,9 +1,8 @@
 //! Two real daemons, a real tailnet link.
 //!
-//! The rest of the suite is covered without Tailscale; this file is the one
-//! test that needs a running tailscaled, because the listener binds real
-//! tailnet addresses and the binding check calls `whois`. It skips with a
-//! clear message when the listener is not up, so a CI runner without
+//! This file is the suite's only tailscale-bound test: the listener binds
+//! real tailnet addresses and the binding check calls `whois`. It skips with
+//! a clear message when the listener is not up, so a CI runner without
 //! Tailscale reports why rather than failing.
 //!
 //! The test drives two separate daemon processes over their named pipes for
@@ -18,7 +17,7 @@
 //! The pipe is spoken raw (`connect_pipe` + `Framed`) rather than through
 //! `DaemonClient`: this test sends `ClientMessage` variants that
 //! `DaemonClient` has no typed method for yet — the device RPCs among them —
-//! and a raw frame keeps the test independent of that.
+//! and a raw frame keeps the test independent of the client's typed wrappers.
 
 #![cfg(windows)]
 

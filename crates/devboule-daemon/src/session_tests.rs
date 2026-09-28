@@ -2522,7 +2522,7 @@ fn agent_message_brakes_limit_rate_and_distinct_recipients() {
     );
 }
 
-/// both windows must let go. A slot a target never answered expires,
+/// Both windows must let go. A slot a target never answered expires,
 /// and the recipient set is a sliding window rather than a permanent one.
 #[test]
 fn an_expired_slot_is_released_and_a_recipient_leaves_the_window() {
@@ -3326,7 +3326,7 @@ fn resolved_cards(conn: &ConnHandle) -> Vec<String> {
         .collect()
 }
 
-/// The race this fix is about: a turn ends while a steer is being
+/// The race this test is about: a turn ends while a steer is being
 /// admitted. The runtime hands the steerer its token under the same lock the
 /// `AgentFinished` transition takes, so the end of the turn cannot land
 /// between the check and the write — the finish is blocked until the write
@@ -3725,7 +3725,7 @@ fn a_turn_that_ended_before_admission_is_sent_as_a_plain_message() {
 
 #[test]
 fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
-    // a local caller keeps the interrupt-and-replace fallback. A
+    // A local caller keeps the interrupt-and-replace fallback. A
     // paired device does not get it, because interrupting the turn is the
     // act `SessionInterrupt` decides and no capability opens that to a peer.
     let (dir, registry, journal) = tmp_delete_registry();
@@ -3783,12 +3783,12 @@ fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
 }
 
 /// The wire carries the daemon's chooser verdict: a request whose option
-/// set trips Paseo's rule — the chooser check in isACPChooserRequest
-/// (packages/server/src/server/agent/providers/acp-agent.ts) — the same kind
-/// offered twice, allow **or** reject, is marked so the app renders one
-/// control per option, while an
-/// ordinary pair and a set of distinct kinds are left unmarked. The app
-/// must never re-derive the rule from the option list — the daemon says it.
+/// set trips Paseo's rule (the same kind offered twice — allow **or**
+/// reject), translated from `isACPChooserRequest`
+/// (packages/server/src/server/agent/providers/acp-agent.ts), is marked so
+/// the app renders one control per option, while an ordinary pair and a set
+/// of distinct kinds are left unmarked. The app must never re-derive the
+/// rule from the option list — the daemon says it.
 #[test]
 fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {
     let (broker, _sent) = permission_broker::test_broker();
@@ -3873,7 +3873,7 @@ fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {
     );
 }
 
-/// cards are cancelled only once the provider has taken the text.
+/// Cards are cancelled only once the provider has taken the text.
 /// A steer that failed leaves the turn — and its cards — exactly as they
 /// were, and the caller sees the failure.
 #[test]
@@ -4076,7 +4076,7 @@ fn a_refused_steer_leaves_the_pending_cards_to_the_turn_that_is_still_running() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// an accepted steer is echoed into the session's transcript
+/// An accepted steer is echoed into the session's transcript
 /// as the event every accepted input publishes, and journaled as `Steered`.
 #[test]
 fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
@@ -4143,7 +4143,7 @@ fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
         .0
         .clone()
         .expect("the echo names the message it published");
-    // the journal row carries the *same* id as the echo, so the row
+    // The journal row carries the *same* id as the echo, so the row
     // and the transcript message are one message rather than two that a
     // reader has to guess between.
     journal.flush().expect("flush the journal");
@@ -4166,7 +4166,7 @@ fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// a steer is text only, and the refusal comes before any attachment
+/// A steer is text only, and the refusal comes before any attachment
 /// byte is planned, decoded, materialized or written.
 #[test]
 fn a_steer_with_an_attachment_is_refused_before_anything_decodes_it() {
@@ -4210,7 +4210,7 @@ fn a_steer_with_an_attachment_is_refused_before_anything_decodes_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// after the provider has taken the text, a recording failure
+/// After the provider has taken the text, a recording failure
 /// is a degraded session — never an error the caller could retry into a
 /// second steer.
 #[test]
@@ -4382,7 +4382,7 @@ fn a_panicking_agent_message_delivery_releases_the_brake_slot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// the slot a message holds ends with the turn that message went into,
+/// The slot a message holds ends with the turn that message went into,
 /// so a sender whose messages have been answered can send again.
 ///
 /// Here the turn is already running, so that is the turn the two messages
@@ -4477,7 +4477,7 @@ fn a_failed_delivery_gives_the_sender_s_slot_back() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// the boundary (the target's turn ending) and the delivery returning
+/// The boundary (the target's turn ending) and the delivery returning
 /// are two different moments, and a slot is over only when both have passed.
 ///
 /// Releasing it at the boundary hands the sender back a place it has not
@@ -4545,7 +4545,7 @@ fn an_admitted_message_still_counts_until_its_delivery_returns() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// the three-recipient window is the fan-out brake, and it is *time*
+/// The three-recipient window is the fan-out brake, and it is *time*
 /// based. Releasing every slot — each one by the turn it joined ending — must
 /// not hand the sender a fresh place to reach a fourth agent inside the
 /// window; only the window ageing out does that.
@@ -4648,7 +4648,7 @@ fn the_recipient_window_survives_its_slots_ending() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// a target that closes takes every entry that names it with it.
+/// A target that closes takes every entry that names it with it.
 #[test]
 fn closing_a_target_forgets_the_message_brake_entries_that_name_it() {
     let (dir, registry, journal) = tmp_delete_registry();
@@ -4713,7 +4713,7 @@ fn closing_a_target_forgets_the_message_brake_entries_that_name_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// the target check and the slot reservation are one critical section.
+/// The target check and the slot reservation are one critical section.
 ///
 /// With the brake table held by the test, a send that has found its target
 /// must still be holding the session map while it waits for its slot — the
@@ -4776,7 +4776,7 @@ fn the_target_check_and_the_slot_reservation_are_one_critical_section() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// a slot that expires gives its one-shot *hook* back too.
+/// A slot that expires gives its one-shot *hook* back too.
 ///
 /// `prune` answers with the hooks of the slots it ended, and this pass's
 /// predecessor dropped that answer on the floor: a target that never ends a
@@ -4831,7 +4831,7 @@ fn an_expired_slot_unregisters_its_boundary_hook() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// a finish that lands between the caller's look and the registration
+/// A finish that lands between the caller's look and the registration
 /// is *observed*, so the message goes as a plain prompt — and that prompt's
 /// turn is what ends the slot.
 ///
@@ -4984,7 +4984,7 @@ fn a_turn_that_ended_before_the_registration_is_not_joined() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// the turn can end between the boundary registration and the delivery.
+/// The turn can end between the boundary registration and the delivery.
 /// The delivery then writes a plain prompt — and that prompt's turn is the
 /// boundary the slot has to end on, not the turn that is gone.
 ///
@@ -5077,7 +5077,7 @@ fn a_turn_that_ends_before_the_delivery_keeps_the_slot_until_the_prompt_ends() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// a session that closes takes its own outstanding slots with it — and
+/// A session that closes takes its own outstanding slots with it — and
 /// their hooks off the targets they were armed on, including a target this
 /// close does not even name.
 #[test]
@@ -5131,7 +5131,7 @@ fn closing_a_sender_unregisters_the_hooks_of_its_other_messages() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// closing and resuming the same session id does not buy a fresh
+/// Closing and resuming the same session id does not buy a fresh
 /// recipient window.
 #[test]
 fn a_closed_and_resumed_sender_keeps_its_recipient_window() {
@@ -5191,7 +5191,7 @@ fn a_closed_and_resumed_sender_keeps_its_recipient_window() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// the admitted turn can end and another can start before the delivery
+/// The admitted turn can end and another can start before the delivery
 /// looks. Steering into the turn that is running is the right delivery; the
 /// slot's boundary has to follow the text into it.
 #[test]
@@ -5282,7 +5282,7 @@ fn a_slot_that_enters_a_newer_turn_keeps_exactly_one_boundary() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// the callback of a hook that has been replaced is a no-op.
+/// The callback of a hook that has been replaced is a no-op.
 ///
 /// `fire_turn_end_hooks` invokes a drained callback outside the hook lock, so
 /// the old boundary can arrive after the delivery re-keyed the slot. Without the
@@ -5368,7 +5368,7 @@ fn a_replaced_boundary_callback_leaves_the_new_hook_alone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// the global sweep runs at most once per rate window.
+/// The global sweep runs at most once per rate window.
 ///
 /// The sweep walks every other sender's entry under the single brakes lock, so
 /// it is a per-window cost; the caller's own entry is still pruned on every

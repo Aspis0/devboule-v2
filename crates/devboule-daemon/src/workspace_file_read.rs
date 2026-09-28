@@ -468,8 +468,8 @@ pub(crate) fn stamped(metadata: &std::fs::Metadata) -> Option<i64> {
 
 /// Whether the requested spelling names an image by its extension — the
 /// decision Paseo makes before it sniffs
-/// (packages/server/src/server/file-explorer/service.ts) — because an
-/// image's bytes are binary and travel base64, never through a text window.
+/// (packages/server/src/server/file-explorer/service.ts). An image's bytes
+/// are binary and travel base64, never through a text window.
 fn is_image(requested: &str) -> bool {
     Path::new(requested).extension().is_some_and(|extension| {
         let extension = extension.to_string_lossy().to_ascii_lowercase();

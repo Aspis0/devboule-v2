@@ -4892,7 +4892,7 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     );
 
     // The child is a session of the daemon's own list, named and parented as
-    // the creation said (S5-12 read back through the wire, not the journal).
+    // the creation said — read back through the wire, not the journal.
     let child = test.child_of(&creator.id);
     assert_eq!(child.display_name.as_deref(), Some("builder"));
     assert_eq!(child.created_by.as_deref(), Some(creator.id.as_str()));
@@ -6145,7 +6145,7 @@ fn a_child_stopped_with_its_transcript_kept_is_reported_and_gives_its_slot_back(
         "the stopped child's record carries the id of the text report"
     );
 
-    // S5B-03: the transcript stays, so the row stays — and it is ended.
+    // The transcript stays, so the row stays — and it is ended.
     assert!(
         wait_for_session_ended(&test, &child_id, Duration::from_secs(45)),
         "a stopped child keeps its row"
@@ -7119,12 +7119,12 @@ fn a_created_child_receives_its_profiles_declared_feature() {
 /// The probe closes the session it opened when the agent advertises
 /// `sessionCapabilities.close` — Paseo's `closeProbe` gate
 /// (packages/server/src/server/agent/providers/acp-agent.ts) — and never
-/// sends it when the agent does not.
-/// Killing the process is not the equivalent: an agent that persists sessions past
-/// process exit keeps an orphan per settings-panel open, in the user's history
-/// or spending a session quota. An agent that did not offer the verb answers
-/// `session/close` with a method-not-found error, so sending one would be a log
-/// line and no cleanup.
+/// sends it when the agent does not. Killing the process is not the
+/// equivalent: an agent that persists sessions past process exit keeps an
+/// orphan per settings-panel open, in the user's history or spending a
+/// session quota. An agent that did not offer the verb answers
+/// `session/close` with a method-not-found error, so sending one would be a
+/// log line and no cleanup.
 #[test]
 fn the_feature_probe_closes_its_session_only_when_the_agent_advertises_close() {
     let _lock = lock_tests();
