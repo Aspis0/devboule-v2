@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { copyToClipboard } from "../../../lib/clipboard";
 
 type CopyState = "ready" | "copied" | "failed";
 
@@ -15,14 +16,7 @@ export function MessageCopyButton({ text }: { text: string }) {
 
   async function copyMessage() {
     if (resetTimer.current !== null) clearTimeout(resetTimer.current);
-    try {
-      const clipboard = navigator.clipboard;
-      if (clipboard === undefined) throw new Error("Clipboard unavailable");
-      await clipboard.writeText(text);
-      setState("copied");
-    } catch {
-      setState("failed");
-    }
+    setState((await copyToClipboard(text)) ? "copied" : "failed");
     resetTimer.current = setTimeout(() => setState("ready"), 1500);
   }
 

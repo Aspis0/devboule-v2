@@ -1,0 +1,89 @@
+.copyblock {
+  position: relative;
+  margin: 4px 0 2px;
+  padding: 10px 80px 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--fill-tool);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre;
+  overflow: hidden;
+}
+
+.codeblock-sample {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.codeblock-sample pre {
+  width: fit-content;
+  max-width: 100%;
+  margin: 4px 0 2px;
+  padding: 8px 80px 8px 12px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow: auto;
+}
+
+.codeblock-sample pre code {
+  font: inherit;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--panel-card);
+  color: var(--ink-soft);
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.copyblock:hover .copy-btn,
+.copyblock:focus-within .copy-btn,
+.codeblock-sample:hover .copy-btn,
+.codeblock-sample:focus-within .copy-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.copy-btn:hover {
+  background: var(--fill-hover);
+  color: var(--ink);
+}
+
+.copy-btn.is-copied {
+  opacity: 1;
+  pointer-events: auto;
+  color: var(--tone-live);
+}
+
+.copy-btn:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.copyblock > .sr-only,
+.codeblock-sample > .sr-only {
+  user-select: none;
+}

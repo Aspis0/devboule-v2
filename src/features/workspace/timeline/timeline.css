@@ -89,24 +89,6 @@
   font-size: 13px;
 }
 
-.workspace-chat-assistant .workspace-chat-copy pre {
-  width: fit-content;
-  max-width: 100%;
-  margin: 4px 0 2px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: var(--code-bg);
-  color: var(--code-text);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.45;
-  overflow: auto;
-}
-
-.workspace-chat-assistant .workspace-chat-copy pre code {
-  font: inherit;
-}
-
 .workspace-chat-assistant .workspace-chat-copy strong {
   font-weight: 600;
 }

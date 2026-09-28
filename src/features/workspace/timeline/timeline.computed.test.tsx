@@ -17,6 +17,10 @@ const timelineCss = assembleCssProof([
   read("src/styles/tokens.css"),
   read("src/features/workspace/timeline/timeline.css"),
 ]);
+const blockCss = assembleCssProof([
+  read("src/styles/tokens.css"),
+  read("src/components/codeBlocks.css"),
+]);
 
 afterEach(removeCssProof);
 
@@ -71,13 +75,26 @@ describe("timeline computed styles", () => {
       ),
       ".workspace-chat-assistant .workspace-chat-copy ul",
       ".workspace-chat-assistant .workspace-chat-copy code:not(pre code)",
-      ".workspace-chat-assistant .workspace-chat-copy pre",
       ".timeline-copy-chip",
       ".timeline-copy-chip:focus-visible",
       ".workspace-chat-user:hover .timeline-copy-chip",
       ".workspace-chat-user:focus-within .timeline-copy-chip",
       ".workspace-chat-assistant:hover .timeline-copy-chip",
       ".workspace-chat-assistant:focus-within .timeline-copy-chip",
+      ".workspace-chat-assistant:hover .workspace-chat-copy",
+    ]);
+    blockCss.inject([
+      ".copyblock",
+      ".copyblock:hover .copy-btn",
+      ".copyblock:focus-within .copy-btn",
+      ".codeblock-sample",
+      ".codeblock-sample pre",
+      ".codeblock-sample:hover .copy-btn",
+      ".codeblock-sample:focus-within .copy-btn",
+      ".copy-btn",
+      ".copy-btn.is-copied",
+      ".copy-btn:focus-visible",
+      ".copyblock > .sr-only",
     ]);
     const assistant = document.createElement("div");
     assistant.className = "workspace-chat-assistant";
@@ -88,6 +105,8 @@ describe("timeline computed styles", () => {
       ),
       "<ul><li>item</li></ul>",
       "<code>inline</code><pre><code>block</code></pre>",
+      '<div class="copyblock"><button class="copy-btn" type="button">Copy</button>pnpm build</div>',
+      '<div class="codeblock-sample"><button class="copy-btn is-copied" type="button">✓ Copied</button><pre><code>sample</code></pre></div>',
       '<button class="timeline-copy-chip" type="button">Copy</button>',
       "</div>",
     ].join("");
@@ -96,14 +115,22 @@ describe("timeline computed styles", () => {
     const heading = assistant.querySelector<HTMLElement>(".plan-markdown-heading-3");
     const list = assistant.querySelector<HTMLElement>("ul");
     const inlineCode = assistant.querySelector<HTMLElement>(".workspace-chat-copy > code");
-    const codeBlock = assistant.querySelector<HTMLElement>("pre");
+    const codeBlock = assistant.querySelector<HTMLElement>(".codeblock-sample pre");
     const copy = assistant.querySelector<HTMLButtonElement>(".timeline-copy-chip");
+    const copyable = assistant.querySelector<HTMLElement>(".copyblock");
+    const sample = assistant.querySelector<HTMLElement>(".codeblock-sample");
+    const blockCopy = assistant.querySelector<HTMLElement>(".copyblock .copy-btn");
+    const copiedBtn = assistant.querySelector<HTMLElement>(".copy-btn.is-copied");
     if (
       heading === null ||
       list === null ||
       inlineCode === null ||
       codeBlock === null ||
-      copy === null
+      copy === null ||
+      copyable === null ||
+      sample === null ||
+      blockCopy === null ||
+      copiedBtn === null
     ) {
       throw new Error("Markdown or copy markup did not render");
     }
@@ -123,6 +150,36 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(inlineCode).fontSize).toBe("13px");
     expect(getComputedStyle(inlineCode).fontFamily).toContain("JetBrains Mono");
     expect(getComputedStyle(codeBlock).backgroundColor).toBe("#262019");
+    expect(getComputedStyle(codeBlock).paddingRight).toBe("80px");
+    expect(getComputedStyle(copyable).backgroundColor).toBe("#ece4d4");
+    expect(getComputedStyle(copyable).borderLeftWidth).toBe("3px");
+    expect(getComputedStyle(copyable).borderLeftColor).toBe("#bd4a26");
+    expect(getComputedStyle(copyable).borderRadius).toBe("8px");
+    expect(getComputedStyle(copyable).padding).toBe("10px 80px 10px 12px");
+    expect(getComputedStyle(copyable).fontFamily).toContain("JetBrains Mono");
+    expect(getComputedStyle(copyable).fontSize).toBe("13px");
+    expect(getComputedStyle(blockCopy).height).toBe("22px");
+    expect(getComputedStyle(blockCopy).opacity).toBe("0");
+    expect(getComputedStyle(blockCopy).pointerEvents).toBe("none");
+    expect(getComputedStyle(blockCopy).userSelect).toBe("none");
+    expect(getComputedStyle(blockCopy).position).toBe("absolute");
+    expect(getComputedStyle(blockCopy).right).toBe("6px");
+    expect(getComputedStyle(copy).position).toBe("absolute");
+    expect(getComputedStyle(copy).right).toBe("4px");
+    expect(getComputedStyle(copiedBtn).color).toBe("#3f7a56");
+    expect(getComputedStyle(copiedBtn).opacity).toBe("1");
+    expect(blockCss.rulesFor(".copyblock:hover .copy-btn")).toContain("opacity: 1");
+    expect(blockCss.rulesFor(".copyblock:hover .copy-btn")).toContain("pointer-events: auto");
+    expect(blockCss.rulesFor(".copyblock:focus-within .copy-btn")).toContain(
+      "pointer-events: auto",
+    );
+    expect(blockCss.rulesFor(".codeblock-sample:hover .copy-btn")).toContain("opacity: 1");
+    expect(blockCss.rulesFor(".codeblock-sample:focus-within .copy-btn")).toContain(
+      "pointer-events: auto",
+    );
+    expect(blockCss.rulesFor(".copy-btn:focus-visible")).toContain("opacity: 1");
+    expect(blockCss.rulesFor(".copy-btn:focus-visible")).toContain("outline: 2px solid");
+    expect(blockCss.rulesFor(".copyblock > .sr-only")).toContain("user-select: none");
     expect(getComputedStyle(copy).opacity).toBe("0");
     expect(getComputedStyle(copy).pointerEvents).toBe("none");
     copy.focus();

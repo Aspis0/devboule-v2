@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { CodeBlock } from "./CodeBlock";
+import { isCopyableFence } from "../lib/fence";
 
 function inline(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -123,6 +125,7 @@ function isMarkdownPunctuation(code: number): boolean {
 }
 
 export function parseMarkdownText(text: string): ReactNode[] {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const lines = text.split(/\r?\n/);
   const blocks: ReactNode[] = [];
   let index = 0;
@@ -138,10 +141,13 @@ export function parseMarkdownText(text: string): ReactNode[] {
       index += 1;
       while (index < lines.length && !/^```/.test(lines[index])) code.push(lines[index++]);
       if (index < lines.length) index += 1;
+      const body = code.join(eol);
       blocks.push(
-        <pre key={blocks.length}>
-          <code>{code.join("\n")}</code>
-        </pre>,
+        <CodeBlock
+          key={blocks.length}
+          code={body}
+          copyable={isCopyableFence(line.slice(3).trim(), body)}
+        />,
       );
       continue;
     }

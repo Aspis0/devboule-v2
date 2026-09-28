@@ -41,7 +41,7 @@ describe("MarkdownText", () => {
     );
 
     expect(markup).toBe(
-      '<div><div role="heading" aria-level="3" class="plan-markdown-heading plan-markdown-heading-3">Details</div><p>A <code>C:\\Users\\x\\design-sandbox</code> path and <strong>bold</strong> text.</p><ul><li>first item</li><li>second item</li></ul><pre><code>const path = `C:\\Users\\x\\design-sandbox`;</code></pre></div>',
+      '<div><div role="heading" aria-level="3" class="plan-markdown-heading plan-markdown-heading-3">Details</div><p>A <code>C:\\Users\\x\\design-sandbox</code> path and <strong>bold</strong> text.</p><ul><li>first item</li><li>second item</li></ul><div class="codeblock-sample"><button type="button" class="copy-btn" aria-label="Copy code">Copy</button><span aria-live="polite" class="sr-only"></span><pre><code>const path = `C:\\Users\\x\\design-sandbox`;</code></pre></div></div>',
     );
   });
 
