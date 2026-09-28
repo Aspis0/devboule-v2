@@ -11,6 +11,44 @@ use super::tests::{test_owner, tmp_delete_registry};
 use super::*;
 
 #[test]
+fn a_worktree_workspace_records_its_base_branch_and_a_local_one_records_none() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let project_path = dir.join("Project With Spaces");
+    std::fs::create_dir(&project_path).expect("project folder");
+    let project = crate::workspace::project_record(
+        project_path.to_str().expect("project path is valid UTF-8"),
+    )
+    .expect("project record");
+    let project = journal.project_add(project).expect("persist project");
+    let local = journal
+        .workspace_create(crate::workspace::local_workspace_record(&project))
+        .expect("persist local workspace");
+    let worktree = journal
+        .workspace_create(crate::workspace::worktree_workspace_record(
+            &project,
+            &dir.join("checkout"),
+            "main",
+        ))
+        .expect("persist worktree workspace");
+
+    assert_eq!(
+        registry.workspace_branch(&local.id).expect("local branch"),
+        None,
+        "a Local workspace records no base branch"
+    );
+    assert_eq!(
+        registry
+            .workspace_branch(&worktree.id)
+            .expect("worktree branch"),
+        Some("main".to_string()),
+        "a worktree workspace records the branch it was cut from"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 #[cfg(windows)]
 fn workspace_spawn_directory_error_names_workspace_in_plain_spelling() {
     let parent = crate::test_dirs::test_temp_dir("devboule-missing-cwd");

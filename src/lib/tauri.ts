@@ -42,6 +42,7 @@ import type {
   WorkspaceFileStaged,
   PreviewMediaKind,
   WorkspaceGitFileDiff,
+  WorkspaceGitLog,
   WorkspaceGitStatus,
   SessionEvent,
   SessionKind,
@@ -110,6 +111,7 @@ export type CommandArgs = {
   };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
+  workspace_git_log: { workspaceId: Id };
   workspace_git_stage: { workspaceId: Id; paths: string[] };
   workspace_git_unstage: { workspaceId: Id; paths: string[] };
   workspace_git_discard: { workspaceId: Id; paths: string[] };
@@ -261,6 +263,12 @@ type CommandResults = {
   workspace_create: Workspace;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
+  /** The commit history of one workspace: the branch's own commits and
+   * the base branch's recent history, split at the fork point — the
+   * Changes panel's Commits section. `error` is `null` on an answer (an
+   * empty list is a repository whose branch has no commit yet) and the
+   * refusing sentence otherwise. */
+  workspace_git_log: WorkspaceGitLog;
   /** The one reply the four git writes share: `null` is the act landed, a
    * sentence is the refusal — already pathless by the daemon's rule. */
   workspace_git_stage: string | null;
@@ -416,6 +424,7 @@ export const COMMAND_ARG_KEYS = {
   workspace_create: ["projectId", "isolation", "branch"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
+  workspace_git_log: ["workspaceId"],
   workspace_git_stage: ["workspaceId", "paths"],
   workspace_git_unstage: ["workspaceId", "paths"],
   workspace_git_discard: ["workspaceId", "paths"],
@@ -598,6 +607,16 @@ export const workspaceGitStatus = (workspaceId: Id) =>
  */
 export const workspaceGitDiff = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_git_diff", { workspaceId, path });
+/**
+ * The commit history of one workspace — the Changes panel's Commits
+ * section. `workspaceId` names the folder: the daemon resolves it from the
+ * id (the `path` a workspace carries is display-only on the wire), splits
+ * the history at the fork point, and answers with the branch's own commits
+ * and the base branch's recent history, or the refusing sentence — already
+ * pathless by the daemon's own rule.
+ */
+export const workspaceGitLog = (workspaceId: Id) =>
+  invokeTyped("workspace_git_log", { workspaceId });
 /**
  * Stage paths in the workspace's index — the Changes panel's Stage. The
  * paths are the panel's own rows (relative, from a status reply): the

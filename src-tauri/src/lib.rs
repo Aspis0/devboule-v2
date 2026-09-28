@@ -111,6 +111,7 @@ pub fn run() {
             backend::workspace::workspace_create,
             backend::workspace::workspace_git_status,
             backend::workspace::workspace_git_diff,
+            backend::workspace::workspace_git_log,
             backend::workspace::workspace_git_stage,
             backend::workspace::workspace_git_unstage,
             backend::workspace::workspace_git_discard,

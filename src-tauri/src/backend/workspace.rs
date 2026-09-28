@@ -3,7 +3,8 @@ use std::sync::Arc;
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
     Project, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
-    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
+    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus,
+    WorkspaceIsolation,
 };
 use tauri::State;
 
@@ -97,6 +98,29 @@ pub async fn workspace_git_diff(
 ) -> Result<WorkspaceGitFileDiff, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_git_diff(&workspace_id, &path)).await
+}
+
+/// The commit history of one workspace — the Changes panel's Commits
+/// section: the branch's own commits and the base branch's recent history,
+/// split at the fork point. `workspace_id` names the folder; the daemon
+/// resolves it and classifies the repository the same way the status road
+/// does.
+///
+/// Bounded like the other workspace roads: `RPC_TIMEOUT` (30 s) is what
+/// this caller feels, against a daemon worst case of up to 18 git spawns —
+/// the probe, the branch and base-ref resolution with its default-branch
+/// fallback, two `git log` runs, `merge-base` and `rev-list` — each under
+/// the house's 60 s per command. The daemon can outlast the caller's wait;
+/// the residual is accepted and stated rather than hidden, the same way the
+/// status road states it. The wait leaves the window's thread the way the
+/// other long roads do.
+#[tauri::command]
+pub async fn workspace_git_log(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+) -> Result<WorkspaceGitLog, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_git_log(&workspace_id)).await
 }
 
 /// The entries of one workspace folder — the Files panel's tree, one

@@ -40,9 +40,10 @@ import {
   surfaceSettingsSet,
   toolPolicyGet,
   toolPolicySet,
+  workspaceGitLog,
   type PairingOutcome,
 } from "./tauri";
-import type { AgentProfilesDocument, PeerRow, PendingPairing } from "../types/ipc";
+import type { AgentProfilesDocument, PeerRow, PendingPairing, WorkspaceGitLog } from "../types/ipc";
 
 function rustCommandFiles(root: string): string[] {
   return readdirSync(root, { withFileTypes: true })
@@ -719,6 +720,36 @@ describe("provider refresh wrapper", () => {
     await providersRefresh();
 
     expect(invoke).toHaveBeenCalledWith("providers_refresh", undefined);
+  });
+});
+
+describe("workspace_git_log command wrapper", () => {
+  it("passes the workspace id and returns the daemon's history", async () => {
+    vi.mocked(invoke).mockClear();
+    const log: WorkspaceGitLog = {
+      baseRef: "main",
+      commits: [
+        {
+          sha: "a".repeat(40),
+          shortSha: "abcdef1",
+          subject: "Add foo",
+          authorName: "Test User",
+          authorDate: "2026-01-02T03:04:05+00:00",
+          isOnRemote: true,
+          isOnBase: false,
+        },
+      ],
+      error: null,
+    };
+    vi.mocked(invoke).mockResolvedValue(log as never);
+
+    const answer = await workspaceGitLog("w.1");
+
+    expect(invoke).toHaveBeenCalledWith("workspace_git_log", { workspaceId: "w.1" });
+    expect(answer).toEqual(log);
+    // The manifest the structural parity test compares with the Rust
+    // parameter list, so a rename on either side has to fail here.
+    expect(COMMAND_ARG_KEYS.workspace_git_log).toEqual(["workspaceId"]);
   });
 });
 

@@ -14,7 +14,8 @@ use devboule_protocol::{
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
     SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
     WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
-    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
+    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus,
+    WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -1028,6 +1029,26 @@ impl DaemonClient {
             message: message.to_string(),
             idempotency_key,
         })
+    }
+
+    /// The commit history of one workspace — the branch's own commits and
+    /// the base branch's recent history, split at the fork point. The id is
+    /// the whole argument: the daemon resolves the directory from it, like
+    /// the status read. Refused unless the handshake negotiated
+    /// `workspace.git_log`: a daemon that predates the frame cannot
+    /// deserialize it and would kill the connection on a request it never
+    /// knew.
+    pub fn workspace_git_log(&self, workspace_id: &str) -> Result<WorkspaceGitLog, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::WORKSPACE_GIT_LOG)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceGitLog {
+            id,
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::WorkspaceGitLog { log, .. } => Ok(log),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
     }
 
     /// The entries of one workspace folder. The id and a relative `path` are
@@ -2240,6 +2261,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Workspace { id, .. }
         | DaemonMessage::WorkspaceGit { id, .. }
         | DaemonMessage::WorkspaceGitFile { id, .. }
+        | DaemonMessage::WorkspaceGitLog { id, .. }
         | DaemonMessage::WorkspaceGitWrite { id, .. }
         | DaemonMessage::WorkspaceFiles { id, .. }
         | DaemonMessage::WorkspaceFileContent { id, .. }

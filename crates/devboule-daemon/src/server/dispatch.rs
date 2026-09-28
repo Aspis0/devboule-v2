@@ -289,6 +289,7 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::WorkspaceGitUnstage { .. }
         | ClientMessage::WorkspaceGitDiscard { .. }
         | ClientMessage::WorkspaceGitCommit { .. }
+        | ClientMessage::WorkspaceGitLog { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }

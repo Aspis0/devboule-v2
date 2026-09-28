@@ -624,6 +624,17 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    /// The commit history of one workspace, for the Changes panel's Commits
+    /// section: the branch's own commits newest-first, then at most ten of
+    /// the base branch's recent history, each carrying its changed files,
+    /// beside the base ref the split was computed against. A read like
+    /// [`Self::WorkspaceGitStatus`]: the daemon resolves the directory from
+    /// `workspace_id` and runs `git log` there under the house runner. The
+    /// reply is [`DaemonMessage::WorkspaceGitLog`].
+    WorkspaceGitLog {
+        id: u64,
+        workspace_id: String,
+    },
     /// The entries of one workspace folder, for the Files panel's tree. A read
     /// like [`Self::WorkspaceGitStatus`]: the daemon resolves the directory
     /// from `workspace_id`, and `path` is a relative path inside it — empty
@@ -1129,6 +1140,7 @@ impl ClientMessage {
             | Self::WorkspaceGitUnstage { id, .. }
             | Self::WorkspaceGitDiscard { id, .. }
             | Self::WorkspaceGitCommit { id, .. }
+            | Self::WorkspaceGitLog { id, .. }
             | Self::WorkspaceFilesList { id, .. }
             | Self::WorkspaceFileRead { id, .. }
             | Self::WorkspaceFileRename { id, .. }
@@ -1262,7 +1274,8 @@ impl ClientMessage {
             | Self::AgentProfilesSet { .. }
             | Self::ProviderVocabularyGet { .. }
             | Self::DelegationGet { .. }
-            | Self::DelegationSet { .. } => None,
+            | Self::DelegationSet { .. }
+            | Self::WorkspaceGitLog { .. } => None,
         }
     }
 
@@ -1311,6 +1324,7 @@ impl ClientMessage {
             Self::WorkspaceGitUnstage { .. } => "WorkspaceGitUnstage",
             Self::WorkspaceGitDiscard { .. } => "WorkspaceGitDiscard",
             Self::WorkspaceGitCommit { .. } => "WorkspaceGitCommit",
+            Self::WorkspaceGitLog { .. } => "WorkspaceGitLog",
             Self::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             Self::WorkspaceFileRename { .. } => "WorkspaceFileRename",
@@ -1364,6 +1378,7 @@ impl ClientMessage {
             | Self::WorkspacesList { .. }
             | Self::WorkspaceGitStatus { .. }
             | Self::WorkspaceGitDiff { .. }
+            | Self::WorkspaceGitLog { .. }
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
             | Self::ProvidersList { .. }
@@ -1523,6 +1538,15 @@ pub enum DaemonMessage {
     WorkspaceGit {
         id: u64,
         status: WorkspaceGitStatus,
+    },
+    /// The reply to [`ClientMessage::WorkspaceGitLog`]: the workspace's
+    /// commit history, or the sentence the refusal stopped on. Same pair
+    /// discipline as [`WorkspaceGit`]: `commits` with `error: null` is the
+    /// answer (an empty list is a repository that has no history yet), a
+    /// sentence in `error` is a refusal and carries no commits.
+    WorkspaceGitLog {
+        id: u64,
+        log: WorkspaceGitLog,
     },
     /// The reply to [`ClientMessage::WorkspaceGitDiff`]: the diff of one
     /// file, or a refusal of it.
@@ -1996,6 +2020,74 @@ pub struct WorkspaceGitFileDiff {
     /// and no git stderr (see the debt note above). `null` exactly when
     /// `status` is `ok` or `binary` — those two are answers, not failures.
     pub error: Option<String>,
+}
+
+/// The commit history of one workspace, as the Changes panel's Commits
+/// section renders it — a three-way answer, and `error` is what separates
+/// the three:
+///
+/// - `commits` with `error: null` is the complete answer (an empty list is
+///   a repository whose branch has no commit yet).
+/// - A populated `commits` with a sentence in `error` is a **cut-short**
+///   list: the branch is longer than the reply carries (past the byte cap
+///   or the commit limit), the records parsed up to the last complete one
+///   are the newest commits, and the sentence says the oldest are missing.
+///   The panel renders the list beside the sentence, not instead of it.
+/// - An empty `commits` with a sentence in `error` is a **refusal**: the
+///   folder is not a repository, the stored base branch is not a valid git
+///   ref, git did not answer. The panel renders the sentence alone.
+///
+/// `base_ref` stands in both cut-short and complete answers — the split
+/// was computed before the read ran — and is `null` in a refusal.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitLog {
+    /// The ref the workspace's commits were split from — the branch this
+    /// workspace was opened on, resolved to a ref git can compare against.
+    /// `null` when the workspace sits on that branch itself (nothing to
+    /// split), when no base branch could be resolved, or when there is no
+    /// branch at all (a detached HEAD, a repository with no commit yet).
+    pub base_ref: Option<String>,
+    /// The branch's own commits newest-first — at most 200 of them, the
+    /// daemon's `WORKSPACE_COMMIT_LIMIT` — then at most ten of the base
+    /// branch's recent history back to the fork point. The two halves are
+    /// disjoint by construction, so no commit appears twice; when the
+    /// workspace sits on its default branch there is no base to split from
+    /// and the reply is the branch's own recent history, every commit
+    /// `is_on_base: true`. A branch longer than the limit ships its newest
+    /// commits and the truncation sentence in `error`.
+    pub commits: Vec<WorkspaceGitCommitEntry>,
+    /// Why this reply is not the complete answer, in one pathless sentence —
+    /// the same debt `WorkspaceGitStatus.error` records: this frame does not
+    /// pass the redaction seam, so the message itself is the guard. `null`
+    /// exactly when the answer is complete.
+    pub error: Option<String>,
+}
+
+/// One commit of the history: its identity and its subject.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitCommitEntry {
+    pub sha: String,
+    pub short_sha: String,
+    /// Git's subject — the message's first line, reflowed by git itself
+    /// onto one line.
+    pub subject: String,
+    pub author_name: String,
+    /// ISO 8601, the strict `%aI` spelling git prints.
+    pub author_date: String,
+    /// `false` = local-only: no remote ref can reach it. A repository with
+    /// no remote marks every commit local-only.
+    pub is_on_remote: bool,
+    /// `true` = not in the workspace's own list — the base branch's history,
+    /// not this workspace's work. The two halves are disjoint by
+    /// construction (the workspace half is everything `comparison..HEAD`
+    /// reaches, the base half everything the merge base reaches going
+    /// back), so no commit appears in both. When there is no base to split
+    /// from — the workspace sits on its default branch — the workspace list
+    /// is empty and every commit of the branch's own recent history is
+    /// `is_on_base: true`.
+    pub is_on_base: bool,
 }
 
 /// The entries of one workspace folder, as the Files panel's tree renders

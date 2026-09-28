@@ -111,8 +111,9 @@ pub use messages::{
     VocabularyFeatureOption, VocabularyFeatures, VocabularyModels, VocabularyModes,
     VocabularyOrigin, VocabularySource, VocabularyState, WorkspaceDirectory, WorkspaceFileContent,
     WorkspaceFileContentKind, WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind,
-    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFilePreviewStatus, WorkspaceGitDiffLine,
-    WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus,
+    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFilePreviewStatus,
+    WorkspaceGitCommitEntry, WorkspaceGitDiffLine, WorkspaceGitDiffLineKind,
+    WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus, WorkspaceGitLog,
     WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
@@ -168,8 +169,10 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// switches, the `SessionSetName` session-rename frame, and the negotiated
 /// `provider.auth-check` capability for credential-status checks. Version 13
 /// adds per-session provider features: the `SessionSetFeature` toggle and the
-/// `SessionFeatureState` event, which carry Codex's plan mode.
-pub const PROTOCOL_VERSION: u32 = 13;
+/// `SessionFeatureState` event, which carry Codex's plan mode. Version 14 adds
+/// the `WorkspaceGitLog` request and its reply, gated on the negotiated
+/// `workspace.git_log` capability — the Changes panel's Commits section.
+pub const PROTOCOL_VERSION: u32 = 14;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.
@@ -217,6 +220,16 @@ pub mod caps {
     /// because older daemons may know tool policies without knowing this frame.
     pub const PROVIDER_SWITCHES: &str = "provider.switches";
     pub const PROVIDER_AUTH_CHECK: &str = "provider.auth-check";
+
+    /// A workspace's commit history (`WorkspaceGitLog`): the branch's own
+    /// commits and the base branch's recent history, split at the fork point.
+    ///
+    /// Its own name rather than the journal's: a client must not send the
+    /// frame to a daemon that predates it, whose reader cannot deserialize the
+    /// variant and would kill the connection on a request it never knew. The
+    /// app's daemon client refuses the call unless this name was negotiated,
+    /// which is what this name exists for.
+    pub const WORKSPACE_GIT_LOG: &str = "workspace.git_log";
 
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
@@ -677,6 +690,11 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // `AgentMessageSend` can carry a sender that lives on the far daemon, so
     // a dialer must refuse a daemon that predates that wire meaning.
     capabilities.push(Capability::new(caps::AGENT_MESSAGES));
+    // The commit-history read: the daemon serves `WorkspaceGitLog`, so the
+    // app must offer the name or the handshake would negotiate it away —
+    // and the app reads it to tell a daemon that serves the Commits section
+    // from one that predates the frame.
+    capabilities.push(Capability::new(caps::WORKSPACE_GIT_LOG));
     capabilities
 }
 
@@ -734,6 +752,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // Keep the frame meaning negotiated on both sides: an older daemon would
     // otherwise answer a far sender with the wrong local-absence receipt.
     capabilities.push(Capability::new(caps::AGENT_MESSAGES));
+    // Same pairing, for the commit history: the app offers it so the
+    // intersection keeps it, and reads it before asking a daemon that
+    // predates `WorkspaceGitLog`.
+    capabilities.push(Capability::new(caps::WORKSPACE_GIT_LOG));
     capabilities
 }
 
@@ -789,6 +811,20 @@ mod tests {
         assert!(m3a_client_capabilities()
             .iter()
             .any(|cap| cap.as_str() == caps::TOOL_POLICY));
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_workspace_git_log_capability() {
+        // The capability the commit-history read is gated on. Same both-lists
+        // rule as `tool_policy`: the handshake negotiates the intersection,
+        // and the app's daemon client refuses `workspace_git_log` unless the
+        // daemon advertised the name.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::WORKSPACE_GIT_LOG));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::WORKSPACE_GIT_LOG));
     }
 
     #[test]

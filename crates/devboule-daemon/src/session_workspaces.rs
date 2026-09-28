@@ -553,6 +553,24 @@ impl super::SessionRegistry {
             .map(|path| plain_cwd(&path))
     }
 
+    /// The workspace row's own recorded base branch — the branch a worktree
+    /// workspace was cut from; `None` for a Local workspace. The git-log
+    /// read resolves its comparison base ref from it (a worktree's stored
+    /// base, the role Paseo's worktree metadata plays), falling back to the
+    /// repository's default branch when the row records none.
+    pub(crate) fn workspace_branch(&self, workspace_id: &str) -> Result<Option<String>, WireError> {
+        let journal = self.journal.as_ref().ok_or_else(|| {
+            workspace_journal_error(
+                workspace_id,
+                crate::journal::JournalError::Unavailable("journal is not open".to_string()),
+            )
+        })?;
+        journal
+            .workspace_get_for_session(workspace_id)
+            .map(|record| record.and_then(|record| record.branch))
+            .map_err(|error| workspace_journal_error(workspace_id, error))
+    }
+
     pub(super) fn apply_workspace_cwd(
         &self,
         workspace_id: Option<&str>,

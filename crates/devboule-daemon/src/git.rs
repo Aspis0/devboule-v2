@@ -167,8 +167,8 @@ struct GitProcess {
     job: crate::process_tree::JobObject,
 }
 
-fn append_git_stdout(output: &mut Vec<u8>, chunk: &[u8]) {
-    let remaining = (GIT_STDOUT_MAX_BYTES + 1).saturating_sub(output.len());
+fn append_git_stdout(output: &mut Vec<u8>, chunk: &[u8], max_bytes: usize) {
+    let remaining = (max_bytes + 1).saturating_sub(output.len());
     output.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
 }
 
@@ -205,7 +205,7 @@ fn spawn_git_process(mut command: Command) -> std::io::Result<GitProcess> {
             match stdout.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(length) => {
-                    append_git_stdout(&mut bytes, &buffer[..length]);
+                    append_git_stdout(&mut bytes, &buffer[..length], GIT_STDOUT_MAX_BYTES);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => {
@@ -329,8 +329,20 @@ pub(crate) enum GitRunError {
 
 /// Run `git` with the given argv. Stdout and stderr are drained concurrently
 /// under a Job Object so a Windows launcher cannot outlive a timeout, and a
-/// full pipe cannot deadlock the wait.
+/// full pipe cannot deadlock the wait. Output is capped at the shared
+/// [`GIT_STDOUT_MAX_BYTES`] ceiling.
 pub(crate) fn run_git_args(args: &[String]) -> Result<GitOutput, GitRunError> {
+    run_git_args_with_cap(args, GIT_STDOUT_MAX_BYTES)
+}
+
+/// Run `git` with the given argv under `max_bytes` — a caller whose output
+/// is not the working tree (the log read's is the history) gets a ceiling
+/// sized to its own job. Same closed argv, timeouts and Job Object as
+/// [`run_git_args`].
+pub(crate) fn run_git_args_with_cap(
+    args: &[String],
+    max_bytes: usize,
+) -> Result<GitOutput, GitRunError> {
     let mut command = Command::new("git");
     command.args(args);
     command
@@ -343,7 +355,7 @@ pub(crate) fn run_git_args(args: &[String]) -> Result<GitOutput, GitRunError> {
         command.creation_flags(0x0800_0000);
     }
 
-    let mut process = match spawn_captured_git_process(command) {
+    let mut process = match spawn_captured_git_process(command, max_bytes) {
         Ok(process) => process,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(GitRunError::NotFound)
@@ -401,16 +413,17 @@ struct CapturedGitProcess {
 
 fn spawn_stdio_reader(
     mut stream: impl Read + Send + 'static,
+    max_bytes: usize,
 ) -> (Receiver<Option<Vec<u8>>>, JoinHandle<()>) {
     let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::spawn(move || {
-        let mut bytes = Vec::with_capacity(GIT_STDOUT_MAX_BYTES + 1);
+        let mut bytes = Vec::with_capacity(max_bytes + 1);
         let mut buffer = [0u8; 4096];
         let mut read_error = false;
         loop {
             match stream.read(&mut buffer) {
                 Ok(0) => break,
-                Ok(length) => append_git_stdout(&mut bytes, &buffer[..length]),
+                Ok(length) => append_git_stdout(&mut bytes, &buffer[..length], max_bytes),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => {
                     read_error = true;
@@ -423,7 +436,10 @@ fn spawn_stdio_reader(
     (receiver, reader)
 }
 
-fn spawn_captured_git_process(mut command: Command) -> std::io::Result<CapturedGitProcess> {
+fn spawn_captured_git_process(
+    mut command: Command,
+    max_bytes: usize,
+) -> std::io::Result<CapturedGitProcess> {
     #[cfg(windows)]
     let job = crate::process_tree::JobObject::new()?;
     let mut child = command.spawn()?;
@@ -456,8 +472,8 @@ fn spawn_captured_git_process(mut command: Command) -> std::io::Result<CapturedG
             return Err(std::io::Error::other("git stderr was not piped"));
         }
     };
-    let (stdout_rx, stdout_reader) = spawn_stdio_reader(stdout);
-    let (stderr_rx, stderr_reader) = spawn_stdio_reader(stderr);
+    let (stdout_rx, stdout_reader) = spawn_stdio_reader(stdout, max_bytes);
+    let (stderr_rx, stderr_reader) = spawn_stdio_reader(stderr, GIT_STDOUT_MAX_BYTES);
     Ok(CapturedGitProcess {
         child,
         stdout: stdout_rx,
@@ -607,7 +623,7 @@ mod tests {
         });
 
         for chunk in chunks {
-            append_git_stdout(&mut output, &chunk);
+            append_git_stdout(&mut output, &chunk, GIT_STDOUT_MAX_BYTES);
         }
 
         assert_eq!(output.len(), GIT_STDOUT_MAX_BYTES + 1);

@@ -3243,6 +3243,78 @@ fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
     }
 }
 
+/// The workspace git-log frame and its reply, pinned to the exact words
+/// TypeScript reads (`src/types/ipc.ts`): the `type` tags, the camelCase
+/// keys, the four `status` words in `snake_case`, and `error`/`baseRef`
+/// travelling as `null` rather than being omitted.
+#[test]
+fn workspace_git_log_round_trips_with_its_wire_words() {
+    let log = WorkspaceGitLog {
+        base_ref: Some("main".to_string()),
+        commits: vec![WorkspaceGitCommitEntry {
+            sha: "a".repeat(40),
+            short_sha: "abcdef1".to_string(),
+            subject: "Add foo".to_string(),
+            author_name: "Test User".to_string(),
+            author_date: "2026-01-02T03:04:05+00:00".to_string(),
+            is_on_remote: true,
+            is_on_base: false,
+        }],
+        error: None,
+    };
+    let reply = DaemonMessage::WorkspaceGitLog { id: 7, log };
+    let json = serde_json::to_string(&reply).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_git_log\"",
+        "\"baseRef\":\"main\"",
+        "\"shortSha\":\"abcdef1\"",
+        "\"authorName\":\"Test User\"",
+        "\"authorDate\":\"2026-01-02T03:04:05+00:00\"",
+        "\"isOnRemote\":true",
+        "\"isOnBase\":false",
+        "\"error\":null",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        reply.clone()
+    );
+
+    let request = ClientMessage::WorkspaceGitLog {
+        id: 7,
+        workspace_id: "ws.1".to_string(),
+    };
+    let json = serde_json::to_string(&request).expect("serialize");
+    assert!(json.contains("\"type\":\"workspace_git_log\""), "{json}");
+    assert!(json.contains("\"workspaceId\":\"ws.1\""), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        request
+    );
+    assert_eq!(request.name(), "WorkspaceGitLog");
+    assert!(!request.is_state_changing(), "a read writes nothing");
+    assert_eq!(request.request_id(), Some(7));
+
+    // An absent base ref and a present error are both `null` on the wire,
+    // never an omitted key — the TypeScript side types them as nullable.
+    let refused = WorkspaceGitLog {
+        base_ref: None,
+        error: Some("this workspace folder is not a git repository".to_string()),
+        ..reply_log(&reply)
+    };
+    let json = serde_json::to_string(&refused).expect("serialize");
+    assert!(json.contains("\"baseRef\":null"), "{json}");
+    assert!(json.contains("\"error\":\"this workspace folder"), "{json}");
+}
+
+fn reply_log(message: &DaemonMessage) -> WorkspaceGitLog {
+    match message {
+        DaemonMessage::WorkspaceGitLog { log, .. } => log.clone(),
+        other => panic!("not a workspace git log reply: {other:?}"),
+    }
+}
+
 /// The workspace git-diff frame and its reply, pinned to the exact words
 /// TypeScript reads (`src/types/ipc.ts`): the `type` tags, the camelCase
 /// keys, the four `status` words and the four `kind` words in `snake_case`,

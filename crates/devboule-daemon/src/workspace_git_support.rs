@@ -10,7 +10,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::git::{
-    detect_git_repository, run_git_args, GitOutput, GitRepositoryStatus, GitRunError,
+    detect_git_repository, run_git_args, run_git_args_with_cap, GitOutput, GitRepositoryStatus,
+    GitRunError,
 };
 
 /// A workspace folder below a repository root. Read from a subdirectory,
@@ -26,7 +27,7 @@ pub(crate) const INSIDE_A_REPOSITORY: &str =
 /// No path in any sentence below: `error` on these frames crosses a wire
 /// whose redaction seam does not touch it (the debt recorded on
 /// `WorkspaceGitStatus`), so the message itself is the guard.
-const NOT_A_REPOSITORY: &str = "this workspace folder is not a git repository";
+pub(crate) const NOT_A_REPOSITORY: &str = "this workspace folder is not a git repository";
 pub(crate) const NOT_A_DIRECTORY: &str = "the workspace folder is not a directory";
 const PROBE_TIMEOUT: &str = "git did not answer within the probe timeout";
 const GIT_UNAVAILABLE: &str = "git could not be run";
@@ -104,6 +105,19 @@ pub(crate) fn git(root: &Path, subcommand: &[&str]) -> Result<GitOutput, GitRunE
     let mut arguments = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
     arguments.extend(subcommand.iter().map(|argument| (*argument).to_string()));
     run_git_args(&arguments)
+}
+
+/// Run `git` in `root` under `max_bytes` — a caller whose output is not the
+/// working tree (the log read's is the history) gets a ceiling sized to its
+/// own job. Same closed argv, timeouts and Job Object as [`git`].
+pub(crate) fn git_with_cap(
+    root: &Path,
+    subcommand: &[&str],
+    max_bytes: usize,
+) -> Result<GitOutput, GitRunError> {
+    let mut arguments = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
+    arguments.extend(subcommand.iter().map(|argument| (*argument).to_string()));
+    run_git_args_with_cap(&arguments, max_bytes)
 }
 
 /// A git that never started, timed out or is not installed — named by

@@ -146,6 +146,8 @@ mod workspace_files;
 #[cfg(feature = "server")]
 mod workspace_git_diff;
 #[cfg(feature = "server")]
+mod workspace_git_log;
+#[cfg(feature = "server")]
 mod workspace_git_status;
 #[cfg(feature = "server")]
 mod workspace_git_support;

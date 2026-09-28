@@ -105,6 +105,9 @@ pub(super) fn dispatch_journal(
             workspace_id,
             path,
         } => crate::workspace_git_diff::reply(state, id, &workspace_id, &path),
+        ClientMessage::WorkspaceGitLog { id, workspace_id } => {
+            crate::workspace_git_log::reply(state, id, &workspace_id)
+        }
         // The four git writes: keyed like the file writes below (a retry
         // with the same key replays the first success instead of acting
         // twice — a second commit would find nothing staged), and only a

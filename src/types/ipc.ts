@@ -94,6 +94,52 @@ export interface WorkspaceGitStatus {
   error: string | null;
 }
 
+/** The commit history of one workspace, the reply of `workspace_git_log`
+ * — a three-way answer, and `error` is what separates the three:
+ *
+ * - `commits` with `error: null` is the complete answer (an empty list is a
+ *   repository whose branch has no commit yet).
+ * - A populated `commits` with a sentence in `error` is a **cut-short**
+ *   list: the branch is longer than the reply carries (past the byte cap
+ *   or the 200-commit limit), the records are the newest commits, and the
+ *   sentence says the oldest are missing. Render the list beside the
+ *   sentence, not instead of it.
+ * - An empty `commits` with a sentence in `error` is a **refusal**: not a
+ *   repository, an invalid stored base branch, git did not answer. Render
+ *   the sentence alone.
+ *
+ * `baseRef` stands in both cut-short and complete answers and is `null`
+ * in a refusal. */
+export interface WorkspaceGitLog {
+  /** The ref the commits were split from — `null` when the workspace sits
+   * on that branch itself, when no base branch could be resolved, or when
+   * there is no branch at all. */
+  baseRef: string | null;
+  /** The branch's own commits newest-first — at most 200 — then at most ten
+   * of the base branch's recent history back to the fork point. */
+  commits: WorkspaceGitCommitEntry[];
+  /** Why this reply is not the complete answer, in one pathless sentence.
+   * `null` exactly when the answer is complete. */
+  error: string | null;
+}
+
+/** One commit of the history. */
+export interface WorkspaceGitCommitEntry {
+  sha: string;
+  shortSha: string;
+  /** Git's subject — the message's first line. */
+  subject: string;
+  authorName: string;
+  /** ISO 8601. */
+  authorDate: string;
+  /** `false` = local-only: no remote ref can reach it. */
+  isOnRemote: boolean;
+  /** `true` = not in the workspace's own list — the base branch's history,
+   * not this workspace's work. When there is no base to split from, every
+   * commit of the branch's own recent history is `isOnBase: true`. */
+  isOnBase: boolean;
+}
+
 /** Why a file diff does or does not carry lines. `ok` and `binary` are
  * complete answers; `too_large` says the lines exist and were withheld
  * rather than cut short (the sentence in `error` names which cap); `error`

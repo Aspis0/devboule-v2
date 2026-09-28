@@ -300,8 +300,11 @@ Pubvia is not available yet.
 ## Building from source
 
 Requirements are pinned in the repository: Node **26.8.1** (`.nvmrc`), pnpm
-**10.33.2** (`packageManager`), Rust **1.98.0** (`rust-toolchain.toml`). Tauri
-also needs the usual platform prerequisites — see the
+**10.33.2** (`packageManager`), Rust **1.98.0** (`rust-toolchain.toml`), and
+git **≥ 2.24** — the commit-history read carries `--end-of-options`, which
+older gits do not know (the daemon answers "git log needs git 2.24 or
+newer" rather than a bare exit code). Tauri also needs the usual platform
+prerequisites — see the
 [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```sh

@@ -340,6 +340,7 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         | ClientMessage::WorkspaceGitUnstage { .. }
         | ClientMessage::WorkspaceGitDiscard { .. }
         | ClientMessage::WorkspaceGitCommit { .. }
+        | ClientMessage::WorkspaceGitLog { .. }
         | ClientMessage::WorkspaceFilePreviewStage { .. }
         | ClientMessage::WorkspaceFilePreviewUnstage { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
@@ -1459,6 +1460,10 @@ pub(crate) mod tests {
                 message: "say what changed".to_string(),
                 idempotency_key: None,
             },
+            ClientMessage::WorkspaceGitLog {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+            },
             ClientMessage::WorkspaceFilesList {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
@@ -2466,6 +2471,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitUnstage { .. } => administrative(),
             ClientMessage::WorkspaceGitDiscard { .. } => administrative(),
             ClientMessage::WorkspaceGitCommit { .. } => administrative(),
+            ClientMessage::WorkspaceGitLog { .. } => administrative(),
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
@@ -2496,7 +2502,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 70;
+    pub(crate) const VARIANT_COUNT: usize = 71;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2545,6 +2551,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitUnstage { .. } => "WorkspaceGitUnstage",
             ClientMessage::WorkspaceGitDiscard { .. } => "WorkspaceGitDiscard",
             ClientMessage::WorkspaceGitCommit { .. } => "WorkspaceGitCommit",
+            ClientMessage::WorkspaceGitLog { .. } => "WorkspaceGitLog",
             ClientMessage::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             ClientMessage::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             ClientMessage::WorkspaceFileRename { .. } => "WorkspaceFileRename",
@@ -2782,6 +2789,10 @@ pub(crate) mod tests {
                 workspace_id: "ws.1".to_string(),
                 message: "say what changed".to_string(),
                 idempotency_key: None,
+            },
+            ClientMessage::WorkspaceGitLog {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
             },
             ClientMessage::WorkspaceFilesList {
                 id: 1,
