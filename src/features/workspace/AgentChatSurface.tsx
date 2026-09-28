@@ -1,7 +1,6 @@
 import {
   memo,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -39,14 +38,7 @@ import {
   lastAssistantMessage,
   RECOVERED_SESSION_UNAVAILABLE,
 } from "../../lib/agentSession";
-import type {
-  AgentChatItem,
-  AgentSessionState,
-  AgentSubagent,
-  AgentSubagentStatusCounts,
-  AgentSubagentStatus,
-  AgentStatus,
-} from "../../lib/agentSession";
+import type { AgentChatItem, AgentSessionState, AgentStatus } from "../../lib/agentSession";
 import {
   groupToolCalls,
   isToolCallGroup,
@@ -68,6 +60,7 @@ import {
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { WorkspaceComposer } from "./WorkspaceComposer";
+import { SubagentMenu } from "./SubagentMenu";
 import { SessionContextMeter } from "./ContextMeter";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
@@ -320,110 +313,6 @@ function thoughtLabel(item: AgentChatItem): string {
   const subagentLabel = hasParentToolUseId(item);
   const depthCopy = subagentDepthCopy(item);
   return subagentLabel ? `Subagent thought${depthCopy}` : "Thought";
-}
-
-const SUBAGENT_STATUSES: AgentSubagentStatus[] = [
-  "running",
-  "finished",
-  "failed",
-  "stopped",
-  "unknown",
-];
-
-function shortSubagentId(id: string): string {
-  return id.length > 16 ? `${id.slice(0, 12)}…` : id;
-}
-
-function subagentTitle(title: string | null, id: string): string {
-  return title?.trim() ? title : shortSubagentId(id);
-}
-
-function subagentType(type: string | null): string {
-  return type?.trim() ? type : "Type unavailable";
-}
-
-function subagentDotClass(status: AgentSubagentStatus): string {
-  return `workspace-subagent-status-${status}`;
-}
-
-interface SubagentMenuProps {
-  subagents: AgentSubagent[];
-  statusCounts: AgentSubagentStatusCounts;
-}
-
-function SubagentMenu({ subagents, statusCounts }: SubagentMenuProps) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const listId = useId();
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node) || !menuRef.current?.contains(target)) setOpen(false);
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    document.addEventListener("click", closeOnOutsideClick);
-    return () => {
-      document.removeEventListener("keydown", closeOnEscape);
-      document.removeEventListener("click", closeOnOutsideClick);
-    };
-  }, [open]);
-
-  if (subagents.length === 0) return null;
-
-  return (
-    <div ref={menuRef} className="workspace-subagent-menu">
-      <button
-        type="button"
-        className="workspace-subagent-pill"
-        data-testid="subagent-pill"
-        aria-expanded={open}
-        aria-controls={open ? listId : undefined}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span className="workspace-subagent-pill-label">Subagents</span>
-        {SUBAGENT_STATUSES.map((status) => {
-          const count = statusCounts[status];
-          if (count === 0) return null;
-          return (
-            <span className="workspace-subagent-pill-group" key={status}>
-              <span
-                className={`workspace-status-dot workspace-subagent-status-dot ${subagentDotClass(status)}`}
-                aria-hidden="true"
-              />
-              <span>
-                {count} {status}
-              </span>
-            </span>
-          );
-        })}
-      </button>
-      {open ? (
-        <div className="workspace-subagent-list" id={listId} role="list">
-          {subagents.map((subagent) => (
-            <div className="workspace-subagent-row" key={subagent.id} role="listitem">
-              <span
-                className={`workspace-status-dot workspace-subagent-status-dot ${subagentDotClass(subagent.status)}`}
-                aria-hidden="true"
-              />
-              <span className="workspace-subagent-row-status">{subagent.status}</span>
-              <span className="workspace-subagent-type">{subagentType(subagent.subagentType)}</span>
-              <span
-                className="workspace-subagent-title"
-                title={subagentTitle(subagent.title, subagent.id)}
-              >
-                {subagentTitle(subagent.title, subagent.id)}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 /** Description line for a model option: catalog copy plus the context size. */

@@ -7,8 +7,11 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { PermissionRequest, Session, SessionEvent, SessionState } from "../../types/ipc";
 import type { AgentStatus } from "../../lib/agentSession";
+import { channelHarness } from "./sessionChannelHarness";
 import { heldAssistantTextFor } from "./attentionNotice";
 import { assembleCssProof } from "./cssProof";
+
+vi.mock("../../lib/tauri", async () => (await import("./sessionChannelHarness")).tauriMock);
 
 const rootDir = resolve(import.meta.dirname, "../../..");
 const workspaceCss = assembleCssProof([
@@ -17,16 +20,6 @@ const workspaceCss = assembleCssProof([
 ]);
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-const channelHarness = vi.hoisted(() => ({
-  emit: null as ((event: SessionEvent) => void) | null,
-  active: null as ((event: SessionEvent) => void) | null,
-  activeSubscriptionId: null as number | null,
-  nextSubscriptionId: 41,
-  deferNextAttach: false,
-  releaseNextAttach: null as (() => void) | null,
-  handlers: new WeakMap<object, (event: SessionEvent) => void>(),
-}));
 
 const REALISTIC_COMMAND_CATALOG = [
   { name: "compact", description: "Compress conversation history to save context window" },
@@ -102,54 +95,6 @@ const REALISTIC_COMMAND_CATALOG = [
   { name: "modernize-uplift", description: "Perform a same-stack version uplift" },
   { name: "frontend-design", description: "Create distinctive, intentional frontend experiences" },
 ];
-
-vi.mock("../../lib/tauri", () => ({
-  // `workspaceSessions.ts` — now in this file's graph for the a2a card's
-  // name resolution — reads `sessionsList` at module scope for its default
-  // source; the roster itself is passed in as a prop by these tests.
-  sessionsList: vi.fn(async () => []),
-  createSessionChannel: vi.fn((onEvent: (event: SessionEvent) => void) => {
-    const channel = {};
-    channelHarness.handlers.set(channel, onEvent);
-    channelHarness.emit = onEvent;
-    return channel;
-  }),
-  sessionAttach: vi.fn(async (...args: unknown[]) => {
-    if (channelHarness.deferNextAttach) {
-      channelHarness.deferNextAttach = false;
-      await new Promise<void>((resolve) => {
-        channelHarness.releaseNextAttach = resolve;
-      });
-      channelHarness.releaseNextAttach = null;
-    }
-    await Promise.resolve();
-    const channel = args[2];
-    const subscriptionId = channelHarness.nextSubscriptionId++;
-    channelHarness.activeSubscriptionId = subscriptionId;
-    channelHarness.active =
-      typeof channel === "object" && channel !== null
-        ? (channelHarness.handlers.get(channel) ?? null)
-        : null;
-    return subscriptionId;
-  }),
-  sessionDetach: vi.fn(async (subscriptionId: number) => {
-    if (channelHarness.activeSubscriptionId !== subscriptionId) return;
-    channelHarness.activeSubscriptionId = null;
-    channelHarness.active = null;
-  }),
-  sessionSend: vi.fn(async () => undefined),
-  sessionInterrupt: vi.fn(async () => undefined),
-  sessionSetModel: vi.fn(async () => undefined),
-  sessionSetMode: vi.fn(async () => undefined),
-  sessionSetFeature: vi.fn(async () => undefined),
-  isCommandError: (error: unknown): boolean =>
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    "message" in error &&
-    typeof (error as { code: unknown }).code === "string" &&
-    typeof (error as { message: unknown }).message === "string",
-}));
 
 import {
   sessionAttach,
@@ -762,7 +707,7 @@ describe("AgentChatSurface", () => {
     expect(container.textContent).not.toContain("Subagents");
   });
 
-  it("shows only non-empty subagent states and keeps stopped distinct", async () => {
+  it("shows the failed and working counts on the pill, hiding a zero part, and lists every subagent", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -802,34 +747,29 @@ describe("AgentChatSurface", () => {
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
-    expect(pill.textContent).toContain("1 running");
-    expect(pill.textContent).toContain("1 stopped");
-    expect(pill.textContent).toContain("1 unknown");
+    expect(pill.textContent).toContain("1 working");
+    expect(pill.textContent).not.toContain("running");
+    expect(pill.textContent).not.toContain("stopped");
+    expect(pill.textContent).not.toContain("unknown");
     expect(pill.textContent).not.toContain("finished");
     expect(pill.textContent).not.toContain("failed");
 
     await act(async () => pill.click());
     expect(pill.getAttribute("aria-expanded")).toBe("true");
     expect(pill.getAttribute("aria-controls")).not.toBeNull();
-    const rows = container.querySelectorAll(".workspace-subagent-row");
+    const rows = document.querySelectorAll(".workspace-subagent-row");
     expect(rows).toHaveLength(3);
-    const list = container.querySelector(".workspace-subagent-list");
-    expect(list?.textContent).toContain("stopped");
-    expect(list?.textContent).toContain("unknown");
+    const list = document.querySelector(".workspace-subagent-list");
+    expect(list?.textContent).toContain("Inspect the workspace");
+    expect(list?.textContent).toContain("Stop this task");
+    expect(list?.textContent).toContain("Background task");
     expect(list?.textContent).not.toContain("finished");
     expect(list?.textContent).not.toContain("failed");
-    for (const status of ["running", "stopped", "unknown"]) {
-      expect(
-        [...(list?.querySelectorAll(".workspace-subagent-row-status") ?? [])].filter(
-          (row) => row.textContent === status,
-        ),
-      ).toHaveLength(1);
-    }
 
     await act(async () => pill.click());
     expect(pill.getAttribute("aria-expanded")).toBe("false");
     expect(pill.getAttribute("aria-controls")).toBeNull();
-    expect(container.querySelector(".workspace-subagent-list")).toBeNull();
+    expect(document.querySelector(".workspace-subagent-list")).toBeNull();
   });
 
   it("renders finished and failed children when those states are present", async () => {
@@ -868,15 +808,13 @@ describe("AgentChatSurface", () => {
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
-    expect(pill.textContent).toContain("1 finished");
     expect(pill.textContent).toContain("1 failed");
+    expect(pill.textContent).not.toContain("finished");
 
     await act(async () => pill.click());
-    const list = container.querySelector(".workspace-subagent-list");
-    expect(list?.textContent).toContain("finished");
-    expect(list?.textContent).toContain("failed");
-    expect(list?.textContent).toContain("verifier");
-    expect(list?.textContent).toContain("debugger");
+    const list = document.querySelector(".workspace-subagent-list");
+    expect(list?.textContent).toContain("Finished task");
+    expect(list?.textContent).toContain("Failed task");
   });
 
   it("renders child transcript items with their type, depth, and id fallback", async () => {
@@ -944,13 +882,11 @@ describe("AgentChatSurface", () => {
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
     await act(async () => pill.click());
-    const list = container.querySelector(".workspace-subagent-list");
-    expect(list?.textContent).toContain("stopped");
-    expect(list?.textContent).toContain("worker");
+    const list = document.querySelector(".workspace-subagent-list");
     expect(list?.textContent).toContain("task-no-title");
   });
 
-  it("closes the subagent list on Escape and an outside click", async () => {
+  it("closes the subagent list on Escape and an outside press", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -971,19 +907,19 @@ describe("AgentChatSurface", () => {
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
     await act(async () => pill.click());
-    expect(container.querySelector(".workspace-subagent-list")).not.toBeNull();
+    expect(document.querySelector(".workspace-subagent-list")).not.toBeNull();
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
-    expect(container.querySelector(".workspace-subagent-list")).toBeNull();
+    expect(document.querySelector(".workspace-subagent-list")).toBeNull();
 
     await act(async () => pill.click());
-    expect(container.querySelector(".workspace-subagent-list")).not.toBeNull();
+    expect(document.querySelector(".workspace-subagent-list")).not.toBeNull();
     await act(async () => {
-      document.body.click();
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     });
-    expect(container.querySelector(".workspace-subagent-list")).toBeNull();
+    expect(document.querySelector(".workspace-subagent-list")).toBeNull();
   });
 
   it("shows provider, model, and effort as chips from the session manifest", async () => {

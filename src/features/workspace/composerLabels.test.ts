@@ -27,6 +27,7 @@ const rootDir = resolve(import.meta.dirname, "../../..");
 const OWNED_SHEETS = [
   readFileSync(resolve(rootDir, "src/styles/tokens.css"), "utf8"),
   readFileSync(resolve(rootDir, "src/features/workspace/Workspace.css"), "utf8"),
+  readFileSync(resolve(rootDir, "src/features/workspace/SubagentMenu.css"), "utf8"),
   readFileSync(resolve(rootDir, "src/components/PickerChip.css"), "utf8"),
 ];
 
@@ -79,7 +80,6 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
   const UI_FONT_AT_12 = [
     ".workspace-chat-label",
     ".workspace-subagent-pill",
-    ".workspace-subagent-row",
     ".workspace-mode-chip-trigger",
     ".workspace-picker-static", // the static single-model label
     ".workspace-composer-hint",
@@ -90,6 +90,15 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
     const rules = css.rulesFor(selector);
     expect(rules).toContain('font-family: "Inter", system-ui, sans-serif');
     expect(rules).toContain("font-size: 12px");
+  });
+
+  it("the subagent rows are the UI font at the mockup's 13px", () => {
+    // The mockup's row is 13 px (skeleton .sub-row) — above the 12 px floor
+    // this describe block enforces, so it is pinned at its own value.
+    const css = assembleCssProof(OWNED_SHEETS);
+    const rules = css.rulesFor(".workspace-subagent-row");
+    expect(rules).toContain('font-family: "Inter", system-ui, sans-serif');
+    expect(rules).toContain("font-size: 13px");
   });
 
   it("the composer text is the spec's 14/1.45 on the transcript column", () => {

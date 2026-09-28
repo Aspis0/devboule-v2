@@ -1,0 +1,118 @@
+/* The subagent pill in the pane header and the menu it opens.
+   Values from the mockups (.pill, .sub-menu, .sub-head, .sub-row). */
+
+.workspace-subagent-menu {
+  flex: none;
+}
+
+.workspace-subagent-pill {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 28px;
+  padding: 0 12px;
+  color: var(--ink-soft);
+  background: var(--panel-menu);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: var(--shadow-pop);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.workspace-subagent-pill:hover,
+.workspace-subagent-pill:focus-visible {
+  color: var(--ink);
+}
+
+.workspace-subagent-pill-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.workspace-subagent-pill-chevron {
+  color: var(--tone-idle);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The subagent dots carry this one rule alone: the shared
+   .workspace-status-dot (Workspace.css) is 7 px and loads after this sheet,
+   so a dot wearing both classes renders 7 px in the portaled rows. */
+.workspace-subagent-status-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+
+.workspace-subagent-status-running {
+  background: var(--tone-live);
+}
+
+.workspace-subagent-status-finished,
+.workspace-subagent-status-stopped,
+.workspace-subagent-status-unknown {
+  background: var(--tone-idle);
+}
+
+.workspace-subagent-status-failed {
+  background: var(--tone-attention);
+}
+
+.workspace-subagent-list {
+  width: 340px;
+  padding: 6px;
+  background: var(--panel-menu);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop);
+}
+
+.workspace-subagent-list-head {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.workspace-subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.workspace-subagent-row-chevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--tone-idle);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.workspace-subagent-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

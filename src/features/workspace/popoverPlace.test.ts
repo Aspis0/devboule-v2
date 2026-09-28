@@ -91,6 +91,90 @@ describe("placePopover — where a popover lands for its anchor", () => {
     expect(placed.top + 300).toBeLessThanOrEqual(700 - gap);
   });
 
+  it("opens above when the content fits there, whatever the space below", () => {
+    // "Above" is a preference, not an order: the menu opens upward when
+    // its content fits there. Space above: 200 − 8 − 6 = 186 ≥ 100. Space
+    // below: 800 − 220 − 8 = 572 — below is the larger side, and the
+    // popover still opens above.
+    const placed = placePopover(
+      { left: 400, right: 430, top: 200, bottom: 220 },
+      { width: 200, height: 100 },
+      viewport,
+      margin,
+      true,
+    );
+    expect(placed).toEqual({
+      left: 400,
+      top: 200 - gap - 100,
+      maxWidth: 984,
+      maxHeight: 200 - gap - margin,
+    });
+    // The popover's bottom edge stops above the anchor's top edge.
+    expect(placed.top + 100).toBeLessThanOrEqual(200 - gap);
+  });
+
+  it("flips below when the content does not fit above — the pill's own geometry", () => {
+    // The pill sits in the pane header, near the window's top: the space
+    // above it is far less than the menu's content (head + rows), so the
+    // menu opens below over the transcript, capped at the old sheet's
+    // 280 px.
+    const placed = placePopover(
+      { left: 400, right: 430, top: 53, bottom: 81 },
+      { width: 340, height: 264 },
+      viewport,
+      margin,
+      true,
+    );
+    expect(placed).toEqual({
+      left: 400,
+      top: 81 + gap,
+      maxWidth: 984,
+      maxHeight: 280,
+    });
+    // The whole eight-row menu shows: 264 ≤ 280, nothing to scroll.
+    expect(placed.top + 264).toBeLessThanOrEqual(800 - margin);
+  });
+
+  it("takes the larger side and scrolls when the content fits nowhere", () => {
+    // A short viewport: space above 250 − 8 − 6 = 236, space below
+    // 300 − 280 − 8 − 6 = 6. The 264 px menu fits neither side; the larger
+    // side is above, so it opens there and scrolls inside.
+    const placed = placePopover(
+      { left: 400, right: 430, top: 250, bottom: 280 },
+      { width: 340, height: 264 },
+      { width: 1000, height: 300 },
+      margin,
+      true,
+    );
+    expect(placed).toEqual({
+      left: 400,
+      top: 250 - gap - 236,
+      maxWidth: 984,
+      maxHeight: 236,
+    });
+    // It scrolls: the box takes the side's space, shorter than the content.
+    expect(Math.min(264, placed.maxHeight)).toBeLessThan(264);
+  });
+
+  it("lands the menu's edge on the viewport's margin when the content is too tall for the side", () => {
+    // A viewport too short for the menu on either side: the larger side is
+    // above, and the menu's top edge lands on the margin — the part above
+    // the window is an inside scroll, never an off-screen head.
+    const placed = placePopover(
+      { left: 400, right: 430, top: 53, bottom: 81 },
+      { width: 340, height: 264 },
+      { width: 1000, height: 120 },
+      margin,
+      true,
+    );
+    expect(placed).toEqual({
+      left: 400,
+      top: margin,
+      maxWidth: 984,
+      maxHeight: 53 - margin - gap,
+    });
+  });
+
   it("a popover taller than the space below ends at the viewport's margin and scrolls inside", () => {
     const placed = placePopover(
       { left: 100, right: 120, top: 30, bottom: 50 },

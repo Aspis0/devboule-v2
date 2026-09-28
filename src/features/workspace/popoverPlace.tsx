@@ -22,6 +22,8 @@ import { createPortal } from "react-dom";
 export const POPOVER_MARGIN = 8;
 /** The gap the popover keeps off its anchor, on whichever side it opens. */
 const ANCHOR_GAP = 6;
+/** The subagent menu's own ceiling: the old sheet capped it at 280 px and scrolled inside. */
+const MENU_MAX_HEIGHT = 280;
 
 export interface PopoverPlacement {
   left: number;
@@ -41,16 +43,22 @@ export interface PopoverPlacement {
  * viewport, and `maxWidth` caps the popover so "wider than the viewport"
  * ends at the margin instead of off-screen.
  *
- * Vertical: it opens BELOW the anchor with `maxHeight` = the space left
- * below minus the margin, and flips ABOVE only when the space above is
- * larger — in both directions the popover's visible edge keeps its gap off
- * the anchor: it never covers it.
+ * Vertical: "above" is a preference, not an order. With `openAbove` the
+ * popover opens upward when its content fits there, and downward when it
+ * does not — downward with the menu's old 280 px ceiling and an inside
+ * scroll — and when it fits on neither side it takes the larger one and
+ * scrolls inside it. Without the flag it keeps the original default:
+ * below, flipping up only when the space above is larger. Either way the
+ * popover's visible edge keeps its gap off the anchor and, when the
+ * content is taller than the side, lands on the viewport's margin: it
+ * never covers the anchor and never leaves the window.
  */
 export function placePopover(
   anchor: { left: number; right: number; top: number; bottom: number },
   popover: { width: number; height: number },
   viewport: { width: number; height: number },
   margin: number = POPOVER_MARGIN,
+  openAbove: boolean = false,
 ): PopoverPlacement {
   const maxWidth = Math.max(0, viewport.width - margin * 2);
   const width = Math.min(popover.width, maxWidth);
@@ -61,13 +69,31 @@ export function placePopover(
 
   const spaceBelow = viewport.height - anchor.bottom - margin;
   const spaceAbove = anchor.top - margin;
-  const below = spaceAbove <= spaceBelow;
-  const maxHeight = Math.max(
-    0,
-    below
-      ? viewport.height - (anchor.bottom + ANCHOR_GAP) - margin
-      : anchor.top - ANCHOR_GAP - margin,
-  );
+  let below: boolean;
+  let maxHeight: number;
+  if (openAbove) {
+    // The preference: upward only when the content fits there, gap
+    // included. Fitting neither side, the larger one wins and the menu
+    // scrolls inside it.
+    const fitsAbove = popover.height <= spaceAbove - ANCHOR_GAP;
+    const fitsBelow = popover.height <= spaceBelow - ANCHOR_GAP;
+    below = fitsAbove ? false : fitsBelow ? true : spaceBelow >= spaceAbove;
+    const side = below ? spaceBelow : spaceAbove;
+    // The ceiling is the old sheet's 280 px, on the downward side the
+    // menu has always had; the side's space is the rest, so a menu too
+    // tall for the side scrolls inside it with its edge on the viewport's
+    // margin — never above the window.
+    const room = Math.max(side - ANCHOR_GAP, 0);
+    maxHeight = below ? Math.min(room, MENU_MAX_HEIGHT) : room;
+  } else {
+    below = spaceAbove <= spaceBelow;
+    maxHeight = Math.max(
+      0,
+      below
+        ? viewport.height - (anchor.bottom + ANCHOR_GAP) - margin
+        : anchor.top - ANCHOR_GAP - margin,
+    );
+  }
   const height = Math.min(popover.height, maxHeight);
   const top = below ? anchor.bottom + ANCHOR_GAP : anchor.top - ANCHOR_GAP - height;
   return { left, top, maxWidth, maxHeight };
@@ -80,6 +106,8 @@ interface AnchoredPopoverProps extends HTMLAttributes<HTMLDivElement> {
   containerRef?: RefObject<HTMLDivElement | null>;
   /** Close the popover: an ancestor of the anchor scrolled, or the anchor left the document. */
   onDismiss?: () => void;
+  /** Prefer opening above the anchor: upward when the content fits there, else below. */
+  openAbove?: boolean;
   children: ReactNode;
 }
 
@@ -99,6 +127,7 @@ export function AnchoredPopover({
   anchorRef,
   containerRef,
   onDismiss,
+  openAbove = false,
   children,
   ...divProps
 }: AnchoredPopoverProps) {
@@ -129,7 +158,7 @@ export function AnchoredPopover({
       right: anchorBox.right,
       bottom: anchorBox.bottom,
     };
-    const placed = placePopover(anchorBox, rootBox, viewport);
+    const placed = placePopover(anchorBox, rootBox, viewport, POPOVER_MARGIN, openAbove);
     root.style.left = `${placed.left}px`;
     root.style.top = `${placed.top}px`;
     root.style.maxHeight = `${placed.maxHeight}px`;
@@ -137,7 +166,7 @@ export function AnchoredPopover({
     // number keeps it above any stacking context the app root may create.
     root.style.zIndex = "100";
     root.style.minWidth = "220px";
-  }, [anchorRef]);
+  }, [anchorRef, openAbove]);
 
   useLayoutEffect(() => {
     place();
