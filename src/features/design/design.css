@@ -1429,10 +1429,6 @@
   flex: none;
   padding: 10px 14px 12px;
   border-top: 1px solid var(--border);
-  /* The permission card is the only child that sizes text from its host, so the
-     composer states the scale once here: the card's description and controls
-     read at the chrome's size instead of the page root's 16px. */
-  --permission-card-font-size: 10.5px;
 }
 
 .design-composer-meta {

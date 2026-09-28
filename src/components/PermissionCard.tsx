@@ -637,11 +637,38 @@ export function PermissionCard({
           (A14): the request's text renders below it, so a remote turn cannot
           print something that reads as it. */}
       {provenance !== null ? <div className="permission-card-origin">{provenance}</div> : null}
-      <div className="permission-card-heading">
-        <span className={`permission-card-dot permission-card-${cardTone}`} />
-        <span className="permission-card-action">{isPlan ? "Plan" : subject.action}</span>
-        {request.cwd ? <span className="permission-card-context">{request.cwd}</span> : null}
-      </div>
+      {/* The plan card keeps the head it has always had — slice C14 owns that
+          card's redesign. The question card has no head: the spec gives it
+          none, and its help icon is its marker. Its working directory lives
+          in the actions row instead. */}
+      {isQuestion ? null : (
+        <div className="permission-card-heading">
+          <span className={`permission-card-dot permission-card-${cardTone}`} />
+          {isPlan ? (
+            <span className="permission-card-action">Plan</span>
+          ) : (
+            <>
+              <svg
+                className="permission-card-icon permission-card-shield"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+              </svg>
+              <span className="permission-card-title">Permission</span>
+            </>
+          )}
+          {request.cwd ? <span className="permission-card-context">{request.cwd}</span> : null}
+        </div>
+      )}
+      {/* The action sentence leaves the head and becomes the card's content
+          line: the head names the card type, this line says what is asked.
+          A question card's action sentence would only repeat its question, so
+          it stays off that card — named in the C4 report. */}
+      {!isQuestion && !isPlan ? (
+        <div className="permission-card-action">{subject.action}</div>
+      ) : null}
       {subject.target ? (
         <div className="permission-card-subject" title={subject.target}>
           {shortenPermissionTarget(subject.target)}
@@ -668,7 +695,7 @@ export function PermissionCard({
       ) : null}
       {!isQuestion && !isPlan && !isChooser && (!allowSupported || !denySupported) ? (
         <div className="permission-card-unavailable" role="status">
-          {!allowSupported ? "Allow once is not offered for this request." : null}
+          {!allowSupported ? "Allow is not offered for this request." : null}
           {!allowSupported && !denySupported ? " " : null}
           {!denySupported ? "Deny is not offered for this request." : null}
         </div>
@@ -677,48 +704,91 @@ export function PermissionCard({
         <div className="permission-card-questions">
           {askedQuestions.map((question, questionIndex) => (
             <fieldset key={questionIndex} className="permission-card-question">
-              <legend className="permission-card-question-text">{question.question}</legend>
-              {question.options.map((option, optionIndex) => {
-                const checked = pickedOptions.get(questionIndex)?.has(optionIndex) ?? false;
-                return (
-                  <label key={optionIndex} className="permission-card-question-option">
+              <legend className="permission-card-question-text">
+                <span className="permission-card-question-row">
+                  <svg
+                    className="permission-card-icon permission-card-help"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                    <path d="M12 17h.01" />
+                  </svg>
+                  {question.question}
+                </span>
+              </legend>
+              <div className="permission-card-question-options">
+                {question.options.map((option, optionIndex) => {
+                  const checked = pickedOptions.get(questionIndex)?.has(optionIndex) ?? false;
+                  return (
+                    <label
+                      key={optionIndex}
+                      className={
+                        checked
+                          ? "permission-card-question-option permission-card-question-option-chosen"
+                          : "permission-card-question-option"
+                      }
+                    >
+                      <input
+                        type={question.multiSelect ? "checkbox" : "radio"}
+                        className="permission-card-question-input"
+                        // Scoped to this card's own session, subscription and
+                        // tool call: a provider-chosen id alone could repeat
+                        // across two visible cards and merge their groups.
+                        name={`permission-question-${sessionId}-${subscriptionId}-${request.toolCallId}-${questionIndex}`}
+                        checked={checked}
+                        onChange={() => toggleQuestionOption(questionIndex, optionIndex)}
+                        disabled={permission !== "waiting" || !daemonReachable}
+                      />
+                      {checked ? (
+                        <svg
+                          className="permission-card-icon permission-card-check"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                          focusable="false"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                      ) : null}
+                      <span className="permission-card-question-label">{option.label}</span>
+                      {option.description ? (
+                        <span className="permission-card-question-description">
+                          {option.description}
+                        </span>
+                      ) : null}
+                    </label>
+                  );
+                })}
+                {questionTextAllowed(question) ? (
+                  <label className="permission-card-question-option permission-card-question-other">
+                    <span className="permission-card-question-label">Other…</span>
                     <input
-                      type={question.multiSelect ? "checkbox" : "radio"}
-                      // Scoped to this card's own session, subscription and
-                      // tool call: a provider-chosen id alone could repeat
-                      // across two visible cards and merge their groups.
-                      name={`permission-question-${sessionId}-${subscriptionId}-${request.toolCallId}-${questionIndex}`}
-                      checked={checked}
-                      onChange={() => toggleQuestionOption(questionIndex, optionIndex)}
+                      type={question.secret === true ? "password" : "text"}
+                      className="permission-card-question-other-input"
+                      value={questionOther(questionIndex)}
+                      onChange={(event) => setQuestionOther(questionIndex, event.target.value)}
+                      placeholder="Type another answer…"
                       disabled={permission !== "waiting" || !daemonReachable}
                     />
-                    <span className="permission-card-question-label">{option.label}</span>
-                    {option.description ? (
-                      <span className="permission-card-question-description">
-                        {option.description}
-                      </span>
-                    ) : null}
                   </label>
-                );
-              })}
-              {questionTextAllowed(question) ? (
-                <label className="permission-card-question-other">
-                  <span className="permission-card-question-label">Other</span>
-                  <input
-                    type={question.secret === true ? "password" : "text"}
-                    value={questionOther(questionIndex)}
-                    onChange={(event) => setQuestionOther(questionIndex, event.target.value)}
-                    placeholder="Type another answer…"
-                    disabled={permission !== "waiting" || !daemonReachable}
-                  />
-                </label>
-              ) : null}
+                ) : null}
+              </div>
             </fieldset>
           ))}
         </div>
       ) : null}
       {chosenName ? <div className="permission-card-choice">Chosen: {chosenName}</div> : null}
       <div className="permission-card-actions">
+        {/* The question card's working directory: a meta line in the actions
+            row, in the UI font — it is not code. The head is gone from this
+            card, so the directory lives here, left of the buttons. */}
+        {isQuestion && request.cwd ? (
+          <span className="permission-card-cwd" title={request.cwd}>
+            {request.cwd}
+          </span>
+        ) : null}
         <span
           className="permission-card-label"
           title={resolution?.answeredBy != null ? resolution.answeredBy : undefined}
@@ -809,7 +879,7 @@ export function PermissionCard({
               onClick={() => void respond({ outcome: "allow_once" })}
               disabled={permission !== "waiting" || !daemonReachable || !allowSupported}
             >
-              Allow once
+              Allow
             </button>
           </>
         )}

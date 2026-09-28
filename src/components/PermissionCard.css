@@ -1,19 +1,20 @@
-/* The host decides the scale. Everything in this card without a size of its own
-   — the description, the buttons' inherited line box — reads at whatever the
-   surrounding chrome reads at, so the card is neither a banner inside a compact
-   panel nor a postage stamp on a full-size page. A host that sets nothing gets
-   the ambient size, which is what an unhosted card had before. */
+/* The card shell: the mockup's .card — panel fill, one hairline, r12,
+   11/14 padding. Every size in this file is an explicit px from the 12/14
+   ramp, so the card reads the same in both themes and at every host
+   scale. */
 .permission-card {
   flex: none;
   overflow: hidden;
-  font-size: var(--permission-card-font-size, inherit);
-  background: var(--surface-muted);
-  border: 1px solid var(--border-strong);
-  /* 9px matches the sibling notice box; 12px read as a page banner. */
-  border-radius: 9px;
+  padding: 11px 14px;
+  background: var(--panel-card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
   animation: rise 0.24s ease both;
 }
 
+/* The design surface's own notice box (DesignSurface.tsx), which shares this
+   sheet: pre-existing, on the pre-redesign tokens by design — declared in the
+   C4 report, not refactored here. */
 .permission-card-notice {
   flex: none;
   padding: 8px 12px;
@@ -21,31 +22,58 @@
   background: var(--surface-muted);
   border: 1px solid var(--border-strong);
   border-radius: 9px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
-/* The provenance band (A14). It sits above the body on a surface of its own,
-   in its own weight: the request's text is chosen upstream, so a line it prints
-   itself must not be able to pass as this one by placing itself first. */
+/* The provenance band (A14). Full-bleed above the body and cut from it by a
+   hairline: the request's text renders below it, so a remote turn cannot
+   print something that reads as it. The full-bleed leans on the card's
+   `overflow: hidden` — if that ever becomes visible (the usual reason: a
+   focus ring must draw outside), the band bleeds past the rounded corners. */
 .permission-card-origin {
-  padding: 5px 11px;
+  margin: -11px -14px 8px;
+  padding: 5px 14px;
   color: var(--ink-soft);
-  background: var(--surface);
-  border-bottom: 1px solid var(--border-strong);
-  font-size: 10.5px;
-  font-weight: 600;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 500;
   letter-spacing: 0.01em;
 }
 
-.permission-card-heading,
-.permission-card-actions {
+.permission-card-heading {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
 }
 
-/* The heading's own words are the heading, so they may shrink; the working
-   directory beside them never pushes them out of the row. */
+/* The card's icons: stroke-only, currentColor — the mockup's .ic. */
+.permission-card-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.permission-card-shield {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted);
+}
+
+.permission-card-title {
+  flex: none;
+  color: var(--muted);
+}
+
+/* The action sentence shrinks with an ellipsis rather than wrapping or
+   pushing its row apart — in the plan card's head it shares a row with the
+   working directory, and as the permission card's content line it can
+   outgrow a narrow card. */
 .permission-card-action {
   min-width: 0;
   overflow: hidden;
@@ -53,29 +81,32 @@
   white-space: nowrap;
 }
 
-.permission-card-heading {
-  min-width: 0;
-  padding: 8px 11px 5px;
-  font-size: 11.5px;
+/* The action sentence as the card's content line — 14px ink, the permission
+   card's own question below its head. (The plan card's action stays inside
+   its head; that card waits for slice C14.) */
+.permission-card > .permission-card-action {
+  margin-top: 6px;
+  color: var(--ink);
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1.4;
 }
 
-/* Aligned under the heading's text, past the 6px dot and its 8px gap, so the
-   target hangs as a line of the sentence above it rather than as a new block. */
 .permission-card-subject {
+  margin-top: 4px;
   overflow: hidden;
-  padding: 0 11px 2px 25px;
   color: var(--ink);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
   line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .permission-card-description {
-  padding: 0 11px 6px 25px;
+  margin-top: 6px;
   color: var(--ink-soft);
+  font-size: 12px;
   line-height: 1.5;
   /* Descriptions carry daemon-authored line structure (a creation card's
      delimited spawn-prompt block, one '| '-prefixed line per prompt line):
@@ -120,11 +151,17 @@
 }
 
 .permission-card-waiting {
-  background: var(--ochre);
+  background: var(--tone-attention);
+}
+
+/* In flight: the card is still waiting, now on the daemon — the same tone,
+   the words say where. */
+.permission-card-submitting {
+  background: var(--tone-attention);
 }
 
 .permission-card-allowed {
-  background: var(--green);
+  background: var(--tone-live);
 }
 
 .permission-card-denied {
@@ -134,135 +171,156 @@
 /* A durable grant wears the allowance's colour; the words carry the
    duration. */
 .permission-card-allowed_always {
-  background: var(--green);
+  background: var(--tone-live);
 }
 
 /* A session grant wears it too; the label says for how long. */
 .permission-card-allowed_session {
-  background: var(--green);
+  background: var(--tone-live);
 }
 
 /* An answered card whose outcome the daemon did not name: it is not a denial
    and must not wear one's colour, so the dot goes neutral. */
 .permission-card-unclaimed {
-  background: var(--silence);
+  background: var(--tone-idle);
 }
 
 .permission-card-context {
   min-width: 0;
   margin-left: auto;
   overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  font-weight: 400;
+  color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .permission-card-command {
+  margin-top: 8px;
   max-height: 12em;
   overflow: auto;
-  padding: 4px 11px 9px 25px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11.5px;
+  padding: 6px 10px;
+  color: var(--code-text);
+  background: var(--code-bg);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .permission-card-env {
+  margin-top: 6px;
   max-height: 8em;
   overflow: auto;
-  padding: 0 11px 8px 25px;
-  color: var(--silence);
-  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .permission-card-unavailable {
-  padding: 0 11px 8px 25px;
-  color: var(--silence);
-  font-size: 10.5px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .permission-card-actions {
-  padding: 8px 11px 9px;
-  /* A chooser's option buttons take their own rows rather than pushing the
-     label's state words out of a narrow card. */
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 /* The option the answer picked, under the daemon's own name: the label says
    whether it was allowed or denied — this says which choice that was. */
 .permission-card-choice {
-  padding: 0 11px 6px 25px;
+  margin-top: 6px;
   color: var(--ink);
-  font-size: 11.5px;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
-.permission-card-label {
-  /* Shrinks first: the two buttons keep their measured widths in a narrow
-     column instead of being pushed onto a second row by the status word. */
+/* The question card's working directory: a meta line in the actions row, in
+   the UI font — it is not code. Truncated with an ellipsis; the full path
+   stays on the title. */
+.permission-card-cwd {
   min-width: 0;
   overflow: hidden;
-  color: var(--silence);
-  font-size: 11px;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-card-label {
+  /* Shrinks first, and pushes the buttons to the card's right edge: the
+     state words read as the row's label, the actions as its controls. */
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .permission-card-secondary-action,
 .permission-card-primary-action {
-  display: grid;
-  flex: none;
-  place-items: center;
-  height: 26px;
-  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
   cursor: pointer;
-  font-size: 11px;
 }
 
 .permission-card-secondary-action {
-  padding: 0 11px;
   color: var(--ink-soft);
   background: transparent;
-  border: 0;
+  border: 1px solid var(--line-strong);
 }
 
 .permission-card-secondary-action:hover,
 .permission-card-secondary-action:focus-visible {
-  color: var(--danger-deep);
+  color: var(--ink);
+  background: var(--fill-hover);
 }
 
 .permission-card-primary-action {
-  padding: 0 12px;
-  color: var(--surface);
-  background: var(--terracotta-deep);
-  border: 1px solid var(--terracotta-deep);
-  font-weight: 500;
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border: 1px solid var(--accent);
 }
 
-.permission-card-primary-action:hover,
+/* An accent ring on the accent fill is invisible — exactly where keyboard
+   focus starts — so the filled action rings in the contrast colour, offset
+   inside its own fill. */
 .permission-card-primary-action:focus-visible {
-  background: var(--ink-soft);
+  outline: 2px solid var(--accent-contrast);
+  outline-offset: -2px;
 }
 
 .permission-card-secondary-action:disabled,
 .permission-card-primary-action:disabled {
   cursor: not-allowed;
-  opacity: 1;
 }
 
 .permission-card-secondary-action:disabled {
-  color: var(--silence);
+  color: var(--muted);
+  border-color: var(--line);
 }
 
 .permission-card-primary-action:disabled {
-  color: var(--silence);
-  background: var(--surface-muted);
-  border-color: var(--silence);
+  color: var(--muted);
+  background: var(--fill-tool);
+  border-color: var(--fill-tool);
 }
 
 /* A model's question: one group per asked item, in the card's own measure.
@@ -272,7 +330,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 2px 11px 6px 25px;
+  margin-top: 8px;
 }
 
 .permission-card-question {
@@ -281,21 +339,79 @@
   border: 0;
 }
 
+/* The question itself: 14px ink with a help icon — the question card's only
+   head. */
 .permission-card-question-text {
-  padding: 0 0 4px;
+  padding: 0;
   color: var(--ink);
+  font-size: 14px;
   font-weight: 600;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
-.permission-card-question-option,
-.permission-card-question-other {
+.permission-card-question-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.permission-card-help {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted);
+}
+
+.permission-card-question-options {
   display: flex;
-  align-items: baseline;
-  gap: 7px;
-  padding: 2px 0;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* The chip's input stays in the DOM — it is the accessible control, and its
+   checked state is what the chosen class and the check icon render from —
+   but it draws nothing: the chip is the visible control. */
+.permission-card-question-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+/* Option chips: the mockup's .opt — r6, one strong hairline. A chosen chip
+   takes the accent border, the accent-soft fill and a check. The chip grows
+   (min-height, no fixed height) so a long description wraps inside the
+   border instead of rendering over it. */
+.permission-card-question-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.permission-card-question-option-chosen {
   color: var(--ink);
-  line-height: 1.5;
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Focus belongs on the chip, and only for the keyboard: :focus-within also
+   fires on mouse press, which would leave an accent ring after every click.
+   The descendant test is the bare :focus-visible — it reaches every input in
+   the row, the Other door's included (a class-scoped descendant cannot: the
+   Other input carries a different class token). */
+.permission-card-question-option:has(:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .permission-card-question-label {
@@ -303,17 +419,40 @@
 }
 
 .permission-card-question-description {
-  color: var(--ink-soft);
+  color: var(--muted);
+  font-size: 12px;
 }
 
-.permission-card-question-other input[type="text"],
-.permission-card-question-other input[type="password"] {
-  min-width: 0;
+/* The check a chosen chip carries — rendered only when chosen, so an
+   unchosen chip is the mockup's plain .opt. */
+.permission-card-check {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+/* The free-text door: a muted chip that grows to hold the answer. It never
+   takes the chosen style — the words are the agent's, the text is the
+   person's. */
+.permission-card-question-other {
+  flex: 1 1 auto;
+  min-width: 160px;
+  color: var(--muted);
+  cursor: text;
+}
+
+.permission-card-question-other-input {
   flex: 1;
-  padding: 3px 8px;
+  align-self: stretch;
+  min-width: 0;
+  padding: 0;
   color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  background: transparent;
+  border: 0;
+  outline: none;
   font: inherit;
+}
+
+.permission-card-question-other-input::placeholder {
+  color: var(--muted);
 }

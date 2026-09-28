@@ -1759,7 +1759,7 @@ describe("Workspace sessions", () => {
     const buttons = [
       ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
     ];
-    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow"]);
     expect(buttons[0].className).toContain("permission-card-secondary-action");
     expect(buttons[0].className).toContain("permission-card-deny-action");
     expect(buttons[1].className).toContain("permission-card-primary-action");
@@ -1869,7 +1869,7 @@ describe("Workspace sessions", () => {
     const buttons = [
       ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
     ];
-    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow"]);
     expect(buttons[1].disabled).toBe(true);
 
     await act(async () => {
@@ -1900,10 +1900,12 @@ describe("Workspace sessions", () => {
     const buttons = [
       ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
     ];
-    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow"]);
     expect(buttons.every((button) => button.disabled)).toBe(true);
     expect(container.textContent).toContain("Deny is not offered for this request.");
-    expect(container.textContent).toContain("Allow once is not offered for this request.");
+    // The button says Allow, so the notice names the same control (fix pass 1,
+    // review F4 — the old sentence named a button that no longer exists).
+    expect(container.textContent).toContain("Allow is not offered for this request.");
     expect(sessionPermissionRespond).not.toHaveBeenCalled();
   });
 
@@ -2242,7 +2244,9 @@ describe("Workspace sessions", () => {
     );
     if (rejectOnlyAllow === null) throw new Error("permission allow control did not render");
     expect(rejectOnlyAllow.disabled).toBe(true);
-    expect(container.textContent).toContain("Allow once is not offered for this request.");
+    // The button says Allow, so the notice names the same control (fix pass 1,
+    // review F4 — the old sentence named a button that no longer exists).
+    expect(container.textContent).toContain("Allow is not offered for this request.");
   });
 
   it("shows the command, args, and cwd that will be spawned", async () => {

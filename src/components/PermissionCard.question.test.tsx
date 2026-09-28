@@ -1,8 +1,11 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { assembleCssProof, removeCssProof } from "../features/workspace/cssProof";
 import type { PermissionRequest } from "../types/ipc";
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +17,13 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import { PermissionCard } from "./PermissionCard";
+
+const rootDir = resolve(import.meta.dirname, "../..");
+const read = (path: string) => readFileSync(resolve(rootDir, path), "utf8");
+const cardCss = assembleCssProof([
+  read("src/styles/tokens.css"),
+  read("src/components/PermissionCard.css"),
+]);
 
 /** A Claude question as the daemon delivers it: one item, two options, no chooser mark needed. */
 const singleRequest: PermissionRequest = {
@@ -104,6 +114,7 @@ describe("PermissionCard question answers", () => {
 
   afterEach(() => {
     document.body.replaceChildren();
+    removeCssProof();
   });
 
   it("renders the question, radio options with descriptions, Other and Submit", async () => {
@@ -116,6 +127,111 @@ describe("PermissionCard question answers", () => {
     expect(card.textContent).toContain("Blends in.");
     expect(otherInput(card)).not.toBeNull();
     expect(actions(card).map((button) => button.textContent)).toEqual(["Dismiss", "Submit"]);
+
+    await act(async () => root.unmount());
+  });
+
+  it("a chosen chip exposes its checked state and the check icon", async () => {
+    const { root, card } = await renderCard(singleRequest);
+    const firstRadio = radios(card)[0];
+    if (firstRadio === undefined) throw new Error("radio option did not render");
+    const chip = firstRadio.closest(".permission-card-question-option");
+    if (chip === null) throw new Error("option chip did not render");
+
+    // Unchosen: no check on the chip, no chosen mark.
+    expect(chip.querySelector(".permission-card-check")).toBeNull();
+    expect(chip.className).not.toContain("permission-card-question-option-chosen");
+
+    await act(async () => firstRadio.click());
+
+    // Chosen: the input's checked is the exposed state, and the check icon
+    // is on the chip.
+    expect(firstRadio.checked).toBe(true);
+    expect(chip.className).toContain("permission-card-question-option-chosen");
+    expect(chip.querySelector(".permission-card-check")).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("lets a long option description wrap inside its chip", async () => {
+    const { root, card } = await renderCard({
+      ...singleRequest,
+      toolCallId: "tool-long",
+      questions: [
+        {
+          question: "Which colour should I paint the fence?",
+          options: [
+            {
+              label: "Forest green",
+              description: "A deep, calm green that blends into the treeline behind the garden.",
+            },
+          ],
+          multiSelect: false,
+        },
+      ],
+    });
+    const chip = card.querySelector(".permission-card-question-option");
+    const description = card.querySelector(".permission-card-question-description");
+    if (chip === null || description === null) throw new Error("option chip did not render");
+
+    // The chip's geometry is min-height 28 with no fixed height (pinned in
+    // PermissionCard.computed.test.tsx), so a wrapped description grows the
+    // chip instead of rendering over its border.
+    cardCss.inject([".permission-card-question-option"]);
+    expect(getComputedStyle(chip).minHeight).toBe("28px");
+    // And the description is the chip's own content, never a line over it.
+    expect(chip.contains(description)).toBe(true);
+    expect(description.textContent).toBe(
+      "A deep, calm green that blends into the treeline behind the garden.",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a question request's command and working directory on the card", async () => {
+    const { root, card } = await renderCard({
+      ...singleRequest,
+      toolCallId: "tool-question-command",
+      command: "pnpm db migrate --target postgres16",
+      cwd: "C:\\alpha",
+    });
+
+    // A question request can carry a command: it renders inside the card, on
+    // its own ground.
+    const command = card.querySelector(".permission-card-command");
+    if (command === null) throw new Error("command line did not render");
+    expect(card.contains(command)).toBe(true);
+    expect(command.textContent).toBe("pnpm db migrate --target postgres16");
+    // The question card has no head — the spec gives it none, and its help
+    // icon is its marker. Its working directory is a meta line in the actions
+    // row instead (fix pass 2, review N2).
+    expect(card.querySelector(".permission-card-heading")).toBeNull();
+    expect(card.textContent).not.toContain("Permission");
+    const cwd = card.querySelector<HTMLElement>(".permission-card-cwd");
+    if (cwd === null) throw new Error("working directory line did not render");
+    expect(cwd.textContent).toBe("C:\\alpha");
+    expect(cwd.title).toBe("C:\\alpha");
+
+    await act(async () => root.unmount());
+  });
+
+  it("gives the Other field the same focus ring as the option chips", async () => {
+    const { root, card } = await renderCard(singleRequest);
+    const other = card.querySelector(".permission-card-question-other");
+    if (other === null) throw new Error("Other door did not render");
+    // The Other door is a chip: it carries the class the ring rule is keyed on.
+    expect(other.className).toContain("permission-card-question-option");
+
+    // The ring rule's descendant test is the bare :focus-visible — the form
+    // that reaches every input in the row, the Other door's included. The
+    // N1 regression scoped it to .permission-card-question-input, a class the
+    // Other input does not carry; this assertion fails if that comes back.
+    // happy-dom matches every :has(), so this pins the rule's shape, not its
+    // match — only a live check proves the Other input triggers the ring
+    // (noted in the report).
+    const ring = cardCss.rulesFor(".permission-card-question-option:has(:focus-visible)");
+    expect(ring).toContain("outline: 2px solid #bd4a26");
+    expect(ring).toContain("outline-offset: 2px");
 
     await act(async () => root.unmount());
   });
