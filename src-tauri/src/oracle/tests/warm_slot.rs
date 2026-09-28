@@ -1,4 +1,4 @@
-//! The warm single-flight behind the `warming` refusal (review F-1): the
+//! The warm single-flight behind the `warming` refusal: the
 //! slot must reopen when its guard drops — at the normal end of a load, and
 //! when a thread panics while holding it. A flag left set answers `warming`
 //! to every later query for the life of the process, and no retry repairs

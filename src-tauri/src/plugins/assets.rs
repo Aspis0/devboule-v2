@@ -201,10 +201,6 @@ fn workspace_content_type_for(path: &str) -> WorkspaceContentType {
 /// symlink, because a link is not in the syntax; that is what the containment
 /// check in [`read_contained`] is for.
 ///
-/// An earlier version of this comment claimed segment checking sufficed
-/// *because* canonicalising can be defeated by a symlink. That was confused:
-/// canonicalising is exactly how a symlink is caught, provided the result is
-/// then tested for containment.
 fn safe_relative_path(uri_path: &str) -> Option<String> {
     let trimmed = uri_path.trim_start_matches('/');
     if trimmed.is_empty() {

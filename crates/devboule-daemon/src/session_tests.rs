@@ -3,8 +3,8 @@ use crate::raster_metadata::clean_png;
 use devboule_protocol::ClientMessage;
 
 // ------------------------------------------------------------------
-// Slice 5b — the delegation switch's reader side: the delegated
-// answer, the surfacing envelope, and the snapshot facts.
+// The delegation switch's reader side: the delegated answer, the
+// surfacing envelope, and the snapshot facts.
 // ------------------------------------------------------------------
 
 /// A live agent session that is somebody's child, with a display name.
@@ -124,8 +124,8 @@ pub(super) fn answer(
 }
 
 // ------------------------------------------------------------------
-// Pass A — `devboule_set_agent_profile`: a creator moves its own live
-// child onto a ticked profile (slice 5b §2).
+// `devboule_set_agent_profile`: a creator moves its own live child onto a
+// ticked profile.
 // ------------------------------------------------------------------
 
 /// A switcher the move tests can watch and aim: both asks counted, in
@@ -2258,9 +2258,9 @@ fn request_provided_npx_id_still_resolves_past_env_gate() {
 /// It is not a hand-written claim: the test below derives it from
 /// `peer_policy::peer_allows`, so a path may only be identity-free while
 /// **no** role holding **any** capability set can reach the act it serves.
-/// `set_mode` left this list in the slice-3 fix pass: `SessionSetMode` is
-/// under `CAP_SEND`, so a paired device can reach it and the call site has
-/// to carry the requestor's identity (§8b A3/A4/A5, H5).
+/// `SessionSetMode` is under `CAP_SEND`, so a paired device can reach it
+/// and the call site has to carry the requestor's identity (§8b A3/A4/A5,
+/// H5).
 const IDENTITY_FREE_PATHS: [&str; 2] = ["stop", "set_model"];
 
 /// A connection that speaks for a paired device, as `server.rs` builds one.
@@ -2732,8 +2732,8 @@ fn a_daemon_peer_is_scoped_by_origin_and_delivers_agent_messages() {
 /// One arm per `ClientMessage` variant, **no `_` arm**: the same shape as
 /// `peer_policy::matrix_row`, and the compiler is the proof — a new variant
 /// does not build until it says whether it names a session. `path_requests`
-/// below is derived from these answers, so the pairing is no longer written
-/// by hand and a new frame cannot be dropped silently.
+/// below is derived from these answers, so the pairing is not written by
+/// hand and a new frame cannot be dropped silently.
 ///
 /// `SessionStop` answers with two paths because one frame has two registry
 /// entry points (`stop`, `stop_with_subscription`) and the harness walks
@@ -3783,7 +3783,7 @@ fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
 }
 
 /// The wire carries the daemon's chooser verdict: a request whose option
-/// set trips Paseo's rule (the same kind offered twice — allow **or**
+/// set trips the chooser rule (the same kind offered twice — allow **or**
 /// reject) is marked so the app renders one control per option, while an
 /// ordinary pair and a set of distinct kinds are left unmarked. The app
 /// must never re-derive the rule from the option list — the daemon says it.
@@ -4337,12 +4337,12 @@ fn agent_message_sweep_count(brakes: &Arc<Mutex<MessageBrakeTable>>) -> u64 {
 /// An agent message that panics between its admission and its delivery still
 /// gives the sender's slot back.
 ///
-/// The plain statements the window used to be released on are skipped by the
-/// unwind, so the slot stays counted — and the only thing that would end it is
-/// the expiry sweep, which no later admission has to run for up to
-/// `MESSAGE_SLOT_EXPIRY`. The guard releases it on the way out instead. The
-/// recipient entry stays, deliberately: the window is the fan-out brake
-/// (S4-01) and outlives the slot it was counted for.
+/// The plain release statements are skipped by the unwind, so the slot stays
+/// counted — and the only thing that would end it is the expiry sweep,
+/// which no later admission has to run for up to `MESSAGE_SLOT_EXPIRY`.
+/// The guard releases it on the way out instead. The recipient entry
+/// stays, deliberately: the window is the fan-out brake (S4-01) and
+/// outlives the slot it was counted for.
 #[test]
 fn a_panicking_agent_message_delivery_releases_the_brake_slot() {
     let (dir, registry, journal) = tmp_delete_registry();

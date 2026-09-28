@@ -505,11 +505,9 @@ fn parse_http_response(raw: &[u8]) -> Result<(u16, Vec<u8>), LocalApiError> {
 /// resolved in either direction (RFC 7230 §3.3.3); so is a repeated
 /// `Content-Length`.
 ///
-/// Note for review: §9 of the design recorded this API as answering with
-/// `Content-Length` and no chunking. On Tailscale 1.102.2 `/localapi/v0/status`
-/// answers `Transfer-Encoding: chunked`, so chunked is decoded rather than
-/// refused. Refusing it would make `self_node()` impossible to satisfy on the
-/// machine the design was measured on.
+/// On Tailscale 1.102.2 `/localapi/v0/status` answers
+/// `Transfer-Encoding: chunked`, so chunked is decoded rather than refused:
+/// refusing it would make `self_node()` impossible to satisfy.
 fn parse_headers(header_bytes: &[u8]) -> Result<(u16, BodyFraming), LocalApiError> {
     let headers = std::str::from_utf8(header_bytes)
         .map_err(|_| LocalApiError::Protocol("response headers are not UTF-8".to_string()))?;

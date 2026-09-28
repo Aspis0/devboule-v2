@@ -218,10 +218,10 @@ fn a_missing_file_is_refused_with_the_listing_own_sentence() {
     assert_eq!(reply.size, None, "a refusal claims nothing");
 }
 
-/// Mutant `m:zero-line` — let the zero resolve to the first window, which
-/// is what the review caught: this case dies on the refusal it must get
-/// instead. Lines are numbered from 1; a zero is the caller's mistake and
-/// gets this frame's own sentence, never a window it did not ask for.
+/// Letting the zero resolve to the first window would be the wrong answer:
+/// this case dies on the refusal it must get instead. Lines are numbered
+/// from 1; a zero is the caller's mistake and gets this frame's own
+/// sentence, never a window it did not ask for.
 #[test]
 fn a_from_line_of_zero_is_refused_with_its_own_sentence() {
     let repo = Repo::new("zero-line");

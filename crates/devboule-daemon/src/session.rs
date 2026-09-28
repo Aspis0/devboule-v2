@@ -153,9 +153,9 @@ mod event_pull;
 mod pi_client;
 /// The class-level provider seam: the `Provider` trait, one implementation
 /// per family, and the registry the spawn road resolves through. Declared
-/// from here like the other children; since pass 2b the mode lists live in
-/// the impls, and `peer_policy`'s mode functions read them through the
-/// registry — so the registry lookup is re-exported for that caller.
+/// from here like the other children; the mode lists live in the impls,
+/// and `peer_policy`'s mode functions read them through the registry — so
+/// the registry lookup is re-exported for that caller.
 #[path = "provider.rs"]
 mod provider;
 #[path = "question_acceptance.rs"]
@@ -247,13 +247,12 @@ mod session_items;
 mod session_messaging;
 /// The attachment and prompt planning carved out of `session_items`: the path
 /// lines a prompt carries, the reference resolution behind them, and the ACP
-/// prompt plan. A move, not a rewrite - its proof is the byte comparison
-/// against `session_items.rs` at `7235ff8`, not a test.
+/// prompt plan.
 #[path = "session_prompt_planning.rs"]
 mod session_prompt_planning;
 /// The registry's standing state carved out of `session_items`: the caches it
 /// holds, the message brake table and the agent creation table with its guards,
-/// tickets and records. A move, not a rewrite - same proof.
+/// tickets and records.
 #[path = "session_registry_state.rs"]
 mod session_registry_state;
 #[path = "session_spawn.rs"]
@@ -304,15 +303,11 @@ use session_registry_state::{
     WORKSPACE_PATH_CACHE_CAP,
 };
 /// The move road's named phases: `set_agent_child_profile` in the parent is
-/// the thin sequence, and this sibling holds the phases it composes. A
-/// rewrite rather than a move — its proof is the characterisation tests in
-/// `session_child_profile_tests.rs`, not a byte comparison.
+/// the thin sequence, and this sibling holds the phases it composes.
 #[path = "session_child_profile.rs"]
 mod session_child_profile;
 /// The create road's named phases: `create_with_provider_env` in the parent
-/// is the thin sequence, and this sibling holds the phases it composes. A
-/// rewrite rather than a move — its proof is the characterisation tests in
-/// `session_create_tests.rs`, not a byte comparison.
+/// is the thin sequence, and this sibling holds the phases it composes.
 #[path = "session_create.rs"]
 mod session_create;
 #[cfg(test)]
@@ -324,9 +319,7 @@ mod session_create_tests;
 use session_child_profile::{manifest_arrived, model_ask_needed};
 /// The delegated answer's named phases: `answer_child_permission` in the
 /// parent is the thin sequence, and this sibling holds the phases it
-/// composes. A rewrite rather than a move — its proof is the
-/// characterisation tests in `session_child_permission_tests.rs`, not a
-/// byte comparison.
+/// composes.
 #[path = "session_child_permission.rs"]
 mod session_child_permission;
 #[cfg(test)]
@@ -336,51 +329,41 @@ mod session_child_profile_phase_tests;
 #[path = "session_child_profile_tests.rs"]
 mod session_child_profile_tests;
 use session_child_permission::child_answer_caps_refusal;
-/// The agent-activity-and-quiet-notice tests carved out of `session_tests` (its
-/// lines 6813-7208 at `f1c42d0`): the derived headline telling working, blocked
+/// The agent-activity-and-quiet-notice tests carved out of `session_tests`: the derived headline telling working, blocked
 /// and idle apart while a live hook row wins, the derived state and the
 /// published hook sharing one session, the quiet notice firing once per spell
 /// and leaving the child alone, a refused notice never steering and leaving the
 /// creator's turn and cards alone, a failed delivery keeping the spell owed, a
 /// stranger's session refused without saying which, and a resolved card
-/// re-arming the quiet clock. A move, not a rewrite - its proof is the byte
-/// comparison against `session_tests.rs` at the commit before it, not a test.
+/// re-arming the quiet clock.
 #[cfg(test)]
 #[path = "session_activity_quiet_tests.rs"]
 mod session_activity_quiet_tests;
-/// The attachment-and-deposit tests carved out of `session_tests` (its lines
-/// 2862-3745 at `1c6b03e`): the owner's deposit answered with the reference of
+/// The attachment-and-deposit tests carved out of `session_tests`: the owner's deposit answered with the reference of
 /// the file the store wrote, the unauthorised, oversized and
 /// close-inside-a-deposit refusals, the count, per-file, total and text-cap
 /// limits, the path line a fallback session writes and the one a terminal
 /// session never writes, and the structured prompt an inline image plans beside
-/// the path line a refused or unknown session keeps. A move, not a rewrite - its
-/// proof is the byte comparison against `session_tests.rs` at the commit before
-/// it, not a test.
+/// the path line a refused or unknown session keeps.
 #[cfg(test)]
 #[path = "session_attachment_tests.rs"]
 mod session_attachment_tests;
-/// The attention-and-suppression tests carved out of `session_tests` (its lines
-/// 2527-2797 at `902f3ed`): priority preserving permission while allowing
+/// The attention-and-suppression tests carved out of `session_tests`: priority preserving permission while allowing
 /// escalation, a clear that cannot complete inside the suppression decision,
 /// focus that suppresses attention while presence clears it, presence that
 /// raises unless the second connection looks elsewhere, and a prompt or an
-/// answer that acknowledges attention. A move, not a rewrite - its proof is the
-/// byte comparison against `session_tests.rs` at the commit before it, not a
-/// test.
+/// answer that acknowledges attention.
 #[cfg(test)]
 #[path = "session_attention_tests.rs"]
 mod session_attention_tests;
-/// The agent-message attribution tests carved out of `session_tests` (its lines
-/// 5700-6121 at `fff9df6`): a remote sender id is not resolved in this registry,
+/// The agent-message attribution tests carved out of `session_tests`: a remote sender id is not resolved in this registry,
 /// a remote sender cannot relay into a third device or smuggle an id, a local
 /// caller still reports an absent source, one brake spans a remote device's far
 /// sender ids, an agent message is attributed to the caller and not to the
 /// session it names, a peer bearer with a local source keeps the local echo, a
 /// sender's a2a echo is agent while a human composer's is human, the envelope's
 /// delimiters cannot be forged, and a sixth message is refused while five are
-/// still in flight. A move, not a rewrite - its proof is the byte comparison
-/// against `session_tests.rs` at the commit before it, not a test.
+/// still in flight.
 #[cfg(test)]
 #[path = "session_attribution_tests.rs"]
 mod session_attribution_tests;
@@ -400,8 +383,7 @@ mod session_child_permission_phase_tests;
 #[cfg(test)]
 #[path = "session_child_permission_tests.rs"]
 mod session_child_permission_tests;
-/// The restricted-child tests carved out of `session_tests` (its lines
-/// 8255-8894 at `f104df1`), the two fixtures at their head included: a
+/// The restricted-child tests carved out of `session_tests`, the two fixtures at their head included: a
 /// restricted child keeps both denials across a restart and after its profile
 /// changes, an orphaned resume keeps the birth restriction, a row without a
 /// recorded depth resumes unable to delegate, an unreadable overlay cell
@@ -409,66 +391,50 @@ mod session_child_permission_tests;
 /// the depth even when the spawn fails, a later upsert without birth facts
 /// keeps them - and on the close/stop side, the child predicate, an agent
 /// closing only its own children, a stop that refuses what a close refuses, and
-/// a stop that ends the whole job tree. A move, not a rewrite - its proof is the
-/// byte comparison against `session_tests.rs` at the commit before it, not a
-/// test.
+/// a stop that ends the whole job tree.
 #[cfg(test)]
 #[path = "session_child_scope_tests.rs"]
 mod session_child_scope_tests;
 #[cfg(test)]
 #[path = "session_child_slot_tests.rs"]
 mod session_child_slot_tests;
-/// The creation-budget tests carved out of `session_tests` (its lines
-/// 1894-2506 at `141bdfa`): one live child per creator and eight daemon-wide,
+/// The creation-budget tests carved out of `session_tests`: one live child per creator and eight daemon-wide,
 /// depth judged on the child's own depth, the creation card owed once per
 /// creator session, the ten-an-hour window and the sweep that rolls it, a
 /// reservation released once by its identity, a commit registering the child
 /// the spawn named, the in-flight creation key, an end that arrives before its
 /// commit, a child resumed twice counted once, a report surviving a steerer
 /// that errors, a child's end claiming its report once, and a pending card
-/// refusing a concurrent creation. A move, not a rewrite - its proof is the
-/// byte comparison against `session_tests.rs` at the commit before it, not a
-/// test.
+/// refusing a concurrent creation.
 #[cfg(test)]
 #[path = "session_creation_caps_tests.rs"]
 mod session_creation_caps_tests;
-/// The creation-race tests carved out of `session_tests` (its lines 7236-7856 at
-/// `a9b31af`), the two fixtures at their head included: the structural check
+/// The creation-race tests carved out of `session_tests`, the two fixtures at their head included: the structural check
 /// that the creation check and its park are one call, a commit racing an end
 /// releasing the child once, a creation whose creator is gone leaving nothing
 /// parked, a creation slower than the slot expiry keeping its marker, the
 /// creation record published before a parked end runs, a readmitted child
 /// keeping what it already spent, standing instructions before the preset
-/// preamble, and the session-id mint. A move, not a rewrite - its proof is the
-/// byte comparison against `session_tests.rs` at the commit before it, not a
-/// test.
+/// preamble, and the session-id mint.
 #[cfg(test)]
 #[path = "session_creation_race_tests.rs"]
 mod session_creation_race_tests;
-/// The delegated-answer tests carved out of `session_tests` (its lines 49-457
-/// at `8408a37`): the switch read at the answer rather than at the park, the
+/// The delegated-answer tests carved out of `session_tests`: the switch read at the answer rather than at the park, the
 /// unknown and already-resolved refusals, the not-the-callers-child and
 /// row-shape refusals, the caller-origin pair, and the no-cap, no-pause shape.
-/// A move, not a rewrite - its proof is the byte comparison against
-/// `session_tests.rs` at the commit before it, not a test.
 #[cfg(test)]
 #[path = "session_delegated_answer_tests.rs"]
 mod session_delegated_answer_tests;
-/// The envelope-grammar tests carved out of `session_tests` (its lines
-/// 1378-1508 at `9a8c667`): the header-and-fence grammar the app parses, a
+/// The envelope-grammar tests carved out of `session_tests`: the header-and-fence grammar the app parses, a
 /// hostile excerpt that must not close its fence, and the excerpt cap counted
-/// in scalars. A move, not a rewrite - its proof is the byte comparison
-/// against `session_tests.rs` at the commit before it, not a test.
+/// in scalars.
 #[cfg(test)]
 #[path = "session_envelope_card_tests.rs"]
 mod session_envelope_card_tests;
-/// The child's-finish tests carved out of `session_tests` (its lines 3236-3628
-/// at `c5989d9`): the stop reason mapped to the a2a word and to the state, the
+/// The child's-finish tests carved out of `session_tests`: the stop reason mapped to the a2a word and to the state, the
 /// note's whole-text bound with its excerpted stop reason, the finish
 /// envelope's escaping and its one-line-per-header rule, the report owed once,
 /// the slot a close frees, and the facts a child inherits from its creator.
-/// A move, not a rewrite - its proof is the byte comparison against
-/// `session_tests.rs` at the commit before it, not a test.
 #[cfg(test)]
 #[path = "session_envelope_finish_tests.rs"]
 mod session_envelope_finish_tests;
@@ -514,21 +480,17 @@ mod session_recovery_refusal_tests;
 #[cfg(test)]
 #[path = "session_recovery_tests.rs"]
 mod session_recovery_tests;
-/// The stored-reference tests carved out of `session_tests` (its lines
-/// 2261-2567 at `774478c`): a deposited reference reaching the provider as a
+/// The stored-reference tests carved out of `session_tests`: a deposited reference reaching the provider as a
 /// path line, a reference whose stored bytes disagree with the file refused, a
 /// reference naming another session refused by the wire's own rule before the
 /// store is asked, a reference whose digest was never deposited refused rather
 /// than dropped, and inline attachments and references in one send keeping the
-/// client's order. A move, not a rewrite - its proof is the byte comparison
-/// against `session_tests.rs` at the commit before it, not a test.
+/// client's order.
 #[cfg(test)]
 #[path = "session_reference_tests.rs"]
 mod session_reference_tests;
 /// The resume road's named phases: `resume` in the parent is the thin
-/// sequence, and this sibling holds the phases it composes. A rewrite rather
-/// than a move — its proof is the characterisation tests in
-/// `session_resume_tests.rs`, not a byte comparison.
+/// sequence, and this sibling holds the phases it composes.
 #[path = "session_resume.rs"]
 mod session_resume;
 /// Test support for the resume road's three characterisation files: the
@@ -546,73 +508,59 @@ mod session_resume_spawn_tests;
 #[path = "session_resume_tests.rs"]
 mod session_resume_tests;
 /// The peer-id, session-access and roster-cache tests carved out of
-/// `session_tests` (its lines 3011-3398 at `a5e1e69`): a learned peer session id
+/// `session_tests`: a learned peer session id
 /// that is durable and restored on hydration, attach, close and stop admitting a
 /// previous-run or dead-client session of the same user while refusing another
 /// user's, the roster and history themselves user-scoped and carrying
 /// previous-run rows, a live transition that neither requeries the journal roster
 /// nor caches rows under a revision that changed after the list, a push-only row
 /// carrying the child's name and creator, and a live transition that does not
-/// rebuild a large roster. A move, not a rewrite - its proof is the byte
-/// comparison against `session_tests.rs` at the commit before it, not a test.
+/// rebuild a large roster.
 #[cfg(test)]
 #[path = "session_roster_access_tests.rs"]
 mod session_roster_access_tests;
-/// The silence-and-liveness tests carved out of `session_tests` (its lines
-/// 1067-1262 at `d00145f`): the threshold transition emitted once, the queued
+/// The silence-and-liveness tests carved out of `session_tests`: the threshold transition emitted once, the queued
 /// silence dropped when output or an exit lands first, the ACP roster notice on
 /// leaving silent, the OS liveness probe that marks an exit without EOF, and an
-/// elapsed time that keeps a recovered session's unknown life unknown. A move,
-/// not a rewrite - its proof is the byte comparison against `session_tests.rs`
-/// at the commit before it, not a test.
+/// elapsed time that keeps a recovered session's unknown life unknown.
 /// The turn status the roster row carries, and the transitions that push it.
 #[cfg(test)]
 #[path = "session_roster_activity_tests.rs"]
 mod session_roster_activity_tests;
-/// The first-prompt-and-MCP-wait tests carved out of `session_tests` (its lines
-/// 2807-2926 at `040e890`): Pi and Codex each deliver the first prompt without
+/// The first-prompt-and-MCP-wait tests carved out of `session_tests`: Pi and Codex each deliver the first prompt without
 /// waiting on the MCP handshake, the resume handle refuses the families it was
 /// never designed for before anything is registered, and an MCP timeout never
-/// writes the prompt. A move, not a rewrite - its proof is the byte comparison
-/// against `session_tests.rs` at the commit before it, not a test.
+/// writes the prompt.
 #[cfg(test)]
 #[path = "session_spawn_first_prompt_tests.rs"]
 mod session_spawn_first_prompt_tests;
-/// The refused-spawn tests carved out of `session_tests` (its lines 1510-1862):
+/// The refused-spawn tests carved out of `session_tests`:
 /// the journal row an ordinary spawn failure must end before the refusal
 /// returns, its non-blocking variant, the two creation-time profile refusals
-/// and the pre-card tick refusal. A move, not a rewrite - its proof is the
-/// byte comparison against `session_tests.rs` at `8b37de9`, not a test.
+/// and the pre-card tick refusal.
 #[cfg(test)]
 #[path = "session_spawn_refusal_tests.rs"]
 mod session_spawn_refusal_tests;
-/// The static-route tests carved out of `session_tests` (its lines 2261-2514 at
-/// `54be819`), the section marker at their head included: a static route sending
+/// The static-route tests carved out of `session_tests`, the section marker at their head included: a static route sending
 /// its own frame and leaving the plain-text writer alone, the route's plan text
 /// carrying the reference lines too, and a route that declines keeping the
 /// legacy write byte for byte, with the route and plan doubles and their
-/// constructor in front of them. A move, not a rewrite - its proof is the byte
-/// comparison against `session_tests.rs` at the commit before it, not a test.
+/// constructor in front of them.
 #[cfg(test)]
 #[path = "session_static_route_tests.rs"]
 mod session_static_route_tests;
-/// The terminal-input tests carved out of `session_tests` (its lines 2261-2383
-/// at `6d29bc3`): several observers sending complete inputs concurrently through
+/// The terminal-input tests carved out of `session_tests`: several observers sending complete inputs concurrently through
 /// one writer without interleaving, and only the resize owner being allowed to
-/// resize the terminal. A move, not a rewrite - its proof is the byte comparison
-/// against `session_tests.rs` at the commit before it, not a test.
+/// resize the terminal.
 #[cfg(test)]
 #[path = "session_terminal_input_tests.rs"]
 mod session_terminal_input_tests;
-/// The terminal-ownership tests carved out of `session_tests` (its lines
-/// 3625-4268 at `5c22b34`): a terminal send never publishes an agent user
+/// The terminal-ownership tests carved out of `session_tests`: a terminal send never publishes an agent user
 /// message, the same user's attached client may send, resize and answer a
 /// permission card while an unattached client or a different user may not, a
 /// failed or poisoned writer still records the error the client sees, and
 /// `delete_session` admits a journal-only or dead entry for the same user while
-/// refusing another user's row and a live session. A move, not a rewrite - its
-/// proof is the byte comparison against `session_tests.rs` at the commit before
-/// it, not a test.
+/// refusing another user's row and a live session.
 #[cfg(test)]
 #[path = "session_terminal_ownership_tests.rs"]
 mod session_terminal_ownership_tests;
@@ -620,7 +568,7 @@ mod session_terminal_ownership_tests;
 #[path = "session_terminal_silence_tests.rs"]
 mod session_terminal_silence_tests;
 /// The terminal-attach, flood and transcript tests carved out of "session_tests"
-/// (its lines 1065-1871 at `4b8bb76`): an attach whose snapshot and live stream
+///: an attach whose snapshot and live stream
 /// meet at an exact boundary, a flood that never duplicates or skips a frame and
 /// leaves a reattached client equal to a fresh emulator, the pending queue's byte
 /// and frame budget, a DSR reply written straight to the PTY, a control path that
@@ -630,18 +578,14 @@ mod session_terminal_silence_tests;
 /// the transcript store holding the whole history whatever the cursor says, a
 /// stale generation rejected, the journal keeping drain bytes after a reap, the
 /// coalesce constants small enough for an echo, and a PTY error exposing only the
-/// OS code. A move, not a rewrite - its proof is the byte comparison against
-/// `session_tests.rs` at the commit before it, not a test.
+/// OS code.
 #[cfg(test)]
 #[path = "session_terminal_transcript_tests.rs"]
 mod session_terminal_transcript_tests;
-/// The workspace road's tests carved out of `session_tests` (its lines
-/// 2072-2599 at `085f4e4`): the spawn error's workspace id and display path,
+/// The workspace road's tests carved out of `session_tests`: the spawn error's workspace id and display path,
 /// the local workspace's cwd and the cache in front of it, the resume road's
 /// created-at and record-own kind, the ACP override refusal, and the delete
 /// rules for a local workspace, a worktree and a project folder already gone.
-/// A move, not a rewrite - its proof is the byte comparison against
-/// `session_tests.rs` at the commit before it, not a test.
 #[cfg(test)]
 #[path = "session_workspace_tests.rs"]
 mod session_workspace_tests;
@@ -1686,10 +1630,10 @@ impl SessionRegistry {
                     if entry.is_configuring() {
                         return Err(not_found());
                     }
-                    // Past the window the close-first guard stands (the
-                    // re-audit's P1-1): a session a peer can see holds a
-                    // running child, and an unrefused delete here would
-                    // remove that child's row and entry out from under it.
+                    // Past the window the close-first guard stands: a session
+                    // a peer can see holds a running child, and an unrefused
+                    // delete here would remove that child's row and entry out
+                    // from under it.
                     // A child that has already ended holds nothing the
                     // delete could strand — the preserved entry keeps only
                     // the transcript, and its PTY handles went when it
@@ -2178,10 +2122,9 @@ impl SessionRegistry {
                 "daemon is shutting down",
             ));
         }
-        // A resumed agent-created session is still that creator's child (audit
-        // S5B-05). The journal has carried `created_by` since the slice-5
-        // migration, and the birth overlay and depth since v13, so the
-        // lineage is read back instead of being dropped: the session
+        // A resumed agent-created session is still that creator's child. The
+        // journal carries `created_by`, the birth overlay and the depth, so
+        // the lineage is read back instead of being dropped: the session
         // re-registers under the powers it was born with, whether or not
         // its creator is live — losing a restriction because the parent is
         // gone would be the silent escalation this column exists to stop.
@@ -2447,10 +2390,9 @@ impl SessionRegistry {
                 // Attach reaches this arm whenever the registry holds the
                 // id — including inside the delivery window, where
                 // `runtime_for_user` answered `SessionNotFound` and the
-                // caller fell back here on exactly that code (the
-                // re-audit's P2-2). Handing back the windowed child's
-                // runtime through the fallback would re-open the window the
-                // door just closed.
+                // caller fell back here on exactly that code. Handing back
+                // the windowed child's runtime through the fallback would
+                // re-open the window the door just closed.
                 if existing.is_configuring() {
                     journal.unpin(session_id);
                     return Err(not_found());
@@ -2637,8 +2579,8 @@ impl SessionRegistry {
         Ok(())
     }
 
-    /// A creator moves its own live child onto a profile (slice 5b §2, Pass
-    /// A), through `devboule_set_agent_profile`.
+    /// A creator moves its own live child onto a profile, through
+    /// `devboule_set_agent_profile`.
     ///
     /// Identity is imposed — `creator_session_id` is the caller's bearer-mapped
     /// session, never a tool argument (§0.1) — and the checks run in the
@@ -3078,15 +3020,15 @@ impl SessionRegistry {
             // this arm, and teardown is the one thing the delivery window
             // must never block.
             Some(RegistryEntry::Live(session)) | Some(RegistryEntry::Configuring(session)) => {
-                // The last chance to report this child to its creator (`S5` §3,
-                // audit S5-01): the row is out of the map, the runtime is still
-                // here, and the report is claimed exactly once, so a child whose
-                // turn already reported finds nothing owed.
+                // The last chance to report this child to its creator (`S5`
+                // §3): the row is out of the map, the runtime is still here,
+                // and the report is claimed exactly once, so a child whose turn
+                // already reported finds nothing owed.
                 //
                 // Report *then* release: the claim of the report reads the
-                // child's link in the creation table, which the release removes.
-                // An end that released first would silently owe the creator
-                // nothing but the caps, which is what the audit found.
+                // child's link in the creation table, which the release
+                // removes. An end that released first would silently owe the
+                // creator nothing but the caps.
                 self.child_ended_with(
                     session_id,
                     Some(&session.metadata),
@@ -3695,9 +3637,8 @@ impl SessionRegistry {
         let map = self.inner.lock().ok()?;
         let entry = map.get(session_id)?;
         // A session inside its delivery window does not exist for the peer
-        // gate either (the re-audit's P2-2): `None` is this function's
-        // "the daemon does not know this session", and the caller refuses
-        // on that.
+        // gate either: `None` is this function's "the daemon does not know
+        // this session", and the caller refuses on that.
         if entry.is_configuring() {
             return None;
         }
@@ -3760,11 +3701,11 @@ impl SessionRegistry {
             Some(entry) => {
                 check_user_owner(entry, owner, conn_peer)?;
                 // The ordering gate must not admit a session that is still
-                // inside its delivery window (the re-audit's P2-2): the
-                // honest answer is the one the operation behind this gate
-                // would give — `SessionNotFound` — while the unknown-id
-                // refusal above stays `unauthorized`, so a probe still
-                // learns nothing from comparing replies.
+                // inside its delivery window: the honest answer is the one
+                // the operation behind this gate would give —
+                // `SessionNotFound` — while the unknown-id refusal above
+                // stays `unauthorized`, so a probe still learns nothing from
+                // comparing replies.
                 if entry.is_configuring() {
                     return Err(not_found());
                 }
@@ -3871,9 +3812,9 @@ impl SessionRegistry {
             .map_err(|_| internal("Session state is unavailable."))?;
         // The peer door: attach, resize, detach and permission responses
         // reach a `Configuring` session through here, and the door refuses
-        // the delivery window (the re-audit's P2-2). A transcript entry is
-        // addressable — it is a roster member — so the door lets it through
-        // and the runtime below serves it.
+        // the delivery window. A transcript entry is addressable — it is a
+        // roster member — so the door lets it through and the runtime
+        // below serves it.
         let entry = peer_entry(&map, session_id, owner, &conn.conn_peer)?;
         Ok(entry.runtime())
     }

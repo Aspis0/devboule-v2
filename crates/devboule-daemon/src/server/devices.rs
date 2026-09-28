@@ -99,8 +99,8 @@ pub(super) fn dispatch_devices(
                 }
                 // A row that is already revoked is a different fact from a row
                 // that does not exist, and the panel shows this sentence
-                // verbatim (C9: a double click, or a second device's panel,
-                // used to be told the peer did not exist).
+                // verbatim: a double click, or a second device's panel, must
+                // not read it as a missing peer.
                 Ok(PeerMutation::Revoked) => DaemonMessage::Error(
                     WireError::new(
                         ErrorCode::InvalidRequest,
@@ -337,8 +337,7 @@ fn no_tailnet_address() -> WireError {
         ErrorCode::InvalidRequest,
         // The remedy is real: showing a code again goes through
         // `pairing_address`, which retries the listener. Nothing here tells the
-        // user to restart the daemon, which used to be the only thing that
-        // worked.
+        // user to restart the daemon.
         "This device has no tailnet address to pair over. Start Tailscale, then show a code again.",
     )
 }

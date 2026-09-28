@@ -1,12 +1,10 @@
 //! The class of roads the window must not wait on, pinned on the sources.
 //!
 //! A `#[tauri::command]` that is not `async` runs inline on the window's own
-//! thread, so every wait it makes is a frozen window: the measured cases are
-//! Reopen (`scout/user-pass/f08b.png`) and the startup queue of the trace
-//! (`scout/freeze-followup/REPRO-sliceM.md`, `SessionAttach` at 522 ms with
-//! the daemon idle). What is pinned here is the form the framework reads —
-//! which commands must be `async`, how many waits go through the helper —
-//! and the helper's own promise that the wait leaves the caller's thread.
+//! thread, so every wait it makes is a frozen window. What is pinned here is
+//! the form the framework reads — which commands must be `async`, how many
+//! waits go through the helper — and the helper's own promise that the wait
+//! leaves the caller's thread.
 
 use std::collections::BTreeSet;
 
@@ -100,24 +98,7 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 /// Every wait goes through the helper, and the total is a declared number —
 /// read from the parsed tree, not from comment-visible text. A road that
 /// starts calling its client directly drops the count; raising it is a
-/// reviewable act, never a silent one. Raised 50 → 51 with
-/// `workspace_file_read` (fetta 1 della sidebar «come Paseo»), then 51 → 53
-/// with `workspace_file_rename` and `workspace_file_duplicate` (fetta 2),
-/// then 53 → 55 with `workspace_file_preview_stage` and
-/// `workspace_file_preview_unstage` (fetta immagini): both wait on the
-/// daemon like every other workspace road. Then 55 → 56 with
-/// `workspace_file_delete` (fetta 3 delle scritture): the delete waits on
-/// the daemon like its two siblings. Then 56 → 57 with the four git
-/// writes (fetta 4 delle scritture): stage, unstage, discard and commit
-/// share one bridge road, so the four add a single helper call. Then 57 → 58
-/// with `session_set_name` (P11 agent titles): the rename waits on the daemon
-/// like the mode switch it sits beside. Then 58 → 60 with the two
-/// protocol-12 roads: `providers_auth_check` (the login check spawns
-/// provider CLIs in the host's credential context, so it must never run on
-/// the UI thread) and `providers_set_enabled` (the switch write waits on
-/// the daemon like every other settings road). Then 60 → 61 with the
-/// protocol-13 road `session_set_feature` (Codex plan mode): the toggle
-/// waits on the daemon like the mode switch it sits beside.
+/// reviewable act, never a silent one.
 #[test]
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();

@@ -167,7 +167,7 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             // Every close of the main window becomes a decision (hide, quit,
-            // or ask) — never the plain quit it used to be.
+            // or ask).
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 close_flow::on_close_requested(window, api);
             }

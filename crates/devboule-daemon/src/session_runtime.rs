@@ -233,7 +233,7 @@ pub(crate) struct SessionRuntime {
     /// is not swallowed (the PTY coalescer already notifies the registry).
     pub(crate) roster_notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Called once after an `AgentFinished` is published (never for any other
-    /// event), which is the slice-5 finish report's trigger.
+    /// event): the finish report's trigger.
     ///
     /// It is deliberately not the attention hook: attention is a *priority*
     /// state (`Error` 2 outranks `Finished` 1), so a child whose provider
@@ -2011,10 +2011,9 @@ impl SessionRuntime {
             note,
             artifacts,
         };
-        // Journaled like the creation record (brief §1, audit finding): the
-        // creator's journal is what an unattached Workspace, or one that
-        // restarts, reads the finish out of, so the structured record cannot
-        // live on the stream alone.
+        // Journaled like the creation record: the creator's journal is what
+        // an unattached Workspace, or one that restarts, reads the finish
+        // out of, so the structured record cannot live on the stream alone.
         self.publish_journaled_agent_event(|_, _| event).is_some()
     }
 

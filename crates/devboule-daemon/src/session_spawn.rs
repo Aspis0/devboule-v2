@@ -259,10 +259,9 @@ pub(super) fn start_spawned_session(
     }
     registry.configure_runtime_attention(&runtime, &owner);
     {
-        // The finish report's trigger (`S5` §3; the slice-5 e2e battery is why
-        // it is not the attention hook): a published `AgentFinished` calls this
-        // once, and [`SessionRegistry::report_child_finish`] no-ops for a
-        // session that is not an agent-created child of ours.
+        // The finish report's trigger (`S5` §3): a published `AgentFinished`
+        // calls this once, and [`SessionRegistry::report_child_finish`]
+        // no-ops for a session that is not an agent-created child of ours.
         let registry = registry.clone();
         let session_id = metadata.id.clone();
         runtime.set_finish_notify(Arc::new(move || {
@@ -339,15 +338,14 @@ pub(super) fn start_spawned_session(
     // map entry and strand the session.
     //
     // The entry goes in as `Configuring` and is promoted to `Live` only
-    // after the delivery below has landed (the re-audit's P2-1). A child
-    // that is live but not yet configured is the authority gap this slice
-    // exists to close: between this insert and the delivery there used to be
-    // a listed, promptable session whose card had not been honoured — a peer
-    // could see it, send it work, and have that work silently die with a
-    // refused delivery. A `Configuring` entry is invisible to every roster
-    // read and refused by every id-addressed peer call, while the daemon's
-    // own teardown paths (the refusal's `close`, EOF reaping) still reach
-    // it.
+    // after the delivery below has landed. A child that is live but not yet
+    // configured is the authority gap this state closes: between the insert
+    // and the delivery a listed, promptable session would have a card that
+    // was not honoured — a peer could see it, send it work, and have that
+    // work silently die with a refused delivery. A `Configuring` entry is
+    // invisible to every roster read and refused by every id-addressed peer
+    // call, while the daemon's own teardown paths (the refusal's `close`,
+    // EOF reaping) still reach it.
     {
         let Ok(mut map) = registry.inner.lock() else {
             teardown_session(session);
@@ -466,11 +464,11 @@ pub(super) fn start_spawned_session(
     // The pending delivery runs here and only here: it is an awaited rpc
     // whose answers only the session reader delivers, and that reader is now
     // live. Run any earlier and the wait outlives its deliverer — fifteen
-    // seconds of stall, then a refusal, for every child a profile creates
-    // (the R2a audit's F1). A refused delivery tears the child down — the
-    // registry entry is still in its `Configuring` state, whose teardown the
-    // close serves — and fails the creation, before any prompt can reach a
-    // child the card did not describe.
+    // seconds of stall, then a refusal, for every child a profile creates.
+    // A refused delivery tears the child down — the registry entry is still
+    // in its `Configuring` state, whose teardown the close serves — and
+    // fails the creation, before any prompt can reach a child the card did
+    // not describe.
     if let Some(deliver) = pending_delivery {
         if let Err(error) = deliver() {
             let _ = registry.close(&id, &owner, &None);
@@ -705,10 +703,10 @@ pub(super) fn finish_reader_session(
     // cannot reserve a slot for it after this point (A2-05).
     forget_message_brake_target(&registry.message_brakes, id);
     // What this child's end owes its creator is copied out of the row *before*
-    // it is removed (`S5` decisions 7 and 8, audit S5-01): the report needs the
-    // row's metadata, its runtime and its owner, and this is the path that ends
-    // a child whose provider exited on its own — the common end — which used to
-    // take the row out without releasing the slot or telling the creator.
+    // it is removed (`S5` decisions 7 and 8): the report needs the row's
+    // metadata, its runtime and its owner, and this is the path that ends a
+    // child whose provider exited on its own — the common end — which must
+    // not take the row out without releasing the slot or telling the creator.
     let ended = map.get(id).and_then(|entry| {
         entry.as_child_process().map(|live| {
             (

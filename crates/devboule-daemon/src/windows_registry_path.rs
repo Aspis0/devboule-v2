@@ -155,9 +155,9 @@ fn read_path_value(root: HKEY, subkey: &str) -> RegistryPathRead {
 
 /// `ExpandEnvironmentStringsW` against the process environment. A variable
 /// the process does not have stays as `%NAME%`; the entry then matches no
-/// folder, which is a lost search entry and never an error (recorded review
-/// finding #6: a variable added to the registry after this process started
-/// resolves only after a restart).
+/// folder, which is a lost search entry and never an error: a variable
+/// added to the registry after this process started resolves only after a
+/// restart.
 fn expand_environment_strings(value: &str) -> Option<String> {
     let source = wide(value);
     unsafe {

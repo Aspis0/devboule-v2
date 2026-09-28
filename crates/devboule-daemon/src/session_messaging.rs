@@ -764,14 +764,14 @@ impl super::SessionRegistry {
             }
         }
         // Paseo calls `tryRunOutOfBand` before `startAgentRunInner` and
-        // `steerOrReplaceActiveRun` (`agent-prompt.ts:110-116`); a picked Codex
+        // `steerOrReplaceActiveRun` — translated from Paseo's agent-prompt
+        // (packages/server/src/server/agent/agent-prompt.ts); a picked Codex
         // prompt or skill is not out-of-band — it stays a turn — and the
         // static plan below expands it against the user's message, ahead of
         // this first-prompt composition, so a later paragraph that merely
         // names a command is never one. Keep this door ahead of composition
         // so out-of-band input remains parseable. Attachment prompts bypass
-        // the out-of-band door because Paseo only resolves string prompts
-        // (:4009).
+        // the out-of-band door because Paseo only resolves string prompts.
         if attachments.is_empty() && attachment_references.is_empty() {
             if let Some(commands) = out_of_band.as_ref() {
                 if commands.handles_out_of_band(text) {

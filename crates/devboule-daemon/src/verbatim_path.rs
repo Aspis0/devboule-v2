@@ -98,11 +98,10 @@ fn has_verbatim_only_component(path: &str) -> bool {
 mod tests {
     use super::plain_path;
 
-    /// The review's path: the last component is clean, but `release.` is
-    /// normalized away in the plain namespace, so a child stripped of the
-    /// prefix would start in `C:\release\repo` while the workspace is
-    /// `C:\release.\repo`. Every component has to be checked, not just the
-    /// last non-empty one.
+    /// The last component is clean, but `release.` is normalized away in
+    /// the plain namespace, so a child stripped of the prefix would start in
+    /// `C:\release\repo` while the workspace is `C:\release.\repo`.
+    /// Every component has to be checked, not just the last non-empty one.
     #[test]
     fn plain_path_keeps_the_prefix_when_a_middle_component_is_verbatim_only() {
         assert_eq!(plain_path(r"\\?\C:\release.\repo"), r"\\?\C:\release.\repo");

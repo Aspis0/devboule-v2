@@ -1,5 +1,5 @@
-//! Peer gate — pass-3a split of `server.rs`: the refusal/audit helpers
-//! behind the gate (`dispatch`'s first statement calls into these).
+//! Peer gate: the refusal/audit helpers behind the gate (`dispatch`'s
+//! first statement calls into these).
 //! Not a leaf: `dispatch.rs`'s capability arms call
 //! `capability_not_supported` too.
 
@@ -19,8 +19,6 @@ use super::*;
 /// everything it enforced before.
 pub(super) struct GatePassed(());
 
-/// The peer gate, lifted out of `dispatch` verbatim in pass 3b.
-///
 /// Nothing below the gate (not the provider spawns, not the readiness check)
 /// runs for a remote connection before its request has a decision
 /// (`DESIGN-remote-agents.md` §8b A1). The capability set is consulted first
@@ -250,8 +248,8 @@ pub(super) fn peer_mode_refusal_for_conn(
         }
         // An agent message is a send whose session is its *target*: the target
         // receives the prompt, so the target is the session this gate vets,
-        // exactly as `SessionSend`'s own session is. Spelled out rather than
-        // folded into the arm above: it is the decision this slice adds.
+        // exactly as `SessionSend`'s own session is, spelled out rather than
+        // folded into the arm above.
         ClientMessage::AgentMessageSend { to_session, .. }
             if state
                 .sessions
@@ -405,11 +403,10 @@ pub(super) fn audit_peer_unauthorized(
     };
     let refused = match reply {
         DaemonMessage::Error(error) => error.code == ErrorCode::Unauthorized,
-        // A2-07: the receipt that names a *denied* caller is what this audit row
-        // records. The daemon no longer answers `RejectedUnpaired` from this
-        // dispatch — an unpaired connection is refused at the peer gate, before
-        // any message is looked at — so the denial is this state and only this
-        // one.
+        // The receipt that names a *denied* caller is what this audit row
+        // records. The daemon does not answer `RejectedUnpaired` from this
+        // dispatch: an unpaired source is closed at the accept layer, before
+        // the Noise handshake, so the denial is this state and only this one.
         DaemonMessage::AgentMessageReceipt {
             state: AgentMessageState::RejectedDenied,
             ..
@@ -502,7 +499,7 @@ pub(super) fn peer_outcome(request: &ClientMessage, outcome: &str) -> &'static s
 
 /// The session id a request names, when it names one.
 ///
-/// A *closed* match (`S5`, block 6): every `ClientMessage` is named, so a new
+/// A *closed* match: every `ClientMessage` is named, so a new
 /// frame has to be classified here rather than falling silently into `None`.
 /// The variants that name no session are listed one by one for the same reason.
 pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {

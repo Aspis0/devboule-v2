@@ -165,13 +165,12 @@ fn ticked_features() -> serde_json::Map<String, serde_json::Value> {
         .to_owned()
 }
 
-/// The crossing the re-audit's P1 found missing: the pre-card gate and
-/// the clients' own spawn-time tick rules, asserted against each other
-/// over the daemon's mode vocabulary plus the provider-authored ids the
-/// audit named. The invariant that convicts the old gate is exact — a
-/// pair the pre-card gate refuses must be a pair the client that will
-/// speak for the child also refuses — and for Claude and pi, whose tick
-/// rule is the daemon's own, the two verdicts must agree outright.
+/// The pre-card gate and the clients' own spawn-time tick rules, asserted
+/// against each other over the daemon's mode vocabulary plus the
+/// provider-authored ids. The invariant is exact — a pair the pre-card gate
+/// refuses must be a pair the client that will speak for the child also
+/// refuses — and for Claude and pi, whose tick rule is the daemon's own,
+/// the two verdicts must agree outright.
 #[test]
 fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
     use crate::provider_catalog::{judge_auto_accept_tick, AutoAcceptTick};
