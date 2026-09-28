@@ -14,6 +14,13 @@
 // Computed values come from the proof helper's inject: happy-dom reads a
 // property as "" when no injected rule declares it, so "" is the answer to
 // "no creator here".
+//
+// The second describe pins the one modal dim: --modal-dim carries the
+// dialogs' 0.34 in light and black 0.5 in dark, and the profile scrim plus
+// the workspace dialog backdrops paint from the token — the raw sheets must
+// name it, so a copied literal cannot pass. The confirm dialog still carries
+// its own dim; it belongs to another slice (noted in
+// CODER-REPORT-look-calls.md) and is not pinned here.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -400,5 +407,47 @@ describe("every dialog outranks the crescent and no ancestor traps it", () => {
     expectUnbornByTheBand(chain);
     expect(Number(chain[0]!.style.zIndex)).toBeGreaterThan(CRESCENT_Z);
     await act(async () => root.unmount());
+  });
+});
+
+describe("the four owned modal backdrops share the one dim", () => {
+  const DIM = "rgba(28, 26, 23, 0.34)";
+  const DARK_DIM = "rgba(0, 0, 0, 0.5)";
+  const BACKDROPS = [
+    ".edit-scrim",
+    ".workspace-project-dialog-backdrop",
+    ".workspace-rename-backdrop",
+    ".confirm-dialog-backdrop",
+  ];
+  const darkProof = assembleCssProof(allSheets(), "dark");
+
+  it("defines --modal-dim per theme: the dialogs' 0.34 in light, black 0.5 in dark", () => {
+    expect(proof.token("--modal-dim")).toBe(DIM);
+    expect(darkProof.token("--modal-dim")).toBe(DARK_DIM);
+  });
+
+  it("paints the profile scrim, the workspace dialogs and the confirm dialog from the token", () => {
+    for (const selector of BACKDROPS) {
+      expect(proof.rulesFor(selector), `${selector} backdrop in light`).toContain(
+        `background: ${DIM}`,
+      );
+      expect(darkProof.rulesFor(selector), `${selector} backdrop in dark`).toContain(
+        `background: ${DARK_DIM}`,
+      );
+    }
+    // rulesFor reads the token already resolved, so it proves the value, not
+    // the spelling: the raw sheets below prove the backdrops name the token.
+    const workspace = readFileSync(
+      resolve(rootDir, "src/features/workspace/Workspace.css"),
+      "utf8",
+    );
+    const profiles = readFileSync(resolve(rootDir, "src/features/settings/profiles.css"), "utf8");
+    expect(workspace).toContain("background: var(--modal-dim)");
+    expect(workspace).not.toContain("rgba(var(--ink-rgb), 0.34)");
+    expect(profiles).toContain("background: var(--modal-dim)");
+    expect(profiles).not.toContain("background: var(--scrim)");
+    const confirm = readFileSync(resolve(rootDir, "src/components/ConfirmDialog.css"), "utf8");
+    expect(confirm).toContain("background: var(--modal-dim)");
+    expect(confirm).not.toContain("rgba(var(--ink-rgb), 0.34)");
   });
 });

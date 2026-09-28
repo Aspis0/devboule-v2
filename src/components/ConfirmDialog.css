@@ -1,7 +1,7 @@
 /* The confirmation dialog: the spec's centred card over a scrim — 380 r12,
    --panel-card, shadow-pop; title 14/500, body 13/1.45 --ink-soft, actions
-   right-aligned at h28. The dim is the workspace's own dialog dim, not
-   --scrim: two dialogs one click apart must dim the page the same way. */
+   right-aligned at h28. The dim is --modal-dim, shared by every modal
+   backdrop, so dialogs one click apart dim the page the same way. */
 
 .confirm-dialog-backdrop {
   position: fixed;
@@ -12,7 +12,7 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(var(--ink-rgb), 0.34);
+  background: var(--modal-dim);
 }
 
 .confirm-dialog {

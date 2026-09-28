@@ -112,7 +112,7 @@ describe("PermissionCard computed styles", () => {
     chosen.remove();
   });
 
-  it("pairs an outline Deny with a filled Allow, both h28 r6 13px", () => {
+  it("pairs an outline Deny with a filled Allow once, both h28 r6 13px", () => {
     cardCss.inject([".permission-card-secondary-action", ".permission-card-primary-action"]);
     const deny = document.createElement("button");
     deny.className = "permission-card-secondary-action permission-card-deny-action";

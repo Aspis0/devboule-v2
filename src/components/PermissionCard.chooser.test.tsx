@@ -162,10 +162,10 @@ describe("PermissionCard chooser answers", () => {
     await act(async () => root.unmount());
   });
 
-  it("a standard request still renders Deny and Allow", async () => {
+  it("a standard request still renders Deny and Allow once", async () => {
     const { root, card } = await renderCard(standardRequest);
 
-    expect(actionButtons(card).map((button) => button.textContent)).toEqual(["Deny", "Allow"]);
+    expect(actionButtons(card).map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
 
     await act(async () => root.unmount());
   });

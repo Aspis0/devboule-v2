@@ -12,9 +12,8 @@
 // The rest of the file pins the slice's own values: the deleted labels are
 // gone outright, the restyled labels are the UI font at 12 px or above, and
 // the focus cue, the menu's max-width and the text alignment are as built.
-// The picker menu's option rows are deliberately not restyled — the slice
-// froze every picker but the trigger — so they are walked for mono only,
-// never for size.
+// The picker menu's option rows are sized in `src/components/PickerChip.test.tsx`
+// (look-calls slice), so this file walks them for mono only, never for size.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

@@ -1,7 +1,7 @@
 // The composer chrome's look contract: the send control is a button named
 // "Send" that sends, the running turn replaces it with a still-named Stop that
-// interrupts, and the queue action keeps its label through the icon change.
-// The keys' contract is `WorkspaceComposer.sendKeys.test.tsx`; the trigger
+// interrupts, and the queue action's icon follows its label — the queue mark
+// while it queues, the send arrow while the interrupt-and-send default steers. The keys' contract is `WorkspaceComposer.sendKeys.test.tsx`; the trigger
 // labels' proof is the provider·model chip tests in `AgentChatSurface.test.tsx`.
 // @vitest-environment happy-dom
 import { act, type ComponentProps } from "react";
@@ -116,6 +116,53 @@ describe("the action icons", () => {
 });
 
 describe("the queue action", () => {
+  it("draws a clock while the action queues", async () => {
+    await renderComposer({ turnActive: true, enterQueues: true });
+
+    const queue = container.querySelector<HTMLButtonElement>(
+      '[data-testid="composer-queue-action"]',
+    );
+    if (queue === null) throw new Error("queue action did not render");
+    expect(queue.getAttribute("aria-label")).toBe("Queue message");
+    const circle = queue.querySelector("circle");
+    // Face centred on the 24-unit box at Send's scale.
+    expect([
+      circle?.getAttribute("cx"),
+      circle?.getAttribute("cy"),
+      circle?.getAttribute("r"),
+    ]).toEqual(["12", "12", "8"]);
+    const paths = [...queue.querySelectorAll("path")].map((path) => path.getAttribute("d"));
+    // Hands from the centre, up and right: a 12-to-3 shape.
+    expect(paths).toEqual(["M12 12V7", "M12 12H17"]);
+  });
+
+  it("wears the send arrow while the action interrupts", async () => {
+    // The interrupt-and-send default (enterQueues false) with no pending
+    // permission: the button says "Send and interrupt" and steers, which
+    // sends — so it draws what it does, not the queue mark. (A pending
+    // permission unmounts this button instead: queueAllowed goes false.)
+    await renderComposer({ turnActive: true });
+
+    const queue = container.querySelector<HTMLButtonElement>(
+      '[data-testid="composer-queue-action"]',
+    );
+    if (queue === null) throw new Error("queue action did not render");
+    expect(queue.getAttribute("aria-label")).toBe("Send and interrupt");
+    const paths = [...queue.querySelectorAll("path")].map((path) => path.getAttribute("d"));
+    expect(paths).toEqual(["M12 19V5", "m5 12 7-7 7 7"]);
+    // No stream runs here, so the plain send button stands beside it: two
+    // identical send arrows, both sending. Named so the pair reads as the
+    // interrupt state's normal chrome, not a doubled control.
+    const buttons = container.querySelectorAll(
+      '[data-testid="composer-queue-action"], .workspace-send-action',
+    );
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      const drawn = [...button.querySelectorAll("path")].map((path) => path.getAttribute("d"));
+      expect(drawn).toEqual(["M12 19V5", "m5 12 7-7 7 7"]);
+    }
+  });
+
   it("keeps its label as the accessible name and queues on click", async () => {
     await renderComposer({ turnActive: true, enterQueues: true });
     await drive.type("later");

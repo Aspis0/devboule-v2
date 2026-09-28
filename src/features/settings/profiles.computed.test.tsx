@@ -121,13 +121,15 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
     expect(getComputedStyle(trash).color).toBe(token("--danger"));
   });
 
-  it("covers the window with the scrim and centres the dialog", () => {
+  it("covers the window with the shared modal dim and centres the dialog", () => {
     inject([".edit-scrim"]);
     const scrim = box("edit-scrim");
     const style = getComputedStyle(scrim);
     expect(style.position).toBe("fixed");
     expect(style.display).toBe("grid");
-    expect(style.backgroundColor).toBe(token("--scrim"));
+    // Every dialog dims the page the same way: the shared modal dim, not
+    // the lightbox scrim.
+    expect(style.backgroundColor).toBe(token("--modal-dim"));
   });
 
   it("styles the dialog's textareas like the pane's", () => {

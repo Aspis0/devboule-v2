@@ -289,6 +289,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               onClick={runDefaultAction}
               disabled={disabled || !input.trim()}
             >
+              {/* A clock while the action queues: it sends later. The
+                  interrupt-and-send default steers, which sends, so it wears
+                  the send arrow. */}
               <svg
                 width={14}
                 height={14}
@@ -301,8 +304,18 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
                 aria-hidden="true"
                 focusable="false"
               >
-                <path d="M12 5v14" />
-                <path d="M5 12h14" />
+                {defaultActionQueues ? (
+                  <>
+                    <circle cx={12} cy={12} r={8} />
+                    <path d="M12 12V7" />
+                    <path d="M12 12H17" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M12 19V5" />
+                    <path d="m5 12 7-7 7 7" />
+                  </>
+                )}
               </svg>
             </button>
           ) : null}

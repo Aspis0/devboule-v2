@@ -93,7 +93,8 @@ type ResolutionAttribution = "creator" | "other" | "unnamed";
 /**
  * The decision the daemon's selected option kind maps to, walked as a table
  * over the closed permission vocabulary — the same mapping the daemon's
- * broker owns (`allow_once | allow_always → Allow`, `reject_once |
+ * broker owns, in outcome words rather than button labels
+ * (`allow_once | allow_always → Allow`, `reject_once |
  * reject_always → Deny`). Keyed by the raw wire string, so an unknown or
  * absent kind misses the table and yields `undefined`: the caller renders an
  * unclaimed answer, never a guessed decision. THIS TABLE IS THE FORK POINT —
@@ -695,7 +696,7 @@ export function PermissionCard({
       ) : null}
       {!isQuestion && !isPlan && !isChooser && (!allowSupported || !denySupported) ? (
         <div className="permission-card-unavailable" role="status">
-          {!allowSupported ? "Allow is not offered for this request." : null}
+          {!allowSupported ? "Allow once is not offered for this request." : null}
           {!allowSupported && !denySupported ? " " : null}
           {!denySupported ? "Deny is not offered for this request." : null}
         </div>
@@ -879,7 +880,7 @@ export function PermissionCard({
               onClick={() => void respond({ outcome: "allow_once" })}
               disabled={permission !== "waiting" || !daemonReachable || !allowSupported}
             >
-              Allow
+              Allow once
             </button>
           </>
         )}

@@ -1,11 +1,13 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { useMenuOpen } from "../lib/menuOpen";
+import { POPOVER_MARGIN, placePopover } from "../features/workspace/popoverPlace";
 import "./PickerChip.css";
 
 // Moved out of AgentChatSurface unchanged, so Design renders the same control.
@@ -40,6 +42,69 @@ interface PickerOption {
   id: string;
   name: string;
   description?: string;
+}
+
+/** Scrolls a row visible inside the menu's own box, the way the command menu
+ * does: the transcript above the menu must not move. (The target for a row
+ * below the window is its bottom minus the window height — not minus the
+ * window bottom, which already contains the current scroll.) */
+function scrollRowIntoView(list: HTMLElement, row: HTMLElement): void {
+  const rowTop = row.offsetTop;
+  const rowBottom = rowTop + row.offsetHeight;
+  const viewTop = list.scrollTop;
+  const viewBottom = viewTop + list.clientHeight;
+  if (rowTop < viewTop) list.scrollTop = rowTop;
+  else if (rowBottom > viewBottom) list.scrollTop = rowBottom - list.clientHeight;
+}
+
+/** The menu's side and cap, reusing the anchored popovers' arithmetic on an
+ * inline measurement — not the portal, so outside-click and z-index stay as
+ * they are. The probe reads the content with the cap lifted: through the
+ * sheet's fallback cap it reports the capped box, never the content. */
+export function menuPlacement(
+  trigger: HTMLElement,
+  menu: HTMLElement,
+): { maxHeight: number; below: boolean } {
+  const anchorBox = trigger.getBoundingClientRect();
+  const inlineCap = menu.style.maxHeight;
+  menu.style.maxHeight = "none";
+  const probe = { width: menu.scrollWidth, height: menu.scrollHeight };
+  menu.style.maxHeight = inlineCap;
+  const panel = trigger.closest(".workspace-center-panel");
+  let anchor: { left: number; right: number; top: number; bottom: number } = anchorBox;
+  let viewport = { width: window.innerWidth, height: window.innerHeight };
+  if (panel !== null) {
+    const box = panel.getBoundingClientRect();
+    anchor = {
+      left: anchorBox.left - box.left,
+      right: anchorBox.right - box.left,
+      top: anchorBox.top - box.top,
+      bottom: anchorBox.bottom - box.top,
+    };
+    viewport = { width: box.width, height: box.height };
+  }
+  const placed = placePopover(anchor, probe, viewport, POPOVER_MARGIN, true);
+  // placePopover keeps the side to itself; the top gives it away: opening
+  // below starts the menu past the anchor's top edge, opening above ends
+  // it before that edge.
+  return { maxHeight: placed.maxHeight, below: placed.top > anchor.top };
+}
+
+/** Sets the open's side and cap on the menu and brings the selected row
+ * along: the open effect and its resize paths share it, so a recompute
+ * can never drift from the open. */
+function placeMenu(trigger: HTMLElement, menu: HTMLElement): void {
+  const placed = menuPlacement(trigger, menu);
+  if (placed.maxHeight > 0) menu.style.maxHeight = `${placed.maxHeight}px`;
+  if (placed.below) {
+    menu.style.top = "calc(100% + 6px)";
+    menu.style.bottom = "auto";
+  } else {
+    menu.style.bottom = "calc(100% + 6px)";
+    menu.style.top = "auto";
+  }
+  const selected = menu.querySelector<HTMLElement>("[aria-selected='true']");
+  if (selected !== null) scrollRowIntoView(menu, selected);
 }
 
 interface PickerChipProps {
@@ -77,6 +142,8 @@ export function PickerChip({
   pendingCopy,
 }: PickerChipProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuBodyRef = useRef<HTMLDivElement>(null);
   const listId = useId();
   const [openRequested, setOpenRequested] = useState(false);
   // A fatal event can flip `disabled` while the menu is open; deriving `open`
@@ -84,6 +151,28 @@ export function PickerChip({
   // buttons cannot reach `onSelect` on a gone view.
   const open = openRequested && !disabled;
   useMenuOpen(open, () => setOpenRequested(false));
+
+  // The menu must stay inside the centre panel's hidden overflow: open on
+  // the side menuPlacement chose, capped to that side's room, and bring the
+  // current row along. The cap is the trigger's room, so a window resize or
+  // a row change re-runs the same placement while open. happy-dom measures
+  // every rectangle as zero, so the geometry is pinned by the menuPlacement
+  // unit tests and only the scroll is exercised through React here.
+  useLayoutEffect(() => {
+    if (!open || options.length === 0) return;
+    const menu = menuBodyRef.current;
+    const trigger = triggerRef.current;
+    if (menu === null || trigger === null) return;
+    const place = (): void => placeMenu(trigger, menu);
+    place();
+    window.addEventListener("resize", place);
+    const sizes = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    if (sizes !== null) sizes.observe(menu);
+    return () => {
+      window.removeEventListener("resize", place);
+      sizes?.disconnect();
+    };
+  }, [open, currentId, options.length]);
 
   useEffect(() => {
     if (!open) return;
@@ -114,21 +203,22 @@ export function PickerChip({
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     event.preventDefault();
-    const optionButtons = [
-      ...(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role='option']") ?? []),
-    ];
+    const menu = menuBodyRef.current;
+    const optionButtons = [...(menu?.querySelectorAll<HTMLButtonElement>("[role='option']") ?? [])];
     const index = optionButtons.indexOf(document.activeElement as HTMLButtonElement);
     const next =
       event.key === "ArrowDown"
         ? (optionButtons[Math.min(index + 1, optionButtons.length - 1)] ?? optionButtons[0])
         : (optionButtons[Math.max(index - 1, 0)] ?? optionButtons[0]);
     next?.focus();
+    if (next !== undefined && menu !== null) scrollRowIntoView(menu, next);
   };
 
   return (
     <div ref={menuRef} className="workspace-mode-chip">
       <button
         type="button"
+        ref={triggerRef}
         className="workspace-mode-chip-trigger"
         data-testid={chipTestId}
         aria-haspopup="listbox"
@@ -161,6 +251,7 @@ export function PickerChip({
       {open ? (
         <div
           className="workspace-mode-menu"
+          ref={menuBodyRef}
           id={listId}
           role="listbox"
           aria-label={label}

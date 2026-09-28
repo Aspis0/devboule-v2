@@ -1519,7 +1519,7 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(var(--ink-rgb), 0.34);
+  background: var(--modal-dim);
 }
 
 .workspace-project-dialog,

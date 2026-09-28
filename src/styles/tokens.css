@@ -92,6 +92,10 @@
 
   /* overlays: lightbox and modal scrims own the window */
   --scrim: rgba(28, 26, 23, 0.78);
+  /* The one modal dim: every dialog backdrop dims the page the same way.
+     The dark ground is darker than the ink tint, so dark carries its own
+     black value — the light one would lift the page instead of dimming it. */
+  --modal-dim: rgba(28, 26, 23, 0.34);
   --lb-text: #f5efe6;
   --lb-hover: rgba(255, 255, 255, 0.12);
 
@@ -220,6 +224,7 @@
   --terminal-ground: #14100d;
 
   --scrim: rgba(8, 6, 4, 0.82);
+  --modal-dim: rgba(0, 0, 0, 0.5);
   --lb-text: #ece5da;
   --lb-hover: rgba(236, 229, 218, 0.12);
 

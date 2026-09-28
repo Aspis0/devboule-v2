@@ -54,6 +54,7 @@ const COLOUR_TOKENS = [
   "terminal-ground",
   "tone-attention-text",
   "tone-unattended-text",
+  "modal-dim",
 ] as const;
 
 /** Theme-independent tokens: fonts, ramp, spacing, radii, heights, motion, frame hooks. */
@@ -212,6 +213,11 @@ describe("the new token blocks", () => {
       if (px === null || !name.startsWith("--type-")) continue;
       expect(Number.parseFloat(px[1]!), `${name} = ${value}`).toBeGreaterThanOrEqual(12);
     }
+  });
+
+  it("defines the one modal dim per theme: the dialogs' 0.34 in light, black 0.5 in dark", () => {
+    expect(sheet.light.get("--modal-dim")).toBe("rgba(28, 26, 23, 0.34)");
+    expect(sheet.dark.get("--modal-dim")).toBe("rgba(0, 0, 0, 0.5)");
   });
 
   it("carry the one motion: the working pulse, static under reduced motion", () => {
