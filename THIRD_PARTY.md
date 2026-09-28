@@ -1254,25 +1254,25 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | @napi-rs/canvas-win32-arm64-msvc | 1.0.9 | npm transitive optional/platform | MIT |
 | @napi-rs/canvas-win32-x64-msvc | 1.0.9 | npm transitive optional/platform | MIT |
 | @oxc-project/types | 0.147.0 | npm transitive | MIT |
-| @oxfmt/binding-android-arm-eabi | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-android-arm64 | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-darwin-arm64 | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-darwin-x64 | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-freebsd-x64 | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-arm-gnueabihf | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-arm-musleabihf | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-arm64-gnu | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-arm64-musl | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-ppc64-gnu | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-riscv64-gnu | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-riscv64-musl | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-s390x-gnu | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-x64-gnu | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-x64-musl | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-openharmony-arm64 | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-win32-arm64-msvc | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-win32-ia32-msvc | 0.70.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-win32-x64-msvc | 0.70.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-android-arm-eabi | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-android-arm64 | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-darwin-arm64 | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-darwin-x64 | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-freebsd-x64 | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm-gnueabihf | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm-musleabihf | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm64-gnu | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm64-musl | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-ppc64-gnu | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-riscv64-gnu | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-riscv64-musl | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-s390x-gnu | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-x64-gnu | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-x64-musl | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-openharmony-arm64 | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-arm64-msvc | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-ia32-msvc | 0.71.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-x64-msvc | 0.71.0 | npm transitive optional/platform | MIT |
 | @oxlint/binding-android-arm-eabi | 1.80.0 | npm transitive optional/platform | MIT |
 | @oxlint/binding-android-arm64 | 1.80.0 | npm transitive optional/platform | MIT |
 | @oxlint/binding-darwin-arm64 | 1.80.0 | npm transitive optional/platform | MIT |
@@ -1384,7 +1384,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | magic-string | 1.2.3 | npm transitive | MIT |
 | nanoid | 3.3.18 | npm transitive | MIT |
 | obug | 2.1.4 | npm transitive | MIT |
-| oxfmt | 0.70.0 | npm direct build/test | MIT |
+| oxfmt | 0.71.0 | npm direct build/test | MIT |
 | oxlint | 1.80.0 | npm direct build/test | MIT |
 | pdfjs-dist | 6.3.289 | npm direct runtime | Apache-2.0 |
 | picocolors | 1.1.1 | npm transitive | ISC |
@@ -1401,7 +1401,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | tinybench | 6.1.4 | npm transitive | MIT |
 | tinyexec | 1.3.0 | npm transitive | MIT |
 | tinyglobby | 0.2.17 | npm transitive | MIT |
-| tinypool | 2.1.2 | npm transitive | MIT |
+| tinypool | 2.2.0 | npm transitive | MIT |
 | typescript | 7.0.2 | npm direct build/test | Apache-2.0 |
 | undici-types | 8.3.0 | npm transitive | MIT |
 | vite | 8.2.2 | npm direct build/test | MIT |
