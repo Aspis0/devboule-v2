@@ -303,7 +303,7 @@ fn a_line_count_of_zero_still_hands_back_one_line() {
 /// newline on its last byte (the whole file), exactly the cap without one
 /// (EOF ends that line — shown, not cut), and one byte over with the
 /// newline AT index cap (the line is cap + 1 bytes: bigger than one window
-/// — cut, stopped, declared). A first window only reaches this edge by
+/// — cut, stopped, declared). The first slice only ever hit this edge by
 /// luck of the arithmetic; these three files pin it deliberately.
 #[test]
 fn the_window_boundary_is_pinned_at_the_byte() {

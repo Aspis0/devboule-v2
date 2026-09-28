@@ -305,7 +305,7 @@ fn a_refused_answer_leaves_the_childs_attention_up() {
 }
 
 /// Mutant: the refusal bound to the pending card's session id instead of
-/// the card id the caller passed — the C3 regression. The
+/// the card id the caller passed. The
 /// broker hands check 4 `pending.session_id`; the sentence must name the
 /// tool call id the chain looked the card up by, which is the only card id
 /// the caller has ever seen.

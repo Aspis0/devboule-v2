@@ -73,7 +73,7 @@ pub(super) fn run_gate(
                 }
                 // Only state-changing requests audit on success. An allowed
                 // read must never write a row: a `Ping` loop would fill the
-                // disk (muse M1).
+                // disk.
                 if request.is_state_changing() {
                     audit_peer_request(state, &conn.conn_peer, request, "ok");
                 }
@@ -386,7 +386,7 @@ pub(super) fn mode_refused(id: Option<u64>, reason: &'static str) -> DaemonMessa
 /// handler runs, so a refusal raised inside the handler would otherwise leave
 /// only "the capability opened it" in the trail. "This paired device asked to
 /// take a running turn away from an agent, and was refused" is exactly the event
-/// the trail exists for (S4-01) — and a receipt sent back to the device is not a
+/// the trail exists for, and a receipt sent back to the device is not a
 /// trail.
 pub(super) fn audit_peer_unauthorized(
     state: &Arc<ServerState>,
@@ -405,8 +405,9 @@ pub(super) fn audit_peer_unauthorized(
         DaemonMessage::Error(error) => error.code == ErrorCode::Unauthorized,
         // The receipt that names a *denied* caller is what this audit row
         // records. The daemon does not answer `RejectedUnpaired` from this
-        // dispatch: an unpaired source is closed at the accept layer, before
-        // the Noise handshake, so the denial is this state and only this one.
+        // dispatch: an unpaired source that is not a pairing candidate is
+        // closed at the accept layer, before the Noise handshake, so the
+        // denial is this state and only this one.
         DaemonMessage::AgentMessageReceipt {
             state: AgentMessageState::RejectedDenied,
             ..
@@ -499,8 +500,9 @@ pub(super) fn peer_outcome(request: &ClientMessage, outcome: &str) -> &'static s
 
 /// The session id a request names, when it names one.
 ///
-/// A *closed* match: every `ClientMessage` is named, so a new
-/// frame has to be classified here rather than falling silently into `None`.
+/// A *closed* match (`S5`, block 6): every `ClientMessage` is named, so a
+/// new frame has to be classified here rather than falling silently into
+/// `None`.
 /// The variants that name no session are listed one by one for the same reason.
 pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
     match request {

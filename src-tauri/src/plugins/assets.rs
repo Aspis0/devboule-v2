@@ -199,8 +199,8 @@ fn workspace_content_type_for(path: &str) -> WorkspaceContentType {
 /// *syntax* of an escape — `..`, backslashes, drive colons, control characters,
 /// names Windows silently rewrites — before any filesystem call. It cannot see a
 /// symlink, because a link is not in the syntax; that is what the containment
-/// check in [`read_contained`] is for.
-///
+/// check in [`read_contained`] is for — canonicalising catches a symlink only
+/// when the result is then containment-tested.
 fn safe_relative_path(uri_path: &str) -> Option<String> {
     let trimmed = uri_path.trim_start_matches('/');
     if trimmed.is_empty() {

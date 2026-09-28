@@ -78,7 +78,7 @@ fn sweep_os_liveness(
 /// raises that code (a provider-side failure is `Io`/`Internal`, including
 /// Pi's extension not activating). A profile mistake is the human's to fix
 /// in the profile: recording it against the provider degrades the Settings
-/// health line for a correctly installed provider (the R2a audit's F6).
+/// health line for a correctly installed provider.
 pub(super) fn spawn_failure_is_provider_health(error: &WireError) -> bool {
     error.code != ErrorCode::InvalidRequest
 }
@@ -642,7 +642,7 @@ pub(super) fn finish_reader_session(
         return false;
     };
     // Captured before the mutable borrow below: a preserved session stays in
-    // the map, and its end still owes its creator a report (audit S5B-03).
+    // the map, and its end still owes its creator a report.
     let owner = map.get(id).map(|entry| entry.owner().clone());
     let Some(session) = map
         .get_mut(id)
@@ -685,8 +685,8 @@ pub(super) fn finish_reader_session(
         join_coalesce(coalesce, runtime);
         journal_mark_ended(registry, runtime);
         runtime.close_output();
-        // A stopped child that kept its transcript is a child that ended (audit
-        // S5B-03): the session stays listed on purpose, and its slot and its
+        // A stopped child that kept its transcript is a child that ended:
+        // the session stays listed on purpose, and its slot and its
         // report are still owed to the creator.
         if let Some((session, child_runtime, owner)) = ended {
             // A child whose creation has not committed yet has no link and a
@@ -698,9 +698,9 @@ pub(super) fn finish_reader_session(
         }
         return false;
     }
-    // The target's message-brake entries leave with it (A2-06), inside this
+    // The target's message-brake entries leave with it, inside this
     // same critical section: an admission that found the session in the map
-    // cannot reserve a slot for it after this point (A2-05).
+    // cannot reserve a slot for it after this point.
     forget_message_brake_target(&registry.message_brakes, id);
     // What this child's end owes its creator is copied out of the row *before*
     // it is removed (`S5` decisions 7 and 8): the report needs the row's

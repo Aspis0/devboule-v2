@@ -874,8 +874,8 @@ impl DaemonBridge {
     /// into `off_main_thread`: the closure cannot borrow `State`, so the
     /// command clones this `Arc` first and the bridge calls run inside the
     /// closure. Per-operation wrappers on `&self` cannot cross that
-    /// boundary. Named `shared`, not
-    /// `inner`: `State::inner` already exists and would take the call.
+    /// boundary. Named `shared`, not `inner`:
+    /// `State::inner` already exists and would take the call.
     pub(crate) fn shared(&self) -> Arc<BridgeInner> {
         Arc::clone(&self.inner)
     }

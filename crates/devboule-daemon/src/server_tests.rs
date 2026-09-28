@@ -1931,7 +1931,7 @@ fn an_unknown_provider_vocabulary_request_is_an_invalid_request() {
     let _ = std::fs::remove_dir_all(runtime_dir);
 }
 
-/// The vocabulary read's wire answers, end to end through dispatch, asserted
+/// What the vocabulary read answers, end to end through dispatch, asserted
 /// on the serialised wire:
 ///
 /// - Claude answers `present` on both axes, its models origin following
@@ -3891,7 +3891,7 @@ fn a_test_built_state_uses_the_file_store_and_never_the_credential_store() {
     drop(state);
     let _ = std::fs::remove_dir_all(path);
 }
-/// M1: the accept path must not hit the journal per accepted socket. The
+/// The accept path must not hit the journal per accepted socket. The
 /// table is loaded once and reused, and every peer mutation drops it so the
 /// next connection sees the change.
 #[test]
@@ -4128,10 +4128,10 @@ fn an_agent_message_from_a_view_only_peer_is_refused() {
 /// device refused a message it may not send.
 ///
 /// `RejectedUnpaired` stays in the enum but is never produced here: an
-/// unpaired source is closed at the accept layer, before the Noise
-/// handshake, so a refusal that arrives as `ErrorCode::Unauthorized` is a
-/// *denied* caller, not an unpaired one, and the receipt says what happened
-/// rather than blaming the pairing.
+/// unpaired source that is not a pairing candidate is closed at the accept
+/// layer, before the Noise handshake, so a refusal that arrives as
+/// `ErrorCode::Unauthorized` is a *denied* caller, not an unpaired one, and
+/// the receipt says what happened rather than blaming the pairing.
 #[test]
 fn every_agent_message_receipt_state_is_produced() {
     let (path, state) = temp_state("agent-message-receipts");
@@ -5234,7 +5234,8 @@ fn a_peers_deposit_is_refused_with_the_attachment_sentence() {
 /// with the store's reference, and a frame the wire refuses is still
 /// answered with a sentence rather than with its own contents — `name` and
 /// `mime_type` are unbounded strings inside a frame that may be close to
-/// `MAX_FRAME_BYTES`, and `PromptAttachment`'s own `Debug` prints both.
+/// `MAX_FRAME_BYTES`, and `PromptAttachment`'s own `Debug` prints both
+/// fields, so no error text names the frame.
 /// The one field that *must* survive a refusal is the request `id`: it is
 /// the caller's correlation token, and a refusal without it is a silence.
 #[test]

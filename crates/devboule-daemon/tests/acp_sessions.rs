@@ -1010,8 +1010,8 @@ fn acp_chooser_reject_option_by_id_is_journaled_and_resolves_denied() {
 /// A second question under an id whose answer the journal already holds
 /// never becomes a card: the person would answer it and the write-once audit
 /// row could not take the answer, so the agent would be told `cancelled`
-/// after the human spent the effort. The repeat is refused
-/// before the card exists — the agent's own refusal frame comes back and the
+/// after the human spent the effort. The repeat is refused before
+/// the card exists — the agent's own refusal frame comes back and the
 /// transcript gets its one plain notice — and the first answer's row is
 /// untouched. The stub asks reused ids only when the test asks for them
 /// (`DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS`); without the knob, every
@@ -2044,7 +2044,7 @@ fn acp_config_option_categories_are_advisory_and_declared_ids_are_used() {
 #[test]
 fn acp_config_options_switch_fails_loudly_after_a_modes_only_reattach() {
     let _test_lock = lock_tests();
-    // Audit §1: after a daemon restart the reattach (session/load) reply
+    // After a daemon restart the reattach (session/load) reply
     // carries modes only. No switch shape may be recorded, and a click must
     // fail loudly — never fall through to session/set_model.
     let mut test = AcpTest::new_config_options_with(false, true, false);
@@ -4321,7 +4321,8 @@ struct Slice5Test {
 impl Drop for Slice5Test {
     fn drop(&mut self) {
         // The observation files live here and `Harness` removes only its own
-        // runtime directory, so this fixture removes its own directory.
+        // runtime directory: this fixture leaked a directory per construction
+        // (measured: 28 per suite run).
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -4997,7 +4998,7 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         "the envelope names the child: {envelope}"
     );
 
-    // S5-04: the two records name one delivery, and that delivery is the
+    // The two records name one delivery, and that delivery is the
     // `<devboule-system>` text the creator's transcript actually holds.
     let (message_id, state, artifacts) = slice5_finished(&transcript);
     assert_eq!(
@@ -5546,7 +5547,7 @@ fn an_agent_that_dribbles_without_a_newline_cannot_hang_the_creation() {
     }
 }
 
-/// R2a, the identity the refusal buys: a tick over a mode the daemon's own
+/// The identity the refusal buys: a tick over a mode the daemon's own
 /// broker answers admits the creation, the child starts in that mode, and the
 /// marker on the child is the fact the human ticked for — the delivered mode
 /// and the marker are the same fact.
@@ -5633,7 +5634,7 @@ fn a_feature_key_the_agent_never_declared_is_named_as_a_condition_on_the_card() 
         "the old promise-nothing sentence is gone: {description}"
     );
     // An uninterpreted key is not a tick — and the provider-authored mode is
-    // not asserted either way (R2b): the line says cannot-establish.
+    // not asserted either way: the line says cannot-establish.
     assert!(
         description.contains("auto accept: Cannot establish"),
         "a stored value is not a tick, and the mode is not judged by name: {description}"
@@ -5864,7 +5865,7 @@ fn slice5_creator_with_a_creation(
     (test, creator, events)
 }
 
-/// Audit S5-01 end to end: a child whose process exits on its own — the reader
+/// A child whose process exits on its own — the reader
 /// reaching EOF — gives its slot back.
 ///
 /// The slot is measured where the daemon states it: a second creator's card
@@ -5947,7 +5948,7 @@ fn a_child_that_exits_by_eof_gives_its_slot_back() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // Audit S5B-11: an end by EOF owes the creator the *report*, not only the
+    // An end by EOF owes the creator the *report*, not only the
     // slot. Both records, and the structured one carries the id the text
     // message beside it really has.
     let report_deadline = Instant::now() + Duration::from_secs(45);
@@ -6104,7 +6105,7 @@ fn a_creation_naming_an_uninstalled_provider_is_refused() {
     );
 }
 
-/// Audit S5B-03: a child stopped *with its transcript kept* reaches EOF, and
+/// A child stopped *with its transcript kept* reaches EOF, and
 /// that end owes the creator the report and the slot while the row stays.
 #[test]
 fn a_child_stopped_with_its_transcript_kept_is_reported_and_gives_its_slot_back() {
@@ -6611,7 +6612,7 @@ fn empty_standing_instructions_leave_the_first_prompt_alone() {
 /// (`sessions_list`) *and* the journal row, which is what the name claims —
 /// `sessions_list` alone serves a live child from its in-memory birth
 /// metadata and would pass against the pre-tri-state journal, so the durable
-/// half is asserted against the stored row (audit R2b-1 §8.2).
+/// half is asserted against the stored row.
 #[test]
 fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
     let _lock = lock_tests();
@@ -6727,8 +6728,8 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
     );
 }
 
-/// The restart is the one path a durable format exists for (audit R2b-1
-/// §8.3): after the daemon process is replaced, the child's marker is read
+/// The restart is the one path a durable format exists for:
+/// after the daemon process is replaced, the child's marker is read
 /// back from the journal on **both** post-restart surfaces — the recovered
 /// roster row, and the resumed session whose metadata comes from
 /// `session_metadata_for_resume` copying `record.unattended_state`. A resume
@@ -7118,8 +7119,8 @@ fn a_created_child_receives_its_profiles_declared_feature() {
 /// The probe closes the session it opened when the agent advertises
 /// `sessionCapabilities.close` — Paseo's `closeProbe` gate
 /// (packages/server/src/server/agent/providers/acp-agent.ts) — and never
-/// sends it when the agent does not. Killing
-/// the process is not the equivalent: an agent that persists sessions past
+/// sends it when the agent does not.
+/// Killing the process is not the equivalent: an agent that persists sessions past
 /// process exit keeps an orphan per settings-panel open, in the user's history
 /// or spending a session quota. An agent that did not offer the verb answers
 /// `session/close` with a method-not-found error, so sending one would be a log

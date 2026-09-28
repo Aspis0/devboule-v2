@@ -1294,10 +1294,11 @@ impl ServerState {
     /// test's own temp dir, and nothing ever removes them — one `cargo test
     /// -p devboule-daemon` run left 146 `noise-static-<16 hex>` entries in
     /// the real Windows Credential Manager, and past ~6 runs (869 entries)
-    /// `CredWrite` fails with `Windows error code 8`. The credential store is
-    /// not a behaviour under test here: this key is per-test scratch, and the
-    /// file store is the one the integration tests and a headless daemon
-    /// already use (`DEVBOULE_SECRET_STORE=file`).
+    /// `CredWrite` fails with `Windows error code 8`, which fails pairing,
+    /// transport and server tests on `credential store failure`. The
+    /// credential store is not a behaviour under test here: this key is
+    /// per-test scratch, and the file store is the one the integration tests
+    /// and a headless daemon already use (`DEVBOULE_SECRET_STORE=file`).
     #[cfg(test)]
     fn initial_secret_store(dir: &Path) -> OnceLock<(Arc<dyn SecretStore>, &'static str)> {
         let store: Arc<dyn SecretStore> = Arc::new(crate::secret_store::FileStore::new(dir));
@@ -1336,7 +1337,7 @@ impl ServerState {
         journal.peers_list().map_err(|error| error.to_string())
     }
 
-    /// The cached `peers` table the accept path filters on (M1).
+    /// The cached `peers` table the accept path filters on.
     ///
     /// Loaded at most once per [`PEER_TABLE_TTL`], and dropped by every peer
     /// mutation, so the cost of accepting a connection is a mutex read rather
@@ -1500,7 +1501,7 @@ impl ServerState {
     /// The capability set of one paired device, read from its `peers` row.
     ///
     /// Resolved once per connection, not once per request: the journal is the
-    /// slow path this design keeps out of dispatch (muse M1), and a
+    /// slow path this design keeps out of dispatch, and a
     /// `PeerSetCaps` closes that device's live connections, so a running
     /// connection can never hold a capability the row no longer grants.
     ///

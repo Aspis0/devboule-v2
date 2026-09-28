@@ -161,13 +161,15 @@ impl SessionSteerer for UnsupportedSteerer {
     }
 }
 
-/// A provider's own side-effect commands, dispatched before a turn starts.
-/// Translated from Paseo's agent-prompt
-/// (packages/server/src/server/agent/agent-prompt.ts): the text is a command
+/// A provider's own side-effect commands, dispatched before a turn starts:
+/// Paseo's agent-prompt
+/// (packages/server/src/server/agent/agent-prompt.ts) calls `tryRunOutOfBand`,
+/// which records the submitted prompt before the command runs
+/// (packages/server/src/server/agent/agent-manager.ts). The text is a command
 /// the provider executes itself — never written as a prompt, and no turn
 /// begun for it. `handles_out_of_band` recognises the text; `run_out_of_band`
-/// performs it, and a caller runs it only after recording the input (Paseo
-/// records the submitted prompt first, then runs).
+/// performs it, and a caller runs it only after the submitted prompt is
+/// recorded inside it.
 pub(crate) trait OutOfBandCommands: Send + Sync {
     fn handles_out_of_band(&self, text: &str) -> bool;
     fn run_out_of_band(&self, text: &str, runtime: &Arc<SessionRuntime>);
@@ -461,12 +463,12 @@ pub(super) fn session_metadata_for_resume(
         // Resume does not re-origin a session: the row keeps the device that
         // created it.
         origin: record.origin.clone(),
-        // Both of these are the journal's now: a resumed session is the same
+        // Both of these are the journal's since v10: a resumed session is the same
         // session, so it comes back under the name the human saw and with the
         // parent it was created by.
         display_name: record.display_name.clone(),
         created_by: record.created_by.clone(),
-        // And so are the creation-from-profile facts: the profile it was
+        // And so are the creation-from-profile facts, since v11: the profile it was
         // started from, the context it belongs to, the marker it was born with
         // and its labels. A resume is not a creation, so none of them is
         // re-derived here — a child born `yes` comes back `yes` even if its
@@ -550,7 +552,7 @@ pub(super) fn process_gone() -> WireError {
 }
 
 /// The refusal an id-addressed peer call gets when the id names an entry
-/// that is still inside its delivery window (the re-audit's P2-1): the
+/// that is still inside its delivery window: the
 /// session does not exist for its peers until the profile's delivery has
 /// landed, so the honest answer is `SessionNotFound`, not "gone" — nothing
 /// was ever visible to lose.
@@ -565,8 +567,8 @@ pub(super) fn not_found_while_configuring(entry: &RegistryEntry) -> WireError {
 /// The door most id-addressed calls resolve their id through: the
 /// entry must exist, belong to this owner, and be past its delivery window.
 /// A `Configuring` entry answers `SessionNotFound` here, because the session
-/// does not exist for peers until the delivery has landed (the re-audit's
-/// P2-1/P2-2 — the variant's own doc claims this refusal, and this door is
+/// does not exist for peers until the delivery has landed (the variant's
+/// own doc claims this refusal, and this door is
 /// what makes the claim true rather than a per-site edit).
 ///
 /// Two callers do not come through here: `deposit` and `read_attachment`

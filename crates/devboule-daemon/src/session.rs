@@ -303,11 +303,15 @@ use session_registry_state::{
     WORKSPACE_PATH_CACHE_CAP,
 };
 /// The move road's named phases: `set_agent_child_profile` in the parent is
-/// the thin sequence, and this sibling holds the phases it composes.
+/// the thin sequence, and this sibling holds the phases it composes. The
+/// split is pinned by the characterisation tests in
+/// `session_child_profile_tests.rs`.
 #[path = "session_child_profile.rs"]
 mod session_child_profile;
 /// The create road's named phases: `create_with_provider_env` in the parent
-/// is the thin sequence, and this sibling holds the phases it composes.
+/// is the thin sequence, and this sibling holds the phases it composes. The
+/// split is pinned by the characterisation tests in
+/// `session_create_tests.rs`.
 #[path = "session_create.rs"]
 mod session_create;
 #[cfg(test)]
@@ -319,7 +323,8 @@ mod session_create_tests;
 use session_child_profile::{manifest_arrived, model_ask_needed};
 /// The delegated answer's named phases: `answer_child_permission` in the
 /// parent is the thin sequence, and this sibling holds the phases it
-/// composes.
+/// composes. The split is pinned by the characterisation tests in
+/// `session_child_permission_tests.rs`.
 #[path = "session_child_permission.rs"]
 mod session_child_permission;
 #[cfg(test)]
@@ -329,7 +334,8 @@ mod session_child_profile_phase_tests;
 #[path = "session_child_profile_tests.rs"]
 mod session_child_profile_tests;
 use session_child_permission::child_answer_caps_refusal;
-/// The agent-activity-and-quiet-notice tests carved out of `session_tests`: the derived headline telling working, blocked
+/// The agent-activity-and-quiet-notice tests carved out of `session_tests`:
+/// the derived headline telling working, blocked
 /// and idle apart while a live hook row wins, the derived state and the
 /// published hook sharing one session, the quiet notice firing once per spell
 /// and leaving the child alone, a refused notice never steering and leaving the
@@ -339,7 +345,8 @@ use session_child_permission::child_answer_caps_refusal;
 #[cfg(test)]
 #[path = "session_activity_quiet_tests.rs"]
 mod session_activity_quiet_tests;
-/// The attachment-and-deposit tests carved out of `session_tests`: the owner's deposit answered with the reference of
+/// The attachment-and-deposit tests carved out of `session_tests`:
+/// the owner's deposit answered with the reference of
 /// the file the store wrote, the unauthorised, oversized and
 /// close-inside-a-deposit refusals, the count, per-file, total and text-cap
 /// limits, the path line a fallback session writes and the one a terminal
@@ -348,7 +355,8 @@ mod session_activity_quiet_tests;
 #[cfg(test)]
 #[path = "session_attachment_tests.rs"]
 mod session_attachment_tests;
-/// The attention-and-suppression tests carved out of `session_tests`: priority preserving permission while allowing
+/// The attention-and-suppression tests carved out of `session_tests`:
+/// priority preserving permission while allowing
 /// escalation, a clear that cannot complete inside the suppression decision,
 /// focus that suppresses attention while presence clears it, presence that
 /// raises unless the second connection looks elsewhere, and a prompt or an
@@ -356,7 +364,8 @@ mod session_attachment_tests;
 #[cfg(test)]
 #[path = "session_attention_tests.rs"]
 mod session_attention_tests;
-/// The agent-message attribution tests carved out of `session_tests`: a remote sender id is not resolved in this registry,
+/// The agent-message attribution tests carved out of `session_tests`:
+/// a remote sender id is not resolved in this registry,
 /// a remote sender cannot relay into a third device or smuggle an id, a local
 /// caller still reports an absent source, one brake spans a remote device's far
 /// sender ids, an agent message is attributed to the caller and not to the
@@ -383,7 +392,8 @@ mod session_child_permission_phase_tests;
 #[cfg(test)]
 #[path = "session_child_permission_tests.rs"]
 mod session_child_permission_tests;
-/// The restricted-child tests carved out of `session_tests`, the two fixtures at their head included: a
+/// The restricted-child tests carved out of `session_tests`,
+/// the two fixtures at their head included: a
 /// restricted child keeps both denials across a restart and after its profile
 /// changes, an orphaned resume keeps the birth restriction, a row without a
 /// recorded depth resumes unable to delegate, an unreadable overlay cell
@@ -398,7 +408,8 @@ mod session_child_scope_tests;
 #[cfg(test)]
 #[path = "session_child_slot_tests.rs"]
 mod session_child_slot_tests;
-/// The creation-budget tests carved out of `session_tests`: one live child per creator and eight daemon-wide,
+/// The creation-budget tests carved out of `session_tests`:
+/// one live child per creator and eight daemon-wide,
 /// depth judged on the child's own depth, the creation card owed once per
 /// creator session, the ten-an-hour window and the sweep that rolls it, a
 /// reservation released once by its identity, a commit registering the child
@@ -409,7 +420,8 @@ mod session_child_slot_tests;
 #[cfg(test)]
 #[path = "session_creation_caps_tests.rs"]
 mod session_creation_caps_tests;
-/// The creation-race tests carved out of `session_tests`, the two fixtures at their head included: the structural check
+/// The creation-race tests carved out of `session_tests`,
+/// the two fixtures at their head included: the structural check
 /// that the creation check and its park are one call, a commit racing an end
 /// releasing the child once, a creation whose creator is gone leaving nothing
 /// parked, a creation slower than the slot expiry keeping its marker, the
@@ -419,19 +431,22 @@ mod session_creation_caps_tests;
 #[cfg(test)]
 #[path = "session_creation_race_tests.rs"]
 mod session_creation_race_tests;
-/// The delegated-answer tests carved out of `session_tests`: the switch read at the answer rather than at the park, the
+/// The delegated-answer tests carved out of `session_tests`:
+/// the switch read at the answer rather than at the park, the
 /// unknown and already-resolved refusals, the not-the-callers-child and
 /// row-shape refusals, the caller-origin pair, and the no-cap, no-pause shape.
 #[cfg(test)]
 #[path = "session_delegated_answer_tests.rs"]
 mod session_delegated_answer_tests;
-/// The envelope-grammar tests carved out of `session_tests`: the header-and-fence grammar the app parses, a
+/// The envelope-grammar tests carved out of `session_tests`:
+/// the header-and-fence grammar the app parses, a
 /// hostile excerpt that must not close its fence, and the excerpt cap counted
 /// in scalars.
 #[cfg(test)]
 #[path = "session_envelope_card_tests.rs"]
 mod session_envelope_card_tests;
-/// The child's-finish tests carved out of `session_tests`: the stop reason mapped to the a2a word and to the state, the
+/// The child's-finish tests carved out of `session_tests`:
+/// the stop reason mapped to the a2a word and to the state, the
 /// note's whole-text bound with its excerpted stop reason, the finish
 /// envelope's escaping and its one-line-per-header rule, the report owed once,
 /// the slot a close frees, and the facts a child inherits from its creator.
@@ -480,7 +495,8 @@ mod session_recovery_refusal_tests;
 #[cfg(test)]
 #[path = "session_recovery_tests.rs"]
 mod session_recovery_tests;
-/// The stored-reference tests carved out of `session_tests`: a deposited reference reaching the provider as a
+/// The stored-reference tests carved out of `session_tests`:
+/// a deposited reference reaching the provider as a
 /// path line, a reference whose stored bytes disagree with the file refused, a
 /// reference naming another session refused by the wire's own rule before the
 /// store is asked, a reference whose digest was never deposited refused rather
@@ -490,7 +506,8 @@ mod session_recovery_tests;
 #[path = "session_reference_tests.rs"]
 mod session_reference_tests;
 /// The resume road's named phases: `resume` in the parent is the thin
-/// sequence, and this sibling holds the phases it composes.
+/// sequence, and this sibling holds the phases it composes. The split is
+/// pinned by the characterisation tests in `session_resume_tests.rs`.
 #[path = "session_resume.rs"]
 mod session_resume;
 /// Test support for the resume road's three characterisation files: the
@@ -519,7 +536,8 @@ mod session_resume_tests;
 #[cfg(test)]
 #[path = "session_roster_access_tests.rs"]
 mod session_roster_access_tests;
-/// The silence-and-liveness tests carved out of `session_tests`: the threshold transition emitted once, the queued
+/// The silence-and-liveness tests carved out of `session_tests`:
+/// the threshold transition emitted once, the queued
 /// silence dropped when output or an exit lands first, the ACP roster notice on
 /// leaving silent, the OS liveness probe that marks an exit without EOF, and an
 /// elapsed time that keeps a recovered session's unknown life unknown.
@@ -527,7 +545,8 @@ mod session_roster_access_tests;
 #[cfg(test)]
 #[path = "session_roster_activity_tests.rs"]
 mod session_roster_activity_tests;
-/// The first-prompt-and-MCP-wait tests carved out of `session_tests`: Pi and Codex each deliver the first prompt without
+/// The first-prompt-and-MCP-wait tests carved out of `session_tests`:
+/// Pi and Codex each deliver the first prompt without
 /// waiting on the MCP handshake, the resume handle refuses the families it was
 /// never designed for before anything is registered, and an MCP timeout never
 /// writes the prompt.
@@ -541,7 +560,8 @@ mod session_spawn_first_prompt_tests;
 #[cfg(test)]
 #[path = "session_spawn_refusal_tests.rs"]
 mod session_spawn_refusal_tests;
-/// The static-route tests carved out of `session_tests`, the section marker at their head included: a static route sending
+/// The static-route tests carved out of `session_tests`,
+/// the section marker at their head included: a static route sending
 /// its own frame and leaving the plain-text writer alone, the route's plan text
 /// carrying the reference lines too, and a route that declines keeping the
 /// legacy write byte for byte, with the route and plan doubles and their
@@ -549,13 +569,15 @@ mod session_spawn_refusal_tests;
 #[cfg(test)]
 #[path = "session_static_route_tests.rs"]
 mod session_static_route_tests;
-/// The terminal-input tests carved out of `session_tests`: several observers sending complete inputs concurrently through
+/// The terminal-input tests carved out of `session_tests`:
+/// several observers sending complete inputs concurrently through
 /// one writer without interleaving, and only the resize owner being allowed to
 /// resize the terminal.
 #[cfg(test)]
 #[path = "session_terminal_input_tests.rs"]
 mod session_terminal_input_tests;
-/// The terminal-ownership tests carved out of `session_tests`: a terminal send never publishes an agent user
+/// The terminal-ownership tests carved out of `session_tests`:
+/// a terminal send never publishes an agent user
 /// message, the same user's attached client may send, resize and answer a
 /// permission card while an unattached client or a different user may not, a
 /// failed or poisoned writer still records the error the client sees, and
@@ -567,8 +589,8 @@ mod session_terminal_ownership_tests;
 #[cfg(test)]
 #[path = "session_terminal_silence_tests.rs"]
 mod session_terminal_silence_tests;
-/// The terminal-attach, flood and transcript tests carved out of "session_tests"
-///: an attach whose snapshot and live stream
+/// The terminal-attach, flood and transcript tests carved out of
+/// "session_tests": an attach whose snapshot and live stream
 /// meet at an exact boundary, a flood that never duplicates or skips a frame and
 /// leaves a reattached client equal to a fresh emulator, the pending queue's byte
 /// and frame budget, a DSR reply written straight to the PTY, a control path that
@@ -582,7 +604,8 @@ mod session_terminal_silence_tests;
 #[cfg(test)]
 #[path = "session_terminal_transcript_tests.rs"]
 mod session_terminal_transcript_tests;
-/// The workspace road's tests carved out of `session_tests`: the spawn error's workspace id and display path,
+/// The workspace road's tests carved out of `session_tests`:
+/// the spawn error's workspace id and display path,
 /// the local workspace's cwd and the cache in front of it, the resume road's
 /// created-at and record-own kind, the ACP override refusal, and the delete
 /// rules for a local workspace, a worktree and a project folder already gone.
@@ -918,7 +941,7 @@ impl SessionRegistry {
     }
 
     /// Arm a one-shot callback that runs after an agent message's brake admission
-    /// and before its delivery (S4-10). `pub(crate)` for the broker's race
+    /// and before its delivery. `pub(crate)` for the broker's race
     /// test, which needs the gap on the send road from outside `session`.
     #[cfg(test)]
     pub(crate) fn set_agent_message_after_admission_hook(
@@ -944,7 +967,7 @@ impl SessionRegistry {
     }
 
     /// Arm a one-shot callback that runs after a deposit's ownership check and
-    /// before the store write (HND-01).
+    /// before the store write.
     #[cfg(test)]
     fn set_deposit_after_ownership_hook(&self, hook: DepositAfterOwnershipHook) {
         *self
@@ -1326,7 +1349,7 @@ impl SessionRegistry {
                     elapsed_ms: session.elapsed_ms,
                     attention,
                     origin: session.origin,
-                    // The two fields a push-only row needs (S5-09, S5-04): the row
+                    // The two fields a push-only row needs: the row
                     // this client is sent must name the child and its creator, not
                     // only the row the next list would build. The
                     // creation-from-profile facts travel with them for the same
@@ -2123,8 +2146,9 @@ impl SessionRegistry {
             ));
         }
         // A resumed agent-created session is still that creator's child. The
-        // journal carries `created_by`, the birth overlay and the depth, so
-        // the lineage is read back instead of being dropped: the session
+        // journal has carried `created_by` since v10 and the birth overlay
+        // and depth since v13, and the resume read tolerates their absence,
+        // so the lineage is read back instead of being dropped: the session
         // re-registers under the powers it was born with, whether or not
         // its creator is live — losing a restriction because the parent is
         // gone would be the silent escalation this column exists to stop.
@@ -2994,8 +3018,8 @@ impl SessionRegistry {
             }
         }
         // The closed session's message-brake entries go in the same critical
-        // section that takes it out of the map (A2-06): a send that found it
-        // here cannot reserve a slot for it afterwards (A2-05). The
+        // section that takes it out of the map: a send that found it
+        // here cannot reserve a slot for it afterwards. The
         // display-name write identity leaves with it for the same reason.
         forget_message_brake_target(&self.message_brakes, session_id);
         self.forget_display_name_epoch(session_id);
@@ -3548,8 +3572,8 @@ impl SessionRegistry {
             .inner
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
-        // A session inside its delivery window does not exist for its peers
-        // (the re-audit's P2-1): the entry is skipped, and the row the
+        // A session inside its delivery window does not exist for its peers:
+        // the entry is skipped, and the row the
         // journal wrote before the spawn is skipped with it, so no roster
         // read can hand out an id a prompt would be lost on.
         let hidden: std::collections::HashSet<String> = map
