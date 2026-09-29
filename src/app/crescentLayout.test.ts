@@ -26,14 +26,29 @@ function cssNumber(ruleBody: string | undefined, property: string): number {
   return Number(match[1]);
 }
 
-// A rule without its own line-height inherits the body's, so read the
-// declaration when the rule names one and inherit otherwise.
+// A rule without its own line-height inherits the nearest ancestor's, so
+// read the declaration down the chain and inherit only past a silent rule.
 function cssLineHeight(ruleBody: string, inherited: number): number {
   try {
     return cssNumber(ruleBody, "line-height");
   } catch {
     return inherited;
   }
+}
+
+// The circle inherits through the chain as rendered (Shell.tsx): its own
+// rule, then button.nav-point, .crescent-nav, .crescent-shell, then the page.
+// Nearest set leading wins: the value that actually applies.
+function cssCircleLineHeight(
+  baseBody: string,
+  ancestors: readonly string[],
+  bodyHeight: number,
+): number {
+  let inherited = bodyHeight;
+  for (let index = ancestors.length - 1; index >= 0; index -= 1) {
+    inherited = cssLineHeight(ancestors[index]!, inherited);
+  }
+  return cssLineHeight(baseBody, inherited);
 }
 
 describe("layoutCrescent", () => {
@@ -143,8 +158,13 @@ describe("layoutCrescent", () => {
     // row's centre; the budget is 0.5px.
     const base = proof.rulesFor(".nav-point-circle");
     const add = proof.rulesFor(".nav-point-add .nav-point-circle");
+    const parent = proof.rulesFor(".nav-point");
+    const nav = proof.rulesFor(".crescent-nav");
+    const shell = proof.rulesFor(".crescent-shell");
     const bodyLineHeight = cssNumber(proof.rulesFor("body"), "line-height");
-    const baseLineBox = cssNumber(base, "font-size") * cssLineHeight(base, bodyLineHeight);
+    const baseLineBox =
+      cssNumber(base, "font-size") *
+      cssCircleLineHeight(base, [parent, nav, shell], bodyLineHeight);
     const addLineBox = cssNumber(add, "font-size") * cssNumber(add, "line-height");
     expect(Math.abs(baseLineBox - addLineBox) / 2).toBeLessThanOrEqual(0.5);
   });

@@ -19,7 +19,12 @@ export function ToolPolicyBanner({ reason }: { reason: string }) {
       <span className="prov-policy-banner-title">Tool policy failed closed.</span>{" "}
       <span className="prov-policy-banner-reason">{reason}</span>{" "}
       <span className="prov-policy-banner-remedy">Fix the file or remove it, then restart.</span>{" "}
-      <button type="button" disabled={restarting} onClick={() => void restartDaemon()}>
+      <button
+        type="button"
+        className="settings-device-action"
+        disabled={restarting}
+        onClick={() => void restartDaemon()}
+      >
         {restarting ? "Restarting…" : "Restart daemon"}
       </button>
       {restartError ? <span className="prov-policy-banner-error">{restartError}</span> : null}

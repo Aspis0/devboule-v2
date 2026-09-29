@@ -3,7 +3,7 @@
 // slice owns, one by one — a sheet missing from the list is a sheet not
 // walked. A sibling slice walks its own sheets in its own file.
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findBelowTypeFloor } from "./typeFloor";
@@ -24,10 +24,32 @@ const SHEET_PATHS = [
   "src/features/polis/polis.css",
   "src/app/errorBoundaries.css",
 ];
-const SHEETS = SHEET_PATHS.map((path) => readFileSync(resolve(rootDir, path), "utf8"));
+
+// Sheets land in subfolders as the slice splits (devices/, panels/, ...):
+// a top-level read lets a nested sheet dodge the walk.
+function settingsSheetsOnDisk(): string[] {
+  const found: string[] = [];
+  const walk = (dir: string, prefix: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        walk(resolve(dir, entry.name), prefix === "" ? entry.name : `${prefix}/${entry.name}`);
+      } else if (entry.name.endsWith(".css")) {
+        found.push(prefix === "" ? entry.name : `${prefix}/${entry.name}`);
+      }
+    }
+  };
+  walk(resolve(rootDir, "src/features/settings"), "");
+  return found.sort();
+}
+
+function listedSettingsSheets(): string[] {
+  return SHEET_PATHS.filter((path) => path.startsWith("src/features/settings/"))
+    .map((path) => path.slice("src/features/settings/".length))
+    .sort();
+}
 
 describe("the settings slice's 12px type floor", () => {
-  it("walks exactly the twelve sheets the slice owns, by name", () => {
+  it("walks exactly the thirteen sheets the slice owns, by name", () => {
     expect(SHEET_PATHS.map((path) => basename(path))).toEqual([
       "tokens.css",
       "settings.css",
@@ -45,10 +67,30 @@ describe("the settings slice's 12px type floor", () => {
     ]);
   });
 
+  it("lists every settings sheet, so a new file cannot dodge the walk", () => {
+    const onDisk = settingsSheetsOnDisk();
+    const listed = listedSettingsSheets();
+    expect(
+      onDisk.filter((name) => !listed.includes(name)),
+      `settings sheets on disk but not listed: ${onDisk.filter((name) => !listed.includes(name)).join(", ")}`,
+    ).toEqual([]);
+    expect(
+      listed.filter((name) => !onDisk.includes(name)),
+      `settings sheets listed but missing on disk: ${listed.filter((name) => !onDisk.includes(name)).join(", ")}`,
+    ).toEqual([]);
+  });
+
   it("declares no text size below 12px, in either theme", () => {
+    // Read inside the test: a listed sheet deleted from disk fails here
+    // with a named error instead of an import-time ENOENT that kills the file.
+    const sheets = SHEET_PATHS.map((path) => {
+      if (!existsSync(resolve(rootDir, path)))
+        throw new Error(`listed sheet missing on disk: ${path}`);
+      return readFileSync(resolve(rootDir, path), "utf8");
+    });
     const findings = [
-      ...findBelowTypeFloor(SHEETS, "light"),
-      ...findBelowTypeFloor(SHEETS, "dark"),
+      ...findBelowTypeFloor(sheets, "light"),
+      ...findBelowTypeFloor(sheets, "dark"),
     ];
     expect(findings).toEqual([]);
   });

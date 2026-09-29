@@ -384,6 +384,27 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     expect(proof.rulesFor(".dev-dot-live")).toContain(proof.token("--tone-live"));
   });
 
+  it("wraps a long status inside the card instead of overflowing it", () => {
+    // A long OS error must shrink with the row: the flex item needs to allow
+    // shrinking (flex-shrink 1, not none), a zero minimum, and wrappable
+    // text, or it pins at content width and escapes.
+    expect(proof.rulesFor(".dev-status")).toMatch(/flex:\s*0 1 auto/);
+    expect(proof.rulesFor(".dev-status")).toContain("min-width: 0");
+    expect(proof.rulesFor(".dev-status")).toMatch(/overflow-wrap:\s*(anywhere|break-word)/);
+    proof.inject([".dev-card", ".dev-row", ".dev-status"]);
+    const card = box("dev-card");
+    card.style.width = "720px";
+    const row = document.createElement("div");
+    row.className = "dev-row";
+    const status = document.createElement("span");
+    status.className = "dev-status";
+    status.textContent = "Only one usage of each socket address (os error 10048)";
+    row.appendChild(status);
+    card.appendChild(row);
+    expect(getComputedStyle(status).minWidth).toBe("0");
+    expect(getComputedStyle(status).flexShrink).toBe("1");
+  });
+
   it("gives the glyph its own 14px box", () => {
     proof.inject([".dev-glyph"]);
     const glyph = box("dev-glyph");

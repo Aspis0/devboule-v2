@@ -386,6 +386,43 @@
   font-size: 12px;
 }
 
+/* Failed-closed uses danger, not the unattended callout: the daemon denied
+   every restrictable tool until the file is fixed and it restarts. */
+.prov-policy-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 720px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  background: var(--panel-card);
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+}
+
+.prov-policy-banner-title {
+  font-size: var(--type-interface);
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.prov-policy-banner-reason {
+  font-size: var(--type-small);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.prov-policy-banner-remedy {
+  font-size: var(--type-meta);
+  color: var(--muted);
+}
+
+.prov-policy-banner-error {
+  font-size: var(--type-meta);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
 /* The consent card, npm failure block, Refresh/Update/Install buttons, and
    the version line keep their long-standing classes below. Only the
    status colours move onto the tone tokens. */
