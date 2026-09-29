@@ -194,7 +194,7 @@ fn codex_answer_labels(question: &CodexQuestion, value: &str) -> Vec<String> {
 }
 
 /// A Codex `requestUserInput` (current or legacy spelling): the model's
-/// questions become a `kind: "question"` card answered with Paseo's
+/// questions become a `kind: "question"` card answered with the
 /// `{answers: {id: {answers}}}` shape. Nothing parseable means nothing
 /// the person could answer, so the id is answered now, not carded.
 pub(super) fn dispatch_question(

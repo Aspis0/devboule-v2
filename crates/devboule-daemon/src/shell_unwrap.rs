@@ -7,7 +7,7 @@
 //! `isWindowsShellCommand`). The title keeps our convention (bare command,
 //! label separate): no "Run command:" prefix.
 //!
-//! Paseo's originals, quoted:
+//! The originals, quoted:
 //!
 //! ```typescript
 //! function unwrapShellCommand(command: string): string {
@@ -36,7 +36,7 @@
 //! }
 //! ```
 //!
-//! Exactness: the string branches below implement Paseo's two anchored
+//! Exactness: the string branches below implement the two anchored
 //! regexes rule-for-rule over byte offsets into the trimmed input. The
 //! payload is the raw remainder after the flag (`([\s\S]+)$`), never
 //! tokenized or re-joined, so interior whitespace and newlines survive. The
@@ -45,11 +45,11 @@
 //! without the `u` flag (see `is_js_space`); trimming uses the same set,
 //! exactly like `String.prototype.trim`.
 //!
-//! Deviations from Paseo: none.
+//! Deviations from the original: none.
 
 use serde_json::Value;
 
-/// JavaScript `\s` as matched by Paseo's patterns (no `u` flag): TAB LF VT
+/// JavaScript `\s` as matched by the source patterns (no `u` flag): TAB LF VT
 /// FF CR SPACE plus the Unicode spaces below. This deliberately differs from
 /// Rust's `char::is_whitespace` in two places: U+0085 is not matched, and
 /// U+FEFF is.
@@ -90,11 +90,11 @@ fn js_trim(s: &str) -> &str {
 }
 
 /// Strip one pair of matching edge quotes (`"..."` or `'...'`). Mismatched
-/// edges are left alone, exactly like Paseo's `stripMatchingEdgeQuotes`
+/// edges are left alone, exactly like the ported `stripMatchingEdgeQuotes`
 /// (which likewise has no length guard: a lone quote strips to `""`).
 pub(crate) fn strip_matching_edge_quotes(value: &str) -> String {
     let bytes = value.as_bytes();
-    // Paseo has no length guard: a lone quote character strips to `""`.
+    // The source has no length guard: a lone quote character strips to `""`.
     if bytes.len() == 1 && (bytes[0] == b'"' || bytes[0] == b'\'') {
         return String::new();
     }
@@ -121,7 +121,7 @@ fn skip_js_space(s: &str, mut i: usize) -> usize {
 }
 
 /// Split `s[from..]` on JavaScript-whitespace runs, returning byte ranges.
-/// Paseo has no quote awareness anywhere in these patterns: quotes never
+/// No quote awareness anywhere in these patterns: quotes never
 /// protect whitespace.
 fn split_ws_ranges(s: &str, from: usize) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
@@ -142,7 +142,7 @@ fn split_ws_ranges(s: &str, from: usize) -> Vec<(usize, usize)> {
     out
 }
 
-/// Case-sensitive interpreter name at byte index `i` (Paseo's unix branch
+/// Case-sensitive interpreter name at byte index `i` (the unix branch
 /// has no `i` flag); returns the end index. First letters are disjoint, so
 /// alternation order is moot. `starts_with` never panics on boundaries.
 fn unix_name_end(s: &str, i: usize) -> Option<usize> {
@@ -154,7 +154,7 @@ fn unix_name_end(s: &str, i: usize) -> Option<usize> {
     None
 }
 
-/// Paseo's `-(?:lc|c)`, with `lc` tried first. The caller requires
+/// The `-(?:lc|c)` alternation, with `lc` tried first. The caller requires
 /// whitespace after, which makes the token exact.
 fn unix_flag_end(s: &str, i: usize) -> Option<usize> {
     if s[i..].starts_with("-lc") {
@@ -166,7 +166,7 @@ fn unix_flag_end(s: &str, i: usize) -> Option<usize> {
     None
 }
 
-/// Paseo's unix branch:
+/// The unix branch:
 /// `^(?:(?:\/[^/\s]+)*\/)?(?:zsh|bash|sh)\s+-(?:lc|c)\s+([\s\S]+)$`.
 /// Name-start candidates are tried longest-prefix first (the greedy optional
 /// prefix unwinds from the back): segment ends, then the lone `/` (zero
@@ -215,23 +215,23 @@ fn match_unix(s: &str) -> Option<String> {
     None
 }
 
-/// Paseo's `(?:-Command|-c|\/c)` with the `i` flag.
+/// The `(?:-Command|-c|\/c)` alternation with the `i` flag.
 fn is_cmd_flag(token: &str) -> bool {
     token.eq_ignore_ascii_case("-command")
         || token.eq_ignore_ascii_case("-c")
         || token.eq_ignore_ascii_case("/c")
 }
 
-/// Paseo's `-[A-Za-z]+`, matched against the entire token.
+/// The `-[A-Za-z]+` option form, matched against the entire token.
 fn is_option_token(token: &str) -> bool {
     token.len() >= 2
         && token.starts_with('-')
         && token[1..].bytes().all(|b| b.is_ascii_alphabetic())
 }
 
-/// Whether `toks` parses completely as Paseo's option run: each option,
+/// Whether `toks` parses completely as the source's option run: each option,
 /// greedily followed by exactly one value token when the next token does
-/// not start with `-` (Paseo's `(?:\s+[^-\s][^\s]*)?`). The segmentation is
+/// not start with `-` (the source's `(?:\s+[^-\s][^\s]*)?`). The segmentation is
 /// forced — an option-shaped token is always an option, a non-dash token is
 /// always a value — so no search is needed here; the only search is over the
 /// flag position in `find_payload_start`.
@@ -284,7 +284,7 @@ fn quoted_name_ends_at(s: &str, end: usize) -> bool {
     false
 }
 
-/// Candidate interpreter ends in Paseo's backtracking order. For a leading
+/// Candidate interpreter ends in the source's backtracking order. For a leading
 /// `"`, the closing quote is consumed first (`"?` is greedy); names ending
 /// before the closing quote with whitespace after come later, rightmost end
 /// first. For a bare name, `.exe` comes before bare.
@@ -326,7 +326,7 @@ fn interpreter_ends(s: &str) -> Vec<usize> {
             return ends
                 .into_iter()
                 .map(|e| {
-                    // Paseo's `"?`: consuming a following quote comes first;
+                    // The `"?` rule: consuming a following quote comes first;
                     // the empty variant is doomed there (`"` is not
                     // whitespace) and is skipped.
                     if s[e..].starts_with('"') {
@@ -347,7 +347,7 @@ fn interpreter_ends(s: &str) -> Vec<usize> {
 /// an option run. Returns the byte index into the raw string (never
 /// re-joined tokens), mirroring the greedy option run with backtracking.
 fn find_payload_start(s: &str, from: usize) -> Option<usize> {
-    // Paseo requires `\s+` after the interpreter before the first option
+    // The source requires `\s+` after the interpreter before the first option
     // or the flag: a glued interpreter (`pwsh-Command x`) never matches.
     if skip_js_space(s, from) == from {
         return None;
@@ -373,7 +373,7 @@ fn find_payload_start(s: &str, from: usize) -> Option<usize> {
     None
 }
 
-/// Paseo's windows branch:
+/// The windows branch:
 /// `^(?:"[^"]*\\)?(?:pwsh|powershell|cmd)(?:\.exe)?"?(?:\s+-[A-Za-z]+(?:\s+[^-\s][^\s]*)?)*\s+(?:-Command|-c|\/c)\s+([\s\S]+)$`
 /// with the `i` flag.
 fn match_windows(s: &str) -> Option<String> {
@@ -385,8 +385,8 @@ fn match_windows(s: &str) -> Option<String> {
     None
 }
 
-/// Paseo's `unwrapShellCommand`: the payload of a shell wrapper, or the
-/// trimmed input when it is not one. Unix is tried first, as in Paseo.
+/// `unwrapShellCommand`: the payload of a shell wrapper, or the
+/// trimmed input when it is not one. Unix is tried first.
 pub(crate) fn unwrap_shell_command(command: &str) -> String {
     let trimmed = js_trim(command);
     if trimmed.is_empty() {
@@ -401,7 +401,7 @@ pub(crate) fn unwrap_shell_command(command: &str) -> String {
     trimmed.to_string()
 }
 
-/// Paseo's `isWindowsShellCommand`, literally: strip one leading and one
+/// `isWindowsShellCommand`, literally: strip one leading and one
 /// trailing quote of either type (`/^["']|["']$/g`), then test
 /// `(?:^|\\)(?:pwsh|powershell|cmd)(?:\.exe)?$` case-insensitively
 /// (backslash only, never forward slash).
@@ -426,7 +426,7 @@ fn is_windows_shell_command(command: &str) -> bool {
     })
 }
 
-/// Paseo's `normalizeCommandExecutionCommand`: strings unwrap; arrays
+/// `normalizeCommandExecutionCommand`: strings unwrap; arrays
 /// starting with a shell plus `-lc`/`-c` (unix, flag only, no quote strip on
 /// the payload) or a Windows shell command plus `-Command`/`-c`/`/c` unwrap
 /// to the payload; any other array joins with spaces.
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn payload_whitespace_is_preserved_verbatim() {
-        // Paseo captures `([\\s\\S]+)$` raw: no tokenization, no re-join.
+        // The source captures `([\\s\\S]+)$` raw: no tokenization, no re-join.
         assert_eq!(
             normalize_command_execution_command(&value("bash -c \"echo \\\"hi\\\"\"")).as_deref(),
             Some("echo \\\"hi\\\"")
@@ -561,7 +561,7 @@ mod tests {
             assert_eq!(
                 normalize_command_execution_command(&value(command)).as_deref(),
                 Some(command),
-                "Paseo leaves {command} unchanged"
+                "leaves {command} unchanged"
             );
         }
     }
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn quoted_option_values_do_not_span_spaces() {
-        // Paseo's value token `[^\\-\\s][^\\s]*` cannot span the space, so the
+        // The value token `[^\\-\\s][^\\s]*` cannot span the space, so the
         // `-Command` never becomes viable.
         let command = "pwsh -File \"C:\\my script.ps1\" -Command x";
         assert_eq!(
@@ -661,7 +661,7 @@ mod tests {
             assert_eq!(
                 normalize_command_execution_command(&value(command)).as_deref(),
                 Some(command),
-                "Paseo leaves {command} unchanged"
+                "leaves {command} unchanged"
             );
         }
         assert_eq!(
@@ -686,7 +686,7 @@ mod tests {
             normalize_command_execution_command(&value("CMD /C dir")).as_deref(),
             Some("dir")
         );
-        // A whitespace-only payload strips to nothing visible (Paseo quirk,
+        // A whitespace-only payload strips to nothing visible (source quirk,
         // verified against node): trim keeps the quotes, strip removes them.
         assert_eq!(
             normalize_command_execution_command(&value("pwsh -Command \" \"")).as_deref(),

@@ -148,8 +148,8 @@ impl ClaudeView {
             .filter(|id| !id.is_empty())
         {
             // Another CLI session on the same view is a rebind: its
-            // checklist starts empty, as Paseo's rebind does. A repeated
-            // init for the same session changes nothing.
+            // checklist starts empty. A repeated init for the same session
+            // changes nothing.
             if self
                 .peer_session_id
                 .as_deref()
@@ -255,10 +255,9 @@ impl ClaudeView {
     /// The one published list from both readings: the handshake's entries
     /// first, then init names it never listed, appended bare in init order.
     /// Either reading alone republishes nothing; both derivations stay
-    /// order-deterministic, live and on replay alike. No `/rewind`: Paseo
-    /// synthesizes it next to a native rewind road it backs it with
-    /// (`packages/server/src/server/agent/providers/claude/agent.ts`), and no
-    /// such road exists here — the menu shows what the CLI lists.
+    /// order-deterministic, live and on replay alike. No `/rewind`:
+    /// synthesizing one needs a native rewind road to back it with, and none
+    /// exists here — the menu shows what the CLI lists.
     fn merge_with_published(
         &self,
         commands: Vec<AvailableCommandView>,
@@ -290,9 +289,8 @@ impl ClaudeView {
             return None;
         }
         let entries = response.get("response")?.get("commands")?.as_array()?;
-        // Paseo keeps the first row per name (`listCommands`,
-        // `packages/server/src/server/agent/providers/claude/agent.ts`); later
-        // rows with a repeated name never reach the menu.
+        // The first row per name wins; later rows with a repeated name
+        // never reach the menu.
         let mut seen: HashSet<&str> = HashSet::new();
         let mut commands = Vec::new();
         for entry in entries.iter().take(MAX_INSPECTED_COMMANDS) {
@@ -490,10 +488,10 @@ impl ClaudeView {
         );
         let mut events = Vec::new();
         // A subagent's task Tools feed the child's checklist, not this
-        // session's — Paseo's sidechain bypass (`claude/agent.ts`). The
-        // checklist reads its own rule here (a non-empty string parent id):
-        // a non-string parent id feeds the checklist while the view routes
-        // the frame to the child transcript; nothing produces one.
+        // session's. The checklist reads its own rule here (a non-empty
+        // string parent id): a non-string parent id feeds the checklist while
+        // the view routes the frame to the child transcript; nothing produces
+        // one.
         if parent_tool_use_id.is_none() {
             if let Some(event) = self.task_state.observe(envelope) {
                 events.push(event);
@@ -1041,12 +1039,10 @@ fn spawn_depth(envelope: &Value) -> Option<u32> {
 /// the transcript line renders — the top-level object, which is what the CLI
 /// bills for the turn — and the context total the meter shows.
 ///
-/// The meter's number is Paseo's `readActiveUsageTokens`
-/// (`packages/server/src/server/agent/providers/claude/agent.ts`): the
-/// four-counter sum (`readUsageTokenTotal`) over the **last** entry of
-/// `usage.iterations[]` (`readLastUsageIteration`), falling back to the
-/// top-level object only when the frame carries no iterations (their legacy
-/// branch). The distinction is the whole point: one turn can make several API
+/// The meter's number is the four-counter sum over the **last** entry of
+/// `usage.iterations[]`, falling back to the top-level object only when the
+/// frame carries no iterations. The distinction is the
+/// whole point: one turn can make several API
 /// calls, each re-sending the conversation, so the top level is the turn's
 /// billing while the last iteration is what sits in the context window. Claude
 /// bills the cache separately, so `input_tokens` alone would understate either
@@ -1056,11 +1052,10 @@ struct ClaudeUsage {
     context_used: Option<u64>,
 }
 
-/// The meter's reading off one `usage` object: Paseo's `readUsageTokenTotal`
-/// over the entry their `readLastUsageIteration` would pick
-/// (`packages/server/src/server/agent/providers/claude/agent.ts`). `None` when
-/// the sum is 0 — their `total > 0` gate — so an all-zero frame claims no
-/// reading instead of claiming an empty window.
+/// The meter's reading off one `usage` object: the four-counter sum over the
+/// last iteration entry, or the top-level object when the frame carries no
+/// iterations. `None` when the sum is 0 — the `total > 0` gate — so an
+/// all-zero frame claims no reading instead of claiming an empty window.
 fn context_used_from_claude(usage: &Value) -> Option<u64> {
     let source = usage
         .get("iterations")
@@ -1649,11 +1644,9 @@ mod tests {
 
     #[test]
     fn initialize_response_publishes_commands_with_descriptions_and_hints() {
-        // What Paseo fills its menu from before the first prompt
-        // (`q.supportedCommands(),
-        // `packages/server/src/server/agent/providers/claude/agent.ts`): names
-        // with their descriptions and argument hints — the init frame's flat
-        // names carry neither.
+        // The handshake fills the menu before the first prompt: names with
+        // their descriptions and argument hints — the init frame's flat names
+        // carry neither.
         let mut mapper = ClaudeView::new(None);
         match mapper.ingest(&initialize_response()).as_slice() {
             [SessionEvent::AvailableCommands { commands }] => {
@@ -1730,7 +1723,7 @@ mod tests {
                 );
                 assert!(
                     !commands.iter().any(|command| command.name == "rewind"),
-                    "no synthesized rewind: Paseo backs it with a native road that has no equivalent here"
+                    "no synthesized rewind: there is no native rewind road here to back one with"
                 );
             }
             other => panic!("expected manifest then a merged list, got {other:?}"),
@@ -2853,8 +2846,7 @@ mod tests {
             [SessionEvent::AgentFinished { .. }, SessionEvent::ContextUsage { used_tokens, .. }] => {
                 assert_eq!(
                     *used_tokens, last_total,
-                    "the meter reads the last iteration (Paseo's readActiveUsageTokens), \
-                     never the turn's top-level billing ({top_total})"
+                    "the meter reads the last iteration, never the turn's top-level billing ({top_total})"
                 );
             }
             other => panic!("expected AgentFinished then ContextUsage, got {other:?}"),

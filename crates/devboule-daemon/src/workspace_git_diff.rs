@@ -28,10 +28,9 @@ mod parse;
 /// words: one sentence, one truth.
 pub(crate) const NOT_A_FILE: &str = "the requested path is a folder, not a file";
 
-/// Bytes of one file this reply will read or diff: Paseo's per-file cap
-/// (`packages/server/src/utils/checkout-git.ts`). Past it the file comes back
-/// `too_large` with no
-/// lines — refused whole, never cut short. Checked with one `stat` before
+/// Bytes of one file this reply will read or diff: the per-file cap. Past it
+/// the file comes back `too_large` with no lines — refused whole, never cut
+/// short. Checked with one `stat` before
 /// any process is spawned; [`parse`] bounds its own read by the same
 /// constant, for the file that grows between the two.
 const DIFF_FILE_MAX_BYTES: u64 = 1024 * 1024;

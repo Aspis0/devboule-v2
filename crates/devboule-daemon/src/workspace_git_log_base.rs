@@ -21,7 +21,7 @@ use crate::workspace_git_support::{exit_error, git, run_error};
 /// The branch HEAD sits on, or `None` when it does not — a detached HEAD
 /// outside a rebase, a repository with no commit yet, or git refusing to
 /// answer. A rebase keeps its branch: git records it in
-/// `.git/rebase-merge/head-name` (or `rebase-apply`), and Paseo's
+/// `.git/rebase-merge/head-name` (or `rebase-apply`), and the source's
 /// `getCurrentBranch` reads the same two paths.
 pub(super) fn current_branch(root: &Path) -> Option<String> {
     let output = git(
@@ -67,7 +67,7 @@ fn rebase_branch(root: &Path) -> Option<String> {
 
 /// The branch name behind a ref — display and legacy identity only; it
 /// cannot round-trip, so anything that has to resolve to a commit keeps
-/// the exact ref instead. Paseo's `branchNameFromRef`.
+/// the exact ref instead. The source's `branchNameFromRef`.
 pub(super) fn branch_name_from_ref(reference: &str) -> Option<&str> {
     let trimmed = reference.trim();
     if let Some(rest) = trimmed.strip_prefix("refs/heads/") {
@@ -89,7 +89,7 @@ pub(super) fn branch_name_from_ref(reference: &str) -> Option<&str> {
 
 /// The repository's default branch: `origin/HEAD` when it points at one
 /// (the local name when a local branch of that name exists, the remote
-/// spelling otherwise), else `main`, else `master`. Paseo's
+/// spelling otherwise), else `main`, else `master`. The source's
 /// `resolveRepositoryDefaultBranch` — the symbolic-ref half is best-effort
 /// and falls through to the listing on any failure; the listing itself is
 /// the authority whose failure is a refusal.
@@ -111,7 +111,7 @@ pub(super) fn repository_default_branch(root: &Path) -> Result<Option<String>, S
             let remote_short = reference.strip_prefix("refs/remotes/").unwrap_or(reference);
             let local_name = remote_short.strip_prefix("origin/").unwrap_or(remote_short);
             // The existence check rides the same best-effort fall-through as
-            // the symbolic-ref itself: Paseo's catch swallows it, and the
+            // the symbolic-ref itself: the source's catch swallows it, and the
             // branch listing below is the authority.
             let local_exists =
                 reference_exists(root, &format!("refs/heads/{local_name}")).unwrap_or(false);
@@ -146,7 +146,7 @@ pub(super) fn repository_default_branch(root: &Path) -> Result<Option<String>, S
 }
 
 /// Whether `reference` names a ref git can resolve — `show-ref --verify`,
-/// whose exit 1 is an answer (absent), not a failure. Paseo's
+/// whose exit 1 is an answer (absent), not a failure. The source's
 /// `doesGitRefExist`.
 fn reference_exists(root: &Path, reference: &str) -> Result<bool, String> {
     let output = git(
@@ -165,7 +165,7 @@ fn reference_exists(root: &Path, reference: &str) -> Result<bool, String> {
 
 /// A fully qualified branch ref (`refs/heads/…`, `refs/remotes/…`) names
 /// the exact commit stream to compare against; a bare name keeps the
-/// local-vs-origin heuristic below. Paseo's `isQualifiedBranchRef`.
+/// local-vs-origin heuristic below. The source's `isQualifiedBranchRef`.
 fn is_qualified_branch_ref(reference: &str) -> bool {
     reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/")
 }
@@ -173,7 +173,7 @@ fn is_qualified_branch_ref(reference: &str) -> bool {
 /// The ref to list workspace commits against for one base name: the local
 /// branch, the origin branch, or whichever is ahead when both exist. A
 /// qualified ref is verified as-is — a caller who named an exact ref meant
-/// it, so its absence is the caller's error. Paseo's
+/// it, so its absence is the caller's error. The source's
 /// `resolveMostAheadBaseRef`.
 fn resolve_most_ahead_base_ref(root: &Path, base_ref: &str) -> Result<String, String> {
     if is_qualified_branch_ref(base_ref) {
@@ -220,7 +220,7 @@ fn resolve_most_ahead_base_ref(root: &Path, base_ref: &str) -> Result<String, St
     let origin_only = parse(counts.next());
     match (local_only, origin_only) {
         (Some(local), Some(origin)) if origin > local => Ok(format!("origin/{name}")),
-        // Unparseable counts fall back to the local name, Paseo's own
+        // Unparseable counts fall back to the local name, the source's own
         // answer when git's output is not two numbers.
         _ => Ok(name.to_string()),
     }
@@ -231,7 +231,7 @@ fn resolve_most_ahead_base_ref(root: &Path, base_ref: &str) -> Result<String, St
 /// a bare name falls back to `None` — the caller then tries the
 /// repository's default branch; a failure on a qualified ref is the
 /// caller's error to answer, because a caller who named an exact ref
-/// meant it. Paseo's `tryResolveCheckoutCommitsBaseRef`.
+/// meant it. The source's `tryResolveCheckoutCommitsBaseRef`.
 pub(super) fn try_resolve_comparison_base_ref(
     root: &Path,
     resolved_base_ref: Option<&str>,

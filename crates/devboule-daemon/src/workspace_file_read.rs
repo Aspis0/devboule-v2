@@ -70,10 +70,8 @@ const LINE_EXCEEDS_WINDOW: &str =
     "the line exceeds one window; what follows it in the file cannot be read this way";
 
 /// Extensions handed back as image content — recognized by spelling alone,
-/// the way Paseo does it
-/// (packages/server/src/server/file-explorer/service.ts), because an image's
-/// bytes are binary and would otherwise never be shown. `svg` is absent on
-/// purpose; Paseo's list includes it. It is text and reads better as text.
+/// because an image's bytes are binary and would otherwise never be shown.
+/// `svg` is absent on purpose. It is text and reads better as text.
 /// Shared with
 /// [`crate::workspace_file_preview`], whose stage gate needs this list for
 /// the same reason; the panel's mirror of every extension the preview draws
@@ -466,10 +464,9 @@ pub(crate) fn stamped(metadata: &std::fs::Metadata) -> Option<i64> {
     })
 }
 
-/// Whether the requested spelling names an image by its extension — the
-/// decision Paseo makes before it sniffs
-/// (packages/server/src/server/file-explorer/service.ts). An image's bytes
-/// are binary and travel base64, never through a text window.
+/// Whether the requested spelling names an image by its extension, decided
+/// before the bytes are ever read. An image's bytes are binary and travel
+/// base64, never through a text window.
 fn is_image(requested: &str) -> bool {
     Path::new(requested).extension().is_some_and(|extension| {
         let extension = extension.to_string_lossy().to_ascii_lowercase();

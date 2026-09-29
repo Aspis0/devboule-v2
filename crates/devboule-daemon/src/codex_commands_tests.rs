@@ -75,7 +75,7 @@ fn the_slash_grammar_splits_the_name_from_its_arguments() {
 }
 
 #[test]
-fn every_goal_form_becomes_the_request_paseo_sends() {
+fn every_goal_form_becomes_the_request_the_app_server_expects() {
     let home = TempDir::new("req-home");
     let workspace = TempDir::new("req-cwd");
     let commands = home.commands(&workspace.0, true);
@@ -122,7 +122,7 @@ fn every_goal_form_becomes_the_request_paseo_sends() {
 #[test]
 fn pause_and_resume_carry_no_objective_and_set_carries_the_status_active() {
     // The three shapes differ by one field each, so each is pinned on its own:
-    // Paseo's pause/resume params hold no `objective` at all (:5063-5074).
+    // the pause/resume params hold no `objective` at all.
     let home = TempDir::new("fields-home");
     let workspace = TempDir::new("fields-cwd");
     let commands = home.commands(&workspace.0, true);
@@ -162,7 +162,7 @@ fn a_bare_goal_answers_the_usage_line_without_touching_codex() {
     );
     assert!(
         Command::Goal(Goal::Usage).request("t-1").is_none(),
-        "Paseo returns the line before it touches the client (:5035-5037)"
+        "the usage line answers before any request touches the client"
     );
     assert_eq!(
         Command::Goal(Goal::Usage).outcome(None).as_deref(),
@@ -171,7 +171,7 @@ fn a_bare_goal_answers_the_usage_line_without_touching_codex() {
     assert_eq!(
         goal(&commands, "/goal Pause"),
         Goal::Pause,
-        "the three words are matched case-insensitively (:199-203)"
+        "the three words are matched case-insensitively"
     );
     assert!(
         matches!(goal(&commands, "/goal pause the goal"), Goal::Set { .. }),
@@ -180,7 +180,7 @@ fn a_bare_goal_answers_the_usage_line_without_touching_codex() {
 }
 
 #[test]
-fn each_answer_produces_the_line_paseo_shows() {
+fn each_answer_produces_its_own_sentence() {
     let ok = [
         (
             Command::Goal(Goal::Set {
@@ -215,8 +215,7 @@ fn each_answer_produces_the_line_paseo_shows() {
 fn an_older_binary_gets_neither_the_flag_nor_the_command() {
     // The gate is one decision with two halves: no `goal` in the list, and
     // `/goal x` is not a command either — so it leaves as the plain text the
-    // human typed, which is Paseo's own fallback when the name is not in
-    // `listCommands` (:4004-4021).
+    // human typed, the fallback when the name is not in `listCommands`.
     let home = TempDir::new("old-home");
     let workspace = TempDir::new("old-cwd");
     let commands = home.commands(&workspace.0, false);
@@ -238,10 +237,9 @@ fn an_older_binary_gets_neither_the_flag_nor_the_command() {
 
 #[test]
 fn only_a_whole_message_is_a_picked_command() {
-    // The steer guard resolves the whole prompt, as Paseo's
-    // `resolveSlashCommandInvocation` does (:4004-4021, checked in
-    // `steerActiveTurn`): a message whose last paragraph merely names a
-    // listed command still steers, and only an actual command is refused.
+    // The steer guard resolves the whole prompt: a message whose last
+    // paragraph merely names a listed command still steers, and only an
+    // actual command is refused.
     let home = TempDir::new("picked-whole-home");
     let workspace = TempDir::new("picked-whole-cwd");
     home.write("prompts/commit.md", "---\ndescription: Draft\n---\nDo it\n");

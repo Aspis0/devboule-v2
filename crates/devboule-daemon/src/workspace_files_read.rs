@@ -39,7 +39,7 @@ pub(super) struct Listed {
 /// - an entry must stat **without following** and must be an ordinary entry.
 ///   A vanished or unreadable entry, a symlink and a junction all fail that
 ///   one test on one line, and all are **skipped** — a single bad entry never
-///   fails the whole listing (Paseo's rule), and a
+///   fails the whole listing, and a
 ///   link's target is never classified, which is why `kind` is only ever
 ///   `dir` or `file`. Every such skip is **counted** in `skipped`: a folder
 ///   with a link inside says so instead of looking complete;
@@ -120,9 +120,8 @@ pub(super) fn is_git_metadata(name: &str) -> bool {
 /// Folders first, then by name — and by name in **byte order** (`str::cmp`
 /// is lexicographic on bytes: ASCII order in the ASCII range, code-point
 /// order past it), deliberately not a locale collation such as
-/// `localeCompare`. The same choice Paseo's diff-tree makes, repeated here:
-/// one authority for order (the daemon sorts), and the panel renders the
-/// order it is given instead of sorting a second time.
+/// `localeCompare`. One authority for order (the daemon sorts), and the
+/// panel renders the order it is given instead of sorting a second time.
 pub(super) fn ordered(a: &WorkspaceFileEntry, b: &WorkspaceFileEntry) -> Ordering {
     rank(a.kind)
         .cmp(&rank(b.kind))

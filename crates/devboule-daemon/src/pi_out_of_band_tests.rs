@@ -1,6 +1,7 @@
 //! The out-of-band command tests: `/compact` and `/autocompact` leave as
 //! pi's own RPCs before any turn starts, every other slash text stays a
-//! prompt, and the argument parsing is Paseo's rule for rule.
+//! prompt, and the argument parsing is pinned case by case: trim, lone
+//! slash, name, args.
 
 use super::super::commands::parse_slash_invocation;
 use super::super::PiControl;
@@ -208,8 +209,8 @@ fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_a_goal_prompt() {
     wait_for_frames(&pi.answers, 2);
 
     // The input is still what the person typed, recorded like any accepted
-    // input (Paseo records the submitted prompt too), and every outcome the
-    // rpcs already published is kept by the same pull.
+    // input, and every outcome the rpcs already published is kept by the
+    // same pull.
     let mut outcomes: Vec<String> = Vec::new();
     let recorded = drain(&conn, &mut outcomes);
     assert_eq!(recorded, ["/compact fold it", "/autocompact on"]);
@@ -234,9 +235,9 @@ fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_a_goal_prompt() {
         "the ordinary prompt road still begins its turn, which the commands must not"
     );
 
-    // The autocompact outcome is shown the way Paseo shows it: the same
-    // sentence, once the RPC has answered. A successful `/compact` adds
-    // nothing — Paseo's handler emits nothing after its RPC either.
+    // The autocompact outcome is shown as one sentence once the RPC has
+    // answered. A successful `/compact` adds nothing: no outcome is emitted
+    // after its RPC either.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         drain(&conn, &mut outcomes);
@@ -272,9 +273,9 @@ fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_a_goal_prompt() {
 }
 
 #[test]
-fn an_unusable_autocompact_argument_is_paseos_usage_line_and_writes_nothing() {
+fn an_unusable_autocompact_argument_is_the_usage_line_and_writes_nothing() {
     // A refusal the handler can answer without touching pi: the message is
-    // Paseo's own sentence, and no frame is written for it.
+    // the usage line itself, and no frame is written for it.
     let stdin: Arc<Mutex<Option<std::process::ChildStdin>>> = Arc::new(Mutex::new(None));
     let control = Arc::new(PiControl::new(
         Arc::clone(&stdin),
@@ -314,7 +315,7 @@ fn an_unusable_autocompact_argument_is_paseos_usage_line_and_writes_nothing() {
     assert_eq!(
         messages,
         ["[Error] Usage: /autocompact [on|off|toggle]"],
-        "Paseo's usage line, published as the assistant line it is"
+        "the usage line, published as the assistant line it is"
     );
     assert!(
         control.pending.lock().expect("pending").is_empty(),
@@ -325,8 +326,8 @@ fn an_unusable_autocompact_argument_is_paseos_usage_line_and_writes_nothing() {
 #[test]
 fn a_slash_text_is_a_command_only_for_the_two_pi_handles() {
     // Every other slash text must fall through to the prompt road, so the
-    // recognition is exactly Paseo's `tryHandleOutOfBand` dispatch: compact
-    // and autocompact (any case), nothing else.
+    // recognition is exactly the out-of-band dispatch: compact and
+    // autocompact (any case), nothing else.
     let stdin: Arc<Mutex<Option<std::process::ChildStdin>>> = Arc::new(Mutex::new(None));
     let hook =
         PiOutOfBandCommands::new(Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1)))));
@@ -341,10 +342,10 @@ fn a_slash_text_is_a_command_only_for_the_two_pi_handles() {
 }
 
 #[test]
-fn the_slash_parse_is_paseos_rule_for_rule() {
-    // Paseo `pi/agent.ts:1797-1811`: trim, drop a lone `/`, take the name up
-    // to the first whitespace, refuse a name containing a slash, keep the
-    // trimmed remainder as args only when it is non-empty.
+fn slash_parsing_trims_takes_name_and_splits_args() {
+    // Trim, drop a lone `/`, take the name up to the first whitespace,
+    // refuse a name containing a slash, keep the trimmed remainder as args
+    // only when it is non-empty.
     let invocation = parse_slash_invocation("  /compact   fold it  ").expect("a command");
     assert_eq!(invocation.name, "compact");
     assert_eq!(invocation.args.as_deref(), Some("fold it"));
@@ -384,10 +385,10 @@ fn the_slash_parse_is_paseos_rule_for_rule() {
 }
 
 #[test]
-fn autocompact_resolves_its_argument_the_way_paseo_does() {
-    // Paseo `pi/agent.ts:362-375`: absent means toggle, the four affirmative
-    // and the four negative spellings, and anything else is unknown — which
-    // the handler answers with the usage line rather than an RPC.
+fn autocompact_resolves_toggle_on_off_and_unknown_spellings() {
+    // Absent means toggle, the four affirmative and the four negative
+    // spellings, and anything else is unknown — which the handler answers
+    // with the usage line rather than an RPC.
     for spelling in [None, Some("toggle")] {
         assert_eq!(
             parse_auto_compact_mode(spelling),
@@ -413,10 +414,8 @@ fn autocompact_resolves_its_argument_the_way_paseo_does() {
         parse_auto_compact_mode(Some("maybe")),
         AutoCompactMode::Unknown
     );
-    // A trailing U+FEFF is whitespace to JavaScript's trim(), which is what
-    // Paseo's mode parse runs on
-    // (`packages/server/src/server/agent/providers/pi/agent.ts`) — the mode still
-    // resolves.
+    // A trailing U+FEFF is whitespace to JavaScript's trim(), and that is
+    // the set the mode parse runs on — the mode still resolves.
     assert_eq!(
         parse_auto_compact_mode(Some("on\u{FEFF}")),
         AutoCompactMode::Enabled

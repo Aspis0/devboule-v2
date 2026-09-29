@@ -170,8 +170,8 @@ fn the_vocabulary_reply_omits_probed_at_on_a_probe_reply_and_names_the_field_cam
         "got {json}"
     );
     // The field's own wire shape: camelCase key, the discriminant spelled
-    // `type` as Paseo's feature union spells it, and no `options` array on a
-    // toggle — a form that read `options: []` and a form that read `undefined`
+    // `type`, and no `options` array on a toggle — a form that read
+    // `options: []` and a form that read `undefined`
     // would draw two different widgets for one row.
     let feature = &json["features"]["items"][0];
     assert_eq!(feature.get("type"), Some(&serde_json::json!("toggle")));
@@ -3039,7 +3039,7 @@ fn a_display_name_refuses_control_characters() {
     );
 }
 
-/// Paseo's rule, daemon-side so every provider and every peer sees the same
+/// The rule, daemon-side so every provider and every peer sees the same
 /// title: the first non-empty line of the first prompt, whitespace-collapsed
 /// and clamped to sixty characters. Prompts the daemon composed itself
 /// (standing instructions, spawn prompt, preamble) never reach this function;
@@ -3089,7 +3089,7 @@ fn a_derived_title_strips_invisible_formatting_instead_of_declining() {
     assert_eq!(
         derive_session_title("zero\u{200b}width words here"),
         Some("zerowidth words here".to_string()),
-        "a zero-width space joins, exactly as the source rendered it"
+        "a zero-width space joins rather than splits"
     );
     assert_eq!(
         derive_session_title("\u{202e}worker"),
@@ -3101,10 +3101,10 @@ fn a_derived_title_strips_invisible_formatting_instead_of_declining() {
     assert_eq!(derive_session_title("fix\u{7}the bug"), None);
     assert_eq!(derive_session_title("a\u{1b}[2Jb first line"), None);
     assert_eq!(derive_session_title("\u{200b}"), None);
-    // Separators are the exception: the collapse turns them into spaces
-    // before the check runs — the same neutralisation Paseo's `\s` does —
-    // so no layout break survives into the title. The stored-name door
-    // still refuses the raw character.
+    // Separators are the exception: the collapse turns them into
+    // spaces before the check runs — the same neutralisation
+    // JavaScript's `\s` does — so no layout break survives into the
+    // title. The stored-name door still refuses the raw character.
     assert_eq!(
         derive_session_title("line\u{2028}break"),
         Some("line break".to_string())

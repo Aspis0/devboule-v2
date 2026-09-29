@@ -532,7 +532,7 @@ pub const MCP_ARCHIVE_WORKSPACE_TOOL: &str = "devboule_archive_workspace";
 /// caps in `session_registry_state.rs`) refuses with one sentence, before
 /// the card is spent.
 pub const MCP_CREATE_TERMINAL_TOOL: &str = "devboule_create_terminal";
-/// The terminal write that types into a pty: Paseo's `{terminalId, keys,
+/// The terminal write that types into a pty: the `{terminalId, keys,
 /// literal}` shape, resolved to bytes by the same token map.
 ///
 /// The stronger premise of the three writes: what it refuses to reach is a
@@ -1015,7 +1015,7 @@ pub(crate) fn judge_auto_accept_tick(
 /// The one feature key that means "approve my permission prompts"
 /// (`create-from-profile`).
 ///
-/// Paseo spells the toggle `Auto Accept`, and this is the only spelling read:
+/// The toggle is spelled `Auto Accept`, and this is the only spelling read:
 /// the features map is otherwise free-form and nothing consults it, so a second
 /// accepted spelling would be a second vocabulary for one meaning.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]

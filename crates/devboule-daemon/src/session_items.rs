@@ -344,9 +344,8 @@ pub(crate) struct SpawnedSession {
     /// road — changes nothing.
     pub(super) pending_codex_verify: Option<codex_client::CodexVerifyBundle>,
     /// A provider's side-effect commands, consulted by a send before a turn
-    /// or a steer is considered — translated from Paseo's agent-prompt
-    /// (packages/server/src/server/agent/agent-prompt.ts). `Some` only where
-    /// such commands exist (pi and Codex); every other family passes `None`.
+    /// or a steer is considered. `Some` only where such commands exist (pi
+    /// and Codex); every other family passes `None`.
     pub(super) out_of_band: Option<Arc<dyn OutOfBandCommands>>,
 }
 

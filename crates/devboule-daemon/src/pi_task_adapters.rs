@@ -80,7 +80,6 @@ fn goal_items(tasks: &[Value], current_task_id: Option<&str>) -> Option<Vec<Agen
     Some(items)
 }
 
-// Translated from Paseo packages/server/src/server/agent/providers/pi/extensions/rpiv-todo/index.ts.
 fn rpiv_tasks(details: &Value) -> Option<Vec<AgentTaskItem>> {
     if !matches!(
         details.get("action").and_then(Value::as_str),
@@ -127,7 +126,6 @@ fn rpiv_tasks(details: &Value) -> Option<Vec<AgentTaskItem>> {
     Some(items)
 }
 
-// Translated from Paseo packages/server/src/server/agent/providers/pi/extensions/pi-example-todo/index.ts.
 fn example_tasks(details: &Value) -> Option<Vec<AgentTaskItem>> {
     if !matches!(
         details.get("action").and_then(Value::as_str),

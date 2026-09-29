@@ -46,9 +46,9 @@ mod out_of_band;
 
 const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
 const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
-/// Paseo's own pi RPC budget (`DEFAULT_PI_RPC_TIMEOUT_MS`) allows this per
-/// request; the handshake covers three RPCs under one deadline, so this
-/// stays the stricter side. A healthy cold start measured ~6 s.
+/// The handshake budget: three RPCs share one 60 s deadline. A healthy
+/// cold start measured ~6 s, so the deadline is a ceiling the daemon
+/// should never reach, not a wait anyone expects to sit through.
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
@@ -1602,17 +1602,16 @@ fn spawn_pi(
         Arc::clone(&controls),
     ));
     let control = Arc::new(PiControl::new(Arc::clone(&stdin), Arc::clone(&next_id)));
-    // The list request goes out immediately after the handshake (Paseo asks
-    // once too): registered and written, never awaited on this thread — the
+    // The list request goes out immediately after the handshake: registered
+    // and written, never awaited on this thread — the
     // reply was measured to take tens of seconds, and neither the session's
     // start nor a prompt may sit on it. The reader starts the waiter that
     // turns the reply into the menu.
     let commands_reply = commands::begin_get_commands(&control);
-    // Mirrors Paseo's out-of-band dispatch: pi is the only family whose
-    // side-effect commands exist today, so pi is the only spawn that builds
-    // the seam a send consults. The compact slot it owns is shared with the
-    // reader, which observes pi's own compaction frames — Paseo keeps both
-    // halves in one agent too.
+    // Pi is the only family whose side-effect commands exist today, so pi is
+    // the only spawn that builds the seam a send consults. The compact slot
+    // it owns is shared with the reader, which observes pi's own compaction
+    // frames.
     let handler = out_of_band::PiOutOfBandCommands::new(Arc::clone(&control));
     let compact_guard = handler.compact_guard();
     let out_of_band: Option<Arc<dyn OutOfBandCommands>> = Some(Arc::new(handler));
@@ -2138,7 +2137,7 @@ fn pi_permission_sender(
     })
 }
 
-/// One Pi `images[]` entry: the Paseo-measured `convertPromptInput` shape
+/// One Pi `images[]` entry: the measured `convertPromptInput` shape
 /// `{"type": "image", "data": ..., "mimeType": ...}` — flat, with a
 /// capital-T `mimeType`, unlike Claude's nested `source`/`media_type`. The
 /// bytes are the stripped bytes read back from the file `materialize`
@@ -2152,7 +2151,7 @@ fn pi_image_entry(mime_type: &str, data_base64: &str) -> serde_json::Value {
 }
 
 /// The `prompt` frame with the optional `images` field: present only when at
-/// least one raster travels. Absent otherwise, matching Paseo's
+/// least one raster travels. Absent otherwise, matching
 /// `...(images?.length ? { images } : {})` — the child must not see an empty
 /// array where the measured sender omits the field.
 ///
@@ -2225,7 +2224,7 @@ fn map_pi_steer_error(error: WireError) -> Result<bool, WireError> {
 }
 
 /// Prompt plan for one Pi send: the text plus any image entries. The
-/// capability rule is Paseo's `piModelSupportsImageInput` — `image` in the
+/// capability rule is `piModelSupportsImageInput` — `image` in the
 /// current model's `input` — read through the tri-state this daemon already
 /// keeps per model: `Supported` frames bytes, `Unsupported` AND `Absent`
 /// keep the path line. A model whose inputs we do not know gets the path
@@ -2675,9 +2674,9 @@ impl SessionSteerer for PiSteerer {
         text: &str,
         turn: &mut TurnToken<'_>,
     ) -> Result<bool, WireError> {
-        // Paseo's pi client refuses to steer a slash input (pi rejects steer
-        // RPCs that are extension commands), so a slash input keeps the
-        // interrupt-and-replace fallback where the text can run directly.
+        // Pi rejects steer RPCs that are extension commands, so a slash
+        // input keeps the interrupt-and-replace fallback where the text can
+        // run directly.
         // Refused before a frame is written, which is what makes this
         // `Ok(false)` and not a transport error.
         if commands::parse_slash_invocation(text).is_some() {
@@ -2989,7 +2988,7 @@ impl PiReader {
     }
 
     /// The compact slot shared with the out-of-band handler, so pi's own
-    /// compaction frames end the run they belong to, mirroring Paseo.
+    /// compaction frames end the run they belong to.
     fn with_compact_guard(mut self, compact: Arc<out_of_band::CompactGuard>) -> Self {
         self.compact = compact;
         self
@@ -3006,8 +3005,8 @@ impl PiReader {
     ) -> Result<(), String> {
         if value.get("type").and_then(Value::as_str) == Some("response") {
             let claimed = self.control.deliver(&value);
-            // Paseo finds no pending entry for such a response and returns
-            // without effect; ours must do the same, and harder: this row
+            // A response no pending entry waits for returns without effect;
+            // ours must do the same, and harder: this row
             // would be replay's copy of the list, so a `get_commands` reply
             // that answered nothing — an expired id, a foreign one — reaches
             // neither the transcript nor the journal. A claimed reply is two

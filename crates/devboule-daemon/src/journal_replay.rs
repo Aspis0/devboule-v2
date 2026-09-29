@@ -153,7 +153,7 @@ pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, Jou
 /// by `created_by`: the status fallback's stored read (`devboule_get_agent_status`).
 /// One row filtered in SQL — never the roster's shape, never a scan of other
 /// users' history, and never a name two rows could share: a closed child is
-/// addressed the way Paseo addresses its stored rows, by id alone.
+/// addressed by id alone.
 pub(super) fn owned_child_record(
     conn: &Connection,
     session_id: &str,

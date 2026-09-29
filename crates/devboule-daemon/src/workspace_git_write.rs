@@ -32,7 +32,7 @@
 //!   dropping the literal flag kills the glob case — measured on git
 //!   2.54.0).
 //! - **The commit is staged-only**: no `add -A` exists in this module
-//!   (Paseo's `commitChanges` adds everything by default because it has
+//!   (the source's `commitChanges` adds everything by default because it has
 //!   no separate stage — this panel does), and the message is written by
 //!   hand: empty after trimming is refused before anything spawns.
 
@@ -198,7 +198,7 @@ fn write(root: &Path, operation: &str, arguments: &[&str]) -> Result<GitOutput, 
 
 /// Stage the selection: a tracked file's change, a new file, or a tracked
 /// file's deletion — `git add` covers the three — under literal pathspecs
-/// and `--`. An empty selection is a no-op success (Paseo's
+/// and `--`. An empty selection is a no-op success (the source's
 /// `discardChanges` returns the same way for nothing selected).
 fn stage(root: &Path, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
@@ -219,7 +219,7 @@ fn stage(root: &Path, paths: &[String]) -> Result<(), String> {
 /// declared fallback. `git reset HEAD -- <paths>` is the road, and when
 /// it fails (measured: an `HEAD` that does not resolve exits 128, while
 /// git 2.54 exits **0** on a merely unborn branch) the paths come out of
-/// the index directly, Paseo's fallback, which needs no `HEAD` at all. A
+/// the index directly, the source's fallback, which needs no `HEAD` at all. A
 /// failure of the fallback itself is reported as its own command's sentence.
 fn reset_or_unindex(root: &Path, selected: &[&str]) -> Result<(), String> {
     let mut reset = vec!["--literal-pathspecs", "reset", "-q", "HEAD", "--"];
@@ -262,9 +262,9 @@ fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
 /// the index (= `HEAD` after the reset) and delete untracked ones. The
 /// classification runs **after** the reset on purpose — load-bearing:
 /// a staged new file is `A ` before it and `??` after, and only the
-/// second classification deletes it (Paseo's three truths,
-/// `packages/server/src/utils/checkout-git.test.ts`). From the reset
-/// onward every failure answers [`DISCARD_HALF_RUN`]: the index has moved by
+/// second classification deletes it (the second of the three measured
+/// truths). From the reset onward every failure answers
+/// [`DISCARD_HALF_RUN`]: the index has moved by
 /// then, and a bare exit code would say nothing about that.
 fn discard(root: &Path, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
@@ -311,7 +311,7 @@ fn discard(root: &Path, paths: &[String]) -> Result<(), String> {
 /// tracked, and a rename/copy entry carries its original path as the very
 /// next NUL token — skipped by position, the only thing stopping that
 /// bare second token from being classified as a path of its own
-/// (Paseo's own step). Borrowed from
+/// (the source's own step). Borrowed from
 /// `stdout`, which the caller still holds.
 fn classify(stdout: &str) -> (Vec<&str>, Vec<&str>) {
     let mut tracked = Vec::new();

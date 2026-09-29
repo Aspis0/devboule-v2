@@ -49,26 +49,25 @@ pub(crate) struct CommandEntry {
 
 /// Where one entry came from, which is what decides the form its prompt takes.
 pub(crate) enum CommandOrigin {
-    /// Codex's own compaction request (Paseo's hardcoded `compact`, :4954).
+    /// Codex's own compaction request (the hardcoded `compact`).
     Compact,
-    /// Codex's goal requests, offered only when the version gate passes
-    /// (Paseo :4962-4968).
+    /// Codex's goal requests, offered only when the version gate passes.
     Goal,
     /// A `~/.codex/prompts/<name>.md` custom prompt, carried by its path
-    /// because running it reads the file again (Paseo :4030-4037).
+    /// because running it reads the file again.
     Prompt { path: PathBuf },
-    /// A `.codex/skills/<dir>/SKILL.md` skill; `buildCommandPromptInput`
-    /// includes both this path and the `$name args` text (:4044-4052).
+    /// A `.codex/skills/<dir>/SKILL.md` skill, carried by its path: the path
+    /// travels in the turn input for the app-server to read.
     Skill { path: PathBuf },
 }
 
-/// The table Paseo's `listCommands` returns (:4937-4973): built-ins, then the
-/// skills, then the prompts, sorted by name.
+/// The table `listCommands` returns: built-ins, then the skills, then the
+/// prompts, sorted by name.
 ///
-/// Paseo's own order for these sources is `builtin, appServerSkills,
-/// fallbackSkills, prompts` and it sorts by `localeCompare`; a byte sort is
-/// the same order for the lowercase names these directories hold in practice,
-/// and the difference is menu order only.
+/// The source order is `builtin, appServerSkills, fallbackSkills, prompts`,
+/// sorted by name. The reference implementation sorts by `localeCompare`;
+/// this is a byte sort, which is the same order for the lowercase names
+/// these directories hold in practice, and the difference is menu order only.
 pub(crate) fn command_table(
     codex_home: &Path,
     cwd: Option<&Path>,
@@ -117,8 +116,8 @@ fn builtin_entries(goals_enabled: bool) -> Vec<CommandEntry> {
 /// `~/.codex/prompts/*.md`, one command each, named `prompts:<stem>`
 /// (`listCodexCustomPrompts` :659-697).
 ///
-/// The `prompts:` prefix is Paseo's, and it is what the front-end types back
-/// into the composer; [`crate::codex_commands::parse_slash`] keeps the colon
+/// The `prompts:` prefix is what the front-end types back into the
+/// composer; [`crate::codex_commands::parse_slash`] keeps the colon
 /// inside the command name and rejects only a name with a `/` in it.
 fn prompt_entries(codex_home: &Path) -> Vec<CommandEntry> {
     let prompts_dir = codex_home.join("prompts");
@@ -137,7 +136,7 @@ fn prompt_entries(codex_home: &Path) -> Vec<CommandEntry> {
         let Some(stem) = name.strip_suffix(".md") else {
             continue;
         };
-        // Paseo's filter (`entry.isFile() && name.endsWith(".md") && stem`):
+        // The filter (`entry.isFile() && name.endsWith(".md") && stem`):
         // a directory named `x.md` and a bare `.md` are not prompts.
         if !file_type.is_file() || stem.is_empty() {
             continue;
@@ -155,7 +154,7 @@ fn prompt_entries(codex_home: &Path) -> Vec<CommandEntry> {
                 .get("description")
                 .cloned()
                 .unwrap_or_else(|| "Custom prompt".to_string()),
-            // Both spellings Paseo accepts, in its order (:684-686).
+            // Both spellings are accepted, in that order.
             hint: front_matter
                 .get("argument-hint")
                 .or_else(|| front_matter.get("argument_hint"))
@@ -167,14 +166,15 @@ fn prompt_entries(codex_home: &Path) -> Vec<CommandEntry> {
     entries
 }
 
-/// The skill directories Paseo walks (`listCodexSkills` :700-760): the
-/// workspace's `.codex/skills`, its parent's and the Git repository root's when
-/// one resolves, then the user's own `~/.codex/skills`.
+/// The skill directories walked (`listCodexSkills`): the workspace's
+/// `.codex/skills`, its parent's and the Git repository root's when one
+/// resolves, then the user's own `~/.codex/skills`.
 ///
-/// One level of directories each, and only those holding a `SKILL.md` — Paseo
-/// reads `<skills dir>/<entry>/SKILL.md` and skips an entry whose read fails.
-/// A skill needs both a `name` and a `description` in its front matter (:750-752)
-/// and the first directory that names a skill wins (:753-759), which is why the
+/// One level of directories each, and only those holding a `SKILL.md` — the
+/// walk reads `<skills dir>/<entry>/SKILL.md` and skips an entry whose read
+/// fails.
+/// A skill needs both a `name` and a `description` in its front matter,
+/// and the first directory that names a skill wins — which is why the
 /// candidates are walked in order rather than collected.
 fn skill_entries(codex_home: &Path, cwd: Option<&Path>) -> Vec<CommandEntry> {
     let mut candidates = Vec::new();
@@ -199,7 +199,7 @@ fn skill_entries(codex_home: &Path, cwd: Option<&Path>) -> Vec<CommandEntry> {
                 Ok(file_type) => file_type,
                 Err(_) => continue,
             };
-            // Paseo's filter (:726): a skill is a directory, or a link to one.
+            // The filter: a skill is a directory, or a link to one.
             if !(file_type.is_dir() || file_type.is_symlink()) {
                 continue;
             }
@@ -257,8 +257,8 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Paseo's `workspaceGitService.resolveRepoRoot(cwd)`, answered the cheap way:
-/// the nearest ancestor holding `.git`. `crates/devboule-daemon/src/git.rs`
+/// `workspaceGitService.resolveRepoRoot(cwd)`, answered the cheap way: the
+/// nearest ancestor holding `.git`. `crates/devboule-daemon/src/git.rs`
 /// resolves a root by running `git rev-parse --show-toplevel`, which would put
 /// a process spawn on every session start for one candidate directory; the
 /// walk answers the same question for the only use this has.
@@ -268,7 +268,7 @@ fn git_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// The YAML-lite front matter Paseo parses (:618-657): a `---` fence at the
+/// The YAML-lite front matter this catalog parses: a `---` fence at the
 /// top, one `key: value` per line with the last one naming a key winning,
 /// `#` lines skipped, and one quote at either end of the value dropped.
 ///
@@ -302,7 +302,7 @@ pub(crate) fn front_matter(markdown: &str) -> (BTreeMap<String, String>, String)
         }
         let key = trimmed[..index].trim();
         let value = trimmed[index + 1..].trim();
-        // Paseo chains the two replaces (`:649-651`), so the second one sees
+        // The two replaces are chained, so the second one sees
         // what the first left: a value quoted on one side only loses that side
         // and keeps the other, and a value quoted on both loses both.
         let value = value.strip_prefix(['\'', '"']).unwrap_or(value);

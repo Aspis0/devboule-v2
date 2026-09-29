@@ -217,11 +217,14 @@ fn origin_line(origin: &SessionOrigin) -> String {
     }
 }
 
-/// The first `FINISH_SUMMARY_CHARS` characters of the child's last message.
+/// The first `FINISH_SUMMARY_CHARS` characters of the child's last
+/// message.
 ///
-/// Paseo's number, and characters rather than bytes so the cut cannot land
-/// inside one. The whole message is still what gets deposited: the summary is
-/// what a person reads in the transcript.
+/// Characters rather than bytes, so the cut cannot land inside one.
+/// 4000 leaves the rest of the finish envelope room inside
+/// [`MAX_FINISH_ENVELOPE_CHARS`], so `bound_finish_envelope` never has
+/// to cut into the summary. The whole message is still what gets
+/// deposited: the summary is what a person reads in the transcript.
 pub(super) fn summary_of(message: Option<&str>) -> String {
     const FINISH_SUMMARY_CHARS: usize = 4000;
     let message = message.unwrap_or_default();

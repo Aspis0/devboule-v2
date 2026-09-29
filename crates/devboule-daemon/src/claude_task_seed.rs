@@ -99,8 +99,8 @@ fn envelope_is_tool_result(payload: &[u8]) -> bool {
 
 /// Lifecycle frames the checklist machine needs even when they name no
 /// task tool: `system/init` (a new CLI session id rebinds — the list starts
-/// empty; Paseo's `handleSystemMessage` reads `session_id` off init,
-/// `agent.test.ts:1966`) and turn-end `result` (pending calls clear there).
+/// empty, and the `session_id` is read off init) and turn-end `result`
+/// (pending calls clear there).
 /// One per session and one per turn, so admitting them costs nothing next
 /// to the pairs.
 ///

@@ -70,7 +70,7 @@ fn request_user_input_builds_a_question_card() {
 }
 
 #[test]
-fn question_option_pick_answers_paseo_shape() {
+fn question_option_pick_answers_per_id_shape() {
     let (broker, captured, runtime, conn, mut reader) = question_harness();
     reader.dispatch_value(
         user_input_line("item/tool/requestUserInput", single_question_params()),
@@ -110,7 +110,7 @@ fn question_other_answer_maps_by_question_id() {
         )
         .expect("Other answer");
     let frames = captured.lock().expect("captured");
-    // One question answered through the text door: Paseo's per-id shape
+    // One question answered through the text door: the per-id shape
     // with the person's words verbatim. (A two-question card answers
     // through the JSON text map instead — covered below.)
     assert_eq!(

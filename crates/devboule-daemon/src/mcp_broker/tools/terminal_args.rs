@@ -6,7 +6,7 @@ use serde_json::Value;
 use devboule_protocol::validate_display_name;
 
 /// The one argument `devboule_create_terminal` takes, trimmed and judged
-/// here: absent and null and empty-after-trimming are Paseo's absent name, a
+/// here: absent, null and empty-after-trimming are one absent name, a
 /// name the wire refuses keeps the wire's sentence, and a name that carries a
 /// control, invisible or line-break character is refused outright — it is
 /// stored as the terminal's title and printed back on the roster, where one
@@ -39,7 +39,7 @@ pub(super) fn parse_name(arguments: &Value) -> Result<Option<String>, String> {
     }
 }
 
-/// What one `send_terminal_keys` call carries: Paseo's three fields, closed.
+/// What one `send_terminal_keys` call carries: the three fields, closed.
 pub(super) fn parse_keys(arguments: &Value) -> Result<KeysRequest, String> {
     let object = argument_map(arguments)?;
     for key in object.keys() {

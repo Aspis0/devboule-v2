@@ -47,8 +47,7 @@
 //! refused.** A feature table now exists (`provider_features.rs`) — the same one
 //! the profile form draws its controls from, so this is not a second list — and a
 //! key outside it names a value no child receives. Dropping it is the store's
-//! rule and Paseo's `pruneFeatureValues`
-//! (`packages/app/src/hooks/feature-preferences.ts`); **refusing** would be wrong here
+//! rule; **refusing** would be wrong here
 //! for a reason specific to this file: `check_document` is shared by `load` and
 //! `set`, so a refusal on a stale key would quarantine a person's whole profile
 //! document over one value nothing delivered. An unread ACP provider is left alone

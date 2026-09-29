@@ -2,8 +2,8 @@
 //! stands for, and how the consent card says what will be typed without
 //! carrying any of it.
 
-/// Paseo's key tokens: the names one key press is spelled with and the bytes
-/// each stands for (`paseo-tools.ts`, `resolveTerminalKeyToken`).
+/// The key-token table: the names one key press is spelled with and the
+/// bytes each stands for.
 pub(super) const KEY_TOKENS: [(&str, &str); 11] = [
     ("Enter", "\r"),
     ("Tab", "\t"),
@@ -19,9 +19,9 @@ pub(super) const KEY_TOKENS: [(&str, &str); 11] = [
 ];
 
 /// The bytes one `keys` payload stands for: literal text as typed, else the
-/// named key it names. An unknown name is the text it is — Paseo's resolver
-/// falls through its switch the same way — so "echo hi" types itself either
-/// way and only a real token is translated.
+/// named key it names. A name the token table does not hold falls
+/// through to the text it is — so "echo hi" types itself either way
+/// and only a real token is translated.
 pub(super) fn resolve_keys(keys: &str, literal: bool) -> String {
     if literal {
         return keys.to_string();

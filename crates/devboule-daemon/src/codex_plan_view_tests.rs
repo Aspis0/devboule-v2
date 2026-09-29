@@ -3,9 +3,9 @@ use devboule_protocol::{AgentTaskStatus, SessionEvent};
 use serde_json::json;
 
 const LIVE_PLAN: &str = include_str!("../fixtures/wire/codex/codex-plan-items-live.jsonl");
-// SYNTHETIC: a `turn/plan/updated` frame shaped after Paseo's
-// `TurnPlanUpdatedNotificationSchema` — invented steps, no measured run
-// behind it (no fixture carries one today).
+// SYNTHETIC: a `turn/plan/updated` frame shaped like the protocol's
+// plan update — invented steps, no measured run behind it (no fixture
+// carries one today).
 const PLAN_UPDATE_SYNTHETIC: &str =
     include_str!("../fixtures/wire/codex/codex-plan-update-synthetic.jsonl");
 
@@ -180,9 +180,10 @@ fn plan_mode_off_emits_agent_tasks_from_the_plan_update() {
     view.set_capture_plan(true);
     let events = view.ingest(&envelope);
     let items = agent_tasks(events);
-    // Paseo's `mapCodexPlanUpdateToTodo`: empty steps would be dropped (none
-    // here), the id is the step's index, and the status is kept —
-    // `inProgress` stays its own state.
+    // The plan-to-checklist mapping (`agent_tasks_from_plan`): empty steps
+    // would be dropped (none here), the id is the
+    // step's index, and the status is kept — `inProgress` stays its own
+    // state.
     assert_eq!(items.len(), 3);
     assert_eq!(items[0].id.as_deref(), Some("0"));
     assert_eq!(items[0].text, "Inspect the project layout");

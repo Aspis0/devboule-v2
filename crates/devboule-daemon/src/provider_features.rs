@@ -7,19 +7,20 @@
 //! disabled feature, it is a lie on a consent surface — the creation card names
 //! what the child was started with, and a card that names an undelivered value
 //! promises a configuration nobody chose. So each row below names the client
-//! that applies it and the frame the value rides. Paseo is the reference for
-//! both halves: its `listFeatures` list and its `setFeature`/spawn application
-//! are written together, and a feature with no application has no row.
+//! that applies it and the frame the value rides. Translated from
+//! Paseo's `listFeatures` and its `setFeature`/spawn application
+//! (`paseo-src/packages/server/src/server/agent/providers/codex-app-server-agent.ts`),
+//! which are written together: a feature with no application has no row.
 //!
 //! Three sources, one per shape of provider:
 //!
-//! - **Claude and Codex** — a fixed table, as in Paseo's
-//!   `feature-definitions.ts` and `codex-feature-definitions.ts`, with no
-//!   probe: the daemon authored the launch flag and the turn parameter, so it
-//!   knows what it can deliver.
-//! - **Pi** — the `autoAccept` tick and nothing else. The permission extension
-//!   this family injects is its whole feature surface and the delivered mode
-//!   drives it; Paseo's pi returns an empty list for the same reason.
+//! - **Claude and Codex** — a fixed table, with no probe: the daemon
+//!   authored the launch flag and the turn parameter, so it knows what
+//!   it can deliver.
+//! - **Pi** — the `autoAccept` tick and nothing else. The permission
+//!   extension this family injects is its whole feature surface and
+//!   the delivered mode drives it, so there is nothing else a pi
+//!   profile could ask for: that one row is the whole table.
 //! - **ACP** — the agent's own declared `select` config options, other than
 //!   the model and effort selectors, beside `autoAccept`. That list is only
 //!   knowable by asking, so the family is probed ([`crate::acp_client`]) and
@@ -34,20 +35,19 @@ use devboule_protocol::{
     VocabularyOrigin, VocabularyState,
 };
 
-/// The Claude and Codex fast-inference toggle. Paseo spells the key
-/// `fast_mode`; this daemon stores its feature keys in the camelCase the
-/// profile's own `features` map already uses (`autoAccept`), so the wire and
-/// the stored key cannot disagree about one more spelling.
+/// The Claude and Codex fast-inference toggle. The key is `fast_mode`; this
+/// daemon stores its feature keys in the camelCase the profile's own
+/// `features` map already uses (`autoAccept`), so the wire and the stored
+/// key cannot disagree about one more spelling.
 pub(crate) const FAST_MODE_FEATURE: &str = "fastMode";
 pub(crate) const PLAN_MODE_FEATURE: &str = "planMode";
 
-/// The label both fast-mode rows carry. Paseo's is `Fast` in both tables.
+/// The label both fast-mode rows carry: `Fast` in both tables.
 const FAST_MODE_LABEL: &str = "Fast";
 
-/// The Claude models that carry fast mode. Copied from Paseo's model manifest
-/// (`providers/claude/model-manifest.ts`, the entries flagged
-/// `supportsFastMode`) — a **fixed table**, because the daemon's own Claude
-/// catalog (`claude_catalog.rs`) scrapes model ids and *effort* capabilities
+/// The Claude models that carry fast mode — a **fixed table**, because
+/// the daemon's own Claude catalog (`claude_catalog.rs`) scrapes model
+/// ids and *effort* capabilities
 /// out of the CLI bundle and has no fast-mode fact to read. A model absent
 /// here gets no toggle, and the launch refuses a stored tick for it rather
 /// than deliver one the CLI would ignore.
@@ -62,8 +62,8 @@ const CLAUDE_FAST_MODE_MODELS: &[&str] = &[
     "claude-opus-4-6",
 ];
 
-/// The Codex models that carry fast mode — Paseo's
-/// `CODEX_FAST_MODE_SUPPORTED_MODELS`, same reason and same consequence.
+/// The Codex models that carry fast mode — same reason and same
+/// consequence as the Claude table above.
 const CODEX_FAST_MODE_MODELS: &[&str] = &[
     "gpt-6-astra",
     "gpt-5.6",
@@ -142,9 +142,9 @@ fn plan_mode() -> VocabularyFeature {
     }
 }
 
-/// The Pi table: the tick alone. Paseo's pi client returns an empty list;
-/// this daemon has one thing a pi profile can genuinely ask for, and its
-/// client enforces it, so it is declared.
+/// The Pi table: the tick alone. The pi client returns an empty list; this
+/// daemon has one thing a pi profile can genuinely ask for, and its client
+/// enforces it, so it is declared.
 pub(crate) fn pi_declarations() -> Vec<VocabularyFeature> {
     vec![auto_accept()]
 }
@@ -252,8 +252,8 @@ pub(crate) fn value_fits(feature: &VocabularyFeature, value: &serde_json::Value)
 /// what arrives first, and the count cap cannot be reached by a pruned map
 /// because pruning only ever removes entries.
 ///
-/// Dropping rather than refusing is the brief's `D4` and Paseo's
-/// `pruneFeatureValues`, and it is the store's own discipline: a document read
+/// Dropping rather than refusing is the brief's `D4`, and it is the store's
+/// own discipline: a document read
 /// back after a provider update is the human's work, and a value that was
 /// never going to reach a child is not a value to quarantine the file over.
 /// The rule runs on both roads — `check_document` is shared by `load` and

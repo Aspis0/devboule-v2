@@ -32,7 +32,7 @@ const BASE_COMMIT_LIMIT: usize = 10;
 
 /// The workspace half's own commit limit, applied in git: the Commits
 /// section shows recent history, and the limit keeps the read's traversal
-/// (and its bytes) bounded. Paseo's workspace half is uncapped; this daemon
+/// (and its bytes) bounded. The source's workspace half is uncapped; this daemon
 /// caps it so the reply's size is computable.
 const WORKSPACE_COMMIT_LIMIT: usize = 200;
 
@@ -81,16 +81,14 @@ fn log_of(root: &Path, stored_base_ref: Option<&str>) -> WorkspaceGitLog {
         return build(None, Vec::new(), Some(message.to_string()));
     }
     // The stored base is persisted verbatim; a name beginning with `-`
-    // would reach git's argv as an option. Paseo's `assertSafeGitRef`
-    // (`packages/server/src/server/worktree-session.ts`) rejects this value
-    // class for the same reason, and the check runs here — before any argv is
-    // built.
+    // would reach git's argv as an option, so the check runs here — before
+    // any argv is built.
     if let Some(sentence) = stored_base_ref.and_then(unsafe_base_ref) {
         return build(None, Vec::new(), Some(sentence.to_string()));
     }
     // A detached HEAD outside a rebase, and a repository with no commit
     // yet, have no branch to split from: the answer is an empty history,
-    // not a refusal (Paseo's `getCurrentBranch` returns null there).
+    // not a refusal.
     let Some(current_branch) = base::current_branch(root) else {
         return build(None, Vec::new(), None);
     };
@@ -116,7 +114,7 @@ fn log_of(root: &Path, stored_base_ref: Option<&str>) -> WorkspaceGitLog {
         && normalized_base_ref.is_some_and(|name| !name.is_empty() && name != current_branch)
     {
         // The saved base can outlive a renamed or deleted base branch: the
-        // retry runs against the repository's default branch, Paseo's own
+        // retry runs against the repository's default branch, the source's own
         // fallback (`resolveBaseRef`).
         if let Ok(Some(default)) = base::repository_default_branch(root) {
             if let Ok(comparison) =
@@ -160,7 +158,7 @@ fn log_of(root: &Path, stored_base_ref: Option<&str>) -> WorkspaceGitLog {
     };
     // The workspace half's own shas, taken before the base half joins them:
     // a commit is base history exactly when the workspace's list did not
-    // carry it (Paseo's `isOnBase`).
+    // carry it (the source's `isOnBase`).
     let workspace_shas: HashSet<String> = workspace_records
         .iter()
         .map(|record| record.sha.clone())
@@ -314,7 +312,7 @@ fn commit_records(root: &Path, revision: &str, max_count: Option<usize>) -> Resu
 
 /// The fork point of `base_ref` and HEAD — where the workspace's history
 /// diverged, and the commit the base list starts at. `None` when git cannot
-/// name one; the base list then starts at HEAD itself (Paseo's
+/// name one; the base list then starts at HEAD itself (the source's
 /// `mergeBase ?? ""`).
 fn merge_base(root: &Path, base_ref: &str) -> Option<String> {
     let output = git(
@@ -333,7 +331,7 @@ fn merge_base(root: &Path, base_ref: &str) -> Option<String> {
 }
 
 /// Every commit git can reach from HEAD that no remote ref can — the
-/// local-only (unpushed) half of `isOnRemote`. Paseo's
+/// local-only (unpushed) half of `isOnRemote`. The source's
 /// `getUnpushedCommitShas`.
 fn unpushed_shas(root: &Path) -> Result<HashSet<String>, String> {
     let output = git(

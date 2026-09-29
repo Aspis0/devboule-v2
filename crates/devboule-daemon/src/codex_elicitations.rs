@@ -35,10 +35,10 @@ pub(super) fn codex_elicitation_result(result: &Value) -> Value {
 
 /// An `mcpServer/elicitation/request`: a permission in disguise — one
 /// message asking whether the MCP server may run a tool — so it becomes
-/// an ordinary Allow/Deny card (`kind: tool`) answered with Paseo's
+/// an ordinary Allow/Deny card (`kind: tool`) answered with the
 /// `{action, content, _meta}` shape. A `url` card and a schema with
 /// required fields ask for more than the pair can give and are declined
-/// at once, the way Paseo declines them.
+/// at once.
 pub(super) fn dispatch_elicitation(
     deps: &CodexInputDeps,
     value: &Value,

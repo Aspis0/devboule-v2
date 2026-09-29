@@ -174,8 +174,8 @@ fn an_attachment_bypasses_the_out_of_band_route() {
 
 #[test]
 fn the_send_reply_says_whether_a_turn_began() {
-    // The disposition Paseo answers with: an out-of-band command began no
-    // turn, while the fall-through prompt began one.
+    // The reply's disposition: an out-of-band command began no turn, while
+    // the fall-through prompt began one.
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-oob-disp", "process-oob-disp");
     let session_id = "oob-disposition";

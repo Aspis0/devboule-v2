@@ -32,8 +32,8 @@ pub(crate) enum Goal {
     Pause,
     Resume,
     Clear,
-    /// `/goal` with nothing after it: Paseo answers the usage line and sends no
-    /// request at all (:5035-5037).
+    /// `/goal` with nothing after it: the usage line is answered here,
+    /// and no request at all is written.
     Usage,
 }
 
@@ -46,8 +46,8 @@ pub(crate) enum Command {
 
 impl Command {
     /// The app-server request this command is, or `None` when it answers by
-    /// itself — the `/goal` usage line, which Paseo returns before touching the
-    /// client (:5035-5037).
+    /// itself — the `/goal` usage line, which is returned without touching
+    /// the client.
     pub(crate) fn request(&self, thread_id: &str) -> Option<(&'static str, Value)> {
         let thread_id = Value::String(thread_id.to_string());
         let (method, params) = match self {
@@ -55,7 +55,7 @@ impl Command {
                 "thread/compact/start",
                 serde_json::json!({ "threadId": thread_id }),
             ),
-            // Setting a goal activates it (:5055-5060).
+            // Setting a goal activates it.
             Command::Goal(Goal::Set { objective }) => (
                 "thread/goal/set",
                 serde_json::json!({
@@ -65,7 +65,7 @@ impl Command {
                 }),
             ),
             // Pause and resume name the thread and the new status only; no
-            // `objective` crosses on either (:5063-5074).
+            // `objective` crosses on either.
             Command::Goal(Goal::Pause) => (
                 "thread/goal/set",
                 serde_json::json!({ "threadId": thread_id, "status": "paused" }),
@@ -83,8 +83,8 @@ impl Command {
         Some((method, params))
     }
 
-    /// The line the session shows for this command's outcome (:5021-5031,
-    /// :5044-5086). `error` is Codex's own message, or the transport's answer
+    /// The line the session shows for this command's outcome. `error` is
+    /// Codex's own message, or the transport's answer
     /// for a request that never reached it.
     ///
     /// An accepted compaction has nothing to say: the app-server reports it
@@ -139,7 +139,7 @@ pub(crate) enum Answer {
 /// clear: a failed RPC changes nothing, and pause and resume never touch the
 /// stored goal. The outer `Some` is a new text, the inner `None` a clear.
 pub(crate) struct AnswerOutcome {
-    /// The line to show. `None` is Paseo's silent acceptance of a compaction.
+    /// The line to show. `None` is the silent acceptance of a compaction.
     pub(crate) line: Option<String>,
     pub(crate) goal: Option<Option<String>>,
 }
@@ -152,20 +152,18 @@ pub(crate) struct CodexCommands {
     /// Command requests written but not yet answered, keyed by the JSON-RPC id
     /// the answer will name.
     ///
-    /// Paseo awaits each request on the thread that ran the command
-    /// (`executeGoalSubcommand` :5043-5050). The daemon's answers arrive on the
-    /// session reader, which is the only thread that may publish an event, so
-    /// the line owed travels with the id instead of being awaited: the writer
-    /// registers it before the frame goes out, the reader takes it when the
-    /// response lands.
+    /// The daemon's answers arrive on the session reader, which is the only
+    /// thread that may publish an event, so the line owed travels with the id
+    /// instead of being awaited on the thread that ran the command: the
+    /// writer registers it before the frame goes out, the reader takes it
+    /// when the response lands.
     owed: Mutex<HashMap<String, Command>>,
 }
 
 impl CodexCommands {
-    /// Read the surface once, off the session's start path — Paseo re-walks it
-    /// on every prompt (`listCommands` through
-    /// `resolveSlashCommandInvocation` :4017), which is the hot path this
-    /// daemon keeps it off.
+    /// Read the surface once, off the session's start path — re-walking it on
+    /// every prompt (`listCommands` through `resolveSlashCommandInvocation`)
+    /// is the hot path this daemon keeps it off.
     pub(crate) fn new(codex_home: &Path, cwd: Option<&Path>, goals_enabled: bool) -> Self {
         Self {
             entries: codex_command_catalog::command_table(codex_home, cwd, goals_enabled),
@@ -184,9 +182,8 @@ impl CodexCommands {
     ///
     /// `compact` is always a command. `goal` is one only when the version gate
     /// passed; an older binary then sees `/goal x` as the ordinary prompt it
-    /// always was, which is Paseo's own answer when a slash name is not in
-    /// `listCommands`: `resolveSlashCommandInvocation` (:4004-4021) hands
-    /// `startTurn` the raw text and it goes out as a `turn/start`.
+    /// always was — a slash name that is not in `listCommands` goes out as a
+    /// `turn/start` with the raw text.
     pub(crate) fn command(&self, text: &str) -> Option<Command> {
         let (name, args) = parse_slash(text)?;
         match name {
@@ -231,14 +228,15 @@ impl CodexCommands {
         })
     }
 
-    /// Input for a picked command (`buildCommandPromptInput` :4028-4056).
+    /// Input for a picked command, built here.
     /// Custom prompts are expanded here because app-server text input does not
-    /// expand them; skills carry the same skill and text blocks Paseo builds.
+    /// expand them; skills carry both the skill block and the fallback text,
+    /// the same two-block form the reference builds.
     ///
     /// `raw_text` is the user's message; `prefix` is the composed first-prompt
     /// text ahead of it (`""` when the prompt was not composed). Resolution
-    /// runs on the message alone, as Paseo's `resolveSlashCommandInvocation`
-    /// does on the whole prompt string (:4004-4021): a message whose last
+    /// runs on the message alone — [`parse_slash`] reads the message, not the
+    /// composed prompt: a message whose last
     /// paragraph merely names a command is not one, and neither is a command
     /// with a blank line inside its arguments unexpandable — whole-string
     /// parsing handles both. The prefix is preserved ahead of the expanded
@@ -251,13 +249,13 @@ impl CodexCommands {
         let Some((name, args)) = parse_slash(raw_text) else {
             return Ok(None);
         };
-        // An out-of-band name never becomes a prompt. Paseo cannot reach a
-        // prompt builder with one: its intercept runs first, and a prompt
-        // carrying images is not a string, so `resolveSlashCommandInvocation`
-        // answers `None` and the raw text goes out (:4009). That same case does
-        // reach this daemon's static plan, and leaving it alone is what keeps a
-        // `/compact` with a picture attached from travelling as a `$compact`
-        // prompt Codex has no command for.
+        // An out-of-band name never becomes a prompt, and the test is by
+        // origin, not by the name being listed: a listed skill or prompt
+        // reaches the `entries` lookup below and expands. Only `compact`
+        // and `goal` stop here. A prompt carrying images never arrives on
+        // this route at all, which is why leaving that case alone keeps a
+        // `/compact` with a picture attached from travelling as a
+        // `$compact` the app-server has no command for.
         if self.command(raw_text).is_some() {
             return Ok(None);
         }
@@ -303,9 +301,9 @@ impl CodexCommands {
     }
 
     /// Whether this message names a listed command, for the steer guard.
-    /// Paseo refuses a steer only when the whole prompt resolves
-    /// (`resolveSlashCommandInvocation` :4004-4021, checked in
-    /// `steerActiveTurn`): a steer whose last paragraph merely names a
+    /// A steer is refused only when the whole prompt resolves
+    /// ([`is_picked_command`]: [`parse_slash`] plus a listed entry): a
+    /// steer whose last paragraph merely names a
     /// command still steers, and only an actual command is refused.
     pub(crate) fn is_picked_command(&self, text: &str) -> bool {
         parse_slash(text)

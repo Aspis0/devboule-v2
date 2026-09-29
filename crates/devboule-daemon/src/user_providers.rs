@@ -1,13 +1,13 @@
 //! User provider rows: the catalogue's open half, read from disk.
 //!
-//! Paseo's row shape (`RECON-paseo-provider-config.md` §1), scoped to the
-//! fields the daemon consumes: `extends`, `label`, `description`, `command`
-//! (a non-empty argv list) and `env`. A field the daemon accepts and ignores
+//! The row shape, scoped to the fields the daemon consumes: `extends`,
+//! `label`, `description`, `command` (a non-empty argv list) and `env`.
+//! A field the daemon accepts and ignores
 //! is a promise it does not keep, so the shape carries nothing else and
 //! unknown fields are refused (`deny_unknown_fields`) — a document naming
 //! `models` or `enabled` gets a sentence that says so rather than a row that
 //! silently does nothing. What is deferred, deliberately, is stated in the
-//! refusal sentences: a row whose id is a built-in (Paseo's override half)
+//! refusal sentences: a row whose id is a built-in (the override half)
 //! and a row extending a native family are both refused "not supported yet",
 //! never silently ignored and never quietly treated as ACP.
 //!
@@ -27,7 +27,7 @@
 //! effect on the next creation rather than at the next restart — the same
 //! liveness rule the profile store states for itself. The raw bytes are
 //! compared with the last document seen and an unchanged document swaps
-//! nothing (Paseo's deep-equal early return), so a boundary costs a read and
+//! nothing (the deep-equal early return), so a boundary costs a read and
 //! a compare, not a swap.
 
 use std::collections::BTreeMap;
@@ -71,9 +71,10 @@ pub(crate) const MAX_PROVIDER_ENV_ENTRIES: usize = 32;
 /// The longest one env key or value may be, in bytes.
 pub(crate) const MAX_PROVIDER_ENV_BYTES: usize = 4 * 1024;
 
-/// One user provider row: how a local process is born. That is the question
-/// Paseo's row answers and A2A's Agent Card does not, which is why the shape
-/// is Paseo's.
+/// One user provider row: how a local process is born — a command argv
+/// and an env, not a capability description. That is the question an
+/// A2A Agent Card does not answer, and it is why this shape is a spawn
+/// record.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UserProviderRow {
@@ -160,10 +161,10 @@ pub(crate) fn parse_providers_document(
     Ok(document)
 }
 
-/// The two Paseo validations, verbatim in meaning, plus the two scope limits
+/// The two source validations, verbatim in meaning, plus the two scope limits
 /// stated rather than hidden.
 fn validate_row(id: &str, row: &UserProviderRow, native_ids: &[String]) -> Result<(), String> {
-    // Paseo validation 1: the id is a closed alphabet. A provider id becomes
+    // Validation 1: the id is a closed alphabet. A provider id becomes
     // a path segment and a config key; an unvalidated id is the
     // absolute-path-join defect waiting to happen.
     if !id_in_closed_alphabet(id) {
@@ -172,7 +173,7 @@ fn validate_row(id: &str, row: &UserProviderRow, native_ids: &[String]) -> Resul
              (a lowercase letter, then lowercase letters, digits and hyphens)"
         ));
     }
-    // Scope limit, stated rather than hidden: Paseo's builtin-override half
+    // Scope limit, stated rather than hidden: the builtin-override half
     // (a built-in id with no `extends` overrides that built-in) is not
     // imported.
     // Ids **and** aliases: several catalog names are alias-only
@@ -189,7 +190,7 @@ fn validate_row(id: &str, row: &UserProviderRow, native_ids: &[String]) -> Resul
              (not supported yet)"
         ));
     }
-    // Paseo validation 2: a non-builtin id MUST declare `extends`, and
+    // Validation 2: a non-builtin id MUST declare `extends`, and
     // `extends` is checked against a closed set.
     let Some(extends) = row
         .extends
@@ -338,7 +339,7 @@ fn check_optional_text(
 
 /// The last raw document this process saw — applied or refused — so a
 /// boundary re-reads, compares, and stops before re-applying or re-logging
-/// the same document (Paseo's deep-equal early return). Guarded together
+/// the same document (the deep-equal early return). Guarded together
 /// with the refresh itself: two threads arriving together must not
 /// interleave read-and-swap.
 pub(crate) struct RowsState {
@@ -572,7 +573,7 @@ mod tests {
         let error = parse(document.as_bytes()).expect_err("refused");
         assert!(
             error.contains("my-agent") && error.contains("must declare extends"),
-            "the refusal is Paseo's, naming the row: {error}"
+            "the refusal names the row: {error}"
         );
     }
 
@@ -609,7 +610,7 @@ mod tests {
         }
     }
 
-    /// The other deferred half: Paseo's builtin-override shape is not
+    /// The other deferred half: the builtin-override shape is not
     /// imported, so a row taking a built-in's id is refused "not supported
     /// yet" rather than shadowing the built-in.
     #[test]

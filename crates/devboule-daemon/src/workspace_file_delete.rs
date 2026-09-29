@@ -16,9 +16,7 @@
 //! daemon starts on Windows (`crate::paths` asks for `LOCALAPPDATA`).
 //!
 //! **The link rule, stated precisely.** A link named as the act's target
-//! is refused — the walk's sentence, the one rule this tree keeps where
-//! Paseo's delete unlinks the link instead
-//! (packages/server/src/server/file-explorer/service.ts). A link **inside** a
+//! is refused — the walk's sentence, the one rule this tree keeps. A link **inside** a
 //! folder being removed goes with the folder: unlinked as an entry, never
 //! followed (`remove_dir_all` traverses no reparse point), so the rule
 //! holds one level deeper than the walk can see.

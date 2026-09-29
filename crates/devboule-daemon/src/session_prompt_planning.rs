@@ -16,7 +16,7 @@ use super::*;
 /// The prompt the writer receives: the user's text, a blank line, then one line
 /// per attachment naming the absolute path its bytes were written to.
 ///
-/// The line is Paseo's shape (`[Image available at: <path>]`), and every
+/// The line is the `[Image available at: <path>]` shape, and every
 /// attachment gets one — including an SVG, which no provider accepts as an
 /// inline image block, so a path on disk is its only route to the agent both
 /// now and after the per-provider blocks land. Nothing else about the prompt

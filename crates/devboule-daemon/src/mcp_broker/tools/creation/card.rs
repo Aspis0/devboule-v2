@@ -32,10 +32,10 @@ pub(in crate::mcp_broker) fn auto_accept_line(
 /// The one consent-surface fact the composition adds: a peer holding
 /// `answer_permissions` may answer its own creation card, and a human
 /// reading the card must see that the asking device is also a potential
-/// answerer. Paseo's model is the reference — its `create_agent_request`
-/// needs the capability pair and shows no card at all, the grant IS the
-/// consent — so this is not a gate to add but a fact to state on the card we
-/// keep as the human's courtesy surface.
+/// answerer. Nothing gates that — holding `answer_permissions` is the
+/// whole grant, so this is a note on the card, not a check: the human
+/// keeps the courtesy surface, and the card tells them who else could
+/// have answered.
 pub(in crate::mcp_broker) fn self_answer_note(
     state: &ServerState,
     caller: &McpCaller,
@@ -235,10 +235,9 @@ pub(in crate::mcp_broker) fn creation_card(
     // The consent surface names its own composition: a paired device
     // holding `answer_permissions` may answer this card itself, and a
     // human reading it must be able to see that the asking device is also a
-    // potential answerer. Paseo's model is the reference: its
-    // `create_agent_request` needs the capability pair and shows no card at
-    // all - the grant IS the consent. Ours keeps the card as the human's
-    // courtesy surface and states the fact on it.
+    // potential answerer. Holding `answer_permissions` is the whole
+    // grant, so there is no gate to add — the card states the fact and
+    // the human decides.
     let self_answer = match self_answer_note {
         Some(note) => format!(" {note}"),
         None => String::new(),

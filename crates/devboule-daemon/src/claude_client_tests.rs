@@ -1739,8 +1739,8 @@ fn kill_does_not_wait_for_the_child_to_cooperate() {
 // The routing decision lives in `plan_claude_prompt`, tested here
 // against the attachment store directly, without spawning a child — the
 // same arrangement the ACP sibling seam's tests use. The wire shape of
-// one block is pinned against the exact JSON Paseo's `toSdkUserMessage`
-// emits (`{"type":"image","source":{"type":"base64","media_type":...}}`).
+// one block is pinned against the exact JSON the provider emits for one
+// image block (`{"type":"image","source":{"type":"base64","media_type":...}}`).
 
 struct PlanTempDir(PathBuf);
 
@@ -2508,7 +2508,7 @@ fn a_delivered_fast_mode_is_confirmed_on_the_create_path_in_all_three_answers() 
     assert_eq!(
         fast_request["request"]["settings"]["fastMode"],
         serde_json::json!(true),
-        "the setting Paseo's SDK writes, in the frame this family already uses: {fast_request}"
+        "the setting the SDK's flag call writes, in the frame this family already uses: {fast_request}"
     );
     // A line that is not the answer — the init event the real CLI sends first.
     let init = serde_json::json!({"type": "system", "subtype": "init"});
@@ -2661,7 +2661,7 @@ fn write_line_to_child(stdin: &Arc<Mutex<Option<ChildStdin>>>, value: &Value) {
 
 #[test]
 fn initialize_request_writes_one_bare_control_frame() {
-    // The handshake Paseo's `supportedCommands()` is answered from: one
+    // The handshake `supportedCommands()` is answered from: one
     // `initialize` control frame, id-keyed like every other control request.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
@@ -3354,7 +3354,7 @@ mod claude_permission_tests {
 
         #[test]
         fn exit_plan_mode_builds_a_plan_card_from_the_fixture_shape() {
-            // This fixture follows Paseo's can_use_tool shape; it is not captured live.
+            // This fixture follows the provider's can_use_tool shape; it is not captured live.
             let (broker, captured, _, _, conn) = harness_with(plan_line(serde_json::json!({
                 "plan": "## Steps\n\n- Add the route\n- Verify it"
             })));

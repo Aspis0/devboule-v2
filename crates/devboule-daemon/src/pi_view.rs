@@ -34,11 +34,9 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
         "tool_execution_start" => tool_execution_start(value).into_iter().collect(),
         "tool_execution_end" => tool_execution_end(value),
         "turn_end" => turn_end(value),
-        // Paseo's own words for pi's compaction frames, shown as our
+        // pi's own words for pi's compaction frames, shown as our
         // transcript's system line — loading, then the manual or automatic
-        // sentence (`packages/server/src/server/agent/providers/pi/agent.ts`;
-        // labels at `packages/app/src/components/message-compaction-label.ts`),
-        // so a `/compact` shows progress and completion.
+        // sentence, so a `/compact` shows progress and completion.
         "compaction_start" => vec![SessionEvent::SessionNotice {
             text: "Compacting...".to_string(),
             severity: NoticeSeverity::Info,
@@ -47,7 +45,7 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
             text: if value.get("reason").and_then(Value::as_str) == Some("manual") {
                 "Context manually compacted"
             } else {
-                // Any reason that is not `manual` is Paseo's automatic trigger.
+                // Any reason that is not `manual` is an automatic trigger.
                 "Context automatically compacted"
             }
             .to_string(),
@@ -65,10 +63,8 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
 }
 
 /// The two built-ins pi's own `get_commands` reply omits — measured: neither
-/// `compact` nor `autocompact` is among the names a live reply returned
-/// — seeded exactly as Paseo seeds them
-/// (`pi/agent.ts:117-130`, merged at `:139-151`), with the argument hints
-/// Paseo gives them.
+/// `compact` nor `autocompact` is among the names a live reply returned —
+/// seeded here with the argument hints they carry.
 pub(crate) fn seeded_commands() -> Vec<AvailableCommandView> {
     vec![
         AvailableCommandView {
@@ -132,10 +128,9 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
             continue;
         }
         accepted += 1;
-        // Paseo's nullish fallback
-        // (`packages/server/src/server/agent/providers/pi/agent.ts`,
-        // `description ?? source`): `""` is a description and stays; only an
-        // absent or null one falls back to the source.
+        // The nullish fallback (`description ?? source`): `""` is a
+        // description and stays; only an absent or null one falls back to
+        // the source.
         let description = match entry.get("description") {
             Some(Value::String(description)) => description.clone(),
             _ => match entry.get("source") {
@@ -452,9 +447,10 @@ mod tests {
     fn a_get_commands_reply_publishes_its_commands_over_the_two_seeds() {
         // The reply pi was measured to send: one id,
         // `command`, `success`, and `data.commands` of name/description
-        // source/input.hint entries. Paseo seeds pi's two built-ins itself
-        // because the reply omits them (`pi/agent.ts:117-130`); we keep
-        // `input.hint`, which Paseo drops (`pi/agent.ts:151`).
+        // source/input.hint entries. The seeds carry the two built-ins the
+        // reply omits; `input.hint` is kept when the reply carries one —
+        // the hint is menu text the reply provided, and dropping it would
+        // hide it.
         let reply = parse(
             r#"{"id":"c-7","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"review","description":"Review the session work","source":"extension","input":{"hint":"<scope>"}},{"name":"skill:pdf","source":"skill"},{"name":"compact","description":"pi's own words","source":"prompt"}]}}"#,
         );
@@ -473,7 +469,7 @@ mod tests {
                 assert_eq!(
                     listed,
                     [
-                        // seeds first, in Paseo's order, with their hints;
+                        // seeds first, with their hints;
                         // a name the reply repeats keeps the reply's
                         // description and the seeded hint (the reply never
                         // carries the built-ins — but if it
@@ -485,7 +481,7 @@ mod tests {
                             Some("[on|off|toggle]")
                         ),
                         ("review", "Review the session work", Some("<scope>")),
-                        // no description → Paseo's source fallback
+                        // no description → the source fallback
                         ("skill:pdf", "skill", None),
                     ]
                 );
@@ -511,13 +507,10 @@ mod tests {
     }
 
     #[test]
-    fn compaction_frames_show_progress_and_completion_as_paseo_shows_them() {
-        // Paseo renders pi's own compaction frames as the transcript's
-        // compaction marker: loading → "Compacting...", and on completion
-        // the manual or automatic sentence
-        // (`packages/server/src/server/agent/providers/pi/agent.ts`, the
-        // labels at `packages/app/src/components/message-compaction-label.ts`).
-        // Our transcript's system line is what can show them.
+    fn compaction_frames_show_progress_and_completion() {
+        // The transcript's compaction marker for pi's own frames: loading →
+        // "Compacting...", and on completion the manual or automatic
+        // sentence. Our transcript's system line is what can show them.
         let start = parse(r#"{"type":"compaction_start","reason":"manual"}"#);
         let end_manual = parse(r#"{"type":"compaction_end","reason":"manual"}"#);
         let end_auto = parse(r#"{"type":"compaction_end","reason":"threshold"}"#);
@@ -532,7 +525,7 @@ mod tests {
             events_from_line(&end_manual),
             notice("Context manually compacted")
         );
-        // Any reason that is not `manual` is Paseo's automatic trigger.
+        // Any reason that is not `manual` is an automatic trigger.
         assert_eq!(
             events_from_line(&end_auto),
             notice("Context automatically compacted")
@@ -634,10 +627,10 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_description_stays_empty_the_way_paseos_nullish_fallback_leaves_it() {
-        // Paseo falls back to `source` only for nullish descriptions
-        // (`packages/server/src/server/agent/providers/pi/agent.ts`,
-        // `description ?? source`): `""` is a description and stays.
+    fn an_empty_description_stays_empty_under_the_nullish_fallback() {
+        // The nullish fallback (`description ?? source`) falls back to
+        // `source` only for nullish descriptions: `""` is a description and
+        // stays.
         let reply = parse(
             r#"{"id":"c-6","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"blank","description":"","source":"skill"}]}}"#,
         );

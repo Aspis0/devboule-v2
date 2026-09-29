@@ -384,7 +384,7 @@ fn an_entry_without_a_mode_key_is_kept_and_sent_as_code() {
     assert_eq!(
         state.collaboration_mode().expect("plan mode")["mode"],
         "code",
-        "Paseo sends a mode-less entry as code"
+        "a mode-less entry is sent as code"
     );
 }
 
@@ -823,7 +823,7 @@ fn turn_start_carries_the_policy_only_after_a_mode_change() {
     assert_eq!(changed["approvalPolicy"], "on-request");
     assert_eq!(changed["sandboxPolicy"]["type"], "readOnly");
 
-    // Paseo keeps `hasWorkflowModeOverride` set, so every later turn
+    // `hasWorkflowModeOverride` stays set, so every later turn
     // re-sends the policy too.
     let later = turn_start_params(
         &state.thread_id(),
@@ -844,7 +844,7 @@ fn read_only_thread_start_sends_the_read_only_sandbox() {
 }
 
 #[test]
-fn initialize_request_includes_paseo_capabilities_on_the_wire() {
+fn initialize_request_declares_the_daemons_client_capabilities_on_the_wire() {
     let frame = super::request_frame("d-1", "initialize", initialize_params());
     let mut bytes = serde_json::to_vec(&frame).expect("initialize request");
     bytes.push(b'\n');

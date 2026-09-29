@@ -163,10 +163,10 @@ fn profile(model: &str, features: serde_json::Value) -> ProfileDelivery {
     )
 }
 
-/// The tick reaches the child on the frame this family already sends: Paseo's
-/// `serviceTier: "fast"` parameter of `turn/start`, because the thread keeps no
-/// tier between turns. Pinned on the params the prompt actually sends, not on a
-/// field, so a seed that never reaches the wire fails.
+/// The tick reaches the child on the frame this family already sends: the
+/// `serviceTier: "fast"` parameter of `turn/start`, because the thread keeps
+/// no tier between turns. Pinned on the params the prompt actually sends, not
+/// on a field, so a seed that never reaches the wire fails.
 #[test]
 fn a_codex_fast_mode_tick_reaches_the_turn_parameters() {
     let state = Arc::new(CodexState::new(

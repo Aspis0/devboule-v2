@@ -17,11 +17,9 @@ use serde_json::Value;
 use super::PiControl;
 use crate::session::SessionRuntime;
 
-/// What any pi request that carries its own deadline may wait: Paseo's pi
-/// runtime is built with `DEFAULT_PI_RPC_TIMEOUT_MS` = 60 s
-/// (`pi/agent.ts:107,1236-1243`) and that is what its `get_commands`,
-/// `set_auto_compaction` and `get_state` calls wait. pi's own measured
-/// latency fits inside it ("tens of seconds", one
+/// What any pi request that carries its own deadline may wait: 60 s, which
+/// is what `get_commands`, `set_auto_compaction` and `get_state` calls
+/// wait. pi's own measured latency fits inside it ("tens of seconds", one
 /// successful reply inside a 120 s window).
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -36,8 +34,7 @@ pub(super) struct PiCommandsReply {
 
 /// Send `{"type":"get_commands"}` without waiting for it: the reply was
 /// measured to take tens of seconds, and neither a session start nor a
-/// prompt may sit on it (Paseo `cli-runtime.ts:210-215` sends; the reply is
-/// matched by id, `jsonl-rpc-process.ts:263-292`).
+/// prompt may sit on it — the reply is matched by id when it arrives.
 ///
 /// A write that fails still answers with a receiver no reply can reach: the
 /// waiter's own no-reply branch then leaves the list at the seeds and logs
@@ -113,8 +110,8 @@ fn await_commands_reply(reply: PiCommandsReply, runtime: &Arc<SessionRuntime>, t
 /// claimed; `Some` is the one log line the seeds are published with.
 fn on_commands_timeout(reply: &PiCommandsReply, timeout: Duration) -> Option<String> {
     // The registration would otherwise sit in the table until the child
-    // ends; Paseo deletes a timed-out request the same way
-    // (`jsonl-rpc-process.ts:160-163`).
+    // ends; a timed-out request is deleted rather than left in the table
+    // past its own wait.
     let Some(id) = reply.id.as_deref() else {
         // No registration was ever written, so no answer can be claimed:
         // the seeds are this waiter's to publish.
@@ -151,7 +148,7 @@ fn refusal_log_line(error: &str) -> String {
     )
 }
 
-/// A `/…` invocation, parsed the way Paseo parses one (`pi/agent.ts:1797-1811`):
+/// A `/…` invocation, parsed the way the upstream pi runtime parses one:
 /// the name up to the first whitespace, a name containing a second slash is
 /// not a command at all, and the trimmed remainder is kept only when it is
 /// non-empty.
@@ -189,9 +186,8 @@ pub(super) fn parse_slash_invocation(text: &str) -> Option<SlashInvocation> {
 
 /// JavaScript's whitespace set (ECMA-262 WhiteSpace + LineTerminator): it
 /// includes U+FEFF and excludes U+0085, both of which differ from Rust's
-/// `char::is_whitespace`. Paseo's parse runs on JS `trim()` and `/\s/`
-/// (`packages/server/src/server/agent/providers/pi/agent.ts`), so ours matches
-/// that set — not Rust's.
+/// `char::is_whitespace`. The upstream parse runs on JS `trim()` and `/\s/`,
+/// so ours matches that set — not Rust's.
 fn is_js_space(character: char) -> bool {
     matches!(
         character,

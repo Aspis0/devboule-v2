@@ -103,7 +103,7 @@ impl Harness {
 
     /// The live condition: a daemon that belongs to no job, which is how the
     /// app launches it and the only state in which the defect appears. This
-    /// test process sits in the CI/paseo job, so the spawn asks for
+    /// test process sits inside a CI job, so the spawn asks for
     /// `CREATE_BREAKAWAY_FROM_JOB`. `Err` names the limit the surrounding job
     /// withholds; the caller records that instead of quietly testing a daemon
     /// that cannot show the defect.

@@ -78,7 +78,7 @@ fn compact_reaches_the_app_server_as_its_own_request_and_never_as_a_turn() {
 }
 
 #[test]
-fn every_goal_form_reaches_the_app_server_with_the_params_paseo_sends() {
+fn every_goal_form_reaches_the_app_server_with_the_params_the_app_server_expects() {
     let Some(reason) = Fixture::skip_without_node() else {
         let cases = [
             (
@@ -91,8 +91,8 @@ fn every_goal_form_reaches_the_app_server_with_the_params_paseo_sends() {
                 }),
             ),
             (
-                // Pause and resume carry no objective: Paseo's params have
-                // none, and an empty string is not the same as an absent key.
+                // Pause and resume carry no objective: the params have none,
+                // and an empty string is not the same as an absent key.
                 "/goal pause",
                 "thread/goal/set",
                 serde_json::json!({ "threadId": "thread-fake", "status": "paused" }),
@@ -119,7 +119,7 @@ fn every_goal_form_reaches_the_app_server_with_the_params_paseo_sends() {
             assert_eq!(
                 fixture.recorded(),
                 vec![(method.to_string(), params)],
-                "{text}: the one request it writes, with the params Paseo builds"
+                "{text}: the one request it writes, with the params the app-server expects"
             );
         }
         return;
@@ -139,7 +139,7 @@ fn a_bare_goal_writes_nothing_and_answers_the_usage_line() {
                 text: "Usage: /goal <objective>|pause|resume|clear".to_string(),
                 severity: NoticeSeverity::Info,
             }],
-            "Paseo returns this text before it touches the client (:5035-5037)"
+            "the usage line is answered before the client is touched"
         );
         assert!(
             fixture.recorded().is_empty(),
@@ -152,10 +152,10 @@ fn a_bare_goal_writes_nothing_and_answers_the_usage_line() {
 
 #[test]
 fn goal_on_an_old_binary_is_not_intercepted_and_reaches_codex_as_text() {
-    // Paseo's `tryHandleOutOfBand` returns null for `goal` when the gate failed
-    // (:4997), and `resolveSlashCommandInvocation` then finds no `goal` in
-    // `listCommands` (:4004-4021) — so the text goes out as the ordinary
-    // `turn/start` it always was, verbatim and not as `$goal …`.
+    // A `goal` on a binary whose handshake listed no `goal` command fails
+    // the out-of-band gate, and no listed command matches either — so the
+    // text goes out as the ordinary `turn/start` it always was, verbatim and
+    // not as `$goal …`.
     let Some(reason) = Fixture::skip_without_node() else {
         let fixture = Fixture::new("old-goal");
         let commands = fixture.commands(false, false);
@@ -462,9 +462,9 @@ fn a_picked_skill_with_stored_references_sends_blocks_and_paths() {
 
 #[test]
 fn a_later_paragraph_naming_a_command_is_not_one_on_any_route() {
-    // The suffix P3: Paseo expands only the message that IS the command
-    // (`parseSlashCommandInput` :3986-4001 on the whole prompt). A message
-    // whose last paragraph merely names a listed command goes out literally,
+    // The suffix P3: only the message that IS the command expands (the parse
+    // runs on the whole prompt). A message whose last paragraph merely names
+    // a listed command goes out literally,
     // whether or not it was composed around.
     let Some(reason) = Fixture::skip_without_node() else {
         let fixture = Fixture::new("suffix");
@@ -537,8 +537,9 @@ fn launch_args_carry_the_goals_flag_only_when_the_gate_passes() {
             let argv = fixture.argv();
             spawned.killer.kill();
             // Node's `-e <script> --` leaves argv[1..] as exactly the flags the
-            // launcher appended, so this is the whole tail of the real launch
-            // line — the pair `spawnAppServer` appends (:7089-7091), in order.
+            // launcher appended, so this is the whole tail of the real
+            // launch line — the `--enable goals` pair the launcher
+            // appends, in order.
             if expected {
                 assert_eq!(
                     argv,

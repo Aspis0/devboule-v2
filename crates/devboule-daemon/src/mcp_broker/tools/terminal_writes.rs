@@ -67,7 +67,7 @@ pub(in crate::mcp_broker) fn create(
     terminal_reply(&id, result)
 }
 
-/// `devboule_send_terminal_keys` (`{terminalId, keys, literal?}`): Paseo's
+/// `devboule_send_terminal_keys` (`{terminalId, keys, literal?}`): the keys
 /// input shape, typed into one terminal of the caller's own workspace.
 pub(in crate::mcp_broker) fn send_keys(
     state: &Arc<ServerState>,

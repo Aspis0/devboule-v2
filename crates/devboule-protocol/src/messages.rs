@@ -573,8 +573,8 @@ pub enum ClientMessage {
     },
     /// Unstage paths — the index entry goes back to `HEAD` and the
     /// worktree keeps its bytes, with the declared fallback for an `HEAD`
-    /// that does not resolve (the paths leave the index directly,
-    /// Paseo's own step). A **write** like [`Self::WorkspaceGitStage`],
+    /// that does not resolve (the paths leave the index directly — the
+    /// fallback step). A **write** like [`Self::WorkspaceGitStage`],
     /// same guards, same cap, same mutex, no confirmation: this act
     /// loses nothing. The reply is [`DaemonMessage::WorkspaceGitWrite`].
     WorkspaceGitUnstage {
@@ -591,8 +591,9 @@ pub enum ClientMessage {
     /// the asking screen is the local Changes panel's own gate (it
     /// confirms through a native dialog before it sends), and a peer
     /// holding the admin capability acts under that capability as behind
-    /// every administrative door. Paseo's sequence, pathspec-scoped at
-    /// every step. A **write** like [`Self::WorkspaceGitStage`], same
+    /// every administrative door. Every step carries a literal
+    /// pathspec. A **write**
+    /// like [`Self::WorkspaceGitStage`], same
     /// guards, same cap, same mutex. The reply is
     /// [`DaemonMessage::WorkspaceGitWrite`].
     WorkspaceGitDiscard {
@@ -604,10 +605,7 @@ pub enum ClientMessage {
         idempotency_key: Option<String>,
     },
     /// Commit **what is staged and nothing else** — no `add -A` exists on
-    /// this frame (the divergence from Paseo's `commitChanges`
-    /// (`packages/server/src/utils/checkout-git.ts`), which stages
-    /// everything because it has no separate stage; this panel
-    /// does), and the message is the caller's
+    /// this frame, because staging is its own act here — and the message is the caller's
     /// own: empty after trimming is refused before anything spawns —
     /// no message is ever generated. A **write**: same folder resolution,
     /// same probe, same mutex; a hook that dies answers as operation plus
@@ -723,8 +721,8 @@ pub enum ClientMessage {
     /// daemon re-judges the path
     /// with the same guards the reads use — the workspace's own folder
     /// refused, the repository's metadata refused in every spelling, and a
-    /// link named as the act's target refused, never followed (where
-    /// Paseo's delete unlinks the link, one rule for the whole tree). A
+    /// link named as the act's target refused, never followed — one rule
+    /// for the whole tree. A
     /// link **inside** a deleted folder goes with the folder — removed as
     /// an entry, never followed — and the folder goes whole, its children
     /// with it. The act is irreversible: no undo exists on this frame. The
@@ -964,10 +962,9 @@ pub enum ClientMessage {
 /// Unicode line separators are refused here exactly as they are there, so a
 /// string one door accepts is not refused at another.
 ///
-/// Sixty characters for an explicit rename is a deliberate divergence from
-/// Paseo, which allows 200 there and clamps only the derived title: a tab
-/// strip is not a profile page, and the surfaces that render this name are
-/// sized for the derived cap. Deriving sanitises and clamps instead of
+/// Sixty characters for an explicit rename is deliberate: a tab strip is not
+/// a profile page, and the surfaces that render this name are sized for the
+/// derived cap. Deriving sanitises and clamps instead of
 /// refusing (see [`derive_session_title`]).
 ///
 /// Refusing an empty name instead of treating it as absent is deliberate:
@@ -995,8 +992,8 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 
 /// Derive an agent session's title from its first prompt.
 ///
-/// The rule is Paseo's (`create-agent-title.ts`): the first non-empty line,
-/// whitespace-collapsed, clamped to [`crate::MAX_DISPLAY_NAME_CHARS`]
+/// The rule: the first non-empty line, whitespace-collapsed, clamped to
+/// [`crate::MAX_DISPLAY_NAME_CHARS`]
 /// characters. Sixty, because the title renders where a display name renders
 /// — the tab strip, the pane header, History rows, attention toasts — and
 /// shares its cap.
@@ -1007,7 +1004,7 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 /// it carries a non-whitespace control: stripping one would fuse two words
 /// into a title the person never typed. Separators never reach either
 /// check: the collapse turns them into spaces first, the same
-/// neutralisation Paseo's `\s` does. Invisible formatting is *stripped* —
+/// neutralisation JavaScript's `\s` does. Invisible formatting is *stripped* —
 /// dropping a soft hyphen or a bidi override restores the word the person
 /// typed, which is what a pasted paragraph needs — except U+200C/U+200D,
 /// which stay: a joiner makes two scalars render as one cluster but never
@@ -1024,15 +1021,14 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
 /// spawn prompt, preamble), which is why the send path derives from the raw
 /// text beside the composed one.
 ///
-/// Two deliberate divergences from Paseo, both recorded so neither looks
-/// like parity: the clamp counts by grapheme clusters rather than UTF-16
-/// code units (sixty emoji stay sixty rather than thirty), and Rust's
-/// whitespace set is not JS `\s` (U+FEFF splits words there and not here;
-/// U+0085 the reverse) — cosmetic either way, since derivation strips what
-/// renaming refuses.
+/// Two deliberate choices, recorded so neither gets "fixed" back: the clamp
+/// counts by grapheme clusters rather than UTF-16 code units (sixty emoji
+/// stay sixty rather than thirty), and Rust's whitespace set is not JS `\s`
+/// (U+FEFF splits words there and not here; U+0085 the reverse) — cosmetic
+/// either way, since derivation strips what renaming refuses.
 ///
-/// The clamp keeps the head, not the tail: a prompt's first words say what
-/// it is about, and Paseo clamps the same end.
+/// The clamp keeps the head, not the tail: a prompt's first words say
+/// what it is about.
 pub fn derive_session_title(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
     if line
@@ -2408,9 +2404,9 @@ pub struct VocabularyFeatureOption {
     pub label: String,
 }
 
-/// The control a profile form draws for one feature. Paseo's own feature
-/// union discriminates on the same word, and the wire keeps it: a `toggle` is
-/// a checkbox, a `select` is a select over the feature's `options`.
+/// The control a profile form draws for one feature. The wire discriminates
+/// on these two words: a `toggle` is a checkbox, a `select` is a select
+/// over the feature's `options`.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VocabularyFeatureControl {
@@ -2444,11 +2440,11 @@ pub struct VocabularyFeature {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<VocabularyFeatureOption>,
     /// **The model gate**: `None` offers the feature on every model of the
-    /// family, `Some(ids)` on exactly those ids. Paseo answers this by
-    /// re-running `listFeatures` per draft model — which for an ACP provider
-    /// means re-spawning it per model change. This daemon states the gate as
-    /// data instead: the same fact, without a process spawn per keystroke in a
-    /// free-text model field. The form filters on this list and holds no model
+    /// family, `Some(ids)` on exactly those ids. Re-running the declaration
+    /// per draft model would mean re-spawning an ACP provider per model
+    /// change. This daemon states the gate as data instead: the same fact,
+    /// without a process spawn per keystroke in a free-text model field.
+    /// The form filters on this list and holds no model
     /// name of its own, so it is still reading the provider's declaration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<String>>,

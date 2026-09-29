@@ -17,22 +17,18 @@ use super::commands::{js_trim, parse_slash_invocation, REQUEST_TIMEOUT};
 use super::PiControl;
 use crate::session::{OutOfBandCommands, SessionRuntime};
 
-/// How long a `compact` round trip may wait: Paseo waits forever
-/// (`JSONL_RPC_NO_TIMEOUT`,
-/// `packages/server/src/server/agent/providers/pi/cli-runtime.ts`) because pi only
-/// replies once the compaction is durable — but a child that stops
-/// answering would otherwise pin one worker and its registration for the
-/// session's life; the bound exists for that silent child.
-/// Five minutes is far longer than a durable compaction, so a real one
-/// never sees it; a silent child's round trip ends in Paseo's failure line
-/// instead of a thread. The same duration bounds a successful run's wait
-/// for its `compaction_end`: a real end arrives with the reply, so the
-/// grace only ever frees runs whose end never comes.
+/// How long a `compact` round trip may wait: five minutes. pi only
+/// replies once the compaction is durable, so a real compaction never
+/// sees the bound; but a child that stops answering would otherwise pin
+/// one worker and its registration for the session's life, and the bound
+/// exists for that silent child, whose round trip ends in the failure
+/// line instead of a thread. The same duration bounds a successful run's
+/// wait for its `compaction_end`: a real end arrives with the reply, so
+/// the grace only ever frees runs whose end never comes.
 const COMPACT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// What an `/autocompact` argument means — Paseo's `parseAutoCompactMode`
-/// (`pi/agent.ts:362-375`): absent means toggle, the four affirmative and
-/// four negative spellings, anything else unknown.
+/// What an `/autocompact` argument means: absent means toggle, the four
+/// affirmative and four negative spellings, anything else unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AutoCompactMode {
     Enabled,
@@ -51,18 +47,16 @@ fn parse_auto_compact_mode(args: Option<&str>) -> AutoCompactMode {
     }
 }
 
-/// Paseo's one-compaction-at-a-time guard (`pi/agent.ts:1821-1825`), with
-/// the run identity Paseo's single `emit` field gives it for free: `active`
-/// is its `outOfBandCompactionEmit`, `started` its
-/// `outOfBandCompactionStarted` (`:1826,1856-1860`), kept alive by the
-/// reader's observation of pi's own compaction frames the way Paseo keeps
-/// its alive on the `compaction_start`/`compaction_end` events
-/// (`packages/server/src/server/agent/providers/pi/agent.ts`). A run releases the slot when its RPC settles without the
-/// compaction having begun (Paseo's `finally`), when the compaction ends,
-/// or when a started compaction's RPC fails — Paseo's synthetic completed
-/// item does that third one.
+/// The one-compaction-at-a-time guard. The run's identity comes free from the
+/// registration's two flags: `shown` (the start marker is on screen) and
+/// `started` (pi reported `compaction_start`), kept alive by the reader's
+/// observation of pi's own compaction frames on the
+/// `compaction_start`/`compaction_end` events. A run releases the slot
+/// when its RPC settles without the compaction having begun (the `finally`
+/// path), when the compaction ends, or when a started compaction's RPC
+/// fails — the synthetic completed item does that third one.
 ///
-/// Two bounds Paseo has none of: the wait is bounded, so a
+/// Two bounds the reference has none of: the wait is bounded, so a
 /// timed-out run's late end is owed to the run that is gone and can never
 /// release the next run; and a successful run whose end never arrives holds
 /// the slot only for the end grace, not the session's life.
@@ -105,7 +99,7 @@ impl CompactGuard {
         }
     }
 
-    /// Claim the one compact slot. `None` is Paseo's refusal.
+    /// Claim the one compact slot. `None` is the refusal.
     fn try_begin(&self) -> Option<u64> {
         let mut state = self.state.lock().ok()?;
         if let Some(run) = state.current.as_ref() {
@@ -134,11 +128,11 @@ impl CompactGuard {
         Some(gen)
     }
 
-    /// One pi frame observed by the reader (Paseo `emitCompactionTimeline`):
-    /// a frame belongs to our run unless its reason is present and not
-    /// manual — pi marks the field optional, and Paseo, which reads it only
-    /// for the label, releases on any end. An explicitly automatic frame is
-    /// someone else's compaction and moves nothing.
+    /// One pi frame observed by the reader: a frame belongs to our
+    /// run unless its reason is present and not
+    /// manual — pi marks the field optional, and any end without a
+    /// non-manual reason releases. An explicitly automatic
+    /// frame is someone else's compaction and moves nothing.
     ///
     /// Answers whether this end closes a run the transcript already completed
     /// synthetically: its late end leaves neither a row nor an event.
@@ -180,8 +174,8 @@ impl CompactGuard {
     }
 
     /// The RPC settled: a run whose compaction never started releases the
-    /// slot (Paseo's `finally`, `:1856-1860`), and so does a failure — for a
-    /// run with a marker on screen that is Paseo's synthetic completed item.
+    /// slot (the `finally` path), and so does a failure — for a run with a
+    /// marker on screen that is the synthetic completed item.
     /// A compaction that succeeded keeps the slot until its `compaction_end`,
     /// bounded by the end grace. Answers whether the failed run owes the
     /// transcript its completion sentence: exactly when a start was shown.
@@ -232,10 +226,8 @@ enum SettleOutcome {
     TimedOut,
 }
 
-/// The two commands pi runs itself, dispatched where Paseo dispatches them
-/// (`pi/agent.ts:1667-1691` `tryHandleOutOfBand`, called from
-/// `agent-manager.ts:2353` `tryRunOutOfBand`): the text never becomes a
-/// prompt and never begins a turn.
+/// The two commands pi runs itself, dispatched before a turn exists: the
+/// text never becomes a prompt and never begins a turn.
 pub(super) struct PiOutOfBandCommands {
     control: Arc<PiControl>,
     compact: Arc<CompactGuard>,
@@ -262,22 +254,18 @@ impl PiOutOfBandCommands {
     }
 
     /// The compact slot, shared with the reader that observes pi's own
-    /// compaction frames — Paseo keeps both halves in one agent.
+    /// compaction frames.
     pub(super) fn compact_guard(&self) -> Arc<CompactGuard> {
         Arc::clone(&self.compact)
     }
 
-    /// Paseo `pi/agent.ts:1819-1862` `executeCompactCommand`: the guard
-    /// first — a second run while one is outstanding is refused with
-    /// Paseo's own sentence and writes no rpc (`:1821-1825`, surfaced as
-    /// the client's `[Error] …` line,
-    /// `packages/server/src/server/agent/agent-manager.ts`) — then
-    /// the `compact` RPC with the custom instructions when there are any
-    /// (`packages/server/src/server/agent/providers/pi/cli-runtime.ts`).
-    /// Progress and completion are pi's own
-    /// compaction frames, which `pi_view` shows; this
-    /// publishes Paseo's failure line, verbatim — preceded by the synthetic
-    /// completion sentence when the start was already shown.
+    /// `executeCompactCommand`: the guard first — a second run while one is
+    /// outstanding is refused with the refusal sentence and writes no rpc
+    /// (surfaced as the client's `[Error] …` line) — then the `compact` RPC
+    /// with the custom instructions when there are any. Progress and
+    /// completion are pi's own compaction frames, which `pi_view` shows;
+    /// this publishes the failure line, verbatim — preceded by the
+    /// synthetic completion sentence when the start was already shown.
     fn run_compact(&self, args: Option<String>, runtime: &Arc<SessionRuntime>) {
         let Some(gen) = self.compact.try_begin() else {
             publish_outcome(
@@ -303,9 +291,9 @@ impl PiOutOfBandCommands {
                     Err(error) if error.timed_out => SettleOutcome::TimedOut,
                     Err(_) => SettleOutcome::Failed,
                 };
-                // Paseo's synthetic completed item (`pi/agent.ts:1834-1845`):
-                // a compaction whose start was shown and whose round trip
-                // then failed owes its completion sentence before the error.
+                // The synthetic completed item: a compaction whose start was
+                // shown and whose round trip then failed owes its completion
+                // sentence before the error.
                 let unclosed = guard.settle(gen, outcome);
                 if let Err(error) = answer {
                     if unclosed {
@@ -341,12 +329,11 @@ impl OutOfBandCommands for PiOutOfBandCommands {
     }
 }
 
-/// Paseo `pi/agent.ts:1864-1912` `executeAutoCompactCommand`: the argument
-/// resolves first (a usage refusal for anything else), toggle reads
-/// `get_state.autoCompactionEnabled` and refuses with Paseo's sentence when
-/// that state is not a boolean, and then the one `set_auto_compaction` RPC
-/// (`cli-runtime.ts:145-147`) — the failure line and the success sentence
-/// exactly as Paseo spells them.
+/// `executeAutoCompactCommand`: the argument resolves first (a usage
+/// refusal for anything else), toggle reads `get_state.autoCompactionEnabled`
+/// and refuses with the refusal sentence when that state is not a boolean,
+/// and then the one `set_auto_compaction` RPC — the failure line and the
+/// success sentence exactly as the reference spells them.
 fn run_autocompact(control: &Arc<PiControl>, args: Option<String>, runtime: &Arc<SessionRuntime>) {
     match parse_auto_compact_mode(args.as_deref()) {
         AutoCompactMode::Unknown => publish_outcome(
@@ -390,8 +377,7 @@ fn run_autocompact(control: &Arc<PiControl>, args: Option<String>, runtime: &Arc
     }
 }
 
-/// One `set_auto_compaction` round trip and the sentence Paseo publishes
-/// for it (`pi/agent.ts:1903-1911`).
+/// One `set_auto_compaction` round trip and the sentence published for it.
 fn request_auto_compaction(control: &Arc<PiControl>, enabled: bool, runtime: &Arc<SessionRuntime>) {
     run_out_of_band_request(
         control,
@@ -425,7 +411,7 @@ struct RoundTripError {
 
 /// Write one out-of-band request and wait for its answer off the send path:
 /// `on_answer` runs on a thread of its own with the reply or the failure and
-/// publishes whatever Paseo would have shown. The write itself happens here,
+/// publishes the outcome sentence. The write itself happens here,
 /// on the caller's thread, so a pipe that cannot take the frame is reported
 /// at once rather than from a thread nobody waits for.
 fn run_out_of_band_request(
@@ -524,14 +510,10 @@ fn run_out_of_band_request_with(
     }
 }
 
-/// One out-of-band round trip, answered the way Paseo's client sees it: a
-/// `success: false` carries pi's own error text (`jsonl-rpc-process.ts:283-289`
-/// rejects with `response.error`), a closed channel is the reason the reader
-/// woke it with, and every wait is bounded — `compact` at
-/// [`COMPACT_TIMEOUT`], the rest at Paseo's own default (Paseo's
-/// `JSONL_RPC_NO_TIMEOUT`,
-/// `packages/server/src/server/agent/providers/pi/cli-runtime.ts`). The bound
-/// replaces Paseo's `JSONL_RPC_NO_TIMEOUT` for `compact`.
+/// One out-of-band round trip: a `success: false` carries pi's own error
+/// text (rejected with `response.error`), a closed channel is the reason
+/// the reader woke it with, and every wait is bounded — `compact` at
+/// [`COMPACT_TIMEOUT`], the rest at [`REQUEST_TIMEOUT`].
 fn await_out_of_band(
     control: &Arc<PiControl>,
     command: &str,
@@ -549,8 +531,8 @@ fn await_out_of_band(
             });
         }
         Err(RecvTimeoutError::Timeout) => {
-            // The registration would outlive the wait that gave up on it
-            // (Paseo deletes it, `jsonl-rpc-process.ts:160-163`).
+            // The registration would otherwise outlive the wait that gave
+            // up on it; delete it now.
             if let Ok(mut pending) = control.pending.lock() {
                 pending.remove(&id);
             }
@@ -579,7 +561,7 @@ fn await_out_of_band(
     })
 }
 
-/// Paseo's compaction marker as our transcript's system line — the same line
+/// The compaction marker as our transcript's system line — the same line
 /// `pi_view` derives from pi's own frames, published here for the synthetic
 /// completed marker a failed compact owes. Journaled like any
 /// daemon event, so replay restores it.
@@ -590,9 +572,9 @@ fn publish_notice(runtime: &Arc<SessionRuntime>, text: String) {
     });
 }
 
-/// The same line Paseo puts on the client's timeline as an `assistant_message`
-/// (`agent-manager.ts:2360-2366`), published as our assistant text and
-/// journaled as a daemon-authored row, so replay derives it back.
+/// The same line the reference puts on the client's timeline as an
+/// `assistant_message`, published as our assistant text and journaled as a
+/// daemon-authored row, so replay derives it back.
 fn publish_outcome(runtime: &Arc<SessionRuntime>, text: String) {
     let _ = runtime.publish_daemon_event(SessionEvent::AgentMessage {
         message_id: None,

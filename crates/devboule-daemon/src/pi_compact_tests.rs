@@ -1,6 +1,6 @@
-//! The compact-run tests: Paseo's one-compaction-at-a-time guard — its
-//! refusal sentence, and the compaction frames that hold and release the
-//! slot — and the bound that keeps a silent child from pinning a thread.
+//! The compact-run tests: the one-compaction-at-a-time guard — its refusal
+//! sentence, and the compaction frames that hold and release the slot — and
+//! the bound that keeps a silent child from pinning a thread.
 
 use super::super::{PiControl, PiReader};
 use crate::session::event_pull::ConnHandle;
@@ -77,7 +77,7 @@ fn attached_runtime(session_id: &str) -> (Arc<SessionRuntime>, Arc<ConnHandle>) 
     (runtime, conn)
 }
 
-/// One pull: the system lines it carried (Paseo's compaction markers, as
+/// One pull: the system lines it carried (the compaction markers, as
 /// `pi_view` shows them) come back first, the assistant lines second.
 fn drain(conn: &ConnHandle) -> (Vec<String>, Vec<String>) {
     let (mut notices, mut messages) = (Vec::new(), Vec::new());
@@ -110,11 +110,11 @@ fn wait_for_notice(conn: &ConnHandle, text: &str) -> Vec<String> {
 
 #[test]
 fn a_second_compact_is_refused_while_the_first_is_outstanding() {
-    // Paseo refuses a second `/compact` with its own sentence while one runs,
-    // shown as the client's `[Error] …` line, and writes no second RPC — the
-    // refusal returns before the write. The child holds the first compaction
-    // open by never answering, so the window is deterministic and both runs
-    // settle synchronously: no timers, no node, no flake.
+    // The guard refuses a second `/compact` with its own sentence while one
+    // runs, shown as the client's `[Error] …` line, and writes no second RPC —
+    // the refusal returns before the write. The child holds the first
+    // compaction open by never answering, so the window is deterministic and
+    // both runs settle synchronously: no timers, no node, no flake.
     let (mut child, stdin) = absorbing_child();
     let control = PiControl::new(stdin, Arc::new(AtomicU64::new(1)));
     let handler = super::PiOutOfBandCommands::new(Arc::new(control));
@@ -126,7 +126,7 @@ fn a_second_compact_is_refused_while_the_first_is_outstanding() {
     assert_eq!(
         drain(&conn).1,
         ["[Error] A Pi compact command is already running"],
-        "Paseo's refusal sentence, shown as the assistant line it is — and, being \
+        "the refusal sentence, shown as the assistant line it is — and, being \
          refused, nothing else: the refused compact writes no rpc, and the held \
          first one answers nothing"
     );
@@ -208,8 +208,8 @@ fn a_late_end_from_a_timed_out_run_does_not_release_the_next_run() {
 
 #[test]
 fn a_reasonless_end_frees_the_slot_right_after_settle() {
-    // pi marks `reason` optional and Paseo releases on any end: a frame
-    // belongs to our run unless its reason is present and not manual. A
+    // pi marks `reason` optional, so any end releases: a frame belongs to
+    // our run unless its reason is present and not manual. A
     // reasonless end after a settled success frees the slot at once — not
     // after the end grace.
     let guard = super::CompactGuard::default();
@@ -490,11 +490,10 @@ fn a_compact_whose_worker_never_starts_still_answers_and_leaves_no_registration(
 
 #[test]
 fn a_failed_compact_closes_its_compacting_marker() {
-    // pi starts and then the round trip fails. Paseo emits a
-    // synthetic completed marker before its error line; ours is the same
-    // completion sentence `pi_view` derives from a real end, published
-    // before the failure line. Without it the transcript shows
-    // "Compacting..." with no completion.
+    // pi starts and then the round trip fails. A synthetic completed marker
+    // precedes the error line, and ours is that same completion sentence
+    // `pi_view` derives from a real end, published before the failure line.
+    // Without it the transcript shows "Compacting..." with no completion.
     let (mut child, stdin) = absorbing_child();
     let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
     let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
@@ -523,7 +522,8 @@ fn a_failed_compact_closes_its_compacting_marker() {
     let _ = child.kill();
     let _ = child.wait();
 }
-/// it — the window Paseo's guard lives in.
+/// The fake whose end arrives after its reply — the window the guard's end
+/// grace lives in.
 const FAKE_PI_ENDS_COMPACT_LATE: &str = r#"
 let buffered = "";
 process.stdin.on("data", (chunk) => {
@@ -550,7 +550,7 @@ process.stdin.on("data", (chunk) => {
 
 #[test]
 fn the_guard_holds_until_the_compaction_ends_and_releases_after_it() {
-    // Paseo's guard lifecycle end to end: an RPC that settled while its
+    // The guard lifecycle end to end: an RPC that settled while its
     // compaction is still running keeps the slot — the second compact is
     // refused — and pi's own `compaction_end` releases it, so a third
     // compact is accepted. One reader does both jobs exactly as production
@@ -604,7 +604,7 @@ fn the_guard_holds_until_the_compaction_ends_and_releases_after_it() {
         "a compaction in progress shows no assistant line yet: {messages:?}"
     );
 
-    // Refused while it runs — Paseo's sentence, and nothing else.
+    // Refused while it runs — the refusal sentence, and nothing else.
     handler.run_out_of_band("/compact two", &runtime);
     assert_eq!(
         drain(&conn).1,
@@ -646,8 +646,8 @@ fn the_guard_holds_until_the_compaction_ends_and_releases_after_it() {
 fn a_compact_whose_child_never_answers_ends_in_a_bounded_failure_and_frees_the_slot() {
     // The compact wait is bounded — a live child that stops answering must
     // not pin a worker thread and its registration for the
-    // session's life — and the round trip still ends in Paseo's failure
-    // line, so the timeout is visible to the user rather than silent. The
+    // session's life — and the round trip still ends in the failure line, so
+    // the timeout is visible to the user rather than silent. The
     // bound is short here only so the test does not wait the production one.
     let (mut child, stdin) = absorbing_child();
     let control = PiControl::new(stdin, Arc::new(AtomicU64::new(1)));
@@ -670,7 +670,7 @@ fn a_compact_whose_child_never_answers_ends_in_a_bounded_failure_and_frees_the_s
     }
 
     // The slot is free again, so the next compact is accepted rather than
-    // refused with Paseo's sentence.
+    // refused with the refusal sentence.
     handler.run_out_of_band("/compact again", &runtime);
     let (_, messages) = drain(&conn);
     assert!(

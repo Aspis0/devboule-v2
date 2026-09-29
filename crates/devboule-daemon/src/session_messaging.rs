@@ -821,15 +821,16 @@ impl super::SessionRegistry {
         // `steerer` was cloned as immutable above; the turn below needs it mutable.
         let mut steerer = steerer;
         let text = goal_text.as_deref().unwrap_or(text);
-        // Paseo calls `tryRunOutOfBand` before `startAgentRunInner` and
-        // `steerOrReplaceActiveRun` — translated from Paseo's agent-prompt
-        // (packages/server/src/server/agent/agent-prompt.ts); a picked Codex
-        // prompt or skill is not out-of-band — it stays a turn — and the
+        // Translated from Paseo's agent-prompt
+        // (packages/server/src/server/agent/agent-prompt.ts): `tryRunOutOfBand`
+        // runs before `startAgentRunInner` and `steerOrReplaceActiveRun`.
+        // A picked Codex prompt or skill is not out-of-band — it stays a turn — and the
         // static plan below expands it against the user's message, ahead of
         // this first-prompt composition, so a later paragraph that merely
         // names a command is never one. Keep this door ahead of composition
         // so out-of-band input remains parseable. Attachment prompts bypass
-        // the out-of-band door because Paseo only resolves string prompts.
+        // the out-of-band door because it only resolves string prompts, never
+        // a composed prompt with blocks.
         if attachments.is_empty() && attachment_references.is_empty() {
             if let Some(commands) = out_of_band.as_ref() {
                 if commands.handles_out_of_band(text) {

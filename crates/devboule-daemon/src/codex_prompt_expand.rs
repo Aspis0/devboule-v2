@@ -1,4 +1,4 @@
-//! The argument substitution Paseo applies to a custom prompt's body before
+//! The argument substitution applied to a custom prompt's body before
 //! Codex sees it, and the tokenizer that splits the arguments it substitutes.
 //!
 //! Translated from
@@ -11,8 +11,8 @@
 //! `prompts:<name>` command carries — Codex's own prompt expansion, which the
 //! app-server does not perform for a text input.
 
-/// The name of the placeholder that hides a literal `$$` from the substitution
-/// passes, exactly as Paseo names it (:779).
+/// The name of the placeholder that hides a literal `$$` from the
+/// substitution passes.
 const DOLLAR_PLACEHOLDER: &str = "__CODEX_DOLLAR_PLACEHOLDER__";
 
 /// `expandCodexCustomPrompt` :763-808: `$$` is a literal dollar, `$ARGUMENTS`
@@ -28,8 +28,9 @@ pub(crate) fn expand_prompt(template: &str, args: &str) -> String {
     let mut named: Vec<(String, String)> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
     for token in &tokens {
-        // Paseo's `idx > 0` (:784): a token that starts with `=` is positional,
-        // and the first `=` splits the name from the value.
+        // A token that starts with `=` is positional: `find` returns 0
+        // there, and the `index > 0` guard keeps it out of the named list.
+        // The first `=` splits the name from the value.
         match token.find('=') {
             Some(index) if index > 0 => {
                 let name = token[..index].to_string();
@@ -52,8 +53,7 @@ pub(crate) fn expand_prompt(template: &str, args: &str) -> String {
         let value = positional.get(position - 1).cloned().unwrap_or_default();
         out = out.replace(&format!("${position}"), &value);
     }
-    // Longest name first (Paseo's `sort((a, b) => b.length - a.length)` :796),
-    // so `$branch_name` survives a `$branch` token.
+    // Longest name first, so `$branch_name` survives a `$branch` token.
     named.sort_by(
         |(left, _), (right, _)| match (array_index(left), array_index(right)) {
             (Some(left), Some(right)) => left.cmp(&right),
@@ -75,8 +75,8 @@ fn array_index(name: &str) -> Option<u32> {
     (index != u32::MAX && index.to_string() == name).then_some(index)
 }
 
-/// Paseo's named-token regex (:800-802): a dollar literal, the escaped name,
-/// then a word boundary. Every `$<name>` whose following character is on the
+/// The named-token shape: a dollar literal, the escaped name, then a word
+/// boundary. Every `$<name>` whose following character is on the
 /// other side of that boundary from the name's last character is replaced.
 /// JavaScript's boundary test is ASCII-only without the `u` flag, so "word
 /// character" here is `[A-Za-z0-9_]` — which is what the name itself is built
@@ -85,8 +85,8 @@ fn array_index(name: &str) -> Option<u32> {
 fn replace_dollar_word(text: &str, name: &str, value: &str) -> String {
     let needle = format!("${name}");
     // A name whose last character is not a word character has no boundary to
-    // its right unless the next character IS one — Paseo's regex says so, and
-    // a name like `dir.` reaches here from a `dir.=value` token.
+    // its right unless the next character IS one — a name like `dir.`
+    // reaches here from a `dir.=value` token.
     let name_ends_on_word = name.chars().next_back().is_some_and(is_word_character);
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -212,9 +212,8 @@ fn tokenize(args: &str) -> Vec<String> {
 mod tests {
     use super::expand_prompt;
 
-    /// Every expectation here came from Paseo's own JavaScript run over the
-    /// same inputs (`expandCodexCustomPrompt` :763-808, `tokenizeCommandArgs`
-    /// :576-616). Where the port is surprising, the surprise is Paseo's, and it
+    /// Every expectation here was verified against the reference
+    /// implementation's behavior. Where the port is surprising, the surprise
     /// is pinned rather than smoothed over.
     #[test]
     fn the_whole_substitution_table_in_one_case() {
@@ -281,7 +280,8 @@ mod tests {
 
     #[test]
     fn a_leading_equals_sign_is_an_argument_not_a_name() {
-        // Paseo's `idx > 0`: a token that opens with `=` has no name to speak of.
+        // A token that opens with `=` puts the `=` at index 0, so the
+        // `index > 0` guard leaves it positional.
         assert_eq!(expand_prompt("$1", "=x"), "=x");
         assert_eq!(
             expand_prompt("$name!", "name="),
@@ -294,13 +294,13 @@ mod tests {
     fn a_name_written_with_its_dollar_is_no_shortcut() {
         // The key is whatever sits before the first `=`, dollar included, so a
         // `$name=value` token looks for `$$name` in the body and finds nothing.
-        // Paseo's regex does the same; this case keeps the port from quietly
-        // normalising the difference away.
+        // The source's regex does the same, so this case keeps the port from
+        // quietly normalising the difference away.
         assert_eq!(expand_prompt("$name", "$name=main"), "$name");
     }
 
     #[test]
-    fn named_values_use_paseo_replacement_string_rules_and_stable_order() {
+    fn named_values_follow_js_replacement_patterns_in_longest_name_first_order() {
         assert_eq!(expand_prompt("A $name B", "name=$$"), "A $ B");
         assert_eq!(expand_prompt("A $name B", "name=$&"), "A $name B");
         assert_eq!(expand_prompt("$b/$a", "b=$a a=1"), "1/1");

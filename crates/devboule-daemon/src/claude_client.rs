@@ -727,12 +727,12 @@ fn spawn_claude_child(
     // satisfy it: a CLI that consumes the frame and never replies, or answers
     // with an error after the spawn has returned, leaves a running session whose
     // transcript carries a session error instead of the creation the human
-    // approved. Paseo can afford the fire-and-forget shape because it also puts
-    // `fastMode` in the child's own launch settings
-    // (`buildSettingsOptions` → `settings: { fastMode }`), so the value is part
-    // of how the process starts and its SDK awaits the control call before the
-    // first turn. This family sends no launch setting it has not measured, so
-    // the awaited frame is what makes the promise true.
+    // approved. A fire-and-forget shape needs the value to ride in the
+    // child's own launch settings (`buildSettingsOptions` →
+    // `settings: { fastMode }`), part of how the process starts, with an SDK
+    // that awaits the control call before the first turn. This family sends
+    // no launch setting it has not measured, so the awaited frame is what
+    // makes the promise true.
     let stderr_source = match ClaudeStderr::start(stderr) {
         Ok(source) => source,
         Err(error) => {
@@ -1154,10 +1154,9 @@ fn frame_user_message(
     Ok(bytes)
 }
 
-/// One user message with the Paseo-measured image shape: a content entry of
+/// One user message with the measured image shape: a content entry of
 /// `{"type": "image", ...}` for every carried raster, after the single text
-/// entry. Measured on Paseo's own Claude provider (`toSdkUserMessage`): a
-/// nested `source` with key `media_type`, not the ACP flat
+/// entry. The nested `source` carries the key `media_type`, not the ACP flat
 /// `{type, mimeType, data}`.
 ///
 /// With no blocks this is [`frame_user_message`] byte for byte — the two
@@ -1200,10 +1199,9 @@ fn claude_image_block(mime_type: &str, data_base64: &str) -> serde_json::Value {
     })
 }
 
-/// Whether Claude accepts this raster inline. Measured as Paseo's
-/// `isImageMimeType`: jpeg/png/gif/webp go in the block, anything else
-/// keeps its `[Image available at: ...]` path line — never the silent drop
-/// Paseo's Claude provider performs.
+/// Whether Claude accepts this raster inline. The measured accept set is
+/// jpeg/png/gif/webp: they go in the block, anything else keeps its
+/// `[Image available at: ...]` path line — never a silent drop.
 ///
 /// At the call site this is ANDed with
 /// [`crate::raster_metadata::RasterMime::from_mime_type`], which knows only
@@ -1229,7 +1227,7 @@ fn claude_accepts_inline(mime_type: &str) -> bool {
 /// Prompt plan for one Claude send: the text plus any image blocks land as
 /// one `content[]` array. `fallback_text` is the user's text with the path
 /// lines for the attachments that stay out of the blocks: SVG, plus any
-/// raster Paseo's `isImageMimeType` would refuse. The bytes each block
+/// raster outside the inline accept set. The bytes each block
 /// carries are the stripped bytes read back from the file `materialize`
 /// wrote, never the base64 that arrived on the wire.
 ///
@@ -1290,7 +1288,7 @@ fn plan_claude_prompt(
     let mut fallback_paths = Vec::new();
     for attachment in attachments {
         let path = session.materialize(attachment)?;
-        // Inline needs both halves: Paseo's measured accept set AND a daemon
+        // Inline needs both halves: the measured accept set AND a daemon
         // strip walk for the container. gif/webp have the first but not the
         // second — no walk exists, so the bytes on disk are unstripped and
         // the honest answer is the path line, never an inline block.
@@ -1583,9 +1581,9 @@ fn control_request_frame_bytes(request_id: &str, request: Value) -> Option<Vec<u
 
 /// The SDK's initialize handshake as one control frame: the CLI answers with
 /// its commands — name, description, argument hint, the `supportedCommands()`
-/// Paseo fills its menu from — so the "/" menu fills at spawn instead of on
-/// the first message. Best-effort: a write failure or a CLI that never
-/// answers only costs the early list; the init frame stays the fallback, as
+/// list — so the "/" menu fills at spawn instead of on the first message.
+/// Best-effort: a write failure or a CLI that never answers only costs the
+/// early list; the init frame stays the fallback, as
 /// before. The answer is routed by request id in `dispatch_control_response`
 /// and derived by the view, so replay re-derives the same list from the row.
 fn begin_initialize(stdin: &Arc<Mutex<Option<ChildStdin>>>, next_id: &AtomicU64) -> Option<String> {
@@ -1668,11 +1666,10 @@ fn send_initial_effort(
 }
 
 /// The fast-mode flag the profile ticked, delivered on the one control frame
-/// this client already writes for the thinking option. Paseo applies Claude's
-/// `fast_mode` through its SDK's `applyFlagSettings({ fastMode })`; this
-/// family speaks the frame that call turns into, so the setting key and the
-/// frame shape are copied and the road is the one already proven for
-/// `effortLevel`.
+/// this client already writes for the thinking option. Claude's `fast_mode`
+/// is set through its SDK's `applyFlagSettings({ fastMode })`; this family
+/// speaks the frame that call turns into, so the setting key and the frame
+/// shape are copied and the road is the one already proven for `effortLevel`.
 ///
 /// Like the effort it shares the registration with: a CLI that answers this
 /// with an error fails the session rather than running unflagged, because a
@@ -2682,7 +2679,7 @@ impl ClaudeReader {
         // Decided here, from the same parse that built the card: the reply
         // shapes itself from this fact, never from the input's shape again.
         let is_question = !asked.is_empty();
-        // Paseo never shows `decision_reason`: for every tool but
+        // `decision_reason` is never shown: for every tool but
         // AskUserQuestion the permission summary is empty. `decision_reason`
         // is the permission engine's internal vocabulary, so it is not
         // surfaced at all — the daemon has no debug-log facility. The

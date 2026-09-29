@@ -96,8 +96,8 @@ fn probe_answer(
 /// - **It never blocks the ask.** The vocabulary reply is a synchronous
 ///   round-trip on the connection's own thread, so the first read claims the
 ///   slot, answers `probing`, and starts the process on a worker. A form that
-///   waited on an `npx` cold start would be a frozen Settings panel — Paseo can
-///   await its probe only because its server is asynchronous.
+///   waited on an `npx` cold start would be a frozen Settings panel — this
+///   server is synchronous, so the read cannot await the probe.
 /// - **One read per provider.** `session/new` carries no model, so the probe
 ///   cannot establish a model-specific declaration.
 /// - **A failed read expires.** Brief failures are cached to avoid starting a

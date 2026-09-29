@@ -163,23 +163,19 @@ pub(crate) struct CodexState {
     turn_start_order: Mutex<VecDeque<String>>,
     sent_turn_modes: Mutex<HashMap<String, bool>>,
     /// The service tier every `turn/start` carries, set once from the profile's
-    /// `fastMode` delivery. Codex's fast mode is Paseo's `serviceTier:
-    /// "fast"` parameter on the turn frame
-    /// (`packages/server/src/server/agent/providers/codex/app-server-transport.ts`),
-    /// and the thread keeps no memory of
-    /// it across turns, so the value lives beside the model and effort the same
-    /// parameters are read from and is written on every prompt.
+    /// `fastMode` delivery. Codex's fast mode is the `serviceTier: "fast"`
+    /// parameter on the turn frame, and the thread keeps no memory of it
+    /// across turns, so the value lives
+    /// beside the model and effort the same parameters are read from and is
+    /// written on every prompt.
     ///
     /// `None` sends no `serviceTier` at all: the provider's own default. That
     /// is why an unset flag and a `false` flag are the same state here — the
     /// turn parameter has no "off" spelling to send.
     service_tier: Mutex<Option<String>>,
-    /// The mode a `set_mode` applied after `thread/start`, if any. Paseo
-    /// (`hasWorkflowModeOverride`,
-    /// `packages/server/src/server/agent/providers/codex-app-server-agent.ts`)
-    /// keeps this set for every later turn; the
-    /// thread already carries the preset, so only an explicit change re-sends
-    /// the policy on `turn/start`.
+    /// The mode a `set_mode` applied after `thread/start`, if any. It stays
+    /// set for every later turn; the thread already carries the preset, so
+    /// only an explicit change re-sends the policy on `turn/start`.
     mode_override: Mutex<Option<String>>,
     catalog: Mutex<CodexCatalog>,
     /// The session's configured model and effort — the profile's choice, or a
@@ -262,9 +258,8 @@ impl CodexState {
             .iter()
             .filter_map(|mode| {
                 let name = mode.get("name").and_then(Value::as_str)?;
-                // Paseo keeps an entry with no `mode` key and sends it as
-                // `code` (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`);
-                // dropping it would lose a usable mode.
+                // An entry with no `mode` key counts as `code`; dropping it
+                // would lose a usable mode.
                 let id = mode
                     .get("mode")
                     .and_then(Value::as_str)
@@ -339,11 +334,10 @@ impl CodexState {
 
     /// The `collaborationMode` one `turn/start` carries, or `None` when no model
     /// is known: the app-server refuses a mode whose `settings` lacks `model`.
-    /// The settings copy Paseo's `resolveCollaborationMode`
-    /// (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`) —
-    /// the entry's model and effort, overridden by the session's configured pair,
-    /// the thread response's model last — minus `developer_instructions`, which
-    /// this daemon sends on no Codex wire.
+    /// The settings are the collaboration mode's own: the entry's model and
+    /// effort, overridden by the session's configured pair, the thread
+    /// response's model last — minus `developer_instructions`, which this
+    /// daemon sends on no Codex wire.
     pub(crate) fn collaboration_mode(&self) -> Option<Value> {
         let enabled = self
             .plan_mode_override
@@ -1060,8 +1054,8 @@ impl CodexView {
                     self.latest_plan = plan_steps_text(params.get("plan"));
                     if !self.plan_mode {
                         // Plan mode off: the steps are the session's
-                        // checklist — Paseo's `mapCodexPlanUpdateToTodo`,
-                        // status kept. The capture above stays: a plan item
+                        // checklist, status kept. The capture above stays: a
+                        // plan item
                         // frame can still replace the text before the turn
                         // completes.
                         return agent_tasks_from_plan(params.get("plan"))
@@ -1150,9 +1144,7 @@ impl CodexView {
     /// total, announce the live context reading. Codex is the one provider
     /// that reports during the turn, so `live` is `true`; `model_id` stays
     /// `None` because the frame names no model — its window rides the same
-    /// frame (`modelContextWindow`), which is exactly what Paseo uses
-    /// (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`,
-    /// `last.totalTokens` as used).
+    /// frame (`modelContextWindow`, `last.totalTokens` as used).
     fn note_usage(&mut self, value: Option<&Value>) -> Vec<SessionEvent> {
         let Some(value) = value else {
             return Vec::new();
@@ -1202,10 +1194,10 @@ fn plan_steps_text(value: Option<&Value>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Codex `turn/plan/updated` steps as checklist items: Paseo's
-/// `mapCodexPlanUpdateToTodo` — empty steps dropped, the id is the step's
-/// index in the plan array, `inProgress`/`in_progress` keep their status and
-/// anything else reads as pending.
+/// Codex `turn/plan/updated` steps as checklist items: empty steps dropped,
+/// the id is the step's index in the plan array,
+/// `inProgress`/`in_progress` keep their status and anything else reads as
+/// pending.
 fn agent_tasks_from_plan(plan: Option<&Value>) -> Option<SessionEvent> {
     let steps = plan?.as_array()?;
     let items = steps
@@ -1968,8 +1960,7 @@ mod tests {
         // Capture line 56 — the first `thread/tokenUsage/updated` where the
         // two blocks disagree: `total.totalTokens` 42 231 is the session's
         // running spend, `last.totalTokens` 21 172 the context after this
-        // turn, which is what Paseo reads
-        // (`packages/server/src/server/agent/providers/codex-app-server-agent.ts`).
+        // turn.
         // On line 25 the two are equal, so the whole-event test above passes
         // even for a mapper reading `total`; this one does not.
         let frames = fixture_frames(include_str!(

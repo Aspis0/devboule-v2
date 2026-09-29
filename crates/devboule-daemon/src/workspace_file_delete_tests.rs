@@ -176,9 +176,8 @@ fn the_repository_metadata_folder_is_never_deleted_in_any_spelling() {
 }
 
 /// The link rule's first half, pinned: a link named **as the act's
-/// target** is refused outright (the divergence from Paseo's delete
-/// declared in `DECISIONS-write.md` §6) — not deleted as the link, not
-/// followed to its target. Mutant `m:walk` — let the walk pass a link —
+/// target** is refused outright — not deleted as the link, not followed to
+/// its target. Mutant `m:walk` — let the walk pass a link —
 /// dies here.
 #[test]
 #[cfg(windows)]

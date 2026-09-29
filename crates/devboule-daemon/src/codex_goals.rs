@@ -19,10 +19,8 @@ use std::time::{Duration, Instant};
 /// launch, so the flag must not be passed at all.
 const CODEX_GOALS_MIN_VERSION: [u64; 3] = [0, 128, 0];
 
-/// How long one `--version` probe may take. Paseo's is 5 s
-/// (`packages/server/src/server/agent/providers/diagnostic-utils.ts`), and a
-/// probe that outlives it reads as a
-/// binary without the feature.
+/// How long one `--version` probe may take: 5 s, and a probe that outlives
+/// it reads as a binary without the feature.
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Memoized gate answers, keyed by the probed argv: the resolved program
@@ -59,16 +57,15 @@ impl Goals {
     }
 
     /// Whether this Codex answers the goal requests. A no on any failure — a
-    /// missing binary, an unparseable version, a probe that never answered —
-    /// which is Paseo's own answer when the probe throws.
+    /// missing binary, an unparseable version, a probe that never answered:
+    /// the gate answers `no` for this create, and only successes memoize, so
+    /// a failed probe is re-run on the next create.
     ///
     /// `launch_args` is the argv the session will spawn with, `app-server`
-    /// included: where our launch differs from Paseo's, the probe must measure
-    /// Codex, so it runs that same argv with `--version` in place of
-    /// `app-server`. Probing the program alone measures `node` on npm-shim
-    /// installs (`node.exe <script> app-server`), and node's version always
-    /// passes the gate — Paseo never meets that shape because its command is
-    /// always the `codex` binary (`resolveCodexLaunchPrefix`).
+    /// included: the probe must measure Codex, so it runs that same argv
+    /// with `--version` in place of `app-server`. Probing the program alone
+    /// measures `node` on npm-shim installs (`node.exe <script> app-server`),
+    /// and node's version always passes the gate.
     pub(crate) fn probe(program: &str, launch_args: &[String]) -> Self {
         let (program, probe_argv) = probe_invocation(program, launch_args);
         let key = (program.clone(), probe_argv.clone());
@@ -86,9 +83,8 @@ impl Goals {
         // re-run on the next create instead of closing the gate for the
         // daemon's life, at the price of a fresh bounded child (up to
         // `VERSION_PROBE_TIMEOUT`) on the creating thread for every create
-        // until one passes. Paseo pays a probe per agent instance;
-        // the success memo keeps that cost off every create once a binary
-        // answers.
+        // until one passes. The success memo keeps that cost off every
+        // create once a binary answers.
         if result.enabled() {
             if let Ok(mut cache) = PROBED_VERSIONS.get_or_init(Default::default).lock() {
                 cache.insert(key, result);
@@ -128,8 +124,7 @@ fn resolved_program_path(program: &str) -> PathBuf {
 
 /// Run the probe and answer its stdout, or the empty string when the program
 /// is missing, fails, or answers later than [`VERSION_PROBE_TIMEOUT`].
-/// Paseo's `resolveBinaryVersion` answers `unknown`/`error: …` for the same
-/// cases; either way no version parses and the gate closes.
+/// Either way no version parses and the gate closes.
 ///
 /// `probe_argv` is already the complete argv — [`version_probe_argv`] built
 /// it — so nothing is appended here. A second `--version` would read as a
@@ -200,21 +195,20 @@ fn version_probe_argv(launch_args: &[String]) -> Vec<String> {
 
 /// `parseCodexVersion` + `codexVersionAtLeast`: the first
 /// `major.minor.patch` run in the output, compared left to right. A version
-/// that cannot be read is not at least anything — Paseo returns false.
+/// that cannot be read is not at least anything, so the answer is false.
 fn version_allows_goals(output: &str) -> bool {
     let Some(version) = parse_version(output) else {
         return false;
     };
-    // Slice order is lexicographic, which is exactly Paseo's left-to-right
-    // `codexVersionAtLeast` loop — including the case its final `return true`
-    // covers: a version equal to the minimum has goals.
+    // Slice order is lexicographic, so the comparison runs left to right
+    // exactly: a version equal to the minimum has goals.
     version.as_slice() >= CODEX_GOALS_MIN_VERSION.as_slice()
 }
 
 /// The first three dot-separated number runs in the output, as `0.155.1` from
 /// `codex-cli 0.155.1`. Written as a scan because the workspace has no regex
-/// dependency; the semantics are Paseo's `(\d+)\.(\d+)\.(\d+)` match, which
-/// takes the leftmost run of digits that is followed by two more.
+/// dependency; the semantics of `(\d+)\.(\d+)\.(\d+)` are kept: the leftmost
+/// run of digits that is followed by two more.
 fn parse_version(output: &str) -> Option<[u64; 3]> {
     let bytes = output.as_bytes();
     for (start, byte) in bytes.iter().enumerate() {
@@ -227,8 +221,8 @@ fn parse_version(output: &str) -> Option<[u64; 3]> {
     None
 }
 
-/// Read `major.minor.patch` starting at `start`, and only there — Paseo's regex
-/// is anchored at the match it found, so `0.128` (no third run) is no version.
+/// Read `major.minor.patch` starting at `start`, and only there — the match
+/// is anchored at that spot, so `0.128` (no third run) is no version.
 fn read_version_at(bytes: &[u8], start: usize) -> Option<[u64; 3]> {
     let mut parts = [0u64; 3];
     let mut rest = bytes.get(start..)?;
@@ -276,9 +270,8 @@ extra"
 
     #[test]
     fn a_version_that_cannot_be_read_has_no_goals() {
-        // Paseo's `parseCodexVersion` answers null and `codexVersionAtLeast`
-        // answers false; `resolveBinaryVersion` can hand back `unknown` or an
-        // `error: …` string, and neither may turn the flag on.
+        // A failed version read can hand back `unknown` or an `error: …`
+        // string, and neither may turn the flag on.
         assert!(!version_allows_goals("unknown"));
         assert!(!version_allows_goals("error: spawn failed"));
         assert!(!version_allows_goals(""));

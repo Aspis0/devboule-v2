@@ -119,7 +119,7 @@ impl Repo {
 
     /// A chain of `count` commits on `branch`, each setting `file` and
     /// committing with `subject(index)` — built in one `git fast-import`
-    /// process, the way Paseo's own commit-list tests build their histories.
+    /// process.
     fn import_linear_history(
         &self,
         branch: &str,
@@ -330,12 +330,12 @@ fn local_base_commits_stay_out_of_the_workspace_history() {
         ],
         "the local base commit is base history the workspace list never carried"
     );
-    // Paseo's combined limit: every workspace commit, then at most ten of
+    // The combined limit: every workspace commit, then at most ten of
     // the base.
     assert_eq!(log.commits.len(), 3);
 }
 
-/// Paseo's own combined shape: twenty-four workspace commits, then the ten
+/// The combined shape: twenty-four workspace commits, then the ten
 /// the cap allows of a fourteen-commit base.
 #[test]
 fn every_workspace_commit_precedes_the_capped_base_list() {
@@ -734,9 +734,7 @@ fn a_merge_commit_is_listed_with_its_subject() {
 }
 
 /// The `origin > local` arm of the base resolution: when the remote base
-/// is ahead of the local one, the comparison runs against `origin/<name>`
-/// — Paseo's "recognizes base history on a remote before the feature
-/// branch is pushed".
+/// is ahead of the local one, the comparison runs against `origin/<name>`.
 #[test]
 fn a_remote_base_ahead_of_the_local_one_is_the_comparison() {
     let repo = Repo::new("origin-ahead");

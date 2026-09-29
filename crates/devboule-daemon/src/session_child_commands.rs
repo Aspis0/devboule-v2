@@ -8,11 +8,8 @@
 use super::*;
 
 /// How long cancel waits for the turn it caught to be no longer active:
-/// two seconds is Paseo's own `INTERRUPT_SESSION_TIMEOUT_MS`, the same
-/// question over the same provider round-trip. The bound is where parity
-/// ends: Paseo force-cancels an acknowledged run that overruns it (and
-/// throws when nothing acknowledged); this road never force-finishes a turn
-/// it does not own, so an overrun answers `TurnStillRunning` with the turn
+/// two seconds. Past the bound this road never force-finishes a turn it
+/// does not own, so an overrun answers `TurnStillRunning` with the turn
 /// still running — the caller decides.
 const CANCEL_TURN_END_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -282,8 +279,7 @@ impl super::SessionRegistry {
 
     /// The stored half of the status snapshot: one row, by id, filtered by
     /// owner and creator in SQL — never a scan of anyone's history, and never
-    /// a display name two rows could share (Paseo addresses its stored rows
-    /// by id too).
+    /// a display name two rows could share.
     fn stored_child_status(
         &self,
         creator_session_id: &str,

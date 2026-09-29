@@ -231,7 +231,7 @@ fn a_command_answer_is_told_in_the_commands_own_words_and_only_once() {
     assert_eq!(
         notices(&conn),
         vec!["Failed to update goal: no active goal".to_string()],
-        "Paseo's own sentence for a failed goal (:5081-5085), told once — the \
+        "the goal command's own sentence for a failed goal, told once — the \
          generic error notice does not also go out"
     );
 }
@@ -246,7 +246,7 @@ fn an_accepted_compaction_answer_publishes_nothing() {
     reader.dispatch_value(serde_json::json!({ "id": "d-2", "result": {} }), &runtime);
     assert!(
         notices(&conn).is_empty(),
-        "Paseo's compact success emits nothing; `thread/compacted` is the report"
+        "compact success emits nothing; `thread/compacted` is the report"
     );
 }
 
@@ -263,7 +263,7 @@ fn a_null_error_is_a_successful_compact_response() {
     );
     assert!(
         notices(&conn).is_empty(),
-        "JSON null is falsy, like Paseo raw.error"
+        "JSON null is falsy and reads as no error"
     );
 }
 
@@ -307,9 +307,8 @@ fn an_error_without_a_message_never_becomes_a_success_line() {
 #[test]
 fn one_compaction_is_one_notice_whichever_channel_arrives_first() {
     // Codex can report one finished compaction twice — as a completed
-    // `contextCompaction` item and as `thread/compacted`. Paseo pairs the two
-    // with counters (:5612-5621, :6211-6216); either order, the session hears
-    // it once.
+    // `contextCompaction` item and as `thread/compacted`. The two are paired
+    // with counters; either order, the session hears it once.
     for (first, second) in [
         (
             compaction_item("item/completed"),
@@ -335,10 +334,9 @@ fn one_compaction_is_one_notice_whichever_channel_arrives_first() {
 #[test]
 fn a_finished_turn_forgets_an_unpaired_compaction_count() {
     // A compaction that reported on one channel only leaves the pairing
-    // counter standing. Paseo clears it at the turn boundary
-    // (`resetTurnTrackingState` :6046-6053), and so must this reader: without
-    // that, the NEXT turn's compaction would be swallowed as the pair of a
-    // compaction that already finished.
+    // counter standing. It must be cleared at the turn boundary, and so it
+    // is here: without that, the NEXT turn's compaction would be swallowed
+    // as the pair of a compaction that already finished.
     let fixture = Fixture::new("turn-boundary");
     let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
     reader.dispatch_value(compaction_item("item/completed"), &runtime);
@@ -366,7 +364,7 @@ fn a_compaction_under_way_says_so() {
     assert_eq!(
         notices(&conn),
         vec!["Compacting the context.".to_string()],
-        "Paseo's loading row (:6583-6588) is this notice"
+        "the loading row is this notice"
     );
 }
 
@@ -403,8 +401,8 @@ fn a_child_turn_end_does_not_close_root_compaction_state() {
 
 #[test]
 fn a_compaction_from_another_thread_is_silent_on_both_channels() {
-    // Codex runs sub-agent threads over the same stream; Paseo drops a
-    // `thread/compacted` naming a thread other than the session's (:6205-6207).
+    // Codex runs sub-agent threads over the same stream; a `thread/compacted`
+    // naming a thread other than the session's is dropped.
     let fixture = Fixture::new("other-thread");
     let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
     reader.dispatch_value(thread_compacted("other-thread"), &runtime);
@@ -419,10 +417,10 @@ fn a_compaction_from_another_thread_is_silent_on_both_channels() {
 }
 
 #[test]
-fn a_late_completion_after_turn_end_reports_again_like_paseo() {
-    // Paseo keeps no stale set: its turn reset clears the pending ids
-    // (`resetTurnTrackingState` :6037-6059), so a completion that lands after
-    // the boundary opens a new count instead of being swallowed. The late
+fn a_late_completion_after_turn_end_reports_again() {
+    // No stale set is kept: the turn reset clears the pending ids, so a
+    // completion that lands after the boundary opens a new count instead of
+    // being swallowed. The late
     // frame below is the third report, not a duplicate of the second.
     let fixture = Fixture::new("unfinished-compaction");
     let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
@@ -458,9 +456,9 @@ fn a_late_completion_after_turn_end_reports_again_like_paseo() {
 #[test]
 fn a_notification_before_turn_end_reports_one_compaction() {
     // The double-emit P2: `thread/compacted` used to leave the pending item
-    // in place, so the turn end reported the same compaction again. Paseo
-    // consumes the pending item in its notification handler
-    // (`consumePendingRootCompaction` :6211), and so does this one.
+    // in place, so the turn end reported the same compaction again. The
+    // pending item is consumed here in the notification handler, so the turn
+    // end cannot see it again.
     let fixture = Fixture::new("notify-then-end");
     let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
     reader.dispatch_value(compaction_item("item/started"), &runtime);
@@ -479,10 +477,10 @@ fn a_notification_before_turn_end_reports_one_compaction() {
 
 #[test]
 fn a_compacted_notification_without_a_thread_id_is_dropped() {
-    // D1, Paseo-exact: `ContextCompactedNotificationSchema` requires
-    // `threadId`, so a frame without one is an invalid payload Paseo warns
-    // and drops — never a root event. An empty string compares strictly
-    // against the current thread (:6205-6207), so it drops too.
+    // D1: `ContextCompactedNotificationSchema` requires `threadId`, so a
+    // frame without one is an invalid payload and is dropped — never a root
+    // event. An empty string compares strictly against the current thread,
+    // so it drops too.
     for params in [serde_json::json!({}), serde_json::json!({"threadId": ""})] {
         let fixture = Fixture::new("compacted-no-thread");
         let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
@@ -499,9 +497,8 @@ fn a_compacted_notification_without_a_thread_id_is_dropped() {
 
 #[test]
 fn an_empty_thread_id_is_the_root_thread_on_the_optional_channels() {
-    // D1, Paseo-exact: `getSubAgentCallIdForThread` treats a missing or empty
-    // id as the root thread (:5477), for the channels whose schema leaves it
-    // optional (`item/*`, `turn/completed`).
+    // D1: a missing or empty id is treated as the root thread, for the
+    // channels whose schema leaves it optional (`item/*`, `turn/completed`).
     let fixture = Fixture::new("empty-thread-id");
     let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
     reader.dispatch_value(
@@ -525,9 +522,9 @@ fn an_empty_thread_id_is_the_root_thread_on_the_optional_channels() {
 
 #[test]
 fn a_new_turn_starts_with_clear_pairing_counts() {
-    // Paseo resets its turn tracking on the root `turn/started`
-    // (`resetTurnTrackingState` :5973-5991): a completion that landed between
-    // turns must not swallow the next turn's notification through a stale
+    // Turn tracking resets on the root `turn/started`: a completion that
+    // landed between turns must not swallow the next turn's notification
+    // through a stale
     // count — while a child thread's turn leaves the root counts alone.
     let fixture = Fixture::new("turn-start-reset");
     let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));

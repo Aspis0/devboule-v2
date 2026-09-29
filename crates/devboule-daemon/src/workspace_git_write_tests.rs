@@ -254,7 +254,7 @@ fn a_glob_spelling_stages_only_itself_and_never_its_neighbour() {
 /// Not a repository → the probe's own sentence, before any `add`. The
 /// mutation that kills it: classify `NotRepository` as `Ready`, and this
 /// folder answers git's "not a git repository" exit instead — a sentence
-/// no longer ours, and `is_git` reasoning upstream would believe it.
+/// that is not ours, and `is_git`-shaped reasoning would believe it.
 #[test]
 fn a_folder_without_a_repository_is_refused_with_the_probes_sentence() {
     let folder = unique_directory("not-a-repo");
@@ -446,10 +446,10 @@ fn discard_returns_the_tracked_to_head_deletes_the_untracked_and_leaves_the_unse
     );
 }
 
-/// Paseo's second truth (`checkout-git.test.ts:3865`): a **staged new
-/// file** in a repository with no commit yet is deleted by a discard —
-/// unstage (reset succeeds on this git even unborn, measured) turns it
-/// untracked, and `clean -fd` removes it. Mutant `u:1` again: without
+/// The second measured truth: a **staged new file** in a repository
+/// with no commit yet is deleted by a discard — unstage (reset succeeds
+/// on this git even unborn, measured) turns it untracked, and `clean -fd`
+/// removes it. Mutant `u:1` again: without
 /// the reset the file reads `A ` (tracked), `checkout` cannot restore a
 /// path no `HEAD` knows, and the file survives.
 #[test]
@@ -490,8 +490,7 @@ fn discard_refuses_git_metadata_before_touching_the_index() {
 }
 
 /// The commit is **staged only**: what the owner staged enters history,
-/// what they did not stays exactly as it was — the divergence from
-/// Paseo's `commitChanges` (`addAll` default `true`) that the whole
+/// what they did not stays exactly as it was — that is what the whole
 /// explicit stage exists for. Mutant `c:1` — reintroduce `add -A`
 /// before the commit: `b.txt` lands in the commit and this assertion
 /// fails.

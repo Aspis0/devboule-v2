@@ -1461,9 +1461,9 @@ pub(crate) fn catalog_registry() -> Arc<ProviderRegistry> {
 /// this function's only work is one `Arc` store under the write lock, so
 /// nothing inside the swap can fail — a build that errors, or never
 /// happens, swaps nothing, and every `catalog_registry()` reader sees
-/// either the previous snapshot or `next`, never a mixture (Paseo's
-/// prepare → apply → commit shape: the registry is never left
-/// half-swapped). Production swaps through [`apply_user_rows`].
+/// either the previous snapshot or `next`, never a mixture (prepare →
+/// apply → commit: the registry is never left half-swapped).
+/// Production swaps through [`apply_user_rows`].
 pub(crate) fn swap_catalog_registry(next: ProviderRegistry) -> Arc<ProviderRegistry> {
     let next = Arc::new(next);
     let mut current = catalog_cell().write().unwrap();

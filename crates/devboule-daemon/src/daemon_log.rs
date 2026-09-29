@@ -11,7 +11,8 @@
 //! impossible, and the pipeline (a reader that never touches the file, a
 //! writer that owns it) is what keeps an `eprintln!` from ever blocking on
 //! the log's account. The best-effort shape — a failed write is dropped and
-//! the reader keeps going — is translated from Paseo's #5445 daemon-log fix.
+//! the reader keeps going — is the point of the pipe: a failed append can
+//! never stall a writer.
 //!
 //! Growth: two files, `daemon.log` and `daemon.log.1`, and that is the whole
 //! retention — nothing ever deletes them. Once the single-instance lock says

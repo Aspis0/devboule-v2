@@ -1102,7 +1102,7 @@ fn absent_or_malformed_input_is_not_a_refusal() {
 // The routing decision lives in `plan_pi_prompt`, tested here against
 // the attachment store directly, without spawning a child — the same
 // arrangement the ACP sibling seam's tests use. The wire shape of one
-// entry is pinned against Paseo's measured `convertPromptInput` output
+// entry is pinned against the measured `convertPromptInput` output
 // (`{"type":"image","data":...,"mimeType":"image/png"}`), and the
 // frame omission against `...(images?.length ? { images } : {})`.
 
@@ -1136,8 +1136,8 @@ fn capable_catalog() -> PiCatalog {
 
 #[test]
 fn pi_delivery_follows_the_current_model_tri_state() {
-    // Paseo's `piModelSupportsImageInput` through the tri-state this
-    // daemon already keeps: `Supported` frames bytes, `Unsupported` AND
+    // The image-capability rule, read through the tri-state this daemon
+    // already keeps: `Supported` frames bytes, `Unsupported` AND
     // `Absent` keep the path line.
     let catalog = capable_catalog();
     assert_eq!(
@@ -1658,7 +1658,7 @@ fn a_pi_that_takes_the_steer_is_steered_with_the_frame_the_round_trip_wrote() {
 }
 
 #[test]
-fn steering_a_slash_input_is_refused_as_paseo_refuses_it() {
+fn steering_a_slash_input_is_refused() {
     // Pi rejects steer RPCs that are extension commands, so a `/…` input is
     // never steered — it answers `Ok(false)`, the refusal that sends the
     // caller down its pre-existing interrupt-and-replace, where the text
@@ -1687,7 +1687,7 @@ fn steering_a_slash_input_is_refused_as_paseo_refuses_it() {
 
 #[test]
 fn only_the_reply_that_answers_the_live_request_becomes_the_command_list() {
-    // Paseo drops a response no live request waits for; ours must too —
+    // A response no live request waits for is dropped; ours must too —
     // and harder: the row is the journal's copy, so a reply that answered
     // nothing must reach neither the transcript nor the replay source, or a
     // reattach would derive a list nobody asked for. The registration below

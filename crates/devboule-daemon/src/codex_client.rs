@@ -39,9 +39,9 @@ use crate::profile_delivery::ProfileDelivery;
 use crate::provider_features::FAST_MODE_FEATURE;
 use crate::server::ServerState;
 
-/// The `serviceTier` value Codex's fast mode is spelled by. Paseo's
-/// `turn/start` parameter of the same name takes `"fast"`, and no other value
-/// is ever written here.
+/// The `serviceTier` value Codex's fast mode is spelled by. The `turn/start`
+/// parameter of the same name takes `"fast"`, and no other value is ever
+/// written here.
 const SERVICE_TIER_FAST: &str = "fast";
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -435,8 +435,8 @@ pub(super) fn spawn_process_resuming(
 
 /// The command surface of one session: the list read off disk under the
 /// resolved Codex home and this session's start path. Codex publishes no list
-/// over the protocol, so the filesystem is the only source (`listCommands`,
-/// and the `listCodexCustomPrompts` / `listCodexSkills` walks it calls).
+/// over the protocol, so the filesystem is the only source: built-ins, then
+/// the skill and prompt walks.
 fn session_commands(goals: &Goals, cwd: &Path, env: &[(String, String)]) -> Arc<CodexCommands> {
     let home = env
         .iter()
@@ -736,8 +736,8 @@ impl SessionSteerer for CodexSteerer {
         text: &str,
         turn: &mut TurnToken<'_>,
     ) -> Result<bool, WireError> {
-        // Paseo refuses listed slash commands as steers so the caller replaces
-        // the turn and `buildCommandPromptInput` can expand them (:4326).
+        // Listed slash commands are refused as steers so the caller replaces
+        // the turn and `buildCommandPromptInput` can expand them.
         if self.commands.is_picked_command(text) {
             return Ok(false);
         }
@@ -781,9 +781,9 @@ impl SessionSteerer for CodexSteerer {
 
 /// One command's line as the session sees it.
 ///
-/// Paseo emits these as an assistant message (:4985-5008); the daemon's own
-/// words about its own request are a notice, never a message attributed to the
-/// model, which is the channel `SessionNotice` exists for.
+/// The daemon's own words about its own request are a notice, never a
+/// message attributed to the model, which is the channel `SessionNotice`
+/// exists for.
 fn command_notice(text: String, failed: bool) -> SessionEvent {
     SessionEvent::SessionNotice {
         text,
@@ -1041,7 +1041,7 @@ impl CodexStaticPrompt {
             runtime.publish_agent_error(error.message);
             return;
         }
-        // Paseo shows no user-message item for its implementation prompt
+        // An implementation prompt shows no user-message item of its own
         // (the follow-up path emits no timeline item), so the daemon-composed
         // line is journalled as the agent's own, never the person's words.
         if runtime
@@ -1083,10 +1083,10 @@ impl super::StaticImageSink for CodexStaticPrompt {
             }
             None => {
                 // No attachments: the writer would send this text literally,
-                // which is Paseo's answer for ordinary text — but a picked
-                // command must still expand, because Paseo resolves slash
-                // commands on the string prompt (`resolveSlashCommandInvocation`
-                // :4004-4021). Claiming it here keeps the writer to its one
+                // which is the answer for ordinary text — but a picked
+                // command must still expand, because slash commands resolve
+                // on the string prompt. Claiming it here keeps the writer to
+                // its one
                 // job — writing text — so it never has to guess which
                 // trailing section of a composed prompt is the command, and
                 // so stored references appended later still meet the expanded
@@ -1210,10 +1210,10 @@ impl Write for CodexWriter {
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
         // Text only, always. A picked command never reaches this writer: the
-        // static route claims every one at plan time (a whole-message
-        // resolution, as Paseo's), so there is nothing to expand here and no
-        // trailing section to mistake for a command. What arrives is sent as
-        // the text-only `turn/start`, unchanged.
+        // static route claims every one at plan time, as a whole-message
+        // resolution, so there is nothing to expand here and no trailing
+        // section to mistake for a command. What arrives is sent as the
+        // text-only `turn/start`, unchanged.
         let (model, effort) = self.state.model_and_effort();
         let policy_mode = self.state.mode_override();
         let params = with_collaboration_mode(
@@ -1518,7 +1518,7 @@ fn perform_handshake(
 }
 
 fn initialize_params() -> Value {
-    // Paseo's non-originating identity: Codex keeps its own CLI identity in
+    // A non-originating identity: Codex keeps its own CLI identity in
     // provider usage logs instead of showing the daemon as the originator.
     serde_json::json!({
         "clientInfo": {
@@ -1668,8 +1668,8 @@ fn turn_start_params(
 }
 
 /// The profile's fast-mode tick, on the frame Codex reads its service tier
-/// from — Paseo's `params.serviceTier = "fast"`, sent on every turn because
-/// the server keeps no tier between them. `None` writes no key: a profile that
+/// from — `params.serviceTier = "fast"`, sent on every turn because the
+/// server keeps no tier between them. `None` writes no key: a profile that
 /// never ticked fast mode sends no parameter rather than one spelling "off"
 /// the provider has no meaning for.
 fn insert_service_tier(params: &mut serde_json::Map<String, Value>, service_tier: Option<&str>) {
@@ -1706,14 +1706,14 @@ fn steer_params_if_current(
         .then(|| turn_steer_params(&state.thread_id(), expected_turn_id, text))
 }
 
-/// One `turn/start` input entry for a materialized raster: the Paseo-measured
+/// One `turn/start` input entry for a materialized raster: the measured
 /// `{"type": "localImage", "path": ...}` shape. The path is the one
 /// `materialize` returned, so the file at the other end is still the stripped
 /// file — no bytes travel. `detail` is omitted deliberately: `auto` is the
 /// server's own default and sending it would assert an unmeasured choice.
-/// Stays on `localImage` even though the schema also lists `image`: Paseo
-/// sends `localImage` and that is what was verified live, while `image` on
-/// this surface has not been measured.
+/// Stays on `localImage` even though the schema also lists `image`: it is
+/// the spelling verified live, while `image` on this surface has not been
+/// measured.
 fn codex_local_image_entry(path: &std::path::Path) -> serde_json::Value {
     serde_json::json!({
         "type": "localImage",
@@ -2052,9 +2052,8 @@ impl CodexReader {
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 );
-                // Paseo resets its turn tracking on the root `turn/started`
-                // (`handleTurnStartedNotification` :5973-5991, gated on the
-                // current thread); a child thread's turn leaves the root
+                // Turn tracking resets on the root `turn/started` (gated on
+                // the current thread); a child thread's turn leaves the root
                 // pairing state alone.
                 let params = value.get("params").unwrap_or(&Value::Null);
                 if crate::codex_compaction::is_root_thread(params, &self.state.thread_id()) {
@@ -2096,10 +2095,9 @@ impl CodexReader {
                         .unwrap_or("Codex returned an error without a message")
                         .to_string()
                 });
-            // A command's answer is told in the command's own words, Paseo's
-            // including (``executeCompactCommand`` :5027-5031,
-            // ``executeGoalSubcommand`` :5081-5085); any other response keeps
-            // the pre-existing notice of Codex's message. The branch is
+            // A command's answer is told in the command's own words,
+            // including the compact and goal families; any other response
+            // keeps the pre-existing notice of Codex's message. The branch is
             // exclusive so one failed request is not reported twice.
             match self.commands.answer(id, error.as_deref()) {
                 Answer::Ours(outcome) => {

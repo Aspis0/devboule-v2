@@ -7117,9 +7117,8 @@ fn a_created_child_receives_its_profiles_declared_feature() {
 }
 
 /// The probe closes the session it opened when the agent advertises
-/// `sessionCapabilities.close` — Paseo's `closeProbe` gate
-/// (packages/server/src/server/agent/providers/acp-agent.ts) — and never
-/// sends it when the agent does not. Killing the process is not the
+/// `sessionCapabilities.close`, and never sends it when the agent does
+/// not. Killing the process is not the
 /// equivalent: an agent that persists sessions past process exit keeps an
 /// orphan per settings-panel open, in the user's history or spending a
 /// session quota. An agent that did not offer the verb answers

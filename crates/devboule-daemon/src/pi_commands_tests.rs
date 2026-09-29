@@ -350,7 +350,7 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
     assert_eq!(
         commands[2].hint.as_deref(),
         Some("<doc>"),
-        "pi's own input.hint is kept, which Paseo drops"
+        "pi's own input.hint is kept, not dropped"
     );
     assert_eq!(commands[2].description, "skill", "source as description");
 

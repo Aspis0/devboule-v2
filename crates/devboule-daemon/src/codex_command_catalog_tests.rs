@@ -79,19 +79,19 @@ fn the_prompt_keeps_the_front_matter_it_carries() {
         .expect("the prompt is listed");
     assert_eq!(
         prompt.description, "Quoted review",
-        "the surrounding quotes are Paseo's to strip (:649-651)"
+        "the surrounding quotes are the catalog's to strip"
     );
     assert_eq!(
         prompt.hint.as_deref(),
         Some("<branch>"),
-        "`argument_hint` is the second spelling Paseo accepts (:684-686)"
+        "`argument_hint` is the second spelling accepted"
     );
 }
 
 #[test]
 fn a_prompt_without_front_matter_is_still_listed() {
-    // Paseo's fallback description, not a skip: the command exists whether or
-    // not its author described it (:682).
+    // The fallback description, not a skip: the command exists whether or
+    // not its author described it.
     let home = TempDir::new("bare-home");
     let workspace = TempDir::new("bare-cwd");
     home.write("prompts/plain.md", "Just a body, no fence.\n");
@@ -126,14 +126,14 @@ fn goal_is_listed_only_when_the_gate_passed() {
     assert_eq!(
         goal.hint.as_deref(),
         Some("[<objective>|pause|resume|clear]"),
-        "Paseo's own argument hint (:4965)"
+        "the goal entry's own argument hint"
     );
 }
 
 #[test]
 fn a_file_named_exactly_dot_md_is_not_a_prompt() {
-    // Paseo's filter keeps the stem: `entry.name.slice(0, -".md".length)` must
-    // be non-empty (:671), so `.md` names no command.
+    // The filter keeps the stem: `entry.name.slice(0, -".md".length)` must
+    // be non-empty, so `.md` names no command.
     let home = TempDir::new("stem-home");
     let workspace = TempDir::new("stem-cwd");
     home.write(
@@ -149,8 +149,8 @@ Body.
 
 #[test]
 fn a_directory_named_like_a_prompt_is_not_one() {
-    // Paseo's filter takes the entry type before the read (:668-672), so a
-    // directory named `broken.md` never reaches the file reading below.
+    // The filter takes the entry type before the read, so a directory named
+    // `broken.md` never reaches the file reading below.
     let home = TempDir::new("dirprompt-home");
     let workspace = TempDir::new("dirprompt-cwd");
     std::fs::create_dir_all(home.0.join("prompts").join("broken.md")).expect("a directory");
@@ -171,7 +171,7 @@ fn a_directory_named_like_a_prompt_is_not_one() {
 fn a_prompt_file_another_handle_holds_is_skipped_and_the_rest_still_lists() {
     // The read-failure half of the skip, on the platform this runs on: an
     // exclusive handle leaves a regular file that will not open, which is
-    // Paseo's `try { readFile } catch { return null }` (:674-679).
+    // the `try { readFile } catch { return null }` skip.
     use std::os::windows::fs::OpenOptionsExt;
     let home = TempDir::new("held-home");
     let workspace = TempDir::new("held-cwd");
@@ -226,8 +226,8 @@ fn a_prompt_with_no_read_permission_is_skipped() {
 
 #[test]
 fn a_skill_needs_both_a_name_and_a_description() {
-    // Paseo's `if (!name || !description) continue` (:750-752): a SKILL.md
-    // missing either is not a command.
+    // `if (!name || !description) continue`: a SKILL.md missing either is
+    // not a command.
     let home = TempDir::new("skill-home");
     let workspace = TempDir::new("skill-cwd");
     workspace.write(
@@ -247,9 +247,8 @@ fn a_skill_needs_both_a_name_and_a_description() {
 
 #[test]
 fn the_nearest_skill_directory_wins_a_name_collision() {
-    // First candidate wins (`commandsByName` is filled with `has`-guarded
-    // inserts, :753-759) and the candidate order is cwd, then the home
-    // (:712-716).
+    // First candidate wins — the walk keeps the first directory that names
+    // a skill — and the candidate order is cwd, then the home.
     let home = TempDir::new("clash-home");
     let workspace = TempDir::new("clash-cwd");
     home.write(
@@ -282,8 +281,8 @@ fn a_missing_prompts_directory_is_no_command_and_no_error() {
 
 #[test]
 fn front_matter_needs_both_fences_and_the_body_starts_after_them() {
-    // Paseo :618-657: no leading `---`, or no closing one, means the whole
-    // document is the body and there is no metadata.
+    // No leading `---`, or no closing one, means the whole document is the
+    // body and there is no metadata.
     let (matter, body) = front_matter("---\nname: x\n---\nbody text\n");
     assert_eq!(matter.get("name").map(String::as_str), Some("x"));
     assert_eq!(body, "body text\n");
@@ -296,8 +295,8 @@ fn front_matter_needs_both_fences_and_the_body_starts_after_them() {
     assert!(matter.is_empty(), "an unclosed fence is not metadata");
     assert_eq!(body, "---\nname: x\nunclosed\n");
 
-    // A `#` line is a comment, and a repeated key keeps its LAST value: Paseo
-    // assigns `frontMatter[key] = value` (:652) without guarding the write.
+    // A `#` line is a comment, and a repeated key keeps its LAST value: the
+    // assignment `frontMatter[key] = value` is not guarded.
     let (matter, _) = front_matter("---\n# note\nname: first\nname: second\n---\n");
     assert_eq!(matter.get("name").map(String::as_str), Some("second"));
 

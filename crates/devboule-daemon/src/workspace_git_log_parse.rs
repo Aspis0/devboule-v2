@@ -32,7 +32,7 @@ pub(super) struct Commit {
 
 /// The commits of one `git log` run. A record git could not give five
 /// fields, or whose sha is empty, is skipped rather than guessed at — the
-/// same rule Paseo's parser applies.
+/// same rule the source's parser applies.
 pub(super) fn parse_commit_records(stdout: &str) -> Vec<Commit> {
     stdout
         .split(RECORD_SEPARATOR)

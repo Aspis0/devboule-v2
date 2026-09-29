@@ -101,7 +101,7 @@ fn release_card_slot(request: &SessionEvent) {
 }
 
 /// Whether one pending card is a plan approval — the only kind a new prompt
-/// dismisses (Paseo's `dismissPendingPlanApprovals` filter).
+/// dismisses.
 fn is_plan_request(request: &SessionEvent) -> bool {
     matches!(
         request,
@@ -859,7 +859,7 @@ impl PermissionBroker {
     /// own family ([`crate::provider_catalog::mode_gate_for`]) — and only
     /// when the agent offers one allow choice; chooser requests stay with
     /// the client, and so does every question: a model's question is never
-    /// auto-answered, in any mode. Paseo's chooser rule:
+    /// auto-answered, in any mode. The chooser rule:
     /// the same kind twice — allow or reject — is a question, the standard
     /// `allow_once`/`allow_always`/`reject_once` batch (three distinct kinds)
     /// is not. Prefer allow_once, then allow_always; a request with no allow
@@ -965,8 +965,8 @@ impl PermissionBroker {
     }
 
     pub(super) fn cancel_pending_for_new_prompt(&self) {
-        // Paseo's dismissPendingPlanApprovals: a new prompt dismisses plan
-        // cards only; every other kind stays pending for the person.
+        // A new prompt dismisses plan cards only; every other kind stays
+        // pending for the person.
         self.cancel_pending_with_outcome(PlanCancellation::NewPrompt, true);
     }
 
@@ -1907,7 +1907,7 @@ fn select_option(
     Ok(None)
 }
 
-/// Paseo's chooser rule, on either side: the same kind offered twice —
+/// The chooser rule, on either side: the same kind offered twice —
 /// allow or reject — means the agent is asking which one to use, so the
 /// request must reach the user.
 fn options_form_a_chooser(options: &[PermissionOption]) -> bool {
@@ -1921,7 +1921,7 @@ fn options_form_a_chooser(options: &[PermissionOption]) -> bool {
     false
 }
 
-/// The auto-accept order Paseo uses: one-shot first, then durable.
+/// The auto-accept order: one-shot first, then durable.
 fn select_allow_option(options: &[PermissionOption]) -> Option<&PermissionOption> {
     options
         .iter()

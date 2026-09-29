@@ -1160,9 +1160,9 @@ pub(crate) fn probe_declarations(
         }
     };
     // Close the session the read opened before the process goes, when the agent
-    // said it can be asked to (mirrors Paseo's `closeProbe`, gated on
-    // `sessionCapabilities.close`). Killing the process is not the
-    // equivalent — an agent that persists sessions past process exit keeps
+    // said it can be asked to (gated on `sessionCapabilities.close`). Killing
+    // the process is not the equivalent — an agent that persists sessions past
+    // process exit keeps
     // the orphan, where it shows in the user's history or eats a session
     // quota. An agent that did not advertise it is never sent the request,
     // because it answers with a method-not-found error and gains nothing.

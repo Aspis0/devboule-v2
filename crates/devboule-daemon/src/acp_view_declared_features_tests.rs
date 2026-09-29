@@ -321,10 +321,10 @@ fn the_mode_selector_is_excluded_by_its_values_and_not_only_its_name() {
     );
 }
 
-/// An empty-string choice is a position the agent declared, not an absence.
-/// Paseo relabels it (`emptyOptionLabel`) rather than deleting it, and this
-/// parser must keep it: `value_fits` reads the declared list, so a dropped
-/// choice would prune on save a value the provider genuinely accepts.
+/// An empty-string choice is a position the agent declared, not an absence,
+/// so this parser keeps it rather than deleting it:
+/// `value_fits` reads the declared list, so a
+/// dropped choice would prune on save a value the provider genuinely accepts.
 #[test]
 fn a_declared_empty_choice_survives_the_parse() {
     let result = options(json!([

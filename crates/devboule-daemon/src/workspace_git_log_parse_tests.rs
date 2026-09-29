@@ -115,9 +115,8 @@ fn an_empty_subject_is_an_answer() {
 }
 
 /// A record git could not give five fields, or whose sha is empty, is
-/// skipped rather than guessed at — the same rule Paseo's parser applies.
-/// A record the accumulator cut short keeps fewer than five fields and
-/// lands here.
+/// skipped rather than guessed at. A record the accumulator cut short
+/// keeps fewer than five fields and lands here.
 #[test]
 fn a_record_without_a_parseable_header_is_skipped() {
     let records = parse_commit_records(&format!(

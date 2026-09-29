@@ -37,10 +37,8 @@ use crate::workspace_git_support::{
 use crate::ServerState;
 
 /// The workspace's own folder: the id resolved it, so there is no parent to
-/// act from and no second spelling to give it — parity with Paseo's
-/// renameExplorerEntry
-/// (packages/server/src/server/file-explorer/service.ts). Pathless, like
-/// every sentence here.
+/// act from and no second spelling to give it. Pathless, like every sentence
+/// here.
 const THE_ROOT: &str = "the workspace's own folder cannot be renamed, duplicated or deleted";
 const NAME_EMPTY: &str = "the new name is empty";
 const NAME_SEPARATOR: &str = "the new name must not contain a path separator";
@@ -182,11 +180,9 @@ fn vouched_entry(root: &Path, requested: &str) -> Result<(PathBuf, std::fs::Meta
     }
 }
 
-/// The new name, judged the way Paseo's renameExplorerEntry judges a created
-/// name (packages/server/src/server/file-explorer/service.ts) — trimmed
-/// first, and the trimmed spelling is the one acted on,
-/// because validating one string and storing another would keep a name the
-/// rule never judged. One name: not empty, not `.`/`..`, no
+/// The new name — trimmed first, and the trimmed spelling is the one acted
+/// on, because validating one string and storing another would keep a name
+/// the rule never judged. One name: not empty, not `.`/`..`, no
 /// separator, never Win32's silent rewrites, and never the repository's own
 /// metadata folder — the guard the listing runs, on the other end of the
 /// rename.
@@ -268,9 +264,7 @@ fn case_only_of(source: &Path, destination: &Path, new_name: &str) -> bool {
 
 /// The act itself. An entry git tracks is renamed through `git mv`, so the
 /// act arrives in the Changes panel staged — one rename there, not a
-/// deletion beside a stranger (parity with Paseo's renameExplorerEntry,
-/// packages/server/src/server/file-explorer/service.ts).
-/// A workspace that is not a repository root (no
+/// deletion beside a stranger. A workspace that is not a repository root (no
 /// repository, a folder inside one, or a probe git did not answer) renames on
 /// the filesystem alone: there the Changes panel's own views have the same
 /// boundary, so there is nothing staged for.
@@ -411,10 +405,9 @@ fn duplicated(root: &Path, requested: &str) -> Result<String, String> {
 }
 
 /// The first free `… copy` / `… copy 2` / `… copy 3` name beside the
-/// original — Paseo's loop, which never overwrites
-/// (packages/server/src/server/file-explorer/service.ts): a name is taken
-/// only after its own stat says something is there, and the creation below
-/// is exclusive anyway.
+/// original — a loop that never overwrites: a name is taken only after
+/// its own stat says something is there, and the creation below is
+/// exclusive anyway.
 fn free_copy_name(source: &Path) -> PathBuf {
     let parent = source
         .parent()

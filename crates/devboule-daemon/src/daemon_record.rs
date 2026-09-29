@@ -39,9 +39,9 @@ pub const RECORD_CAPACITY: u64 = 4096;
 
 /// How often the daemon touches the record to prove it is alive.
 ///
-/// The interval follows the precedent this workspace already has (Paseo's
-/// daemon beats its own pid lock every 30 s). The multiple below does not,
-/// because that daemon never reads its heartbeat back.
+/// The interval follows the precedent this workspace already has: the
+/// reference daemon beats its own pid lock every 30 s. The multiple below
+/// does not, because that daemon never reads its heartbeat back.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Beats a record may miss before it stops being believed.

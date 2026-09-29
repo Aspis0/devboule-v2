@@ -14,7 +14,7 @@ fn a_picked_prompt_command_sends_its_expanded_body() {
     assert_eq!(
         commands.prompt_input("/prompts:commit stage"),
         Some(serde_json::json!([{ "type": "text", "text": "On stage: stage\n" }])),
-        "the prompt body keeps its trailing newline after expansion (:4030-4037)"
+        "the prompt body keeps its trailing newline after expansion"
     );
     assert_eq!(
         commands.prompt_input("/prompts:commit"),
@@ -65,7 +65,7 @@ fn a_picked_skill_command_sends_the_skill_and_text_blocks() {
             { "type": "skill", "name": "plotting", "path": skill_path },
             { "type": "text", "text": "$plotting sales.csv" },
         ])),
-        "Paseo's populated-cache form includes both the skill block and fallback text (:4044-4052)"
+        "the populated-cache form includes both the skill block and fallback text"
     );
 }
 
@@ -95,7 +95,7 @@ fn a_skill_named_goal_is_available_when_the_goal_builtin_is_gated_off() {
             { "type": "skill", "name": "goal", "path": workspace.0.join(".codex").join("skills").join("goal").join("SKILL.md") },
             { "type": "text", "text": "$goal ship it" },
         ])),
-        "when the version gate is closed, Paseo's listed skill remains a picked command"
+        "when the version gate is closed, the listed skill remains a picked command"
     );
 }
 
@@ -131,7 +131,7 @@ fn a_prompt_file_edited_after_the_session_starts_is_read_at_send_time() {
     assert_eq!(
         commands.prompt_input("/prompts:live"),
         Some(serde_json::json!([{ "type": "text", "text": "second\n" }])),
-        "the cached list holds the path, not the body (:4034-4036)"
+        "the cached list holds the path, not the body"
     );
 }
 

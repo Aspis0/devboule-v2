@@ -3794,11 +3794,10 @@ fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
 }
 
 /// The wire carries the daemon's chooser verdict: a request whose option
-/// set trips Paseo's rule (the same kind offered twice — allow **or**
-/// reject), translated from `isACPChooserRequest`
-/// (packages/server/src/server/agent/providers/acp-agent.ts), is marked so
-/// the app renders one control per option, while an ordinary pair and a set
-/// of distinct kinds are left unmarked. The app must never re-derive the
+/// set trips the chooser rule (the same kind offered twice — allow **or**
+/// reject), is marked so the app renders one control per option, while
+/// an ordinary pair and a set of distinct kinds are left unmarked.
+/// The app must never re-derive the
 /// rule from the option list — the daemon says it.
 #[test]
 fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {

@@ -19,7 +19,7 @@ const TASK_TOOL_NAMES: [&str; 4] = ["TodoWrite", "TaskCreate", "TaskUpdate", "Ta
 pub(crate) struct ClaudeTaskState {
     /// The provider's tasks in the order the provider listed them. A plain
     /// list with a linear scan: plans are single-digit rows, and a scan
-    /// keeps insertion order with re-insert-in-place, the way Paseo's JS
+    /// keeps insertion order with re-insert-in-place, the way a JS
     /// Map does, without an order-preserving map dependency.
     tasks: Vec<AgentTaskItem>,
     /// Tool inputs stashed at `tool_use`, consumed at the matching
@@ -164,7 +164,7 @@ impl ClaudeTaskState {
             });
         // No status in the envelope keeps the item's own; a present one
         // replaces it, and an unrecognized value reads as pending —
-        // Paseo's `taskStatus` vocabulary is completed/deleted/in_progress
+        // the recognized vocabulary is completed/deleted/in_progress
         // and nothing else.
         let status = match status_value {
             None => current.status,
@@ -183,7 +183,8 @@ impl ClaudeTaskState {
             item.text = text;
         }
         // A present form replaces the running row's text; an absent one
-        // keeps it, the way Paseo spreads the current item first.
+        // keeps it — the current item is copied first, so a missing key
+        // leaves the running text alone.
         if let Some(active_form) = string(input.get("activeForm")) {
             item.active_form = Some(active_form);
         }
@@ -216,7 +217,7 @@ impl ClaudeTaskState {
     }
 
     /// Re-insert in place: an id the list already carries keeps its
-    /// position, a new one appends — Paseo's `Map.set` order.
+    /// position, a new one appends — the re-set order of a `Map`.
     fn upsert(&mut self, item: AgentTaskItem) {
         let id = item.id.clone();
         if let Some(slot) = self.tasks.iter_mut().find(|task| task.id == id) {
@@ -244,7 +245,7 @@ impl ClaudeTaskState {
 }
 
 /// The task tool name when the block carries one of the four, and nothing
-/// else — Paseo's `isTaskToolName` guard.
+/// else.
 fn task_tool_name(value: Option<&Value>) -> Option<&'static str> {
     let name = value.and_then(Value::as_str)?.trim();
     TASK_TOOL_NAMES
@@ -268,8 +269,7 @@ fn tool_uses(message: &Value) -> Vec<&Value> {
 }
 
 /// The `tool_use_id` of the first `tool_result` block of one message,
-/// trimmed the way Paseo's `string()` reads both sides of the pending-call
-/// key.
+/// trimmed on both sides — the same trim `string()` applies to stored text.
 fn tool_result_id(message: &Value) -> Option<String> {
     let content = message
         .get("message")
@@ -286,7 +286,7 @@ fn tool_result_id(message: &Value) -> Option<String> {
 
 /// The structured tool output the CLI carries beside the `tool_result`
 /// blocks: the tool's own Output object, not the string content sent to the
-/// model. Paseo reads the SDK's camelCase `toolUseResult` first, then the
+/// model. The SDK's camelCase `toolUseResult` is read first, then the
 /// wire's `tool_use_result` — and a non-object under the first key does not
 /// hide an object under the second.
 fn structured_result(message: &Value) -> Option<&Value> {
@@ -301,7 +301,7 @@ fn structured_result(message: &Value) -> Option<&Value> {
 }
 
 /// One task entry as the provider described it. `None` when the entry carries
-/// no text or says `deleted` — Paseo's `toTaskItem` drops both.
+/// no text or says `deleted` — either drops the entry.
 fn to_task_item(value: &Value) -> Option<AgentTaskItem> {
     if !value.is_object() {
         return None;

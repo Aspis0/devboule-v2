@@ -798,9 +798,9 @@ fn the_keys_card_counts_the_keys_and_never_carries_them() {
 
 #[test]
 fn keys_type_literal_text_and_named_keys_into_the_pty() {
-    // Paseo's input shape, byte for byte: a named key is resolved, literal
+    // The input shape, byte for byte: a named key is resolved, literal
     // text is written as typed, and a name the token list does not hold is
-    // the text it is (Paseo's switch falls through the same way).
+    // the text it is.
     let state = ServerState::new("mcp-tw-keys".to_string());
     let (workspace, _root) = project_workspace(&state, "keys");
     caller_in(&state, "tw-keys-caller", &workspace);
@@ -841,7 +841,7 @@ fn keys_type_literal_text_and_named_keys_into_the_pty() {
     assert_eq!(
         received.lock().expect("recorder").clone(),
         b"echo hi\r\x03\tEnter",
-        "the pty received exactly what Paseo would have sent"
+        "the pty received exactly the resolved keys, in order"
     );
 
     // The shape is closed: unknown parameters and a missing payload are

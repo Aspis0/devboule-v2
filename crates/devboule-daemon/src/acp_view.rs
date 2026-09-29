@@ -223,11 +223,10 @@ fn view_from_session_update(
 
 /// ACP `plan` entries as checklist items: `priority` is dropped, and the
 /// running state is kept as its own status. That second half is a deliberate
-/// deviation — the pill shows running rows — not Paseo's map: Paseo's
-/// `mapPlanToTimeline` reads only `content` and `status === "completed"`,
-/// so `in_progress` collapses to not completed there. The 0.17.1 schema has
-/// no per-entry id, so the item carries none; entries are keyed by position
-/// alone.
+/// deviation — the pill shows running rows; a mapping that reads only
+/// `content` and `status === "completed"` would collapse `in_progress`
+/// to not completed. The 0.17.1 schema has no per-entry id, so the item carries
+/// none; entries are keyed by position alone.
 fn plan_items_from_update(update: &serde_json::Value) -> Option<Vec<AgentTaskItem>> {
     let entries = update.get("entries")?.as_array()?;
     Some(entries.iter().filter_map(plan_item_from_entry).collect())
@@ -945,10 +944,9 @@ pub(crate) fn declared_features_from_options(
             .filter_map(|entry| {
                 let value = entry.get("value").and_then(serde_json::Value::as_str)?;
                 // An empty choice is a position the agent declared, not an
-                // absence: Paseo relabels it (`emptyOptionLabel`,
-                // packages/server/src/server/agent/providers/acp-agent.ts)
-                // rather than deleting it. Dropping it would hide a value the
-                // profile can hold and `value_fits` would then prune on save.
+                // absence: it is kept rather than deleted. Dropping it would
+                // hide a value the profile can hold and `value_fits` would
+                // then prune on save.
                 Some(devboule_protocol::VocabularyFeatureOption {
                     label: entry
                         .get("name")
@@ -1833,9 +1831,8 @@ mod tests {
         assert_eq!(items[0].id, None);
         assert_eq!(items[0].text, "Inspect the project layout");
         assert_eq!(items[0].status, AgentTaskStatus::Pending);
-        // `in_progress` keeps its own status: a deliberate deviation from
-        // Paseo's `mapPlanToTimeline`, which collapses it — the pill shows
-        // running rows.
+        // `in_progress` keeps its own status: a deliberate deviation — the
+        // pill shows running rows.
         assert_eq!(items[1].text, "Draft the greeting file");
         assert_eq!(items[1].status, AgentTaskStatus::InProgress);
         assert_eq!(items[2].text, "Verify the file on disk");

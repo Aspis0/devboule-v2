@@ -9,8 +9,7 @@ use serde_json::{json, Value};
 use super::ClaudeTaskState;
 
 // SYNTHETIC: stream-json envelopes shaped after the CLI's task Tool
-// traffic (Paseo's task-state.test.ts shapes) — invented ids, invented task
-// texts, no measured run behind them.
+// traffic — invented ids, invented task texts, no measured run behind them.
 const CLAUDE_TASKS_SYNTHETIC: &str = include_str!("../fixtures/wire/claude-tasks-synthetic.jsonl");
 
 fn tool_use(id: &str, name: &str, input: Value) -> Value {
@@ -67,7 +66,7 @@ fn todowrite_replaces_the_whole_list_at_tool_use() {
         ),
     );
     assert_eq!(first.len(), 2);
-    // Entries without an id are keyed by position, Paseo's `legacy:${index}`.
+    // Entries without an id are keyed by position, as `legacy:${index}`.
     assert_eq!(first[0].id.as_deref(), Some("legacy:0"));
     assert_eq!(first[0].text, "Legacy");
     assert_eq!(first[0].status, AgentTaskStatus::InProgress);
@@ -254,8 +253,8 @@ fn an_errored_tool_result_leaves_the_list_unchanged() {
             json!({"taskId": "1", "status": "completed"}),
         ),
     );
-    // The tool's own failure report: Paseo's `result?.success === false`
-    // short-circuits before any field is read.
+    // The tool's own failure report: `success === false` short-circuits
+    // before any field is read.
     let errored = state.observe(&tool_result(
         "update",
         json!({"success": false, "error": "The tool failed"}),
@@ -313,9 +312,9 @@ fn a_result_with_no_structured_body_leaves_the_list_unchanged() {
 
 #[test]
 fn a_taskupdate_status_rides_the_tool_use_input_not_the_result() {
-    // Paseo's `applyUpdate` reads `input.status` first and the result's
-    // `statusChange.to` only as a fallback, so a result with no structured
-    // body still applies the status the call carried.
+    // The update reads `input.status` first and the result's `statusChange.to`
+    // only as a fallback, so a result with no structured body still applies
+    // the status the call carried.
     let mut state = ClaudeTaskState::default();
     record(
         &mut state,
@@ -414,7 +413,7 @@ fn a_tool_result_for_an_unknown_id_keeps_the_envelopes_snapshot() {
     // A result for an id no call stashed — a retried delivery, a compacted
     // row — applies nothing, and whatever snapshot the same envelope
     // produced is still the answer. A bare unknown result alone answers
-    // nothing, as Paseo's `if (!call) return snapshot` does.
+    // nothing: there is no stashed call to match.
     let mut state = ClaudeTaskState::default();
     assert!(state
         .observe(&tool_result(
