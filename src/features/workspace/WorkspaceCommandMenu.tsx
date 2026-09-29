@@ -21,7 +21,7 @@ interface WorkspaceCommandMenuProps {
   onClose: () => void;
   /** The listbox's own id: the composer's combobox points aria-controls at it. */
   listId: string;
-  /** The filter's matches, in the order the daemon gave them. */
+  /** The ranked matches, best first; the daemon's order for a bare "/". */
   commands: readonly WorkspaceCommand[];
   /** The row the keys are on; -1 while there is no row to be on. */
   activeIndex: number;

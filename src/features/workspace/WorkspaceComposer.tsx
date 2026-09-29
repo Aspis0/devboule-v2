@@ -12,6 +12,7 @@ import {
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { composerActionLabel } from "../../lib/sendBehavior";
 import { isImeComposition } from "../../lib/imeComposition";
+import { rankCommandMatches } from "./commandMatch";
 import { WorkspaceCommandMenu, type WorkspaceCommand } from "./WorkspaceCommandMenu";
 
 /** Height cap of the growing textarea: eight 20px lines. */
@@ -218,10 +219,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   const query = commandQuery(input);
   const commandMatches = useMemo(
-    () =>
-      query === null
-        ? []
-        : availableCommands.filter((command) => command.name.toLowerCase().includes(query)),
+    () => (query === null ? [] : rankCommandMatches(availableCommands, query)),
     [availableCommands, query],
   );
   const matchCount = commandMatches.length;
