@@ -1,0 +1,189 @@
+// @vitest-environment happy-dom
+
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkspaceFileContent } from "../../types/ipc";
+
+vi.mock("../../lib/tauri", () => ({
+  workspaceFileRead: vi.fn(),
+  workspaceFilePreviewStage: vi.fn(),
+  workspaceFilePreviewUnstage: vi.fn(),
+}));
+
+import { workspaceFileRead } from "../../lib/tauri";
+import { WorkspaceFileTab } from "./WorkspaceFileTab";
+import { resetFileTabModeForTests } from "./fileTabMode";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const WORKSPACE = "workspace-file-tab-subject";
+
+function content(overrides: Partial<WorkspaceFileContent> = {}): WorkspaceFileContent {
+  return {
+    status: "ok",
+    kind: "text",
+    content: "hello\n",
+    size: 6,
+    modifiedAt: 1_758_000_000_000,
+    error: null,
+    fromLine: 1,
+    lines: 1,
+    hasMore: false,
+    truncated: false,
+    note: null,
+    ...overrides,
+  };
+}
+
+describe("WorkspaceFileTab header", () => {
+  let container: HTMLDivElement;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    resetFileTabModeForTests();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(workspaceFileRead).mockResolvedValue(content());
+  });
+
+  afterEach(async () => {
+    if (root !== undefined) {
+      await act(async () => root!.unmount());
+      root = undefined;
+    }
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderTab(path: string, key = "a") {
+    const mount = (
+      <WorkspaceFileTab
+        key={key}
+        workspaceId={WORKSPACE}
+        path={path}
+        refreshNonce={0}
+        cache={new Map()}
+      />
+    );
+    if (root === undefined) root = createRoot(container);
+    await act(async () => {
+      root!.render(mount);
+    });
+  }
+
+  function meta(): string {
+    const match = container.querySelector(".workspace-file-tab-meta");
+    if (match === null) throw new Error("header meta did not render");
+    return match.textContent ?? "";
+  }
+
+  function segButtons(): HTMLButtonElement[] {
+    return Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-file-tab-seg-button"),
+    );
+  }
+
+  it("shows basename, parent directory and size", async () => {
+    vi.mocked(workspaceFileRead).mockResolvedValue(content({ size: 2150, hasMore: true }));
+    await renderTab("docs/SETUP.md");
+
+    const name = container.querySelector(".workspace-file-tab-name");
+    expect(name?.textContent).toBe("SETUP.md");
+    expect(meta()).toBe("docs · 2.1 KB");
+  });
+
+  it("shows the line count only for a fully loaded file", async () => {
+    vi.mocked(workspaceFileRead).mockResolvedValue(
+      content({ size: 2150, lines: 48, hasMore: false, truncated: false }),
+    );
+    await renderTab("docs/SETUP.md");
+
+    expect(meta()).toBe("docs · 2.1 KB · 48 lines");
+  });
+
+  it("never shows a window count as the file's count", async () => {
+    vi.mocked(workspaceFileRead).mockResolvedValue(
+      content({ size: 2150, fromLine: 41, lines: 48, hasMore: false, truncated: false }),
+    );
+    await renderTab("docs/SETUP.md");
+
+    expect(meta()).toBe("docs · 2.1 KB");
+  });
+
+  it("leaves the line count out while another window follows or one was cut", async () => {
+    vi.mocked(workspaceFileRead)
+      .mockResolvedValueOnce(content({ size: 2150, lines: 48, hasMore: true }))
+      .mockResolvedValueOnce(
+        content({ size: 2150, lines: 1, hasMore: false, truncated: true, note: "cut" }),
+      );
+    await renderTab("docs/SETUP.md");
+    expect(meta()).toBe("docs · 2.1 KB");
+
+    await renderTab("docs/SETUP.md", "b");
+    expect(meta()).toBe("docs · 2.1 KB");
+  });
+
+  it("omits the directory part of a root-level file", async () => {
+    vi.mocked(workspaceFileRead).mockResolvedValue(content({ size: 2150, lines: 48 }));
+    await renderTab("README.md");
+
+    expect(meta()).toBe("2.1 KB · 48 lines");
+  });
+
+  it("splits a Windows-separator path for the name and the directory", async () => {
+    vi.mocked(workspaceFileRead).mockResolvedValue(content({ size: 6 }));
+    await renderTab("C:\\Users\\x\\file.md");
+
+    expect(container.querySelector(".workspace-file-tab-name")?.textContent).toBe("file.md");
+    expect(meta()).toBe("C:\\Users\\x · 6 B · 1 line");
+  });
+
+  it("offers no mode control to a non-Markdown file", async () => {
+    await renderTab("src/main.rs");
+
+    expect(segButtons()).toHaveLength(0);
+    expect(container.querySelector(".workspace-file-tab-source")).not.toBeNull();
+  });
+
+  it("recognises .markdown and uppercase extensions as Markdown", async () => {
+    await renderTab("docs/README.MARKDOWN");
+
+    expect(segButtons()).toHaveLength(2);
+  });
+
+  it("defaults a Markdown file to Preview", async () => {
+    await renderTab("docs/SETUP.md");
+
+    expect(container.querySelector(".workspace-file-tab-preview")).not.toBeNull();
+    expect(container.querySelector(".workspace-file-tab-source")).toBeNull();
+  });
+
+  it("switches to Source when its segment is clicked", async () => {
+    await renderTab("docs/SETUP.md");
+    const buttons = segButtons();
+    if (buttons[1] === undefined) throw new Error("Source segment did not render");
+
+    await act(async () => {
+      buttons[1].click();
+    });
+
+    expect(container.querySelector(".workspace-file-tab-source")).not.toBeNull();
+    expect(container.querySelector(".workspace-file-tab-preview")).toBeNull();
+  });
+
+  it("remembers the mode across tabs for the app run", async () => {
+    await renderTab("docs/a.md");
+    const buttons = segButtons();
+    if (buttons[1] === undefined) throw new Error("Source segment did not render");
+    await act(async () => {
+      buttons[1].click();
+    });
+
+    // A different path, a fresh mount: the module's memory survives it.
+    await renderTab("docs/b.md", "second");
+
+    expect(container.querySelector(".workspace-file-tab-preview")).toBeNull();
+    expect(container.querySelector(".workspace-file-tab-source")).not.toBeNull();
+  });
+});

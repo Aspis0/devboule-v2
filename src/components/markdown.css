@@ -1,0 +1,31 @@
+/* The parser's own output rules, shared by every surface that renders
+   parsed Markdown (File tab preview, chat transcript, plan cards): a wide
+   table scrolls inside the column it lands in instead of breaking it.
+   Palette tokens only. Loaded by the parser. */
+
+.plan-markdown-table-scroll {
+  margin: 0 0 12px;
+  overflow-x: auto;
+}
+
+/* An image is its alt text, muted: nothing is ever fetched for it. */
+.plan-markdown-image {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.plan-markdown-table {
+  border-collapse: collapse;
+}
+
+.plan-markdown-table th,
+.plan-markdown-table td {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+
+.plan-markdown-table th {
+  background: var(--fill-tool);
+  font-weight: 600;
+}

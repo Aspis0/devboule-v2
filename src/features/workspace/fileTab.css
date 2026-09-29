@@ -1,0 +1,197 @@
+/* The File tab (SPEC-regions §Right panel, mockups a-workspace-5.png and
+   c-workspace-5.png): the h36 header — file mark, basename, muted
+   `dir · size · N lines`, the Preview | Source switch — a 680 px Markdown
+   column for Preview, and a numbered Source. The tab owns its rules the
+   way panel/changes.css and panel/files.css own theirs; loaded by the tab
+   itself. The switch restates the app's segmented vocabulary (the Changes
+   panel's Uncommitted | Commits bed) under the tab's own names. */
+
+.workspace-file-tab-header {
+  position: sticky;
+  /* The pane pads 4px on top, and sticky stops at that padding edge: both
+     offsets take it back, so the header sits and sticks flush under the strip. */
+  top: -4px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  margin-top: -4px;
+  background: var(--ground-center);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+}
+
+.workspace-file-tab-header .strip-kind {
+  flex: none;
+  display: flex;
+  color: var(--muted);
+}
+
+.workspace-file-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-file-tab-meta {
+  flex: none;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Preview | Source: the changes panel's switch geometry — 24px buttons on
+   a fill-tool bed, the active one a panel-card chip — pushed to the
+   header's right edge. */
+.workspace-file-tab-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  background: var(--fill-tool);
+  border-radius: 7px;
+}
+
+.workspace-file-tab-seg-button {
+  height: 24px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.workspace-file-tab-seg-button-is-on {
+  color: var(--ink);
+  background: var(--panel-card);
+  box-shadow: var(--shadow-pop);
+}
+
+/* Source: the tool pane's own column, mono text with a gutter. The gutter
+   numbers are --muted, the pair palette-contrast.test.ts holds at ≥4.5:1
+   on --ground-center in both themes. */
+.workspace-file-tab-source-body {
+  padding: 8px 0 24px;
+}
+
+.workspace-file-tab-source {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.workspace-file-tab-source-row {
+  display: flex;
+  gap: 12px;
+  min-height: 1.6em;
+}
+
+.workspace-file-tab-source-number {
+  flex: none;
+  min-width: 3ch;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+.workspace-file-tab-source-line {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Preview: the 680 px document column inside the pane's column, with the
+   document styles the parser's nodes wear here. */
+.workspace-file-tab-preview {
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 14px 0 24px;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.workspace-file-tab-preview p {
+  margin: 0 0 10px;
+}
+
+.workspace-file-tab-preview .plan-markdown-heading-1 {
+  margin: 18px 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.workspace-file-tab-preview .plan-markdown-heading-2 {
+  margin: 16px 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.workspace-file-tab-preview .plan-markdown-heading-3 {
+  margin: 14px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workspace-file-tab-preview .plan-markdown-heading-4,
+.workspace-file-tab-preview .plan-markdown-heading-5,
+.workspace-file-tab-preview .plan-markdown-heading-6 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workspace-file-tab-preview ul,
+.workspace-file-tab-preview ol {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+
+.workspace-file-tab-preview li {
+  margin: 2px 0;
+}
+
+.workspace-file-tab-preview a {
+  color: var(--accent);
+}
+
+.workspace-file-tab-preview code:not(pre code) {
+  padding: 1px 5px;
+  background: var(--fill-code-inline);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* Tables wear the parser's shared rules (components/markdown.css). */
+
+/* The window's disclosure row, under either body. */
+.workspace-file-tab-window {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}

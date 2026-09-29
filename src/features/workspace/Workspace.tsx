@@ -32,7 +32,7 @@ import {
   type ToolTabKind,
 } from "./strip/toolTabs";
 import { ToolDiffPane } from "./ToolDiffPane";
-import { ToolFilePane } from "./ToolFilePane";
+import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
 import { useTabSelection } from "./strip/useTabSelection";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
@@ -1429,7 +1429,7 @@ export function Workspace({
                 cache={toolContentCache.diffs}
               />
             ) : (
-              <ToolFilePane
+              <WorkspaceFileTab
                 key={activeTool.id}
                 workspaceId={activeTool.workspaceId}
                 path={activeTool.path}

@@ -25,6 +25,23 @@ describe("MarkdownText", () => {
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 
+  // 128 KiB is the wire's file-read window, and a chat message carries it
+  // uncapped: parsing one line must stay linear in the line's length, so
+  // each candidate-heavy shape clears the same generous bar as above.
+  it.each([
+    { shape: "[a](", chunk: "[a](" },
+    { shape: "[a](x", chunk: "[a](x" },
+    { shape: "![a](", chunk: "![a](" },
+    { shape: "the three mixed with spaces", chunk: "[a]( [a](x ![a](" },
+  ])("renders 128 KiB of $shape in one line within a generous time bound", ({ chunk }) => {
+    const input = chunk.repeat(Math.floor((128 * 1024) / chunk.length));
+    const started = performance.now();
+    const markup = renderToStaticMarkup(<MarkdownText text={input} />);
+
+    expect(markup).toContain(input);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("renders the timeline Markdown elements and preserves Windows paths in code", () => {
     const markup = renderToStaticMarkup(
       <MarkdownText

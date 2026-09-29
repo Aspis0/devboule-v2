@@ -66,6 +66,11 @@ const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }
   { text: "--ink", ground: "--panel-card", why: "primary text on cards" },
   { text: "--ink-soft", ground: "--ground-center", why: "secondary text on the transcript" },
   { text: "--muted", ground: "--panel-card", why: "metadata text on cards" },
+  {
+    text: "--muted",
+    ground: "--ground-center",
+    why: "metadata and the File tab gutter on the transcript",
+  },
   { text: "--tone-attention-text", ground: "--panel-card", why: "attention text on cards" },
   {
     text: "--tone-attention-text",
