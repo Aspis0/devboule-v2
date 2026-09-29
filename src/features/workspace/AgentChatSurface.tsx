@@ -177,6 +177,10 @@ interface AgentChatSurfaceProps {
   /** An unanswered permission card parks this session's turn; Enter's queue
    * action becomes steer while one is open (queueing would strand the message). */
   hasPendingPermission?: boolean;
+  /** The one plan timeline row that may stand down: the id of the permission
+   * card actually rendered in this pane, while it waits unanswered. Null,
+   * every plan row renders. */
+  pendingPlanToolCallId?: string | null;
   /**
    * The session's queue of unsent follow-ups, held in memory by the workspace
    * (one per session) and handed down. Handed none, the surface renders
@@ -753,6 +757,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   sessionRoster,
   deviceNames,
   hasPendingPermission = false,
+  pendingPlanToolCallId = null,
   queue = null,
   onPermissionRequest,
   onPermissionResolved,
@@ -1028,14 +1033,27 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         ? { ...item, isStreamingThought: item.id === streamingThoughtId }
         : item,
     );
-    return groupToolCalls(
+    const grouped = groupToolCalls(
       recoveredAttach
         ? items.filter(
             (item) => item.role !== "error" || item.text !== RECOVERED_SESSION_UNAVAILABLE,
           )
         : items,
     );
-  }, [state.items, recoveredAttach, streamingThoughtId]);
+    if (pendingPlanToolCallId === null) return grouped;
+    // The plan row whose approval card is the one on screen is dropped here
+    // only — the item stays in `state.items`, so the row returns to this
+    // exact position when the permission resolves. Plans never join tool
+    // groups, so the filter cannot disturb one.
+    return grouped.filter((entry) => {
+      if (isToolCallGroup(entry)) return true;
+      return !(
+        entry.role === "tool" &&
+        entry.kind === "plan" &&
+        entry.toolCallId === pendingPlanToolCallId
+      );
+    });
+  }, [state.items, recoveredAttach, streamingThoughtId, pendingPlanToolCallId]);
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const composerDisabled = disabledReason !== null;
   // Memoised so an `agent_tasks` frame re-renders the pill alone: the

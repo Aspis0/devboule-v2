@@ -19,6 +19,7 @@ import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SideP
 import { useMenuOpen } from "../../lib/menuOpen";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
+import { pendingPlanId } from "./pendingPlanId";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 import {
   composeStripTabs,
@@ -1117,6 +1118,11 @@ export function Workspace({
   // action into a steer while one is open (queueing would strand the message).
   const hasPendingPermission =
     selectedPermission !== null && selectedPermission.resolution === undefined;
+  // The one plan row that may stand down: the id of the card this pane
+  // actually renders, while it waits unanswered. A plan whose card waits
+  // behind another card keeps its row — a hidden plan with no card on screen
+  // is worse than a duplicate.
+  const pendingPlanToolCallId = pendingPlanId(selectedPermission);
   // The creator lookup the strip's tooltips resolve against: one map per
   // roster, so a chip never scans the roster for its own row.
   const creatorById = useMemo(() => new Map(sessions.map((row) => [row.id, row])), [sessions]);
@@ -1479,6 +1485,7 @@ export function Workspace({
                 }}
                 deviceNames={peerNames}
                 hasPendingPermission={hasPendingPermission}
+                pendingPlanToolCallId={pendingPlanToolCallId}
                 // The app-level owner's queue for this session (see
                 // `sessionQueue`): the surface binds its controller to it, and
                 // Enter mid-turn queues instead of interrupting (review P1-1).
