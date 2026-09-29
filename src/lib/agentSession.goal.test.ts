@@ -5,7 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionEvent } from "../types/ipc";
 import { AgentSession, type AgentChannel, type AgentSessionDeps } from "./agentSession";
 
-function goalHarness(sessionId: string, initialGoal?: string | null) {
+function goalHarness(
+  sessionId: string,
+  initialGoal?: string | null,
+  onGoalChanged?: (goal: string | null) => void,
+) {
   let emit: (event: SessionEvent) => void = () => undefined;
   const invoke = vi.fn(async (command: string) =>
     command === "session_attach" ? 41 : undefined,
@@ -18,6 +22,7 @@ function goalHarness(sessionId: string, initialGoal?: string | null) {
       return {} as AgentChannel;
     },
     ...(initialGoal === undefined ? {} : { initialGoal }),
+    ...(onGoalChanged === undefined ? {} : { onGoalChanged }),
   });
   return { session, emit: (event: SessionEvent) => emit(event) };
 }
@@ -86,5 +91,19 @@ describe("the session goal state", () => {
     const second = goalHarness("agent-2");
     await second.session.start();
     expect(second.session.getState().goal ?? null).toBeNull();
+  });
+
+  it("reports a replacement once and a clear once with null", async () => {
+    const onGoalChanged = vi.fn();
+    const { session, emit } = goalHarness("agent-1", undefined, onGoalChanged);
+    await session.start();
+
+    emit({ type: "goal_changed", goal: "Latest" });
+    expect(onGoalChanged).toHaveBeenCalledTimes(1);
+    expect(onGoalChanged).toHaveBeenLastCalledWith("Latest");
+
+    emit({ type: "goal_changed", goal: null });
+    expect(onGoalChanged).toHaveBeenCalledTimes(2);
+    expect(onGoalChanged).toHaveBeenLastCalledWith(null);
   });
 });

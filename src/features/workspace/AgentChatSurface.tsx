@@ -877,15 +877,23 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     [],
   );
 
+  // The roster goal the workspace keeps current. The controller reads it at
+  // construction, so this refresh must stay above the controller effect: a
+  // same-commit roster move and generation bump must seed the new goal.
+  const latestInitialGoalRef = useRef(initialGoal);
+  useEffect(() => {
+    latestInitialGoalRef.current = initialGoal;
+  });
+
   // An attachment is valid for exactly one `(sessionId, generation)` pair.
   // Resume keeps the id but increments the generation, so this is the signal
   // that the surface's attachment is dead and must be rebuilt. Generation
   // moves only on resume, so this cannot remount under someone mid-turn.
-  /* oxlint-disable react-hooks/exhaustive-deps -- initialGoal seeds only a generation-bump rebuild. */
   useEffect(() => {
     const session = new AgentSession({
       sessionId,
-      initialGoal: goalFrameRef.current !== undefined ? goalFrameRef.current : initialGoal,
+      initialGoal:
+        goalFrameRef.current !== undefined ? goalFrameRef.current : latestInitialGoalRef.current,
       invoke: invokeAgentCommand,
       createChannel: createSessionChannel,
       onTurnFinished: () => queue?.agentFinished(),
@@ -902,8 +910,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     sessionRef.current = session;
     appliedEffortPrefRef.current = false;
     // `start()` is async: seed the new controller now so the old controller's
-    // latched error cannot render until the first notification. This is
-    // external-session synchronization, so it belongs here despite the lint rule.
+    // latched error cannot render until the first notification.
     setState(session.getState());
     const unsubscribe = session.subscribe(() => setState(session.getState()));
     void session.start();
@@ -913,7 +920,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       session.dispose();
     };
   }, [onPermissionRequest, onPermissionResolved, queue, sessionId, observedState?.generation]);
-  /* oxlint-enable react-hooks/exhaustive-deps */
 
   // While this surface is on screen, the queue's sends and interrupts ride the
   // controller it owns, read at call time so a recreated controller (resume,

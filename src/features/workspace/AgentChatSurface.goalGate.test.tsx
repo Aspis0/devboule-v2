@@ -64,6 +64,10 @@ function commands(): string {
 
 async function renderSurface(observedState: SessionState | null): Promise<void> {
   root = createRoot(container);
+  await rerenderSurface(observedState);
+}
+
+async function rerenderSurface(observedState: SessionState | null): Promise<void> {
   await act(async () => {
     root?.render(
       <AgentChatSurface
@@ -94,5 +98,23 @@ describe("the shipped /goal gate", () => {
     await renderSurface(LIVE);
 
     expect(commands().split(",").filter(Boolean)).toContain("goal");
+  });
+
+  it("drops the goal entry when the same surface goes live to ended", async () => {
+    await renderSurface(LIVE);
+    expect(commands().split(",").filter(Boolean)).toContain("goal");
+
+    await rerenderSurface(ENDED);
+
+    expect(commands().split(",").filter(Boolean)).not.toContain("goal");
+  });
+
+  it("drops the goal entry when the same surface goes live to recovered", async () => {
+    await renderSurface(LIVE);
+    expect(commands().split(",").filter(Boolean)).toContain("goal");
+
+    await rerenderSurface(RECOVERED);
+
+    expect(commands().split(",").filter(Boolean)).not.toContain("goal");
   });
 });

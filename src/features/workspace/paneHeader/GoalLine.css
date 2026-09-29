@@ -3,6 +3,7 @@
  * The row never scrolls — it sits outside the transcript scrollport. */
 
 .goal-line {
+  --goal-leading: 1.45;
   display: flex;
   flex: none;
   align-items: center;
@@ -34,9 +35,23 @@
   color: var(--ink-soft);
   font-family: var(--font-ui);
   font-size: var(--type-small);
-  line-height: 1.45;
+  line-height: var(--goal-leading);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.goal-line.is-expanded {
+  align-items: flex-start;
+}
+
+.goal-line.is-expanded .goal-line-icon {
+  /* Centres the 14px mark on the first text line; 14px mirrors .goal-line-icon. */
+  margin-top: calc((var(--type-small) * var(--goal-leading) - 14px) / 2);
+}
+
+.goal-line.is-expanded .goal-line-label {
+  /* The text's first-line box, so both centres sit on line one. */
+  line-height: calc(var(--type-small) * var(--goal-leading));
 }
 
 .goal-line.is-expanded .goal-line-text {

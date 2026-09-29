@@ -178,7 +178,7 @@ describe("the goal row on the agent surface", () => {
       initialGoal: "ROSTER",
       observedState: { type: "live", generation: 1 },
     });
-    // Live frames stay the source of truth while the controller lives.
+    // A roster goal alone does not rebuild the live controller.
     expect(container.querySelector('[data-testid="goal-line"]')).toBeNull();
 
     await rerenderSurface({
@@ -187,6 +187,15 @@ describe("the goal row on the agent surface", () => {
     });
 
     expect(container.querySelector('[data-testid="goal-line"]')?.textContent).toContain("ROSTER");
+  });
+
+  it("seeds the rebuilt controller with a roster goal that lands with the bump", async () => {
+    await renderSurface({ initialGoal: "A", observedState: { type: "live", generation: 1 } });
+    expect(container.querySelector('[data-testid="goal-line"]')?.textContent).toContain("A");
+
+    await rerenderSurface({ initialGoal: "B", observedState: { type: "live", generation: 2 } });
+
+    expect(container.querySelector('[data-testid="goal-line"]')?.textContent).toContain("B");
   });
 
   it("arrives collapsed when the goal is replaced", async () => {
