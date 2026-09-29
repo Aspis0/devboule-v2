@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { getFocusableElements } from "../../../lib/focusableElements";
+import { isImeComposition } from "../../../lib/imeComposition";
 import { useModalOpen } from "../../../lib/modalOpen";
 
 /**
@@ -83,6 +84,7 @@ export function ProfileDialog({
 
     function handleKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
+        if (isImeComposition(event)) return;
         event.preventDefault();
         requestClose();
         return;

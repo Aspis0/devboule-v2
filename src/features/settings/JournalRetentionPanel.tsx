@@ -3,6 +3,7 @@ import { journalRetentionGet, journalRetentionSet, journalUsage } from "../../li
 import type { JournalRetention, JournalUsage, RetentionPatch } from "../../types/ipc";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
+import { isImeComposition } from "../../lib/imeComposition";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
 import "./diagnostics.css";
@@ -192,6 +193,7 @@ export function JournalRetentionPanel() {
                   focusedField.current = field;
                 }}
                 onKeyDown={(event) => {
+                  if (isImeComposition(event.nativeEvent)) return;
                   if (event.key === "Enter") {
                     event.preventDefault();
                     commitField(field, values[field]);

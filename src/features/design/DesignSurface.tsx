@@ -26,6 +26,7 @@ import type {
 } from "./designHost";
 import { ErrorText } from "../../components/ErrorText";
 import { useMenuOpen } from "../../lib/menuOpen";
+import { isImeComposition } from "../../lib/imeComposition";
 import { artifactSrcDoc } from "./artifactCsp";
 import { artifactSlideNotice, readArtifactSlideShape } from "./artifactSlides";
 import { ArtifactCopyControl } from "./ArtifactCopyControl";
@@ -554,6 +555,7 @@ export const DesignSkillModeControl = memo(function DesignSkillModeControl({
     selectedModeRef.current?.focus();
 
     const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (isImeComposition(event)) return;
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
@@ -1026,6 +1028,7 @@ export const DesignToolbar = memo(function DesignToolbar({
     historyPopoverRef.current?.focus();
 
     const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (isImeComposition(event)) return;
       if (event.key !== "Escape") return;
       event.preventDefault();
       closeHistory();
@@ -1265,6 +1268,7 @@ const SectionDetails = memo(function SectionDetails({
           aria-label="Note for the agent on this section"
           onChange={(event) => setNoteDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeComposition(event.nativeEvent)) return;
             if (event.key === "Enter") {
               event.preventDefault();
               submitNote();
@@ -3070,6 +3074,7 @@ const DesignAssistant = memo(function DesignAssistant({
   useEffect(() => {
     if (!providerPickerOpen) return;
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (isImeComposition(event)) return;
       if (event.key !== "Escape") return;
       event.preventDefault();
       dismissProviderPicker();
@@ -4602,6 +4607,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   useEffect(() => {
     if (selectedLayer === null) return;
     const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (isImeComposition(event)) return;
       if (event.key !== "Escape") return;
       const surface = designSurfaceRef.current;
       if (!surface) return;
@@ -5451,6 +5457,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (isImeComposition(event.nativeEvent)) return;
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         send();

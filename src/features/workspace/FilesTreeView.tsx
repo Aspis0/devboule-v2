@@ -1,6 +1,7 @@
 import { memo, useMemo, type ReactNode } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 import { useMenuOpen } from "../../lib/menuOpen";
+import { isImeComposition } from "../../lib/imeComposition";
 import { ErrorText } from "../../components/ErrorText";
 import { formatSize } from "./FilesPreview";
 import { previewMediaKind } from "./previewMedia";
@@ -107,6 +108,7 @@ const RenameInput = memo(function RenameInput({
       autoFocus
       onChange={(event) => onRenameChange(event.target.value)}
       onKeyDown={(event) => {
+        if (isImeComposition(event.nativeEvent)) return;
         if (event.key === "Enter") onCommitRename(entry, value);
         if (event.key === "Escape") onCancelRename();
       }}

@@ -5,6 +5,7 @@
 
 import { act, useState } from "react";
 import { NewProjectDialog } from "../components/NewProjectDialog";
+import { getFocusableElements } from "../lib/focusableElements";
 import { ProfileDialog } from "../features/settings/profiles/ProfileDialog";
 import { buildSkillBlock } from "../features/design/skillLoader";
 import type { BuiltInSkillIndexEntry } from "../features/design/builtInSkills";
@@ -80,6 +81,66 @@ describe("walking every dialog the source finds", () => {
     expect(modalCount()).toBe(0);
   });
 
+  // Escape from a composing field is the IME's cancel, not the dialog's
+  // dismissal: the typed path must survive it.
+  it("New project keeps its draft when Escape arrives from an open composition", async () => {
+    const onClose = vi.fn();
+    const { container, root } = await mount(
+      <NewProjectDialog open onClose={onClose} onCreate={() => undefined} />,
+    );
+    const field = container.querySelector<HTMLInputElement>("#workspace-project-input");
+    if (field === null) throw new Error("project path input missing");
+
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape", isComposing: true }),
+      );
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+
+    // Positive control: outside a composition the Escape still closes, so
+    // a guard that returns unconditionally fails here.
+    await act(async () => {
+      field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    expect(modalCount()).toBe(0);
+  });
+
+  // The composition guard may swallow Escape, never the dialog's Tab trap:
+  // focus containment is what keeps the modal a modal mid-composition.
+  it("New project keeps its Tab trap during a composition", async () => {
+    const onClose = vi.fn();
+    const { container, root } = await mount(
+      <NewProjectDialog open onClose={onClose} onCreate={() => undefined} />,
+    );
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
+    if (dialog === null) throw new Error("new project dialog missing");
+    const focusable = getFocusableElements(dialog);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (first === undefined || last === undefined || first === last) {
+      throw new Error("dialog needs at least two focusables");
+    }
+    await act(async () => last.focus());
+
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    });
+    await act(async () => {
+      last.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(first);
+    await act(async () => root.unmount());
+    expect(modalCount()).toBe(0);
+  });
+
   it("Profile raises the signal, lands focus in the card, and closes on Escape", async () => {
     const onClose = vi.fn();
     const { container, root } = await mount(
@@ -104,6 +165,83 @@ describe("walking every dialog the source finds", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    expect(modalCount()).toBe(0);
+  });
+
+  // Escape from a composing field is the IME's cancel, not the card's
+  // dismissal: the typed form must survive it.
+  it("Profile keeps its form when Escape arrives from an open composition", async () => {
+    const onClose = vi.fn();
+    const { container, root } = await mount(
+      <ProfileDialog open title="Edit profile" busy={false} onClose={onClose}>
+        {({ requestClose }) => (
+          <form>
+            <input aria-label="Profile name" />
+            <button type="button" onClick={requestClose}>
+              Cancel
+            </button>
+          </form>
+        )}
+      </ProfileDialog>,
+    );
+    const field = container.querySelector<HTMLInputElement>('input[aria-label="Profile name"]');
+    if (field === null) throw new Error("profile name input missing");
+
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape", isComposing: true }),
+      );
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.querySelector(".edit-card")).not.toBeNull();
+
+    // Positive control: outside a composition the Escape still closes.
+    await act(async () => {
+      field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    expect(modalCount()).toBe(0);
+  });
+
+  // Same contract as New project: the composition guard may swallow Escape,
+  // never the card's Tab trap.
+  it("Profile keeps its Tab trap during a composition", async () => {
+    const onClose = vi.fn();
+    const { container, root } = await mount(
+      <ProfileDialog open title="Edit profile" busy={false} onClose={onClose}>
+        {({ requestClose }) => (
+          <form>
+            <input aria-label="Profile name" />
+            <button type="button" onClick={requestClose}>
+              Cancel
+            </button>
+          </form>
+        )}
+      </ProfileDialog>,
+    );
+    const card = container.querySelector<HTMLElement>(".edit-card");
+    if (card === null) throw new Error("profile card missing");
+    const focusable = getFocusableElements(card);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (first === undefined || last === undefined || first === last) {
+      throw new Error("profile card needs at least two focusables");
+    }
+    await act(async () => last.focus());
+
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    });
+    await act(async () => {
+      last.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(first);
     await act(async () => root.unmount());
     expect(modalCount()).toBe(0);
   });

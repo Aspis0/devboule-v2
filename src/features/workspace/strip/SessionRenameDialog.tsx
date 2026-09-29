@@ -17,6 +17,7 @@ import { ErrorText } from "../../../components/ErrorText";
 import { isCommandError } from "../../../lib/commandError";
 import { errorSentence } from "../../../lib/errorSentence";
 import { getFocusableElements } from "../../../lib/focusableElements";
+import { isImeComposition } from "../../../lib/imeComposition";
 import { useModalOpen } from "../../../lib/modalOpen";
 import { sessionSetName } from "../../../lib/tauri";
 import { validateSessionRename } from "../../../lib/sessionRename";
@@ -151,6 +152,7 @@ export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProp
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
+      if (isImeComposition(event.nativeEvent)) return;
       event.preventDefault();
       if (!submitting) onClose();
       return;
@@ -224,6 +226,7 @@ export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProp
               setError(null);
             }}
             onKeyDown={(event) => {
+              if (isImeComposition(event.nativeEvent)) return;
               if (event.key !== "Enter") return;
               // The form's own implicit submission would also fire on a real
               // browser; the submitting ref makes the second call a no-op.

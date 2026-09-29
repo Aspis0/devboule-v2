@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { isImeComposition } from "../../../lib/imeComposition";
 import { sessionTabElementId } from "./useTabCloseFlow";
 
 interface StripKeyboardArgs {
@@ -102,7 +103,7 @@ export function useStripKeyboard({ tabs, activeTabId, selectTab, closeTab }: Str
       // The chord is text or composition inside a field: switching tabs
       // would yank the caret out from under the user. Terminals, menus
       // and dialogs own their keys the same way.
-      if (event.isComposing) return;
+      if (isImeComposition(event)) return;
       const target = event.target;
       if (target instanceof HTMLElement) {
         const tag = target.tagName;

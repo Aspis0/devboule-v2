@@ -194,9 +194,9 @@ describe("FilesFileActions", () => {
     });
   }
 
-  async function pressKey(key: string): Promise<void> {
+  async function pressKey(key: string, init: KeyboardEventInit = {}): Promise<void> {
     await act(async () => {
-      renameInput().dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      renameInput().dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
     });
   }
 
@@ -300,6 +300,35 @@ describe("FilesFileActions", () => {
 
     expect(container.querySelector(".workspace-tree-rename")).toBeNull();
     expect(vi.mocked(workspaceFileRename)).not.toHaveBeenCalled();
+  });
+
+  // Enter and Escape during an IME composition belong to the candidate list:
+  // neither may reach the rename, and the typed name stays untouched.
+  it("leaves Enter and Escape to an open IME composition", async () => {
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    await openMenu("README.md");
+    await menuItem("Rename");
+    await typeName("GUIDE.md");
+
+    await pressKey("Enter", { isComposing: true });
+    expect(vi.mocked(workspaceFileRename)).not.toHaveBeenCalled();
+    expect(renameInput().value).toBe("GUIDE.md");
+
+    // Older engines report the composition commit as keyCode 229 alone.
+    await pressKey("Enter", { keyCode: 229 });
+    expect(vi.mocked(workspaceFileRename)).not.toHaveBeenCalled();
+    expect(renameInput().value).toBe("GUIDE.md");
+
+    await pressKey("Escape", { isComposing: true });
+    await act(async () => undefined);
+    expect(container.querySelector(".workspace-tree-rename")).not.toBeNull();
+    expect(renameInput().value).toBe("GUIDE.md");
+
+    // Composition closed: the next Enter renames, as it always has.
+    await pressKey("Enter");
+    await act(async () => undefined);
+    expect(vi.mocked(workspaceFileRename)).toHaveBeenCalledWith(WORKSPACE, "README.md", "GUIDE.md");
   });
 
   // The tree must FOLLOW a renamed folder: its keys (row, expansion, child

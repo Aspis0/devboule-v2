@@ -2801,6 +2801,51 @@ describe("Workspace sessions", () => {
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
+  // Escape from a composing field is the IME's cancel: the consent must
+  // not be cancelled and focus must not be yanked back to the trigger.
+  it("an Escape from an open composition leaves the consent standing", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, npxProvider],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+
+    const codexOption = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+    ).find((button) => button.textContent?.includes("codex-acp"));
+    if (codexOption === undefined) throw new Error("codex-acp option did not render");
+    await act(async () => codexOption.click());
+    await act(async () => undefined);
+
+    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true }),
+      );
+    });
+
+    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    expect(sessionCreate).not.toHaveBeenCalled();
+
+    // Positive control: outside a composition the Escape still cancels, so
+    // a guard that returns unconditionally fails here.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
+  });
+
   it("double-click on Confirm creates only once", async () => {
     vi.mocked(providersList).mockResolvedValue({
       providers: [grokProvider, npxProvider],

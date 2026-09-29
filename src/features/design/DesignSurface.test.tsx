@@ -999,6 +999,44 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  // Escape from a composing field is the IME's cancel: the popover must not
+  // close, and focus must not be yanked out of the composition.
+  it("keeps History open when Escape arrives from an open composition", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    const composer = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Describe a design change"]',
+    );
+    if (trigger === null || popover === null || composer === null) {
+      throw new Error("History controls or composer missing");
+    }
+
+    await act(async () => trigger.click());
+    expect(popover.hidden).toBe(false);
+
+    await act(async () => {
+      composer.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true }),
+      );
+    });
+    expect(popover.hidden).toBe(false);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    // Positive control: outside a composition the Escape still closes the
+    // popover, so a guard that returns unconditionally fails here.
+    await act(async () => {
+      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(popover.hidden).toBe(true);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => root.unmount());
+  });
+
   it("closes History when an entry is picked", async () => {
     historyOpenMocks.open.mockReturnValue({ dispose: vi.fn() });
     const { container, root } = await renderDesign(createHost());
@@ -1620,6 +1658,47 @@ describe("DesignSurface host capabilities", () => {
     expect(document.activeElement).toBe(container.querySelector('[role="option"]'));
     await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
     expect(container.querySelector("#design-provider-picker")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  // Escape from a composing field is the IME's cancel: the pending consent
+  // must not be cancelled under it.
+  it("keeps pending consent when Escape arrives from an open composition", async () => {
+    const downloadedOnDemand = provider("downloaded-agent", "npx-wrapper");
+    providerMocks.list.mockResolvedValueOnce({
+      providers: [downloadedOnDemand],
+      unreadableDirs: 0,
+    });
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await act(settle);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[aria-label^="Choose provider:"]')?.click(),
+    );
+    const option = container.querySelector<HTMLButtonElement>('[role="option"]');
+    if (option === null) throw new Error("Provider option missing");
+    await act(async () => option.click());
+    expect(container.querySelector(".design-agent-picker-primary")).not.toBeNull();
+
+    const composer = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Describe a design change"]',
+    );
+    if (composer === null) throw new Error("composer missing");
+    await act(async () => {
+      composer.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true }),
+      );
+    });
+    expect(container.querySelector(".design-agent-picker-primary")).not.toBeNull();
+
+    // Positive control: outside a composition the Escape still cancels the
+    // consent, so a guard that returns unconditionally fails here.
+    await act(async () => {
+      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector(".design-agent-picker-primary")).toBeNull();
+    expect(container.querySelector("#design-provider-picker")).not.toBeNull();
     await act(async () => root.unmount());
   });
 
@@ -4058,6 +4137,41 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  // Escape from a composing field is the IME's cancel: the popover must not
+  // close, and focus must not be yanked out of the composition.
+  it("keeps the craft popover open when Escape arrives from an open composition", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[data-design-skill-mode-trigger="true"]',
+    );
+    const composer = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Describe a design change"]',
+    );
+    if (trigger === null || composer === null) throw new Error("Craft trigger or composer missing");
+
+    await act(async () => trigger.click());
+    expect(container.querySelector("#design-skill-picker")).not.toBeNull();
+
+    await act(async () => {
+      composer.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true }),
+      );
+    });
+    expect(container.querySelector("#design-skill-picker")).not.toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    // Positive control: outside a composition the Escape still closes the
+    // popover, so a guard that returns unconditionally fails here.
+    await act(async () => {
+      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector("#design-skill-picker")).toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => root.unmount());
+  });
+
   it("shows matched result provenance, including fallback copy, and clears it on mode change", async () => {
     const generate = vi.fn<NonNullable<DesignHost["generate"]>>().mockResolvedValue({
       ...GENERATION_RESULT,
@@ -4709,6 +4823,50 @@ describe("Design chrome, composer and folder attachment", () => {
       expect(skillSettingsMocks.saveWorkspace).toHaveBeenCalledWith(newWorkspace.id),
     );
     expect(container.textContent).toContain(newProject.path);
+    await act(async () => root.unmount());
+  });
+
+  it("leaves Enter to an open IME composition instead of sending", async () => {
+    // Enter confirms an IME candidate; sending here would ship the
+    // half-composed prompt before the candidate is chosen.
+    const generate = vi.fn(async () => GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    const draft = await fillDraft(container, "Make the header quieter.");
+
+    await act(async () => {
+      draft.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+        }),
+      );
+    });
+    expect(generate).not.toHaveBeenCalled();
+    expect(draft.value).toBe("Make the header quieter.");
+
+    // Older engines report the composition commit as keyCode 229 alone.
+    await act(async () => {
+      draft.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+          keyCode: 229,
+        }),
+      );
+    });
+    expect(generate).not.toHaveBeenCalled();
+    expect(draft.value).toBe("Make the header quieter.");
+
+    // Composition closed: the next Enter sends, as it always has.
+    await act(async () => {
+      draft.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(generate).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
   });
 

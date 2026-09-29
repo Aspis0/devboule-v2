@@ -17,6 +17,7 @@ vi.mock("../../../lib/tauri", async (importOriginal) => {
 });
 
 import { sessionSetName } from "../../../lib/tauri";
+import { getFocusableElements } from "../../../lib/focusableElements";
 import { useAppStore } from "../../../store/appStore";
 import { SessionRenameDialog } from "./SessionRenameDialog";
 
@@ -91,8 +92,10 @@ function saveButton(): HTMLButtonElement {
   return found;
 }
 
-function pressKey(field: HTMLElement, key: string): void {
-  field.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+function pressKey(field: HTMLElement, key: string, init: KeyboardEventInit = {}): void {
+  field.dispatchEvent(
+    new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }),
+  );
 }
 
 afterEach(() => {
@@ -173,6 +176,76 @@ describe("SessionRenameDialog", () => {
     });
     expect(sessionSetName).not.toHaveBeenCalled();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await probe.unmount();
+  });
+
+  // Enter and Escape during an IME composition belong to the candidate
+  // list: neither may reach the save, and the typed name stays untouched.
+  it("leaves Enter and Escape to an open IME composition", async () => {
+    const probe = renderProbe();
+    await probe.mount();
+    probe.store.setRename({ sessionId: "s.4242.7", title: "worker one" });
+    await act(async () => {});
+    typeIn(input(), "worker two");
+
+    await act(async () => {
+      pressKey(input(), "Enter", { isComposing: true });
+    });
+    expect(sessionSetName).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(input().value).toBe("worker two");
+
+    // Older engines report the composition commit as keyCode 229 alone.
+    await act(async () => {
+      pressKey(input(), "Enter", { keyCode: 229 });
+    });
+    expect(sessionSetName).not.toHaveBeenCalled();
+    expect(input().value).toBe("worker two");
+
+    await act(async () => {
+      pressKey(input(), "Escape", { isComposing: true });
+    });
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(input().value).toBe("worker two");
+
+    // Composition closed: the next Enter saves, as it always has.
+    await act(async () => {
+      pressKey(input(), "Enter");
+    });
+    expect(sessionSetName).toHaveBeenCalledTimes(1);
+    expect(sessionSetName).toHaveBeenCalledWith("s.4242.7", "worker two");
+    await probe.unmount();
+  });
+
+  // The composition guard may swallow Escape, never the card's Tab trap.
+  it("keeps its Tab trap during a composition", async () => {
+    const probe = renderProbe();
+    await probe.mount();
+    probe.store.setRename({ sessionId: "s.4242.7", title: "worker one" });
+    await act(async () => {});
+    const card = document.querySelector<HTMLElement>('[role="dialog"]');
+    if (card === null) throw new Error("rename dialog missing");
+    const focusable = getFocusableElements(card);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (first === undefined || last === undefined || first === last) {
+      throw new Error("rename dialog needs at least two focusables");
+    }
+    await act(async () => {
+      last.focus();
+    });
+
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    });
+    await act(async () => {
+      last.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(first);
     await probe.unmount();
   });
 

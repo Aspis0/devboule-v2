@@ -144,6 +144,56 @@ describe("Settings retention panel", () => {
     );
   });
 
+  // Enter during an IME composition is the candidate list's key: it must
+  // not commit the field, and the typed value stays untouched.
+  it("leaves Enter to an open IME composition instead of committing the field", async () => {
+    root = createRoot(container);
+    await act(async () => root.render(<JournalRetentionPanel />));
+    await act(async () => undefined);
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='Maximum sessions']");
+    if (!input) throw new Error("Maximum sessions input did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (!setValue) throw new Error("input value setter did not exist");
+    input.focus();
+    setValue.call(input, "10");
+    await act(async () => input.dispatchEvent(new Event("input", { bubbles: true })));
+
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+        }),
+      );
+    });
+    expect(journalRetentionSet).not.toHaveBeenCalled();
+    expect(input.value).toBe("10");
+
+    // Older engines report the composition commit as keyCode 229 alone.
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+          keyCode: 229,
+        }),
+      );
+    });
+    expect(journalRetentionSet).not.toHaveBeenCalled();
+    expect(input.value).toBe("10");
+
+    // Composition closed: the next Enter commits, as it always has.
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(journalRetentionSet).toHaveBeenCalledWith({ maxSessions: 10 });
+  });
+
   it("commits a complete value on blur instead of persisting each prefix", async () => {
     root = createRoot(container);
     await act(async () => root.render(<JournalRetentionPanel />));

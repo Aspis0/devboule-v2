@@ -758,6 +758,56 @@ describe("ChangesSurface actions", () => {
     expect(document.querySelector(".confirm-dialog")).toBeNull();
   });
 
+  // Enter during an IME composition is the candidate list's key: it must
+  // not reach the commit, and the typed message stays untouched.
+  it("leaves Enter to an open IME composition instead of committing", async () => {
+    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Commit message"]');
+    if (input === null) throw new Error("no message field");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    if (setter === undefined) throw new Error("no value setter");
+    await act(async () => {
+      setter.call(input, "say what changed");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+        }),
+      );
+    });
+    expect(vi.mocked(workspaceGitCommit)).not.toHaveBeenCalled();
+    expect(input.value).toBe("say what changed");
+
+    // Older engines report the composition commit as keyCode 229 alone.
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+          keyCode: 229,
+        }),
+      );
+    });
+    expect(vi.mocked(workspaceGitCommit)).not.toHaveBeenCalled();
+    expect(input.value).toBe("say what changed");
+
+    // Composition closed: the next Enter commits, as it always has.
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(vi.mocked(workspaceGitCommit)).toHaveBeenCalledWith(WORKSPACE, "say what changed");
+  });
+
   // Commit's own discipline at the keyboard: an empty message never
   // reaches the wire (the button is disabled for it — the daemon refuses
   // it again, but the panel should not offer the trip), a written one is

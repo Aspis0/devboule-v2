@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { projectAdd } from "../lib/tauri";
 import { getFocusableElements } from "../lib/focusableElements";
 import { useModalOpen } from "../lib/modalOpen";
+import { isImeComposition } from "../lib/imeComposition";
 import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import { ErrorText } from "./ErrorText";
 import type { Project } from "../types/ipc";
@@ -46,6 +47,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
 
     const handleDialogKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (isImeComposition(event)) return;
         event.preventDefault();
         if (!submittingRef.current) onClose();
         return;

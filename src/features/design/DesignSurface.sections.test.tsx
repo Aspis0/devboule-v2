@@ -339,7 +339,7 @@ function wheelEvent(init: {
   return event;
 }
 
-async function fillNote(container: HTMLDivElement, text: string): Promise<void> {
+async function typeNote(container: HTMLDivElement, text: string): Promise<HTMLInputElement> {
   const field = container.querySelector<HTMLInputElement>(
     'input[aria-label="Note for the agent on this section"]',
   );
@@ -350,6 +350,11 @@ async function fillNote(container: HTMLDivElement, text: string): Promise<void> 
     setValue.call(field, text);
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  return field;
+}
+
+async function fillNote(container: HTMLDivElement, text: string): Promise<void> {
+  await typeNote(container, text);
   const add = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
     (button) => button.textContent === "Add",
   );
@@ -790,6 +795,117 @@ describe("DesignSurface page sections", () => {
       await Promise.resolve();
     });
     expect(container.querySelector(".design-layer-row-selected")).toBeNull();
+    expect(container.querySelector(".design-layer-details")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("leaves Enter to an open IME composition instead of adding the note", async () => {
+    // Enter confirms an IME candidate; committing here would file the
+    // half-composed note before the candidate is chosen.
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
+    const host = createHost({ generate });
+    const { container, root } = await renderDesign(host);
+    await generateArtifact(container, generate, "Build a shop page.");
+
+    await act(async () => {
+      layerRowByName(container, "Deals").click();
+      await Promise.resolve();
+    });
+    const field = await typeNote(container, "Make the CTA louder.");
+
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+        }),
+      );
+    });
+    expect(field.value).toBe("Make the CTA louder.");
+    expect(container.querySelector(".design-section-notes")).toBeNull();
+
+    // Older engines report the composition commit as keyCode 229 alone.
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+          keyCode: 229,
+        }),
+      );
+    });
+    expect(field.value).toBe("Make the CTA louder.");
+    expect(container.querySelector(".design-section-notes")).toBeNull();
+
+    // Composition closed: the next Enter files the note, as it always has.
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(field.value).toBe("");
+    expect(container.querySelector(".design-section-notes")).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("leaves Escape to an open IME composition: the draft and the section stay", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
+    const host = createHost({ generate });
+    const { container, root } = await renderDesign(host);
+    await generateArtifact(container, generate, "Build a shop page.");
+
+    await act(async () => {
+      layerRowByName(container, "Deals").click();
+      await Promise.resolve();
+    });
+    const field = await typeNote(container, "half-written note");
+
+    // Escape cancels the candidate; it must not clear the draft.
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(field.value).toBe("half-written note");
+    expect(container.querySelector(".design-layer-details")).not.toBeNull();
+
+    // With the draft already empty the Escape would bubble to the surface's
+    // deselect handler — that one must leave a composition alone too.
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (setValue === undefined) throw new Error("input value setter did not exist");
+      setValue.call(field, "");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".design-layer-details")).not.toBeNull();
+
+    // Composition closed: Escape on the empty field deselects, as before.
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+    });
     expect(container.querySelector(".design-layer-details")).toBeNull();
     await act(async () => root.unmount());
   });

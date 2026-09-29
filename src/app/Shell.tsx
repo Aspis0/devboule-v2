@@ -3,6 +3,7 @@ import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { chooseAndInstall } from "../features/plugins/install";
 import { pluginState } from "../lib/plugins";
 import { closeOpenMenus } from "../lib/menuOpen";
+import { isImeComposition } from "../lib/imeComposition";
 import { useAppStore } from "../store/appStore";
 import { ErrorText } from "../components/ErrorText";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
@@ -139,6 +140,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
 
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key === "Escape") {
+      if (isImeComposition(event.nativeEvent)) return;
       if (!navOpen) return;
       event.preventDefault();
       closeNav();

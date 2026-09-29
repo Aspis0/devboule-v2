@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -41,7 +41,7 @@ function inventory(plugins: PluginEntry[], problem: string | null = null): Plugi
   return { root: "C:/data/plugins", plugins, problem };
 }
 
-async function renderShell(): Promise<{
+async function renderShell(children: ReactNode = <div>Surface</div>): Promise<{
   container: HTMLDivElement;
   root: ReturnType<typeof createRoot>;
 }> {
@@ -49,11 +49,7 @@ async function renderShell(): Promise<{
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(
-      <Shell activeSurface="workspace">
-        <div>Surface</div>
-      </Shell>,
-    );
+    root.render(<Shell activeSurface="workspace">{children}</Shell>);
   });
   return { container, root };
 }
@@ -185,6 +181,44 @@ describe("Shell crescent", () => {
 
     await act(async () => {
       sliver.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    });
+    expect(navigation.classList).not.toContain("crescent-nav-open");
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  // Escape from a composing field is the IME's cancel: the shell must not
+  // close the nav under it, and above all must not yank focus to the trigger.
+  it("keeps the nav open when Escape arrives from an open composition", async () => {
+    useAppStore.setState({ plugins: inventory([READY]) });
+    const { container, root } = await renderShell(<input aria-label="Draft" />);
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const navigation = container.querySelector<HTMLElement>(".crescent-nav");
+    const field = container.querySelector<HTMLInputElement>('input[aria-label="Draft"]');
+    if (sliver === null || navigation === null || field === null) {
+      throw new Error("crescent or draft field did not render");
+    }
+    await act(async () => {
+      sliver.focus();
+    });
+    expect(navigation.classList).toContain("crescent-nav-open");
+    await act(async () => {
+      field.focus();
+    });
+
+    await act(async () => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape", isComposing: true }),
+      );
+    });
+    expect(navigation.classList).toContain("crescent-nav-open");
+    expect(document.activeElement).toBe(field);
+
+    // Composition closed: the next Escape closes the nav, as it always has.
+    await act(async () => {
+      field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
     });
     expect(navigation.classList).not.toContain("crescent-nav-open");
     await act(async () => {

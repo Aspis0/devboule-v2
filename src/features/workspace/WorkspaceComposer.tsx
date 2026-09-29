@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,6 +11,7 @@ import {
 } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { composerActionLabel } from "../../lib/sendBehavior";
+import { isImeComposition } from "../../lib/imeComposition";
 import { WorkspaceCommandMenu, type WorkspaceCommand } from "./WorkspaceCommandMenu";
 
 /** Height cap of the growing textarea: eight 20px lines. */
@@ -62,6 +64,15 @@ function commandQuery(input: string): string | null {
   return query.toLowerCase();
 }
 
+/** One hand-back's merge: refused text stacks above what is already there.
+ * An empty refusal is the identity, so the merge, the park fold, the pending
+ * fold and a racing keystroke that empties the field all answer the same
+ * question the same way. */
+function combine(refused: string, existing: string): string {
+  if (refused === "") return existing;
+  return existing === "" ? refused : `${refused}\n\n${existing}`;
+}
+
 /** One step from the highlighted row for an arrow key, wrapping at both ends
  * (Paseo's `getNextActiveIndex`,
  * `packages/app/src/components/ui/combobox-keyboard.ts`); with no rows there
@@ -94,6 +105,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
+  const parkedRestoreRef = useRef<{ text: string; focus: boolean } | null>(null);
+  const pendingPrefixRef = useRef<string | null>(null);
   const menuId = useId();
 
   useEffect(() => {
@@ -105,14 +119,68 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     textarea.style.overflowY = overflowing ? "auto" : "hidden";
   }, [input]);
 
+  // A hand-back merges refused text above whatever the composer holds, via a
+  // functional update: the freshest state is read at process time, so a
+  // keystroke queued before the merge is folded in rather than overwritten.
+  // The pending marker rides along so the keystroke that races the merge —
+  // onChange is the only place a keystroke lands — re-applies it instead of
+  // replacing it; a second hand-back before the first is observable folds
+  // above it, the same order the park uses.
+  const applyHandBack = useCallback(
+    (draft: { text: string; focus: boolean }) => {
+      const pending = pendingPrefixRef.current;
+      pendingPrefixRef.current = combine(draft.text, pending ?? "");
+      setInput((current) => combine(draft.text, current));
+      if (draft.focus) textareaRef.current?.focus();
+    },
+    [setInput],
+  );
+
+  // Primitive views of the hand-back: the effect keys on these, never on
+  // `restoreDraft`'s identity and never on `input`, so an inline-literal
+  // caller cannot re-fire it and no keystroke runs it either.
+  const restoreNonce = restoreDraft?.nonce ?? null;
+  const restoreText = restoreDraft?.text ?? null;
+  const restoreFocus = restoreDraft?.focus ?? false;
+
   // A queue hand-back (an Edit's text, a refused steer's text) is applied
-  // once, keyed by its nonce; only a refused steer also takes the focus,
-  // because an Edit's focus follows the row rule in the track.
+  // once, keyed by its nonce — primitive deps, so a fresh object with the
+  // same nonce does not re-fire it and no keystroke does either; only a
+  // refused steer also takes the focus, because an Edit's focus follows the
+  // row rule in the track. A late hand-back must not eat what was typed
+  // meanwhile: refused text first, the newer text after, so both survive.
+  // One that lands mid-composition is parked instead — writing the value now
+  // would cancel the composition and drop the preedit — and applies on
+  // compositionend.
   useEffect(() => {
-    if (restoreDraft === null) return;
-    setInput(restoreDraft.text);
-    if (restoreDraft.focus) textareaRef.current?.focus();
-  }, [restoreDraft]);
+    if (restoreNonce === null || restoreText === null) return;
+    if (composingRef.current) {
+      const parked = parkedRestoreRef.current;
+      // Two refusals in one composition stack instead of the later one
+      // replacing the earlier: nothing handed back is ever dropped.
+      parkedRestoreRef.current =
+        parked === null
+          ? { text: restoreText, focus: restoreFocus }
+          : {
+              text: combine(restoreText, parked.text),
+              focus: restoreFocus || parked.focus,
+            };
+      return;
+    }
+    applyHandBack({ text: restoreText, focus: restoreFocus });
+  }, [restoreNonce, restoreText, restoreFocus, applyHandBack]);
+
+  // Only an input commit runs this — an unrelated re-render leaves [input]
+  // untouched. While a hand-back is pending the writers of `input` are the
+  // merge itself and onChange's own combine (both always start with the
+  // pending text) or send/queue/command's raw write (which never does) — so
+  // startsWith clears exactly when the merge is observable and keeps the
+  // marker across a clear-out.
+  useLayoutEffect(() => {
+    const refused = pendingPrefixRef.current;
+    if (refused === null) return;
+    if (input.startsWith(refused)) pendingPrefixRef.current = null;
+  }, [input]);
 
   const sendInput = useCallback(() => {
     const text = input.trim();
@@ -188,12 +256,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   const handleComposerKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-      // Enter belongs to an IME while a composition is open: the keystroke
-      // commits the composition, and sending here would submit the text before
-      // the candidate is chosen. `isComposing` is the standard signal; the
-      // legacy `keyCode === 229` covers engines that report the composition
-      // commit without setting it.
-      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+      if (isImeComposition(event.nativeEvent)) return;
       if (event.key === "Escape" && commandMenuVisible) {
         event.preventDefault();
         setMenuDismissed(true);
@@ -265,8 +328,25 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
             captureTextarea?.(element);
           }}
           value={input}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={(event) => {
+            const value = event.target.value;
+            const refused = pendingPrefixRef.current;
+            // The DOM value cannot carry the pending refusal — a commit that
+            // put it there would already have cleared the marker — so the
+            // refused text is stacked back on here, where every keystroke
+            // lands, instead of in a second guessing effect.
+            setInput(refused === null ? value : combine(refused, value));
+          }}
           onKeyDown={handleComposerKeyDown}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+            const parked = parkedRestoreRef.current;
+            parkedRestoreRef.current = null;
+            if (parked !== null) applyHandBack(parked);
+          }}
           placeholder={COMPOSER_PLACEHOLDER}
           rows={1}
           aria-label="Message the agent"

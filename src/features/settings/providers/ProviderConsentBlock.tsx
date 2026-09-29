@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { isImeComposition } from "../../../lib/imeComposition";
 import { CopyableLines, type CopyableLine } from "./CopyableLines";
 
 /**
@@ -39,6 +40,7 @@ export function ProviderConsentBlock({
 
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
+      if (isImeComposition(event)) return;
       if (event.key === "Escape") onCancel();
     };
     window.addEventListener("keydown", onKey);

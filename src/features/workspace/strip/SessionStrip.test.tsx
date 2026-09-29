@@ -403,6 +403,24 @@ describe("SessionStrip", () => {
     expect(props.selectTab).not.toHaveBeenCalled();
   });
 
+  it("does not switch tabs on a keyCode-229 chord from a legacy engine", () => {
+    // One definition serves every site: legacy engines report the
+    // composition as keyCode 229 without ever setting isComposing.
+    const props = renderStrip([session("a", "agent a"), session("b", "agent b")], "a");
+    const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
+    const event = new KeyboardEvent("keydown", {
+      key: "]",
+      altKey: true,
+      shiftKey: true,
+      bubbles: true,
+      keyCode: 229,
+    });
+    act(() => {
+      tab.dispatchEvent(event);
+    });
+    expect(props.selectTab).not.toHaveBeenCalled();
+  });
+
   it("paints every state with its own dot tone", () => {
     renderStrip(
       [

@@ -65,6 +65,7 @@ import {
   type DelegationController,
 } from "../../lib/delegation";
 import { SESSION_RENAME_CAPABILITY } from "../../lib/sessionRename";
+import { isImeComposition } from "../../lib/imeComposition";
 import {
   PermissionCard as WorkspacePermissionCard,
   formatPermissionCommand,
@@ -965,6 +966,7 @@ export function Workspace({
   useEffect(() => {
     if (providerAnchor === null && consentProvider === null) return;
     const onKey = (event: KeyboardEvent) => {
+      if (isImeComposition(event)) return;
       if (event.key === "Escape") {
         if (consentProvider !== null) {
           consentCancel();

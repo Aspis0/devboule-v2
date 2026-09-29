@@ -298,6 +298,41 @@ describe("ProviderRow", () => {
     expect(document.activeElement).toBe(kebab);
   });
 
+  // Escape from a composing field is the IME's cancel: the consent card
+  // must not be cancelled under it.
+  it("keeps the consent standing when Escape arrives from an open composition", async () => {
+    const onCancelConsent = vi.fn();
+    await act(async () => {
+      root.render(
+        <ProviderRow
+          {...props}
+          onCancelConsent={onCancelConsent}
+          consent={{
+            verb: "update",
+            lines: ["npm install -g @vibe/grok-cli@latest"],
+            copyLines: null,
+            notice: null,
+          }}
+        />,
+      );
+    });
+    expect(container.querySelector(".provider-consent")).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true }),
+      );
+    });
+    expect(onCancelConsent).not.toHaveBeenCalled();
+    expect(container.querySelector(".provider-consent")).not.toBeNull();
+
+    // Composition closed: the next Escape cancels, as it always has.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(onCancelConsent).toHaveBeenCalledTimes(1);
+  });
+
   it("opens Update through the kebab and renders the consent card", async () => {
     const onOpenUpdate = vi.fn();
     const onConfirmConsent = vi.fn();

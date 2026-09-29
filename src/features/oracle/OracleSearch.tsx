@@ -9,6 +9,7 @@ import type {
 import type { TrackedRequestState } from "../../lib/trackedRequest";
 import { ErrorText } from "../../components/ErrorText";
 import { formatCount } from "../../lib/format";
+import { isImeComposition } from "../../lib/imeComposition";
 import {
   focusLineRange,
   resultLineCount,
@@ -57,6 +58,7 @@ export const OracleSearch = memo(function OracleSearch({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (isImeComposition(event.nativeEvent)) return;
     if (event.key === "Enter") {
       event.preventDefault();
       submitQuery();

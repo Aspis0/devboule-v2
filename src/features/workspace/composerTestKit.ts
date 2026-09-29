@@ -2,7 +2,7 @@ import { act, type ComponentProps } from "react";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
 /**
- * The fixtures and drivers the composer's two suites share — how a test types
+ * The fixtures and drivers the composer's suites share — how a test types
  * into the composer, presses a key on it, and reads its menu. Nothing here is
  * a case, and nothing here is production code.
  */

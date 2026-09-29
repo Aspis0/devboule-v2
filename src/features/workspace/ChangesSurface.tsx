@@ -2,6 +2,7 @@ import { memo, useCallback, useState } from "react";
 import type { WorkspaceGitStatus } from "../../types/ipc";
 import { useWorkspaceChanges } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
+import { isImeComposition } from "../../lib/imeComposition";
 import { useWorkspaceGitActions } from "./useWorkspaceGitActions";
 import { useWorkspaceCommits } from "./useWorkspaceCommits";
 import { useAskFocus } from "./useAskFocus";
@@ -195,6 +196,7 @@ function CommitRow({
         disabled={acting}
         onChange={(event) => onMessage(event.target.value)}
         onKeyDown={(event) => {
+          if (isImeComposition(event.nativeEvent)) return;
           if (event.key === "Enter" && message.trim() !== "") onCommit();
         }}
       />
