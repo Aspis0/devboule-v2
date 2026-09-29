@@ -190,21 +190,21 @@ impl ProviderSwitchStore {
 
 /// Read the file, canonicalising built-in aliases while retaining ids that
 /// are temporarily absent from the live catalog (including user rows).
+///
+/// A missing, 0-byte or whitespace-only file reads all-on (the first run).
+/// A leading UTF-8 BOM is stripped, so a Notepad save loads as written.
 fn read_switches(path: &Path) -> Result<HashSet<String>, String> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashSet::new()),
-        Err(error) => return Err(error.to_string()),
-    };
-    if metadata.len() > crate::tool_policy::MAX_POLICY_FILE_BYTES {
-        return Err(format!(
-            "{} is {} bytes, over the {}-byte cap",
-            path.display(),
-            metadata.len(),
-            crate::tool_policy::MAX_POLICY_FILE_BYTES
-        ));
-    }
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let bytes =
+        match crate::config_read::read_config_file(path, crate::tool_policy::MAX_POLICY_FILE_BYTES)
+            .map_err(|error| error.to_string())?
+        {
+            // Absent and blank both read all-on: a blank switches file holds
+            // nothing to destroy.
+            crate::config_read::ConfigFile::Absent | crate::config_read::ConfigFile::Blank => {
+                return Ok(HashSet::new());
+            }
+            crate::config_read::ConfigFile::Present(bytes) => bytes,
+        };
     let document: SwitchesDocument = serde_json::from_slice(&bytes).map_err(|error| {
         format!(
             "{} is not a provider-switch document: {error}",
@@ -358,6 +358,36 @@ mod tests {
             "providers absent from the file stay ON"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bom_prefixed_switches_file_keeps_its_off_state() {
+        let dir = temp_dir("bom");
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend(br#"{"disabled":["grok"]}"#);
+        std::fs::write(dir.join(SWITCHES_FILE), &bytes).expect("seed");
+        let store = ProviderSwitchStore::load(&dir);
+        assert!(!store.is_enabled("grok"), "the off state survives the BOM");
+        assert!(store.is_enabled("claude"));
+        assert!(dir.join(SWITCHES_FILE).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_switches_file_reads_all_on_and_is_left() {
+        for (tag, bytes) in [
+            ("empty", b"".as_slice()),
+            ("whitespace", b"  \n ".as_slice()),
+            ("bom-only", b"\xef\xbb\xbf".as_slice()),
+        ] {
+            let dir = temp_dir(tag);
+            std::fs::write(dir.join(SWITCHES_FILE), bytes).expect("seed");
+            let store = ProviderSwitchStore::load(&dir);
+            assert!(store.is_enabled("grok"), "{tag} is a first run");
+            assert!(store.is_enabled("claude"));
+            assert!(dir.join(SWITCHES_FILE).is_file(), "{tag} is left alone");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use devboule_protocol::ToolPolicyEntry;
@@ -118,19 +118,36 @@ pub(crate) fn is_tool_enabled(policy: Option<&ToolPolicyEntry>, name: &str) -> b
 pub(crate) struct ToolPolicyStore {
     path: PathBuf,
     policies: Mutex<HashMap<String, ToolPolicyEntry>>,
+    /// True when the file existed but could not be parsed. The file is kept
+    /// where it is and every restrictable tool is denied until the file is
+    /// fixed or removed and the daemon restarts; see `get`.
+    failed_closed: AtomicBool,
+    /// Why the load failed, for the Status surface. `None` on a clean load.
+    load_error: Mutex<Option<String>>,
 }
 
 impl ToolPolicyStore {
     /// Read `runtime_dir/tool-policies.json`.
     ///
-    /// A missing file is the normal first run and is not an error. A file that
-    /// cannot be read, parsed, or admitted — over a cap, or not a policy
-    /// document at all — also yields an empty store, but never silently and
-    /// never destructively: the bad file is renamed aside first, best effort,
-    /// and one line names it and the reason. A daemon that refused to start
-    /// over a malformed settings file would lock the user out of the app that
-    /// could fix it; a daemon that overwrote the file would erase the evidence
-    /// of what it refused.
+    /// A missing file is the normal first run and is not an error: the store
+    /// starts empty and every tool is enabled (the pre-policy behaviour
+    /// `is_tool_enabled` states for `None`). A BOM-prefixed file is stripped
+    /// before parsing, so a Notepad save loads as written.
+    ///
+    /// A file that exists but holds no JSON (0 bytes, whitespace, a lone BOM)
+    /// is NOT a first run here: this store decides access, so a blank file is
+    /// an unknown policy and fails closed like any other unreadable file.
+    ///
+    /// A file that exists but cannot be read, parsed, or admitted — blank,
+    /// over a cap, or not a policy document at all — fails CLOSED, not open:
+    /// the file is kept where it is (never quarantined aside), the store holds
+    /// no rows, and `get` answers every known provider with a deny-all row.
+    /// `set` refuses while failed-closed (writing would rebuild the document
+    /// from the empty map and destroy the other providers' rows), so the
+    /// repair is by hand or removal, then restart. The reason is kept in
+    /// `load_error` for the Status surface and named in one line. A daemon
+    /// that re-enabled every restriction over a malformed file would silently
+    /// drop the user's access controls in one restart.
     ///
     /// A row no session can ever be gated by — a key that disagrees with its own
     /// `providerId`, or a provider id the catalog publishes no MCP tools for —
@@ -141,7 +158,7 @@ impl ToolPolicyStore {
     /// of that id, so `CLAUDE` and `claude` are one provider and one row.
     pub(crate) fn load(runtime_dir: &Path) -> Self {
         let path = runtime_dir.join(POLICY_FILE);
-        let policies = match load_policies(&path) {
+        let (policies, failed_closed, load_error) = match load_policies(&path) {
             Ok((policies, dropped)) => {
                 if dropped.mismatched > 0 || dropped.unknown_provider > 0 {
                     eprintln!(
@@ -151,26 +168,21 @@ impl ToolPolicyStore {
                         dropped.unknown_provider
                     );
                 }
-                policies
+                (policies, false, None)
             }
             Err(reason) => {
-                match quarantine(&path) {
-                    Some(kept) => eprintln!(
-                        "tool policy: {} is unusable ({reason}); moved to {} and starting with no policies",
-                        path.display(),
-                        kept.display()
-                    ),
-                    None => eprintln!(
-                        "tool policy: {} is unusable ({reason}); it could not be moved aside, starting with no policies",
-                        path.display()
-                    ),
-                }
-                HashMap::new()
+                eprintln!(
+                    "tool policy: {} is unusable ({reason}); keeping the file and starting with every broker tool denied until it is fixed or reset",
+                    path.display(),
+                );
+                (HashMap::new(), true, Some(reason))
             }
         };
         Self {
             path,
             policies: Mutex::new(policies),
+            failed_closed: AtomicBool::new(failed_closed),
+            load_error: Mutex::new(load_error),
         }
     }
 
@@ -180,13 +192,41 @@ impl ToolPolicyStore {
     /// same resolution `set` and `load` apply, so the store's keys and the ids a
     /// session carries are one name per provider: a session registered as
     /// `CLAUDE` reads the row a caller stored as `claude`.
+    ///
+    /// When the file failed to load the store holds no rows and answers every
+    /// known provider with a deny-all row (`enabled: Some(false)`), so the
+    /// broker's `is_tool_enabled` denies every restrictable tool while the two
+    /// always-on names stay on. `None` (no provider id) still reads as no
+    /// policy: it matches no row by construction, so no restriction is lost by
+    /// serving it. Unknown ids likewise read as no policy: `set` refuses them
+    /// and `load` drops them, so none could have been restricted.
     pub(crate) fn get(&self, provider_id: Option<&str>) -> Option<ToolPolicyEntry> {
         let provider_id = crate::provider_catalog::mcp_catalog_id(provider_id?)?;
+        if self.failed_closed.load(Ordering::Relaxed) {
+            return Some(ToolPolicyEntry {
+                provider_id: provider_id.to_string(),
+                enabled: Some(false),
+                disabled_tools: Vec::new(),
+            });
+        }
         self.policies
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(provider_id)
             .cloned()
+    }
+
+    /// Whether the store is serving deny-all after a failed load is read
+    /// through `load_error().is_some()`: one inhabited field, not two that
+    /// can disagree.
+    ///
+    /// Why the file failed to load, for the Status surface (`Status` carries
+    /// it as `toolPolicyError`). `None` on a clean load.
+    pub(crate) fn load_error(&self) -> Option<String> {
+        self.load_error
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     /// Every stored policy, ordered by provider id. `HashMap` iteration order
@@ -209,6 +249,12 @@ impl ToolPolicyStore {
     /// memory as they were, so the caller can report a real failure instead
     /// of a policy the next restart would forget.
     ///
+    /// While failed-closed every write is refused before anything is read:
+    /// `set` is a read-modify-write of the whole store and the store holds no
+    /// rows, so persisting would replace the user's file with a partial
+    /// document and lift the deny-all over destroyed rows. The file stays
+    /// untouched; fix it or remove it, then restart.
+    ///
     /// A request over a cap, or one naming a provider the daemon publishes no
     /// MCP tools for, is refused before anything is written: the first is a
     /// caller bug the daemon will not store, the second could never be
@@ -226,6 +272,11 @@ impl ToolPolicyStore {
         enabled: Option<bool>,
         disabled_tools: Vec<String>,
     ) -> Result<(), PolicyError> {
+        if self.failed_closed.load(Ordering::Relaxed) {
+            return Err(PolicyError::InvalidRequest(
+                "the tool policy file is unreadable; fix it or remove it, then restart".to_string(),
+            ));
+        }
         check_row(provider_id, &disabled_tools).map_err(PolicyError::InvalidRequest)?;
         let Some(canonical) = crate::provider_catalog::mcp_catalog_id(provider_id) else {
             return Err(PolicyError::InvalidRequest(format!(
@@ -285,29 +336,29 @@ struct Dropped {
 /// Parse the file, refusing one larger than the cap before it is read.
 ///
 /// A missing file is an empty document, not an error: that is the first run.
+/// A file that exists but holds no JSON is NOT a first run here: this store
+/// decides access, so a blank file is an unknown policy and fails closed. A
+/// leading UTF-8 BOM is stripped before parsing, so a Notepad save loads as
+/// written.
 fn read_policies(path: &Path) -> io::Result<HashMap<String, ToolPolicyEntry>> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(error) => return Err(error),
-    };
-    if metadata.len() > MAX_POLICY_FILE_BYTES {
-        return Err(io::Error::new(
+    match crate::config_read::read_config_file(path, MAX_POLICY_FILE_BYTES)? {
+        crate::config_read::ConfigFile::Absent => Ok(HashMap::new()),
+        crate::config_read::ConfigFile::Blank => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "{} is {} bytes, over the {MAX_POLICY_FILE_BYTES}-byte cap",
-                path.display(),
-                metadata.len()
+                "{} exists but holds no policy; a blank file is not a first run for access config",
+                path.display()
             ),
-        ));
+        )),
+        crate::config_read::ConfigFile::Present(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{} is not a tool policy document: {error}", path.display()),
+                )
+            })
+        }
     }
-    let bytes = std::fs::read(path)?;
-    serde_json::from_slice(&bytes).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{} is not a tool policy document: {error}", path.display()),
-        )
-    })
 }
 
 /// The document as the store will hold it, or the reason it cannot be used,
@@ -353,6 +404,12 @@ fn admit(
             continue;
         }
         check_row(canonical, &entry.disabled_tools)?;
+        // An over-cap row fails the whole document rather than being dropped
+        // like a mismatched one, and the asymmetry is deliberate: a dropped
+        // row reads as no policy (enabled), so dropping a row that could have
+        // restricted tools would silently re-enable them — the fail-open this
+        // store exists to close. Mismatched and unknown rows could never be
+        // consulted, so dropping them loses nothing; an over-cap row could.
         // The row keeps the catalog's spelling on both sides: the key is what
         // the broker looks the session's own id up with, and `providerId` is
         // what the app renders and what the next write persists.
@@ -392,72 +449,6 @@ fn check_row(provider_id: &str, disabled_tools: &[String]) -> Result<(), String>
     Ok(())
 }
 
-/// The most quarantine destinations one failed load tries before it gives up
-/// and leaves the file where it is.
-const MAX_QUARANTINE_ATTEMPTS: u64 = 32;
-
-/// Distinguishes the destinations of two quarantines inside one process, so two
-/// files refused in the same millisecond cannot be offered the same name.
-static QUARANTINE_NONCE: AtomicU64 = AtomicU64::new(0);
-
-/// Move a file the store refused aside, so the next write cannot erase it.
-///
-/// Best effort by design: this runs while the daemon is already reporting a
-/// load failure, and a path that cannot be renamed is left exactly where it is
-/// — the caller's line then says so, rather than claiming a move that did not
-/// happen.
-fn quarantine(path: &Path) -> Option<PathBuf> {
-    if !path.is_file() {
-        return None;
-    }
-    quarantine_at(path, now_millis())
-}
-
-/// [`quarantine`] with the clock supplied.
-///
-/// The millisecond is a parameter so the names one call will consider are a
-/// property a test can occupy; `quarantine` reads the clock once and passes it
-/// down, so every attempt of one quarantine carries one timestamp.
-///
-/// The name is `tool-policies.json.corrupt-<unix millis>-<8 hex nonce>`, and the
-/// destination has to be free before it is used: `rename` replaces an existing
-/// destination on Windows as well as on Unix, so a name that is already taken
-/// would erase the evidence an earlier quarantine kept. The nonce is unique
-/// inside this process and the millisecond is what separates one process — and
-/// one restart — from the next; `exists` then covers what is left of the window
-/// between the check and the rename, which is best effort and not a reservation.
-/// A name that cannot be taken is passed over, and after
-/// [`MAX_QUARANTINE_ATTEMPTS`] of them the file stays where it is: the same
-/// outcome as a directory that refuses the rename, which would refuse the next
-/// name just as flatly.
-fn quarantine_at(path: &Path, millis: u128) -> Option<PathBuf> {
-    for _ in 0..MAX_QUARANTINE_ATTEMPTS {
-        let nonce = QUARANTINE_NONCE.fetch_add(1, Ordering::Relaxed);
-        let kept = quarantine_name(path, millis, nonce);
-        if kept.exists() {
-            continue;
-        }
-        return std::fs::rename(path, &kept).ok().map(|()| kept);
-    }
-    None
-}
-
-/// The name one quarantine attempt keeps `path` under: `path`'s own directory,
-/// the millisecond it was called at, and this process's nonce for that attempt.
-/// One function, so the name a test occupies is the name the writer picks.
-fn quarantine_name(path: &Path, millis: u128, nonce: u64) -> PathBuf {
-    path.with_file_name(format!("{POLICY_FILE}.corrupt-{millis}-{nonce:08x}"))
-}
-
-/// Unix time in milliseconds, or 0 before the epoch: the timestamp in a
-/// quarantine name, not a duration anything measures.
-fn now_millis() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or_default()
-}
-
 /// Serialize the whole store and replace the file with it.
 ///
 /// One writer (P2): the bytes go through the shared protected-write primitive
@@ -474,7 +465,6 @@ fn write_policies(path: &Path, policies: &HashMap<String, ToolPolicyEntry>) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
 
     fn entry(provider_id: &str, enabled: Option<bool>, disabled: &[&str]) -> ToolPolicyEntry {
         ToolPolicyEntry {
@@ -488,20 +478,22 @@ mod tests {
         crate::test_dirs::test_temp_dir("devboule-tool-policy")
     }
 
-    /// Every `<POLICY_FILE>.corrupt-*` sibling in `dir`, sorted.
-    fn quarantined(dir: &Path) -> Vec<PathBuf> {
+    /// No `<POLICY_FILE>.corrupt-*` sibling may exist: this store never
+    /// quarantines. A failed load keeps the file where it is.
+    fn no_corrupt_siblings(dir: &Path) {
         let prefix = format!("{POLICY_FILE}.corrupt-");
-        let mut kept = std::fs::read_dir(dir)
-            .expect("read dir")
-            .map(|entry| entry.expect("dir entry").path())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with(&prefix))
-            })
-            .collect::<Vec<_>>();
-        kept.sort();
-        kept
+        let mut kept = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("dir entry").path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix))
+            {
+                kept.push(path);
+            }
+        }
+        assert!(kept.is_empty(), "nothing is quarantined, got {kept:?}");
     }
 
     #[test]
@@ -607,38 +599,90 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_file_is_quarantined_rather_than_dropped() {
+    fn a_malformed_file_fails_closed_and_is_kept() {
         let dir = temp_dir();
         std::fs::write(dir.join(POLICY_FILE), b"{ this is not json").expect("seed");
         let store = ToolPolicyStore::load(&dir);
         assert!(store.entries().is_empty());
-
-        // The load failed loudly and the bytes are still on disk under the
-        // name the `eprintln!` names: a daemon that started empty is not a
-        // daemon that threw the file away.
-        assert!(!dir.join(POLICY_FILE).exists());
-        let kept = quarantined(&dir);
-        assert_eq!(kept.len(), 1, "one quarantine file, got {kept:?}");
+        assert!(store.load_error().is_some(), "a corrupt file denies");
         assert!(
-            kept[0]
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("tool-policies.json.corrupt-")),
-            "the quarantine name names the file it keeps: {kept:?}"
+            store.load_error().is_some(),
+            "the reason is kept for the Status surface"
         );
+
+        // The file is kept where it is: a daemon that started denied is not
+        // a daemon that threw the evidence away.
         assert_eq!(
-            std::fs::read(&kept[0]).expect("quarantined bytes"),
+            std::fs::read(dir.join(POLICY_FILE)).expect("kept bytes"),
             b"{ this is not json"
         );
+        no_corrupt_siblings(&dir);
 
-        // And a successful set repairs the live file.
-        store.set("claude", Some(false), Vec::new()).expect("set");
-        assert!(ToolPolicyStore::load(&dir).get(Some("claude")).is_some());
+        // A restricted tool is denied, while the two always-on names stay on.
+        let policy = store.get(Some("claude")).expect("deny-all row");
+        assert!(!is_tool_enabled(Some(&policy), "some_future_tool"));
+        assert!(is_tool_enabled(
+            Some(&policy),
+            crate::provider_catalog::MCP_ROSTER_TOOL
+        ));
+        assert!(is_tool_enabled(
+            Some(&policy),
+            crate::provider_catalog::MCP_LIST_PROFILES_TOOL
+        ));
+        // No provider id matches no row, so nothing is lost by serving it.
+        assert!(store.get(None).is_none());
+
+        // While failed-closed no write may replace the user's file: a `set`
+        // is a read-modify-write of the whole store, and the store holds no
+        // rows, so writing would destroy every other provider's policy and
+        // lift the deny-all. The repair is by hand or removal, then restart.
+        let before = std::fs::read(dir.join(POLICY_FILE)).expect("kept bytes");
+        let error = store
+            .set("claude", Some(false), Vec::new())
+            .expect_err("a set while failed-closed must be refused");
+        assert!(
+            error.to_string().contains("unreadable"),
+            "the refusal names the unreadable file: {error}"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(POLICY_FILE)).expect("kept bytes"),
+            before,
+            "the refused write leaves the file byte-identical"
+        );
+        assert!(
+            store.load_error().is_some(),
+            "still denied after the refusal"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_file_over_the_byte_cap_is_quarantined_before_it_is_read() {
+    fn a_set_while_failed_closed_keeps_a_truncated_documents_rows() {
+        let dir = temp_dir();
+        // Truncated mid-row: recoverable-looking rows plus a syntax error.
+        // Nothing in here parses, so no row may be treated as known.
+        let truncated = br#"{"claude": {"providerId": "claude", "enabled": false, "disabledTools": ["some_tool"]}, "codex": {"providerId": "cod"#;
+        std::fs::write(dir.join(POLICY_FILE), truncated).expect("seed");
+        let store = ToolPolicyStore::load(&dir);
+        assert!(store.load_error().is_some());
+
+        let before = std::fs::read(dir.join(POLICY_FILE)).expect("bytes");
+        store
+            .set("claude", Some(true), Vec::new())
+            .expect_err("the truncated file must not be rewritten from an empty map");
+        assert_eq!(
+            std::fs::read(dir.join(POLICY_FILE)).expect("bytes"),
+            before,
+            "codex's row survives the refused write byte for byte"
+        );
+        // And codex stays denied: the refusal lifted nothing.
+        let policy = store.get(Some("codex")).expect("deny-all row");
+        assert!(!is_tool_enabled(Some(&policy), "some_future_tool"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_over_the_byte_cap_fails_closed_before_it_is_read() {
         let dir = temp_dir();
         assert_eq!(MAX_POLICY_FILE_BYTES, 1024 * 1024);
         // One byte over the cap, and not JSON either: the refusal has to come
@@ -648,13 +692,15 @@ mod tests {
         std::fs::write(dir.join(POLICY_FILE), &oversized).expect("seed");
         let store = ToolPolicyStore::load(&dir);
         assert!(store.entries().is_empty());
-        let kept = quarantined(&dir);
-        assert_eq!(kept.len(), 1, "one quarantine file, got {kept:?}");
+        assert!(store.load_error().is_some(), "over the cap denies");
         assert_eq!(
-            std::fs::metadata(&kept[0]).expect("metadata").len(),
+            std::fs::metadata(dir.join(POLICY_FILE))
+                .expect("metadata")
+                .len(),
             MAX_POLICY_FILE_BYTES + 1,
-            "the oversized file is moved, not truncated"
+            "the oversized file is kept, not truncated"
         );
+        no_corrupt_siblings(&dir);
 
         // A document under the cap is read normally, so the refusal above is
         // about the size of the file and not about the quarantine path itself.
@@ -670,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_over_the_row_cap_is_quarantined() {
+    fn a_file_over_the_row_cap_fails_closed() {
         let dir = temp_dir();
         let mut seeded: HashMap<String, ToolPolicyEntry> = HashMap::new();
         for index in 0..=MAX_POLICY_ROWS {
@@ -685,7 +731,9 @@ mod tests {
 
         let store = ToolPolicyStore::load(&dir);
         assert!(store.entries().is_empty());
-        assert_eq!(quarantined(&dir).len(), 1, "over the row cap is corrupt");
+        assert!(store.load_error().is_some(), "over the row cap denies");
+        assert!(dir.join(POLICY_FILE).is_file(), "the file is kept");
+        no_corrupt_siblings(&dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -760,6 +808,8 @@ mod tests {
         let store = ToolPolicyStore {
             path: dir.join(POLICY_FILE),
             policies: Mutex::new(policies),
+            failed_closed: AtomicBool::new(false),
+            load_error: Mutex::new(None),
         };
         assert_eq!(store.entries().len(), MAX_POLICY_ROWS);
 
@@ -821,7 +871,7 @@ mod tests {
         );
         assert_eq!(store.entries().len(), 1);
         assert!(dir.join(POLICY_FILE).is_file());
-        assert!(quarantined(&dir).is_empty());
+        no_corrupt_siblings(&dir);
         assert!(
             crate::provider_catalog::mcp_catalog_id("claude-acp").is_none(),
             "the predicate under test is the catalog's, not a second list"
@@ -864,7 +914,7 @@ mod tests {
         assert_eq!(store.entries().len(), 1);
         // A mismatch is repaired, not treated as corruption.
         assert!(dir.join(POLICY_FILE).is_file());
-        assert!(quarantined(&dir).is_empty());
+        no_corrupt_siblings(&dir);
 
         // The next write persists the repaired document.
         store.set("claude", Some(false), Vec::new()).expect("set");
@@ -965,7 +1015,7 @@ mod tests {
         assert_eq!(store.entries().len(), 2);
         // A spelling is not corruption: the document is usable as written.
         assert!(dir.join(POLICY_FILE).is_file());
-        assert!(quarantined(&dir).is_empty());
+        no_corrupt_siblings(&dir);
 
         // And the next write persists the canonical spelling on both sides.
         store.set("gemini", Some(true), Vec::new()).expect("set");
@@ -1007,96 +1057,125 @@ mod tests {
         );
         // One row for one provider is not corruption.
         assert!(dir.join(POLICY_FILE).is_file());
-        assert!(quarantined(&dir).is_empty());
+        no_corrupt_siblings(&dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The destination names one quarantine call will consider, in the order the
-    /// nonce offers them. The counter is process-wide, so this is read right
-    /// before the call under test: no test in this module moves it far.
-    fn quarantine_names(path: &Path, millis: u128, count: u64) -> Vec<PathBuf> {
-        let first = QUARANTINE_NONCE.load(Ordering::Relaxed);
-        (first..first + count)
-            .map(|nonce| quarantine_name(path, millis, nonce))
-            .collect()
-    }
-
-    /// S-3c: `rename` replaces an existing destination on Windows as well as on
-    /// Unix, so a name already in use has to be passed over. Nothing under a
-    /// taken name is overwritten, and the refused file lands on a free one.
+    /// A directory at the policy name is a file the store cannot read as a
+    /// policy. It fails closed and stays where it is.
     #[test]
-    fn a_quarantine_never_replaces_a_file_already_at_its_destination() {
-        let dir = temp_dir();
-        let live = dir.join(POLICY_FILE);
-        std::fs::write(&live, b"{ this is not json").expect("seed");
-        let millis = 1_700_000_000_000;
-        // Fewer names than the window `quarantine_at` walks, so a free name is
-        // always reachable while the taken ones are still passed over.
-        let occupied = quarantine_names(&live, millis, 8);
-        for name in &occupied {
-            std::fs::write(name, b"evidence a previous quarantine kept").expect("occupy");
-        }
-
-        let kept = quarantine_at(&live, millis).expect("a free name exists");
-        assert!(!live.exists(), "the refused file was moved out of the way");
-        assert_eq!(
-            std::fs::read(&kept).expect("kept bytes"),
-            b"{ this is not json".to_vec(),
-            "the moved file is the refused one"
-        );
-        assert!(
-            !occupied.contains(&kept),
-            "the move must land on a free name, not on {}",
-            kept.display()
-        );
-        for name in &occupied {
-            assert_eq!(
-                std::fs::read(name).expect("occupant"),
-                b"evidence a previous quarantine kept".to_vec(),
-                "{} was overwritten",
-                name.display()
-            );
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// S-3c's other arm: when no name can be taken the file stays exactly where
-    /// it is. A directory at every candidate name fails the rename the way a
-    /// read-only directory does, so the caller keeps the bytes it refused to
-    /// read instead of losing them.
-    #[test]
-    fn a_quarantine_with_no_free_name_leaves_the_file_in_place() {
-        let dir = temp_dir();
-        let live = dir.join(POLICY_FILE);
-        std::fs::write(&live, b"{ this is not json").expect("seed");
-        let millis = 1_700_000_000_001;
-        // Twice the window `quarantine_at` walks: every test in this binary
-        // shares the counter, so its first attempt may start further in.
-        for name in quarantine_names(&live, millis, MAX_QUARANTINE_ATTEMPTS * 2) {
-            std::fs::create_dir(&name).expect("occupy");
-        }
-
-        assert_eq!(quarantine_at(&live, millis), None);
-        assert_eq!(
-            std::fs::read(&live).expect("the refused file is still there"),
-            b"{ this is not json".to_vec()
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The same arm through `load`: nothing is destroyed, the store starts
-    /// empty, and the one line the daemon prints says the file could not be
-    /// moved aside. A directory at the policy name is a file the store cannot
-    /// read as a policy and cannot move either, which is the shape a refused
-    /// rename leaves behind.
-    #[test]
-    fn a_file_that_cannot_be_moved_aside_is_left_and_the_store_starts_empty() {
+    fn an_unreadable_policy_file_fails_closed_and_is_left() {
         let dir = temp_dir();
         std::fs::create_dir(dir.join(POLICY_FILE)).expect("squat the policy name");
         let store = ToolPolicyStore::load(&dir);
         assert!(store.entries().is_empty());
+        assert!(store.load_error().is_some());
         assert!(dir.join(POLICY_FILE).is_dir(), "the file stays where it is");
-        assert!(quarantined(&dir).is_empty(), "nothing was quarantined");
+        no_corrupt_siblings(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bom_prefixed_policy_loads_with_its_row() {
+        let dir = temp_dir();
+        let mut seeded: HashMap<String, ToolPolicyEntry> = HashMap::new();
+        seeded.insert(
+            "claude".to_string(),
+            entry("claude", Some(true), &["some_tool"]),
+        );
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend(serde_json::to_vec(&seeded).expect("json"));
+        std::fs::write(dir.join(POLICY_FILE), &bytes).expect("seed");
+
+        let store = ToolPolicyStore::load(&dir);
+        assert_eq!(store.load_error(), None, "a BOM is not damage");
+        let policy = store.get(Some("claude")).expect("the row survives");
+        assert!(!is_tool_enabled(Some(&policy), "some_tool"));
+        assert!(is_tool_enabled(Some(&policy), "another_tool"));
+        assert!(dir.join(POLICY_FILE).is_file());
+        no_corrupt_siblings(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_existing_but_blank_policy_file_fails_closed() {
+        // A first run has NO file. A file that exists but holds no policy —
+        // 0 bytes, whitespace, or a lone BOM, the shape a truncated copy or
+        // a sync tool leaves — is an unknown policy, and unknown denies.
+        // Blank-as-absent stays for the non-security stores; this store
+        // decides access, so blank is damage here.
+        for (tag, bytes) in [
+            ("empty", b"".as_slice()),
+            ("whitespace", b"  \r\n\t ".as_slice()),
+            ("bom-only", b"\xef\xbb\xbf".as_slice()),
+        ] {
+            let dir = crate::test_dirs::test_temp_dir(&format!("devboule-tool-policy-{tag}"));
+            std::fs::write(dir.join(POLICY_FILE), bytes).expect("seed");
+            let store = ToolPolicyStore::load(&dir);
+            assert!(store.entries().is_empty());
+            assert!(
+                store.load_error().is_some(),
+                "{tag}: an existing blank file denies, and the Status surface names it"
+            );
+            let policy = store.get(Some("claude")).expect("{tag}: deny-all row");
+            assert!(
+                !is_tool_enabled(Some(&policy), "some_tool"),
+                "{tag}: denied"
+            );
+            assert_eq!(
+                std::fs::read(dir.join(POLICY_FILE)).expect("bytes"),
+                bytes,
+                "{tag}: the file is kept, not replaced"
+            );
+            no_corrupt_siblings(&dir);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_missing_policy_file_is_still_a_first_run() {
+        let dir = temp_dir();
+        let store = ToolPolicyStore::load(&dir);
+        assert!(store.entries().is_empty());
+        assert_eq!(store.load_error(), None, "no file means no policy");
+        assert!(
+            is_tool_enabled(store.get(Some("claude")).as_ref(), "some_tool"),
+            "no row means enabled"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_utf16_policy_file_fails_closed_and_names_its_encoding() {
+        let dir = temp_dir();
+        // UTF-16LE with BOM, the way older Windows editors save: decoded
+        // here so the seed is honestly UTF-16, never hand-mangled bytes.
+        let text = r#"{"claude": {"providerId": "claude", "enabled": false, "disabledTools": []}}"#;
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend(unit.to_le_bytes());
+        }
+        std::fs::write(dir.join(POLICY_FILE), &bytes).expect("seed");
+
+        let store = ToolPolicyStore::load(&dir);
+        assert!(store.entries().is_empty());
+        assert!(
+            store.load_error().is_some(),
+            "UTF-16 is not decoded, it is denied"
+        );
+        let reason = store.load_error().expect("the Status surface names it");
+        assert!(
+            reason.contains("UTF-16"),
+            "the reason says what the file is: {reason}"
+        );
+        let policy = store.get(Some("claude")).expect("deny-all row");
+        assert!(!is_tool_enabled(Some(&policy), "some_future_tool"));
+        assert_eq!(
+            std::fs::read(dir.join(POLICY_FILE)).expect("bytes"),
+            bytes,
+            "the file is kept for the user to re-save as UTF-8"
+        );
+        no_corrupt_siblings(&dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

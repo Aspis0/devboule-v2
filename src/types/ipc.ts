@@ -1451,6 +1451,12 @@ export interface DaemonStatus {
   /** For `unresponsive`: a human sentence from the supervisor, shown verbatim. */
   message: string | null;
   /**
+   * Why the daemon denies every restrictable broker tool, when it does
+   * (`tool-policies.json` was unreadable at startup). Absent when the
+   * policy loaded. The tool toggles page banners it and locks the toggles.
+   */
+  toolPolicyError?: string;
+  /**
    * Remote reachability and the secret store the daemon selected. Both live in
    * the daemon's `Status` body; this supervisor projection does not forward
    * them yet (`UiDaemonStatus` in `src-tauri/src/client/mod.rs`), so they stay

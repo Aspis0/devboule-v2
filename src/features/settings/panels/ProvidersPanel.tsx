@@ -52,6 +52,7 @@ import {
   type ProviderRowConsent,
 } from "../providers/ProviderRow";
 import { useToolPolicies } from "../providers/useToolPolicies";
+import { ToolPolicyBanner } from "../providers/ToolPolicyBanner";
 import { useProviderSwitches } from "../providers/useProviderSwitches";
 import "../providers.css";
 
@@ -272,6 +273,10 @@ export function ProvidersPanel() {
     [installed],
   );
   const toolStore = useToolPolicies(toolPolicySupported, toolProviderCount > 0);
+  // Failed-closed policy: the daemon denies every restrictable tool while
+  // `toolPolicyError` is set. Missing rows render as denied (never as
+  // allowed) and the toggles lock — a write would be refused anyway.
+  const toolPolicyFailedClosed = daemon.toolPolicyError != null;
   const providerSwitches = useProviderSwitches(providerSwitchSupported);
   const { beginFetch, reconcile } = providerSwitches;
 
@@ -679,8 +684,10 @@ export function ProvidersPanel() {
         onToggleProvider={(next) => void providerSwitches.setEnabled(provider, next)}
         providerWriteError={providerSwitches.states[provider.id]?.error?.sentence ?? null}
         providerSwitchSupported={providerSwitchSupported}
-        toolPolicy={withTools ? toolPolicyFor(provider.id, toolStore.policies) : null}
-        toolsDisabled={toolStore.policies === null}
+        toolPolicy={
+          withTools ? toolPolicyFor(provider.id, toolStore.policies, toolPolicyFailedClosed) : null
+        }
+        toolsDisabled={toolStore.policies === null || toolPolicyFailedClosed}
         vocabularySupported={vocabularySupported}
         modelCache={modelCache}
         consent={consent?.provider.id === provider.id ? consentView(provider, consent.verb) : null}
@@ -723,6 +730,9 @@ export function ProvidersPanel() {
       <button className="provider-refresh" type="button" disabled={refreshing} onClick={refresh}>
         {refreshing ? "Refreshing…" : "Refresh"}
       </button>
+      {toolPolicyFailedClosed && daemon.toolPolicyError ? (
+        <ToolPolicyBanner reason={daemon.toolPolicyError} />
+      ) : null}
       {error ? (
         <div role="alert">
           <ErrorText

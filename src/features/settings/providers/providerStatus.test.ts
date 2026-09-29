@@ -151,6 +151,20 @@ describe("toolPolicyFor", () => {
       ]),
     ).toEqual({ enabled: true, disabledTools: [] });
   });
+
+  it("reads a missing row as denied while the policy is failed closed", () => {
+    // The daemon serves deny-all while `toolPolicyError` is set, so the
+    // panel must never render the absence as allowed. A stored row still
+    // reads as stored.
+    expect(toolPolicyFor("grok", null, true)).toEqual({ enabled: false, disabledTools: [] });
+    expect(toolPolicyFor("grok", [], true)).toEqual({ enabled: false, disabledTools: [] });
+    expect(
+      toolPolicyFor("grok", [{ providerId: "other", enabled: false, disabledTools: [] }], true),
+    ).toEqual({ enabled: false, disabledTools: [] });
+    expect(
+      toolPolicyFor("grok", [{ providerId: "grok", enabled: null, disabledTools: [] }], true),
+    ).toEqual({ enabled: true, disabledTools: [] });
+  });
 });
 
 describe("providerVersionSegments", () => {

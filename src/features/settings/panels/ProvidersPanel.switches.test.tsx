@@ -23,6 +23,7 @@ import {
   toolPolicySet,
 } from "../../../lib/tauri";
 import { ProvidersPanel } from "./ProvidersPanel";
+import { useSettingsDaemon } from "../settingsDaemon";
 import {
   daemonStatusWith,
   installedProvider,
@@ -394,5 +395,107 @@ describe("tools switch wiring", () => {
       "A system or file operation failed on this machine.",
     );
     expect(toolSwitch()?.disabled).toBe(false);
+  });
+
+  it("locks the tool switches and banners while the tool policy is failed closed", async () => {
+    // The daemon denies every restrictable tool while `toolPolicyError` is
+    // set: the banner shows the daemon's sentence and the switch locks, so
+    // the panel never renders the deny-all as allowed and clickable.
+    vi.mocked(daemonStatus).mockResolvedValue({
+      ...daemonStatusWith(["ping", "status", "tool_policy", "provider.switches"]),
+      toolPolicyError: "tool-policies.json exists but holds no policy",
+    });
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [installedProvider({ tools: [{ name: "some_tool", description: "Something." }] })],
+      unreadableDirs: 0,
+    });
+    await renderPanel();
+
+    const banner = container.querySelector('[role="alert"]');
+    if (!banner) throw new Error("failed-closed banner did not render");
+    expect(banner.textContent).toContain("tool-policies.json exists but holds no policy");
+    const master = toolSwitch();
+    if (!master) throw new Error("switch did not render");
+    expect(master.disabled).toBe(true);
+  });
+
+  it("keeps the banner visible across a disconnect and releases it on a clean status", async () => {
+    // Restarting takes the pipe down: the panel must keep describing the
+    // deny-all until a fresh status clears it. That is the whole guarantee —
+    // the tool section hides with the dropped capabilities, so there is no
+    // toggle to assert on while disconnected.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(daemonStatus).mockResolvedValue({
+        ...daemonStatusWith(["ping", "status", "tool_policy", "provider.switches"]),
+        toolPolicyError: "tool-policies.json exists but holds no policy",
+      });
+      vi.mocked(providersList).mockResolvedValueOnce({
+        providers: [
+          installedProvider({ tools: [{ name: "some_tool", description: "Something." }] }),
+        ],
+        unreadableDirs: 0,
+      });
+      await renderPanel();
+      expect(toolSwitch()?.disabled).toBe(true);
+
+      vi.mocked(daemonStatus).mockRejectedValue(new Error("pipe is gone"));
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+
+      const banner = container.querySelector('[role="alert"]');
+      if (!banner) throw new Error("failed-closed banner did not survive the disconnect");
+      expect(banner.textContent).toContain("tool-policies.json exists but holds no policy");
+      expect(toolSwitch()).toBeNull();
+
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith(["ping", "status", "tool_policy", "provider.switches"]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+      expect(container.textContent).not.toContain("tool-policies.json exists but holds no policy");
+      expect(toolSwitch()?.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not re-render subscribers on every failed poll", async () => {
+    // The disconnect arm preserves snapshot identity like the timeout arm:
+    // one emit per outage, not one per poll.
+    vi.useFakeTimers();
+    try {
+      let renders = 0;
+      function Probe() {
+        const daemon = useSettingsDaemon();
+        renders += 1;
+        return <span data-testid="probe">{daemon.toolPolicyError ?? "none"}</span>;
+      }
+      vi.mocked(daemonStatus).mockResolvedValue({
+        ...daemonStatusWith(["ping", "status"]),
+        toolPolicyError: "tool-policies.json exists but holds no policy",
+      });
+      root = createRoot(container);
+      await act(async () => root.render(<Probe />));
+      await act(async () => undefined);
+
+      vi.mocked(daemonStatus).mockRejectedValue(new Error("pipe is gone"));
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+      const afterFirstReject = renders;
+      await act(async () => {
+        vi.advanceTimersByTime(4_200);
+      });
+      await act(async () => undefined);
+      expect(renders).toBe(afterFirstReject);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

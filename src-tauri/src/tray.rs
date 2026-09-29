@@ -150,6 +150,7 @@ mod tests {
             ring_evicted_bytes: 0,
             ring_dropped_frames: 0,
             journal_error: None,
+            tool_policy_error: None,
             journal_stats: None,
             secret_store: None,
             remote: None,

@@ -1691,6 +1691,7 @@ fn boxing_journal_stats_and_remote_does_not_change_the_wire() {
         ring_evicted_bytes: 0,
         ring_dropped_frames: 0,
         journal_error: None,
+        tool_policy_error: None,
         journal_stats: Some(Box::new(JournalStats {
             accepted_frames: 1,
             accepted_bytes: 2,
@@ -1714,6 +1715,26 @@ fn boxing_journal_stats_and_remote_does_not_change_the_wire() {
         body.journal_stats.as_deref()
     );
     assert_eq!(decoded.remote.as_deref(), body.remote.as_deref());
+    // Output-only optional: absent serialises to nothing, and an older
+    // payload without the key reads as `None` — the no-bump contract.
+    assert!(!json
+        .as_object()
+        .expect("object")
+        .contains_key("toolPolicyError"));
+    let with_error = DaemonStatusBody {
+        tool_policy_error: Some("tool-policies.json is unreadable".to_string()),
+        ..body
+    };
+    let error_json = serde_json::to_value(&with_error).expect("json");
+    assert_eq!(
+        error_json["toolPolicyError"],
+        "tool-policies.json is unreadable"
+    );
+    let decoded_error: DaemonStatusBody = serde_json::from_value(error_json).expect("back");
+    assert_eq!(
+        decoded_error.tool_policy_error.as_deref(),
+        Some("tool-policies.json is unreadable")
+    );
     assert_eq!(
         serde_json::to_value(&decoded).expect("json"),
         json,

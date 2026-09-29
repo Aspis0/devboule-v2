@@ -125,6 +125,9 @@ fn id_in_closed_alphabet(id: &str) -> bool {
 /// A record wrong in any row is refused whole, never truncated: half a list
 /// of providers is not a smaller catalogue, it is a different one.
 ///
+/// A leading UTF-8 BOM is stripped, and an empty or whitespace-only document
+/// reads as no rows (the first run), not as damage.
+///
 /// `native_ids` is the ids the native families bind by, from the impls —
 /// this module never spells one.
 pub(crate) fn parse_providers_document(
@@ -136,6 +139,10 @@ pub(crate) fn parse_providers_document(
             "the document is {} bytes, over the {MAX_PROVIDERS_FILE_BYTES}-byte cap",
             bytes.len()
         ));
+    }
+    let bytes = crate::config_read::strip_utf8_bom(bytes);
+    if bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return Ok(BTreeMap::new());
     }
     let document: BTreeMap<String, UserProviderRow> =
         serde_json::from_slice(bytes).map_err(|error| {
@@ -414,10 +421,10 @@ pub(crate) fn refresh_user_rows_with(state: &mut RowsState, runtime_dir: &Path) 
     }
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        // A missing file is the normal first run, or the user removed every
-        // row. Absence is deliberate, so it retires whatever rows were
-        // loaded. (A zero-byte file that exists is not absence: it is
-        // malformed JSON, and it is refused like any other bad document.)
+        // A missing, 0-byte or whitespace-only file is the normal first run,
+        // or the user removed every row. Absence is deliberate, so it retires
+        // whatever rows were loaded (`parse_providers_document` reads blank as
+        // no rows, after stripping one leading BOM).
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if !matches!(state.last_seen, LastSeen::Absent) {
                 crate::session::apply_user_rows(BTreeMap::new());
@@ -508,6 +515,31 @@ mod tests {
             row.env.as_ref().and_then(|env| env.get("MY_KEY")),
             Some(&"value".to_string())
         );
+    }
+
+    #[test]
+    fn a_bom_prefixed_document_parses_like_the_same_bytes_without_it() {
+        let plain = valid_row_json("my-agent");
+        let mut bom = b"\xef\xbb\xbf".to_vec();
+        bom.extend(plain.as_bytes());
+        assert_eq!(
+            parse(&bom).expect("BOM-prefixed row"),
+            parse(plain.as_bytes()).expect("plain row")
+        );
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_document_reads_as_no_rows() {
+        for bytes in [
+            b"".as_slice(),
+            b"  \r\n ".as_slice(),
+            b"\xef\xbb\xbf".as_slice(),
+        ] {
+            assert!(
+                parse(bytes).expect("blank is absent").is_empty(),
+                "blank input is no rows, not damage"
+            );
+        }
     }
 
     /// An id outside the closed alphabet is refused, naming the id and the
@@ -753,12 +785,11 @@ mod tests {
         }
     }
 
-    /// Absence and an empty file are different documents. An empty file is
-    /// refused (it is not JSON) and must keep the rows already loaded; a file
-    /// that is then **deleted** is a deliberate removal and must retire them.
-    /// When both states shared one marker, the refusal poisoned the absence
-    /// marker and the delete retired nothing — the user's providers stayed
-    /// live with no file behind them.
+    /// An empty file is absence, not damage: what an interrupted write leaves
+    /// behind reads as no rows and retires whatever was loaded. A file that is
+    /// then **deleted** is the same deliberate removal and must also retire
+    /// them — the two states share the retired outcome, and neither may leave
+    /// rows live with no file behind them.
     #[test]
     fn a_delete_after_an_empty_file_still_retires_the_rows() {
         let dir = temp_dir();
@@ -774,15 +805,15 @@ mod tests {
             "the row is live after the first refresh"
         );
 
-        // Zero bytes: what an interrupted write leaves behind. Refused, and
-        // the rows already loaded stand.
+        // Zero bytes: what an interrupted write leaves behind. Absent, so
+        // the rows already loaded retire.
         std::fs::write(&path, b"").expect("truncate");
         refresh_user_rows_with(&mut gate, &dir);
         assert!(
             crate::session::catalog_registry()
                 .user_row_for("sentinel-agent")
-                .is_some(),
-            "an empty file is a refused document, not an empty catalogue"
+                .is_none(),
+            "an empty file is absence, not a refused document"
         );
 
         // Now the file is gone. That is a removal, and it must be obeyed.
@@ -792,7 +823,7 @@ mod tests {
             crate::session::catalog_registry()
                 .user_row_for("sentinel-agent")
                 .is_none(),
-            "a deleted file retires the rows even after an empty-file refusal"
+            "a deleted file retires the rows, as the empty file already did"
         );
 
         crate::session::apply_user_rows(BTreeMap::new());

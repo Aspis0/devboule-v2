@@ -214,21 +214,16 @@ fn read_switch(path: &Path) -> Result<Option<bool>, String> {
 const MISSING_FILE: &str = "no delegation file exists yet";
 
 fn read_document(path: &Path) -> Result<DelegationDocument, String> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+    let bytes = match crate::config_read::read_config_file(path, MAX_DELEGATION_FILE_BYTES)
+        .map_err(|error| error.to_string())?
+    {
+        // Absent and blank are both "never configured": a blank switch file
+        // holds nothing to destroy, so it reads as the first run, not damage.
+        crate::config_read::ConfigFile::Absent | crate::config_read::ConfigFile::Blank => {
             return Err(MISSING_FILE.to_string());
         }
-        Err(error) => return Err(error.to_string()),
+        crate::config_read::ConfigFile::Present(bytes) => bytes,
     };
-    if metadata.len() > MAX_DELEGATION_FILE_BYTES {
-        return Err(format!(
-            "{} is {} bytes, over the {MAX_DELEGATION_FILE_BYTES}-byte cap",
-            path.display(),
-            metadata.len()
-        ));
-    }
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     serde_json::from_slice(&bytes).map_err(|error| {
         format!(
             "{path} is not a delegation document: {error}",
@@ -372,6 +367,43 @@ mod tests {
         let reopened = DelegationStore::load(&dir);
         assert_eq!(reopened.get(), (false, DelegationSource::File));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_bom_prefixed_switch_loads_as_written() {
+        let dir = store_dir("bom");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend(br#"{"enabled": true}"#);
+        std::fs::write(dir.join(DELEGATION_FILE), &bytes).expect("seed");
+        assert_eq!(
+            DelegationStore::load(&dir).get(),
+            (true, DelegationSource::File)
+        );
+        assert!(dir.join(DELEGATION_FILE).is_file());
+        assert!(quarantined(&dir).is_empty(), "a BOM is not damage");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_switch_counts_as_never_configured() {
+        for (tag, bytes) in [
+            ("empty", b"".as_slice()),
+            ("whitespace", b"  \n ".as_slice()),
+            ("bom-only", b"\xef\xbb\xbf".as_slice()),
+        ] {
+            let dir = store_dir(tag);
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            std::fs::write(dir.join(DELEGATION_FILE), bytes).expect("seed");
+            assert_eq!(
+                DelegationStore::load(&dir).get(),
+                (false, DelegationSource::Default),
+                "{tag} is a first run, not damage"
+            );
+            assert!(dir.join(DELEGATION_FILE).is_file(), "{tag} is left alone");
+            assert!(quarantined(&dir).is_empty());
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     /// The corrupt file is quarantined — kept as evidence, never overwritten

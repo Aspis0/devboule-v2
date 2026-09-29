@@ -390,7 +390,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | ctr | 0.9.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | ctutils | 0.4.2 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | cursor-icon | 1.2.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 OR Zlib |
-| curve25519-dalek | 4.1.3 | Rust transitive (lockfile) | BSD-3-Clause |
+| curve25519-dalek | 4.1.3 | Rust direct runtime optional | BSD-3-Clause |
 | curve25519-dalek-derive | 0.1.1 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | daachorse | 2.1.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | darling | 0.20.11 | Rust transitive (lockfile) | MIT |

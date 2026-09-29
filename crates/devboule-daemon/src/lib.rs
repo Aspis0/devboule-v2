@@ -38,11 +38,15 @@ mod codex_plan_marks;
 mod codex_prompt_expand;
 #[cfg(feature = "server")]
 mod codex_view;
+#[cfg(feature = "server")]
+mod config_read;
 mod daemon_record;
 #[cfg(feature = "server")]
 mod delegation_store;
 #[cfg(feature = "server")]
 mod device_identity;
+#[cfg(feature = "server")]
+mod device_recovery;
 mod diagnostics;
 mod error;
 mod framing;

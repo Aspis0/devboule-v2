@@ -59,14 +59,13 @@ impl std::fmt::Display for DeviceIdentityError {
                 formatter,
                 "device.json exists but the Noise static key is not in the secret store; \
                  refusing to generate a new key silently, which would orphan every pairing. \
-                 Restore the key from a backup or delete device.json and the stored secret to \
-                 start over — the pairings will have to be made again"
+                 Restore the key from a backup, or delete device.json and restart to start \
+                 over — the pairings will have to be made again"
             ),
             Self::Envelope(message) => write!(
                 formatter,
-                "noise static envelope is malformed ({message}); restore the key from a backup \
-                 or, if this device has no pairings worth keeping, delete device.json and the \
-                 stored secret to start over"
+                "the stored secret for device.json is malformed ({message}); restore the key \
+                 from a backup — without it this device cannot authenticate to its pairings"
             ),
             Self::Crypto(message) => write!(formatter, "noise static key: {message}"),
             Self::DeviceFile(message) => write!(formatter, "device.json: {message}"),
@@ -153,7 +152,9 @@ pub struct DeviceIdentity {
     pub display_name: String,
     pub public_key: [u8; STATIC_KEY_LEN],
     pub key_fingerprint: String,
-    private_key: [u8; STATIC_KEY_LEN],
+    // Crate-visible so the recovery module can build the identity its rebuild
+    // returns; read nowhere else — the key is borrowed through `private_key()`.
+    pub(crate) private_key: [u8; STATIC_KEY_LEN],
 }
 
 impl Drop for DeviceIdentity {
@@ -295,9 +296,16 @@ pub fn display_name_or_fallback(name: &str) -> String {
 
 /// Read `device.json` and the private key, or create both.
 ///
-/// A present `device.json` with an absent secret-store entry is
-/// [`DeviceIdentityError::KeyMissing`]: the alternative, generating a new
-/// key, would silently invalidate every peer that pinned the old one.
+/// One rule: a stored key is never replaced. A missing file beside a stored
+/// key is rebuilt from it (fresh id, same key — peers pin the public key, so
+/// the pairings keep authenticating); a new keypair is minted only when the
+/// store holds no key. A blank or unparseable file beside a stored key is
+/// moved aside first and then rebuilt the same way, so nothing restorable is
+/// lost. Without a stored key there is nothing to rebuild from: blank refuses
+/// with the file delete as its recovery, and an unparseable file stays a
+/// parse error.
+///
+/// A leading UTF-8 BOM on a real document is stripped before parsing.
 pub fn load_or_create(
     paths: &RuntimePaths,
     store: &dyn SecretStore,
@@ -305,22 +313,97 @@ pub fn load_or_create(
     if paths.device_file.exists() {
         return load(paths, store);
     }
-    create(paths, store)
+    match stored_key(store, "the identity file is missing")? {
+        Some(_) => crate::device_recovery::rebuild_identity(
+            paths,
+            store,
+            None,
+            "the identity file is missing",
+        ),
+        None => create(paths, store),
+    }
+}
+
+/// device.json files this daemon writes are a few hundred bytes; anything
+/// past the cap is damage, and bounding the read bounds every parse below.
+const MAX_DEVICE_FILE_BYTES: u64 = 64 * 1024;
+
+/// The stored private-key envelope, if any. A store failure names both facts —
+/// what the file turned out to be and why the key could not be checked — so a
+/// keyring outage never hides behind, or hides, the file diagnosis.
+pub(crate) fn stored_key(
+    store: &dyn SecretStore,
+    file_state: &str,
+) -> Result<Option<Vec<u8>>, DeviceIdentityError> {
+    store.get(NOISE_STATIC_SECRET_NAME).map_err(|error| {
+        DeviceIdentityError::DeviceFile(format!(
+            "{file_state}, and the stored key could not be read ({error})"
+        ))
+    })
 }
 
 fn load(
     paths: &RuntimePaths,
     store: &dyn SecretStore,
 ) -> Result<DeviceIdentity, DeviceIdentityError> {
-    let raw = std::fs::read(&paths.device_file)?;
-    let file: DeviceFile = serde_json::from_slice(&raw)?;
-    validate_device_file(&file)?;
-    let mut stored = store
-        .get(NOISE_STATIC_SECRET_NAME)?
+    // Bounded like every other config read, through the same helper: the
+    // tri-state tells a first run from damage, and oversize or UTF-16 refuse
+    // here with their own prescription instead of reaching any branch below.
+    let bytes =
+        match crate::config_read::read_config_file(&paths.device_file, MAX_DEVICE_FILE_BYTES)? {
+            crate::config_read::ConfigFile::Absent => {
+                return Err(DeviceIdentityError::Io(
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "device.json vanished during startup; restart to retry",
+                    )
+                    .to_string(),
+                ));
+            }
+            crate::config_read::ConfigFile::Blank => {
+                // The recovery names only what exists: with no stored key there is
+                // nothing to rebuild from — deleting the file and restarting mints a
+                // first-run identity.
+                return match stored_key(store, "the identity file holds no readable bytes")? {
+                    None => Err(DeviceIdentityError::DeviceFile(
+                        "the identity file exists but holds no identity; delete the file and \
+                         restart to create a fresh identity"
+                            .to_string(),
+                    )),
+                    Some(_) => {
+                        crate::device_recovery::move_aside(paths);
+                        crate::device_recovery::rebuild_identity(
+                            paths,
+                            store,
+                            None,
+                            "the identity file holds no readable bytes",
+                        )
+                    }
+                };
+            }
+            crate::config_read::ConfigFile::Present(bytes) => bytes,
+        };
+    // One parse from bytes; the Value serves both the schema read and the
+    // salvaged name, so a damaged file is never deserialized twice.
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return heal_unparseable(paths, store, None, error);
+        }
+    };
+    let name = crate::device_recovery::lenient_display_name(&value);
+    let file: DeviceFile = match serde_json::from_value(value) {
+        Ok(file) => file,
+        Err(error) => {
+            return heal_unparseable(paths, store, name, error);
+        }
+    };
+    validate_device_file(&file).map_err(unusable_file)?;
+    let public_key = decode_public_key(&file.public_key).map_err(unusable_file)?;
+    let mut stored = stored_key(store, "the identity file holds an identity")?
         .ok_or(DeviceIdentityError::KeyMissing)?;
     let private_key = decode_envelope(&stored).inspect_err(|_| stored.zeroize())?;
     stored.zeroize();
-    let public_key = decode_public_key(&file.public_key)?;
     Ok(DeviceIdentity {
         device_id: file.device_id,
         // Sanitised on the way in as well: a hand-edited `device.json` is one of
@@ -331,6 +414,44 @@ fn load(
         key_fingerprint: file.key_fingerprint,
         private_key,
     })
+}
+
+/// The unreadable-file branch, shared by garbage bytes and wrong-shape
+/// documents: heal around a stored key (salvaging the name when there is
+/// one); without a key the file is all there is, so refuse with what to do.
+fn heal_unparseable(
+    paths: &RuntimePaths,
+    store: &dyn SecretStore,
+    name: Option<String>,
+    error: serde_json::Error,
+) -> Result<DeviceIdentity, DeviceIdentityError> {
+    match stored_key(store, "the identity file cannot be parsed as an identity")? {
+        None => Err(DeviceIdentityError::Json(format!(
+            "{error}; restore it from a backup, or delete the file and restart to create a \
+             fresh identity"
+        ))),
+        Some(_) => {
+            crate::device_recovery::move_aside(paths);
+            crate::device_recovery::rebuild_identity(
+                paths,
+                store,
+                name.as_deref(),
+                "the identity file cannot be parsed as an identity",
+            )
+        }
+    }
+}
+
+/// A readable-but-wrong file refuses with its evidence intact; deleting it
+/// heals either way (an absent file rebuilds from the key, or mints without
+/// one), so the refusal names that recovery.
+fn unusable_file(error: DeviceIdentityError) -> DeviceIdentityError {
+    match error {
+        DeviceIdentityError::DeviceFile(message) => DeviceIdentityError::DeviceFile(format!(
+            "{message}; delete the file and restart to create a working identity"
+        )),
+        other => other,
+    }
 }
 
 fn create(
@@ -368,9 +489,10 @@ fn create(
         key_fingerprint: key_fingerprint.clone(),
     };
     // Store the private half first. A crash between these two writes leaves
-    // device.json absent and the secret present, which the next start
-    // overwrites; the reverse order would leave a device.json whose key
-    // cannot be found (KeyMissing) on a device that never paired.
+    // device.json absent and the secret present, which the next start rebuilds
+    // from the stored key; the reverse order would leave a device.json whose
+    // key cannot be found (KeyMissing) on a device that never paired,
+    // recoverable only by deleting the file.
     let mut envelope = encode_envelope(&private_key);
     let stored = store.set(NOISE_STATIC_SECRET_NAME, &envelope);
     envelope.zeroize();
@@ -422,7 +544,7 @@ fn validate_device_file(file: &DeviceFile) -> Result<(), DeviceIdentityError> {
     Ok(())
 }
 
-fn unix_millis() -> u64 {
+pub(crate) fn unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(0))
@@ -437,12 +559,12 @@ fn unix_millis() -> u64 {
 /// a machine with a badly skewed clock would be unable to use its own identity
 /// until the clock was fixed. One millisecond past the epoch is a value
 /// the validator accepts and no real daemon start can produce by accident.
-fn created_at_stamp() -> u64 {
+pub(crate) fn created_at_stamp() -> u64 {
     unix_millis().max(1)
 }
 
 #[cfg(windows)]
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     // `COMPUTERNAME` is what the OS sets for this process.
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
@@ -457,7 +579,7 @@ fn hostname() -> String {
 /// fingerprint — so the file the OS keeps is read as a fallback. The daemon
 /// does not run on these platforms yet, and no new dependency is added for it.
 #[cfg(not(windows))]
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     for path in ["/etc/hostname", "/proc/sys/kernel/hostname"] {
         if let Ok(name) = std::fs::read_to_string(path) {
             let name = name.trim();
@@ -536,6 +658,93 @@ mod tests {
         let parsed: DeviceFile = serde_json::from_slice(&raw).expect("json");
         assert!(parsed.created_at > 0);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bom_prefixed_device_file_loads_the_same_identity() {
+        let (dir, paths) = tmp_paths();
+        let store = InMemoryStore::default();
+        let created = load_or_create(&paths, &store).expect("create");
+
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend(std::fs::read(&paths.device_file).expect("device.json"));
+        std::fs::write(&paths.device_file, &bytes).expect("reseed with BOM");
+
+        let loaded = load_or_create(&paths, &store).expect("BOM loads");
+        assert_eq!(loaded.device_id, created.device_id);
+        assert_eq!(loaded.public_key, created.public_key);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_blank_device_file_without_a_stored_key_names_only_the_file() {
+        // Nobody stored a secret and nobody could have paired: the recovery
+        // must not mention either.
+        for (tag, bytes) in [
+            ("empty", b"".as_slice()),
+            ("whitespace", b"  \n ".as_slice()),
+            ("bom-only", b"\xef\xbb\xbf".as_slice()),
+        ] {
+            let dir = crate::test_dirs::test_temp_dir(&format!("devboule-identity-blank-{tag}"));
+            let paths = RuntimePaths::from_dir(&dir);
+            let store = InMemoryStore::default();
+            std::fs::write(&paths.device_file, bytes).expect("truncate");
+
+            let error = match load_or_create(&paths, &store) {
+                Err(error) => error,
+                Ok(_) => panic!("{tag}: refuses"),
+            };
+            let rendered = error.to_string();
+            assert_eq!(
+                rendered.matches("device.json").count(),
+                1,
+                "{tag}: one device.json per sentence: {rendered}"
+            );
+            assert!(
+                !rendered.contains("secret") && !rendered.contains("pair"),
+                "{tag}: no secret and no pairings exist, so neither is named: {rendered}"
+            );
+            assert!(
+                rendered.contains("delete the file"),
+                "{tag}: the recovery is deleting the file: {rendered}"
+            );
+            assert!(
+                store.get(NOISE_STATIC_SECRET_NAME).expect("read").is_none(),
+                "{tag}: no key is minted on refusal"
+            );
+            assert_eq!(
+                std::fs::read(&paths.device_file).expect("bytes"),
+                bytes,
+                "{tag}: the file is kept"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn an_unparseable_device_file_without_a_stored_key_stays_a_parse_error() {
+        // Nothing to rebuild from: the file is all there is, so it stays a
+        // parse error with the file left where it is.
+        let (dir, paths) = tmp_paths();
+        let store = InMemoryStore::default();
+        std::fs::write(&paths.device_file, b"{ this is not json").expect("damage");
+
+        match load_or_create(&paths, &store) {
+            Err(DeviceIdentityError::Json(message)) => {
+                assert!(
+                    message.contains("delete the file"),
+                    "a bare parser message helps nobody; the recovery is named: {message}"
+                );
+            }
+            Err(other) => panic!("a parse error, got {other:?}"),
+            Ok(_) => panic!("an unparseable file with no key must not load"),
+        }
+        assert_eq!(
+            std::fs::read(&paths.device_file).expect("bytes"),
+            b"{ this is not json",
+            "the file is kept"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1265,6 +1265,10 @@ impl ServerState {
                 ring_dropped_frames: output_metrics.coalesced_frames,
                 journal_error,
                 journal_stats: self.sessions.journal_stats().map(Box::new),
+                // The tool-policy load failure, if any: the Settings page
+                // banners it and locks the toggles instead of rendering
+                // missing rows as allowed.
+                tool_policy_error: self.tool_policy.load_error(),
                 // The selector, never the key. The body is part of the app's
                 // own status surface: a peer reads it only with the
                 // administrative capability, and the key is not in this struct

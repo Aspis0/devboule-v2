@@ -81,7 +81,12 @@ function tick() {
           if (current.state === "unresponsive") return;
           emit({ ...current, state: "unresponsive", message: null });
         } else {
-          emit(DISCONNECTED_DAEMON);
+          // Same bail-out as the timeout arm: no new object, no re-render.
+          // The carried failure cannot change without a successful poll.
+          if (current.state === "disconnected") return;
+          // A disconnect keeps the last known failure: the banner and the
+          // locks hold until a fresh status clears them.
+          emit({ ...DISCONNECTED_DAEMON, toolPolicyError: current.toolPolicyError });
         }
       }
     },

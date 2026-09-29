@@ -281,30 +281,20 @@ fn load_document(path: &Path) -> Result<AgentProfilesDocument, String> {
 
 /// Parse the file, refusing one larger than the cap before it is read.
 ///
-/// A missing file is an empty document, not an error: that is the first run.
+/// A missing, 0-byte or whitespace-only file is an empty document, not an
+/// error: that is the first run. A leading UTF-8 BOM is stripped before
+/// parsing, so a Notepad save loads as written.
 ///
 /// An unknown field is a parse failure here, and the refusal names it: the wire
 /// types carry `deny_unknown_fields`, so a hand-edited file cannot smuggle a
 /// field the daemon would silently ignore — and neither can a frame.
 fn read_document(path: &Path) -> io::Result<AgentProfilesDocument> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(AgentProfilesDocument::default())
+    let bytes = match crate::config_read::read_config_file(path, MAX_PROFILES_FILE_BYTES)? {
+        crate::config_read::ConfigFile::Absent | crate::config_read::ConfigFile::Blank => {
+            return Ok(AgentProfilesDocument::default());
         }
-        Err(error) => return Err(error),
+        crate::config_read::ConfigFile::Present(bytes) => bytes,
     };
-    if metadata.len() > MAX_PROFILES_FILE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "{} is {} bytes, over the {MAX_PROFILES_FILE_BYTES}-byte cap",
-                path.display(),
-                metadata.len()
-            ),
-        ));
-    }
-    let bytes = std::fs::read(path)?;
     serde_json::from_slice(&bytes).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -878,6 +868,44 @@ mod tests {
         assert_eq!(parsed["standingInstructions"], sent.standing_instructions);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bom_prefixed_document_loads_with_its_profiles() {
+        let dir = temp_dir();
+        let store = AgentProfilesStore::load(&dir);
+        let mut sent = document(vec![profile("p-1", "Reviewer")]);
+        sent.standing_instructions = "Report your result.".to_string();
+        store.set(sent.clone()).expect("set");
+
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend(std::fs::read(dir.join(PROFILES_FILE)).expect("file"));
+        std::fs::write(dir.join(PROFILES_FILE), &bytes).expect("reseed with BOM");
+
+        let reopened = AgentProfilesStore::load(&dir).document();
+        assert_eq!(names(&reopened), ["Reviewer"], "the row survives the BOM");
+        assert_eq!(reopened.standing_instructions, sent.standing_instructions);
+        assert!(dir.join(PROFILES_FILE).is_file());
+        assert!(quarantined(&dir).is_empty(), "a BOM is not damage");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_document_counts_as_absent() {
+        for (tag, bytes) in [
+            ("empty", b"".as_slice()),
+            ("whitespace", b"  \r\n ".as_slice()),
+            ("bom-only", b"\xef\xbb\xbf".as_slice()),
+        ] {
+            let dir = crate::test_dirs::test_temp_dir(&format!("devboule-agent-profiles-{tag}"));
+            std::fs::write(dir.join(PROFILES_FILE), bytes).expect("seed");
+            let document = AgentProfilesStore::load(&dir).document();
+            assert!(document.profiles.is_empty(), "{tag} is a first run");
+            assert!(document.standing_instructions.is_empty());
+            assert!(dir.join(PROFILES_FILE).is_file(), "{tag} is left alone");
+            assert!(quarantined(&dir).is_empty(), "{tag} is not damage");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// The reason `id` exists at all: a human renames a profile, and a child

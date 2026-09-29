@@ -161,15 +161,17 @@ export const PROVIDER_AUTH_CHECK_CAPABILITY = "provider.auth-check";
 
 /**
  * What one provider's toggles read from a stored row. `undefined` is the
- * same as enabled: `ToolPolicyGet` returns stored rows only, so a provider
- * with no row is enabled by default — never an error, never "unknown".
+ * same as enabled — unless the policy failed closed, in which case a missing
+ * row means denied: the daemon serves deny-all while `toolPolicyError` is
+ * set, so the panel must never render the absence as allowed.
  */
 export function toolPolicyFor(
   providerId: string,
   policies: readonly ToolPolicyEntry[] | null,
+  failedClosed = false,
 ): { enabled: boolean; disabledTools: readonly string[] } {
   const row = policies?.find((entry) => entry.providerId === providerId);
-  if (row === undefined) return { enabled: true, disabledTools: [] };
+  if (row === undefined) return { enabled: !failedClosed, disabledTools: [] };
   return {
     enabled: row.enabled !== false,
     // A stored row that names the always-on tool is stale daemon data:

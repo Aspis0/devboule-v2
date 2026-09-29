@@ -20,7 +20,7 @@ default = ["server"]
 # -p devboule-daemon` builds no stub binary and exports no test API. The
 # daemon's own test run enables this feature.
 test-support = []
-server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest", "dep:uuid", "dep:base64", "dep:sha2", "dep:snow", "dep:keyring", "dep:zeroize", "dep:spake2", "dep:getrandom", "dep:hkdf", "dep:oracle-core"]
+server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest", "dep:uuid", "dep:base64", "dep:sha2", "dep:snow", "dep:keyring", "dep:zeroize", "dep:spake2", "dep:getrandom", "dep:hkdf", "dep:oracle-core", "dep:curve25519-dalek"]
 
 [lib]
 name = "devboule_daemon"
@@ -132,6 +132,11 @@ spake2 = { version = "=0.4.0", optional = true }
 # dependency.
 getrandom = { version = "=0.4.3", optional = true }
 hkdf = { version = "=0.13.0", optional = true }
+# X25519 basepoint multiplication only, to rebuild `device.json` from the
+# stored private key when the file is lost or unreadable. 4.1.3 is the version
+# snow already resolves. Default features are off so snow's copy of the crate
+# keeps the feature set it chose: the derivation needs none of them.
+curve25519-dalek = { version = "=4.1.3", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Named pipe, DACL, and LockFileEx. Version 0.61.2 is already in the lockfile

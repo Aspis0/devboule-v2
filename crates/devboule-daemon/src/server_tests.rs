@@ -3851,6 +3851,40 @@ fn status_carries_the_secret_store_selector_and_a_remote_state() {
     let _ = std::fs::remove_dir_all(path);
 }
 
+#[test]
+fn status_carries_the_tool_policy_failure_while_a_clean_load_carries_none() {
+    // P1-1: the deny-all is only mergable if the UI can see it. A blank
+    // policy file (P0-2: existing but empty denies) must surface its reason
+    // in Status; a missing file must surface nothing.
+    let blank_dir = crate::test_dirs::test_temp_dir("devboule-status-policy-blank");
+    std::fs::write(blank_dir.join(crate::tool_policy::POLICY_FILE), b"").expect("seed blank");
+    let blank = ServerState::with_paths(
+        "test-instance".to_string(),
+        RuntimePaths::from_dir(blank_dir.clone()),
+    )
+    .expect("state");
+    match blank.status_body(9) {
+        DaemonMessage::Status { body, .. } => assert!(
+            body.tool_policy_error.is_some(),
+            "a blank policy file denies and says so in Status"
+        ),
+        other => panic!("expected Status, got {other:?}"),
+    }
+    drop(blank);
+    let _ = std::fs::remove_dir_all(blank_dir);
+
+    let (path, state) = temp_state("status-policy-clean");
+    match state.status_body(9) {
+        DaemonMessage::Status { body, .. } => assert_eq!(
+            body.tool_policy_error, None,
+            "a first run carries no policy error"
+        ),
+        other => panic!("expected Status, got {other:?}"),
+    }
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
 /// The leak that this guards: a state built by a test must not reach the OS
 /// credential store.
 ///

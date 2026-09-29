@@ -3104,6 +3104,12 @@ pub struct DaemonStatusBody {
     /// itself is what carries that doubt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_error: Option<String>,
+    /// Present when `tool-policies.json` existed but could not be read: every
+    /// restrictable broker tool is denied until the file is fixed or removed.
+    /// Output-only and optional — `serde(default)` like `journal_error` — so
+    /// older payloads read as `None` and no protocol bump is needed for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_policy_error: Option<String>,
     /// Live counters of the journal writer, present when the journal was
     /// opened. `None` means the journal is unavailable (see `journalError`):
     /// there is no writer whose behaviour could be counted.

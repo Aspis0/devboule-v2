@@ -41,6 +41,10 @@ pub struct UiDaemonStatus {
     pub clients: Option<u32>,
     pub capabilities: Vec<String>,
     pub message: Option<String>,
+    /// Why the daemon denies every restrictable broker tool, when it does.
+    /// The Settings page banners it and locks the toggles.
+    #[serde(default)]
+    pub tool_policy_error: Option<String>,
 }
 
 impl UiDaemonStatus {
@@ -53,6 +57,7 @@ impl UiDaemonStatus {
             clients: None,
             capabilities: Vec::new(),
             message: None,
+            tool_policy_error: None,
         }
     }
 
@@ -65,6 +70,7 @@ impl UiDaemonStatus {
             clients: None,
             capabilities: Vec::new(),
             message: Some(message.into()),
+            tool_policy_error: None,
         }
     }
 
@@ -77,6 +83,7 @@ impl UiDaemonStatus {
             clients: None,
             capabilities: Vec::new(),
             message: Some(message.into()),
+            tool_policy_error: None,
         }
     }
 }
@@ -1752,6 +1759,7 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                                 .map(|capability| capability.as_str().to_string())
                                 .collect(),
                             message: connection_signal.and_then(|signal| signal.message),
+                            tool_policy_error: None,
                         },
                     );
                     Ok((client, hello))
@@ -1769,6 +1777,7 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                                 clients: None,
                                 capabilities: Vec::new(),
                                 message: signal.message,
+                                tool_policy_error: None,
                             },
                         );
                     } else {
@@ -1799,6 +1808,7 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                             .map(|capability| capability.as_str().to_string())
                             .collect(),
                         message: body.journal_error,
+                        tool_policy_error: body.tool_policy_error,
                     },
                 ),
                 StatusUpdate::Failure(signal) => set_status(
@@ -1811,6 +1821,7 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                         clients: None,
                         capabilities: Vec::new(),
                         message: signal.message,
+                        tool_policy_error: None,
                     },
                 ),
             },

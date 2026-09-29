@@ -794,6 +794,136 @@ fn a_stored_policy_can_take_the_activity_tool_away() {
 }
 
 #[test]
+fn a_failed_closed_policy_denies_at_the_real_broker_gate() {
+    // The wiring P1-4 pins: a corrupt policy file, the real startup load,
+    // and the real HTTP doors. `tools/list` must not offer a restrictable
+    // tool, `tools/call` must refuse it, and the two always-on names must
+    // still be served. A unit test on `get` would not catch a door that
+    // stopped consulting the store.
+    let dir = crate::test_dirs::test_temp_dir("devboule-failed-closed-gate");
+    std::fs::write(
+        dir.join(crate::tool_policy::POLICY_FILE),
+        b"{ this is not json",
+    )
+    .expect("seed damage");
+    let state = ServerState::with_paths(
+        "mcp-failed-closed-gate".to_string(),
+        crate::paths::RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    assert!(
+        state.tool_policy.load_error().is_some(),
+        "the gate test needs a failed-closed store"
+    );
+    let owner = owner("mcp-failed-closed-user", "mcp-failed-closed-client");
+    crate::session::insert_test_live_agent(&state.sessions, "denied-caller", owner.clone());
+    let guard = state
+        .mcp
+        .register_with_provider(
+            "denied-caller",
+            &owner,
+            &SessionKind::Acp,
+            Some("claude"),
+            AgentLineage::root(),
+        )
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token("denied-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+    let listed = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+    let listed_body = response_json(&listed);
+    let names: Vec<&str> = listed_body["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(
+        !names.contains(&crate::provider_catalog::MCP_ACTIVITY_TOOL),
+        "a restrictable tool is not offered while failed-closed: {names:?}"
+    );
+    assert!(
+        names.contains(&crate::provider_catalog::MCP_ROSTER_TOOL),
+        "the always-on roster stays servable: {names:?}"
+    );
+    let refused = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"denied-caller"}}}"#,
+    );
+    let refused_body = response_json(&refused);
+    assert_eq!(refused_body.pointer("/error/code"), Some(&json!(-32601)));
+    assert_eq!(
+        refused_body.pointer("/error/message"),
+        Some(&json!("Tool disabled by policy"))
+    );
+    drop(guard);
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_blank_policy_file_denies_at_the_real_broker_gate() {
+    // P0-2 at the gate: an existing-but-blank file is an unknown policy,
+    // not a first run. The list must not offer a restrictable tool and the
+    // call must be refused, exactly like a corrupt file.
+    let dir = crate::test_dirs::test_temp_dir("devboule-blank-gate");
+    std::fs::write(dir.join(crate::tool_policy::POLICY_FILE), b"").expect("seed blank");
+    let state = ServerState::with_paths(
+        "mcp-blank-gate".to_string(),
+        crate::paths::RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    let owner = owner("mcp-blank-gate-user", "mcp-blank-gate-client");
+    crate::session::insert_test_live_agent(&state.sessions, "blank-caller", owner.clone());
+    let guard = state
+        .mcp
+        .register_with_provider(
+            "blank-caller",
+            &owner,
+            &SessionKind::Acp,
+            Some("claude"),
+            AgentLineage::root(),
+        )
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token("blank-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+    let listed = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+    let listed_body = response_json(&listed);
+    let names: Vec<&str> = listed_body["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(
+        !names.contains(&crate::provider_catalog::MCP_ACTIVITY_TOOL),
+        "a blank file denies like a corrupt one: {names:?}"
+    );
+    let refused = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"blank-caller"}}}"#,
+    );
+    assert_eq!(
+        response_json(&refused).pointer("/error/code"),
+        Some(&json!(-32601))
+    );
+    drop(guard);
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_end_tools_stop_and_close_a_callers_own_children_only() {
     // The destructive pair end to end: served, scoped to the caller's
     // own children, and refused for the caller's parent, itself, and an

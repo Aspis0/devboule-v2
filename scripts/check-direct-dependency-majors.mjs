@@ -33,6 +33,11 @@ const inlineExceptions = {
       exitCondition:
         "oracle-core's dependents (hf-hub, lance-namespace-reqwest-client) move to reqwest 0.13, or reqwest regains a ring-based TLS feature",
     },
+    "curve25519-dalek": {
+      reason:
+        "the daemon derives the device's public key from its stored Noise static key with the same curve25519-dalek copy snow 0.10 already compiles (4.1.3), so the derivation matches snow's keypair and no second curve implementation is built",
+      exitCondition: "snow moves to curve25519-dalek 5",
+    },
     winreg: {
       reason:
         "the daemon's vendored-portable-pty regression test (Windows-only) must construct the exact winreg::RegValue type portable-pty 0.9.0 validates; 0.10.1 is what the vendored crate resolves and is already in Cargo.lock",
