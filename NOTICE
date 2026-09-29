@@ -138,6 +138,15 @@ source, and that line is the authority for the entry:
   `packages/app/src/components/root-error-boundary.tsx`
 - `src/app/SurfaceErrorBoundary.tsx` —
   `packages/app/src/plugins/surface-error-boundary.tsx`
+- `src/features/workspace/WorkspaceComposer.tsx` —
+  `packages/app/src/components/ui/combobox-keyboard.ts`
+  (`getNextActiveIndex`), `packages/app/src/composer/input/state.ts`
+  (`runAlternateSendAction`), `packages/app/src/hooks/use-autocomplete.ts`
+  (the highlight reset and clamp) and `packages/app/src/i18n/resources/en.ts`
+  (the submit-button words)
+- `src/features/workspace/commandMatch.ts` —
+  `packages/protocol/src/search/text-match.ts` and
+  `packages/app/src/utils/agent-command-autocomplete.ts`
 - `src/lib/toolCallGroups.ts` — `packages/app/src/i18n/resources/en.ts:1853-1879`
   (the `toolCallGroup.*` strings)
 

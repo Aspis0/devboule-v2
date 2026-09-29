@@ -1,3 +1,5 @@
+// The arrow-key step, the alternate send action, the highlight reset and the
+// submit-button words are translated from Paseo's app (files listed in NOTICE).
 import {
   memo,
   useCallback,
@@ -74,10 +76,8 @@ function combine(refused: string, existing: string): string {
   return existing === "" ? refused : `${refused}\n\n${existing}`;
 }
 
-/** One step from the highlighted row for an arrow key, wrapping at both ends
- * (Paseo's `getNextActiveIndex`,
- * `packages/app/src/components/ui/combobox-keyboard.ts`); with no rows there
- * is no row to move to. */
+/** One step from the highlighted row for an arrow key, wrapping at both ends;
+ * with no rows there is no row to move to. */
 function nextCommandIndex(current: number, count: number, key: "ArrowUp" | "ArrowDown"): number {
   if (count <= 0) return current;
   const step = key === "ArrowDown" ? 1 : -1;
@@ -205,10 +205,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     else sendInput();
   }, [defaultActionQueues, queueInput, sendInput]);
 
-  // Paseo's `runAlternateSendAction`
-  // (`packages/app/src/composer/input/state.ts`): with the queue default the
-  // alternate key sends; with the steer default it queues onto a running
-  // turn, and does nothing when there is no turn to queue onto.
+  // With the queue default the alternate key sends; with the steer default it
+  // queues onto a running turn, and does nothing when there is no turn to
+  // queue onto.
   const runAlternateAction = useCallback(() => {
     if (enterQueues) {
       sendInput();
@@ -231,9 +230,8 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const activeOptionId =
     commandMenuVisible && activeRow >= 0 ? `${menuId}-option-${activeRow}` : null;
 
-  // Paseo resets the highlight on a query change and clamps a row that fell
-  // out of range (`packages/app/src/hooks/use-autocomplete.ts`); the
-  // Escape's dismissal rides the same line.
+  // A query change resets the highlight and clamps a row that fell out of
+  // range; the Escape's dismissal rides the same line.
   const lastQueryRef = useRef(query);
   useEffect(() => {
     const queryChanged = lastQueryRef.current !== query;
@@ -299,9 +297,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     ],
   );
 
-  // Paseo's submit-button words
-  // (`packages/app/src/i18n/resources/en.ts`) on the button that does what
-  // Enter does.
+  // The submit button's words name what Enter does.
   const actionLabel = composerActionLabel(defaultActionQueues);
 
   return (
