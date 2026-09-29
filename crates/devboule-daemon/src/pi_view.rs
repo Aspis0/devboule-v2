@@ -32,7 +32,7 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
         "message_update" => message_update_events(value),
         "toolcall_end" => toolcall_end(value).into_iter().collect(),
         "tool_execution_start" => tool_execution_start(value).into_iter().collect(),
-        "tool_execution_end" => tool_execution_end(value).into_iter().collect(),
+        "tool_execution_end" => tool_execution_end(value),
         "turn_end" => turn_end(value),
         // Paseo's own words for pi's compaction frames, shown as our
         // transcript's system line — loading, then the manual or automatic
@@ -248,13 +248,16 @@ fn tool_execution_start(value: &Value) -> Option<SessionEvent> {
     })
 }
 
-fn tool_execution_end(value: &Value) -> Option<SessionEvent> {
+fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
+    let Some(tool_call_id) = value.get("toolCallId").and_then(Value::as_str) else {
+        return Vec::new();
+    };
     let failed = value
         .get("isError")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    Some(SessionEvent::AgentToolUpdate {
-        tool_call_id: value.get("toolCallId")?.as_str()?.to_string(),
+    let mut events = vec![SessionEvent::AgentToolUpdate {
+        tool_call_id: tool_call_id.to_string(),
         status: Some(tool_status(failed).to_string()),
         text: value.get("result").and_then(tool_result_text),
         title: None,
@@ -265,7 +268,15 @@ fn tool_execution_end(value: &Value) -> Option<SessionEvent> {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
-    })
+    }];
+    if let Some(tool_name) = value.get("toolName").and_then(Value::as_str) {
+        if let Some(items) =
+            crate::pi_task_adapters::agent_tasks(tool_name, value.get("result"), failed)
+        {
+            events.push(SessionEvent::AgentTasks { items });
+        }
+    }
+    events
 }
 
 fn tool_result_text(value: &Value) -> Option<String> {
@@ -637,5 +648,125 @@ mod tests {
             }
             other => panic!("expected one command list, got {other:?}"),
         }
+    }
+
+    /// A captured session's wire frames, the rows the journal carries.
+    fn fixture_frames(fixture: &str) -> Vec<serde_json::Value> {
+        let captured: serde_json::Value = serde_json::from_str(fixture).expect("fixture JSON");
+        captured
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .expect("events array")
+            .clone()
+    }
+
+    fn fixture_ends(frames: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+        frames
+            .iter()
+            .filter(|frame| {
+                frame.get("type").and_then(serde_json::Value::as_str) == Some("tool_execution_end")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_completed_pi_task_call_publishes_the_checklist_after_its_tool_row() {
+        let frames = fixture_frames(include_str!(
+            "../fixtures/pi-tasks/paseo-pi-goal-x.rpc-session.json"
+        ));
+        let ends = fixture_ends(&frames);
+        // The goal-creating call carries no task list: its row and nothing else.
+        assert!(matches!(
+            events_from_line(ends[0]).as_slice(),
+            [SessionEvent::AgentToolUpdate { .. }]
+        ));
+        match events_from_line(ends[2]).as_slice() {
+            [SessionEvent::AgentToolUpdate {
+                tool_call_id,
+                status,
+                ..
+            }, SessionEvent::AgentTasks { items }] => {
+                assert_eq!(tool_call_id, "call_23432");
+                assert_eq!(status.as_deref(), Some("completed"));
+                assert_eq!(items.len(), 2);
+                assert_eq!(
+                    items[0].status,
+                    devboule_protocol::AgentTaskStatus::Completed
+                );
+                assert_eq!(items[0].text, "Inspect workspace");
+                assert_eq!(items[1].status, devboule_protocol::AgentTaskStatus::Pending);
+                assert_eq!(items[1].text, "Summarize findings");
+            }
+            other => panic!("expected the tool row then the checklist, got {other:?}"),
+        }
+        // A running frame of the same call carries no list.
+        assert!(events_from_line(&frames[4])
+            .iter()
+            .all(|event| { !matches!(event, SessionEvent::AgentTasks { .. }) }));
+        // A failed call carries no list either.
+        let failed = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_f","toolName":"set_goal_tasks","result":{"details":{"version":3,"goal":{"taskList":{"tasks":[{"id":"a","title":"x","status":"pending"}]}}}},"isError":true}"#,
+        );
+        assert!(events_from_line(&failed)
+            .iter()
+            .all(|event| !matches!(event, SessionEvent::AgentTasks { .. })));
+    }
+
+    #[test]
+    fn the_pi_task_checklist_replays_the_same_as_live() {
+        let mut envelopes = Vec::new();
+        for fixture in [
+            include_str!("../fixtures/pi-tasks/paseo-pi-goal-x.rpc-session.json"),
+            include_str!("../fixtures/pi-tasks/paseo-rpiv-todo.rpc-session.json"),
+            include_str!("../fixtures/pi-tasks/paseo-pi-example-todo.rpc-session.json"),
+        ] {
+            envelopes.extend(fixture_frames(fixture));
+        }
+        let mut live: Vec<Vec<devboule_protocol::AgentTaskItem>> = Vec::new();
+        for envelope in &envelopes {
+            for event in events_from_line(envelope) {
+                if let SessionEvent::AgentTasks { items } = event {
+                    live.push(items);
+                }
+            }
+        }
+        assert_eq!(
+            live.len(),
+            9,
+            "two goal snapshots, four todo snapshots, three example snapshots"
+        );
+
+        let (dir, path) = crate::journal::tmp_journal();
+        let journal = crate::journal::Journal::open(&path).expect("open");
+        let id = "s.pi.tasks.replay";
+        journal
+            .create_session(crate::journal::new_session_record(
+                id,
+                "owner",
+                None,
+                devboule_protocol::SessionKind::Pi,
+                "pi tasks",
+            ))
+            .expect("birth");
+        for (index, envelope) in envelopes.iter().enumerate() {
+            journal
+                .append_blocking(
+                    crate::journal::acp_envelope_record(id, 1, index as u64 + 1, envelope)
+                        .expect("record"),
+                )
+                .expect("append");
+        }
+        let replay = journal.replay(id).expect("replay");
+        let replayed: Vec<Vec<devboule_protocol::AgentTaskItem>> = replay
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentTasks { items } => Some(items.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replayed, live);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

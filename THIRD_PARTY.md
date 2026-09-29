@@ -34,6 +34,8 @@ The workspace root's `[patch.crates-io]` also remaps `portable-pty` to the vendo
 
 The application does link/compile code from the registry dependencies listed below. In particular, rusqlite 0.40.2 is enabled with bundled: libsqlite3-sys 0.38.2 compiles the SQLite amalgamation it ships, SQLite 3.53.2, into the daemon artifact. That source is not checked into this repository, but it is part of the linked build input; rusqlite and libsqlite3-sys declare MIT, while the bundled SQLite amalgamation itself is distributed by SQLite under its public-domain dedication.
 
+Translated source and captured payloads from [Paseo](https://github.com/getpaseo/paseo) (Apache-2.0, Copyright (c) 2025-present Mohamed Boudra) are checked in. `crates/devboule-daemon/src/pi_task_adapters.rs` translates its three pi extension task-list adapters (`pi-goal-x`, `rpiv-todo` and `pi-example-todo`, under `packages/server/src/server/agent/providers/pi/extensions/`) at commit `f232d23e9a7b1ab4fdeaf198f2aabd8df8fb34ed`; three captured extension payloads copied verbatim from that commit's `fixtures/` directories sit in `crates/devboule-daemon/fixtures/pi-tasks/` (`paseo-pi-goal-x.rpc-session.json`, `paseo-rpiv-todo.rpc-session.json`, `paseo-pi-example-todo.rpc-session.json`), each carrying its own `provenance` block. Every file carrying a file-level Paseo translation attribution, with the Paseo source each was taken from, is indexed in NOTICE; NOTICE carries the attribution.
+
 ## Non-code assets
 
 | File | Provenance / use | Copyright | Licence | SHA-256 |

@@ -75,6 +75,8 @@ mod peer_policy;
 #[cfg(feature = "server")]
 mod peer_transport;
 #[cfg(feature = "server")]
+mod pi_task_adapters;
+#[cfg(feature = "server")]
 mod pi_view;
 #[cfg(feature = "server")]
 mod plan_text;

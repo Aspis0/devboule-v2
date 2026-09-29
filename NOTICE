@@ -78,12 +78,83 @@ The provider catalog adds Devboule's installed-agent model, ACP launch
 metadata, and an explicit unknown authentication status; it does not probe
 login state.
 
-Apart from the explicitly attributed herdr portions above, the only
-third-party library source copied into this repository is the vendored
+Paseo (https://github.com/getpaseo/paseo) is Copyright (c) 2025-present
+Mohamed Boudra, Apache-2.0. Its source was translated, ported or copied into
+the files below; each file carries its own attribution line naming the Paseo
+source, and that line is the authority for the entry:
+
+- `crates/devboule-daemon/src/claude_task_state.rs` — `claude/task-state.ts`
+  (commit `d6861f8`)
+- `crates/devboule-daemon/src/codex_command_catalog.rs` —
+  `packages/server/src/server/agent/providers/codex-app-server-agent.ts`
+  (`listCodexCustomPrompts`, `listCodexSkills`, `parseFrontMatter`, the
+  built-in rows of `listCommands`)
+- `crates/devboule-daemon/src/codex_commands.rs` — the same file
+  (`parseSlashCommandInput`, `tryHandleOutOfBand`, `executeCompactCommand`,
+  `executeGoalSubcommand`, `parseGoalSubcommand`, `buildCommandPromptInput`)
+- `crates/devboule-daemon/src/codex_goals.rs` — the same file
+  (`CODEX_GOALS_MIN_VERSION`, `parseCodexVersion`, `codexVersionAtLeast`,
+  `resolveGoalsEnabled`, the launcher's `--enable goals`)
+- `crates/devboule-daemon/src/codex_prompt_expand.rs` — the same file
+  (`expandCodexCustomPrompt`, `escapeRegExp`, `tokenizeCommandArgs`,
+  `decodeEscapedChar`)
+- `crates/devboule-daemon/src/pi_commands.rs` — the `providers/pi` functions,
+  each cited with its file and line inside the file
+- `crates/devboule-daemon/src/pi_out_of_band.rs` — the same, for the two
+  out-of-band commands
+- `crates/devboule-daemon/src/pi_task_adapters.rs` —
+  `packages/server/src/server/agent/providers/pi/extensions/pi-goal-x/index.ts`,
+  `…/rpiv-todo/index.ts` and `…/pi-example-todo/index.ts` (commit
+  `f232d23e9a7b1ab4fdeaf198f2aabd8df8fb34ed`)
+- `crates/devboule-daemon/src/pi_view.rs` — `pi/agent.ts` (the seeded
+  `compact`/`autocompact` built-ins and `mapPiSlashCommands`) and
+  `packages/app/src/components/message-compaction-label.ts` (the compaction
+  sentences)
+- `crates/devboule-daemon/src/provider_features.rs` —
+  `providers/claude/model-manifest.ts` (the `supportsFastMode` entries)
+- `crates/devboule-daemon/src/session_items.rs` —
+  `packages/server/src/server/agent/agent-prompt.ts` and
+  `packages/server/src/server/agent/agent-manager.ts` (`tryRunOutOfBand`)
+- `crates/devboule-daemon/src/session_messaging.rs` —
+  `packages/server/src/server/agent/agent-prompt.ts`
+- `crates/devboule-daemon/src/shell_unwrap.rs` —
+  `packages/server/src/server/agent/providers/codex/tool-call-mapper.ts`
+  (`unwrapShellCommand`, `stripMatchingEdgeQuotes`,
+  `normalizeCommandExecutionCommand`, `isWindowsShellCommand`)
+- `crates/devboule-daemon/src/workspace_git_log.rs` —
+  `packages/server/src/utils/checkout-git.ts` (`listCheckoutCommits`)
+- `crates/devboule-daemon/src/workspace_git_log_base.rs` — the same file
+  (`getCurrentBranch`, `branchNameFromRef`, `resolveRepositoryDefaultBranch`,
+  `doesGitRefExist`, `isQualifiedBranchRef`, `resolveMostAheadBaseRef`,
+  `tryResolveCheckoutCommitsBaseRef`)
+- `crates/devboule-daemon/src/workspace_git_log_parse.rs` — the same file
+  (`parseCheckoutCommitRecords`)
+- `crates/devboule-daemon/src/workspace_git_log_tests.rs` —
+  `packages/server/src/utils/checkout-git.commits.test.ts` (test histories
+  and classification rules)
+- `crates/devboule-daemon/src/workspace_git_write.rs` —
+  `packages/server/src/utils/checkout-git.ts` (`discardChanges`)
+- `src/app/RootErrorBoundary.tsx` —
+  `packages/app/src/components/root-error-boundary.tsx`
+- `src/app/SurfaceErrorBoundary.tsx` —
+  `packages/app/src/plugins/surface-error-boundary.tsx`
+- `src/lib/toolCallGroups.ts` — `packages/app/src/i18n/resources/en.ts:1853-1879`
+  (the `toolCallGroup.*` strings)
+
+The captured extension payloads in `crates/devboule-daemon/fixtures/pi-tasks/`
+(`paseo-pi-goal-x.rpc-session.json`, `paseo-rpiv-todo.rpc-session.json`,
+`paseo-pi-example-todo.rpc-session.json`) are copied verbatim from commit
+`f232d23e9a7b1ab4fdeaf198f2aabd8df8fb34ed`'s
+`packages/server/src/server/agent/providers/pi/extensions/<name>/fixtures/`
+directories; each file's own `provenance` block records the extension package,
+version and source commit.
+
+Apart from the explicitly attributed herdr and Paseo portions above, the
+only third-party library source copied into this repository is the vendored
 `portable-pty` tree (`vendor/portable-pty`; upstream MIT, see its
 `LICENSE.md`, plus herdr's Apache-2.0 patch and the local Devboule
-modification noted above). This does not
-mean that linked dependency code is absent from a built binary; the
+modification noted above). This does not mean that linked dependency code is
+absent from a built binary; the
 Cargo and npm dependencies identified in THIRD_PARTY.md are compiled or
 bundled according to their respective licences. The three checked-in fonts
 and the application icon asset are listed separately there.
