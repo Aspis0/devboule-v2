@@ -40,6 +40,7 @@ mod codex_prompt_expand;
 mod codex_view;
 #[cfg(feature = "server")]
 mod config_read;
+mod daemon_log;
 mod daemon_record;
 #[cfg(feature = "server")]
 mod delegation_store;
@@ -57,6 +58,8 @@ mod idempotency;
 #[cfg(feature = "server")]
 mod journal;
 mod lock;
+#[cfg(all(windows, feature = "server"))]
+mod log_pipeline;
 mod login_shell_env;
 #[cfg(feature = "server")]
 mod mcp_broker;
@@ -237,6 +240,14 @@ pub use session::{
     SESSION_SILENCE_THRESHOLD,
 };
 pub use spawn::{daemon_file_name, resolve_daemon_binary, spawn_daemon};
+// The daemon binary's entrypoint into the log sink; the binary is only built
+// with the server feature, so anything less would be dead code in the
+// client-only build the app produces.
+#[cfg(all(windows, feature = "server"))]
+pub use daemon_log::take_over_stderr;
+// The binary's exit paths flush the log the same way run_windows does.
+#[cfg(all(windows, feature = "server"))]
+pub use log_pipeline::shutdown_log;
 // Test support, not product (audit S5B-10): absent from a release build.
 #[cfg(any(test, feature = "test-support"))]
 pub use spawn::spawn_daemon_with_env;

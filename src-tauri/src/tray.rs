@@ -151,6 +151,7 @@ mod tests {
             ring_dropped_frames: 0,
             journal_error: None,
             tool_policy_error: None,
+            log_error: None,
             journal_stats: None,
             secret_store: None,
             remote: None,

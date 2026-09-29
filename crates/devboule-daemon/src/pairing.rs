@@ -920,8 +920,17 @@ impl PairingHook for PairingService {
     ) {
         if let Err(error) = self.serve_pairing(transport, &mut stream, peer_addr, server, in_flight)
         {
-            // The reason only: no code, no key, no device id.
-            eprintln!("daemon pairing attempt ended: {error}");
+            // Outcome and size only: a `Failed` reason may be the other
+            // device's own prose, arriving before the peer is trusted, so
+            // the text itself is never logged.
+            let line = match &error {
+                PairingError::Failed(reason) => format!(
+                    "pairing failed (the other device's reason was {} bytes long)",
+                    reason.len()
+                ),
+                other => other.to_string(),
+            };
+            eprintln!("daemon pairing attempt ended: {line}");
         }
         let _ = stream.shutdown(std::net::Shutdown::Both);
     }

@@ -1,6 +1,15 @@
 use devboule_daemon::{DaemonError, RuntimePaths};
 
 fn main() {
+    #[cfg(windows)]
+    {
+        // Before anything can print: hand stderr to the daemon log when it
+        // would otherwise go nowhere (the app spawns us with stderr on
+        // null). std re-reads the stderr handle on every write, so every
+        // later eprintln! — and any panic message — lands in daemon.log.
+        devboule_daemon::take_over_stderr();
+    }
+
     #[cfg(all(feature = "server", unix))]
     {
         // This call must remain the first runtime action in main: the Unix
@@ -28,6 +37,8 @@ fn main() {
                 "Devboule is already running: another daemon owns this user's runtime folder. \
                  Nothing was started; use the running Devboule app."
             );
+            #[cfg(windows)]
+            devboule_daemon::shutdown_log();
             std::process::exit(0);
         }
         Err(DaemonError::Io(error)) if error.raw_os_error() == Some(5) => {
@@ -40,6 +51,8 @@ fn main() {
                 "Devboule cannot access its runtime folder at {runtime_dir} (permission denied). \
                  Check the folder's permissions, then start Devboule again."
             );
+            #[cfg(windows)]
+            devboule_daemon::shutdown_log();
             std::process::exit(1);
         }
         Err(error) => {
@@ -51,6 +64,8 @@ fn main() {
                  That folder holds your session history, so do not delete it to \
                  work around this. Report the error instead."
             );
+            #[cfg(windows)]
+            devboule_daemon::shutdown_log();
             std::process::exit(1);
         }
     }

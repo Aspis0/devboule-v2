@@ -1734,9 +1734,12 @@ impl SessionRuntime {
                 return false;
             };
             if stream.output_closed {
+                // The kind only: variants carry prompt text, terminal output,
+                // and permission environment values, which never reach a log.
                 eprintln!(
-                    "session {} dropped ACP event after EOF: {:?}",
-                    self.session_id, event
+                    "session {} dropped ACP event after EOF: {}",
+                    self.session_id,
+                    event.kind()
                 );
                 return false;
             }

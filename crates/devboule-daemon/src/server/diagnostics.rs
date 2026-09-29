@@ -128,6 +128,9 @@ pub(super) fn diagnostics_report(
         ring_dropped_frames: output_metrics.coalesced_frames,
         journal_stats: state.sessions.journal_stats(),
         journal_error,
+        // Read at request time: a reopen failure is recorded after the
+        // state exists, and the report must still see it.
+        log_error: crate::daemon_log::startup_error(),
         journal_schema_version: JOURNAL_SCHEMA_VERSION,
         journal_file_bytes,
         sessions,

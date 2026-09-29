@@ -48,6 +48,27 @@ fn session_event_uses_a_type_tag() {
     assert_eq!(exit["code"], 0);
 }
 
+/// `kind()` names the variant for log lines, where the payload must never
+/// appear: it must agree with the wire spelling of the same variant.
+#[test]
+fn kind_is_the_wire_type_tag() {
+    let cases = [
+        SessionEvent::Output {
+            seq: 7,
+            data: "prompt text that must not be logged".to_string(),
+        },
+        SessionEvent::Exit { code: Some(0) },
+        SessionEvent::Detached,
+    ];
+    for event in cases {
+        let tag = serde_json::to_value(&event).expect("json")["type"]
+            .as_str()
+            .expect("a string tag")
+            .to_string();
+        assert_eq!(event.kind(), tag);
+    }
+}
+
 #[test]
 fn attention_uses_camel_case_and_omits_absent_snapshot_value() {
     let attention = Attention {

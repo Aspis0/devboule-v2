@@ -424,6 +424,9 @@ pub struct DiagnosticsInput {
     pub ring_dropped_frames: u64,
     pub journal_stats: Option<JournalStats>,
     pub journal_error: Option<String>,
+    /// Why the daemon's own log could not be opened, next to
+    /// `journal_error`; redacted like every other free text here.
+    pub log_error: Option<String>,
     pub journal_schema_version: i32,
     pub journal_file_bytes: Option<u64>,
     pub sessions: Vec<Session>,
@@ -468,6 +471,10 @@ pub struct HealthDiagnostics {
     pub journal_stats: Option<JournalStats>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_error: Option<SafeText>,
+    /// Present when the daemon's own log (`daemon.log`) could not be opened;
+    /// the daemon keeps serving without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_error: Option<SafeText>,
     pub journal_schema_version: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_file_bytes: Option<u64>,
@@ -579,6 +586,7 @@ impl DiagnosticsReport {
                 ring_dropped_frames: input.ring_dropped_frames,
                 journal_stats: input.journal_stats,
                 journal_error: input.journal_error.map(SafeText::new),
+                log_error: input.log_error.map(SafeText::new),
                 journal_schema_version: input.journal_schema_version,
                 journal_file_bytes: input.journal_file_bytes,
             },
@@ -668,6 +676,7 @@ mod tests {
             ring_dropped_frames: 11,
             journal_stats: None,
             journal_error: None,
+            log_error: None,
             journal_schema_version: 5,
             journal_file_bytes: Some(12),
             sessions: Vec::new(),
@@ -736,6 +745,7 @@ mod tests {
                     failed_frames: 0,
                 }),
                 journal_error: None,
+                log_error: None,
                 journal_schema_version: 5,
                 journal_file_bytes: Some(9_740_288),
             },
@@ -786,6 +796,7 @@ mod tests {
         source.journal_error = Some(format!(
             "token={secret} C:\\Users\\alice\\project S-1-5-21-111-222-333-1001"
         ));
+        source.log_error = Some(format!("daemon.log: token={secret} C:\\Users\\alice\\log"));
         source.os_version = "Windows for C:\\Users\\alice".to_string();
         source.runtime_dir = "C:\\Users\\alice\\AppData\\Local\\devboule".to_string();
         source.providers[0].executable = "C:\\Users\\alice\\DEVBOULE_BIN_PATH.exe".to_string();

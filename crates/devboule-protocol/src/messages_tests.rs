@@ -1692,6 +1692,7 @@ fn boxing_journal_stats_and_remote_does_not_change_the_wire() {
         ring_dropped_frames: 0,
         journal_error: None,
         tool_policy_error: None,
+        log_error: None,
         journal_stats: Some(Box::new(JournalStats {
             accepted_frames: 1,
             accepted_bytes: 2,

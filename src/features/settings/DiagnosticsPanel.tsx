@@ -60,12 +60,19 @@ function formatValue(value: unknown): string {
  */
 function splitHealth(health: unknown): { health: DiagnosticsRecord; journal: DiagnosticsRecord } {
   const source = asRecord(health);
-  const { journalStats, journalError, journalSchemaVersion, journalFileBytes, ...counters } =
-    source;
+  const {
+    journalStats,
+    journalError,
+    logError,
+    journalSchemaVersion,
+    journalFileBytes,
+    ...counters
+  } = source;
   const journal: DiagnosticsRecord = isRecord(journalStats)
     ? { ...journalStats }
     : { journalStats };
   journal.journalError = journalError;
+  journal.logError = logError;
   journal.journalFileBytes = journalFileBytes;
   journal.journalSchemaVersion = journalSchemaVersion;
   return { health: counters, journal };

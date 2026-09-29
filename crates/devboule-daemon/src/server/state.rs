@@ -1242,6 +1242,10 @@ impl ServerState {
                     "Journal output is degraded; some terminal output may not be saved.".to_string()
                 })
             });
+        // The log error is read at request time, not snapshotted at
+        // construction: a reopen failure is recorded by the log writer
+        // thread, after this state exists.
+        let log_error = crate::daemon_log::startup_error();
         DaemonMessage::Status {
             id: request_id,
             body: DaemonStatusBody {
@@ -1264,6 +1268,7 @@ impl ServerState {
                 ring_evicted_bytes: output_metrics.coalesced_bytes,
                 ring_dropped_frames: output_metrics.coalesced_frames,
                 journal_error,
+                log_error,
                 journal_stats: self.sessions.journal_stats().map(Box::new),
                 // The tool-policy load failure, if any: the Settings page
                 // banners it and locks the toggles instead of rendering
@@ -1277,6 +1282,13 @@ impl ServerState {
                 remote: Some(Box::new(self.remote_state())),
             },
         }
+    }
+
+    /// Test-facing: the same frame dispatch serves, for tests outside
+    /// `server` (the log sink's tests read `logError` through it).
+    #[cfg(test)]
+    pub(crate) fn status_body_for_test(&self, request_id: u64) -> DaemonMessage {
+        self.status_body(request_id)
     }
 
     /// The secret-store cell a fresh `ServerState` starts with.

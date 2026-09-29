@@ -1201,6 +1201,50 @@ pub enum SessionEvent {
     },
 }
 
+impl SessionEvent {
+    /// The event's variant name, spelled the way the wire spells it
+    /// (`tag = "type"`, snake_case). For log lines: name the kind, never the
+    /// payload — variants carry prompt text, terminal output, and
+    /// permission environment values.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Output { .. } => "output",
+            Self::SessionNotice { .. } => "session_notice",
+            Self::AgentMessage { .. } => "agent_message",
+            Self::AgentUserMessage { .. } => "agent_user_message",
+            Self::Steered { .. } => "steered",
+            Self::AgentThought { .. } => "agent_thought",
+            Self::AvailableCommands { .. } => "available_commands",
+            Self::AgentToolCall { .. } => "agent_tool_call",
+            Self::AgentToolUpdate { .. } => "agent_tool_update",
+            Self::AgentFinished { .. } => "agent_finished",
+            Self::ContextUsage { .. } => "context_usage",
+            Self::PlanUsage { .. } => "plan_usage",
+            Self::AgentCreated { .. } => "agent_created",
+            Self::ChildFinished { .. } => "child_finished",
+            Self::AgentTaskStarted { .. } => "agent_task_started",
+            Self::AgentTaskNotification { .. } => "agent_task_notification",
+            Self::AgentBackgroundTasksChanged { .. } => "agent_background_tasks_changed",
+            Self::AgentTasks { .. } => "agent_tasks",
+            Self::AgentError { .. } => "agent_error",
+            Self::AgentStderr { .. } => "agent_stderr",
+            Self::PermissionRequest { .. } => "permission_request",
+            Self::PermissionResolved { .. } => "permission_resolved",
+            Self::PermissionAnswered { .. } => "permission_answered",
+            Self::SessionManifest { .. } => "session_manifest",
+            Self::SessionFeatureState { .. } => "session_feature_state",
+            Self::AgentReported { .. } => "agent_reported",
+            Self::Exit { .. } => "exit",
+            Self::Silent { .. } => "silent",
+            Self::Recovered { .. } => "recovered",
+            Self::Detached => "detached",
+            Self::JournalDegraded { .. } => "journal_degraded",
+            Self::SessionsSnapshot { .. } => "sessions_snapshot",
+            Self::Snapshot { .. } => "snapshot",
+        }
+    }
+}
+
 /// Shape of the screen cursor carried by [`SessionEvent::Snapshot`].
 ///
 /// The wire values are the cursor styles xterm.js accepts, so the client

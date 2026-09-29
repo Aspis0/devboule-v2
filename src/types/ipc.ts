@@ -991,6 +991,8 @@ export interface DaemonDiagnostics {
     ringDroppedFrames: number;
     journalStats: JournalStatsDiagnostics | null;
     journalError?: string;
+    /** Present when the daemon's own log (daemon.log) could not be opened. */
+    logError?: string;
     journalSchemaVersion: number;
     journalFileBytes?: number;
   };

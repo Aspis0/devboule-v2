@@ -1546,7 +1546,7 @@ impl From<String> for ConnectFailure {
 }
 
 enum StatusUpdate {
-    Connected(DaemonStatusBody),
+    Connected(Box<DaemonStatusBody>),
     Failure(StatusSignal),
 }
 
@@ -1582,7 +1582,7 @@ where
         match source.status() {
             Ok(body) => {
                 status_tracker.record_success();
-                publish(StatusUpdate::Connected(body));
+                publish(StatusUpdate::Connected(Box::new(body)));
             }
             Err(error) => {
                 let signal = status_tracker.record_failure(

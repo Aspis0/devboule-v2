@@ -3110,6 +3110,14 @@ pub struct DaemonStatusBody {
     /// older payloads read as `None` and no protocol bump is needed for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_policy_error: Option<String>,
+    /// Present when the daemon's own log file (`daemon.log`) could not be
+    /// opened at startup. The log is best effort: the daemon runs and serves
+    /// without it, and stderr stays wherever the launcher put it. Absent
+    /// while the log is healthy — or when this daemon does not own its
+    /// stderr (a terminal, an explicit redirect), where nothing was taken
+    /// over and there is nothing to report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_error: Option<String>,
     /// Live counters of the journal writer, present when the journal was
     /// opened. `None` means the journal is unavailable (see `journalError`):
     /// there is no writer whose behaviour could be counted.

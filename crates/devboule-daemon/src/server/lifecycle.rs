@@ -49,6 +49,9 @@ pub fn run() -> Result<(), DaemonError> {
 fn run_windows() -> Result<(), DaemonError> {
     let paths = RuntimePaths::from_env()?;
     let mut lock = SingleInstanceLock::acquire(&paths)?;
+    // Only now — the single-instance lock is ours — may the log rotate: a
+    // losing second daemon must never move the running daemon's log aside.
+    crate::daemon_log::rotate_after_lock(&paths.dir);
     let pid = std::process::id();
     let instance_id = format!(
         "{pid}-{}",
@@ -130,6 +133,9 @@ fn run_windows() -> Result<(), DaemonError> {
         // daemon did what it was asked.
         eprintln!("daemon could not record why it stopped: {error}");
     }
+    // Flush the log pipeline so the goodbye lines land, then hand stderr
+    // back to the launcher's sink.
+    crate::log_pipeline::shutdown_log();
     drop(lock);
     Ok(())
 }

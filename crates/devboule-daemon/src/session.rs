@@ -2334,11 +2334,12 @@ impl SessionRegistry {
                         // replacement could not be built: the refusal is what
                         // the app has always read for this answer, and it
                         // stands exactly as it did, with only this line to
-                        // say the recovery did not happen.
+                        // say the recovery did not happen. The length only:
+                        // the message carries the provider's refusal prose.
                         Err(recovery_error) => eprintln!(
                             "session {session_id} was not recovered from the journal after its \
-                             provider refused the handle: {}",
-                            recovery_error.message
+                             provider refused the handle (the refusal was {} characters long)",
+                            recovery_error.message.chars().count()
                         ),
                     }
                 }
