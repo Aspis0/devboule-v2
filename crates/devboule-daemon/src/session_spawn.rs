@@ -113,6 +113,7 @@ pub fn spawn_session(
         metadata,
         owner,
         None,
+        None,
         delivery.mode_id,
         spawned,
         mcp_session.take(),
@@ -122,6 +123,10 @@ pub fn spawn_session(
 pub(crate) struct ResumedSessionContext {
     pub(super) peer_session_id: String,
     pub(super) generation: u64,
+    /// The resumed row's `goal` column, read by `resume_locate_record` and
+    /// carried so the seed cannot be invented from a failed or duplicated
+    /// journal read.
+    pub(super) goal: Option<String>,
     pub(super) mcp_session: Option<McpSessionGuard>,
 }
 
@@ -145,6 +150,7 @@ pub fn spawn_resumed_session(
         metadata,
         owner,
         Some(context.generation),
+        context.goal,
         None,
         spawned,
         context.mcp_session,
@@ -158,6 +164,7 @@ pub(super) fn start_spawned_session(
     metadata: Session,
     owner: OwnerId,
     generation: Option<u64>,
+    goal: Option<String>,
     requested_mode: Option<String>,
     spawned: SpawnedSession,
     mcp_session: Option<McpSessionGuard>,
@@ -234,6 +241,12 @@ pub(super) fn start_spawned_session(
         // on `first_prompt_owed` promises a resume never re-injects the
         // standing instructions into the next prompt the human sends.
         runtime.clear_first_prompt_owed();
+        // Peers can attach from the `Live` promotion below, and a lagged
+        // attach's goal correction publishes the runtime goal as
+        // authoritative. The value is the resumed row's own `goal` column,
+        // carried in from `resume_locate_record`'s read — no re-read whose
+        // failure could seed an absence the row does not hold.
+        runtime.set_goal(goal);
     }
     if metadata.kind == SessionKind::Claude {
         let catalog = state.claude_models();

@@ -2850,6 +2850,7 @@ fn codex_live_carrier_road_registers_verifies_and_lists() {
         owner.clone(),
         None,
         None,
+        None,
         spawned,
         Some(guard),
     )

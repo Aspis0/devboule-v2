@@ -707,9 +707,9 @@ pub struct FinishArtifact {
 /// state, delivered on attach instead of a replay of past frames.
 ///
 /// Attachment variants in this enum are the TypeScript `SessionEvent`
-/// contract. Alignment is enforced by the committed snapshot
-/// `session-event-samples.generated.json` and the tests in
-/// `session_event_guard.rs`; the TypeScript handler must accept every sample.
+/// contract, and the TypeScript handler must accept every sample; the guard
+/// that enforces that alignment — the committed samples and the frontend
+/// union check — is `session_event_guard.rs`.
 /// Generation is **not**
 /// a field here: it lives on [`Cursor`] and on [`super::SessionEventEnvelope`]
 /// so a reconnecting client can tell a recreated process from the stream it

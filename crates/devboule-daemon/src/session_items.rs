@@ -25,7 +25,8 @@ pub const PENDING_OUTPUT_BUDGET_FRAMES: u64 = 64;
 /// Session events pulled from one session per connection-writer turn.
 /// Deliberately small: items left behind stay in the session's budgeted
 /// pending queue where slow-client coalescing can still replace them, and a
-/// pull never moves an unbounded batch into connection-local state.
+/// pull moves no unbounded batch into connection-local state — the one
+/// bounded exception is a replay's two-event tail completing a full round.
 pub(super) const PULL_BATCH: usize = 16;
 
 pub(super) const READ_CHUNK: usize = 16 * 1024;

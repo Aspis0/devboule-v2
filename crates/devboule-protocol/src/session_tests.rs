@@ -49,23 +49,21 @@ fn session_event_uses_a_type_tag() {
 }
 
 /// `kind()` names the variant for log lines, where the payload must never
-/// appear: it must agree with the wire spelling of the same variant.
+/// appear: it must agree with the wire spelling of the same variant. The
+/// cases come from the guard's exhaustive sample list, so a variant that
+/// joins the enum joins this assertion.
 #[test]
 fn kind_is_the_wire_type_tag() {
-    let cases = [
-        SessionEvent::Output {
-            seq: 7,
-            data: "prompt text that must not be logged".to_string(),
-        },
-        SessionEvent::Exit { code: Some(0) },
-        SessionEvent::Detached,
-    ];
-    for event in cases {
+    for event in crate::session_event_guard::session_event_samples() {
         let tag = serde_json::to_value(&event).expect("json")["type"]
             .as_str()
             .expect("a string tag")
             .to_string();
-        assert_eq!(event.kind(), tag);
+        assert_eq!(
+            event.kind(),
+            tag,
+            "kind() must spell the wire type tag for {tag}"
+        );
     }
 }
 

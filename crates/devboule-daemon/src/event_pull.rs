@@ -583,6 +583,58 @@ impl ConnHandle {
     }
 }
 
+/// The attachment state in which the only replay work left is the tail. The
+/// watermark clause mirrors the loop's own extension check, so "due" here is
+/// exactly what the loop would act on next.
+fn replay_tail_is_due(runtime: &SessionRuntime, replay: &AgentReplay) -> bool {
+    replay.durable_done
+        && replay.pending.is_empty()
+        && replay.manifest_emitted
+        && replay.plan_usage_delivered
+        && (replay.force_finish || runtime.current_agent_seq() <= replay.watermark)
+}
+
+/// The replay tail: the degraded notice when owed, then, on a lagged replay,
+/// one wire-only `GoalChanged` carrying the runtime goal — never journaled,
+/// and never on a complete replay or the live path, where a live GoalChanged
+/// already speaks in stream order. A due tail is emitted even into a full
+/// batch: PULL_BATCH is a per-round budget, not a wire bound
+/// (`pull_transcript_events` pushes uncapped), so a saturated round cannot
+/// hold the tail back the way it can hold back a replay still paging. The
+/// batch overruns by at most this tail: two events per attachment whose
+/// replay completes this round. journal_lagged implies needs_degraded, so
+/// the tail is two events.
+fn emit_replay_tail(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
+    let Some(replay) = pull.agent_replay.as_ref() else {
+        return;
+    };
+    let needs_degraded =
+        replay.journal_lagged || (!pull.journal_degraded_sent && pull.runtime.journal_degraded());
+    let needs_goal_correction = replay.journal_lagged;
+    if needs_degraded {
+        events.push(wire_event(
+            session_id,
+            pull,
+            pull.generation,
+            pull.runtime.journal_degraded_event(),
+            None,
+        ));
+        pull.journal_degraded_sent = true;
+    }
+    if needs_goal_correction {
+        events.push(wire_event(
+            session_id,
+            pull,
+            pull.generation,
+            SessionEvent::GoalChanged {
+                goal: pull.runtime.goal(),
+            },
+            None,
+        ));
+    }
+    pull.agent_replay = None;
+}
+
 /// Live-agent replay pull: read at most one bounded journal page at a time,
 /// derive its view events, and keep them in a connection-local page-sized
 /// queue. The live attachment queue is not touched until the durable
@@ -592,6 +644,14 @@ fn pull_live_agent_replay_events(
     pull: &mut PullState,
     events: &mut Vec<PendingEvent>,
 ) {
+    if pull
+        .agent_replay
+        .as_ref()
+        .is_some_and(|replay| replay_tail_is_due(pull.runtime.as_ref(), replay))
+    {
+        emit_replay_tail(session_id, pull, events);
+        return;
+    }
     let budget = super::PULL_BATCH.saturating_sub(events.len());
     if budget == 0 {
         return;
@@ -682,22 +742,7 @@ fn pull_live_agent_replay_events(
                 continue;
             }
 
-            let needs_degraded = replay.journal_lagged
-                || (!pull.journal_degraded_sent && pull.runtime.journal_degraded());
-            if needs_degraded && events.len() + 1 >= super::PULL_BATCH {
-                return;
-            }
-            if needs_degraded {
-                events.push(wire_event(
-                    session_id,
-                    pull,
-                    pull.generation,
-                    pull.runtime.journal_degraded_event(),
-                    None,
-                ));
-                pull.journal_degraded_sent = true;
-            }
-            pull.agent_replay = None;
+            emit_replay_tail(session_id, pull, events);
             return;
         }
 

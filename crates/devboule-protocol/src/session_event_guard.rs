@@ -26,7 +26,10 @@ use crate::{
 /// The `match` and the `vec` are expanded from the same list. Adding a
 /// variant to the enum without a dummy here is a compile error. Wire `type`
 /// tags are taken from serde, not from these identifiers.
-fn session_event_samples() -> Vec<SessionEvent> {
+///
+/// `pub(crate)` so the crate's other tests can drive exhaustive assertions
+/// (the `kind()` tag test) from the same list; the module is `cfg(test)`.
+pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
     macro_rules! samples {
         ($($variant:ident => $sample:expr),+ $(,)?) => {{
             let events: Vec<SessionEvent> = vec![$($sample),+];

@@ -2229,6 +2229,7 @@ impl SessionRegistry {
             ResumedSessionContext {
                 peer_session_id,
                 generation,
+                goal: record.goal.clone(),
                 mcp_session,
             },
         ) {
@@ -2252,17 +2253,10 @@ impl SessionRegistry {
                 // trusted as the person's words. An untitled legacy session
                 // keeps the app's fallback until its next prompt — which
                 // titles it from the raw text — or until the user renames it.
-                // The goal is runtime state, so the respawned session starts
-                // without one: seed it back from the row's column, silently —
-                // the transcript already holds the `GoalChanged` event that
-                // said it, and a resume never re-sends the text as a prompt.
-                if let Some(resumed) = self.agent_runtime_for(session_id, owner, conn) {
-                    resumed.set_goal(record.goal.clone());
-                    // The seed emits no event, but registration may already
-                    // have cached the row: refresh it so the roster lists the
-                    // seeded goal instead of the pre-seed absence.
-                    self.refresh_state_snapshot(owner, session_id);
-                }
+                // The goal needs no seeding here: it is carried into spawn
+                // and seated before the runtime is reachable (see
+                // `start_spawned_session`), so the roster snapshot taken at
+                // registration already reads it.
             }
             Err(mut error) => {
                 state.session_finished();
