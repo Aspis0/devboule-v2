@@ -24,6 +24,32 @@ const MAX_CLAUDE_COMMANDS: usize = 1000;
 /// one counts the scan.
 const MAX_INSPECTED_COMMANDS: usize = 10_000;
 
+/// The journal row that says the NEXT `result` envelope's finish was
+/// withheld live (`claude_client`): replay reads it so a reattach derives
+/// the same suppression instead of resurrecting the finish. An older daemon
+/// that predates the marker ignores the unknown type and does resurrect the
+/// finish — silent, crash-free, the safe direction.
+pub(crate) const WITHHELD_FINISH_MARKER_TYPE: &str = "devboule_withheld_finish";
+
+/// The marker row itself, journalled ahead of a result envelope whose finish
+/// the live pass withheld. A daemon-owned type string, never a Claude frame.
+pub(crate) fn withheld_finish_marker() -> serde_json::Value {
+    serde_json::json!({"type": WITHHELD_FINISH_MARKER_TYPE})
+}
+
+/// Whether a `result` envelope is an interrupted turn's, measured on the live
+/// CLI (2.1.284): `is_error` true with `terminal_reason` `aborted_streaming`
+/// — its `stop_reason` field carried the dead call's `tool_use`, so only the
+/// terminal reason identifies the abort. An `is_error` result with any other
+/// terminal reason is a genuine failure, not an interrupt.
+pub(crate) fn is_interrupted_result(envelope: &Value) -> bool {
+    envelope.get("is_error").and_then(Value::as_bool) == Some(true)
+        && envelope
+            .get("terminal_reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.starts_with("aborted"))
+}
+
 /// The streamed text of one content block. `kind` is the block type as the
 /// stream declared it (`content_block_start`, or the delta flavour); a
 /// final-envelope block finds its stream block by this declared type plus the
@@ -62,6 +88,10 @@ pub(crate) struct ClaudeView {
     /// The session's plan checklist, fed by Claude's task tools. Per session
     /// and in the view, so live and replay derive the same snapshots.
     task_state: ClaudeTaskState,
+    /// Set by a journalled withholding marker, replay-only: the next `result`
+    /// envelope derives its usual events minus the `AgentFinished` the live
+    /// pass suppressed. Live stdout never carries the marker.
+    withheld_finish_pending: bool,
 }
 
 impl ClaudeView {
@@ -78,6 +108,7 @@ impl ClaudeView {
             published_commands: None,
             question_tool_ids: HashSet::new(),
             task_state: ClaudeTaskState::default(),
+            withheld_finish_pending: false,
         }
     }
 
@@ -114,7 +145,16 @@ impl ClaudeView {
     /// Map one parsed envelope to zero or more view events. Unknown or
     /// journal-only frames yield an empty vec.
     pub(crate) fn ingest(&mut self, envelope: &Value) -> Vec<SessionEvent> {
-        match envelope.get("type").and_then(Value::as_str) {
+        let frame_type = envelope.get("type").and_then(Value::as_str);
+        // The withholding marker owns exactly the result row written after
+        // it. Any other frame between the two means the journal being read
+        // is not the journal the marker was written for — a hole dropped the
+        // result — so the marker expires here rather than silence a later
+        // turn's completion.
+        if frame_type != Some(WITHHELD_FINISH_MARKER_TYPE) && frame_type != Some("result") {
+            self.withheld_finish_pending = false;
+        }
+        match frame_type {
             Some("system") => self.ingest_system(envelope),
             Some("stream_event") => self.ingest_stream_event(envelope),
             Some("assistant") => self.ingest_assistant(envelope),
@@ -122,6 +162,10 @@ impl ClaudeView {
             Some("result") => self.ingest_result(envelope),
             Some("control_response") => self.ingest_control_response(envelope),
             Some("rate_limit_event") => rate_limit_plan_usage(envelope).into_iter().collect(),
+            Some(WITHHELD_FINISH_MARKER_TYPE) => {
+                self.withheld_finish_pending = true;
+                Vec::new()
+            }
             _ => Vec::new(),
         }
     }
@@ -646,11 +690,21 @@ impl ClaudeView {
         self.task_state.end_turn();
         // Debt: stream-json has no ACP-like inactivity watchdog, so a dead
         // CLI can leave a turn without ever producing an AgentFinished event.
-        let stop_reason = envelope
-            .get("stop_reason")
-            .and_then(Value::as_str)
-            .unwrap_or("end_turn")
-            .to_string();
+        // An error result's `stop_reason` is whatever the failing call was
+        // mid-way through, not a reason, so the error markers decide.
+        let stop_reason = if envelope.get("is_error").and_then(Value::as_bool) == Some(true) {
+            if is_interrupted_result(envelope) {
+                "interrupted".to_string()
+            } else {
+                "error".to_string()
+            }
+        } else {
+            envelope
+                .get("stop_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("end_turn")
+                .to_string()
+        };
         let model_id = envelope
             .get("model")
             .and_then(Value::as_str)
@@ -660,11 +714,17 @@ impl ClaudeView {
             Some(parsed) => (Some(parsed.turn), parsed.context_used),
             None => (None, None),
         };
-        let mut events = vec![SessionEvent::AgentFinished {
-            stop_reason,
-            model_id: model_id.clone(),
-            usage,
-        }];
+        let suppress_finish = self.withheld_finish_pending;
+        self.withheld_finish_pending = false;
+        let mut events = if suppress_finish {
+            Vec::new()
+        } else {
+            vec![SessionEvent::AgentFinished {
+                stop_reason,
+                model_id: model_id.clone(),
+                usage,
+            }]
+        };
         if let Some(used_tokens) = context_used {
             // The window lives in the daemon's model catalog, not on this
             // envelope, so the app takes it from the manifest entry of this
@@ -3197,6 +3257,116 @@ mod tests {
             }
             _ => panic!("expected the tool update"),
         }
+    }
+
+    #[test]
+    fn measured_aborted_result_maps_to_interrupted() {
+        let frame: Value =
+            serde_json::from_str(include_str!("../../../fixtures/claude-aborted-result.json"))
+                .expect("fixture");
+        let events = view().ingest(&frame);
+        let stop_reason = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::AgentFinished { stop_reason, .. } => Some(stop_reason.clone()),
+                _ => None,
+            })
+            .expect("finish event");
+        assert_eq!(stop_reason, "interrupted");
+    }
+
+    #[test]
+    fn synthetic_error_result_maps_to_error_not_completed() {
+        let events = view().ingest(&json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": true,
+            "terminal_reason": "api_error",
+            "stop_reason": "stop_sequence",
+        }));
+        let stop_reason = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::AgentFinished { stop_reason, .. } => Some(stop_reason.clone()),
+                _ => None,
+            })
+            .expect("finish event");
+        assert_eq!(stop_reason, "error");
+    }
+
+    #[test]
+    fn a_withheld_finish_marker_suppresses_only_the_next_result_s_finish() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/claude-aborted-result.json"))
+                .expect("fixture");
+        let mut mapper = view();
+        assert!(mapper
+            .ingest(&json!({"type": WITHHELD_FINISH_MARKER_TYPE}))
+            .is_empty());
+        let events = mapper.ingest(&fixture);
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. })));
+        // The marker arms one suppression; an ordinary result after it
+        // finishes again.
+        let after = mapper.ingest(&json!({"type": "result", "stop_reason": "end_turn"}));
+        assert_eq!(
+            after
+                .iter()
+                .filter_map(|event| match event {
+                    SessionEvent::AgentFinished { stop_reason, .. } => Some(stop_reason.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["end_turn".to_string()]
+        );
+    }
+
+    #[test]
+    fn replay_honours_the_withheld_finish_marker() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/claude-aborted-result.json"))
+                .expect("fixture");
+        let mut mapper = ClaudeView::new(None);
+        let mut marker = json!({"type": WITHHELD_FINISH_MARKER_TYPE});
+        assert!(drive_replay(&mut mapper, &mut marker).is_empty());
+        let mut frame = fixture.clone();
+        assert!(!drive_replay(&mut mapper, &mut frame)
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. })));
+        let mut ordinary = json!({"type": "result", "stop_reason": "end_turn"});
+        assert!(drive_replay(&mut mapper, &mut ordinary)
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. })));
+    }
+
+    #[test]
+    fn an_orphaned_marker_expires_instead_of_silencing_a_later_finish() {
+        // A journal hole that dropped the marked result leaves the marker
+        // followed by some other frame; the suppression must not outlive it
+        // and eat a later turn's completion.
+        let mut mapper = view();
+        assert!(mapper
+            .ingest(&json!({"type": WITHHELD_FINISH_MARKER_TYPE}))
+            .is_empty());
+        let _ = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "a later frame"}],
+            },
+        }));
+        let events = mapper.ingest(&json!({"type": "result", "stop_reason": "end_turn"}));
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    SessionEvent::AgentFinished { stop_reason, .. } => Some(stop_reason.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["end_turn".to_string()]
+        );
     }
 }
 

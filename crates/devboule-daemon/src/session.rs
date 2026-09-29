@@ -3160,7 +3160,13 @@ impl SessionRegistry {
             (session.killer.clone_killer(), Arc::clone(&session.runtime))
         };
         check_attached(&runtime, conn, subscription_id)?;
-        killer.interrupt();
+        // An interrupt with no running turn aborts nothing and no result
+        // will answer it; the killer decides what expecting one would cost.
+        if runtime.is_running_turn() {
+            killer.interrupt();
+        } else {
+            killer.interrupt_idle();
+        }
         Ok(())
     }
 
@@ -3172,7 +3178,7 @@ impl SessionRegistry {
     pub fn interrupt(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let mut killer = {
+        let (mut killer, runtime) = {
             let mut map = self
                 .inner
                 .lock()
@@ -3185,9 +3191,15 @@ impl SessionRegistry {
                     "Only agent sessions support interrupting a turn.",
                 ));
             }
-            session.killer.clone_killer()
+            (session.killer.clone_killer(), Arc::clone(&session.runtime))
         };
-        killer.interrupt();
+        // Same gate as the subscription twin: expecting an aborted result
+        // without a running turn is how the next run's finish gets eaten.
+        if runtime.is_running_turn() {
+            killer.interrupt();
+        } else {
+            killer.interrupt_idle();
+        }
         Ok(())
     }
 

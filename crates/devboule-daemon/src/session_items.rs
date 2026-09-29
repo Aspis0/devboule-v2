@@ -129,6 +129,14 @@ pub(crate) trait SessionKiller: Send + Sync {
     /// Interrupt the current turn without killing the session. The default
     /// no-op covers killers whose transport has no turn concept (pty).
     fn interrupt(&mut self) {}
+    /// Interrupt while no turn is running. The default is the same
+    /// interrupt; a provider whose aborted result can outlive its turn
+    /// (Claude's stale abort) overrides this to skip expecting one, because
+    /// no result ever answers the interrupt of a turn that does not exist —
+    /// expected, it would swallow the next run's only completion.
+    fn interrupt_idle(&mut self) {
+        self.interrupt();
+    }
     fn clone_killer(&self) -> Box<dyn SessionKiller>;
 }
 

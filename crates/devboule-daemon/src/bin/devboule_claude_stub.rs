@@ -174,6 +174,64 @@ fn shake_broker_hand(config_path: &str) {
     let _ = listed;
 }
 
+/// The CLI's aborted-turn result, measured live (CLI 2.1.284): the markers
+/// the daemon's abort detection reads — `subtype` `error_during_execution`,
+/// `is_error`, `terminal_reason` `aborted_streaming` — on the frame the
+/// interrupt's control request produced. From the capture, so the stub
+/// cannot drift from the wire; only `session_id` and `uuid` are
+/// placeholders.
+const ABORTED_RESULT: &str = include_str!("../../../../fixtures/claude-aborted-result.json");
+
+/// One interrupt's whole emission, in the order the live CLI produced it:
+/// the control response, the `aborted` assistant message, the
+/// `[Request interrupted by user]` user echo, and — in the deferred modes —
+/// the aborted result followed by the second `system/init` the CLI sends
+/// when it continues the same session after an abort. The eager mode emits
+/// all five at interrupt time; the deferred modes hold the last two until
+/// the next user prompt has been READ, so a test can force the ordering
+/// "replacement admitted before the stale result" without relying on
+/// scheduling.
+enum AbortEmission {
+    Eager,
+    Deferred,
+    None,
+}
+
+fn emit_interrupt_prelude() {
+    emit(&json!({
+        "type": "assistant",
+        "aborted": true,
+        "message": {
+            "id": "stub-message-aborted",
+            "model": "stub-model",
+            "role": "assistant",
+            "content": [{
+                "type": "text",
+                "text": "The Bash tool has blocked the `sleep 45` command.",
+            }],
+        },
+    }));
+    emit(&json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "[Request interrupted by user]"}],
+        },
+    }));
+}
+
+fn emit_aborted_result(peer: &str) {
+    emit(&serde_json::from_str::<Value>(ABORTED_RESULT).expect("aborted-result fixture parses"));
+    // The CLI re-inits the same session after an abort before the next turn.
+    emit(&json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": peer,
+        "model": "stub-model",
+        "permissionMode": "default",
+    }));
+}
+
 fn main() -> io::Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let argv_file = flag_value(&argv, "--argv-file").unwrap_or_default();
@@ -197,6 +255,15 @@ fn main() -> io::Result<()> {
         "permissionMode": "default",
     }));
     let stdin = io::stdin();
+    // A `HOLD`-prefixed prompt starts a turn the stub deliberately never
+    // finishes: its result comes only from the interrupt path below, the way
+    // a real CLI's mid-tool turn does. The suffix picks the interrupt's
+    // emission mode: plain `HOLD` emits the aborted result eagerly;
+    // `HOLD-AFTER` holds it until the next user prompt has been read (the
+    // ordering the daemon's suppression exists for); `HOLD-SILENT` never
+    // sends it.
+    let mut abort_mode = AbortEmission::None;
+    let mut deferred_abort = false;
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -210,6 +277,30 @@ fn main() -> io::Result<()> {
                 .get("request_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
+            if frame.pointer("/request/subtype").and_then(Value::as_str) == Some("interrupt") {
+                emit(&json!({
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": request_id,
+                        "response": {"still_queued": []},
+                    },
+                }));
+                // The prelude and the result belong to a turn that was
+                // running; an interrupt with nothing held gets only the
+                // protocol answer, the way an idle CLI has no blocked tool
+                // to report.
+                if !matches!(abort_mode, AbortEmission::None) {
+                    emit_interrupt_prelude();
+                    match &abort_mode {
+                        AbortEmission::Eager => emit_aborted_result(&peer),
+                        AbortEmission::Deferred => deferred_abort = true,
+                        AbortEmission::None => {}
+                    }
+                    abort_mode = AbortEmission::None;
+                }
+                continue;
+            }
             emit(&json!({
                 "type": "control_response",
                 "response": {
@@ -233,6 +324,32 @@ fn main() -> io::Result<()> {
                 .append(true)
                 .open(&console_file)?;
             writeln!(file, "{text}")?;
+        }
+        // The deferred aborted result is emitted only here, after this
+        // prompt's bytes have been read: the stale result cannot precede
+        // the daemon's admission of the replacement.
+        if deferred_abort {
+            deferred_abort = false;
+            emit_aborted_result(&peer);
+        }
+        if text.starts_with("HOLD") {
+            abort_mode = if text.starts_with("HOLD-SILENT") {
+                AbortEmission::None
+            } else if text.starts_with("HOLD-AFTER") {
+                AbortEmission::Deferred
+            } else {
+                AbortEmission::Eager
+            };
+            emit(&json!({
+                "type": "assistant",
+                "message": {
+                    "id": "stub-message-hold",
+                    "model": "stub-model",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": format!("STUB-ECHO:{text}")}],
+                },
+            }));
+            continue;
         }
         emit(&json!({
             "type": "assistant",

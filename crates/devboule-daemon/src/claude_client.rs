@@ -30,6 +30,7 @@ use super::{
     SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
 };
 use crate::attachment_store::AttachmentStore;
+use crate::claude_abort::ClaudeAbortGate;
 use crate::claude_view::ClaudeView;
 use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
@@ -75,6 +76,7 @@ struct ClaudeModeGate {
 }
 
 type ClaudeModeGateRef = Arc<Mutex<ClaudeModeGate>>;
+type ClaudeAbortGateRef = Arc<ClaudeAbortGate>;
 
 /// Launch-time mode gate wiring: the stdin the gate writes through, the gate
 /// itself, the response deadline, and the delivery's effort requests the
@@ -82,15 +84,21 @@ type ClaudeModeGateRef = Arc<Mutex<ClaudeModeGate>>;
 struct ClaudeModeGateWiring {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     gate: ClaudeModeGateRef,
+    abort_gate: ClaudeAbortGateRef,
     timeout: Duration,
     delivery_settings: ClaudeDeliverySettings,
 }
 
 impl ClaudeModeGateWiring {
-    fn new(stdin: Arc<Mutex<Option<ChildStdin>>>, gate: ClaudeModeGateRef) -> Self {
+    fn new(
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+        gate: ClaudeModeGateRef,
+        abort_gate: ClaudeAbortGateRef,
+    ) -> Self {
         Self {
             stdin,
             gate,
+            abort_gate,
             timeout: CONTROL_RESPONSE_TIMEOUT,
             delivery_settings: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -780,11 +788,13 @@ fn spawn_claude_child(
     // arrives on the session reader like every other control response, and
     // an old CLI's error — or silence — only costs the early list.
     let pending_initialize = begin_initialize(&stdin, &next_id);
+    let abort_gate: ClaudeAbortGateRef = Arc::new(ClaudeAbortGate::default());
     let switcher = ClaudeSwitcher {
         stdin: Arc::clone(&stdin),
         next_id: Arc::clone(&next_id),
         mode_responses: Arc::clone(&mode_responses),
         mode_gate: Some(Arc::clone(&mode_gate)),
+        abort_gate: Arc::clone(&abort_gate),
     };
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
@@ -792,6 +802,7 @@ fn spawn_claude_child(
         stdin: Arc::clone(&stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&mode_gate)),
+        abort_gate: Arc::clone(&abort_gate),
     };
     // The static prompt route needs the same stdin and the same gate: an image
     // frame must queue behind the initial mode response exactly as a text
@@ -799,6 +810,7 @@ fn spawn_claude_child(
     let static_prompt = Arc::new(ClaudeStaticPrompt::new(
         Arc::clone(&stdin),
         Some(Arc::clone(&mode_gate)),
+        Arc::clone(&abort_gate),
     ));
     let killer = ClaudeKiller {
         process: Arc::clone(&process),
@@ -806,8 +818,13 @@ fn spawn_claude_child(
         next_id: Arc::clone(&next_id),
         permission_broker: Arc::clone(&permission_broker),
         cancelled: Arc::new(AtomicBool::new(false)),
+        abort_gate: Arc::clone(&abort_gate),
     };
-    let mut wiring = ClaudeModeGateWiring::new(Arc::clone(&stdin), Arc::clone(&mode_gate));
+    let mut wiring = ClaudeModeGateWiring::new(
+        Arc::clone(&stdin),
+        Arc::clone(&mode_gate),
+        Arc::clone(&abort_gate),
+    );
     wiring.delivery_settings = Arc::clone(&delivery_settings);
     let mut reader_dispatch = ClaudeReader::with_mode_gate(
         ClaudeView::new(Some(command.cwd.clone())),
@@ -1336,11 +1353,20 @@ fn carried_mime_types(plan: Option<&ClaudePromptPlan>) -> Vec<&str> {
 pub(crate) struct ClaudeStaticPrompt {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     mode_gate: Option<ClaudeModeGateRef>,
+    abort_gate: ClaudeAbortGateRef,
 }
 
 impl ClaudeStaticPrompt {
-    fn new(stdin: Arc<Mutex<Option<ChildStdin>>>, mode_gate: Option<ClaudeModeGateRef>) -> Self {
-        Self { stdin, mode_gate }
+    fn new(
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+        mode_gate: Option<ClaudeModeGateRef>,
+        abort_gate: ClaudeAbortGateRef,
+    ) -> Self {
+        Self {
+            stdin,
+            mode_gate,
+            abort_gate,
+        }
     }
 }
 
@@ -1359,6 +1385,7 @@ impl super::StaticImageSink for ClaudeStaticPrompt {
         Ok(Some(Box::new(ClaudePlannedPrompt {
             stdin: Arc::clone(&self.stdin),
             mode_gate: self.mode_gate.clone(),
+            abort_gate: Arc::clone(&self.abort_gate),
             plan,
         })))
     }
@@ -1370,6 +1397,7 @@ impl super::StaticImageSink for ClaudeStaticPrompt {
 struct ClaudePlannedPrompt {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     mode_gate: Option<ClaudeModeGateRef>,
+    abort_gate: ClaudeAbortGateRef,
     plan: ClaudePromptPlan,
 }
 
@@ -1389,7 +1417,13 @@ impl super::PlannedStaticPrompt for ClaudePlannedPrompt {
     fn send(&self) -> Result<(), WireError> {
         let bytes = frame_user_message_with_images(&self.plan.fallback_text, &self.plan.images)
             .map_err(send_failure)?;
-        write_gated_frame(&self.stdin, self.mode_gate.as_ref(), bytes).map_err(send_failure)
+        write_gated_frame(
+            &self.stdin,
+            self.mode_gate.as_ref(),
+            &self.abort_gate,
+            bytes,
+        )
+        .map_err(send_failure)
     }
 }
 
@@ -1407,6 +1441,7 @@ struct ClaudeWriter {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     pending: Vec<u8>,
     mode_gate: Option<ClaudeModeGateRef>,
+    abort_gate: ClaudeAbortGateRef,
 }
 
 impl Write for ClaudeWriter {
@@ -1425,7 +1460,12 @@ impl Write for ClaudeWriter {
         // through `frame_user_message_with_images`, which is these same bytes
         // when it carries no block; both then go through `write_gated_frame`.
         let bytes = frame_user_message(&text, None, None)?;
-        write_gated_frame(&self.stdin, self.mode_gate.as_ref(), bytes)
+        write_gated_frame(
+            &self.stdin,
+            self.mode_gate.as_ref(),
+            &self.abort_gate,
+            bytes,
+        )
     }
 }
 
@@ -1440,6 +1480,7 @@ impl Write for ClaudeWriter {
 fn write_gated_frame(
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     mode_gate: Option<&ClaudeModeGateRef>,
+    abort_gate: &ClaudeAbortGateRef,
     bytes: Vec<u8>,
 ) -> io::Result<()> {
     if let Some(mode_gate) = mode_gate {
@@ -1457,7 +1498,13 @@ fn write_gated_frame(
             }
         }
     }
-    write_child_stdin(stdin, &bytes, "Claude")
+    write_child_stdin(stdin, &bytes, "Claude")?;
+    // Counted on delivery: a frame that was refused, failed, or is still
+    // queued behind the mode gate never reached the child, so it cannot be
+    // the replacement an aborted result would be stale against. The queue's
+    // own flush counts when it writes.
+    abort_gate.note_prompt_delivered();
+    Ok(())
 }
 
 /// Writes one already-framed *steer* through the mode gate, refusing instead of
@@ -1481,6 +1528,7 @@ fn write_gated_frame(
 fn write_gated_steer_frame(
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     mode_gate: Option<&ClaudeModeGateRef>,
+    abort_gate: &ClaudeAbortGateRef,
     bytes: &[u8],
 ) -> io::Result<bool> {
     if let Some(mode_gate) = mode_gate {
@@ -1498,9 +1546,11 @@ fn write_gated_steer_frame(
             ClaudeModeGateState::AwaitingResponse { .. } => return Ok(false),
         }
         write_child_stdin(stdin, bytes, "Claude")?;
+        abort_gate.note_prompt_delivered();
         return Ok(true);
     }
     write_child_stdin(stdin, bytes, "Claude")?;
+    abort_gate.note_prompt_delivered();
     Ok(true)
 }
 
@@ -1510,6 +1560,7 @@ struct ClaudeKiller {
     next_id: Arc<AtomicU64>,
     permission_broker: Arc<PermissionBroker>,
     cancelled: Arc<AtomicBool>,
+    abort_gate: ClaudeAbortGateRef,
 }
 
 struct ClaudeSwitcher {
@@ -1517,11 +1568,15 @@ struct ClaudeSwitcher {
     next_id: Arc<AtomicU64>,
     mode_responses: ClaudeModeResponses,
     mode_gate: Option<ClaudeModeGateRef>,
+    /// Not for switching: `clone_steerer` is where the session's steerer is
+    /// born, and the steerer needs the gate to count its own deliveries.
+    abort_gate: ClaudeAbortGateRef,
 }
 
 struct ClaudeSteerer {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     mode_gate: Option<ClaudeModeGateRef>,
+    abort_gate: ClaudeAbortGateRef,
 }
 
 impl SessionSteerer for ClaudeSteerer {
@@ -1546,8 +1601,13 @@ impl SessionSteerer for ClaudeSteerer {
         // batch that a single `flush_gate_frames` writes, and a gate that fails
         // drops the whole batch rather than delivering it late
         // (`fail_initial_mode_parts`).
-        if write_gated_steer_frame(&self.stdin, self.mode_gate.as_ref(), &bytes)
-            .map_err(send_failure)?
+        if write_gated_steer_frame(
+            &self.stdin,
+            self.mode_gate.as_ref(),
+            &self.abort_gate,
+            &bytes,
+        )
+        .map_err(send_failure)?
         {
             Ok(true)
         } else {
@@ -1559,6 +1619,7 @@ impl SessionSteerer for ClaudeSteerer {
         Box::new(Self {
             stdin: Arc::clone(&self.stdin),
             mode_gate: self.mode_gate.clone(),
+            abort_gate: Arc::clone(&self.abort_gate),
         })
     }
 }
@@ -1874,6 +1935,7 @@ fn flush_gate_frames(
     gate: &mut ClaudeModeGate,
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     view: &mut ClaudeView,
+    abort_gate: &ClaudeAbortGateRef,
     mode_id: Option<&str>,
 ) -> Option<io::Error> {
     if let Some(mode_id) = mode_id {
@@ -1883,6 +1945,7 @@ fn flush_gate_frames(
         if let Err(error) = write_child_stdin(stdin, &bytes, "Claude") {
             return Some(error);
         }
+        abort_gate.note_prompt_delivered();
     }
     gate.state = ClaudeModeGateState::Ready;
     None
@@ -2042,6 +2105,7 @@ impl ModelSwitcher for ClaudeSwitcher {
             next_id: Arc::clone(&self.next_id),
             mode_responses: Arc::clone(&self.mode_responses),
             mode_gate: self.mode_gate.clone(),
+            abort_gate: Arc::clone(&self.abort_gate),
         })
     }
 
@@ -2049,14 +2113,16 @@ impl ModelSwitcher for ClaudeSwitcher {
         Box::new(ClaudeSteerer {
             stdin: Arc::clone(&self.stdin),
             mode_gate: self.mode_gate.clone(),
+            abort_gate: self.abort_gate.clone(),
         })
     }
 }
 
-impl SessionKiller for ClaudeKiller {
-    /// Soft interrupt: ask the CLI to abort the current turn. The process,
-    /// stdin, and the kill guard stay untouched so later turns keep working.
-    fn interrupt(&mut self) {
+impl ClaudeKiller {
+    /// The interrupt write itself: the control frame and the card cancel.
+    /// The process, stdin, and the kill guard stay untouched so later turns
+    /// keep working.
+    fn send_interrupt(&mut self) {
         // A kill already closed stdin and drained the broker; a late
         // interrupt would only spawn a thread doomed to BrokenPipe.
         if self.cancelled.load(Ordering::Acquire) {
@@ -2066,10 +2132,27 @@ impl SessionKiller for ClaudeKiller {
         send_interrupt_frame(Arc::clone(&self.stdin), request_id);
         self.permission_broker.cancel_pending();
     }
+}
+
+impl SessionKiller for ClaudeKiller {
+    /// Soft interrupt of a running turn: the aborted result the CLI will
+    /// send for it is now expected, so a stale one can be told apart.
+    fn interrupt(&mut self) {
+        self.abort_gate.note_interrupt();
+        self.send_interrupt();
+    }
+
+    /// Soft interrupt with no turn running: nothing will answer it, so no
+    /// expectation is armed — armed, the next run's only completion would
+    /// be measured against a stop that aborted nothing.
+    fn interrupt_idle(&mut self) {
+        self.send_interrupt();
+    }
 
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+            self.abort_gate.note_interrupt();
             send_interrupt_frame(Arc::clone(&self.stdin), request_id);
             self.permission_broker.close();
         }
@@ -2088,6 +2171,7 @@ impl SessionKiller for ClaudeKiller {
             next_id: Arc::clone(&self.next_id),
             permission_broker: Arc::clone(&self.permission_broker),
             cancelled: Arc::clone(&self.cancelled),
+            abort_gate: Arc::clone(&self.abort_gate),
         })
     }
 }
@@ -2119,6 +2203,11 @@ struct ClaudeReader {
     /// Live frames to skip before the next seed attempt.
     seed_cooldown_frames: u64,
     initial_mode_timeout: Duration,
+    /// The interrupt/prompt epoch pair that decides whether an abort-marked
+    /// result may finish the run (`claude_abort`). Non-optional: every
+    /// construction path goes through `with_mode_gate`, whose wiring carries
+    /// the gate the prompt writers share.
+    abort_gate: ClaudeAbortGateRef,
     initial_mode_timer_started: bool,
     initial_mode_timer_cancel: Option<Sender<()>>,
     initial_mode_timer_thread: Option<JoinHandle<()>>,
@@ -2186,6 +2275,10 @@ impl ClaudeReader {
             seed_attempts: 0,
             seed_cooldown_frames: 0,
             initial_mode_timeout: CONTROL_RESPONSE_TIMEOUT,
+            // Overwritten by `with_mode_gate` from the wiring; a bare `new`
+            // has no writer to share a gate with, so the safe default is the
+            // one that never withholds.
+            abort_gate: Arc::new(ClaudeAbortGate::default()),
             initial_mode_timer_started: false,
             initial_mode_timer_cancel: None,
             initial_mode_timer_thread: None,
@@ -2205,6 +2298,7 @@ impl ClaudeReader {
         reader.mode_gate = Some(wiring.gate);
         reader.initial_mode_timeout = wiring.timeout;
         reader.delivery_settings = wiring.delivery_settings;
+        reader.abort_gate = wiring.abort_gate;
         reader
     }
 
@@ -2249,6 +2343,18 @@ impl ClaudeReader {
         event_seq: Option<u64>,
     ) {
         let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
+    }
+
+    /// The result path's twin: `settle_turn_finish` already ended the turn,
+    /// so publishing its finish must not end one again — a turn begun in the
+    /// window between settle and publish is a different turn.
+    fn publish_settled_with_seq(
+        &self,
+        runtime: &SessionRuntime,
+        event: SessionEvent,
+        event_seq: Option<u64>,
+    ) {
+        let _ = runtime.publish_agent_event_settled_with_seq(event, event_seq);
     }
 
     fn dispatch_line(&mut self, line: &str, runtime: &Arc<SessionRuntime>) {
@@ -2305,6 +2411,29 @@ impl ClaudeReader {
         // The initialize answer carries the account identity next to the
         // commands; the journal keeps only what the menu reads.
         let value = self.minimize_initialize_answer(value);
+        // A result ends the daemon turn unless the abort gate withholds it,
+        // and the decision and the transition are one critical section
+        // (`settle_turn_finish`): a steer admitted concurrently either
+        // precedes the decision — the finish is withheld — or finds the run
+        // already finished, so it is refused and its text starts a new run.
+        // Deciding before the journal append also lets the withholding be
+        // recorded ahead of the envelope it belongs to.
+        let withhold_finish = if value.get("type").and_then(Value::as_str) == Some("result") {
+            let abort_marked = crate::claude_view::is_interrupted_result(&value);
+            runtime.settle_turn_finish(|| self.abort_gate.settle_result(abort_marked))
+        } else {
+            false
+        };
+        if withhold_finish {
+            // The journal keeps the wire frame verbatim; this marker row is
+            // what replay reads to suppress the same finish on reattach.
+            // Adjacency is load-bearing: the marker owns exactly the NEXT
+            // journal row, and the view expires it on any frame that is not
+            // this result — so nothing may be journalled between the two
+            // appends, which is why they are two consecutive calls on this
+            // same reader thread with no early return between them.
+            runtime.journal_agent_envelope(&crate::claude_view::withheld_finish_marker());
+        }
         let event_seq = runtime.journal_agent_envelope(&value);
         if self.dispatch_control_response(&value, runtime) {
             return;
@@ -2338,7 +2467,11 @@ impl ClaudeReader {
             self.dispatch_permission(&value, runtime, event_seq);
             return;
         }
+        let settled = value.get("type").and_then(Value::as_str) == Some("result");
         for event in self.view.ingest(&view_value) {
+            if withhold_finish && matches!(event, SessionEvent::AgentFinished { .. }) {
+                continue;
+            }
             crate::plan_usage_cache::note_live(&event);
             let event = if matches!(&event, SessionEvent::SessionManifest { .. }) {
                 let event = runtime.store_session_manifest(event);
@@ -2349,7 +2482,11 @@ impl ClaudeReader {
             } else {
                 event
             };
-            self.publish_with_seq(runtime, event, event_seq);
+            if settled {
+                self.publish_settled_with_seq(runtime, event, event_seq);
+            } else {
+                self.publish_with_seq(runtime, event, event_seq);
+            }
         }
     }
 
@@ -2479,6 +2616,7 @@ impl ClaudeReader {
                         &mut gate,
                         self.stdin.as_ref().expect("mode gate has stdin"),
                         &mut self.view,
+                        &self.abort_gate,
                         mode_id.as_deref(),
                     )
                 };

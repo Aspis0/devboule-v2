@@ -395,6 +395,11 @@ struct InitialModeHarness {
     stdout: BufReader<ChildStdout>,
     gate: ClaudeModeGateRef,
     next_id: Arc<AtomicU64>,
+    abort_gate: Arc<crate::claude_abort::ClaudeAbortGate>,
+}
+
+fn test_abort_gate() -> Arc<crate::claude_abort::ClaudeAbortGate> {
+    Arc::new(crate::claude_abort::ClaudeAbortGate::default())
 }
 
 fn initial_mode_test_setup() -> InitialModeHarness {
@@ -417,6 +422,7 @@ fn initial_mode_test_setup() -> InitialModeHarness {
         stdout: BufReader::new(stdout),
         gate,
         next_id,
+        abort_gate: test_abort_gate(),
     }
 }
 
@@ -454,6 +460,7 @@ fn initial_mode_test_reader_with_timeout(
         ClaudeModeGateWiring {
             stdin,
             gate,
+            abort_gate: test_abort_gate(),
             timeout,
             delivery_settings: Arc::new(Mutex::new(HashMap::new())),
         },
@@ -507,6 +514,7 @@ fn initial_claude_mode_response_flushes_prompt_without_init() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: reader.mode_gate.clone(),
+        abort_gate: test_abort_gate(),
     };
     writer.write_all(b"Reply DONE").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -542,6 +550,7 @@ fn initial_mode_ack_without_mode_releases_queued_prompt() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"queued prompt").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -594,6 +603,7 @@ fn claude_prompts_waiting_for_initial_mode_response_flush_in_order() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"FIRST").expect("buffer first prompt");
     writer.flush().expect("queue first prompt");
@@ -633,6 +643,7 @@ fn a_steer_while_the_mode_gate_is_awaiting_is_refused_not_queued() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     // The running turn's own prompt: queued, not written, because the gate
     // has not released yet.
@@ -644,6 +655,7 @@ fn a_steer_while_the_mode_gate_is_awaiting_is_refused_not_queued() {
     let mut steerer = ClaudeSteerer {
         stdin: Arc::clone(&harness.stdin),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     let steered = runtime.with_active_turn(runtime.turn_counter(), |turn| {
         steerer.steer_active_turn("Turn left instead", turn)
@@ -671,7 +683,14 @@ fn a_steer_while_the_mode_gate_is_awaiting_is_refused_not_queued() {
     {
         let mut gate = harness.gate.lock().expect("gate");
         assert!(
-            flush_gate_frames(&mut gate, &harness.stdin, &mut view, Some("default")).is_none(),
+            flush_gate_frames(
+                &mut gate,
+                &harness.stdin,
+                &mut view,
+                &harness.abort_gate,
+                Some("default"),
+            )
+            .is_none(),
             "the batch writes cleanly"
         );
     }
@@ -697,6 +716,7 @@ fn a_refused_steer_leaves_the_gate_s_failing_batch_untouched() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"Reply DONE").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -704,6 +724,7 @@ fn a_refused_steer_leaves_the_gate_s_failing_batch_untouched() {
     let mut steerer = ClaudeSteerer {
         stdin: Arc::clone(&harness.stdin),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     let steered = runtime.with_active_turn(runtime.turn_counter(), |turn| {
         steerer.steer_active_turn("Turn left instead", turn)
@@ -773,6 +794,7 @@ fn the_steer_write_holds_the_gate_while_it_writes() {
     let mut steerer = super::ClaudeSteerer {
         stdin: Arc::clone(&stdin),
         mode_gate: Some(Arc::clone(&gate)),
+        abort_gate: test_abort_gate(),
     };
     let text = "x".repeat(1024 * 1024);
     let steer = std::thread::spawn(move || {
@@ -804,6 +826,7 @@ fn initial_claude_mode_request_is_written_before_the_first_prompt() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"FIRST").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -831,6 +854,7 @@ fn initial_claude_mode_error_publishes_once_and_closes_stdin() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"DROP ME").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -881,6 +905,7 @@ fn initial_claude_mode_timeout_publishes_once_and_drops_frames() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"DROP ME").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -929,6 +954,7 @@ fn initial_claude_mode_timeout_after_success_is_a_noop() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"KEEP ME").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -971,6 +997,7 @@ fn claude_mode_timeout_on_a_ready_gate_is_a_noop() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"KEEP ME").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -983,9 +1010,14 @@ fn claude_mode_timeout_on_a_ready_gate_is_a_noop() {
     // firing, without a sleep.
     let mut gate = harness.gate.lock().expect("gate");
     drop(reader.initial_mode_timer_cancel.take());
-    assert!(
-        flush_gate_frames(&mut gate, &harness.stdin, &mut reader.view, Some("default"),).is_none()
-    );
+    assert!(flush_gate_frames(
+        &mut gate,
+        &harness.stdin,
+        &mut reader.view,
+        &harness.abort_gate,
+        Some("default"),
+    )
+    .is_none());
     drop(gate);
 
     reader
@@ -1024,6 +1056,7 @@ fn claude_finish_while_initial_mode_is_pending_publishes_once_without_flushing()
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"DROP ON EXIT").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -1073,6 +1106,7 @@ fn user_mode_switch_during_initial_mode_is_fifo_and_wins_in_the_view() {
         next_id: Arc::clone(&harness.next_id),
         mode_responses,
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     let user_mode = std::thread::spawn(move || switcher.set_mode("acceptEdits"));
     let initial_request = read_json_line(&mut harness.stdout);
@@ -1625,6 +1659,7 @@ fn soft_interrupt_cancels_the_pending_permission_and_keeps_the_broker_open() {
         next_id: Arc::new(AtomicU64::new(1)),
         permission_broker: Arc::clone(&broker),
         cancelled: Arc::new(AtomicBool::new(false)),
+        abort_gate: test_abort_gate(),
     };
     killer.interrupt();
     let stopped = drain(&conn);
@@ -1713,6 +1748,7 @@ fn kill_does_not_wait_for_the_child_to_cooperate() {
         next_id: Arc::new(AtomicU64::new(1)),
         permission_broker: broker,
         cancelled: Arc::new(AtomicBool::new(false)),
+        abort_gate: test_abort_gate(),
     };
     killer.kill();
     let started = std::time::Instant::now();
@@ -1987,7 +2023,11 @@ fn the_static_route_frames_the_blocks_it_planned_through_the_mode_gate() {
         },
         pending_frames: Vec::new(),
     }));
-    let route = ClaudeStaticPrompt::new(Arc::new(Mutex::new(None)), Some(Arc::clone(&gate)));
+    let route = ClaudeStaticPrompt::new(
+        Arc::new(Mutex::new(None)),
+        Some(Arc::clone(&gate)),
+        test_abort_gate(),
+    );
     let plan = route
         .plan_prompt(
             &store,
@@ -2027,7 +2067,7 @@ fn the_static_route_declines_a_prompt_with_no_attachments() {
     // and the send path writes it through the writer, exactly as before.
     let temp = PlanTempDir::new("route-none");
     let store = AttachmentStore::new(&temp.0);
-    let route = ClaudeStaticPrompt::new(Arc::new(Mutex::new(None)), None);
+    let route = ClaudeStaticPrompt::new(Arc::new(Mutex::new(None)), None, test_abort_gate());
     assert!(route
         .plan_prompt(
             &store,
@@ -2247,6 +2287,7 @@ fn the_effort_frame_names_the_flag_and_its_refusal_names_it_back() {
         ClaudeModeGateWiring {
             stdin: Arc::clone(&harness.stdin),
             gate: Arc::clone(&harness.gate),
+            abort_gate: test_abort_gate(),
             timeout: CONTROL_RESPONSE_TIMEOUT,
             delivery_settings,
         },
@@ -2341,6 +2382,7 @@ fn a_refused_delivery_effort_fails_the_session_instead_of_passing_silently() {
         ClaudeModeGateWiring {
             stdin: Arc::clone(&harness.stdin),
             gate: Arc::clone(&harness.gate),
+            abort_gate: test_abort_gate(),
             timeout: CONTROL_RESPONSE_TIMEOUT,
             delivery_settings,
         },
@@ -2350,6 +2392,7 @@ fn a_refused_delivery_effort_fails_the_session_instead_of_passing_silently() {
         stdin: Arc::clone(&harness.stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
     };
     writer.write_all(b"Reply DONE").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -4395,4 +4438,35 @@ fn first_failed_seed_attempt_notices_at_once() {
     reader.dispatch_line(LAZY_TASK_USE, &runtime);
     assert_eq!(notices(&drain(&conn)), [SEED_FAILURE_NOTICE]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_refused_or_failed_replacement_write_does_not_arm_the_suppression() {
+    use super::ClaudeModeGateState;
+    // Refused: the mode gate is still awaiting its response, so the steer is
+    // turned away and nothing is written.
+    let stdin = Arc::new(Mutex::new(None));
+    let awaiting: ClaudeModeGateRef = Arc::new(Mutex::new(ClaudeModeGate {
+        state: ClaudeModeGateState::AwaitingResponse {
+            request_id: "initial-permission-mode-0".to_string(),
+        },
+        pending_frames: Vec::new(),
+    }));
+    let abort_gate = test_abort_gate();
+    abort_gate.note_interrupt();
+    let refused = write_gated_steer_frame(&stdin, Some(&awaiting), &abort_gate, b"{}\n");
+    assert!(matches!(refused, Ok(false)));
+    assert_eq!(abort_gate.delivered_prompts(), 0);
+    assert!(!abort_gate.settle_result(true));
+
+    // Failed: the gate is ready but the child's stdin is gone, so the write
+    // errors after the decision to admit.
+    let ready: ClaudeModeGateRef = Arc::new(Mutex::new(ClaudeModeGate {
+        state: ClaudeModeGateState::Ready,
+        pending_frames: Vec::new(),
+    }));
+    abort_gate.note_interrupt();
+    assert!(write_gated_steer_frame(&stdin, Some(&ready), &abort_gate, b"{}\n").is_err());
+    assert_eq!(abort_gate.delivered_prompts(), 0);
+    assert!(!abort_gate.settle_result(true));
 }

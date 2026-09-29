@@ -1585,16 +1585,7 @@ impl SessionRuntime {
     fn finish_turn(&self) {
         let (ended, push) = {
             let _hold = self.lock_turn_hold();
-            let ended = if self.turn_active.swap(false, Ordering::AcqRel) {
-                self.turn_counter.fetch_add(1, Ordering::AcqRel);
-                true
-            } else {
-                false
-            };
-            let push = (ended && self.mark_activity_changed())
-                .then(|| self.prepare_roster_transition())
-                .flatten();
-            (ended, push)
+            self.end_turn_under_hold()
         };
         if ended {
             self.fire_turn_end_hooks();
@@ -1602,6 +1593,49 @@ impl SessionRuntime {
         if let Some(push) = push {
             push();
         }
+    }
+
+    /// The turn transition itself, under the hold both callers already own.
+    fn end_turn_under_hold(&self) -> (bool, Option<Box<dyn FnOnce() + Send>>) {
+        let ended = if self.turn_active.swap(false, Ordering::AcqRel) {
+            self.turn_counter.fetch_add(1, Ordering::AcqRel);
+            true
+        } else {
+            false
+        };
+        let push = (ended && self.mark_activity_changed())
+            .then(|| self.prepare_roster_transition())
+            .flatten();
+        (ended, push)
+    }
+
+    /// End the running turn unless `withhold` says to keep it, deciding AND
+    /// transitioning under the turn-hold so the decision is atomic with steer
+    /// admission: a steer either is admitted while the hold is still yours to
+    /// take (its delivery has already happened, so `withhold` can see it and
+    /// spare the turn) or finds the turn already ended (admission refused,
+    /// the text goes as a plain prompt for a new run). The closure may take
+    /// the provider's abort-gate lock; that lock is always acquired BELOW the
+    /// turn-hold — the steer path takes the same order (hold, then gate) — so
+    /// the two can never deadlock. The hooks run after the release, as
+    /// `finish_turn`'s do.
+    pub(crate) fn settle_turn_finish(&self, withhold: impl FnOnce() -> bool) -> bool {
+        let (withheld, ended, push) = {
+            let _hold = self.lock_turn_hold();
+            if withhold() {
+                (true, false, None)
+            } else {
+                let (ended, push) = self.end_turn_under_hold();
+                (false, ended, push)
+            }
+        };
+        if ended {
+            self.fire_turn_end_hooks();
+        }
+        if let Some(push) = push {
+            push();
+        }
+        withheld
     }
 
     /// Register a one-shot callback for the end of this runtime's next turn.
@@ -1714,6 +1748,30 @@ impl SessionRuntime {
         journal_text: Option<&str>,
         event_seq: Option<u64>,
     ) -> bool {
+        self.publish_agent_event_core(event, journal_text, event_seq, true)
+    }
+
+    /// Publish a finish whose turn transition the caller already performed
+    /// (`settle_turn_finish`): identical to
+    /// [`Self::publish_agent_event_with_seq`] except that it does NOT end the
+    /// turn again. The settle-to-publish window can carry a `begin_turn` —
+    /// the inter-agent brakes release at the settle — and a second transition
+    /// there would end that new turn while it streams.
+    pub(crate) fn publish_agent_event_settled_with_seq(
+        &self,
+        event: SessionEvent,
+        event_seq: Option<u64>,
+    ) -> bool {
+        self.publish_agent_event_core(event, None, event_seq, false)
+    }
+
+    fn publish_agent_event_core(
+        &self,
+        event: SessionEvent,
+        journal_text: Option<&str>,
+        event_seq: Option<u64>,
+        finish_the_turn: bool,
+    ) -> bool {
         // Every published agent event passes through here, which is the one
         // place the finish hook's raw material can be remembered without a
         // second matching pass over the stream (`S5` decisions 7 and 10).
@@ -1782,7 +1840,7 @@ impl SessionRuntime {
         if was_silent {
             self.notify_roster();
         }
-        if matches!(&event, SessionEvent::AgentFinished { .. }) {
+        if finish_the_turn && matches!(&event, SessionEvent::AgentFinished { .. }) {
             self.finish_turn();
         }
         let changed = self.mark_activity_changed();

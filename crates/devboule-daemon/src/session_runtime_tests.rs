@@ -651,3 +651,43 @@ fn plan_mark_scans_are_counted() {
     assert_eq!(runtime.plan_mark_scan_count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_turn_begun_between_a_settled_finish_and_its_publish_survives() {
+    let runtime = SessionRuntime::new();
+    runtime.begin_turn();
+    // The result path settles the turn before publishing it; the window this
+    // opens is exactly one begin_turn wide.
+    runtime.settle_turn_finish(|| false);
+    runtime.begin_turn();
+    runtime.publish_agent_event_settled_with_seq(
+        SessionEvent::AgentFinished {
+            stop_reason: "end_turn".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    assert!(
+        runtime.is_running_turn(),
+        "the publish of an already-settled finish must not end the turn that began after it"
+    );
+}
+
+#[test]
+fn an_unsetled_publish_still_ends_the_turn() {
+    // Every provider but the settled result path relies on this: publishing
+    // an AgentFinished through the generic route is what ends its turn.
+    let runtime = SessionRuntime::new();
+    runtime.begin_turn();
+    runtime.publish_agent_event_with_seq(
+        SessionEvent::AgentFinished {
+            stop_reason: "end_turn".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+        None,
+    );
+    assert!(!runtime.is_running_turn());
+}
