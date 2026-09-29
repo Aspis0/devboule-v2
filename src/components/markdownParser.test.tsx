@@ -209,6 +209,24 @@ describe("markdownParser link targets", () => {
     expect(out).toContain("[a](https://e.com/x(y) some prose ) tail text");
   });
 
+  it.each([
+    ["[a](http://e.com/a<b)", "[a](http://e.com/a&lt;b)"],
+    ["[a](http://e.com/a b)", "[a](http://e.com/a b)"],
+    ["[a](http://e.com/a\tb)", "[a](http://e.com/a\tb)"],
+    ["[a](http://e.com/a\rb)", "[a](http://e.com/a\rb)"],
+    ["[a](http://e.com/a\fb)", "[a](http://e.com/a\fb)"],
+    ["[a](http://e.com/a\nb)", "[a](http://e.com/a b)"],
+    ["[a](http://e.com/a\\ b)", "[a](http://e.com/a\\ b)"],
+    ['[a](http://e.com "Title")', "[a](http://e.com &quot;Title&quot;)"],
+    ["![a](https://e.com/x(y) prose )", "![a](https://e.com/x(y) prose )"],
+  ])("refuses %j as literal text", (input, literal) => {
+    const out = markup(input);
+
+    expect(out).not.toContain("<a ");
+    expect(out).not.toContain("href=");
+    expect(out).toContain(literal);
+  });
+
   it("still links http, https and mailto after the scan", () => {
     expect(markup("[a](http://e.com/x_(y))")).toContain('<a href="http://e.com/x_(y)"');
     expect(markup("[a](HTTPS://e.com)")).toContain('href="HTTPS://e.com"');

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { isValidElement, type ReactNode } from "react";
 import { CodeBlock } from "./CodeBlock";
 import { TableScrollRegion } from "./TableScrollRegion";
 import { isCopyableFence } from "../lib/fence";
@@ -68,8 +68,7 @@ function inline(text: string): ReactNode[] {
       }
     }
   }
-  // The first whitespace or `<` at or after each index: a bare CommonMark
-  // destination holds neither, so a match that runs past one is no link.
+  // A destination is cut at the first stop, so a URL carrying a raw space or `<` is deliberately not a link.
   const nextStop = new Int32Array(text.length + 1);
   nextStop[text.length] = text.length;
   for (let index = text.length - 1; index >= 0; index -= 1) {
@@ -84,9 +83,6 @@ function inline(text: string): ReactNode[] {
         ? index
         : nextStop[index + 1];
   }
-  // The target closing the `(` after `close` — balanced, not empty, and
-  // reaching no whitespace or `<` — else -1, and the branch falls closed
-  // to literal text.
   const destinationEnd = (close: number): number => {
     const targetEnd = parenClose[close + 1];
     return targetEnd > close + 2 && nextStop[close + 2] >= targetEnd ? targetEnd : -1;
@@ -254,6 +250,18 @@ function isTableStart(lines: string[], index: number): boolean {
   return delimiter !== null && isDelimiterRow(delimiter) && delimiter.length === header.length;
 }
 
+// The region's name is the <th>'s own text: walking the rendered nodes keeps them identical.
+function textOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  if (isValidElement<{ children?: ReactNode; alt?: unknown }>(node)) {
+    if (node.type === "img" && typeof node.props.alt === "string") return node.props.alt;
+    return textOf(node.props.children);
+  }
+  return "";
+}
+
 function tableBlock(
   key: number,
   headers: string[],
@@ -264,14 +272,15 @@ function tableBlock(
     alignments[column] === undefined || alignments[column] === null
       ? undefined
       : { textAlign: alignments[column]! };
+  const headerNodes = headers.map((cell) => inline(cell));
   return (
-    <TableScrollRegion key={key} headers={headers}>
+    <TableScrollRegion key={key} headers={headerNodes.map((nodes) => textOf(nodes).trim())}>
       <table className="plan-markdown-table">
         <thead>
           <tr>
-            {headers.map((cell, column) => (
+            {headerNodes.map((nodes, column) => (
               <th key={column} style={align(column)}>
-                {inline(cell)}
+                {nodes}
               </th>
             ))}
           </tr>

@@ -6,7 +6,7 @@ import type { WorkspaceGitDiffLine, WorkspaceGitFileDiff } from "../../types/ipc
 import { ErrorText } from "../../components/ErrorText";
 import type { ChangesReply } from "./useWorkspaceChanges";
 import { withDiffLineNumbers, type NumberedDiffLine } from "./diffLineNumbers";
-import { DIFF_LINE_MARKER } from "./diffMarker";
+import { DIFF_LINE_MARKER, DIFF_ROW_WORD } from "./diffMarker";
 import { toSplitRows, type SplitDiffRow } from "./diffSplitRows";
 import "./panel/diffTab.css";
 
@@ -62,13 +62,6 @@ export const ROW_CLASS: Record<WorkspaceGitDiffLine["kind"], string> = {
   header: "diff-tab-hunk",
 };
 
-const ROW_WORD: Record<WorkspaceGitDiffLine["kind"], string | null> = {
-  add: "added",
-  remove: "removed",
-  context: null,
-  header: null,
-};
-
 function formatNumber(value: number | null): string {
   return value === null ? "" : String(value);
 }
@@ -88,8 +81,8 @@ function UnifiedRows({ lines }: { lines: readonly NumberedDiffLine[] }) {
             <span className="diff-tab-marker" aria-hidden="true">
               {DIFF_LINE_MARKER[line.kind]}
             </span>
-            {ROW_WORD[line.kind] !== null ? (
-              <span className="diff-tab-visually-hidden">{ROW_WORD[line.kind]}</span>
+            {DIFF_ROW_WORD[line.kind] !== null ? (
+              <span className="diff-tab-visually-hidden">{DIFF_ROW_WORD[line.kind]}</span>
             ) : null}
             <span className="diff-tab-text">{line.text}</span>
           </div>
@@ -109,8 +102,8 @@ function SplitCell({ cell, number }: { cell: NumberedDiffLine | null; number: "o
       <span className="diff-tab-marker" aria-hidden="true">
         {DIFF_LINE_MARKER[cell.kind]}
       </span>
-      {ROW_WORD[cell.kind] !== null ? (
-        <span className="diff-tab-visually-hidden">{ROW_WORD[cell.kind]}</span>
+      {DIFF_ROW_WORD[cell.kind] !== null ? (
+        <span className="diff-tab-visually-hidden">{DIFF_ROW_WORD[cell.kind]}</span>
       ) : null}
       <span className="diff-tab-text">{cell.text}</span>
     </div>
@@ -197,10 +190,14 @@ export function DiffTab({
         </span>
         {dir !== "" ? <span className="diff-tab-dir">{dir}</span> : null}
         <span className="diff-tab-stats">{stats}</span>
+        {/* Polite: announced when the line appears or its reason changes. Repeats stay silent. */}
+        <span className="diff-tab-visually-hidden" role="status">
+          {diff.failure !== null && reply !== null
+            ? `Couldn't refresh: ${diff.failure.sentence}`
+            : ""}
+        </span>
         {diff.failure !== null && reply !== null ? (
-          // Polite: announced when the line appears or its reason changes.
-          // Repeats stay silent — an identical failure schedules no render.
-          <span className="diff-tab-refresh-failure" role="status">
+          <span className="diff-tab-refresh-failure" aria-hidden="true">
             Couldn&apos;t refresh: {diff.failure.sentence}
           </span>
         ) : null}

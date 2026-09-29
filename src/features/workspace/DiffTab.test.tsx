@@ -30,6 +30,17 @@ function refusalReply(status: "binary" | "too_large" | "error", error: string | 
   return okReply([], { additions: 0, deletions: 0, lines: [], status, error });
 }
 
+// Accessible text: subtrees the author hid from assistive tech do not count.
+function accessibleText(root: Element): string {
+  if (root.getAttribute("aria-hidden") === "true") return "";
+  let out = "";
+  for (const child of [...root.childNodes]) {
+    if (child.nodeType === 3) out += child.textContent ?? "";
+    else if (child.nodeType === 1) out += accessibleText(child as Element);
+  }
+  return out;
+}
+
 const LINES: WorkspaceGitDiffLine[] = [
   { kind: "header", text: "@@ -12,3 +12,4 @@ import" },
   { kind: "context", text: 'import { detectGates } from "./gates";' },
@@ -294,17 +305,47 @@ describe("DiffTab", () => {
     }
   });
 
+  it("keeps one live region mounted, empty until a failure lands", async () => {
+    await render("src/checkout.ts", { reply: okReply(LINES), failure: null });
+    const before = container.querySelector('.diff-tab-header [role="status"]');
+    expect(before).not.toBeNull();
+    expect(before?.textContent).toBe("");
+    await render("src/checkout.ts", {
+      reply: okReply(LINES),
+      failure: { sentence: "The daemon went away.", detail: null },
+    });
+    const after = container.querySelector('.diff-tab-header [role="status"]');
+    expect(after).not.toBeNull();
+    expect(after).toBe(before);
+    expect(after?.textContent).toContain("The daemon went away.");
+  });
+
   it("announces the refresh failure through a polite live region", async () => {
     await render("src/checkout.ts", {
       reply: okReply(LINES),
       failure: { sentence: "The daemon went away.", detail: null },
     });
-    const note = container.querySelector(".diff-tab-refresh-failure");
-    expect(note?.getAttribute("role")).toBe("status");
-    expect(note?.textContent).toContain("The daemon went away.");
+    const live = container.querySelector('.diff-tab-header [role="status"]');
+    expect(live?.textContent).toContain("The daemon went away.");
+    expect(container.querySelector(".diff-tab-refresh-failure")?.textContent).toContain(
+      "The daemon went away.",
+    );
   });
 
-  it("speaks a changed failure reason, and drops the region on recovery", async () => {
+  it("reads the failure sentence exactly once", async () => {
+    await render("src/checkout.ts", {
+      reply: okReply(LINES),
+      failure: { sentence: "The daemon went away.", detail: null },
+    });
+    const header = container.querySelector(".diff-tab-header");
+    if (header === null) throw new Error("header did not render");
+    expect(container.querySelector(".diff-tab-refresh-failure")?.getAttribute("aria-hidden")).toBe(
+      "true",
+    );
+    expect(accessibleText(header).split("The daemon went away.")).toHaveLength(2);
+  });
+
+  it("speaks a changed failure reason, and empties the region on recovery", async () => {
     const failure = (sentence: string) => ({
       reply: okReply(LINES),
       failure: { sentence, detail: null },
@@ -315,8 +356,9 @@ describe("DiffTab", () => {
     );
     await render("src/checkout.ts", failure("The file is locked."));
     expect(container.querySelector(".diff-tab-refresh-failure")?.textContent).toContain("locked");
-    // Clearing removes the node instead of announcing: silence, not a second message.
+    // Clearing drops the visible line and empties the live shell: silence, not a second message.
     await render("src/checkout.ts", { reply: okReply(LINES), failure: null });
     expect(container.querySelector(".diff-tab-refresh-failure")).toBeNull();
+    expect(container.querySelector('.diff-tab-header [role="status"]')?.textContent).toBe("");
   });
 });

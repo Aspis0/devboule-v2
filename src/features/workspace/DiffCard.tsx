@@ -5,7 +5,7 @@ import { useId } from "react";
 import type { WorkspaceGitDiffLine, WorkspaceGitFileDiff } from "../../types/ipc";
 import type { ChangesReply } from "./useWorkspaceChanges";
 import { ErrorText } from "../../components/ErrorText";
-import { DIFF_LINE_MARKER } from "./diffMarker";
+import { DIFF_LINE_MARKER, DIFF_ROW_WORD } from "./diffMarker";
 
 const DIFF_LINE_CLASS: Record<WorkspaceGitDiffLine["kind"], string> = {
   add: "added",
@@ -72,7 +72,10 @@ export function DiffCard({
               className={`workspace-diff-line workspace-diff-${DIFF_LINE_CLASS[line.kind]}`}
               key={index}
             >
-              <span>{DIFF_LINE_MARKER[line.kind]}</span>
+              <span aria-hidden="true">{DIFF_LINE_MARKER[line.kind]}</span>
+              {DIFF_ROW_WORD[line.kind] !== null ? (
+                <span className="sr-only">{DIFF_ROW_WORD[line.kind]}</span>
+              ) : null}
               <span>{line.text}</span>
             </div>
           ))}

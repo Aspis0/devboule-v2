@@ -255,7 +255,7 @@ describe("the Diff tab poll", () => {
       vi.advanceTimersByTime(CHANGES_POLL_MS);
     });
     await act(async () => {});
-    // The node is removed, not re-announced: no live region survives the clear.
+    // The visible line is removed, not re-announced: the live shell stays mounted but empty.
     expect(container.querySelector(".diff-tab-refresh-failure")).toBeNull();
   });
 

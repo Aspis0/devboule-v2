@@ -42,6 +42,29 @@ describe("MarkdownText", () => {
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 
+  // A header cell runs the same inline scan: 80 k brackets there must clear
+  // the same bar, through the real table path.
+  it("renders an 80 k bracket header cell within the same generous time bound", () => {
+    const input = `| ${"[".repeat(80_000)} |\n|---|\n| x |`;
+    const started = performance.now();
+    const markup = renderToStaticMarkup(<MarkdownText text={input} />);
+
+    expect(markup).toContain("<table");
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  // The four shapes above never make a table, so this guard stays blind to
+  // the table path: one 128 KiB window that does.
+  it("renders a 128 KiB table within the same generous time bound", () => {
+    const cell = "a".repeat(128 * 1024 - 20);
+    const input = `| ${cell} |\n|---|\n| x |`;
+    const started = performance.now();
+    const markup = renderToStaticMarkup(<MarkdownText text={input} />);
+
+    expect(markup).toContain("<table");
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("renders the timeline Markdown elements and preserves Windows paths in code", () => {
     const markup = renderToStaticMarkup(
       <MarkdownText

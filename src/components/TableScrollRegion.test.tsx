@@ -7,6 +7,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parseMarkdownText } from "./markdownParser";
 import { TableScrollRegion } from "./TableScrollRegion";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -145,5 +146,87 @@ describe("the table scroll region", () => {
 
     expect(region.observer.released).toBe(true);
     expect(() => region.observer.fire()).not.toThrow();
+  });
+
+  it("renders a plain table when ResizeObserver is missing", async () => {
+    const saved = globalThis.ResizeObserver;
+    delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TableScrollRegion headers={["Name"]}>
+            <table>
+              <tbody>
+                <tr>
+                  <td>cell</td>
+                </tr>
+              </tbody>
+            </table>
+          </TableScrollRegion>,
+        );
+      });
+      expect(container.querySelector(".plan-markdown-table-scroll")).not.toBeNull();
+      expect(container.querySelector("table")).not.toBeNull();
+    } finally {
+      globalThis.ResizeObserver = saved;
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("names the region from the finished header names it is given", async () => {
+    const region = await renderRegion(["bold", "code", "plain"]);
+    region.overflow(true);
+    await act(async () => region.observer.fire());
+    expect(region.wrapper.getAttribute("aria-label")).toBe("Table: bold, code, plain");
+    await act(async () => region.root.unmount());
+  });
+
+  // The spoken name must be the column's own text: one shape per inline
+  // construct the parser renders, or deliberately leaves alone.
+  it.each([
+    "Plain",
+    "**bold**",
+    "`code`",
+    "_em_",
+    "__init__",
+    "***x***",
+    "\\*literal\\*",
+    "\\_escaped\\_",
+    "[a](https://e.com/x(y))",
+    "[**b**](http://e.com)",
+    "![](http://e.com)",
+    "**a _b_ c**",
+    "a*b",
+    "~~strike~~",
+    "![alt](http://e.com/i.png)",
+    "[a](http://e.com)",
+  ])("names %j like its column shows", async (source) => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<div>{parseMarkdownText(`| ${source} |\n|---|\n| x |`)}</div>);
+      });
+      const wrapper = container.querySelector<HTMLElement>(".plan-markdown-table-scroll");
+      const th = container.querySelector("th");
+      if (wrapper === null || th === null) throw new Error(`no table for ${source}`);
+      Object.defineProperty(wrapper, "clientWidth", { value: 500, configurable: true });
+      Object.defineProperty(wrapper.firstElementChild, "scrollWidth", {
+        value: 800,
+        configurable: true,
+      });
+      const observer = CapturingObserver.live[CapturingObserver.live.length - 1];
+      await act(async () => observer.fire());
+      const shown = th.textContent ?? "";
+      expect(wrapper.getAttribute("aria-label")).toBe(shown === "" ? "Table" : `Table: ${shown}`);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
   });
 });

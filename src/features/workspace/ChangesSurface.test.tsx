@@ -417,8 +417,10 @@ describe("ChangesSurface", () => {
     expect(container.querySelector(".workspace-diff-context")?.textContent).toContain(
       "export function run() {",
     );
-    expect(container.querySelector(".workspace-diff-removed")?.textContent).toBe("−  return 1;");
-    expect(container.querySelector(".workspace-diff-added")?.textContent).toBe("+  return 2;");
+    expect(container.querySelector(".workspace-diff-removed")?.textContent).toBe(
+      "−removed  return 1;",
+    );
+    expect(container.querySelector(".workspace-diff-added")?.textContent).toBe("+added  return 2;");
   });
 
   // Fix round R3: the diff effect owns the FIRST read of a selection — at
