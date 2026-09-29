@@ -14,7 +14,7 @@ interface StripKeyboardArgs {
 
 /** True tablist semantics: one tab stop per strip, arrows/Home/End moving
  * between chips with automatic activation, Delete closing the focused chip,
- * and Paseo's prev/next-tab shortcut (Alt+Shift+[ / Alt+Shift+]) switching from
+ * and the Alt+Shift+[ / Alt+Shift+] prev/next-tab shortcut switching from
  * anywhere but the terminal — the terminal keeps its Alt chords, so the
  * shortcut never fires from inside one. */
 export function useStripKeyboard({ tabs, activeTabId, selectTab, closeTab }: StripKeyboardArgs): {

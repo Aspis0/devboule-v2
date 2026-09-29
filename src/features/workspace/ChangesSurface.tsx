@@ -132,10 +132,9 @@ function BranchRow({
 
 /**
  * Uncommitted | Commits. Uncommitted is the tree below; Commits is the
- * branch's history (`CommitsList`). The Commits segment hides itself when
- * the daemon cannot list history — Paseo's section returns null when its
- * capability is missing — so the switch never offers a trip that would be
- * refused.
+ * branch's history (`CommitsList`). The Commits segment hides itself
+ * when the daemon cannot list history, so the switch never offers
+ * a trip that would be refused.
  */
 function ChangesViewSwitch({
   view,
@@ -254,10 +253,10 @@ export const ChangesSurface = memo(function ChangesSurface({
     failure,
     refresh: refreshCommits,
   } = useWorkspaceCommits(workspaceId, view === "commits" && chrome, canListCommits);
-  // The Commits segment hides itself when the daemon cannot list history
-  // (Paseo's `unsupported` → `return null`): a control that would answer
-  // nothing is not drawn as one. The view falls back with it, so a daemon
-  // that loses the capability mid-view leaves the person on the tree.
+  // The Commits segment hides itself when the daemon cannot list history:
+  // a control that would answer nothing is not drawn as one. The view
+  // falls back with it, so a daemon that loses the capability mid-view
+  // leaves the person on the tree.
   const showCommits = view === "commits" && supported;
   const [menuPath, setMenuPath] = useState<string | null>(null);
   const [actionError, setActionError] = useState<ErrorSentence | null>(null);

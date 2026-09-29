@@ -691,8 +691,8 @@ describe("ChangesSurface", () => {
   });
 
   // R7d: the Commits segment that used to be an honest empty state is
-  // wired to the history read. The list renders the branch's own
-  // commits — Paseo's filter — and the base half stays out of it.
+  // wired to the history read. The list renders the branch's own commits;
+  // the base half of the history stays out of it.
   it("renders the Commits view from the bridge answer", async () => {
     vi.mocked(workspaceGitLog).mockResolvedValue(
       logReply({
@@ -784,7 +784,7 @@ describe("ChangesSurface", () => {
     expect(container.querySelector(".workspace-commits-row")).toBeNull();
   });
 
-  // Paseo's gate: the section is hidden unless the capability is
+  // The gate: the Commits section is hidden unless the capability is
   // present. A daemon that cannot list history leaves the switch with
   // one segment — and a hidden segment reads nothing.
   it("hides the Commits segment when the daemon cannot list history", async () => {

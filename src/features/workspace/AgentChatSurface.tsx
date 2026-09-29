@@ -179,8 +179,8 @@ interface AgentChatSurfaceProps {
   hasPendingPermission?: boolean;
   /**
    * The session's queue of unsent follow-ups, held in memory by the workspace
-   * (one per session, as in Paseo) and handed down. Handed none, the surface
-   * renders no rows and no queue actions and Enter always sends — the
+   * (one per session) and handed down. Handed none, the surface renders
+   * no rows and no queue actions and Enter always sends — the
    * workspace never ships that mode.
    */
   queue?: MessageQueue | null;
@@ -518,10 +518,9 @@ interface ToolCallGroupEntryProps {
 
 /** One collapsed row for a run of consecutive tool calls (see `toolCallGroups`).
  * The wrapper carries the first item's frame, plus `is-running` when any
- * item is still running (Paseo's `isLoading`: any call running/executing)
- * and `is-failed` with the failed mark when any item failed. A run replayed
- * into a transcript with no process left carries `is-interrupted` instead of
- * `is-running`: nothing will ever complete it. */
+ * item is still running and `is-failed` with the failed mark when any item
+ * failed. A run replayed into a transcript with no process left carries
+ * `is-interrupted` instead of `is-running`: nothing will ever complete it. */
 function ToolCallGroupEntry({ group, a2aNames, transcriptEnded }: ToolCallGroupEntryProps) {
   const [open, setOpen] = useState(false);
   const first = group.items[0];
