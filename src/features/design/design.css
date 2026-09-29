@@ -169,7 +169,7 @@
 .design-folder-use:focus-visible,
 .design-folder-attach:hover,
 .design-folder-attach:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 
@@ -282,7 +282,7 @@
 .design-history-menu-button:hover,
 .design-history-menu-button:focus-visible,
 .design-history-menu-button[aria-expanded="true"] {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 
@@ -418,7 +418,7 @@
   color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: var(--type-small);
   font-weight: 600;
 }
 
@@ -1076,7 +1076,7 @@
 }
 
 .design-assistant-title {
-  font-size: 12.5px;
+  font-size: var(--type-small);
   font-weight: 600;
 }
 
@@ -1107,7 +1107,7 @@
 
 .design-visual-check:hover,
 .design-visual-check:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 
@@ -1170,7 +1170,7 @@
   color: var(--white);
   background: var(--terracotta-deep);
   border-radius: 12px 12px 4px 12px;
-  font-size: 12.5px;
+  font-size: var(--type-interface);
   line-height: 1.6;
 }
 
@@ -1315,7 +1315,7 @@
 
 .design-message-actions button:hover,
 .design-message-actions button:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 
@@ -1541,7 +1541,7 @@
 }
 
 .design-craft-sheet-heading span {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-size: var(--type-meta);
   font-weight: 650;
 }
@@ -1575,7 +1575,7 @@
 }
 
 .design-craft-close:hover {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--selection);
 }
 
@@ -1606,7 +1606,7 @@
 }
 
 .design-craft-count-limit {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .design-craft-budget-note {
@@ -1617,7 +1617,7 @@
 }
 
 .design-craft-budget-note-limit {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .design-craft-title-list {
@@ -1688,7 +1688,7 @@
 }
 
 .design-craft-title-button[aria-expanded="true"] {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--selection);
 }
 
@@ -1700,7 +1700,7 @@
 }
 
 .design-craft-title-row-dropped .design-craft-title-status {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .design-craft-title-mark {
@@ -1760,7 +1760,7 @@
 
 .design-craft-detail-body code {
   padding: 1px 3px;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -1921,7 +1921,7 @@
 
 .design-attachment-remove:hover,
 .design-attachment-remove:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--surface);
 }
 
@@ -1956,7 +1956,7 @@
 
 .design-attach-button:hover,
 .design-attach-button:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--border-strong);
 }
 
@@ -1988,7 +1988,7 @@
   background: transparent;
   border: 0;
   outline: 0;
-  font-size: 12.5px;
+  font-size: var(--type-interface);
   line-height: 1.6;
 }
 
@@ -2057,7 +2057,7 @@
 .design-provider-button:focus-visible,
 .design-composer-context button:hover,
 .design-composer-context button:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .design-provider-button:disabled {
@@ -2170,11 +2170,11 @@
 }
 
 .design-skill-mode-option-default .design-skill-mode-option-badge {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .design-skill-mode-option-auto .design-skill-mode-option-badge {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .design-skill-mode-option-manual .design-skill-mode-option-badge {
@@ -2189,7 +2189,7 @@
 .design-skill-mode-option-selected {
   flex: none;
   margin-left: 0;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-size: var(--type-meta);
   font-weight: 600;
 }
@@ -2206,7 +2206,7 @@
 }
 
 .design-skill-picker-action:hover {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--surface-muted);
 }
 
@@ -2342,7 +2342,7 @@
 }
 
 .design-generate-button:disabled {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--surface);
   border-color: var(--terracotta-deep);
   cursor: not-allowed;
@@ -2536,7 +2536,7 @@
 
 .design-layer-orphan-badge {
   flex: none;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border: 1px solid var(--terracotta);
   border-radius: 4px;
   padding: 0 4px;
@@ -2637,7 +2637,7 @@
 }
 
 .design-section-note-compose button:disabled {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--surface);
   border-color: var(--terracotta-deep);
   cursor: not-allowed;

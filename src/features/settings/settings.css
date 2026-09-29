@@ -255,7 +255,7 @@
   background: transparent;
   border: 1px dashed var(--border-strong);
   border-radius: 12px;
-  font-size: 12.5px;
+  font-size: var(--type-small);
   text-align: left;
 }
 
@@ -266,13 +266,13 @@
 
 .settings-dashed-action:hover,
 .settings-dashed-action:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 
 .settings-value-row {
   justify-content: space-between;
-  font-size: 12.5px;
+  font-size: var(--type-small);
 }
 
 .settings-value-row .settings-card-value {
@@ -299,7 +299,7 @@
 
 .settings-device-action:hover,
 .settings-device-action:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 

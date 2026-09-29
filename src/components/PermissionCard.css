@@ -203,7 +203,7 @@
   background: var(--code-bg);
   border-radius: 6px;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--type-mono-cmd);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -86,12 +86,12 @@
 
 .marketplace-filter:hover,
 .marketplace-filter:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--surface);
 }
 
 .marketplace-filter-active {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--selection);
 }
 
@@ -205,7 +205,7 @@
 }
 
 .marketplace-action-install {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: transparent;
   border: 1px solid var(--border-strong);
 }

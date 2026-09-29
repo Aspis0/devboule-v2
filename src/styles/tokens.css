@@ -54,6 +54,10 @@
 
   /* the one accent: terracotta */
   --accent: #bd4a26;
+  /* the accent as text or icon colour: --accent misses 4.5:1 as small text
+     on the light grounds; this clears it on card, page, sidebar and the
+     selected pill, in both themes */
+  --accent-text: #943a1e;
   --accent-contrast: #fdf6ec;
   --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
 
@@ -212,6 +216,7 @@
   --region-edge: var(--line);
 
   --accent: #dd7a4e;
+  --accent-text: #e18861;
   --accent-contrast: #33130a;
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
 

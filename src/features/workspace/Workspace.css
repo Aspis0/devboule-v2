@@ -182,7 +182,7 @@
    background on hover, a lost affordance from the R2a cleanup. */
 .workspace-icon-button:hover,
 .workspace-icon-button:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--selection);
 }
 
@@ -1042,7 +1042,7 @@
 }
 
 .workspace-command-name {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-family: "JetBrains Mono", monospace;
   font-size: var(--type-mono-md);
   white-space: nowrap;
@@ -1465,7 +1465,7 @@
 
 .workspace-open-design:hover,
 .workspace-open-design:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 
@@ -1597,7 +1597,7 @@
 
 .workspace-dialog-close:hover,
 .workspace-dialog-close:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--selection);
 }
 
@@ -1723,5 +1723,5 @@
 }
 
 .workspace-menu-option-destructive {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }

@@ -34,7 +34,7 @@
 
 .polis-plugin-failure button:hover,
 .polis-plugin-failure button:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta-deep);
 }
 
@@ -125,7 +125,7 @@
 
 .polis-readiness-button:hover:not(:disabled),
 .polis-readiness-button:focus-visible:not(:disabled) {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta-deep);
 }
 

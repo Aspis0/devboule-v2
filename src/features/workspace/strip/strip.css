@@ -226,7 +226,7 @@
 
 .workspace-session-add:hover,
 .workspace-session-add:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--surface-muted);
 }
 
@@ -351,7 +351,7 @@
   border: 1px solid var(--terracotta);
   border-radius: 999px;
   background: var(--surface);
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-size: var(--type-small);
   font-weight: 700;
   white-space: nowrap;

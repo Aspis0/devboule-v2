@@ -112,7 +112,7 @@
 .diagnostics-retry:hover,
 .diagnostics-copy:focus-visible,
 .diagnostics-retry:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 
@@ -136,7 +136,7 @@
 }
 
 .diagnostics-copy-failed {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 /* The raw report text keeps the `pre` default exactly as base had it: no
@@ -247,7 +247,7 @@
 .retention-blocked-copy,
 .retention-help {
   margin: 0;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -275,7 +275,7 @@
 
 .settings-retention-alert {
   padding: 9px 11px;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--terracotta) 10%, transparent);
   border: 1px solid var(--terracotta);
   border-radius: 8px;

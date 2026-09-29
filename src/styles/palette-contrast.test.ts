@@ -57,6 +57,15 @@ const darkVars = parseRootVars([...rootBlocks, ...darkBlocks].join("\n"));
 /** Text-bearing pairs SPEC-tokens.md promises at ≥4.5:1, in both themes. */
 const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }> = [
   { text: "--accent-contrast", ground: "--accent", why: "text on accent fills" },
+  {
+    text: "--accent",
+    ground: "--panel-card",
+    why: "the nav-point circle letter — the one text the accent walk allow-lists",
+  },
+  { text: "--accent-text", ground: "--panel-card", why: "accent text on cards" },
+  { text: "--accent-text", ground: "--ground-center", why: "accent text on the transcript" },
+  { text: "--accent-text", ground: "--panel-side", why: "accent text on the sidebar" },
+  { text: "--accent-text", ground: "--fill-selected", why: "accent text on the selected pill" },
   { text: "--danger-contrast", ground: "--danger", why: "text on filled danger" },
   { text: "--diff-add", ground: "--code-bg", why: "added diff lines on code" },
   { text: "--diff-del", ground: "--code-bg", why: "removed diff lines on code" },

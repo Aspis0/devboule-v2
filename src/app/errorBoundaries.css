@@ -148,6 +148,6 @@ body:has(.root-fallback) {
 .boundary-reload:focus-visible,
 .boundary-retry:hover,
 .boundary-retry:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }

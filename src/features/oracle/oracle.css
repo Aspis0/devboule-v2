@@ -72,7 +72,7 @@
 }
 
 .oracle-setup-step-current {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .oracle-setup-step-current .oracle-setup-step-number {
@@ -215,7 +215,7 @@
 
 .oracle-button-secondary:hover:not(:disabled),
 .oracle-button-secondary:focus-visible:not(:disabled) {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .oracle-cancel-action {
@@ -460,7 +460,7 @@
 
 .oracle-index-progress-heading span:last-child {
   margin-left: auto;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-family: "JetBrains Mono", monospace;
   font-size: var(--type-mono-sm);
 }
@@ -636,7 +636,7 @@
 
 .oracle-inline-action:hover,
 .oracle-inline-action:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .oracle-search {
@@ -656,7 +656,7 @@
 }
 
 .oracle-search-mark {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-family: "Fraunces", Georgia, serif;
   font-size: 17px;
 }
@@ -704,7 +704,7 @@
 }
 
 .oracle-reading-cost strong {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-family: "JetBrains Mono", monospace;
   font-size: 17px;
   line-height: 1;
@@ -762,7 +762,7 @@
 
 .oracle-result-rank {
   flex: none;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-family: "JetBrains Mono", monospace;
   font-size: var(--type-mono-sm);
   font-weight: 600;
@@ -811,7 +811,7 @@
 }
 
 .oracle-result-cost {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -850,7 +850,7 @@
 
 .oracle-admin summary::before {
   flex: none;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   content: "+";
   font-family: "JetBrains Mono", monospace;
   font-size: 14px;
@@ -881,7 +881,7 @@
 
 .oracle-admin-summary-action {
   margin-left: auto;
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .oracle-admin summary:hover .oracle-admin-summary-action,

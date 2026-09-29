@@ -51,7 +51,7 @@
 .workspace-terminal-interrupt:hover,
 .workspace-terminal-interrupt:focus-visible,
 .workspace-terminal-interrupt[aria-pressed="true"] {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   background: var(--selection);
 }
 

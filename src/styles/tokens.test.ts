@@ -33,6 +33,7 @@ const COLOUR_TOKENS = [
   "line-strong",
   "region-edge",
   "accent",
+  "accent-text",
   "accent-contrast",
   "accent-soft",
   "tone-live",

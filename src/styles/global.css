@@ -444,7 +444,7 @@ button:focus-visible {
 }
 
 .crescent-page-arrow:hover {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .crescent-install-error {

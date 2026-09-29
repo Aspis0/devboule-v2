@@ -69,12 +69,12 @@
 }
 
 .workspace-queue-steer {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
 }
 
 .workspace-queue-steer:hover,
 .workspace-queue-steer:focus-visible {
-  color: var(--terracotta);
+  color: var(--accent-text);
   background: var(--surface);
 }
 

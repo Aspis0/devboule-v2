@@ -171,7 +171,7 @@
 }
 
 .workspace-file-tab-preview a {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .workspace-file-tab-preview code:not(pre code) {

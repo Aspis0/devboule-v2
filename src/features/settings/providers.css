@@ -494,7 +494,7 @@ section .provider-refresh {
 
 .provider-refresh:hover,
 .provider-refresh:focus-visible {
-  color: var(--terracotta-deep);
+  color: var(--accent-text);
   border-color: var(--terracotta);
 }
 
@@ -527,5 +527,5 @@ section .provider-refresh {
   margin: 0;
   max-width: 42em;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--type-small);
 }
