@@ -34,6 +34,7 @@ import {
 } from "./strip/toolTabs";
 import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
+import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
 import { useTabSelection } from "./strip/useTabSelection";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
@@ -1391,14 +1392,7 @@ export function Workspace({
               sessionsError.detail !== null ? "workspace-session-error-detail" : undefined
             }
           >
-            <svg
-              className="workspace-error-line-icon"
-              viewBox="0 0 12 12"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <path d="M6 1.6 11 10.4H1Z" />
-            </svg>
+            <ErrorTriangleIcon />
             <span className="workspace-error-line-text">{sessionsError.sentence}</span>
             {sessionsError.detail !== null ? (
               <span id="workspace-session-error-detail" className="error-detail-sr-only">

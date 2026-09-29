@@ -48,6 +48,7 @@ import {
 } from "../../lib/toolCallGroups";
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
+import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { useConversationScrollStick } from "./useConversationScrollStick";
 import { PaneHeader } from "./paneHeader/PaneHeader";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
@@ -707,7 +708,7 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
     return (
       <div className={className} key={item.id} role="alert" style={style}>
         <div className="workspace-chat-error-line">
-          <span aria-hidden="true">△</span>
+          <ErrorTriangleIcon />
           <span className="workspace-chat-copy">{item.text}</span>
         </div>
         {item.detail ? <div className="workspace-chat-error-detail">{item.detail}</div> : null}

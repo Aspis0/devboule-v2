@@ -9,7 +9,7 @@ import type { PermissionRequest, Session, SessionEvent, SessionState } from "../
 import type { AgentStatus } from "../../lib/agentSession";
 import { channelHarness } from "./sessionChannelHarness";
 import { heldAssistantTextFor } from "./attentionNotice";
-import { assembleCssProof } from "./cssProof";
+import { assembleCssProof, removeCssProof } from "./cssProof";
 
 vi.mock("../../lib/tauri", async () => (await import("./sessionChannelHarness")).tauriMock);
 
@@ -281,6 +281,7 @@ describe("AgentChatSurface", () => {
   afterEach(async () => {
     await act(async () => root?.unmount());
     container.remove();
+    removeCssProof();
     channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;
     channelHarness.deferNextAttach = false;
@@ -1917,12 +1918,47 @@ describe("AgentChatSurface", () => {
       "402 Payment Required",
     );
     expect(container.querySelector('[role="alert"] .workspace-chat-label')).toBeNull();
-    expect(container.querySelector(".workspace-chat-error-line > span")?.textContent).toBe("△");
+    const errorLine = container.querySelector(".workspace-chat-error-line");
+    expect(errorLine?.querySelector('svg[aria-hidden="true"] path')?.getAttribute("d")).toBe(
+      "M6 1.6 11 10.4H1Z",
+    );
+    // textContent counts aria-hidden subtrees, so this pins "the mark adds no
+    // text node"; the a11y guarantee is the aria-hidden assertion above.
+    expect(errorLine?.textContent).toBe("402 Payment Required");
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(false);
     expect(container.textContent).not.toContain("This session is no longer available.");
+  });
+
+  it("gives the transcript error icon the shared icon class's 12px box", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="err-icon"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_error", message: "402 Payment Required" });
+    });
+
+    // The component hard-codes the class; only a computed style proves the
+    // sheet still answers it — a rename renders the replaced default box.
+    workspaceCss.inject([".workspace-error-line-icon"]);
+    const icon = container.querySelector<SVGElement>(".workspace-chat-error-line svg");
+    if (icon === null) throw new Error("the transcript error icon did not render");
+    const style = getComputedStyle(icon);
+    expect(style.width).toBe("12px");
+    expect(style.height).toBe("12px");
+    expect(style.flexShrink).toBe("0");
   });
 
   it("keeps the composer usable while the daemon reports connected", async () => {

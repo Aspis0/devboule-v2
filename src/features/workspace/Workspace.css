@@ -333,9 +333,11 @@
 }
 
 .workspace-error-line-icon {
+  /* Named because the transcript's centring offset subtracts this same box. */
+  --error-icon: 12px;
   flex: none;
-  width: 12px;
-  height: 12px;
+  width: var(--error-icon);
+  height: var(--error-icon);
   fill: currentColor;
 }
 
@@ -799,7 +801,30 @@
 .workspace-chat-error {
   color: var(--danger);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
+}
+
+/* The transcript's error line (SPEC-regions "Error line"): a 12px --danger
+   sentence with the triangle, start-aligned so the icon stays on line one. */
+.workspace-chat-error-line {
+  --error-leading: 1.55;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  line-height: calc(var(--type-meta) * var(--error-leading));
+}
+
+/* A path or URL in an error is one unbreakable token; the flex item needs
+   a zero minimum and anywhere-wrapping to fit it. */
+.workspace-chat-error-line .workspace-chat-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Centres the mark on the first text line: the line box (meta × leading)
+   minus the icon's own box, halved — two named sizes, never one number. */
+.workspace-chat-error-line .workspace-error-line-icon {
+  margin-top: calc((var(--type-meta) * var(--error-leading) - var(--error-icon)) / 2);
 }
 
 /* The demoted raw text under a transcript error item: present for the copy,

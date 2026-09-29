@@ -93,17 +93,6 @@
   font-weight: 600;
 }
 
-.workspace-chat-error-line {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-}
-
-.workspace-chat-error-line > span:first-child {
-  flex: none;
-  color: var(--danger);
-}
-
 .timeline-copy-chip {
   position: absolute;
   z-index: 1;
