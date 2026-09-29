@@ -1,7 +1,6 @@
-// The bulk close's confirmation: what each ask says, adapted only where
-// our semantics differ — for us a terminal close is
-// an archive too (session_stop), so the process stops and every message
-// stays in History.
+// The bulk close's confirmation: the titles, and the counting line written
+// to what a close does here — a terminal close is an archive (session_stop),
+// so the process stops and every message stays in History.
 
 import { describe, expect, it } from "vitest";
 import type { Session } from "../../../types/ipc";

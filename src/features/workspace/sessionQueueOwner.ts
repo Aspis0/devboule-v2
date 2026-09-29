@@ -6,12 +6,11 @@ import { SESSION_NOT_RUNNING } from "./queueStatus";
 /**
  * The queue's owner for the whole app run: one queue per session id, held
  * here rather than in a component, so leaving the Workspace, switching to
- * another tab, or a refresh that rebuilds the tab strip cannot destroy a
- * message the user queued.
+ * another tab, or a refresh that rebuilds the tab strip cannot
+ * destroy a message the user queued.
  *
- * **What may send, and when.** The queue drains on the open-to-idle edge
- * and on every synchronized timeline that finds the agent idle. The edge is
- * the queue's own
+ * **What may send, and when.** The queue drains on the open-to-idle edge and
+ * on every roster push that finds the agent idle. The edge is the queue's own
  * (`turnActive` falling); the snapshot is every roster push, always the daemon's
  * full list (`workspaceSessions.ts`'s `applySnapshot`), so the arm is per push,
  * not per connection. A repeated idle push neither duplicates a send in flight

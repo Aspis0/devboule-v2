@@ -127,7 +127,7 @@ describe("groupToolCalls", () => {
 });
 
 describe("summarizeToolCallGroup", () => {
-  it("counts commands, reads, and edits like the overview summary", () => {
+  it("counts commands, reads, and edits in one summary sentence", () => {
     const summary = summarizeToolCallGroup([
       tool({ title: "git status", kind: "execute" }),
       tool({ title: "git diff", kind: "execute" }),

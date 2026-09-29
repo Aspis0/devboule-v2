@@ -44,8 +44,9 @@ export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProp
   // The reset runs during render, not in an effect: the input's first paint
   // after an open must already carry the title, or the focus effect selects
   // an empty field and the re-render leaves the cursor at the end. A title
-  // change resyncs only an untouched draft — the user's edit outranks the
-  // roster behind it.
+  // change resyncs only an untouched draft — the user's edit
+  // outranks the roster behind it: overwriting a draft the user has typed
+  // into would throw that edit away.
   //
   // The submitting halves are deliberately NOT cleared here. The daemon's
   // rename pushes the roster and answers the RPC from independent tasks with
@@ -143,9 +144,7 @@ export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProp
   // The refusal shows as soon as the draft is invalid — including on open.
   // The daemon's own title derivation keeps U+200C/U+200D, so a pre-fill can
   // be a name the rename door refuses; a grey button and no message is the
-  // one outcome this dialog must never produce. (The dead button was two
-  // bugs: an inherited one, and this app feeding a derived or synthetic
-  // title into it.)
+  // one outcome this dialog must never produce.
   const refusal = validateSessionRename(draft);
   const shownError = error ?? refusal;
   const saveDisabled = submitting || draft === rename.title || refusal !== null;

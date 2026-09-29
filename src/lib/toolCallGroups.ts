@@ -6,9 +6,8 @@ export type ToolChatItem = Extract<AgentChatItem, { role: "tool" }>;
  * A run of consecutive groupable tool calls, rendered as one collapsible row.
  *
  * Grouping: consecutive groupable tools accumulate into a pending run and
- * any other item flushes
- * it. The id is the first item's id, so it stays stable while streaming
- * appends tools to the end of the run.
+ * any other item flushes it. The id is the first item's id, so it stays
+ * stable while streaming appends tools to the end of the run.
  */
 export interface ToolCallGroup {
   kind: "tool-group";
@@ -26,7 +25,7 @@ export function isToolCallGroup(entry: AgentChatItem | ToolCallGroup): entry is 
 /**
  * Excludes the `plan` detail type and the `question` tool name, so the
  * transcript's only copy of a question and its answer is never buried in a
- * collapsed group.
+ * collapsed group. The `question` exclusion is deliberate, not an oversight.
  */
 export function isGroupableToolCall(item: AgentChatItem): item is ToolChatItem {
   if (item.role !== "tool") return false;
@@ -92,10 +91,10 @@ export interface ToolCallGroupSummary {
 }
 
 /**
- * Count a run: edited
- * and read files dedupe by path, everything else counts calls. A
- * location-less edit/read cannot name a file, so it counts as another
- * tool instead of guessing by title.
+ * Count a run: edited and read files dedupe by path, everything else counts
+ * calls. A `fetch` is not one of the counted kinds here, so it lands in
+ * `otherToolCount`. A location-less edit/read cannot name a file, so it
+ * counts as another tool instead of guessing by title.
  */
 export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGroupSummary {
   const editedFiles = new Set<string>();
@@ -134,9 +133,8 @@ function pluralize(count: number, one: string, other: string): string {
 }
 
 /**
- * Join summary parts: two parts
- * join with "and", three or more use ", " with "and" before the last, and
- * the first character is uppercased.
+ * Join summary parts: two parts join with "and", three or more use ", "
+ * with "and" before the last, and the first character is uppercased.
  */
 function joinSummaryParts(parts: string[], conjunction: string): string {
   if (parts.length === 0) return "";

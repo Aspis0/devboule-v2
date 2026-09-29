@@ -119,9 +119,9 @@ export function enabledNameClash(
  * form starts from, the draft an edit reports up, and what a save applies.
  * The feature values travel as one map keyed the way the provider declares
  * them, and the form writes only the keys the provider offered: a stored value
- * the provider no longer offers is dropped on save, silently. That
- * replaced an earlier rule that kept unknown
- * keys visible and removable, and the reason it went is this: once a control
+ * the provider no longer offers is dropped on save, silently. That replaced
+ * an earlier rule that kept unknown keys visible and removable, and the
+ * reason it went is this: once a control
  * exists per offered feature, an unoffered key has no control, so keeping it
  * alive would leave a value on the profile that the form cannot even show.
  * The daemon prunes on the same rule at the store, so no child is ever created
@@ -378,10 +378,10 @@ export function featuresAskFailed(vocabulary: ProviderVocabulary | null): boolea
  * and absent are one state to the daemon and storing both spellings would be two
  * ways to say one thing. A select writes its chosen option id, including an
  * explicitly declared empty string. **A stored key the provider no longer offers
- * is therefore dropped here, silently, on save**, and the reason the form
- * no longer shows removable read-only rows: with one control per offered
- * feature an unoffered key has no
- * control, and keeping it alive would store a value the form cannot display.
+ * is therefore dropped here, silently, on save**, which is also the reason
+ * the form no longer shows removable read-only rows: with one control per
+ * offered feature an unoffered key has no control, and keeping it alive
+ * would store a value the form cannot display.
  *
  * With no answer (`offered === null`: the query failed, the daemon predates the
  * axis, or an ACP read has not landed) nothing may be judged away, so the

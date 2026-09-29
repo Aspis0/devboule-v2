@@ -237,8 +237,8 @@ describe("the rename dispatch roads", () => {
 
   it("the auto-title landing moves the open dialog's pre-fill", async () => {
     // The daemon names an untitled session from its first prompt while the
-    // dialog is open: the roster push carries the new name and the field
-    // follows it.
+    // dialog is open: the roster push carries the new name, and the field
+    // follows the push rather than keeping what it opened with.
     const sessions = [agentSession("agent-one", "Agent one")];
     const flow = renderFlow(sessions, true);
     await flow.mount();

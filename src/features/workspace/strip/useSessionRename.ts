@@ -40,8 +40,8 @@ export function useSessionRename({ sessions, renameSupported }: UseSessionRename
 
   // The dialog's pre-fill follows the roster: a push that names the session
   // (the auto-title landing) moves the field with it. Adjusted during render,
-  // not in an
-  // effect — the title is derived from the roster this render already has.
+  // not in an effect — the title is derived from the
+  // roster this render already has.
   if (renameState !== null) {
     const row = sessions.find((session) => session.id === renameState.sessionId);
     if (row !== undefined) {

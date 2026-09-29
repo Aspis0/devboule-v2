@@ -7,13 +7,12 @@ import { lookedAtSessionId } from "./presence";
  * reason, the decision of when an OS toast may fire, what the toast says,
  * and the one place that sends it.
  *
- * The gate rule: a raise is
- * announced unless the user is looking at THIS session — the window actively
- * seen AND this session the one this window shows. Which rows the tab strip
- * draws is not the question the gate asks, so nothing here is parked or
- * flushed: a raise for a session in another workspace announces while this
- * window stays focused, and its toast quotes only what this window holds for
- * it (see `heldContentForSession`).
+ * The gate rule: a raise is announced unless the user is looking at THIS
+ * session — the window actively seen AND this session the one this window
+ * shows. Which rows the tab strip draws is not the question the gate asks,
+ * so nothing here is parked or flushed: a raise for a session in another
+ * workspace announces while this window stays focused, and its toast quotes
+ * only what this window holds for it (see `heldContentForSession`).
  */
 
 /**
@@ -81,7 +80,8 @@ export function toastGate(state: WindowState, sessionId: string, lookedAt: strin
   return !windowSeen || lookedAt !== sessionId;
 }
 
-/** ~220 characters of preview. */
+/** The preview's length in plain-text characters; `previewFrom` cuts after
+ * the last whole word under it. */
 export const PREVIEW_LIMIT = 220;
 
 /**

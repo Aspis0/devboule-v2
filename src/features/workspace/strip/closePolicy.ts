@@ -1,8 +1,7 @@
-// Why: one place decides when a close asks first — the policy on our
-// model. The daemon turns a Running stream into Silent after an
-// output-silence
-// threshold alone (session_runtime.rs mark_silent_if_due), so `silent` is
-// NOT idle — an agent in a long tool call can be silent and still working.
+// Why: one place decides when a close asks first. The daemon turns a
+// Running stream into Silent after an output-silence threshold alone
+// (session_runtime.rs mark_silent_if_due), so `silent` is NOT idle — an
+// agent in a long tool call can be silent and still working.
 // The roster carries no field that states a turn has ended, so the policy
 // asks for EVERY agent with a process (`live` or `silent`); an agent without
 // one (`ended`, `recovered`) closes without asking. A delete — which

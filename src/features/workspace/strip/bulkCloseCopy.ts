@@ -1,7 +1,6 @@
-// Why: the confirmations' words in one place — the titles, adapted where
-// our semantics differ: for us a terminal close is an
-// archive (session_stop), so the process stops and every message stays in
-// History.
+// Why: the confirmations' words in one place — the titles, and the counting
+// line written to what a close does here: a terminal close is an archive
+// (session_stop), so the process stops and every message stays in History.
 
 import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionHasHumanTitle, sessionKindWord, sessionTitle } from "../workspaceSessions";

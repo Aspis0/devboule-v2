@@ -59,8 +59,7 @@ describe("RootErrorBoundary", () => {
     expect(alert.textContent).toContain("Devboule ran into a problem.");
     expect(alert.textContent).toContain("restarts the app on the Workspace surface");
     expect(alert.textContent).toContain("root render failed");
-    // Pinned footer: the only recovery control must not scroll away at
-    // high zoom.
+    // Reload is pinned in the footer so it never scrolls away at high zoom.
     expect(alert.querySelector(".root-fallback-footer .boundary-reload")?.textContent).toBe(
       "Reload",
     );

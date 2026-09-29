@@ -231,9 +231,9 @@ export type DesignOutputMode = "page" | "slides";
  * accepts an image expects on the wire — the `{ data, mimeType }` pair.
  *
  * An SVG is not an image here. It is a text document this surface can embed in
- * the HTML it generates, so it is carried as sanitized source — deliberately
- * not as a generic file: this surface generates HTML, and an SVG is something
- * it can use directly. `source` has already been through the sanitizer in
+ * the HTML it generates, so it is carried as sanitized `source`, not as the
+ * raster's base64: this surface generates HTML, and an SVG is something it can
+ * use directly. `source` has already been through the sanitizer in
  * `designAttachments.ts` and never travels raw.
  *
  * The measured type is the one stored, never the declared one: see the module

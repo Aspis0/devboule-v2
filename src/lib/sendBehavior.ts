@@ -72,7 +72,8 @@ export function subscribeSendBehavior(listener: (value: SendBehavior) => void): 
 
 /**
  * Queueing behind a permission prompt would strand the message: the turn is
- * parked until the request is answered.
+ * parked until the request is answered, so a queued send behind an open
+ * permission card resolves to interrupt-and-send instead.
  */
 export function resolveActiveSendBehavior(
   sendBehavior: SendBehavior,

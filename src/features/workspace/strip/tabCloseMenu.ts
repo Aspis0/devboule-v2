@@ -1,7 +1,7 @@
 // Why: the tab context menu as data — the four close entries in the order
-// workspace-tab-menu.test.ts pins, our Delete
-// after a separator in the destructive tone, and when each entry has nothing
-// to act on — so the menu only renders rows.
+// workspace-tab-menu.test.ts pins, Delete after a separator in the
+// destructive tone, and when each entry has nothing to act on —
+// so the menu only renders rows.
 
 import type { TabCloseAction } from "./bulkCloseSessions";
 

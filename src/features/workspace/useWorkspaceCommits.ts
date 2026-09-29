@@ -4,9 +4,9 @@ import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { WorkspaceGitLog } from "../../types/ipc";
 
 /**
- * A stale window for the same read: history changes rarely while the
- * section is open, so a collapse and
- * re-expand cycle stays warm without leaving the answer stale for long.
+ * The section's freshness window: history changes rarely while the
+ * section is open, so a collapse and re-expand cycle stays warm without
+ * leaving the answer stale for long.
  */
 const COMMITS_STALE_MS = 30_000;
 

@@ -355,8 +355,8 @@ export function Workspace({
   // hidden by an in-flight close is not "visible in this window" even before
   // the daemon removes it from the roster. With the strip scoped to the
   // selected workspace, "rendered" means rendered there; it decides WORDING
-  // only, never whether the raise announces (the toast gate asks the looked-at
-  // session for that).
+  // only, never whether the raise announces (the toast gate asks the
+  // looked-at session for that).
   const renderedSessionIds = useMemo(
     () => new Set(visibleSessions.map((session) => session.id)),
     [visibleSessions],
@@ -784,11 +784,11 @@ export function Workspace({
         return;
       }
       if (capable.length === 0) {
-        // Gate before create (§5a): with no
-        // chat-capable provider the create would be born doomed, so the flow
-        // stops here — the anchored picker opens with its empty state and
-        // afterChoice is never called. The choice ends through the picker's
-        // own dismissal, or the button that opens the install guidance.
+        // Gate before create: with no chat-capable provider the create would
+        // be born doomed, so the flow stops here — the anchored picker opens
+        // with its empty state and afterChoice is never called. The choice
+        // ends through the picker's own dismissal, or the button that opens
+        // the install guidance.
         afterProviderChoiceRef.current = afterChoice;
         providerAnchorElRef.current = trigger ?? addButtonRef.current;
         setProviderAnchor(anchor);

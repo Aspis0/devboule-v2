@@ -1698,8 +1698,8 @@ export interface VocabularyFeatureOption {
   label: string;
 }
 
-/** The control a profile form draws for one feature; these two words are
- *  what the wire keeps. */
+/** The control a profile form draws for one feature; the wire keeps both
+ * words exactly as they are. */
 export type VocabularyFeatureControl = "toggle" | "select";
 
 /**

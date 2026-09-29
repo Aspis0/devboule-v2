@@ -9,8 +9,7 @@ interface RootErrorBoundaryState {
   error: string | null;
 }
 
-// Ours only ever sees render-phase throws, so a small local formatter
-// covers it.
+// The formatter only ever sees render-phase throws, so a small local one covers it.
 function formatRenderError(value: unknown): string {
   if (value instanceof Error) {
     const headline = `${value.name}: ${value.message}`;
@@ -58,8 +57,8 @@ export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErr
   }
 }
 
-// The last body sentence is ours: a document reload always boots the
-// default surface, and the copy must say where the user lands.
+// A document reload always boots the default surface, so the body's first
+// sentence names where the user lands.
 function RootErrorFallback({ error }: { error: string }): ReactNode {
   return (
     <div className="root-fallback" role="alert">
@@ -71,8 +70,7 @@ function RootErrorFallback({ error }: { error: string }): ReactNode {
         </p>
         <h2 className="root-fallback-details-label">Details</h2>
         <pre className="root-fallback-details">{error}</pre>
-        {/* Reload is pinned in the footer so it never scrolls away at
-            high zoom. */}
+        {/* Reload is pinned in the footer so it never scrolls away at high zoom. */}
         <div className="root-fallback-footer">
           <button
             type="button"

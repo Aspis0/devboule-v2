@@ -1,7 +1,7 @@
-// Why: the strip's tab context menu — the close entries, then our
-// Delete after a separator in the destructive tone — rendered on the shared
-// portal, anchored to the right-clicked row, with the "+" menu's keyboard
-// model (menuNav.ts) so the menus cannot drift apart.
+// Why: the strip's tab context menu — whatever close entries the caller
+// builds for the row — rendered on the shared portal, anchored to the
+// right-clicked row, with the "+" menu's keyboard model
+// (menuNav.ts) so the menus cannot drift apart.
 
 import {
   Fragment,

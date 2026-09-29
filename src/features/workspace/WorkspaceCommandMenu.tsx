@@ -10,8 +10,8 @@ export interface WorkspaceCommand {
   hint?: string;
 }
 
-/** The list renders this line whenever it has no option to draw, so the
- * menu is never an empty box. */
+/** The command menu draws this line whenever it has no option to render,
+ * so it is never an empty box. */
 const NO_COMMANDS_TEXT = "No commands found";
 
 interface WorkspaceCommandMenuProps {

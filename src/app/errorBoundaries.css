@@ -58,8 +58,7 @@ body:has(.root-fallback) {
 }
 
 /* A stack trace is reference material, not the screen: cap it at 300px so
-   the message and the Reload action keep their shape, and let the rest
-   scroll. */
+   the message and the Reload action keep their shape and the rest scrolls. */
 .root-fallback-details,
 .surface-fallback-details {
   margin: 0;

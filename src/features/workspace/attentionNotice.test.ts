@@ -126,8 +126,8 @@ describe("attentionRaised", () => {
 });
 
 describe("toastGate", () => {
-  // Away from the WINDOW or away from the SESSION — the raise
-  // is silent only when the user is looking at the session that raised.
+  // The rule: the raise announces when the user is away from the window or
+  // the session; silent only when they are looking at the session that raised.
   const seen = { visible: true, focused: true, minimized: false };
 
   it("stays silent only for the raise of the session this window shows", () => {
