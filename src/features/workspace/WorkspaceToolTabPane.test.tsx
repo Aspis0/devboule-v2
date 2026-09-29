@@ -61,9 +61,11 @@ function filesWithEntry(path: string, name: string) {
   };
 }
 
-/** Every diff card's error: its described-by target and its own detail node. */
-function diffCardErrorLinks(): Array<{ describedBy: string | null; detailId: string | null }> {
-  return [...document.querySelectorAll(".workspace-diff-card")].map((card) => ({
+/** Every diff surface's error: its described-by target and its own detail node.
+    The tab is its own surface since C10 (`.diff-tab`); the panel cards stay
+    `.workspace-diff-card`. */
+function diffSurfaceErrorLinks(): Array<{ describedBy: string | null; detailId: string | null }> {
+  return [...document.querySelectorAll(".workspace-diff-card, .diff-tab")].map((card) => ({
     describedBy: card.querySelector("[aria-describedby]")?.getAttribute("aria-describedby") ?? null,
     detailId: card.querySelector(".error-detail-sr-only")?.getAttribute("id") ?? null,
   }));
@@ -277,7 +279,7 @@ describe("error detail ids", () => {
     await flush();
     await flush();
 
-    const links = diffCardErrorLinks().filter((link) => link.detailId !== null);
+    const links = diffSurfaceErrorLinks().filter((link) => link.detailId !== null);
     expect(links).toHaveLength(2);
     const detailIds = links.map((link) => link.detailId);
     expect(new Set(detailIds).size).toBe(2);
@@ -304,7 +306,7 @@ describe("error detail ids", () => {
     await flush();
     await flush();
 
-    const links = diffCardErrorLinks().filter((link) => link.detailId !== null);
+    const links = diffSurfaceErrorLinks().filter((link) => link.detailId !== null);
     expect(links).toHaveLength(2);
     const detailIds = links.map((link) => link.detailId);
     expect(new Set(detailIds).size).toBe(2);

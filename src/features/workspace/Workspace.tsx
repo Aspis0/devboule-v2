@@ -1414,7 +1414,9 @@ export function Workspace({
         {activeTool !== null ? (
           <div
             id={WORKSPACE_TERMINAL_PANEL_ID}
-            className="workspace-conversation workspace-scroll workspace-tool-pane"
+            className={`workspace-conversation workspace-scroll workspace-tool-pane${
+              activeTool.kind === "diff" ? " workspace-tool-pane-diff" : ""
+            }`}
             role="tabpanel"
             aria-label={activeTool.kind === "diff" ? "Diff" : "File"}
           >

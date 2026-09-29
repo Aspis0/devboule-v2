@@ -72,6 +72,18 @@
   --tone-add: #315e43;
   --tone-del: #a83040;
   --tone-warn: #b8862e;
+  /* Diff tab row grounds: the spec's 22%/18%/10% tone tints over the
+     centre ground the tool pane sits on. The texts mix their tone toward
+     ink (60%/60%/50%) to hold 4.5:1 on the tints, in both themes. */
+  --diff-row-add: color-mix(in srgb, var(--tone-add) 22%, var(--ground-center));
+  --diff-row-del: color-mix(in srgb, var(--tone-del) 18%, var(--ground-center));
+  --diff-row-hunk: color-mix(in srgb, var(--tone-warn) 10%, var(--ground-center));
+  --diff-text-add: color-mix(in srgb, var(--tone-add) 60%, var(--ink));
+  --diff-text-del: color-mix(in srgb, var(--tone-del) 60%, var(--ink));
+  --diff-text-hunk: color-mix(in srgb, var(--tone-warn) 50%, var(--ink));
+  /* Line numbers sit on the centre ground and on every row tint, so they
+     mix idle toward ink to 4.5:1 on all four grounds, in both themes. */
+  --tone-idle-text: color-mix(in srgb, var(--tone-idle) 40%, var(--ink));
   --alert-border: color-mix(in srgb, var(--tone-unattended) 40%, var(--line));
   --alert-bg: color-mix(in srgb, var(--tone-unattended) 6%, transparent);
 
@@ -214,6 +226,15 @@
   --tone-add: #7cba92;
   --tone-del: #e0837a;
   --tone-warn: #d1a35a;
+  /* The dark tones already clear 4.5:1 on their own tints; the texts mix
+     them toward ink at the same 60%/60%/50% as light, symmetrically. */
+  --diff-row-add: color-mix(in srgb, var(--tone-add) 22%, var(--ground-center));
+  --diff-row-del: color-mix(in srgb, var(--tone-del) 18%, var(--ground-center));
+  --diff-row-hunk: color-mix(in srgb, var(--tone-warn) 10%, var(--ground-center));
+  --diff-text-add: color-mix(in srgb, var(--tone-add) 60%, var(--ink));
+  --diff-text-del: color-mix(in srgb, var(--tone-del) 60%, var(--ink));
+  --diff-text-hunk: color-mix(in srgb, var(--tone-warn) 50%, var(--ink));
+  --tone-idle-text: color-mix(in srgb, var(--tone-idle) 50%, var(--ink));
   --alert-border: color-mix(in srgb, var(--tone-unattended) 45%, var(--line));
   --alert-bg: color-mix(in srgb, var(--tone-unattended) 8%, transparent);
 

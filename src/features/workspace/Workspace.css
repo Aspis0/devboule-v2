@@ -421,6 +421,12 @@
   width: 100%;
 }
 
+/* The Diff tab is a code surface, not a chat column: full main-pane width.
+   The File tab keeps the chat cap, its Markdown column being capped by spec. */
+.workspace-tool-pane-diff {
+  max-width: none;
+}
+
 .workspace-conversation-content {
   display: flex;
   flex: none;

@@ -1,0 +1,202 @@
+/* The Diff tab body (C10): header h36 plus unified/split rows over one reply. */
+
+.diff-tab {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.diff-tab-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.diff-tab-file-icon {
+  display: flex;
+  flex: none;
+  color: var(--muted);
+}
+
+.diff-tab-name {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-tab-dir {
+  min-width: 0;
+  /* Shrinks before the name: the directory gives way first. */
+  flex: 2 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-tab-stats {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.diff-tab-stats-add {
+  color: var(--tone-add);
+}
+
+.diff-tab-stats-del {
+  color: var(--tone-del);
+}
+
+.diff-tab-stats-word {
+  color: var(--muted);
+}
+
+.diff-tab-refresh-failure {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Unified | Split: 24px buttons on a fill-tool bed, the active one a
+   panel-card chip — the Changes switch's shape, tab-scoped. */
+.diff-tab-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  background: var(--fill-tool);
+  border-radius: 7px;
+}
+
+.diff-tab-seg-button {
+  height: 24px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.diff-tab-seg-button-is-on {
+  color: var(--ink);
+  background: var(--panel-card);
+  box-shadow: var(--shadow-pop);
+}
+
+.diff-tab-body {
+  padding: 8px 0 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.diff-tab-line {
+  display: grid;
+  grid-template-columns: 34px 34px 16px minmax(0, 1fr);
+}
+
+.diff-tab-marker {
+  text-align: center;
+  user-select: none;
+}
+
+.diff-tab-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.diff-tab-num {
+  padding-right: 8px;
+  color: var(--tone-idle-text);
+  text-align: right;
+  user-select: none;
+}
+
+.diff-tab-text {
+  min-width: 0;
+  /* Same wrap as the panel card: indentation is content, and long lines
+     wrap inside the column instead of pushing the pane sideways. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-tab-added {
+  color: var(--diff-text-add);
+  background: var(--diff-row-add);
+  box-shadow: inset 2px 0 0 var(--tone-add);
+}
+
+.diff-tab-removed {
+  color: var(--diff-text-del);
+  background: var(--diff-row-del);
+  box-shadow: inset 2px 0 0 var(--tone-del);
+}
+
+.diff-tab-context {
+  color: var(--muted);
+}
+
+.diff-tab-hunk {
+  padding: 2px 12px 2px 14px;
+  color: var(--diff-text-hunk);
+  background: var(--diff-row-hunk);
+  font-weight: 600;
+}
+
+/* Split: old on the left, new on the right; each side keeps its own marker
+   and 34px number column and wraps within its half. Hunk headers span. */
+.diff-tab-split-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.diff-tab-split-row > :last-child {
+  border-left: 1px solid var(--line);
+}
+
+.diff-tab-cell {
+  display: grid;
+  grid-template-columns: 34px 16px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.diff-tab-cell-empty {
+  min-width: 0;
+}
+
+.diff-tab-note {
+  padding: 10px 12px 12px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.diff-tab-note-error {
+  color: var(--danger);
+}

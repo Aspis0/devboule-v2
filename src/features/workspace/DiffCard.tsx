@@ -1,27 +1,17 @@
-// Why: the diff card is drawn twice — under the Changes tree, and as a
-// diff tab's whole body — so it lives here, fed by whatever read owns the
-// path, instead of once per surface.
+// Why: the diff card is the Changes panel's inline diff, fed by whatever read
+// owns the selected path, instead of once per surface.
 
 import { useId } from "react";
 import type { WorkspaceGitDiffLine, WorkspaceGitFileDiff } from "../../types/ipc";
 import type { ChangesReply } from "./useWorkspaceChanges";
 import { ErrorText } from "../../components/ErrorText";
+import { DIFF_LINE_MARKER } from "./diffMarker";
 
 const DIFF_LINE_CLASS: Record<WorkspaceGitDiffLine["kind"], string> = {
   add: "added",
   remove: "removed",
   context: "context",
   header: "hunk",
-};
-
-// The daemon strips the `+`/`-`/space marker and keeps a `@@ …` header whole,
-// so the marker column is drawn here; the non-breaking space keeps context and
-// header lines aligned under the content column.
-const DIFF_LINE_MARKER: Record<WorkspaceGitDiffLine["kind"], string> = {
-  add: "+",
-  remove: "−",
-  context: "\u00A0",
-  header: "\u00A0",
 };
 
 export function DiffCard({
