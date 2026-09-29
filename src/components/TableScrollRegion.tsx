@@ -6,6 +6,7 @@ export function TableScrollRegion({
   headers,
   children,
 }: {
+  /** Plain rendered `<th>` text: up to three non-blank values form the overflow region's accessible name. */
   headers: string[];
   children: ReactNode;
 }) {

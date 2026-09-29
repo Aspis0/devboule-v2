@@ -148,6 +148,29 @@ describe("the table scroll region", () => {
     expect(() => region.observer.fire()).not.toThrow();
   });
 
+  // One observer per table, two observed elements each, all released with
+  // their wrapper: a shared-observer rewrite or a leaked effect shows here.
+  it("gives each of 800 tables its own observer and releases them all on unmount", async () => {
+    const source = Array.from({ length: 800 }, () => "| a | b |\n|---|---|\n| 1 | 2 |").join(
+      "\n\n",
+    );
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<div>{parseMarkdownText(source)}</div>);
+    });
+
+    expect(container.querySelectorAll(".plan-markdown-table-scroll")).toHaveLength(800);
+    expect(CapturingObserver.live).toHaveLength(800);
+    expect(CapturingObserver.live.flatMap((observer) => observer.watched)).toHaveLength(1_600);
+
+    await act(async () => root.unmount());
+
+    expect(CapturingObserver.live.filter((observer) => observer.released)).toHaveLength(800);
+    container.remove();
+  });
+
   it("renders a plain table when ResizeObserver is missing", async () => {
     const saved = globalThis.ResizeObserver;
     delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
