@@ -183,6 +183,13 @@ pub(crate) struct CodexState {
     /// response or the handshake default also writes.
     configured_model: Mutex<Option<String>>,
     configured_effort: Mutex<Option<String>>,
+    /// Turn ids in the order this session adopted them: a `turn/start`
+    /// response matched to the request this daemon wrote, or the root
+    /// thread's `turn/started`. That order is the only proof that a
+    /// mismatching completion is the late completion of a replaced turn.
+    /// Never pruned: a settled turn's id is the evidence for its own late
+    /// completion, and the growth is one short string per turn.
+    adopted_turns: Mutex<Vec<String>>,
     turn_id: Mutex<Option<String>>,
 }
 
@@ -201,6 +208,7 @@ impl CodexState {
             catalog: Mutex::new(catalog),
             configured_model: Mutex::new(None),
             configured_effort: Mutex::new(None),
+            adopted_turns: Mutex::new(Vec::new()),
             turn_id: Mutex::new(None),
         }
     }
@@ -230,9 +238,31 @@ impl CodexState {
         self.turn_id.lock().ok().and_then(|turn| turn.clone())
     }
 
+    // The slot's writers record their adoption here, so the lateness proof
+    // below can only ever name turns this session actually began.
     pub(crate) fn set_turn(&self, turn_id: Option<String>) {
-        if let Ok(mut current) = self.turn_id.lock() {
-            *current = turn_id;
+        if let Some(turn_id) = turn_id {
+            if let Ok(mut adopted) = self.adopted_turns.lock() {
+                if !adopted.iter().any(|id| id == &turn_id) {
+                    adopted.push(turn_id.clone());
+                }
+            }
+            if let Ok(mut current) = self.turn_id.lock() {
+                *current = Some(turn_id);
+            }
+        } else if let Ok(mut current) = self.turn_id.lock() {
+            *current = None;
+        }
+    }
+
+    /// Whether a completion for `turn_id` provably lags `tracked`: both
+    /// were adopted, the tracked one after it. Only such a completion may
+    /// be dropped; a completion the daemon cannot prove late settles,
+    /// because dropping the only settle the run will ever get strands it.
+    pub(crate) fn completion_is_late(&self, turn_id: &str, tracked: &str) -> bool {
+        match self.adopted_turns.lock() {
+            Ok(adopted) => adopted_before(&adopted, turn_id, tracked),
+            Err(_) => false,
         }
     }
 
@@ -983,6 +1013,11 @@ pub(crate) struct CodexView {
     plan_mode: bool,
     capture_plan: bool,
     latest_plan: Option<String>,
+    /// The replay side of the tracked turn. The journal records no outbound
+    /// requests, so the root `turn/started` frame is the only adoption a
+    /// rebuild can prove; this mirrors what the live reader's state knows.
+    replay_tracked_turn: Option<String>,
+    replay_adopted_turns: Vec<String>,
 }
 
 impl CodexView {
@@ -994,6 +1029,8 @@ impl CodexView {
             plan_mode: false,
             capture_plan: true,
             latest_plan: None,
+            replay_tracked_turn: None,
+            replay_adopted_turns: Vec::new(),
         }
     }
 
@@ -1236,19 +1273,46 @@ pub(crate) fn drive_replay(
     plan_turns: &HashSet<String>,
     value: &Value,
 ) -> Vec<SessionEvent> {
+    let method = value.get("method").and_then(Value::as_str);
     let params = value.get("params").unwrap_or(&Value::Null);
     let root_thread =
         thread_id.is_none_or(|root| crate::codex_compaction::is_root_thread(params, root));
     view.set_capture_plan(root_thread);
-    // The live reader sets the mode at the root `turn/started` from the
-    // mode the turn was sent with; outbound frames are not journalled, so
-    // the replay reads the same fact back from the turn's card marks.
-    if value.get("method").and_then(Value::as_str) == Some("turn/started") && root_thread {
-        let mode = params
-            .pointer("/turn/id")
-            .and_then(Value::as_str)
-            .is_some_and(|turn| plan_turns.contains(turn));
+    // A child thread's output replays for the same reason it is dropped
+    // live: it is the child's own work, never the root agent's.
+    if method.is_some_and(crate::codex_compaction::is_thread_scoped) && !root_thread {
+        return Vec::new();
+    }
+    // The replay rebuilds the tracked turn the way the live reader holds
+    // it, so a journalled completion for a provably replaced turn drops
+    // here as it did live. The journal records no outbound requests, so
+    // the root `turn/started` frame is the only adoption a rebuild can
+    // prove; a completion it cannot correlate settles, as it does live.
+    if method == Some("turn/started") && root_thread {
+        let turn_id = params.pointer("/turn/id").and_then(Value::as_str);
+        if let Some(turn_id) = turn_id {
+            if !view.replay_adopted_turns.iter().any(|id| id == turn_id) {
+                view.replay_adopted_turns.push(turn_id.to_string());
+            }
+            view.replay_tracked_turn = Some(turn_id.to_string());
+        }
+        // The live reader sets the mode from the mode the turn was sent
+        // with; outbound frames are not journalled, so the replay reads
+        // the same fact back from the turn's card marks.
+        let mode = turn_id.is_some_and(|turn| plan_turns.contains(turn));
         view.set_plan_mode(mode);
+    } else if method == Some("turn/completed") && root_thread {
+        let turn_id = params.pointer("/turn/id").and_then(Value::as_str);
+        let settles = match (view.replay_tracked_turn.as_deref(), turn_id) {
+            (Some(tracked), Some(turn)) => {
+                tracked == turn || !adopted_before(&view.replay_adopted_turns, turn, tracked)
+            }
+            _ => true,
+        };
+        if !settles {
+            return Vec::new();
+        }
+        view.replay_tracked_turn = None;
     }
     let views = view.ingest_replay(value);
     // The one exception to replay-equals-live: plan usage is the account's
@@ -1545,6 +1609,18 @@ fn status_name(value: &str) -> String {
     }
 }
 
+/// Whether `turn_id` was adopted before `tracked`: the only proof that a
+/// completion for `turn_id` is the late completion of a replaced turn.
+fn adopted_before(adopted: &[String], turn_id: &str, tracked: &str) -> bool {
+    match (
+        adopted.iter().position(|id| id == turn_id),
+        adopted.iter().position(|id| id == tracked),
+    ) {
+        (Some(late), Some(current)) => late < current,
+        _ => false,
+    }
+}
+
 fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent> {
     let Some(turn) = params.get("turn") else {
         return Vec::new();
@@ -1566,15 +1642,28 @@ fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent>
                 .map(str::to_string),
             usage,
         }],
-        Some("failed") => vec![SessionEvent::SessionNotice {
-            text: turn
-                .get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("Codex turn failed")
-                .to_string(),
-            severity: NoticeSeverity::Warning,
-        }],
+        // The failure is told and the run still ends: the notice alone
+        // would leave the session "working" forever, since the runtime's
+        // only exit from an active turn is an AgentFinished.
+        Some("failed") => vec![
+            SessionEvent::SessionNotice {
+                text: turn
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Codex turn failed")
+                    .to_string(),
+                severity: NoticeSeverity::Warning,
+            },
+            SessionEvent::AgentFinished {
+                stop_reason: "failed".to_string(),
+                model_id: turn
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                usage,
+            },
+        ],
         _ => Vec::new(),
     }
 }
@@ -2033,10 +2122,17 @@ mod tests {
         );
         assert_eq!(
             events_from_envelope(&failed),
-            vec![SessionEvent::SessionNotice {
-                text: "nope".to_string(),
-                severity: devboule_protocol::NoticeSeverity::Warning,
-            }]
+            vec![
+                SessionEvent::SessionNotice {
+                    text: "nope".to_string(),
+                    severity: devboule_protocol::NoticeSeverity::Warning,
+                },
+                SessionEvent::AgentFinished {
+                    stop_reason: "failed".to_string(),
+                    model_id: None,
+                    usage: None,
+                },
+            ]
         );
     }
 

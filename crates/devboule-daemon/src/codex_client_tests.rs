@@ -11,9 +11,9 @@ use super::{
     command_prompt_input, empty_commands, initialize_params, interrupt_params, mcp_launch,
     mode_values, notification_frame, plan_codex_prompt, request_frame, send_interrupt_request,
     send_turn_start, steer_params_if_current, thread_resume_params, thread_start_params,
-    turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
-    turn_start_params_with_images, turn_steer_params, validate_mode, with_collaboration_mode,
-    CodexCommands, CodexReader, CodexRequests, CodexStaticPrompt, CodexSteerer, ThreadRoad,
+    turn_start_params, turn_start_params_for_prompt, turn_start_params_with_images,
+    turn_steer_params, validate_mode, with_collaboration_mode, CodexCommands, CodexReader,
+    CodexRequests, CodexStaticPrompt, CodexSteerer, ThreadRoad,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
@@ -960,12 +960,18 @@ fn turn_start_response_records_the_turn_before_started_notification() {
     }))
     .expect("catalog");
     let state = CodexState::new("thread".to_string(), catalog, "auto");
+    // The `turn/start` this daemon wrote registered its request id; the
+    // answer is matched back by that id — the only response that may write
+    // the tracked turn.
+    state.record_turn_start("d-7", false);
     let response = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "d-7",
         "result": { "turn": { "id": "turn-7" } }
     });
-    state.set_turn(turn_id_from_response(&response));
+    if let Some((turn_id, _)) = state.resolve_turn_start(&response) {
+        state.set_turn(Some(turn_id));
+    }
     assert_eq!(state.current_turn().as_deref(), Some("turn-7"));
 }
 

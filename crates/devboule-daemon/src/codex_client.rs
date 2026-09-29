@@ -1971,12 +1971,35 @@ impl CodexReader {
         let method = value.get("method").and_then(Value::as_str);
         let params = value.get("params").unwrap_or(&Value::Null);
         let root_thread = crate::codex_compaction::is_root_thread(params, &self.state.thread_id());
+        let completion_turn_id = params.pointer("/turn/id").and_then(Value::as_str);
+        // Only the root thread's completion may settle the run. The tracked
+        // turn has exactly two writers — a `turn/start` response matched to
+        // the request this daemon wrote, and the root thread's
+        // `turn/started` — and both record the order of adoption, so a
+        // mismatching completion is dropped only when the tracked turn
+        // provably began after the completed one. Anything unprovable
+        // settles: dropping the only settle the run will ever get strands
+        // it. Computed for completions only; every other frame skips the
+        // slot read.
+        let replaced_turn: Option<(String, String)> = if method == Some("turn/completed") {
+            match (self.state.current_turn(), completion_turn_id) {
+                (Some(tracked), Some(turn_id))
+                    if tracked != turn_id && self.state.completion_is_late(turn_id, &tracked) =>
+                {
+                    Some((turn_id.to_string(), tracked))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let settling = method == Some("turn/completed") && root_thread && replaced_turn.is_none();
         self.view.set_capture_plan(root_thread);
         // For a root `turn/completed`, the plan events go out BEFORE the frame's
         // envelope: live they precede its AgentFinished, and the card's
         // journalled rows carry lower seqs than it, so the rebuild keeps that
         // order.
-        let completed_plan = (method == Some("turn/completed") && root_thread)
+        let completed_plan = (method == Some("turn/completed") && settling)
             .then(|| self.view.take_completed_plan(params))
             .flatten();
         if let Some(completion) = completed_plan {
@@ -2046,26 +2069,36 @@ impl CodexReader {
                 return;
             }
             if method == "turn/started" {
-                self.state.set_turn(
-                    value
-                        .pointer("/params/turn/id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                );
-                // Turn tracking resets on the root `turn/started` (gated on
-                // the current thread); a child thread's turn leaves the root
-                // pairing state alone.
-                let params = value.get("params").unwrap_or(&Value::Null);
-                if crate::codex_compaction::is_root_thread(params, &self.state.thread_id()) {
+                // The root thread's turn is the only one the daemon tracks
+                // or pairs compactions against, so a child thread's turn can
+                // neither be steered nor settle a completion. The slot is only ever FILLED here, never
+                // replaced: the daemon's own replaces arrive as `turn/start`
+                // responses, which the measured wire answers before the
+                // turn's `turn/started`, so a new id while a turn is tracked
+                // is a provider-initiated turn — a compaction, a review —
+                // that may complete without ever emitting `turn/completed`.
+                // A frame that names no id leaves the slot alone rather
+                // than clearing it.
+                if root_thread {
+                    if self.state.current_turn().is_none() {
+                        if let Some(turn_id) =
+                            value.pointer("/params/turn/id").and_then(Value::as_str)
+                        {
+                            self.state.set_turn(Some(turn_id.to_string()));
+                        }
+                    }
                     self.compactions.turn_started();
                 }
             } else if method == "turn/completed" {
-                let params = value.get("params").unwrap_or(&Value::Null);
-                if crate::codex_compaction::is_root_thread(params, &self.state.thread_id()) {
-                    for event in self.compactions.turn_ended() {
-                        let _ = runtime.publish_daemon_event(event);
+                if root_thread {
+                    // The pairing state belongs to the turn that ends: a
+                    // stale completion must not spend it on the live one.
+                    if settling {
+                        for event in self.compactions.turn_ended() {
+                            let _ = runtime.publish_daemon_event(event);
+                        }
                     }
-                    if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
+                    if let Some(turn_id) = completion_turn_id {
                         self.state.clear_turn_mode(turn_id);
                     }
                 }
@@ -2081,8 +2114,11 @@ impl CodexReader {
                 if self.state.current_turn().as_deref() == Some(&turn_id) {
                     self.view.set_plan_mode(plan_mode);
                 }
-            }
-            if let Some(turn_id) = turn_id_from_response(&value) {
+                // The response writer of the tracked turn:
+                // resolve_turn_start correlates the answer to the
+                // `turn/start` request this daemon wrote by its own request
+                // id, so an answer to a steer, an interrupt, or a command
+                // that carries a turn id can never displace the slot.
                 self.state.set_turn(Some(turn_id));
             }
             let error = value
@@ -2125,19 +2161,35 @@ impl CodexReader {
                 }
             }
         }
+        // A child thread's items and completion are the child's own work:
+        // with no subagent model to hang them on, they are dropped rather
+        // than shown as the root agent's output.
+        let child_frame =
+            method.is_some_and(crate::codex_compaction::is_thread_scoped) && !root_thread;
+        let stale_completion = method == Some("turn/completed") && !settling;
+        if let Some((late, tracked)) = replaced_turn {
+            // Recorded like the daemon's other dropped frames: a line, no
+            // payload. Nothing is published — the live transcript must not
+            // grow a row for a turn it never showed.
+            eprintln!(
+                "Codex turn/completed for turn {late} ignored: turn {tracked} is tracked and newer."
+            );
+        }
         let mut seq = event_seq;
-        for event in self.view.ingest(&value) {
-            crate::plan_usage_cache::note_live(&event);
-            if matches!(
-                event,
-                SessionEvent::AgentFinished { .. }
-                    | SessionEvent::AgentError { .. }
-                    | SessionEvent::SessionNotice { .. }
-            ) && value.get("method").and_then(Value::as_str) == Some("turn/completed")
-            {
-                self.state.set_turn(None);
+        if !child_frame && !stale_completion {
+            for event in self.view.ingest(&value) {
+                crate::plan_usage_cache::note_live(&event);
+                if matches!(
+                    event,
+                    SessionEvent::AgentFinished { .. }
+                        | SessionEvent::AgentError { .. }
+                        | SessionEvent::SessionNotice { .. }
+                ) && value.get("method").and_then(Value::as_str) == Some("turn/completed")
+                {
+                    self.state.set_turn(None);
+                }
+                self.publish(runtime, event, seq.take());
             }
-            self.publish(runtime, event, seq.take());
         }
         if let Some(context_window) = self.view.take_context_window_update() {
             self.state.set_context_window(context_window);
@@ -2432,6 +2484,11 @@ pub(crate) fn empty_commands() -> Arc<CodexCommands> {
 #[cfg(test)]
 #[path = "codex_client_tests.rs"]
 mod tests;
+
+/// Which completion settles a run, and whose frames reach the transcript.
+#[cfg(test)]
+#[path = "codex_client_turn_tests.rs"]
+mod turn_tests;
 
 /// Test support for the input-request cards the topics below share.
 #[cfg(test)]

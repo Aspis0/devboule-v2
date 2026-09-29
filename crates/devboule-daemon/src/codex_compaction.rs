@@ -116,6 +116,27 @@ pub(crate) fn is_root_thread(params: &Value, root_thread_id: &str) -> bool {
     }
 }
 
+/// The channels whose frames belong to the emitting thread: the item rows
+/// and deltas, the turn's completion, and the thread's token-usage report,
+/// which feeds the root's usage latch and the model's context window. This
+/// list must never grow into the request channels (`item/*/requestApproval`,
+/// `requestUserInput`, `mcpServer/elicitation/request`) — those are answered
+/// by JSON-RPC id, and a child's card must still block. See `is_root_thread`
+/// above for how a non-root `threadId` is attributed.
+pub(crate) fn is_thread_scoped(method: &str) -> bool {
+    matches!(
+        method,
+        "item/agentMessage/delta"
+            | "item/reasoning/summaryTextDelta"
+            | "item/commandExecution/outputDelta"
+            | "item/fileChange/outputDelta"
+            | "item/started"
+            | "item/completed"
+            | "turn/completed"
+            | "thread/tokenUsage/updated"
+    )
+}
+
 fn notice(text: &str, severity: NoticeSeverity) -> SessionEvent {
     SessionEvent::SessionNotice {
         text: text.to_string(),
