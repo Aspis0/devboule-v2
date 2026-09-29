@@ -21,7 +21,7 @@ export const MOCK_MARKETPLACE_ENTRIES: readonly MarketplaceEntry[] = [
   {
     id: "review-kit",
     name: "Review Kit",
-    author: "@mira-dev",
+    author: "@example-author",
     kind: "pack",
     price: "$8",
     description: "A compact set of review skills for risks, tests, and release notes.",
@@ -29,7 +29,7 @@ export const MOCK_MARKETPLACE_ENTRIES: readonly MarketplaceEntry[] = [
   {
     id: "repo-rhythm",
     name: "Repo Rhythm",
-    author: "@lena-code",
+    author: "@sample-dev",
     kind: "skill",
     price: "free",
     description: "Turn a repository snapshot into a clear working plan.",
@@ -37,7 +37,7 @@ export const MOCK_MARKETPLACE_ENTRIES: readonly MarketplaceEntry[] = [
   {
     id: "change-notes",
     name: "Change Notes",
-    author: "@lena-code",
+    author: "@sample-dev",
     kind: "skill",
     price: "free",
     description: "Draft concise release notes from the changes in a workspace.",
