@@ -543,5 +543,6 @@ describe("Settings agents panel — sentence uniqueness", () => {
         ).toBe(false);
       }
     }
-  });
+    // One test renders every panel state: ~2.5 s alone, past 5 s under a full parallel run.
+  }, 30_000);
 });
