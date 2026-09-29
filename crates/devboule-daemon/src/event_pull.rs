@@ -291,6 +291,7 @@ impl ConnHandle {
                     is_pi,
                     is_codex,
                     manifest_emitted: false,
+                    plan_usage_delivered: false,
                     catch_up_extensions: 0,
                     durable_done: false,
                     journal_lagged: false,
@@ -603,9 +604,14 @@ fn pull_live_agent_replay_events(
             // History is a record, not a position: it carries its own
             // generation and no transcript position, so neither reader's
             // cursor can be dragged into another generation's numbering.
-            let transcript_seq = if matches!(&event, SessionEvent::SessionManifest { .. }) {
+            let transcript_seq = if matches!(
+                &event,
                 // A stored manifest summarizes runtime state; its replay watermark
-                // is not the position of a transcript row.
+                // is not the position of a transcript row. Plan usage is the
+                // account's live state, delivered at the seam below — also no
+                // transcript position.
+                SessionEvent::SessionManifest { .. } | SessionEvent::PlanUsage { .. }
+            ) {
                 None
             } else {
                 (generation == pull.generation).then_some(seq)
@@ -655,6 +661,23 @@ fn pull_live_agent_replay_events(
                         .push_back((pull.generation, replay.watermark, manifest));
                 }
                 replay.manifest_emitted = true;
+                continue;
+            }
+
+            // Replay is done. A viewer that just attached has seen no live
+            // frame yet, so hand it the daemon's latest LIVE plan usage for
+            // this provider once, as a live event — replay never re-emits
+            // plan usage. Memory-only: after a daemon restart the cache is
+            // empty until the provider's next live frame.
+            if !replay.plan_usage_delivered {
+                replay.plan_usage_delivered = true;
+                if let Some(kind) = pull.runtime.agent_kind() {
+                    if let Some(event) = crate::plan_usage_cache::cached_for_kind(kind) {
+                        replay
+                            .pending
+                            .push_back((pull.generation, replay.watermark, event));
+                    }
+                }
                 continue;
             }
 

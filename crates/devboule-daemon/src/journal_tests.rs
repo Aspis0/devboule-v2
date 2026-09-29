@@ -425,9 +425,10 @@ fn ended_clean_replays_exit_only_and_reports_complete() {
 /// own: one envelope row yields each event exactly once. The live road
 /// publishes them with no journal text (`publish_agent_event_with_seq` with
 /// `journal_text = None`), which leaves the replay below as the only place
-/// a double would become visible.
+/// a double would become visible. Plan usage is the exception: live state,
+/// never replayed at all.
 #[test]
-fn replayed_usage_events_come_back_exactly_once() {
+fn replay_returns_context_usage_once_and_plan_usage_never() {
     let (dir, path) = tmp_journal();
     let journal = Journal::open(&path).expect("open");
     let mut record = sample_session("s.replay.usage");
@@ -505,33 +506,11 @@ fn replayed_usage_events_come_back_exactly_once() {
         .iter()
         .filter(|event| matches!(event, SessionEvent::PlanUsage { .. }))
         .collect();
-    let [plan] = plans.as_slice() else {
-        panic!(
-            "one envelope row must yield one PlanUsage, got {}",
-            plans.len()
-        );
-    };
-    match plan {
-        SessionEvent::PlanUsage {
-            provider_id,
-            plan_label,
-            windows,
-            credits,
-        } => {
-            assert_eq!(provider_id, "codex");
-            assert_eq!(plan_label.as_deref(), Some("plus"));
-            assert_eq!(windows.len(), 2, "only the windows the frame carried");
-            assert_eq!(windows[0].duration_mins, 300);
-            assert_eq!(windows[0].used_percent, Some(82));
-            assert_eq!(windows[0].resets_at, Some(1_789_057_213));
-            assert_eq!(windows[1].duration_mins, 10_080);
-            assert_eq!(windows[1].used_percent, Some(39));
-            let credits = credits.as_ref().expect("the frame carried credits");
-            assert_eq!(credits.balance.as_deref(), Some("0"));
-            assert_eq!(credits.unlimited, Some(false), "the frame said false");
-        }
-        other => panic!("expected PlanUsage, got {other:?}"),
-    }
+    assert!(
+        plans.is_empty(),
+        "replay must not re-emit plan usage, got {}",
+        plans.len()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

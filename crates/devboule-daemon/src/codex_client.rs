@@ -2117,6 +2117,7 @@ impl CodexReader {
         }
         let mut seq = event_seq;
         for event in self.view.ingest(&value) {
+            crate::plan_usage_cache::note_live(&event);
             if matches!(
                 event,
                 SessionEvent::AgentFinished { .. }

@@ -666,8 +666,10 @@ export interface SessionFeatureState {
 }
 
 /** One rate-limit window a plan-usage frame actually carried (protocol
- * `PlanWindow`). `durationMins` labels the window — Codex sends 300 for the
- * 5-hour window and 10080 for the weekly one. `resetsAt` is Unix seconds. */
+ * `PlanWindow`). `durationMins` labels the window — Codex and Claude alike
+ * send 300 for the 5-hour window and 10080 for the weekly one. `resetsAt` is
+ * Unix seconds. Above 100 the percent stays the provider's own (overage);
+ * the popover clamps its bar and keeps its text true. */
 export interface PlanWindow {
   durationMins: number;
   /** Absent when the frame named the window but not its consumption — the
@@ -1263,10 +1265,12 @@ export type SessionEvent =
     }
   /**
    * Plan windows a provider pushed on the wire (protocol
-   * `SessionEvent::PlanUsage`) — today only Codex `account/rateLimits/updated`.
-   * One entry per window the frame carried; a window the frame did not send
-   * is never added, and a missing percent stays missing rather than becoming
-   * zero. Account-scoped: the app keeps the latest event per `providerId`.
+   * `SessionEvent::PlanUsage`) — Codex `account/rateLimits/updated` and
+   * Claude's `rate_limit_event`. One entry per window the frame carried; a
+   * window the frame did not send is never added, and a missing percent stays
+   * missing rather than becoming zero. Live frames only: the daemon's replay
+   * does not re-emit plan usage. Account-scoped: the app keeps the latest
+   * live frame per `providerId`.
    */
   | {
       type: "plan_usage";

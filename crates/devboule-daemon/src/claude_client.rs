@@ -2342,6 +2342,7 @@ impl ClaudeReader {
             return;
         }
         for event in self.view.ingest(&view_value) {
+            crate::plan_usage_cache::note_live(&event);
             let event = if matches!(&event, SessionEvent::SessionManifest { .. }) {
                 let event = runtime.store_session_manifest(event);
                 if let Some(session_id) = self.view.peer_session_id() {

@@ -1258,7 +1258,16 @@ pub(crate) fn drive_replay(
             .is_some_and(|turn| plan_turns.contains(turn));
         view.set_plan_mode(mode);
     }
-    view.ingest_replay(value)
+    let views = view.ingest_replay(value);
+    // The one exception to replay-equals-live: plan usage is the account's
+    // LIVE state, not transcript. The drop protects a reading the app
+    // already has; where none exists yet the meter stays empty until the
+    // provider's next live frame, and the attach seam re-delivers the
+    // daemon's cached latest live frame (plan_usage_cache) to cover it.
+    views
+        .into_iter()
+        .filter(|event| !matches!(event, SessionEvent::PlanUsage { .. }))
+        .collect()
 }
 
 #[cfg(test)]

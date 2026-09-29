@@ -838,9 +838,10 @@ pub enum SessionEvent {
         live: bool,
     },
     /// The account's plan consumption as the provider pushed it — Codex
-    /// `account/rateLimits/updated` is the only provider that pushes it.
-    /// Account-scoped, not session-scoped: the
-    /// app keeps the latest event per provider id.
+    /// `account/rateLimits/updated` and Claude's `rate_limit_event`. Live
+    /// frames only: replay does not re-emit plan usage, and the app keeps
+    /// the latest live frame per provider id. Account-scoped, not
+    /// session-scoped.
     ///
     /// Carries no token counter and no account id — only what the popover
     /// shows: the plan's own label, one window per window the frame actually

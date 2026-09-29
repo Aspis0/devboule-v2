@@ -80,6 +80,8 @@ mod pi_task_adapters;
 mod pi_view;
 #[cfg(feature = "server")]
 mod plan_text;
+#[cfg(feature = "server")]
+mod plan_usage_cache;
 #[cfg(all(test, feature = "server"))]
 mod portable_pty_tests;
 mod process_tree;

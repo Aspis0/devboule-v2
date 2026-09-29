@@ -799,6 +799,101 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn plan_usages_of(events: &[SessionEvent]) -> Vec<SessionEvent> {
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::PlanUsage { .. }))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn replayed_rate_limits_do_not_re_emit_plan_usage() {
+        // The one exception to replay-equals-live: plan usage is the
+        // account's LIVE state, not transcript — a replayed frame would
+        // overwrite the provider's current reading in the app's per-provider
+        // store. The same frames live still emit, pinned below.
+        let envelopes: Vec<Value> =
+            include_str!("../fixtures/wire/claude-rate-limits-synthetic.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("fixture line"))
+                .collect();
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.rate.replay";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Claude,
+                "Rate",
+            ))
+            .expect("birth");
+        append_envelopes(&journal, id, 1, &envelopes);
+        let replay = journal.replay(id).expect("replay");
+        assert!(
+            plan_usages_of(&replay.events).is_empty(),
+            "replay must not re-emit plan usage: {:?}",
+            plan_usages_of(&replay.events)
+        );
+
+        let mut live = crate::claude_view::ClaudeView::new(None);
+        let mut live_events = Vec::new();
+        for envelope in &envelopes {
+            live_events.extend(live.ingest(envelope));
+        }
+        assert_eq!(
+            plan_usages_of(&live_events).len(),
+            3,
+            "the same frames live emit one event each"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replayed_codex_rate_limits_do_not_re_emit_plan_usage() {
+        // Same exception, Codex side: the journalled frame re-derives
+        // nothing on replay, and live still maps it.
+        let rate_limits = crate::codex_view::fixture_frames(include_str!(
+            "../fixtures/wire/codex/E1-step1-handshake.jsonl"
+        ))
+        .into_iter()
+        .find(|frame| {
+            frame.get("method").and_then(Value::as_str) == Some("account/rateLimits/updated")
+        })
+        .expect("measured frame 26");
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.codex.rate.replay";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Codex,
+                "Rate",
+            ))
+            .expect("birth");
+        append_envelopes(&journal, id, 1, std::slice::from_ref(&rate_limits));
+        let replay = journal.replay(id).expect("replay");
+        assert!(
+            plan_usages_of(&replay.events).is_empty(),
+            "replay must not re-emit plan usage: {:?}",
+            plan_usages_of(&replay.events)
+        );
+
+        let mut live = crate::codex_view::CodexView::new(None);
+        assert_eq!(
+            plan_usages_of(&live.ingest(&rate_limits)).len(),
+            1,
+            "the same frame live emits one event"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn replay_keeps_the_checklist_across_a_resume() {
         // A resume is a new generation with a fresh process: the replay must

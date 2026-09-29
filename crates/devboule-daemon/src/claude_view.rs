@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use devboule_protocol::{
-    AgentBackgroundTask, AvailableCommandView, SessionEvent, SessionModeStateView, SessionModeView,
-    SessionModel, SubagentTaskStatus, ToolLocation, TurnUsage, UnattendedState,
+    AgentBackgroundTask, AvailableCommandView, PlanWindow, SessionEvent, SessionModeStateView,
+    SessionModeView, SessionModel, SubagentTaskStatus, ToolLocation, TurnUsage, UnattendedState,
 };
 use serde_json::Value;
 
@@ -121,6 +121,7 @@ impl ClaudeView {
             Some("user") => self.ingest_user(envelope),
             Some("result") => self.ingest_result(envelope),
             Some("control_response") => self.ingest_control_response(envelope),
+            Some("rate_limit_event") => rate_limit_plan_usage(envelope).into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -849,11 +850,20 @@ impl ClaudeView {
 pub(crate) fn drive_replay(view: &mut ClaudeView, value: &mut Value) -> Vec<SessionEvent> {
     crate::plan_text::bound_claude_envelope(value);
     let views = crate::acp_view::view_from_envelope(value, "");
-    if views.is_empty() {
+    let views = if views.is_empty() {
         view.ingest(value)
     } else {
         views
-    }
+    };
+    // The one exception to replay-equals-live: plan usage is the account's
+    // LIVE state, not transcript. The drop protects a reading the app
+    // already has; where none exists yet the meter stays empty until the
+    // provider's next live frame, and the attach seam re-delivers the
+    // daemon's cached latest live frame (plan_usage_cache) to cover it.
+    views
+        .into_iter()
+        .filter(|event| !matches!(event, SessionEvent::PlanUsage { .. }))
+        .collect()
 }
 
 fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
@@ -1094,6 +1104,75 @@ fn usage_from_claude(usage: &Value) -> Option<ClaudeUsage> {
         },
         context_used: context_used_from_claude(usage),
     })
+}
+
+/// The windows Claude's frame can name, in the order the popover lists them.
+/// A key outside this table is a window this view cannot label — skipped,
+/// never shown with a guessed duration.
+const NAMED_WINDOWS: [(&str, u64); 2] = [("five_hour", 300), ("seven_day", 10_080)];
+
+/// The plan-usage view of one `rate_limit_event`: the unified windows the
+/// frame carried, or the single top-level window an older CLI names instead.
+/// `status`, `surpassedThreshold` and the `overage*` fields have no popover
+/// field to feed and no protocol field to carry, so they stay out.
+fn rate_limit_plan_usage(envelope: &Value) -> Option<SessionEvent> {
+    let info = envelope.get("rate_limit_info")?;
+    let mut windows = unified_windows(info.get("unifiedWindows"));
+    if info.get("unifiedWindows").is_none() {
+        windows.extend(top_level_window(info));
+    }
+    // A frame that names no window this view can label publishes nothing,
+    // never an empty `windows` list.
+    (!windows.is_empty()).then_some(SessionEvent::PlanUsage {
+        provider_id: "claude".to_string(),
+        plan_label: None,
+        windows,
+        credits: None,
+    })
+}
+
+fn unified_windows(windows: Option<&Value>) -> Vec<PlanWindow> {
+    let Some(windows) = windows.and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    NAMED_WINDOWS
+        .iter()
+        .filter_map(|(key, duration_mins)| {
+            windows
+                .get(*key)
+                .map(|window| claude_plan_window(window, *duration_mins))
+        })
+        .collect()
+}
+
+/// The one window an older CLI names at the top level instead of inside
+/// `unifiedWindows`: type, utilization and reset must all be there, or the
+/// frame names no complete window.
+fn top_level_window(info: &Value) -> Option<PlanWindow> {
+    let duration_mins = NAMED_WINDOWS
+        .iter()
+        .find(|(key, _)| info.get("rateLimitType").and_then(Value::as_str) == Some(key))
+        .map(|(_, duration_mins)| *duration_mins)?;
+    info.get("utilization")?;
+    info.get("resetsAt")?;
+    Some(claude_plan_window(info, duration_mins))
+}
+
+/// One window: the frame's 0-1 fraction becomes the popover's 0-100, rounded.
+/// A fraction that is absent, non-numeric or negative leaves the percent
+/// absent — never a stand-in 0 — while above 1 (overage) stays the real
+/// number: the popover clamps its bar and keeps its text true. `resetsAt`
+/// passes through in epoch seconds, the unit `PlanWindow` carries.
+fn claude_plan_window(window: &Value, duration_mins: u64) -> PlanWindow {
+    PlanWindow {
+        duration_mins,
+        used_percent: window
+            .get("utilization")
+            .and_then(Value::as_f64)
+            .filter(|fraction| fraction.is_finite() && *fraction >= 0.0)
+            .map(|fraction| (fraction * 100.0).round() as u64),
+        resets_at: window.get("resetsAt").and_then(Value::as_i64),
+    }
 }
 
 /// One entry of the daemon's own Claude mode vocabulary, and the answer the
@@ -2770,19 +2849,13 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_and_system_status_have_no_view() {
+    fn system_status_and_thinking_tokens_have_no_view() {
         let mut mapper = view();
-        let rate = mapper.ingest(&json!({
-            "type": "rate_limit_event",
-            "rate_limit_info": {"status": "allowed"},
-            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd"
-        }));
-        assert!(rate.is_empty());
         let status = mapper.ingest(&json!({
             "type": "system",
             "subtype": "status",
             "status": "requesting",
-            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd"
+            "session_id": "00000000-0000-4000-8000-0000000000c2"
         }));
         assert!(status.is_empty());
         let thinking_tokens = mapper.ingest(&json!({
@@ -3121,3 +3194,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "claude_view_rate_limit_tests.rs"]
+mod rate_limit_tests;

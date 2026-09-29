@@ -202,6 +202,57 @@ describe("the context popover", () => {
     expect(popover.textContent).toContain("Credits: 0");
   });
 
+  it("shows the claude plan windows derived from the measured rate-limit frame", async () => {
+    // The windows the daemon derives from Claude's `rate_limit_event`:
+    // `five_hour` becomes 300 minutes and `seven_day` a week, the same
+    // durations Codex names, so the popover labels them without knowing the
+    // provider.
+    recordPlanUsage({
+      type: "plan_usage",
+      providerId: "claude-plan-windows",
+      windows: [
+        { durationMins: 300, usedPercent: 33, resetsAt: 1_790_632_800 },
+        { durationMins: 10_080, usedPercent: 76, resetsAt: 1_790_748_000 },
+      ],
+    });
+    const host = await render(
+      meter({
+        usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }),
+        manifest: manifest({ providerId: "claude-plan-windows", models: [] }),
+      }),
+    );
+    const popover = await openPopover(host);
+    const labels = [...popover.querySelectorAll(".workspace-context-window-label")].map(
+      (node) => node.textContent,
+    );
+    expect(labels).toEqual(["5-hour", "Weekly"]);
+    const metas = [...popover.querySelectorAll(".workspace-context-window-meta")].map(
+      (node) => node.textContent,
+    );
+    expect(metas[0]).toContain("33%");
+    expect(metas[1]).toContain("76%");
+  });
+
+  it("shows an overage percent as true text beside a clamped bar", async () => {
+    // Above 100 the number stays the provider's own; only the bar clamps —
+    // the text never contradicts what the frame sent.
+    recordPlanUsage({
+      type: "plan_usage",
+      providerId: "claude-overage",
+      windows: [{ durationMins: 300, usedPercent: 105, resetsAt: 1_790_632_800 }],
+    });
+    const host = await render(
+      meter({
+        usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }),
+        manifest: manifest({ providerId: "claude-overage", models: [] }),
+      }),
+    );
+    const popover = await openPopover(host);
+    expect(popover.querySelector(".workspace-context-window-meta")?.textContent).toContain("105%");
+    const fill = popover.querySelector<HTMLElement>(".workspace-context-window-fill");
+    expect(fill?.style.width).toBe("100%");
+  });
+
   it("omits a percent the frame never sent instead of showing zero", async () => {
     recordPlanUsage({
       type: "plan_usage",

@@ -2,12 +2,16 @@ import { useSyncExternalStore } from "react";
 import type { PlanUsage } from "../types/ipc";
 
 /**
- * The latest plan-usage frame per provider id.
+ * The latest live plan-usage frame per provider id.
  *
  * Plan usage belongs to the account, not to a session: every session of the
  * provider may display it, and it outlives the session that happened to
  * receive the push. It therefore lives here keyed by the `providerId` the
  * daemon sent, not in `AgentSessionState`.
+ *
+ * Live frames only: replay does not re-emit plan usage (the daemon's replay
+ * path drops it), so the newest live write wins and the store keeps the
+ * latest live frame per provider.
  *
  * Snapshots are the stored events themselves, so `useSyncExternalStore`
  * sees a stable reference until a new frame actually replaces one.

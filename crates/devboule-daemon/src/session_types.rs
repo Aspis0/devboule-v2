@@ -322,6 +322,10 @@ pub(super) struct AgentReplay {
     pub(super) is_pi: bool,
     pub(super) is_codex: bool,
     pub(super) manifest_emitted: bool,
+    /// The provider's cached live plan usage is handed to this viewer once,
+    /// at the replay/live seam. A flag because the seam can be re-entered
+    /// when a pull round's batch fills up.
+    pub(super) plan_usage_delivered: bool,
     /// Number of times a page boundary has extended the replay watermark to
     /// catch live journal rows published during the replay.
     pub(super) catch_up_extensions: u8,
