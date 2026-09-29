@@ -51,7 +51,7 @@ function agentSession(id: string, title: string): Session {
 }
 
 describe("bulkActionTitle", () => {
-  it("is Paseo's title for each tab-relative action", () => {
+  it("titles each tab-relative action as a question", () => {
     expect(bulkActionTitle("left")).toBe("Close tabs to the left?");
     expect(bulkActionTitle("right")).toBe("Close tabs to the right?");
     expect(bulkActionTitle("others")).toBe("Close other tabs?");
@@ -59,7 +59,7 @@ describe("bulkActionTitle", () => {
 });
 
 describe("bulkSelectionTitle", () => {
-  it("counts the selection — our own title, Paseo has no multi-select", () => {
+  it("counts the selection in our own multi-select title", () => {
     expect(bulkSelectionTitle(4)).toBe("Close 4 tabs?");
   });
 
@@ -98,7 +98,7 @@ describe("bulkCloseMessage", () => {
     );
   });
 
-  it("agents only: Paseo's line, unchanged", () => {
+  it("agents only: names the archived agents", () => {
     expect(bulkCloseMessage({ agents: 3, terminals: 0 })).toBe("This will archive 3 agent(s).");
   });
 
@@ -155,7 +155,7 @@ describe("the single-close confirmations", () => {
     expect(sessionTitle(terminalSession("session-9", "Terminal"))).toBe("Terminal");
   });
 
-  it("a running agent: Paseo's title verbatim, our sentence keeps the transcript", () => {
+  it("a running agent: asks to archive, keeps the transcript in History", () => {
     expect(archiveRunningAgentConfirm()).toEqual({
       title: "Archive running agent?",
       message:

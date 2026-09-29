@@ -416,6 +416,11 @@
   overflow-anchor: none;
 }
 
+/* A short diff would otherwise shrink the column to its own width. */
+.workspace-tool-pane {
+  width: 100%;
+}
+
 .workspace-conversation-content {
   display: flex;
   flex: none;

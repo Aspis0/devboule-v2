@@ -226,7 +226,7 @@ describe("the close chip", () => {
     expect(document.activeElement).toBe(tabElement("session-2"));
   });
 
-  it("closing the active tab via the chip selects Paseo's successor", async () => {
+  it("closing the active tab via the chip selects the nearest survivor", async () => {
     await renderWorkspace();
     await plainClick("session-2");
     expect(tabElement("session-2").getAttribute("aria-selected")).toBe("true");

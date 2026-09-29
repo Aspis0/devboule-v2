@@ -3,6 +3,7 @@ import type { WorkspaceFileEntry } from "../../types/ipc";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { ErrorText } from "../../components/ErrorText";
 import { formatSize } from "./FilesPreview";
+import { previewMediaKind } from "./previewMedia";
 import { sortFileEntries } from "./filesSort";
 import type { DirectoryCell } from "./useWorkspaceFiles";
 
@@ -339,8 +340,12 @@ const FileRow = memo(function FileRow({
       )}
       {/* The file open below carries the pencil (SPEC-regions): slice 8's
           tab, reached through the one callback this panel owes it — last
-          in the row, where the mockup puts it. */}
-      {!beingRenamed && selected && onOpenFile !== undefined ? (
+          in the row, where the mockup puts it. No tab for a staged preview:
+          the same media test the tab uses gates the pencil. */}
+      {!beingRenamed &&
+      selected &&
+      onOpenFile !== undefined &&
+      previewMediaKind(entry.path) === null ? (
         <button
           type="button"
           className="workspace-files-pencil"

@@ -1,4 +1,5 @@
 import type { SessionKind } from "../../../types/ipc";
+import type { ToolTabKind } from "./toolTabs";
 
 const STROKE = {
   fill: "none",
@@ -8,8 +9,8 @@ const STROKE = {
   strokeLinejoin: "round",
 } as const;
 
-/** One 14 px kind mark per session kind, drawn as our own simple strokes. */
-export function StripKindMark({ kind }: { kind: SessionKind }) {
+/** One 14 px kind mark per session or tool kind, drawn as our own simple strokes. */
+export function StripKindMark({ kind }: { kind: SessionKind | ToolTabKind }) {
   return (
     <span className="strip-kind" aria-hidden="true">
       <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true" focusable="false">
@@ -19,8 +20,22 @@ export function StripKindMark({ kind }: { kind: SessionKind }) {
   );
 }
 
-function mark(kind: SessionKind) {
+function mark(kind: SessionKind | ToolTabKind) {
   switch (kind) {
+    case "diff":
+      return (
+        <g data-mark="diff" {...STROKE}>
+          <path d="M3 4.5h5M5.5 2v5" />
+          <path d="M3 10h5" />
+        </g>
+      );
+    case "file":
+      return (
+        <g data-mark="file" {...STROKE}>
+          <path d="M4 1.5h3.5L10.5 4.5v8H4z" />
+          <path d="M7.5 1.5v3h3" />
+        </g>
+      );
     case "claude":
       return (
         <g data-mark="burst" {...STROKE}>

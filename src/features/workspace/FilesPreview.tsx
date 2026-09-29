@@ -1,3 +1,4 @@
+import { useId } from "react";
 import type { WorkspaceFileContent } from "../../types/ipc";
 import type { PreviewCell } from "./useWorkspaceFilePreview";
 import { ErrorText } from "../../components/ErrorText";
@@ -68,6 +69,9 @@ export function FilesPreview({
   preview: PreviewCell;
   readMore: () => Promise<void>;
 }) {
+  // Per instance, like DiffCard: the Files panel and a file tab can mount
+  // this card for the same path at once.
+  const errorId = useId();
   const reply = preview.reply;
   const staged = preview.staged;
   // The only reply carrying a window: `ok` text. Everything else on this
@@ -86,7 +90,7 @@ export function FilesPreview({
             <ErrorText
               sentence={preview.failure.sentence}
               detail={preview.failure.detail}
-              id="files-preview-error"
+              id={errorId}
             />
           </div>
         ) : (

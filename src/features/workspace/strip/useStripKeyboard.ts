@@ -2,9 +2,11 @@ import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEv
 import { sessionTabElementId } from "./useTabCloseFlow";
 
 interface StripKeyboardArgs {
-  sessions: readonly { id: string }[];
-  selectedSessionId: string | null;
-  selectSession: (id: string | null) => void;
+  /** The composed strip (sessions plus tool tabs): arrows, Home/End and
+   * the chord walk every tab, and Delete closes by each kind's own rule. */
+  tabs: readonly { id: string }[];
+  activeTabId: string | null;
+  selectTab: (id: string) => void;
   /** Delete on a focused chip closes by the same policy as every other close. */
   closeTab: (id: string) => void;
 }
@@ -14,12 +16,7 @@ interface StripKeyboardArgs {
  * and Paseo's prev/next-tab shortcut (Alt+Shift+[ / Alt+Shift+]) switching from
  * anywhere but the terminal — the terminal keeps its Alt chords, so the
  * shortcut never fires from inside one. */
-export function useStripKeyboard({
-  sessions,
-  selectedSessionId,
-  selectSession,
-  closeTab,
-}: StripKeyboardArgs): {
+export function useStripKeyboard({ tabs, activeTabId, selectTab, closeTab }: StripKeyboardArgs): {
   tabIndexFor: (id: string) => 0 | -1;
   onChipKeyDown: (id: string, event: ReactKeyboardEvent<HTMLElement>) => void;
 } {
@@ -27,18 +24,18 @@ export function useStripKeyboard({
   // The roving stop follows outside selection (a click, a close's
   // successor): the adjust-state-when-a-prop-changes form the tab
   // selection hook uses, since arrows always select as they move.
-  const [followedSelection, setFollowedSelection] = useState(selectedSessionId);
-  if (followedSelection !== selectedSessionId) {
-    setFollowedSelection(selectedSessionId);
-    setFocusedId(selectedSessionId);
+  const [followedSelection, setFollowedSelection] = useState(activeTabId);
+  if (followedSelection !== activeTabId) {
+    setFollowedSelection(activeTabId);
+    setFocusedId(activeTabId);
   }
   // Whenever the id the stop would sit on is not in the list — the commit
   // between the selected row leaving and the selection reconciling after
   // it, or a focused id gone stale — the stop falls back to the first tab
   // so Tab never skips the whole strip. Zero tabs is correctly no tab stop.
-  const activeId = sessions.some((session) => session.id === (focusedId ?? selectedSessionId))
-    ? (focusedId ?? selectedSessionId)
-    : (sessions[0]?.id ?? null);
+  const activeId = tabs.some((tab) => tab.id === (focusedId ?? activeTabId))
+    ? (focusedId ?? activeTabId)
+    : (tabs[0]?.id ?? null);
 
   const focusChip = useCallback((id: string) => {
     setFocusedId(id);
@@ -47,24 +44,22 @@ export function useStripKeyboard({
 
   const step = useCallback(
     (fromId: string, delta: 1 | -1) => {
-      if (sessions.length === 0) return;
-      const from = sessions.findIndex((session) => session.id === fromId);
+      if (tabs.length === 0) return;
+      const from = tabs.findIndex((tab) => tab.id === fromId);
       const next =
-        sessions[
-          (from === -1 ? (delta === 1 ? -1 : 0) : from + delta + sessions.length) % sessions.length
-        ];
-      selectSession(next.id);
+        tabs[(from === -1 ? (delta === 1 ? -1 : 0) : from + delta + tabs.length) % tabs.length];
+      selectTab(next.id);
       focusChip(next.id);
     },
-    [sessions, selectSession, focusChip],
+    [tabs, selectTab, focusChip],
   );
 
   const jump = useCallback(
     (id: string) => {
-      selectSession(id);
+      selectTab(id);
       focusChip(id);
     },
-    [selectSession, focusChip],
+    [selectTab, focusChip],
   );
 
   const onChipKeyDown = useCallback(
@@ -82,11 +77,11 @@ export function useStripKeyboard({
           break;
         case "Home":
           event.preventDefault();
-          if (sessions.length > 0) jump(sessions[0].id);
+          if (tabs.length > 0) jump(tabs[0].id);
           break;
         case "End":
           event.preventDefault();
-          if (sessions.length > 0) jump(sessions[sessions.length - 1].id);
+          if (tabs.length > 0) jump(tabs[tabs.length - 1].id);
           break;
         case "Delete":
         case "Backspace":
@@ -97,7 +92,7 @@ export function useStripKeyboard({
           break;
       }
     },
-    [step, jump, closeTab, sessions],
+    [step, jump, closeTab, tabs],
   );
 
   useEffect(() => {
@@ -124,30 +119,27 @@ export function useStripKeyboard({
           return;
         }
       }
-      if (sessions.length === 0) return;
+      if (tabs.length === 0) return;
       event.preventDefault();
-      const current =
-        selectedSessionId !== null
-          ? sessions.findIndex((session) => session.id === selectedSessionId)
-          : -1;
+      const current = activeTabId !== null ? tabs.findIndex((tab) => tab.id === activeTabId) : -1;
       const next =
-        sessions[
+        tabs[
           (current === -1
             ? event.key === "]"
               ? 0
-              : sessions.length - 1
-            : current + (event.key === "]" ? 1 : -1) + sessions.length) % sessions.length
+              : tabs.length - 1
+            : current + (event.key === "]" ? 1 : -1) + tabs.length) % tabs.length
         ];
-      selectSession(next.id);
+      selectTab(next.id);
       focusChip(next.id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sessions, selectedSessionId, selectSession, focusChip]);
+  }, [tabs, activeTabId, selectTab, focusChip]);
 
   const tabIndexFor = useCallback(
-    (id: string): 0 | -1 => (sessions.length > 0 && id === activeId ? 0 : -1),
-    [sessions.length, activeId],
+    (id: string): 0 | -1 => (tabs.length > 0 && id === activeId ? 0 : -1),
+    [tabs.length, activeId],
   );
 
   return { tabIndexFor, onChipKeyDown };

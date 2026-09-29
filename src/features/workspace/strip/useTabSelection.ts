@@ -1,15 +1,16 @@
 // Why: multi-select is ours, not translated — this owns the selection's
 // state, its click grammar (Ctrl/Cmd toggles, Shift ranges from the active
 // tab, plain click and Escape clear), and the polite announcement of its
-// size; the strip only wires the handlers.
+// size; the strip only wires the handlers. The list is the composed strip
+// (sessions plus tool tabs), held by id: a tool id is a member like any
+// other, never pruned against the session roster.
 
 import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
-import type { Session } from "../../../types/ipc";
 
 interface TabSelectionArgs {
-  sessions: readonly Session[];
-  selectedSessionId: string | null;
-  selectSession: (id: string) => void;
+  tabs: readonly { id: string }[];
+  activeTabId: string | null;
+  selectTab: (id: string) => void;
 }
 
 interface TabSelectionState {
@@ -24,34 +25,34 @@ function announcementFor(size: number): string {
 
 function pruneToLiveRoster(
   state: TabSelectionState,
-  sessions: readonly Session[],
+  tabs: readonly { id: string }[],
 ): TabSelectionState {
   if (state.ids.size === 0) return state;
-  const ids = new Set([...state.ids].filter((id) => sessions.some((s) => s.id === id)));
+  const ids = new Set([...state.ids].filter((id) => tabs.some((tab) => tab.id === id)));
   if (ids.size === state.ids.size) return state;
-  // Pruned for real, not just hidden: a session that returns with the same
+  // Pruned for real, not just hidden: a tab that returns with the same
   // id comes back UNSELECTED — the user selects it again or it is not in.
   return { ids, announcement: announcementFor(ids.size) };
 }
 
-export function useTabSelection({ sessions, selectedSessionId, selectSession }: TabSelectionArgs): {
+export function useTabSelection({ tabs, activeTabId, selectTab }: TabSelectionArgs): {
   selection: ReadonlySet<string>;
   announcement: string;
-  handleTabClick: (session: Session, event: ReactMouseEvent<HTMLButtonElement>) => void;
+  handleTabClick: (tab: { id: string }, event: ReactMouseEvent<HTMLButtonElement>) => void;
   clearSelection: () => void;
 } {
   const [state, setState] = useState<TabSelectionState>(() => ({
     ids: new Set(),
     announcement: "",
   }));
-  // The roster is the truth about what can be selected: a tab the daemon
+  // The strip is the truth about what can be selected: a tab the roster
   // removed — or one a close hid — leaves the selection, in the commit that
-  // brought the new roster (React's adjust-state-when-a-prop-changes form,
+  // brought the new list (React's adjust-state-when-a-prop-changes form,
   // the same one useStripFocus uses).
-  const [prunedFor, setPrunedFor] = useState(sessions);
-  if (prunedFor !== sessions) {
-    setPrunedFor(sessions);
-    setState((current) => pruneToLiveRoster(current, sessions));
+  const [prunedFor, setPrunedFor] = useState(tabs);
+  if (prunedFor !== tabs) {
+    setPrunedFor(tabs);
+    setState((current) => pruneToLiveRoster(current, tabs));
   }
 
   const clearSelection = useCallback(() => {
@@ -73,36 +74,32 @@ export function useTabSelection({ sessions, selectedSessionId, selectSession }: 
 
   const selectRange = useCallback(
     (targetId: string, anchorId: string) => {
-      const from = sessions.findIndex((session) => session.id === anchorId);
-      const to = sessions.findIndex((session) => session.id === targetId);
+      const from = tabs.findIndex((tab) => tab.id === anchorId);
+      const to = tabs.findIndex((tab) => tab.id === targetId);
       if (from === -1 || to === -1) return false;
       const [low, high] = from <= to ? [from, to] : [to, from];
-      const ids = sessions.slice(low, high + 1).map((session) => session.id);
+      const ids = tabs.slice(low, high + 1).map((tab) => tab.id);
       setState({ ids: new Set(ids), announcement: announcementFor(ids.length) });
       return true;
     },
-    [sessions],
+    [tabs],
   );
 
   const handleTabClick = useCallback(
-    (session: Session, event: ReactMouseEvent<HTMLButtonElement>) => {
+    (tab: { id: string }, event: ReactMouseEvent<HTMLButtonElement>) => {
       if (event.ctrlKey || event.metaKey) {
-        toggle(session.id);
+        toggle(tab.id);
         return;
       }
-      if (
-        event.shiftKey &&
-        selectedSessionId !== null &&
-        selectRange(session.id, selectedSessionId)
-      ) {
+      if (event.shiftKey && activeTabId !== null && selectRange(tab.id, activeTabId)) {
         return;
       }
       // A plain click is the escape hatch: it selects and empties the
       // selection in one gesture.
       clearSelection();
-      selectSession(session.id);
+      selectTab(tab.id);
     },
-    [toggle, selectRange, clearSelection, selectSession, selectedSessionId],
+    [toggle, selectRange, clearSelection, selectTab, activeTabId],
   );
 
   useEffect(() => {

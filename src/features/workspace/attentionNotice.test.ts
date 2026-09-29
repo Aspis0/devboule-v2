@@ -565,7 +565,7 @@ describe("fireAttentionToast window gate", () => {
   });
 });
 
-describe("the toast gate is Paseo's rule", () => {
+describe("the toast gate holds raises for the session in view", () => {
   // The production path: the real roster controller with the observer wiring
   // `sharedSessionController` installs (one `fireAttentionToast` per NEW
   // raise), the real held-content provider, and the real `reportSelection`

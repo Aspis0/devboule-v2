@@ -50,16 +50,16 @@ export function stripScrollLeft(
  */
 export function useSelectedTabVisible(
   scrollportRef: RefObject<HTMLDivElement | null>,
-  selectedSessionId: string | null,
+  activeTabId: string | null,
   tabs: readonly { id: string }[],
 ): void {
   const selectedPresent = useMemo(
-    () => selectedSessionId !== null && tabs.some((tab) => tab.id === selectedSessionId),
-    [tabs, selectedSessionId],
+    () => activeTabId !== null && tabs.some((tab) => tab.id === activeTabId),
+    [tabs, activeTabId],
   );
   const selectedIndex = useMemo(
-    () => (selectedSessionId === null ? -1 : tabs.findIndex((tab) => tab.id === selectedSessionId)),
-    [tabs, selectedSessionId],
+    () => (activeTabId === null ? -1 : tabs.findIndex((tab) => tab.id === activeTabId)),
+    [tabs, activeTabId],
   );
   const tabCount = tabs.length;
 
@@ -70,7 +70,7 @@ export function useSelectedTabVisible(
     const scrollport = scrollportRef.current;
     if (scrollport === null) return;
     const apply = () => {
-      const tab = document.getElementById(`workspace-session-tab-${selectedSessionId}`);
+      const tab = document.getElementById(`workspace-session-tab-${activeTabId}`);
       if (tab === null) return;
       const tabRect = tab.getBoundingClientRect();
       const portRect = scrollport.getBoundingClientRect();
@@ -87,5 +87,5 @@ export function useSelectedTabVisible(
     const observer = new ResizeObserver(apply);
     observer.observe(scrollport);
     return () => observer.disconnect();
-  }, [scrollportRef, selectedSessionId, selectedPresent, selectedIndex, tabCount]);
+  }, [scrollportRef, activeTabId, selectedPresent, selectedIndex, tabCount]);
 }

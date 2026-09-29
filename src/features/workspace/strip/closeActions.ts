@@ -70,7 +70,9 @@ export class CloseActionStore {
     this.markClosing(target.id, target.generation);
     const run = kind === "archive" ? this.acts.archive : this.acts.destroy;
     void run(target.id).then(
-      () => this.clearFailure(target.id, target.generation),
+      () => {
+        this.clearFailure(target.id, target.generation);
+      },
       (cause: unknown) => {
         // A late result for an older generation settles nothing: the mark
         // and the visible row it would name belong to a newer act now.

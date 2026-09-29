@@ -47,7 +47,7 @@ afterEach(async () => {
 });
 
 describe("the tab context menu", () => {
-  it("lists Paseo's close entries, then Delete after a separator in the destructive tone", async () => {
+  it("lists the close entries, then Delete after a separator in the destructive tone", async () => {
     await renderWorkspace();
 
     await rightClick("agent-one");

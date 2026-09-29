@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../../types/ipc";
 import { agentSession, silentAgentSession, terminalSession } from "../bulkCloseHarness";
 import type { CloseIntent } from "./closePolicy";
+import { composeStripTabs } from "./toolTabs";
 import { useTabCloseFlow } from "./useTabCloseFlow";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -18,7 +19,6 @@ type Flow = ReturnType<typeof useTabCloseFlow>;
 type OnClose = (
   kind: CloseIntent,
   matched: readonly Session[],
-  skipped: ReadonlyArray<{ id: string; title: string; generation: number }>,
   onFailed?: (sessionId: string) => void,
 ) => void;
 
@@ -37,10 +37,12 @@ function renderFlow(
   function Probe() {
     const flow = useTabCloseFlow({
       sessions,
-      selectedSessionId: "agent-one",
+      tabs: composeStripTabs(sessions, []),
+      activeTabId: "agent-one",
       selection,
       onClose,
-      selectSession: () => undefined,
+      onCloseTools: () => () => undefined,
+      selectTab: () => undefined,
       clearSelection: () => undefined,
       addButtonRef: { current: null },
       // The explicit no-op: this test has no rename half to wire, and the

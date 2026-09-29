@@ -4,6 +4,7 @@ import { sessionTabElementId } from "./useTabCloseFlow";
 import { sessionTitle } from "../workspaceSessions";
 import type { ChipDisplay } from "./stripDisplay";
 import { StripKindMark } from "./StripKindMark";
+import { toolTabLabel, type ToolTab } from "./toolTabs";
 
 const DOT_CLASS: Record<ChipDisplay["dot"], string> = {
   live: "strip-dot-live",
@@ -123,6 +124,84 @@ export function StripChip({
           Take back
         </button>
       ) : null}
+    </div>
+  );
+}
+
+export interface ToolStripChipProps {
+  tool: ToolTab;
+  selected: boolean;
+  multiselected: boolean;
+  tabIndex: 0 | -1;
+  /** The workspace-relative path — the label keeps the basename only. */
+  tooltip: string;
+  menuOpen: boolean;
+  onTabClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onTabAuxClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onRowContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void;
+  onChipKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
+  onClose: () => void;
+}
+
+/** No take-back, no rename — a tool tab has no session behind it to act on. */
+export function ToolStripChip({
+  tool,
+  selected,
+  multiselected,
+  tabIndex,
+  tooltip,
+  menuOpen,
+  onTabClick,
+  onTabAuxClick,
+  onRowContextMenu,
+  onChipKeyDown,
+  onClose,
+}: ToolStripChipProps) {
+  const label = toolTabLabel(tool.path);
+  const stateLine = tool.kind === "diff" ? "Diff" : "File";
+  return (
+    <div className="workspace-session-row" onContextMenu={onRowContextMenu}>
+      <button
+        type="button"
+        role="tab"
+        id={sessionTabElementId(tool.id)}
+        aria-selected={selected}
+        aria-controls="workspace-panel-terminal"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        tabIndex={tabIndex}
+        title={tooltip}
+        aria-keyshortcuts="Delete"
+        className={`workspace-session-tab${selected ? " workspace-session-tab-selected" : ""}${multiselected ? " workspace-session-tab-multiselected" : ""}`}
+        onClick={onTabClick}
+        onAuxClick={onTabAuxClick}
+        onKeyDown={onChipKeyDown}
+      >
+        <StripKindMark kind={tool.kind} />
+        <span className="workspace-tab-label">{label}</span>
+        {/* Heard, never seen: the kind and the path, never a session state. */}
+        <span className="workspace-sr-only">{`${stateLine} ${tool.path}`}</span>
+      </button>
+      <span className="workspace-session-chip">
+        <button
+          type="button"
+          tabIndex={-1}
+          className="workspace-session-chip-close"
+          aria-label={`Close ${label}`}
+          title={`Close ${label}`}
+          onClick={onClose}
+        >
+          <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+            <path
+              d="M2 2l8 8M10 2l-8 8"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              fill="none"
+            />
+          </svg>
+        </button>
+      </span>
     </div>
   );
 }

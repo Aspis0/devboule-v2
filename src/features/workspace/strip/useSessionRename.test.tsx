@@ -17,6 +17,7 @@ import {
   terminalSession,
 } from "../bulkCloseHarness";
 import { useSessionRename } from "./useSessionRename";
+import { composeStripTabs } from "./toolTabs";
 import { useTabCloseFlow } from "./useTabCloseFlow";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,10 +35,12 @@ function renderFlow(
     const rename = useSessionRename({ sessions, renameSupported });
     const flow = useTabCloseFlow({
       sessions,
-      selectedSessionId: "agent-one",
+      tabs: composeStripTabs(sessions, []),
+      activeTabId: "agent-one",
       selection,
       onClose: () => undefined,
-      selectSession: () => undefined,
+      onCloseTools: () => () => undefined,
+      selectTab: () => undefined,
       clearSelection: () => undefined,
       addButtonRef: { current: null },
       renameMenu: { entriesFor: rename.renameEntriesFor, open: rename.openRename },

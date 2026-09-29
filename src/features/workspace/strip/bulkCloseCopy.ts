@@ -39,6 +39,16 @@ export function bulkSelectionConfirmLabel(count: number): string {
   return `Close ${count} tab${count === 1 ? "" : "s"}`;
 }
 
+/** A mixed set's ask: the sessions keep today's archive copy, and the tool
+ * tabs ride along in their own sentence — closing, never archived. With no
+ * tool tabs the answer is byte-identical to `bulkCloseMessage`. */
+export function mixedBulkCloseMessage(counts: BulkCloseCounts, toolCount: number): string {
+  const base = bulkCloseMessage(counts);
+  if (toolCount <= 0) return base;
+  const tabs = toolCount === 1 ? "1 tab closes too." : `${toolCount} tabs close too.`;
+  return `${base} ${tabs}`;
+}
+
 export function bulkCloseMessage(counts: BulkCloseCounts): string {
   const { agents, terminals } = counts;
   if (agents > 0 && terminals > 0) {

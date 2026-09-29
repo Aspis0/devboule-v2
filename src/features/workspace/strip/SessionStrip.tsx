@@ -18,13 +18,15 @@ import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
 import { chipDisplay } from "./stripDisplay";
 import { useStripFade } from "./useStripFade";
 import { useStripKeyboard } from "./useStripKeyboard";
-import { StripChip } from "./StripChip";
+import { StripChip, ToolStripChip } from "./StripChip";
+import type { StripTab } from "./toolTabs";
 import "./strip.css";
 
 /** Chips re-render only when their own props change: every other prop the
  * strip passes is stable across unrelated renders (see the callbacks
  * below), so a composer keystroke never walks the strip. */
 const MemoStripChip = memo(StripChip);
+const MemoToolChip = memo(ToolStripChip);
 
 export interface StripNewTab {
   open: boolean;
@@ -37,9 +39,13 @@ export interface StripNewTab {
 }
 
 export interface SessionStripProps {
-  sessions: Session[];
-  selectedSessionId: string | null;
-  selectSession: (id: string | null) => void;
+  /** The composed strip Workspace owns — sessions first, tool tabs appended.
+   * The same array the selection and the close flow read: never recomposed. */
+  tabs: StripTab[];
+  /** The ONE active tab id both readers — chips, keyboard, scroll — use. */
+  activeTabId: string | null;
+  /** Routes a tab id to its owner: the session controller, or the tool list. */
+  selectTab: (id: string) => void;
   tabSelection: ReturnType<typeof useTabSelection>;
   tabClose: ReturnType<typeof useTabCloseFlow>;
   addButtonRef: RefObject<HTMLButtonElement | null>;
@@ -57,9 +63,9 @@ export interface SessionStripProps {
 /** The tab strip region: the scrolling tablist, the fade on the sides that
  * still hide chips, the "+" pinned after the scrollport, and the count. */
 export function SessionStrip({
-  sessions,
-  selectedSessionId,
-  selectSession,
+  tabs,
+  activeTabId,
+  selectTab,
   tabSelection,
   tabClose,
   addButtonRef,
@@ -72,27 +78,35 @@ export function SessionStrip({
   statusText,
 }: SessionStripProps) {
   const scrollportRef = useRef<HTMLDivElement>(null);
-  useSelectedTabVisible(scrollportRef, selectedSessionId, sessions);
-  const fade = useStripFade(scrollportRef, sessions);
+  const sessions = useMemo(
+    () => tabs.flatMap((tab) => (tab.type === "session" ? [tab.session] : [])),
+    [tabs],
+  );
+  const toolTabs = useMemo(
+    () => tabs.flatMap((tab) => (tab.type === "tool" ? [tab.tool] : [])),
+    [tabs],
+  );
+  useSelectedTabVisible(scrollportRef, activeTabId, tabs);
+  const fade = useStripFade(scrollportRef, tabs);
   const { selection, handleTabClick } = tabSelection;
   const { menu, openMenu, closeSingle } = tabClose;
-  const menuSessionId = menu?.sessionId;
+  const menuAnchorId = menu?.anchorId;
   const keyboard = useStripKeyboard({
-    sessions,
-    selectedSessionId,
-    selectSession,
+    tabs,
+    activeTabId,
+    selectTab,
     closeTab: closeSingle,
   });
   const { tabIndexFor, onChipKeyDown: keyboardChipKeyDown } = keyboard;
 
   const handleChipKeyDown = useCallback(
-    (session: Session, event: ReactKeyboardEvent<HTMLElement>) => {
+    (id: string, event: ReactKeyboardEvent<HTMLElement>) => {
       if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
         event.preventDefault();
-        openMenu(session.id);
+        openMenu(id);
         return;
       }
-      keyboardChipKeyDown(session.id, event);
+      keyboardChipKeyDown(id, event);
     },
     [openMenu, keyboardChipKeyDown],
   );
@@ -126,18 +140,18 @@ export function SessionStrip({
   // unrelated parent render reuses the very same elements, so the
   // memoised chips below never re-render for it.
   const rows = useMemo(
-    () =>
-      chips.map(({ session, display, tooltip, provenanceLines, takeBack }) => (
+    () => [
+      ...chips.map(({ session, display, tooltip, provenanceLines, takeBack }) => (
         <MemoStripChip
           key={session.id}
           session={session}
-          selected={selectedSessionId === session.id}
+          selected={activeTabId === session.id}
           multiselected={selection.has(session.id)}
           tabIndex={tabIndexFor(session.id)}
           display={display}
           tooltip={tooltip}
           provenanceLines={provenanceLines}
-          menuOpen={menuSessionId === session.id}
+          menuOpen={menuAnchorId === session.id}
           takeBack={takeBack}
           onTakeBack={onTakeBack}
           onTabClick={(event) => handleTabClick(session, event)}
@@ -151,16 +165,42 @@ export function SessionStrip({
             event.preventDefault();
             openMenu(session.id);
           }}
-          onChipKeyDown={(event) => handleChipKeyDown(session, event)}
+          onChipKeyDown={(event) => handleChipKeyDown(session.id, event)}
           onClose={() => closeSingle(session.id)}
         />
       )),
+      ...toolTabs.map((tool) => (
+        <MemoToolChip
+          key={tool.id}
+          tool={tool}
+          selected={activeTabId === tool.id}
+          multiselected={selection.has(tool.id)}
+          tabIndex={tabIndexFor(tool.id)}
+          tooltip={tool.path}
+          menuOpen={menuAnchorId === tool.id}
+          onTabClick={(event) => handleTabClick({ id: tool.id }, event)}
+          onTabAuxClick={(event) => {
+            if (event.button === 1) {
+              event.preventDefault();
+              closeSingle(tool.id);
+            }
+          }}
+          onRowContextMenu={(event) => {
+            event.preventDefault();
+            openMenu(tool.id);
+          }}
+          onChipKeyDown={(event) => handleChipKeyDown(tool.id, event)}
+          onClose={() => closeSingle(tool.id)}
+        />
+      )),
+    ],
     [
       chips,
-      selectedSessionId,
+      toolTabs,
+      activeTabId,
       selection,
       tabIndexFor,
-      menuSessionId,
+      menuAnchorId,
       onTakeBack,
       handleTabClick,
       closeSingle,
@@ -176,7 +216,7 @@ export function SessionStrip({
       <div
         className="workspace-session-tabs-scroll"
         role="tablist"
-        aria-label="Sessions"
+        aria-label="Tabs"
         ref={scrollportRef}
         data-fade-left={fade.left ? "true" : "false"}
         data-fade-right={fade.right ? "true" : "false"}

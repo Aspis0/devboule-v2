@@ -20,6 +20,7 @@ vi.mock("./StripChip", async (importOriginal) => {
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Session } from "../../../types/ipc";
 import { SessionStrip } from "./SessionStrip";
+import { composeStripTabs } from "./toolTabs";
 
 function session(id: string, title: string, overrides: Partial<Session> = {}): Session {
   return {
@@ -50,16 +51,16 @@ function selectionStub() {
   return {
     selection: new Set<string>(),
     announcement: "",
-    handleTabClick: vi.fn((_session: Session, _event: ReactMouseEvent<HTMLButtonElement>) => {}),
+    handleTabClick: vi.fn((_tab: { id: string }, _event: ReactMouseEvent<HTMLButtonElement>) => {}),
     clearSelection: vi.fn(),
   };
 }
 
-function propsOf(sessions: Session[], selectedSessionId: string | null) {
+function propsOf(sessions: Session[], activeTabId: string | null) {
   return {
-    sessions,
-    selectedSessionId,
-    selectSession: vi.fn(),
+    tabs: composeStripTabs(sessions, []),
+    activeTabId,
+    selectTab: vi.fn(),
     tabSelection: selectionStub(),
     tabClose: { ...noMenu, closeSingle: vi.fn(), openMenu: vi.fn() },
     addButtonRef: { current: null },
@@ -281,20 +282,20 @@ describe("SessionStrip", () => {
       tabs()[0].focus();
       tabs()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     });
-    expect(props.selectSession).toHaveBeenCalledWith("b");
+    expect(props.selectTab).toHaveBeenCalledWith("b");
     expect(document.activeElement?.getAttribute("id")).toContain("b");
     act(() => {
       (document.activeElement as HTMLElement).dispatchEvent(
         new KeyboardEvent("keydown", { key: "End", bubbles: true }),
       );
     });
-    expect(props.selectSession).toHaveBeenCalledWith("c");
+    expect(props.selectTab).toHaveBeenCalledWith("c");
     act(() => {
       (document.activeElement as HTMLElement).dispatchEvent(
         new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
       );
     });
-    expect(props.selectSession).toHaveBeenCalledWith("a");
+    expect(props.selectTab).toHaveBeenCalledWith("a");
   });
 
   it("closes the focused chip with Delete without tabbing through a close button", () => {
@@ -318,7 +319,7 @@ describe("SessionStrip", () => {
         new KeyboardEvent("keydown", { key: "]", altKey: true, shiftKey: true, bubbles: true }),
       );
     });
-    expect(props.selectSession).toHaveBeenCalledWith("b");
+    expect(props.selectTab).toHaveBeenCalledWith("b");
   });
 
   it("does not steal Alt+Shift+] from the terminal", () => {
@@ -332,7 +333,7 @@ describe("SessionStrip", () => {
         new KeyboardEvent("keydown", { key: "]", altKey: true, shiftKey: true, bubbles: true }),
       );
     });
-    expect(props.selectSession).not.toHaveBeenCalled();
+    expect(props.selectTab).not.toHaveBeenCalled();
     shell.remove();
   });
 
@@ -350,7 +351,7 @@ describe("SessionStrip", () => {
         }),
       );
     });
-    expect(props.selectSession).not.toHaveBeenCalled();
+    expect(props.selectTab).not.toHaveBeenCalled();
   });
 
   it("does not switch tabs from an editable region", () => {
@@ -363,7 +364,7 @@ describe("SessionStrip", () => {
         new KeyboardEvent("keydown", { key: "]", altKey: true, shiftKey: true, bubbles: true }),
       );
     });
-    expect(props.selectSession).not.toHaveBeenCalled();
+    expect(props.selectTab).not.toHaveBeenCalled();
   });
 
   it("does not switch tabs while the keys belong to a composition", () => {
@@ -380,7 +381,7 @@ describe("SessionStrip", () => {
     act(() => {
       field.dispatchEvent(event);
     });
-    expect(props.selectSession).not.toHaveBeenCalled();
+    expect(props.selectTab).not.toHaveBeenCalled();
   });
 
   it("does not switch tabs on a composing chord outside any field", () => {
@@ -399,7 +400,7 @@ describe("SessionStrip", () => {
     act(() => {
       tab.dispatchEvent(event);
     });
-    expect(props.selectSession).not.toHaveBeenCalled();
+    expect(props.selectTab).not.toHaveBeenCalled();
   });
 
   it("paints every state with its own dot tone", () => {

@@ -72,12 +72,18 @@ export interface WorkspaceFilePreviewSource {
  * the read's confinement on the daemon side because it goes through the
  * same wire road.
  */
-export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFilePreviewSource {
+export function useWorkspaceFilePreview(
+  workspaceId: string | null,
+  // A seed a remounting surface passes to skip its own loading flash: the
+  // cell it last showed, restored until the new read lands. The panel never
+  // passes one, so its click-to-empty behaviour is unchanged.
+  seed?: { path: string; cell: PreviewCell } | null,
+): WorkspaceFilePreviewSource {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [state, setState] = useState<PreviewState>(() => ({
     workspaceId,
-    path: null,
-    cell: { reply: null, staged: null, failure: null },
+    path: seed?.path ?? null,
+    cell: seed?.cell ?? { reply: null, staged: null, failure: null },
   }));
   // The newest request wins: two clicks can be in flight at the same
   // moment, and the slower one must not overwrite the fresher answer's

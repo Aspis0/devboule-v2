@@ -3,6 +3,7 @@ import { AppSurface, DesignPanel, PullRequestSurface } from "./sidePanels";
 import { ChangesSurface } from "./ChangesSurface";
 import { FilesSurface } from "./FilesSurface";
 import type { PanelIconName } from "./panel/PanelIcon";
+import type { ToolTabKind } from "./strip/toolTabs";
 
 /** Where the tab row offers a panel: a visible tab, or the kebab menu. The
  * three spec tabs stay tabs; mock and future panels must not crowd them. */
@@ -20,6 +21,12 @@ export interface SidePanelContext {
    * memo holds. Workspace computes it from the status it already holds.
    */
   canListCommits: boolean;
+  /**
+   * Open a path as a main tab. Each entry binds its own kind — the Changes
+   * entry a diff tab, the Files entry a file tab — so the trees keep their
+   * (workspaceId, path) call shape and the kind travels only this far.
+   */
+  onOpenFile?: (workspaceId: string, path: string, kind: ToolTabKind) => void;
 }
 
 export interface SidePanelEntry {
@@ -38,7 +45,16 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     name: "Files",
     placement: "tab",
     icon: "files",
-    render: ({ workspaceId }) => <FilesSurface workspaceId={workspaceId} />,
+    render: ({ workspaceId, onOpenFile }) => (
+      <FilesSurface
+        workspaceId={workspaceId}
+        onOpenFile={
+          onOpenFile === undefined
+            ? undefined
+            : (childWorkspaceId, path) => onOpenFile(childWorkspaceId, path, "file")
+        }
+      />
+    ),
   },
   {
     id: "changes",
@@ -47,8 +63,16 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     icon: "changes",
     // The counts live in R7b's branch row, read off the panel's own poll via
     // changesBadgeLabel — never on the tab (no room at 300 px).
-    render: ({ workspaceId, canListCommits }) => (
-      <ChangesSurface workspaceId={workspaceId} canListCommits={canListCommits} />
+    render: ({ workspaceId, canListCommits, onOpenFile }) => (
+      <ChangesSurface
+        workspaceId={workspaceId}
+        canListCommits={canListCommits}
+        onOpenFile={
+          onOpenFile === undefined
+            ? undefined
+            : (childWorkspaceId, path) => onOpenFile(childWorkspaceId, path, "diff")
+        }
+      />
     ),
   },
   {

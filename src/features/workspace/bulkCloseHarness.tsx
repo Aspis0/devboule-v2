@@ -59,6 +59,28 @@ vi.mock("../../lib/tauri", () => ({
     skipped: 0,
     error: null,
   })),
+  workspaceFileRead: vi.fn(async () => ({
+    status: "ok",
+    kind: "text",
+    content: "preview bytes",
+    size: 13,
+    modifiedAt: null,
+    error: null,
+    fromLine: 1,
+    lines: 1,
+    hasMore: false,
+    truncated: false,
+    note: null,
+  })),
+  workspaceFilePreviewStage: vi.fn(async () => ({
+    status: "ok",
+    url: "http://asset.localhost/preview.png",
+    kind: "image",
+    size: 8,
+    modifiedAt: null,
+  })),
+  workspaceFilePreviewUnstage: vi.fn(async () => undefined),
+  sessionResume: vi.fn(),
   sessionsList: vi.fn(),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
@@ -237,7 +259,11 @@ export function headerMenuSeamFor(
 }
 
 export function tabElement(id: string): HTMLButtonElement {
-  const tab = container.querySelector<HTMLButtonElement>(`#workspace-session-tab-${id}`);
+  // Tool tab ids carry colons and slashes, which are not valid bare in a
+  // selector; session ids pass through the escape unchanged.
+  const tab = container.querySelector<HTMLButtonElement>(
+    `#${CSS.escape(`workspace-session-tab-${id}`)}`,
+  );
   if (tab === null) throw new Error(`tab did not render: ${id}`);
   return tab;
 }

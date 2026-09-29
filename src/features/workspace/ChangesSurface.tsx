@@ -1,10 +1,6 @@
 import { memo, useCallback, useState } from "react";
-import type {
-  WorkspaceGitDiffLine,
-  WorkspaceGitFileDiff,
-  WorkspaceGitStatus,
-} from "../../types/ipc";
-import { useWorkspaceChanges, type ChangesReply } from "./useWorkspaceChanges";
+import type { WorkspaceGitStatus } from "../../types/ipc";
+import { useWorkspaceChanges } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import { useWorkspaceGitActions } from "./useWorkspaceGitActions";
 import { useWorkspaceCommits } from "./useWorkspaceCommits";
@@ -12,6 +8,7 @@ import { useAskFocus } from "./useAskFocus";
 import { ErrorText } from "../../components/ErrorText";
 import { ChangesTreeView } from "./ChangesTreeView";
 import { CommitsList } from "./CommitsList";
+import { DiffCard } from "./DiffCard";
 import { changesBranchLabel, changesTotalsLabel } from "./changesBadge";
 import "./panel/changes.css";
 
@@ -36,23 +33,6 @@ interface ChangesSurfaceProps {
 }
 
 type ChangesPanelView = "uncommitted" | "commits";
-
-const DIFF_LINE_CLASS: Record<WorkspaceGitDiffLine["kind"], string> = {
-  add: "added",
-  remove: "removed",
-  context: "context",
-  header: "hunk",
-};
-
-// The daemon strips the `+`/`-`/space marker and keeps a `@@ …` header whole,
-// so the marker column is drawn here; the non-breaking space keeps context and
-// header lines aligned under the content column.
-const DIFF_LINE_MARKER: Record<WorkspaceGitDiffLine["kind"], string> = {
-  add: "+",
-  remove: "−",
-  context: "\u00A0",
-  header: "\u00A0",
-};
 
 /**
  * The wire's caveat, if this reply carries one — one sentence that decides two
@@ -226,68 +206,6 @@ function CommitRow({
       >
         Commit
       </button>
-    </div>
-  );
-}
-
-function DiffCard({ path, diff }: { path: string; diff: ChangesReply<WorkspaceGitFileDiff> }) {
-  const reply = diff.reply;
-  const header =
-    reply === null
-      ? diff.failure !== null
-        ? "error"
-        : "…"
-      : reply.status === "ok"
-        ? `+${reply.additions} −${reply.deletions}`
-        : reply.status === "binary"
-          ? "binary"
-          : reply.status === "too_large"
-            ? "too large"
-            : "error";
-  return (
-    <div className="workspace-diff-card">
-      <div className="workspace-diff-header">
-        <span title={path}>{path}</span>
-        <span>{header}</span>
-      </div>
-      {reply === null ? (
-        diff.failure !== null ? (
-          <div className="workspace-diff-note workspace-diff-note-error" role="alert">
-            <ErrorText
-              sentence={diff.failure.sentence}
-              detail={diff.failure.detail}
-              id="changes-diff-error"
-            />
-          </div>
-        ) : (
-          <div className="workspace-diff-note" role="status">
-            Loading diff…
-          </div>
-        )
-      ) : reply.status === "binary" ? (
-        <div className="workspace-diff-note">This file is binary; there are no lines to show.</div>
-      ) : reply.error !== null ? (
-        // `too_large` and `error` are the only two statuses that carry a
-        // sentence (`error` is null exactly when the status is ok or binary),
-        // and both are shown as the refusal they are.
-        <div className="workspace-diff-note workspace-diff-note-error" role="alert">
-          {reply.error}
-        </div>
-      ) : reply.lines.length === 0 ? (
-        <div className="workspace-diff-note">This file has no uncommitted line changes.</div>
-      ) : (
-        <div className="workspace-diff-lines">
-          {reply.lines.map((line, index) => (
-            <div
-              className={`workspace-diff-line workspace-diff-${DIFF_LINE_CLASS[line.kind]}`}
-              key={index}
-            >
-              <span>{DIFF_LINE_MARKER[line.kind]}</span>
-              <span>{line.text}</span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

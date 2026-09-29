@@ -26,6 +26,18 @@ export function buildTabCloseEntries(index: number, tabCount: number): TabMenuEn
   ];
 }
 
+/** A tool tab's menu: the close entries only. No Rename (the rename half
+ * resolves the anchor in the session roster) and no Delete (it would
+ * destroy a session id the daemon never knew). */
+export function buildToolTabCloseEntries(index: number, tabCount: number): TabMenuEntry[] {
+  return [
+    { key: "left", label: "Close to the left", disabled: index === 0 },
+    { key: "right", label: "Close to the right", disabled: index === tabCount - 1 },
+    { key: "others", label: "Close other tabs", disabled: tabCount <= 1 },
+    { key: "close", label: "Close", disabled: false },
+  ];
+}
+
 export function buildSelectionCloseEntry(selectionSize: number): TabMenuEntry {
   return {
     key: "close-selection",

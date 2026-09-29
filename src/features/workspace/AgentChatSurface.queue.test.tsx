@@ -387,7 +387,7 @@ describe("AgentChatSurface queue keys", () => {
     expect(textarea().value).toBe("");
   });
 
-  it("puts a refused plain send back into the composer, as Paseo does", async () => {
+  it("puts a refused plain send back into the composer", async () => {
     await renderSurface();
     vi.mocked(sessionSend).mockRejectedValueOnce(new Error("Session input is too large."));
 
@@ -434,7 +434,7 @@ describe("AgentChatSurface queue keys", () => {
     expect(textarea().value).toBe("queued instead");
   });
 
-  it("under the steer setting, Ctrl+Enter with no running turn does nothing, as Paseo's does", async () => {
+  it("under the steer setting, Ctrl+Enter with no running turn does nothing", async () => {
     setSendBehavior("interrupt-and-send");
     const queue = await renderSurface();
     type("hold on");

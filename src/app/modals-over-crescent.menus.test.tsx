@@ -282,7 +282,7 @@ describe("walking every menu the source finds — the band's open is the outside
     };
     const tabClose = {
       menu: {
-        sessionId: "s1",
+        anchorId: "s1",
         entries: [{ key: "close" as const, label: "Close", disabled: false, destructive: true }],
       },
       anchorRef: nullRef<HTMLButtonElement>(),
@@ -298,9 +298,9 @@ describe("walking every menu the source finds — the band's open is the outside
     const { container, root } = await mount(
       <ShellWith>
         <SessionStrip
-          sessions={[]}
-          selectedSessionId={null}
-          selectSession={() => undefined}
+          tabs={[]}
+          activeTabId={null}
+          selectTab={() => undefined}
           tabSelection={{
             selection: new Set<string>(),
             announcement: "",

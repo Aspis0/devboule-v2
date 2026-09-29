@@ -3,7 +3,11 @@
 // destructive tone, and the rule for when each one has nothing to act on.
 
 import { describe, expect, it } from "vitest";
-import { buildSelectionCloseEntry, buildTabCloseEntries } from "./tabCloseMenu";
+import {
+  buildSelectionCloseEntry,
+  buildTabCloseEntries,
+  buildToolTabCloseEntries,
+} from "./tabCloseMenu";
 
 function labels(entries: ReturnType<typeof buildTabCloseEntries>): string[] {
   return entries.map((entry) => entry.label);
@@ -16,7 +20,7 @@ function entry(entries: ReturnType<typeof buildTabCloseEntries>, key: string) {
 }
 
 describe("buildTabCloseEntries", () => {
-  it("lists Paseo's close entries, then Delete, in order on a middle tab", () => {
+  it("lists the four close entries, then Delete, in order on a middle tab", () => {
     const entries = buildTabCloseEntries(1, 3);
     expect(labels(entries)).toEqual([
       "Close to the left",
@@ -70,5 +74,24 @@ describe("buildSelectionCloseEntry", () => {
 
   it("never carries Delete — the selection menu offers no destruction", () => {
     expect(buildSelectionCloseEntry(3).destructive).toBeUndefined();
+  });
+});
+
+describe("buildToolTabCloseEntries", () => {
+  it("offers the close entries only, never Rename or Delete", () => {
+    const entries = buildToolTabCloseEntries(1, 3);
+    expect(entries.map((entry) => entry.key)).toEqual(["left", "right", "others", "close"]);
+    expect(entries.every((entry) => !entry.disabled)).toBe(true);
+    expect(entries.some((entry) => entry.destructive)).toBe(false);
+  });
+
+  it("disables every directional entry on the only tab, never Close", () => {
+    const entries = buildToolTabCloseEntries(0, 1);
+    expect(entries.filter((entry) => entry.disabled).map((entry) => entry.key)).toEqual([
+      "left",
+      "right",
+      "others",
+    ]);
+    expect(entries.find((entry) => entry.key === "close")?.disabled).toBe(false);
   });
 });
