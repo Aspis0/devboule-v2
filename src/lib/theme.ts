@@ -10,6 +10,8 @@
  * values, because the inline copy cannot import them.
  */
 
+import { syncNativeWindowBackground } from "./nativeWindowBackground";
+
 export type ThemePreference = "light" | "dark" | "system";
 export type ResolvedTheme = "light" | "dark";
 
@@ -123,6 +125,10 @@ export function applyTheme(
     document.head.appendChild(meta);
   }
   meta.setAttribute("content", GROUND_BY_THEME[resolved]);
+
+  // The OS window repaints on its own schedule: hand it the ground the page
+  // is showing now, so a resize never flashes the native layer through.
+  syncNativeWindowBackground();
 
   document.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: resolved }));
   return resolved;

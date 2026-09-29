@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "notification:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-background-color",
+    "core:webview:allow-set-webview-background-color",
+    "dialog:default",
+    "notification:default"
+  ]
 }

@@ -8,6 +8,7 @@ mod plugins;
 mod preview_scope;
 mod surface_settings;
 mod tray;
+mod window_background;
 
 use tauri::Manager;
 
@@ -35,6 +36,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // Before any other setup: the native layers must carry a ground
+            // from the first presented frame, not the config's single colour.
+            // The OS answer is a stand-in — the stored preference lives in
+            // webview storage, so a stored-choice launch is corrected by the
+            // frontend once it runs (known residual, see the U15 report).
+            window_background::paint_startup_background(app);
             // The asset scope in tauri.conf.json concedes the DEFAULT
             // runtime dir's previews folder; the daemon stages where
             // `RuntimePaths::from_env` says — `DEVBOULE_RUNTIME_DIR`
