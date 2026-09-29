@@ -36,6 +36,7 @@ import type {
 import {
   AgentSession,
   lastAssistantMessage,
+  normalizeGoal,
   RECOVERED_SESSION_UNAVAILABLE,
 } from "../../lib/agentSession";
 import type { AgentChatItem, AgentSessionState, AgentStatus } from "../../lib/agentSession";
@@ -71,6 +72,8 @@ import "./timeline/timeline.css";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
 import { AgentTaskPill } from "./AgentTaskPill";
+import { GoalLine } from "./paneHeader/GoalLine";
+import type { WorkspaceCommand } from "./WorkspaceCommandMenu";
 import { setHeldAssistantText } from "./attentionNotice";
 import { ThoughtRow } from "./ThoughtRow";
 import { QueueTrack } from "./QueueTrack";
@@ -104,6 +107,41 @@ export function composerDisabledReason(
   }
 }
 
+/** The universal `/goal` entry: `/goal x` travels to the daemon as plain
+ * text, which intercepts it, so the app only makes it discoverable. */
+const UNIVERSAL_GOAL_COMMAND: WorkspaceCommand = {
+  name: "goal",
+  description: "Set, show, or clear this session's goal",
+};
+
+/**
+ * The slash menu for a live agent session: the provider catalog plus the
+ * universal `/goal`, deduped by name without touching the provider's own
+ * entry or description (Codex ships one). Terminals never reach this —
+ * they mount TerminalSurface, which has no slash menu — and a caller hands
+ * false for an ended or recovered session.
+ */
+export function withGoalCommand(
+  commands: readonly WorkspaceCommand[],
+  includeGoal: boolean,
+): WorkspaceCommand[] {
+  if (!includeGoal) return [...commands];
+  if (commands.some((command) => command.name.toLowerCase() === "goal")) return [...commands];
+  return [...commands, UNIVERSAL_GOAL_COMMAND];
+}
+
+/**
+ * The command list the composer receives: `/goal` for a live session alone.
+ * A starting session counts as live; an ended or recovered one never does.
+ */
+export function goalCommandsFor(
+  commands: readonly WorkspaceCommand[],
+  observedState: SessionState | null,
+): WorkspaceCommand[] {
+  const gone = observedState?.type === "ended" || observedState?.type === "recovered";
+  return withGoalCommand(commands, !gone);
+}
+
 interface AgentChatSurfaceProps {
   sessionId: string;
   title: string;
@@ -116,6 +154,11 @@ interface AgentChatSurfaceProps {
   activity?: AgentActivityState;
   attention?: Attention;
   observedState?: SessionState | null;
+  /**
+   * The roster snapshot's goal: the row's seed before the first frame, and
+   * what a stopped or recovered session shows, since those receive no frames.
+   */
+  initialGoal?: string | null;
   elapsedMs?: number | null;
   /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
   daemonState: DaemonConnectionState;
@@ -705,6 +748,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   activity,
   attention,
   observedState = null,
+  initialGoal = null,
   elapsedMs = null,
   daemonState,
   sessionRoster,
@@ -714,6 +758,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
+  // Undefined until a goal_changed frame arrives; then the last frame, even a clear.
+  const goalFrameRef = useRef<string | null | undefined>(undefined);
   const sessionRef = useRef<AgentSession | null>(null);
   const appliedEffortPrefRef = useRef(false);
   const [state, setState] = useState<AgentSessionState>({
@@ -730,6 +776,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     pendingModeId: null,
     journalLoss: null,
     agentTasks: [],
+    goal: normalizeGoal(initialGoal),
   });
   const { conversationRef, contentRef, onScroll } = useConversationScrollStick(
     state.items,
@@ -834,12 +881,17 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // Resume keeps the id but increments the generation, so this is the signal
   // that the surface's attachment is dead and must be rebuilt. Generation
   // moves only on resume, so this cannot remount under someone mid-turn.
+  /* oxlint-disable react-hooks/exhaustive-deps -- initialGoal seeds only a generation-bump rebuild. */
   useEffect(() => {
     const session = new AgentSession({
       sessionId,
+      initialGoal: goalFrameRef.current !== undefined ? goalFrameRef.current : initialGoal,
       invoke: invokeAgentCommand,
       createChannel: createSessionChannel,
       onTurnFinished: () => queue?.agentFinished(),
+      onGoalChanged: (goal) => {
+        goalFrameRef.current = goal;
+      },
       onPermissionRequest: onPermissionRequest
         ? (request, subscriptionId) => onPermissionRequest(sessionId, subscriptionId, request)
         : undefined,
@@ -861,6 +913,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       session.dispose();
     };
   }, [onPermissionRequest, onPermissionResolved, queue, sessionId, observedState?.generation]);
+  /* oxlint-enable react-hooks/exhaustive-deps */
 
   // While this surface is on screen, the queue's sends and interrupts ride the
   // controller it owns, read at call time so a recreated controller (resume,
@@ -986,6 +1039,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     () => <AgentTaskPill items={state.agentTasks ?? []} />,
     [state.agentTasks],
   );
+  // `/goal` rides to the daemon as plain text, which intercepts it: the app
+  // only makes it discoverable, for a live agent session alone.
+  const composerCommands = useMemo(
+    () => goalCommandsFor(state.availableCommands, observedState ?? null),
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- the roster object would churn on every push.
+    [state.availableCommands, osGone],
+  );
   // Memoized so a streamed token re-renders the transcript, never the rows:
   // the element's identity only moves when the queue's snapshot does.
   const queuedTrack = useMemo(
@@ -1023,6 +1083,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           ) : null
         }
       />
+      {/* Remounted per goal text: the disclosure state belongs to the text,
+          so a replaced goal arrives collapsed. */}
+      <GoalLine key={state.goal ?? "no-goal"} goal={state.goal ?? null} />
       <div
         ref={conversationRef}
         className="workspace-conversation workspace-scroll"
@@ -1063,7 +1126,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         queueAllowed={!hasPendingPermission}
         disabled={composerDisabled}
         disabledReason={recoveredAttach ? null : disabledReason}
-        availableCommands={state.availableCommands}
+        availableCommands={composerCommands}
         taskPill={taskPill}
         queuedTrack={queuedTrack}
         restoreDraft={restoreDraft}

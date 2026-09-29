@@ -546,12 +546,12 @@ function carrySession(listed: Session, previous: Session | undefined): Session {
     ...listed,
     createdBy,
     origin: listed.origin ?? previous?.origin,
-    // The list carries neither push-only field (the protocol Session struct
-    // has no activity and no attention), so an omitting list lets the row's
-    // known values stand — a reconnect refresh must not strip the turn the
-    // daemon described, nor clear a pending ask the card still shows.
+    // The wire's list row carries no activity, attention or goal, so an
+    // omitting list lets the row's known values stand — a refresh must not
+    // strip the turn, the pending ask or the goal a push landed.
     activity: listed.activity ?? previous?.activity,
     attention: listed.attention ?? previous?.attention,
+    goal: listed.goal === undefined ? previous?.goal : listed.goal,
     delegation:
       listed.delegation ??
       previous?.delegation ??
@@ -710,6 +710,9 @@ export function createWorkspaceSessionController(
         // `idle`, so a row that stopped being `working` has to be seen stopping,
         // and one the daemon stopped describing has to be seen as unstated.
         activity: snapshot.activity,
+        // A push replaces the goal outright: missing, null and undefined
+        // all mean "no goal". A list refresh instead carries the row's goal forward.
+        goal: snapshot.goal ?? null,
         // The delegation ledger rides the explicit value: `active` must
         // become `off` the moment a push SAYS so. A push that says nothing
         // does not un-say what an earlier one said — it carries the last

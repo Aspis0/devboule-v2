@@ -1453,6 +1453,7 @@ export function Workspace({
                 title={sessionTitle(paneSession)}
                 cwd={paneSession.cwd}
                 observedState={paneSession.state}
+                initialGoal={paneSession.goal}
                 elapsedMs={paneSession.elapsedMs}
                 activity={paneSession.activity}
                 attention={paneSession.attention}

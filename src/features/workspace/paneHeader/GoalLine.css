@@ -1,0 +1,80 @@
+/* The pinned goal row under the pane header: the target mark, the label,
+ * the one-line objective, and the chevron that reveals a long goal inline.
+ * The row never scrolls — it sits outside the transcript scrollport. */
+
+.goal-line {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.goal-line-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--tone-live);
+}
+
+.goal-line-label {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
+}
+
+.goal-line-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: var(--type-small);
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-line.is-expanded .goal-line-text {
+  overflow: visible;
+  white-space: normal;
+}
+
+.goal-line-chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  /* A full-size hit target that does not push the row past its 32px. */
+  margin-block: -4px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.goal-line-chevron:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.goal-line-chevron:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.goal-line-chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
+.goal-line-chevron[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}

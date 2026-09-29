@@ -949,6 +949,13 @@ export interface Session {
    * is off".
    */
   delegation?: DelegationState;
+  /**
+   * Mirror of the roster snapshot's `goal`; the frontend only renders it.
+   * A push assigns the snapshot's value outright — an omitting push clears
+   * the row. A list refresh carries the row's goal forward: the wire's
+   * `Session` never carries the field.
+   */
+  goal?: string | null;
 }
 
 export type ResumeResult =

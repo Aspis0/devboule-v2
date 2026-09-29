@@ -137,6 +137,14 @@ export interface AgentFinished {
 /** One row of the agent's plan checklist, as the wire carries it. */
 export type AgentTaskItem = Extract<SessionEvent, { type: "agent_tasks" }>["items"][number];
 
+/**
+ * The wire's three no-goal shapes plus the app's empty-string fourth: a
+ * missing, null or empty goal is no goal, never an empty row.
+ */
+export function normalizeGoal(goal: string | null | undefined): string | null {
+  return typeof goal === "string" && goal !== "" ? goal : null;
+}
+
 export interface AgentSessionState {
   items: AgentChatItem[];
   /**
@@ -174,6 +182,12 @@ export interface AgentSessionState {
    * before the field still construct a state.
    */
   agentTasks?: AgentTaskItem[];
+  /**
+   * The session's current goal: every `goal_changed` frame replaces it whole,
+   * and `INITIAL_STATE` seeds no goal. Optional only so fixture states written
+   * before the field still construct a state.
+   */
+  goal?: string | null;
 }
 
 /**
@@ -186,6 +200,12 @@ type AgentSessionPatch = Omit<Partial<AgentSessionState>, "status"> & { status?:
 
 export interface AgentSessionDeps {
   sessionId: string;
+  /**
+   * The roster snapshot's goal, read once at construction: a live session's
+   * later goals arrive as `goal_changed` frames, and a stopped or recovered
+   * session's never moves, so nothing re-seeds it afterwards.
+   */
+  initialGoal?: string | null;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   createChannel: (onEvent: (event: SessionEvent) => void) => AgentChannel;
   /**
@@ -208,6 +228,8 @@ export interface AgentSessionDeps {
   onPermissionResolved?: (resolution: PermissionResolved) => void;
   /** The session channel reported `agent_finished`; exits and disconnects use other paths. */
   onTurnFinished?: () => void;
+  /** A `goal_changed` frame arrived, carrying the live goal (null on a clear). */
+  onGoalChanged?: (goal: string | null) => void;
 }
 
 const INITIAL_STATE: AgentSessionState = {
@@ -225,6 +247,7 @@ const INITIAL_STATE: AgentSessionState = {
   pendingModeId: null,
   journalLoss: null,
   agentTasks: [],
+  goal: null,
 };
 
 const SWITCH_CONFIRM_TIMEOUT_MS = 15_000;
@@ -356,7 +379,9 @@ export class AgentSession {
   private modeTimer: ReturnType<typeof setTimeout> | null = null;
   private modeRequest = 0;
 
-  constructor(private readonly deps: AgentSessionDeps) {}
+  constructor(private readonly deps: AgentSessionDeps) {
+    this.state = { ...this.state, goal: normalizeGoal(deps.initialGoal) };
+  }
 
   getState(): AgentSessionState {
     return this.state;
@@ -935,11 +960,14 @@ export class AgentSession {
         // empty one clears it; replay and live frames ride this same path.
         this.update({ agentTasks: event.items });
         return;
-      case "goal_changed":
-        // The session's current goal, carried whole on every change. No
-        // row renders it yet; the event is accepted here so the exhaustiveness
-        // guard below stays total until one does.
+      case "goal_changed": {
+        // The session's current goal, carried whole on every change; a null,
+        // missing or empty goal clears the row, exactly like the seed.
+        const goal = normalizeGoal(event.goal);
+        this.update({ goal });
+        this.deps.onGoalChanged?.(goal);
         return;
+      }
       case "agent_error":
         // A notification, not a turn ending: the daemon publishes it for one
         // malformed output line and returns to its read loop, and the turn
