@@ -68,7 +68,7 @@ body:has(.root-fallback) {
   border-radius: 8px;
   color: var(--code-text);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-mono-sm);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -120,7 +120,7 @@ body:has(.root-fallback) {
 .surface-fallback-note {
   margin: 0;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .surface-fallback-actions {
@@ -134,7 +134,7 @@ body:has(.root-fallback) {
 .boundary-retry {
   display: grid;
   width: fit-content;
-  height: 26px;
+  height: var(--control-default);
   padding: 0 14px;
   place-items: center;
   color: var(--ink-soft);
@@ -142,7 +142,7 @@ body:has(.root-fallback) {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--type-interface);
 }
 
 .boundary-reload:hover,

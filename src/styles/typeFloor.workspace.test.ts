@@ -4,7 +4,7 @@
 // on purpose.
 // @vitest-environment node
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findBelowTypeFloor } from "./typeFloor";
 
@@ -43,12 +43,31 @@ function exempt(finding: { rule: string; px: number | null }): boolean {
 }
 
 describe("the workspace slice's 12px type floor", () => {
-  it("walks every sheet the slice owns", () => {
-    expect(SHEET_PATHS).toHaveLength(14);
+  it("walks exactly the thirteen workspace sheets plus tokens, by name", () => {
+    expect(SHEET_PATHS.map((path) => basename(path))).toEqual([
+      "tokens.css",
+      "Workspace.css",
+      "QueueTrack.css",
+      "paneHeader.css",
+      "sidebar.css",
+      "strip.css",
+      "changes.css",
+      "files.css",
+      "AgentTaskPill.css",
+      "timeline.css",
+      "SubagentMenu.css",
+      "fileTab.css",
+      "panel.css",
+      "diffTab.css",
+    ]);
   });
 
-  it("declares no text size below 12px across the slice's sheets", () => {
-    expect(findBelowTypeFloor(SHEETS).filter((finding) => !exempt(finding))).toEqual([]);
+  it("declares no text size below 12px across the slice's sheets, in either theme", () => {
+    const findings = [
+      ...findBelowTypeFloor(SHEETS, "light"),
+      ...findBelowTypeFloor(SHEETS, "dark"),
+    ];
+    expect(findings.filter((finding) => !exempt(finding))).toEqual([]);
   });
 });
 

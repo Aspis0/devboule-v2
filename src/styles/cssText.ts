@@ -1,7 +1,7 @@
-// Reading CSS text for the style walks: the rules (descending into
-// conditional at-rules), the custom properties the themes define, and every
-// var() resolved to its token's value — or left in place, named in `stuck`,
-// when the chain is unknown or cyclic.
+// Reading CSS text for the style walks: the rules (descending into every
+// at-rule that can hold painted text), the custom properties each theme
+// defines, and every var() resolved to its token's value — or left in place,
+// named in `stuck`, when the chain is unknown or cyclic.
 
 export interface ParsedRule {
   selector: string;
@@ -23,19 +23,40 @@ function blockEnd(css: string, open: number): number {
   return depth === 0 ? cursor - 1 : css.length;
 }
 
-/** Rules at every level, descending into conditional at-rules only —
- * @keyframes frames and the inside of @font-face are not painted text. */
-export function parseRules(css: string): ParsedRule[] {
+/** At-rules whose bodies hold no painted text: keyframe steps, font
+ * metadata, property descriptors. Everything else descends. */
+const OPAQUE_AT_RULE = /^@(keyframes|font-face|property|counter-style)\b/i;
+
+/** Rules at every level: statements are skipped, at-rules descend, and a
+ * rule body that itself holds a block is native CSS nesting, which the walk
+ * cannot read — it fails loudly rather than drop the nested rule. Callers
+ * that cannot use a nested rule pass onNesting "skip" to drop it instead. */
+export function parseRules(css: string, options?: { onNesting?: "throw" | "skip" }): ParsedRule[] {
   const rules: ParsedRule[] = [];
   let index = 0;
   while (index < css.length) {
     const open = css.indexOf("{", index);
     if (open < 0) break;
+    const statement = css.indexOf(";", index);
+    if (statement >= 0 && statement < open) {
+      // A statement (@import, @charset) carries no block; skip past it so
+      // the next rule's selector is not glued onto it and lost.
+      index = statement + 1;
+      continue;
+    }
     const selector = css.slice(index, open).trim();
     const close = blockEnd(css, open);
     const body = css.slice(open + 1, close);
     if (selector.startsWith("@")) {
-      if (/^@(media|supports|container)\b/i.test(selector)) rules.push(...parseRules(body));
+      if (!OPAQUE_AT_RULE.test(selector)) rules.push(...parseRules(body, options));
+    } else if (body.includes("{")) {
+      // Dropped under onNesting "skip": the proof layer leaves a rule it
+      // cannot represent flat out of the assembled sheet.
+      if (options?.onNesting !== "skip") {
+        throw new Error(
+          `native CSS nesting in the body of "${selector}" is not supported by the walk`,
+        );
+      }
     } else {
       rules.push({ selector: selector.replace(/\s+/g, " "), body });
     }
@@ -54,10 +75,10 @@ function blockBodies(css: string, header: RegExp): string[] {
   return bodies;
 }
 
-/** Custom properties as the themes define them: :root, then the dark block's
- * word. Today the two ramps carry identical values; a future dark-only size
- * needs a per-theme read. */
-export function collectTokens(css: string): Map<string, string> {
+/** Custom properties as one theme defines them: the :root blocks, then the
+ * dark block's word when the dark theme is read. One merged map would judge
+ * a light-theme size at the dark ramp's value, so the caller picks a theme. */
+export function collectTokens(css: string, theme: "light" | "dark" = "light"): Map<string, string> {
   const tokens = new Map<string, string>();
   const add = (body: string): void => {
     for (const m of body.matchAll(/--([a-zA-Z0-9-]+)\s*:\s*([^;]+);/g)) {
@@ -65,7 +86,9 @@ export function collectTokens(css: string): Map<string, string> {
     }
   };
   for (const body of blockBodies(css, /:root\s*\{/g)) add(body);
-  for (const body of blockBodies(css, /\[data-theme=["']dark["']\]\s*\{/g)) add(body);
+  if (theme === "dark") {
+    for (const body of blockBodies(css, /\[data-theme=["']dark["']\]\s*\{/g)) add(body);
+  }
   return tokens;
 }
 
@@ -89,6 +112,24 @@ function topLevelComma(text: string): number {
     else if (text[i] === "," && depth === 0) return i;
   }
   return -1;
+}
+
+/** Split a comma-separated list at the top level: selector lists,
+ * math-function arguments, shorthand heads. The paren-depth scan lives here
+ * once — typeFloor and cssProof share this instead of carrying their own. */
+export function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let rest = text;
+  for (;;) {
+    const comma = topLevelComma(rest);
+    if (comma < 0) {
+      parts.push(rest.trim());
+      break;
+    }
+    parts.push(rest.slice(0, comma).trim());
+    rest = rest.slice(comma + 1);
+  }
+  return parts.filter((part) => part.length > 0);
 }
 
 function resolvePass(

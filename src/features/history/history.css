@@ -21,7 +21,7 @@
   padding: 0 6px 10px;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .history-alert,
@@ -29,7 +29,7 @@
 .history-empty {
   margin: 0 6px 10px;
   color: var(--silence);
-  font-size: 10.5px;
+  font-size: var(--type-meta);
   line-height: 1.45;
 }
 
@@ -87,7 +87,7 @@
 .history-row-note {
   margin-top: 4px;
   color: var(--ochre);
-  font-size: 10px;
+  font-size: var(--type-meta);
   line-height: 1.4;
 }
 
@@ -104,7 +104,7 @@
   border: 0;
   border-radius: 7px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--type-interface);
   white-space: normal;
 }
 
@@ -117,7 +117,7 @@
   border: 0;
   border-radius: 7px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--type-interface);
   white-space: nowrap;
 }
 

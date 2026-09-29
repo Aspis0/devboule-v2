@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { assembleCssProof } from "../features/workspace/cssProof";
 import {
   CRESCENT_ARC_END_X,
   CRESCENT_ARC_RADIUS,
@@ -12,6 +13,28 @@ import {
   CRESCENT_SHELL_WIDTH,
   layoutCrescent,
 } from "./crescentLayout";
+
+const proof = assembleCssProof([
+  readFileSync(new URL("../styles/tokens.css", import.meta.url), "utf8"),
+  readFileSync(new URL("../styles/global.css", import.meta.url), "utf8"),
+]);
+
+function cssNumber(ruleBody: string | undefined, property: string): number {
+  if (ruleBody === undefined) throw new Error(`Missing CSS rule for ${property}`);
+  const match = ruleBody.match(new RegExp(`${property}:\\s*([\\d.]+)`));
+  if (match === null) throw new Error(`Missing CSS property ${property}`);
+  return Number(match[1]);
+}
+
+// A rule without its own line-height inherits the body's, so read the
+// declaration when the rule names one and inherit otherwise.
+function cssLineHeight(ruleBody: string, inherited: number): number {
+  try {
+    return cssNumber(ruleBody, "line-height");
+  } catch {
+    return inherited;
+  }
+}
 
 describe("layoutCrescent", () => {
   it("keeps every visible point between the crescent arc ends in order", () => {
@@ -95,28 +118,34 @@ describe("layoutCrescent", () => {
   });
 
   it("guards the install error band against the arc stroke", () => {
-    const globalCss = readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
-    const errorRule = globalCss.match(/\.crescent-install-error\s*\{([\s\S]*?)\n\}/)?.[1];
-    const buttonRule = globalCss.match(/\.crescent-install-error button\s*\{([\s\S]*?)\n\}/)?.[1];
-    const arcPathRule = globalCss.match(/\.crescent-arc path\s*\{([\s\S]*?)\n\}/)?.[1];
+    const errorRule = proof.rulesFor(".crescent-install-error");
+    const buttonRule = proof.rulesFor(".crescent-install-error button");
+    const arcPathRule = proof.rulesFor(".crescent-arc path");
 
-    function cssNumber(rule: string | undefined, property: string): number {
-      if (rule === undefined) throw new Error(`Missing CSS rule for ${property}`);
-      const match = rule.match(new RegExp(`${property}:\\s*([\\d.]+)`));
-      if (match === null) throw new Error(`Missing CSS property ${property}`);
-      return Number(match[1]);
-    }
-
-    expect(errorRule).toBeDefined();
     expect(errorRule).toContain("top: 0;");
-    expect(buttonRule).toBeDefined();
     expect(buttonRule).toContain("border: 0;");
-    expect(arcPathRule).toBeDefined();
+    expect(arcPathRule).not.toBe("");
 
     const top = cssNumber(errorRule, "top");
     const fontSize = cssNumber(errorRule, "font-size");
     const lineHeight = cssNumber(errorRule, "line-height");
     const strokeWidth = cssNumber(arcPathRule, "stroke-width");
     expect(top + fontSize * lineHeight).toBeLessThanOrEqual(CRESCENT_ARC_Y - strokeWidth / 2);
+  });
+
+  it("paints the + glyph on the other nav glyphs' optical centre", () => {
+    // The + rides --type-small, not a bare literal beside the tokenised base.
+    const rawGlobalCss = readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
+    const addOverride = rawGlobalCss.match(/\.nav-point-add \.nav-point-circle\s*\{([^}]*)\}/)?.[1];
+    expect(addOverride).toContain("font-size: var(--type-small);");
+
+    // Half the line-box difference is the glyph's vertical drift off the
+    // row's centre; the budget is 0.5px.
+    const base = proof.rulesFor(".nav-point-circle");
+    const add = proof.rulesFor(".nav-point-add .nav-point-circle");
+    const bodyLineHeight = cssNumber(proof.rulesFor("body"), "line-height");
+    const baseLineBox = cssNumber(base, "font-size") * cssLineHeight(base, bodyLineHeight);
+    const addLineBox = cssNumber(add, "font-size") * cssNumber(add, "line-height");
+    expect(Math.abs(baseLineBox - addLineBox) / 2).toBeLessThanOrEqual(0.5);
   });
 });

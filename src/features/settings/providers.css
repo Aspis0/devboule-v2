@@ -180,7 +180,7 @@
 }
 
 .prov-legacy {
-  font-size: 11px;
+  font-size: var(--type-interface);
   color: var(--muted);
 }
 
@@ -192,7 +192,7 @@
   background: none;
   border: none;
   text-decoration: underline;
-  font-size: 11px;
+  font-size: var(--type-interface);
 }
 
 .prov-kebab-wrap {
@@ -274,7 +274,7 @@
 .prov-detail-code {
   color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: var(--type-mono-sm);
 }
 
 .prov-detail-value {
@@ -401,7 +401,7 @@
 .provider-consent-command {
   color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: var(--type-mono-md);
 }
 
 .provider-consent-notice {
@@ -425,7 +425,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .provider-version {
@@ -433,13 +433,13 @@
   margin-top: 2px;
   color: var(--muted);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .provider-refresh {
   display: grid;
   width: fit-content;
-  height: 26px;
+  height: var(--control-default);
   margin-top: 14px;
   padding: 0 12px;
   place-items: center;
@@ -448,7 +448,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--type-interface);
 }
 
 section .provider-refresh {

@@ -3,7 +3,7 @@
 .agent-profiles-intro {
   margin: 0;
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .agent-profiles-off {
@@ -291,12 +291,12 @@
 
 .agent-profile-note {
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .agent-profile-note-label {
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .agent-profile-note-empty {
@@ -309,7 +309,7 @@
   align-items: baseline;
   gap: 7px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .agent-profile-tick > span {
@@ -319,7 +319,7 @@
 
 .agent-profile-tick-note {
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .agent-inline-editor {
@@ -346,7 +346,7 @@
 
 .agent-byte-counter {
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .agent-standing {
@@ -389,7 +389,7 @@
   align-items: baseline;
   gap: 7px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .agent-delegation-row > span {
@@ -418,5 +418,7 @@
   border: 1px dashed var(--border-strong);
   border-radius: 12px;
   color: var(--silence);
-  font-size: 11px;
+  /* Same size as the shell's .device-copy it always pairs with: the shell
+     sheet loads last, so a smaller value here would never render. */
+  font-size: var(--type-small);
 }

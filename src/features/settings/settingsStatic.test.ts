@@ -179,7 +179,7 @@ describe("Settings static contracts", () => {
       "diagnostics.css",
     ] as const;
     const allowlist = new Map<string, readonly string[]>([
-      ["settings.css", [".settings-card-meta", ".model-choice-control", ".settings-card-value"]],
+      ["settings.css", [".settings-card-meta", ".settings-card-value"]],
       ["general.css", []],
       [
         "providers.css",

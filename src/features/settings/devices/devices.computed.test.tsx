@@ -244,10 +244,10 @@ describe("shared form rules live in the shell sheet (real stylesheets)", () => {
     );
   });
 
-  it("gives the shared field inputs their box, with no mono face", () => {
+  it("gives the shared field inputs their box at interface 14, with no mono face", () => {
     shell.inject([".device-field", ".device-field input"]);
     const style = getComputedStyle(fieldInput());
-    expect(style.fontSize).toBe("11.5px");
+    expect(style.fontSize).toBe("14px");
     expect(style.borderRadius).toBe("8px");
     expect(style.fontFamily).not.toMatch(/monospace|JetBrains/i);
     expect(shell.rulesFor(".device-field input")).not.toMatch(/monospace|JetBrains/i);
@@ -398,6 +398,11 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(kebab).height).toBe("26px");
   });
 
+  it("keeps the role chip a 12px metadata label, not a 14px chip", () => {
+    proof.inject([".dev-role-chip"]);
+    expect(getComputedStyle(box("dev-role-chip")).fontSize).toBe("12px");
+  });
+
   it("owns every dev- rule: no other settings sheet declares one", () => {
     // What makes the four-sheet assembly above sound. A `dev-*` selector
     // in providers, profiles, general or diagnostics would join the real
@@ -430,11 +435,10 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
         ".dev-typed-input",
       ],
       "src/features/settings/settings.css": [
-        // Legacy meta lines still rendered by other slices' panels, and
-        // the shell's own model picker control: declared, not refactored.
+        // Legacy meta lines still rendered by other slices' panels
+        // (the Projects page's rows): declared, not refactored.
         ".settings-card-meta",
         ".settings-card-value",
-        ".model-choice-control",
       ],
       "src/features/settings/providers.css": [
         ".prov-detail-code",

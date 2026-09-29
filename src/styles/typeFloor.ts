@@ -1,13 +1,14 @@
 // The 12px type floor as a walk over the sheets' real text. Every font-size
 // a sheet can paint — a literal, a token, an alias chain, a shorthand, or a
-// math function, anywhere including inside @media/@supports/@container —
-// must resolve to at least the floor, and a size the walk cannot resolve is
-// a finding, never a skip.
+// math function, anywhere including inside at-rule blocks — must resolve to
+// at least the floor, and a size the walk cannot resolve is a finding, never
+// a skip. `inherit` is the one non-size: it paints the parent's computed
+// size, and every declared size it can end up at is walked by the same run.
 //
 // This is a declaration linter: it certifies what the sheets say, not what
 // a later rule paints over. Computed-style proofs live in cssProof.
 
-import { collectTokens, parseRules, resolveVars, stripComments } from "./cssText";
+import { collectTokens, parseRules, resolveVars, splitTopLevel, stripComments } from "./cssText";
 
 export const TYPE_FLOOR_PX = 12;
 
@@ -46,24 +47,6 @@ interface EvalContext {
 const LENGTH = /^(\d+(?:\.\d+)?)(px|rem|em|%)$/i;
 const MATH_FN = /^(clamp|min|max)\((.*)\)$/is;
 
-function splitTopLevel(text: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let part = "";
-  for (const char of text) {
-    if (char === "(") depth += 1;
-    else if (char === ")") depth -= 1;
-    if (char === "," && depth === 0) {
-      parts.push(part.trim());
-      part = "";
-      continue;
-    }
-    part += char;
-  }
-  parts.push(part.trim());
-  return parts.filter((part) => part.length > 0);
-}
-
 function classesOf(part: string): Set<string> {
   return new Set([...part.matchAll(/\.([a-zA-Z0-9_-]+)/g)].map((m) => m[1]!));
 }
@@ -99,7 +82,7 @@ function declarationSize(decl: string): { expr: string | null; why?: string } {
 }
 
 function evaluateSize(expr: string, ctx: EvalContext): Resolution {
-  const value = expr.trim();
+  const value = expr.trim().replace(/\s*!\s*important$/i, "");
   if (/^inherit$/i.test(value)) return parentSize(ctx);
   const fn = MATH_FN.exec(value);
   if (fn) {
@@ -190,24 +173,31 @@ function varReason(
   tokens: ReadonlyMap<string, string>,
 ): string | null {
   if (expr === null || !/var\(/i.test(expr)) return null;
-  for (const name of stuck) {
-    return tokens.has(name)
-      ? `custom property ${name} sits on a cyclic alias chain`
-      : `unknown custom property ${name}`;
-  }
-  return "a var() the walk could not resolve";
+  // The declaration's own stuck var(), not the rule's: a sibling
+  // declaration's colour token must not be blamed for a size failure.
+  const own = [...expr.matchAll(/var\(\s*(--[a-zA-Z0-9-]+)/gi)]
+    .map((match) => match[1]!)
+    .find((name) => stuck.has(name));
+  if (own === undefined) return "a var() the walk could not resolve";
+  return tokens.has(own)
+    ? `custom property ${own} sits on a cyclic alias chain`
+    : `unknown custom property ${own}`;
 }
 
-export function findBelowTypeFloor(sheets: readonly string[]): TypeFloorFinding[] {
+export function findBelowTypeFloor(
+  sheets: readonly string[],
+  theme: "light" | "dark" = "light",
+): TypeFloorFinding[] {
   const findings: TypeFloorFinding[] = [];
   // Tokens are a property of the bundle: tokens.css is its own sheet, so the
-  // maps merge in sheet order before any body is resolved. The parent of an
-  // em is still read sheet-locally, per parentSize.
+  // maps merge in sheet order before any body is resolved — per theme, so a
+  // size the dark ramp drops is never judged at the light ramp's value. The
+  // parent of an em is still read sheet-locally, per parentSize.
   const tokens = new Map<string, string>();
   const parsed = sheets.map((sheetText) => {
     const css = stripComments(sheetText);
     const rules = parseRules(css);
-    for (const [name, value] of collectTokens(css)) tokens.set(name, value);
+    for (const [name, value] of collectTokens(css, theme)) tokens.set(name, value);
     return rules;
   });
   const resolved = parsed.map((rules) =>
@@ -223,6 +213,8 @@ export function findBelowTypeFloor(sheets: readonly string[]): TypeFloorFinding[
         const decl = declaration.trim();
         const { expr, why } = declarationSize(decl);
         if (expr === null && why === undefined) continue;
+        // See the header: inherit adds no size of its own.
+        if (expr !== null && /^inherit$/i.test(expr)) continue;
         const resolution =
           expr === null
             ? { px: null as number | null, reason: why }

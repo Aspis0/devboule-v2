@@ -8,38 +8,13 @@
 // DOM states, not a whole-app browser run. Happy DOM does not expose generated
 // pseudo-element content reliably; use `rulesFor` for those declarations.
 
+import { parseRules, splitTopLevel } from "../../styles/cssText";
+
 export type CssTheme = "light" | "dark";
 
 export interface CssRule {
   selector: string;
   body: string;
-}
-
-function parseRules(css: string): CssRule[] {
-  const rules: CssRule[] = [];
-  let index = 0;
-  while (index < css.length) {
-    const open = css.indexOf("{", index);
-    if (open < 0) break;
-    const selector = css.slice(index, open).trim();
-    const close = css.indexOf("}", open);
-    if (close < 0) break;
-    const body = css.slice(open + 1, close);
-    if (selector.startsWith("@")) {
-      let depth = 1;
-      let cursor = open + 1;
-      while (depth > 0 && cursor < css.length) {
-        if (css[cursor] === "{") depth += 1;
-        if (css[cursor] === "}") depth -= 1;
-        cursor += 1;
-      }
-      index = cursor;
-      continue;
-    }
-    rules.push({ selector: selector.replace(/\s+/g, " "), body });
-    index = close + 1;
-  }
-  return rules;
 }
 
 export function selectorMatches(ruleSelector: string, target: string): boolean {
@@ -54,24 +29,6 @@ const MONO_FAMILY = /font-family:[^;]*(?:"JetBrains Mono"|var\(--font-mono\))/;
 
 function isIdentChar(char: string): boolean {
   return /[\w-]/.test(char);
-}
-
-function splitSelectorList(selector: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let part = "";
-  for (const char of selector) {
-    if (char === "(") depth += 1;
-    else if (char === ")") depth -= 1;
-    if (char === "," && depth === 0) {
-      parts.push(part.trim());
-      part = "";
-      continue;
-    }
-    part += char;
-  }
-  parts.push(part.trim());
-  return parts.filter((candidate) => candidate.length > 0);
 }
 
 function strongerSpec(
@@ -149,7 +106,7 @@ function specificityOfPart(part: string): [number, number, number] {
  * :not() its own, :where() nothing. */
 export function specificity(selector: string): [number, number, number] {
   let best: [number, number, number] = [0, 0, 0];
-  for (const part of splitSelectorList(selector)) {
+  for (const part of splitTopLevel(selector)) {
     const spec = specificityOfPart(part);
     if (strongerSpec(spec, best)) best = spec;
   }
@@ -217,7 +174,7 @@ export function assembleCssProof(
       (whole: string, name: string) => tokens.get(name) ?? whole,
     );
   }
-  const allRules = parseRules(resolved);
+  const allRules = parseRules(resolved, { onNesting: "skip" });
 
   function rulesFor(target: string): string {
     return allRules

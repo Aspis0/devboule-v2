@@ -1,7 +1,7 @@
 // The type floor walk's own contract, on synthetic sheets: resolution of
-// tokens, aliases and fallbacks; conditional at-rules; relative units; and
-// the shorthand and math forms. The slice's real sheets are policed in
-// typeFloor.workspace.test.ts.
+// tokens, aliases and fallbacks; at-rules, statements and nesting; themes;
+// relative units; and the shorthand and math forms. The slices' real sheets
+// are policed in typeFloor.workspace.test.ts and typeFloor.settings.test.ts.
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { TYPE_FLOOR_PX, findBelowTypeFloor } from "./typeFloor";
@@ -43,6 +43,13 @@ describe("token resolution", () => {
       reason: expect.stringContaining("cyclic"),
     });
   });
+
+  it("blames the var() the failed declaration actually names", () => {
+    expect(one(".probe { color: var(--zzz-color); font-size: var(--zzz-size); }")).toMatchObject({
+      declaration: "font-size: var(--zzz-size)",
+      reason: "unknown custom property --zzz-size",
+    });
+  });
 });
 
 describe("conditional at-rules", () => {
@@ -58,6 +65,83 @@ describe("conditional at-rules", () => {
       });
     });
   }
+});
+
+describe("statements before rules", () => {
+  for (const statement of ['@import url("./other.css");', '@charset "utf-8";']) {
+    it(`keeps the rule after a leading ${statement.split(" ")[0]}`, () => {
+      expect(one(`${statement} .probe { font-size: 9px; }`)).toMatchObject({
+        rule: ".probe",
+        px: 9,
+      });
+    });
+  }
+});
+
+describe("block at-rules beyond the conditional three", () => {
+  for (const at of ["@layer base", "@scope (.a)", "@starting-style"]) {
+    it(`walks rules inside ${at.split(" ")[0]}`, () => {
+      expect(one(`${at} { .probe { font-size: 9px; } }`)).toMatchObject({
+        rule: ".probe",
+        px: 9,
+      });
+    });
+  }
+
+  it("walks a conditional at-rule nested in a layer", () => {
+    expect(
+      one("@layer base { @media (max-width: 900px) { .probe { font-size: 9px; } } }"),
+    ).toMatchObject({ rule: ".probe", px: 9 });
+  });
+
+  it("keeps skipping the at-rules that declare no painted text", () => {
+    for (const frame of [
+      "@keyframes spin { from { font-size: 9px; } to { font-size: 20px; } }",
+      "@font-face { font-family: X; src: url(x.woff2); }",
+      "@property --probe { syntax: '<length>'; initial-value: 9px; }",
+    ]) {
+      expect(findBelowTypeFloor([frame, ".probe { font-size: 14px; }"])).toEqual([]);
+    }
+  });
+});
+
+describe("nesting", () => {
+  it("fails a natively nested rule loudly instead of dropping it", () => {
+    expect(() => findBelowTypeFloor([".outer { color: red; .inner { font-size: 9px; } }"])).toThrow(
+      /nesting/,
+    );
+  });
+});
+
+describe("!important and inherit", () => {
+  it("judges the size behind !important", () => {
+    expect(one(".probe { font-size: 11px !important; }")).toMatchObject({ px: 11 });
+    expect(findBelowTypeFloor([".probe { font-size: 12px !important; }"])).toEqual([]);
+    expect(
+      findBelowTypeFloor([`${ROOT} .probe { font-size: var(--type-meta) !important; }`]),
+    ).toEqual([]);
+  });
+
+  it("lets an inherited size ride on the declarations it inherits from", () => {
+    // inherit paints the parent's computed size and adds no size of its
+    // own; every declared size it can end up at is judged by this walk.
+    expect(findBelowTypeFloor(["button, input, textarea { font: inherit; }"])).toEqual([]);
+    expect(findBelowTypeFloor([".probe { font-size: inherit; }"])).toEqual([]);
+  });
+});
+
+describe("themes", () => {
+  it("judges each theme at its own token values", () => {
+    const sheet = ':root { --band: 9px; } [data-theme="dark"] { --band: 20px; }';
+    expect(one(`${sheet} .probe { font-size: var(--band); }`)).toMatchObject({ px: 9 });
+    expect(findBelowTypeFloor([`${sheet} .probe { font-size: var(--band); }`], "dark")).toEqual([]);
+  });
+
+  it("fails a dark-only drop below the floor", () => {
+    const sheet = ':root { --band: 14px; } [data-theme="dark"] { --band: 9px; }';
+    const [finding] = findBelowTypeFloor([`${sheet} .probe { font-size: var(--band); }`], "dark");
+    expect(finding).toMatchObject({ rule: ".probe", px: 9 });
+  });
 });
 
 describe("relative units", () => {

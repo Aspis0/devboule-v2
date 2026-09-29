@@ -155,7 +155,7 @@
   color: var(--ink-soft);
   border: 1px solid var(--border-strong);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--type-meta);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -246,7 +246,7 @@
 .dev-fingerprint {
   color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
   letter-spacing: 0.04em;
   word-break: break-word;
 }
@@ -297,7 +297,7 @@
   align-items: baseline;
   gap: 7px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .dev-role-name {
@@ -308,7 +308,7 @@
 .dev-role-hint {
   flex: 1 1 100%;
   padding-left: 22px;
-  font-size: 10.5px;
+  font-size: var(--type-meta);
 }
 
 .dev-caps {
@@ -322,7 +322,7 @@
 .dev-caps-legend {
   padding: 0;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -333,20 +333,20 @@
   align-items: baseline;
   gap: 6px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .dev-cap-note {
   flex: 1 1 100%;
   padding-left: 22px;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .dev-revoked {
   margin: 0 14px 8px;
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .dev-revoked summary {
