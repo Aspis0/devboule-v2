@@ -1,5 +1,5 @@
 // Which sessions a close action takes: the strip's visible order, the
-// anchor tab exclusive for left/right/others (Paseo's slicing), and the
+// anchor tab exclusive for left/right/others, and the
 // selection intersected with what is on screen.
 
 import { describe, expect, it } from "vitest";

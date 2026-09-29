@@ -228,15 +228,13 @@ export type DesignOutputMode = "page" | "slides";
  * because they travel as two different things.
  *
  * A raster image is bytes: it is carried base64, the form every provider that
- * accepts an image expects on the wire — the `{ data, mimeType }` pair Paseo
- * sends (`packages/client/src/daemon-client.ts`).
+ * accepts an image expects on the wire — the `{ data, mimeType }` pair.
  *
  * An SVG is not an image here. It is a text document this surface can embed in
- * the HTML it generates, so it is carried as sanitized source. A deliberate
- * divergence from Paseo, which classifies SVG as a generic file
- * (`packages/app/src/attachments/file-types.ts`): this surface generates HTML,
- * and an SVG is something it can use directly. `source` has already been
- * through the sanitizer in `designAttachments.ts` and never travels raw.
+ * the HTML it generates, so it is carried as sanitized source — deliberately
+ * not as a generic file: this surface generates HTML, and an SVG is something
+ * it can use directly. `source` has already been through the sanitizer in
+ * `designAttachments.ts` and never travels raw.
  *
  * The measured type is the one stored, never the declared one: see the module
  * comment in `designAttachments.ts` for why the bytes decide.

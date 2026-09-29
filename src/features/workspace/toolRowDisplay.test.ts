@@ -140,7 +140,7 @@ describe("humanizeToolName", () => {
   });
 
   it("keeps namespaced names as-is", () => {
-    expect(humanizeToolName("mcp__paseo__foo")).toBe("mcp__paseo__foo");
+    expect(humanizeToolName("mcp__server__foo")).toBe("mcp__server__foo");
     expect(humanizeToolName("server.tool")).toBe("server.tool");
     expect(humanizeToolName("a/b")).toBe("a/b");
     expect(humanizeToolName("mode:fast")).toBe("mode:fast");

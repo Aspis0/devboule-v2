@@ -7,13 +7,11 @@ import { SESSION_NOT_RUNNING } from "./queueStatus";
  * The queue's owner for the whole app run: one queue per session id, held
  * here rather than in a component, so leaving the Workspace, switching to
  * another tab, or a refresh that rebuilds the tab strip cannot destroy a
- * message the user queued — Paseo keeps its queue on the app-level session
- * store for the same reason (packages/app/src/stores/session-store.ts).
+ * message the user queued.
  *
- * **What may send, and when.** Paseo drains on the open-to-idle edge
- * (packages/app/src/runtime/host-runtime.ts)
- * and on every synchronized timeline that finds the agent idle
- * (packages/app/src/timeline/viewed-timeline-sync.ts). The edge is the queue's own
+ * **What may send, and when.** The queue drains on the open-to-idle edge
+ * and on every synchronized timeline that finds the agent idle. The edge is
+ * the queue's own
  * (`turnActive` falling); the snapshot is every roster push, always the daemon's
  * full list (`workspaceSessions.ts`'s `applySnapshot`), so the arm is per push,
  * not per connection. A repeated idle push neither duplicates a send in flight
@@ -71,8 +69,7 @@ export function createSessionQueueOwner(
   const entries = new Map<string, Entry>();
   /** The last row each session carried, cached even before it has a queue:
    * a queue opened mid-turn must know the turn is open before the next
-   * push, since its composer's Queue offer and a press read it. Paseo needs
-   * no such cache: its directory row is there before its queue is. */
+   * push, since its composer's Queue offer and a press read it. */
   const statuses = new Map<
     string,
     { activity: AgentActivityState | null; state: Session["state"] }

@@ -4,8 +4,8 @@ import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { WorkspaceGitLog } from "../../types/ipc";
 
 /**
- * Paseo's stale window for the same read (`use-commits-query.ts:11`):
- * history changes rarely while the section is open, so a collapse and
+ * A stale window for the same read: history changes rarely while the
+ * section is open, so a collapse and
  * re-expand cycle stays warm without leaving the answer stale for long.
  */
 const COMMITS_STALE_MS = 30_000;
@@ -25,8 +25,7 @@ interface LogCell {
 
 export interface WorkspaceCommits {
   /**
-   * The capability gate, passed by the caller: Paseo's
-   * `capabilityPresent` (`use-commits-query.ts:83-87`), whose false arm
+   * The capability gate, passed by the caller: its false arm
    * hides the section. The caller computes it from the daemon status
    * Workspace already holds, so the panel adds no poll of its own.
    */

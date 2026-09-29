@@ -1,5 +1,5 @@
-// Why: the tab context menu as data — Paseo's four close entries in Paseo's
-// order (the order is pinned by workspace-tab-menu.test.ts), our Delete
+// Why: the tab context menu as data — the four close entries in the order
+// workspace-tab-menu.test.ts pins, our Delete
 // after a separator in the destructive tone, and when each entry has nothing
 // to act on — so the menu only renders rows.
 

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The rename dialog: Paseo's rename modal on our shell — the current name
+// The rename dialog: the current name
 // pre-filled and selected, Enter saves (the exact sessionSetName call),
 // Escape cancels, the daemon's refusal next to the field with the draft
 // kept, and focus back to whatever opened it.
@@ -426,7 +426,7 @@ describe("SessionRenameDialog", () => {
   });
 
   it("Enter on an unchanged name makes no call", async () => {
-    // Paseo's guard: the daemon's store computes `changed` and skips the
+    // The daemon's store computes `changed` and skips the
     // roster push, so the cost of skipping this is one IPC that changes nothing.
     const probe = renderProbe();
     await probe.mount();

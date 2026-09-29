@@ -531,8 +531,8 @@ ul.workspace-changes-tree {
   opacity: 0.6;
 }
 
-/* The Commits list (R7d): the branch's own commits — Paseo's section
-   filters the base half out, and so does this panel. The mockup draws no
+/* The Commits list (R7d): the branch's own commits — the base half of the
+   history is filtered out, and this panel filters it too. The mockup draws no
    commit rows, so the row follows the tree's h24 — [sha mono 12]
    [subject 13, truncated][author + relative time 12 muted]. UI text
    throughout; only the sha is mono, the way a commit id is code. */

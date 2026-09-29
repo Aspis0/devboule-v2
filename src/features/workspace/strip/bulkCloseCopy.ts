@@ -1,7 +1,7 @@
-// Why: the confirmations' words in one place — Paseo's titles where they are
-// ours, adapted where our semantics differ: for us a terminal close is an
+// Why: the confirmations' words in one place — the titles, adapted where
+// our semantics differ: for us a terminal close is an
 // archive (session_stop), so the process stops and every message stays in
-// History, where Paseo destroys the closed terminal.
+// History.
 
 import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionHasHumanTitle, sessionKindWord, sessionTitle } from "../workspaceSessions";
@@ -20,14 +20,14 @@ export function countSessions(sessions: readonly Session[]): BulkCloseCounts {
   return counts;
 }
 
-/** Paseo's titles, verbatim (workspace.tabs.confirmations.closeTabs*Title). */
+/** The confirmation title for a bulk action: left, right or others. */
 export function bulkActionTitle(action: "left" | "right" | "others"): string {
   if (action === "left") return "Close tabs to the left?";
   if (action === "right") return "Close tabs to the right?";
   return "Close other tabs?";
 }
 
-/** Our own title: Paseo has no multi-select. The live set is what is asked
+/** Our own title: the live set is what is asked
  * about, even when a roster change shrank the selection to one. */
 export function bulkSelectionTitle(count: number): string {
   return `${bulkSelectionConfirmLabel(count)}?`;
@@ -88,8 +88,8 @@ export function closeTerminalConfirm(session: Session): {
   };
 }
 
-/** A single running agent: Paseo's title verbatim; the message says our
- * close keeps the transcript, where Paseo's also closes the tab for good. */
+/** A single running agent: a fixed title; the message says the archive
+ * stops the agent and every message stays in History. */
 export function archiveRunningAgentConfirm(): {
   title: string;
   message: string;

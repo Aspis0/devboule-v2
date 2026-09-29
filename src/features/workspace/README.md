@@ -124,7 +124,7 @@ separate click, and only for the families the daemon says are resumable
 (`Session.resumable`, never re-derived here). Ended sessions stay in History:
 there is nothing for them to come back to.
 
-Closing works as in Paseo, with **no undo window** (owner, 2026-09-23,
+Closing has **no undo window** (owner, 2026-09-23,
 evening): a terminal tab asks before it closes; **every agent with a process**
 asks before it is archived — `live` or `silent`, because the daemon flips a
 Running stream to Silent on an output-silence threshold alone
@@ -143,12 +143,12 @@ swipe, its hover pills, the 5-second window, its persistence, the crash
 recovery and the unload flush are gone — records an older build persisted are
 dropped unread on startup (`OLDER_BUILD_PENDING_KEY`).
 
-The tab row is a plain row: the tab button, Paseo's trailing close chip — an
+The tab row is a plain row: the tab button, a trailing close chip — an
 18×18 "×" in a ~48 px overlay scrimmed with the tab's own background, shown on
 hover and while focus is inside the row, hidden and unclickable otherwise —
 and, where it applies, the take-back. A middle click closes; a right-click
 anywhere on the row, the chip included, opens the tab menu, which carries
-Paseo's close entries and, after a separator, Delete in the destructive tone.
+the four close entries and, after a separator, Delete in the destructive tone.
 
 ## Terminal lifecycle
 

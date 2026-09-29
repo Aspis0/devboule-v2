@@ -5,9 +5,8 @@ import { relativeTime } from "../../lib/relativeTime";
 import { ErrorText } from "../../components/ErrorText";
 
 /**
- * The Commits half of the Changes panel: the branch's own commits — what
- * Paseo's section shows (`commits-section.tsx:61-70` filters the base half
- * out; this panel copies the filter, Paseo's function with our look). Rows
+ * The Commits half of the Changes panel: the branch's own commits — the
+ * base half of the history is filtered out. Rows
  * are not controls: opening a commit's diff needs a tab kind and a
  * commit-diff read that do not exist yet. The subject and the author carry
  * `title` for the text their ellipsis cuts.

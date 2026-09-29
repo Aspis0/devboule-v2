@@ -57,9 +57,9 @@ body:has(.root-fallback) {
   font-weight: 600;
 }
 
-/* A stack trace is reference material, not the screen: cap it at Paseo's
-   DETAILS_MAX_HEIGHT (300px) so the message and the Reload action keep their
-   shape, and let the rest scroll. */
+/* A stack trace is reference material, not the screen: cap it at 300px so
+   the message and the Reload action keep their shape, and let the rest
+   scroll. */
 .root-fallback-details,
 .surface-fallback-details {
   margin: 0;
@@ -79,8 +79,8 @@ body:has(.root-fallback) {
   padding: 12px;
 }
 
-/* Paseo's compact-footer idiom in CSS: pinned inside the scroll container so
-   Reload stays visible at high zoom or in a short window. */
+/* Pinned inside the scroll container so Reload stays visible at high zoom
+   or in a short window. */
 .root-fallback-footer {
   position: sticky;
   bottom: 0;

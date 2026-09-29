@@ -21,8 +21,7 @@ import { POPOVER_MARGIN } from "./popoverPlace";
 
 const POPOVER_RING_RADIUS = 12;
 const POPOVER_RING_CIRCUMFERENCE = 2 * Math.PI * POPOVER_RING_RADIUS;
-/** The gap off the anchor — the spec's offset above the ring; Paseo's context
- * meter tooltip uses the same gap (`packages/app/src/components/context-window-meter.tsx`). */
+/** The gap off the anchor — the spec's offset above the ring. */
 const ANCHOR_GAP = 8;
 /** `.workspace-context-popover`'s CSS width: happy-dom has no layout, so a
     zero measurement falls back to the number the stylesheet declares. */
@@ -197,10 +196,7 @@ function planBody(plan: PlanUsage, nowMs: number): ReactNode {
  * meter draws, then the provider's own plan windows when the session has a
  * plan reading. A `null` plan means "no reading" (a session that predates the
  * frame, or no frame arrived), never "the provider cannot", so it renders no
- * plan section and no divider — Paseo's tooltip-section does the same
- * (`if (!usage) return null;`,
- * `packages/app/src/provider-usage/tooltip-section.tsx`). Every number here is
- * one the provider sent.
+ * plan section and no divider. Every number here is one the provider sent.
  *
  * It renders through a portal on `document.body` with fixed positioning: the
  * meter's pane (`.workspace-center-panel`) clips its own children, which is

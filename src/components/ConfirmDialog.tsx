@@ -1,9 +1,7 @@
-// Why: the destructive ask's shell — Paseo's `confirmDialog`
-// (`packages/app/src/utils/confirm-dialog.ts`) rebuilt as the redesign's
-// centred modal: the same ask and the same two answers, over a scrim instead
-// of anchored to the tab it came from. Git Discard and file delete ask
-// through this dialog too, so it lives beside the other shared components,
-// not in the strip.
+// Why: the destructive ask's shell — a centred modal over a scrim: one ask
+// and two answers, not anchored to the tab it came from. Git Discard and
+// file delete ask through this dialog too, so it lives beside the other
+// shared components, not in the strip.
 
 import { useEffect, useId, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";

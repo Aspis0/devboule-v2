@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 // The tab strip's "+" menu: what a new tab can be. Pins the menu's contents
-// (exactly Agent, Terminal, in Paseo's order), the Terminal entry's create
+// (exactly Agent, Terminal), the Terminal entry's create
 // call, selection and in-flight disabling, Escape focus return, and the Agent
 // entry's unchanged provider flow. Focus: a menu-created terminal gets
 // the surface's autofocus request, a cancelled picker hands focus back to

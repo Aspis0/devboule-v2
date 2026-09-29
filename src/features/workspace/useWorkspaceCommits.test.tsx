@@ -253,8 +253,8 @@ describe("useWorkspaceCommits", () => {
     expect(failure()).toBe("the folder is not a repository");
   });
 
-  // Paseo's gate: the section is hidden unless the capability is present
-  // (use-commits-query.ts:83-87). A connected daemon without it leaves the
+  // The gate: the section is hidden unless the capability is present. A
+  // connected daemon without it leaves the
   // segment hidden — and a hidden segment reads nothing, first tick or
   // thirtieth.
   it("hides the segment and reads nothing when the daemon lacks the capability", async () => {

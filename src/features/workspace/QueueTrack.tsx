@@ -4,9 +4,9 @@ import type { QueuedMessage } from "./messageQueue";
 import "./QueueTrack.css";
 
 /**
- * The queued follow-up rows above the composer (Paseo's place): the text on
+ * The queued follow-up rows above the composer: the text on
  * at most two lines, and per row Steer (send now — it interrupts the turn),
- * Edit (Paseo's: the row leaves the queue and its content goes back into
+ * Edit (the row leaves the queue and its content goes back into
  * the composer), Delete, and reorder — by dragging the row, or Alt+Arrow on
  * a focused row. A send the daemon refused leaves its reason on the row —
  * nothing renders while the queue is empty, and an emptied track under the

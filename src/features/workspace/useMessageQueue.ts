@@ -78,7 +78,7 @@ export function useMessageQueue(
     [queue],
   );
 
-  // Paseo's Edit: the composer gets the text only once the row is out. An id
+  // The Edit action: the composer gets the text only once the row is out. An id
   // the queue no longer holds says so — silently doing nothing would leave the
   // user's click with no answer at all.
   const editRow = useCallback(

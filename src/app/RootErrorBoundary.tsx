@@ -9,9 +9,8 @@ interface RootErrorBoundaryState {
   error: string | null;
 }
 
-// Paseo formats any caught value into renderable text
-// (packages/app/src/components/root-error-details.ts); ours only ever sees
-// render-phase throws, so a small local formatter covers it.
+// Ours only ever sees render-phase throws, so a small local formatter
+// covers it.
 function formatRenderError(value: unknown): string {
   if (value instanceof Error) {
     const headline = `${value.name}: ${value.message}`;
@@ -59,9 +58,8 @@ export class RootErrorBoundary extends Component<RootErrorBoundaryProps, RootErr
   }
 }
 
-// Paseo's copy (packages/app/src/i18n/resources/en.ts) with our name; the
-// last body sentence is ours: a document reload always boots the default
-// surface, and the copy must say where the user lands.
+// The last body sentence is ours: a document reload always boots the
+// default surface, and the copy must say where the user lands.
 function RootErrorFallback({ error }: { error: string }): ReactNode {
   return (
     <div className="root-fallback" role="alert">
@@ -73,9 +71,8 @@ function RootErrorFallback({ error }: { error: string }): ReactNode {
         </p>
         <h2 className="root-fallback-details-label">Details</h2>
         <pre className="root-fallback-details">{error}</pre>
-        {/* Paseo's compact-footer idiom
-            (packages/app/src/components/root-error-boundary.tsx): Reload is
-            pinned so it never scrolls away at high zoom. */}
+        {/* Reload is pinned in the footer so it never scrolls away at
+            high zoom. */}
         <div className="root-fallback-footer">
           <button
             type="button"

@@ -1,6 +1,6 @@
-// Why: one place decides when a close asks first — Paseo's policy on our
-// model (packages/app/src/screens/workspace/workspace-screen.tsx). The
-// daemon turns a Running stream into Silent after an output-silence
+// Why: one place decides when a close asks first — the policy on our
+// model. The daemon turns a Running stream into Silent after an
+// output-silence
 // threshold alone (session_runtime.rs mark_silent_if_due), so `silent` is
 // NOT idle — an agent in a long tool call can be silent and still working.
 // The roster carries no field that states a turn has ended, so the policy

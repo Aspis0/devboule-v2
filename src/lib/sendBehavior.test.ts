@@ -71,7 +71,7 @@ describe("sendBehavior setting", () => {
     expect(seen).toEqual(["interrupt-and-send", "queue"]);
   });
 
-  it("answers queue with interrupt-and-send while a permission card is open (Paseo's rule)", () => {
+  it("answers queue with interrupt-and-send while a permission card is open", () => {
     expect(resolveActiveSendBehavior("queue", false)).toBe("queue");
     expect(resolveActiveSendBehavior("queue", true)).toBe("interrupt-and-send");
     expect(resolveActiveSendBehavior("interrupt-and-send", true)).toBe("interrupt-and-send");

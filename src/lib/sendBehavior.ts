@@ -72,8 +72,7 @@ export function subscribeSendBehavior(listener: (value: SendBehavior) => void): 
 
 /**
  * Queueing behind a permission prompt would strand the message: the turn is
- * parked until the request is answered. Paseo's `resolveActiveSendBehavior`,
- * resolved to our interrupt-and-send instead of its interrupt.
+ * parked until the request is answered.
  */
 export function resolveActiveSendBehavior(
   sendBehavior: SendBehavior,
@@ -84,7 +83,7 @@ export function resolveActiveSendBehavior(
 
 export type ComposerActionLabel = "Queue message" | "Send and interrupt";
 
-/** Paseo's submit-button words on the button that does what Enter does while
+/** The submit-button words on the button that does what Enter does while
  * the turn runs: queue, or interrupt-and-send — the label says it interrupts. */
 export function composerActionLabel(defaultActionQueues: boolean): ComposerActionLabel {
   return defaultActionQueues ? "Queue message" : "Send and interrupt";

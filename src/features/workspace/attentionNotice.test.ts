@@ -126,7 +126,7 @@ describe("attentionRaised", () => {
 });
 
 describe("toastGate", () => {
-  // Paseo's rule: away from the WINDOW or away from the SESSION — the raise
+  // Away from the WINDOW or away from the SESSION — the raise
   // is silent only when the user is looking at the session that raised.
   const seen = { visible: true, focused: true, minimized: false };
 

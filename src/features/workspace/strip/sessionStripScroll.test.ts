@@ -221,8 +221,7 @@ describe("the session strip", () => {
   });
 
   it("keeps the close chip a narrow trailing overlay that hides unclickable", () => {
-    // Paseo's chip (tabTrailingOverlay in
-    // packages/app/src/screens/workspace/workspace-desktop-tabs-row.tsx): 48 px on the
+    // The close chip: 48 px on the
     // row's right edge — never a full-width hit area over the label — and hidden means a
     // pointer cannot reach it.
     const chip = ruleBody(".workspace-session-chip");

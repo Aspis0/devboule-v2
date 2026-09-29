@@ -3,8 +3,7 @@
 // the close flow owns the close and this owns the rename. The daemon's one
 // rename road reaches the record only through a live process, so the entry is
 // agent-only, capability-gated and refused on a journal-replayed (recovered)
-// session; the state follows the roster between opens the way Paseo resyncs
-// its modal.
+// session; the state follows the roster between opens.
 
 import { useCallback, useState } from "react";
 import { isAgentKind, type Session } from "../../../types/ipc";
@@ -40,8 +39,8 @@ export function useSessionRename({ sessions, renameSupported }: UseSessionRename
   }
 
   // The dialog's pre-fill follows the roster: a push that names the session
-  // (the auto-title landing) moves the field with it, the way Paseo resyncs
-  // its modal on [visible, initialValue]. Adjusted during render, not in an
+  // (the auto-title landing) moves the field with it. Adjusted during render,
+  // not in an
   // effect — the title is derived from the roster this render already has.
   if (renameState !== null) {
     const row = sessions.find((session) => session.id === renameState.sessionId);

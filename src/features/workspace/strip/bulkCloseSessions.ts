@@ -1,6 +1,5 @@
 // Why: one place decides what each close entry actually closes — the strip's
-// visible order, the anchor tab exclusive for left/right/others (Paseo's
-// slicing in packages/app/src/screens/workspace/workspace-screen.tsx), and a
+// visible order, the anchor tab exclusive for left/right/others, and a
 // multi-selection intersected with what is on screen. The lists are the
 // composed strip (sessions plus tool tabs), sliced by id; the caller
 // partitions the answer by what a close means for each kind.

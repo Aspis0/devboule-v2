@@ -10,9 +10,8 @@ export interface WorkspaceCommand {
   hint?: string;
 }
 
-/** Paseo's `agentAutocomplete.noCommands`
- * (`packages/app/src/i18n/resources/en.ts`): its list renders this line
- * whenever it has no option to draw, so the menu is never an empty box. */
+/** The list renders this line whenever it has no option to draw, so the
+ * menu is never an empty box. */
 const NO_COMMANDS_TEXT = "No commands found";
 
 interface WorkspaceCommandMenuProps {

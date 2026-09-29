@@ -484,8 +484,8 @@ export interface PermissionRequest {
   options: PermissionOption[];
   /**
    * The daemon's chooser verdict: present and `true` exactly when the
-   * option set trips Paseo's rule (the same kind offered twice — allow or
-   * reject — means the agent is asking which one to use). The card renders
+   * option set offers the same kind twice — allow or reject — which means
+   * the agent is asking which one to use. The card renders
    * one control per option when it is set; absent — an ordinary
    * permission, or a frame from a daemon older than this field — renders
    * the ordinary Allow once and Deny pair. The app reads this mark and
@@ -1691,8 +1691,8 @@ export interface VocabularyFeatureOption {
   label: string;
 }
 
-/** The control a profile form draws for one feature. Paseo's feature union
- *  discriminates on the same word, and the wire keeps it. */
+/** The control a profile form draws for one feature; these two words are
+ *  what the wire keeps. */
 export type VocabularyFeatureControl = "toggle" | "select";
 
 /**

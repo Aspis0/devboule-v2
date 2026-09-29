@@ -749,7 +749,7 @@ export function createWorkspaceSessionController(
           };
       // A raise is the timestamp the daemon wrote, so one publication cannot
       // announce twice — but the guard is the notifier's dedupe AFTER its gate,
-      // exactly as in Paseo, not a filter here. The offer therefore stands even
+      // not a filter here. The offer therefore stands even
       // when the previous application carried the same raise: a raise the gate
       // held back (the user was looking at that session) stays due and gets its
       // chance the next time the roster speaks, once they have looked away.

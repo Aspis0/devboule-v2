@@ -1,7 +1,7 @@
-// The bulk close's confirmation: Paseo's titles verbatim, and the counting
-// line adapted only where our semantics differ — for us a terminal close is
+// The bulk close's confirmation: what each ask says, adapted only where
+// our semantics differ — for us a terminal close is
 // an archive too (session_stop), so the process stops and every message
-// stays in History, where Paseo destroys the closed terminal.
+// stays in History.
 
 import { describe, expect, it } from "vitest";
 import type { Session } from "../../../types/ipc";

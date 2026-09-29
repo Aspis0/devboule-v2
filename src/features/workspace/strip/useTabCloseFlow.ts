@@ -229,7 +229,7 @@ export function useTabCloseFlow({
   const openMenuState = menuIsValid(menuState, selection, tabs) ? menuState : null;
   const anchorTab =
     openMenuState === null ? undefined : tabs.find((tab) => tab.id === openMenuState.anchorId);
-  // Rename sits ahead of the close group on an agent tab (Paseo's order);
+  // Rename sits ahead of the close group on an agent tab;
   // a selection menu and a tool tab's menu are close-only. The capability
   // gate lives in the rename hook's entry builder, not here.
   const menu =

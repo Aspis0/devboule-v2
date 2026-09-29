@@ -750,9 +750,9 @@ surface, one place to audit.
 > - OAuth DPoP: https://www.rfc-editor.org/rfc/rfc9449.html - mTLS binding: https://www.rfc-editor.org/rfc/rfc8705.html
 > - Tauri v2 mobile: https://v2.tauri.app/develop/plugins/develop-mobile/
 
-The requirement: a future Devboule phone app (Tailscale-connected, like
-Paseo's) must **discover and command any installed plugin without shipping
-per-plugin mobile code**. The researched answer is a **two-tier model**:
+The requirement: a future Devboule phone app (Tailscale-connected) must
+**discover and command any installed plugin without shipping per-plugin
+mobile code**. The researched answer is a **two-tier model**:
 
 ### Tier 1 — schema-driven command floor (the compatibility contract)
 

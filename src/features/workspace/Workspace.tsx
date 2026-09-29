@@ -326,7 +326,7 @@ export function Workspace({
   );
   const visibleSessions = useMemo(() => {
     const hiding = new Set(closingIds);
-    // Selection is navigation (Paseo's rule): the strip shows only the
+    // Selection is navigation: the strip shows only the
     // selected workspace's tabs, so an empty workspace shows the empty state
     // instead of another workspace's tabs.
     // A session with no workspace (a legacy record) has no home to navigate
@@ -356,7 +356,7 @@ export function Workspace({
   // the daemon removes it from the roster. With the strip scoped to the
   // selected workspace, "rendered" means rendered there; it decides WORDING
   // only, never whether the raise announces (the toast gate asks the looked-at
-  // session for that, Paseo's rule).
+  // session for that).
   const renderedSessionIds = useMemo(
     () => new Set(visibleSessions.map((session) => session.id)),
     [visibleSessions],
@@ -376,7 +376,7 @@ export function Workspace({
     );
     return () => setAttentionHeldContentProvider(null);
   }, [renderedSessionIds, permissionQueue, closeActions]);
-  // Selection is navigation (Paseo), reconciled in ONE effect from ONE
+  // Selection is navigation, reconciled in ONE effect from ONE
   // snapshot so workspace and session can never undo each other across
   // renders (two effects here once fought: one scheduled the workspace
   // switch while the other, still closing over the old strip, pulled the
@@ -784,7 +784,7 @@ export function Workspace({
         return;
       }
       if (capable.length === 0) {
-        // Gate before create (the recon's Paseo reading, §5a): with no
+        // Gate before create (§5a): with no
         // chat-capable provider the create would be born doomed, so the flow
         // stops here — the anchored picker opens with its empty state and
         // afterChoice is never called. The choice ends through the picker's

@@ -7,8 +7,8 @@ import {
 } from "../../lib/sendBehavior";
 import "./general.css";
 
-/** Paseo's "Default send" choice, reduced to this app's two behaviours and put
- * in the row form every other Editing-page setting uses. The copy says what the
+/** This app's two send behaviours, offered in the row form every other
+ * Editing-page setting uses. The copy says what the
  * alternate key actually does: under the queue default it is not a second
  * submit — it interrupts the running turn and sends (decision 3), the same act
  * the composer's "Send and interrupt" button names. The value lives in the

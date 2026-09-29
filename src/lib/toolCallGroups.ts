@@ -5,9 +5,8 @@ export type ToolChatItem = Extract<AgentChatItem, { role: "tool" }>;
 /**
  * A run of consecutive groupable tool calls, rendered as one collapsible row.
  *
- * Grouping follows Paseo's `prepareGroupedHistory`
- * (packages/app/src/tool-calls/detail-level/grouping.ts): consecutive
- * groupable tools accumulate into a pending run and any other item flushes
+ * Grouping: consecutive groupable tools accumulate into a pending run and
+ * any other item flushes
  * it. The id is the first item's id, so it stays stable while streaming
  * appends tools to the end of the run.
  */
@@ -25,11 +24,9 @@ export function isToolCallGroup(entry: AgentChatItem | ToolCallGroup): entry is 
 }
 
 /**
- * Paseo's `isGroupableToolCall` (packages/app/src/tool-calls/detail-level/grouping.ts)
- * excludes the `plan` detail type and the `speak` tool name; this surface
- * excludes `plan` and `question` instead, so the transcript's only copy of a
- * question and its answer is never buried in a collapsed group — the
- * `question` exclusion is ours alone.
+ * Excludes the `plan` detail type and the `question` tool name, so the
+ * transcript's only copy of a question and its answer is never buried in a
+ * collapsed group.
  */
 export function isGroupableToolCall(item: AgentChatItem): item is ToolChatItem {
   if (item.role !== "tool") return false;
@@ -95,12 +92,9 @@ export interface ToolCallGroupSummary {
 }
 
 /**
- * Count a run the way Paseo's `buildOverviewGroup`
- * (packages/app/src/tool-calls/detail-level/overview/model.ts) does: edited
- * and read files dedupe by path, everything else counts calls. The
- * `paseoCallCount` bucket has no equivalent here and is omitted; `fetch` falls
- * into `otherToolCount` exactly as Paseo's unbucketed `fetch` detail type
- * does. A location-less edit/read cannot name a file, so it counts as another
+ * Count a run: edited
+ * and read files dedupe by path, everything else counts calls. A
+ * location-less edit/read cannot name a file, so it counts as another
  * tool instead of guessing by title.
  */
 export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGroupSummary {
@@ -140,8 +134,7 @@ function pluralize(count: number, one: string, other: string): string {
 }
 
 /**
- * Join summary parts the way Paseo's `useOverviewSummary` + `joinSummaryParts`
- * (packages/app/src/tool-calls/detail-level/overview/view.tsx) do: two parts
+ * Join summary parts: two parts
  * join with "and", three or more use ", " with "and" before the last, and
  * the first character is uppercased.
  */

@@ -92,8 +92,8 @@ describe("CommitsList", () => {
     );
   });
 
-  // Paseo's function: the section shows the branch's own commits
-  // (commits-section.tsx:61-70 filters the base half out). The order is
+  // The section shows the branch's own commits: the base half of the
+  // history is filtered out. The order is
   // the author dates' — the wire's only date — so the time column cannot
   // jump backwards; equal dates keep the wire's order (stable sort).
   it("shows only the branch's own commits, newest first by their author dates", async () => {

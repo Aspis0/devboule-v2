@@ -1,5 +1,4 @@
-// The tab strip's "+" menu: what a new tab can be. Entries in Paseo's order
-// (`packages/app/src/workspace-tabs/launcher/index.tsx`) — Agent continues
+// The tab strip's "+" menu: what a new tab can be. Agent continues
 // into the provider flow, Terminal creates a plain session of kind
 // "terminal". The keyboard lives on the menu element itself: once focus is
 // elsewhere, the keys are not the menu's. The menu renders through

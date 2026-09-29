@@ -33,9 +33,9 @@ import type { ProviderInfo, ProviderVocabulary } from "../../types/ipc";
 import { ACP_MODE_SUGGESTION } from "./AgentProfileVocabulary";
 
 /** How often the form re-asks while an ACP provider's feature list is being
- *  read. Two seconds: the read is a provider process start, which Paseo budgets
- *  at 90 s, so a faster poll is a dozen identical round-trips against a worker
- *  that cannot finish sooner, and a slower one leaves the human watching
+ *  read. Two seconds: the read starts a provider process, so a faster poll
+ *  is a run of identical round-trips against a worker that cannot finish
+ *  sooner, and a slower one leaves the human watching
  *  "Checking…" after the answer already exists. */
 export const VOCABULARY_POLL_MS = 2000;
 
