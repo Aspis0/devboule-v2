@@ -4,8 +4,7 @@
 }
 
 .oracle-stage-description,
-.oracle-ready-intro p,
-.oracle-index-progress p {
+.oracle-ready-intro p {
   color: var(--ink-soft);
   font-size: 13px;
   line-height: 1.6;
@@ -31,7 +30,6 @@
   background: var(--surface);
 }
 
-.oracle-stage-rail,
 .oracle-setup-rail {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -47,7 +45,7 @@
   gap: 7px;
   min-width: 0;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -70,7 +68,7 @@
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-setup-step-current {
@@ -139,7 +137,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-help-note {
@@ -151,7 +149,7 @@
   color: var(--ink-soft);
   background: color-mix(in srgb, var(--selection) 24%, var(--surface));
   border-left: 3px solid var(--terracotta);
-  font-size: 11px;
+  font-size: var(--type-small);
   line-height: 1.5;
 }
 
@@ -165,7 +163,7 @@
   padding-top: 16px;
   color: var(--ink-soft);
   border-top: 1px solid var(--border);
-  font-size: 10.5px;
+  font-size: var(--type-small);
   line-height: 1.55;
 }
 
@@ -190,7 +188,7 @@
   border: 0;
   border-radius: 9px;
   cursor: pointer;
-  font-size: 11.5px;
+  font-size: var(--type-interface);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -238,7 +236,7 @@
 .oracle-watch-notice {
   padding: 10px 12px;
   border-radius: 8px;
-  font-size: 10.5px;
+  font-size: var(--type-meta);
   line-height: 1.5;
 }
 
@@ -278,7 +276,7 @@
   background: color-mix(in srgb, var(--ochre) 10%, var(--surface));
   border-left: 3px solid var(--ochre);
   border-radius: 8px;
-  font-size: 10.5px;
+  font-size: var(--type-meta);
   line-height: 1.5;
 }
 
@@ -347,7 +345,7 @@
 
 .oracle-model-card-heading strong {
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--type-small);
 }
 
 .oracle-model-card-heading span,
@@ -355,14 +353,14 @@
 .oracle-model-card small,
 .oracle-index-progress p {
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .oracle-model-state {
   margin-left: auto;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
   text-transform: uppercase;
 }
 
@@ -384,7 +382,7 @@
   margin-top: 10px;
   color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-model-progress-copy span:last-child {
@@ -407,7 +405,7 @@
   gap: 10px;
   margin-top: 9px;
   color: var(--danger-deep);
-  font-size: 10px;
+  font-size: var(--type-meta);
   line-height: 1.45;
 }
 
@@ -420,7 +418,7 @@
   margin-left: auto;
   padding: 0 9px;
   border: 1px solid var(--danger);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .oracle-model-degradation {
@@ -445,7 +443,7 @@
   align-items: center;
   gap: 7px;
   color: var(--green-deep);
-  font-size: 10.5px;
+  font-size: var(--type-meta);
 }
 
 .oracle-index-progress {
@@ -457,14 +455,14 @@
 
 .oracle-index-progress-heading {
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .oracle-index-progress-heading span:last-child {
   margin-left: auto;
   color: var(--terracotta-deep);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-index-progress .oracle-progress-track {
@@ -473,6 +471,7 @@
 
 .oracle-index-progress p {
   margin: 8px 0 0;
+  line-height: 1.6;
 }
 
 .oracle-ready-context {
@@ -482,7 +481,7 @@
   margin-bottom: 12px;
   padding: 0 2px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .oracle-ready-context > div {
@@ -520,7 +519,7 @@
   margin-left: auto;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
   white-space: nowrap;
 }
 
@@ -561,7 +560,7 @@
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 9.5px;
+  font-size: var(--type-meta);
   line-height: 1.4;
   text-align: right;
   white-space: nowrap;
@@ -593,7 +592,7 @@
   grid-column: 2;
   margin-top: 3px;
   color: var(--danger-deep);
-  font-size: 9px;
+  font-size: var(--type-meta);
 }
 
 .oracle-reranker-status-warning .oracle-inline-action {
@@ -629,7 +628,7 @@
   background: transparent;
   border: 0;
   cursor: pointer;
-  font-size: 9.5px;
+  font-size: var(--type-meta);
   font-weight: 600;
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -714,7 +713,7 @@
 .oracle-reading-cost span,
 .oracle-results-note {
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-small);
 }
 
 .oracle-reading-cost span {
@@ -765,7 +764,7 @@
   flex: none;
   color: var(--terracotta-deep);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-sm);
   font-weight: 600;
 }
 
@@ -776,7 +775,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
   font-weight: 600;
 }
 
@@ -785,7 +784,7 @@
   margin-left: auto;
   color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-result-snippet {
@@ -796,7 +795,7 @@
   background: var(--surface);
   border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-sm);
   line-height: 1.55;
   white-space: pre;
 }
@@ -808,7 +807,7 @@
   margin-top: 8px;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-result-cost {
@@ -877,7 +876,7 @@
 .oracle-admin-summary-action {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-admin-summary-action {
@@ -918,10 +917,10 @@
 }
 
 .oracle-admin-block-heading .oracle-button {
-  height: 22px;
+  height: var(--control-default);
   margin-left: auto;
   padding: 0 7px;
-  font-size: 9.5px;
+  font-size: var(--type-interface);
 }
 
 .oracle-admin-facts {
@@ -938,7 +937,7 @@
 
 .oracle-admin-facts dt {
   color: var(--silence);
-  font-size: 9.5px;
+  font-size: var(--type-meta);
 }
 
 .oracle-admin-facts dd {
@@ -949,7 +948,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-health-check-list {
@@ -965,7 +964,7 @@
   gap: 5px;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-check-dot {
@@ -988,7 +987,7 @@
 .oracle-admin-block > p {
   margin: 11px 0 0;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .oracle-model-facts {
@@ -1003,13 +1002,13 @@
   gap: 8px;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-model-facts strong {
   color: var(--ink-soft);
   font-family: "Inter", sans-serif;
-  font-size: 10px;
+  font-size: var(--type-meta);
   font-weight: 600;
 }
 
@@ -1018,7 +1017,9 @@
   padding: 0;
   background: transparent;
   border: 0;
-  font-size: 9px;
+  /* The settings content column caps at 720px, so a grid column is
+     ~207px; the base rule's 12px status line needs more and wraps. */
+  white-space: normal;
 }
 
 .oracle-admin-actions {
@@ -1054,7 +1055,7 @@
   margin-left: auto;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-file-tabs {
@@ -1075,13 +1076,13 @@
   border: 0;
   border-radius: 8px 8px 0 0;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: var(--type-small);
 }
 
 .oracle-file-tab > span:last-child {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-file-tab-active,
@@ -1122,7 +1123,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-file-detail,
@@ -1130,7 +1131,7 @@
   flex: none;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: var(--type-mono-sm);
 }
 
 .oracle-file-detail {
@@ -1138,7 +1139,7 @@
 }
 
 .oracle-file-when {
-  width: 62px;
+  white-space: nowrap;
   text-align: right;
 }
 
@@ -1195,7 +1196,6 @@
 
   .oracle-setup-step {
     gap: 4px;
-    font-size: 8.5px;
   }
 
   .oracle-setup-step:not(:last-child)::after {
@@ -1261,9 +1261,5 @@
 
   .oracle-file-detail {
     margin-left: 0;
-  }
-
-  .oracle-file-when {
-    width: auto;
   }
 }
