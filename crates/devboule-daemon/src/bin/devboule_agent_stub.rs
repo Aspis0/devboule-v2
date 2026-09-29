@@ -28,25 +28,44 @@ fn main() -> io::Result<()> {
         eprintln!("missing Devboule session environment");
         std::process::exit(2);
     }
+    // The integration restart/resume tests drive a life's counter and its
+    // start source from outside; the defaults keep the single-report
+    // contract the original test asserts.
+    let agent_session_id = std::env::var("DEVBOULE_AGENT_STUB_SESSION_ID")
+        .unwrap_or_else(|_| "stub-session".to_string());
+    let seqs: Vec<u64> = std::env::var("DEVBOULE_AGENT_STUB_SEQS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(|part| part.trim().parse::<u64>().ok())
+                .collect::<Vec<u64>>()
+        })
+        .filter(|seqs| !seqs.is_empty())
+        .unwrap_or_else(|| vec![1]);
+    let start =
+        std::env::var("DEVBOULE_AGENT_STUB_START").unwrap_or_else(|_| "startup".to_string());
+    let session_start_source = (!start.is_empty()).then_some(start);
 
     let file = connect_pipe(&socket)?;
     let owner =
         OwnerId::new("stub", format!("stub-{}", std::process::id())).map_err(io::Error::other)?;
     let client = handshake(file, ClientHello::m3a(owner, "devboule-agent-stub"))
         .map_err(|error| io::Error::other(error.to_string()))?;
-    client
-        .session_report_agent(
-            &session_id,
-            "devboule:stub",
-            "stub",
-            AgentActivityState::Working,
-            Some(1),
-            Some("stub-session".to_string()),
-            None,
-            Some("startup".to_string()),
-            None,
-        )
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    for seq in seqs {
+        client
+            .session_report_agent(
+                &session_id,
+                "devboule:stub",
+                "stub",
+                AgentActivityState::Working,
+                Some(seq),
+                Some(agent_session_id.clone()),
+                None,
+                session_start_source.clone(),
+                None,
+            )
+            .map_err(|error| io::Error::other(error.to_string()))?;
+    }
     // Stay alive so the test can attach to a live session. Close/kill ends this.
     std::thread::sleep(Duration::from_secs(30));
     Ok(())

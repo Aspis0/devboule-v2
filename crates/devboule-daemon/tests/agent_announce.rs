@@ -236,3 +236,130 @@ fn pty_stub_announces_over_the_named_pipe() {
         replay.events
     );
 }
+
+fn announced(events: &[SessionEvent], identity: &str, seq: u64) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            SessionEvent::AgentReported {
+                agent,
+                report_seq: Some(reported),
+                agent_session_id: Some(id),
+                ..
+            } if agent == "stub" && id == identity && *reported == seq
+        )
+    })
+}
+
+fn queue_stub_pty(harness: &Harness) {
+    write_test_pty_command(
+        &harness.paths,
+        &PtyCommand::new(
+            stub_bin().to_string_lossy().into_owned(),
+            Vec::<String>::new(),
+            std::env::current_dir().expect("cwd"),
+            Vec::new(),
+        ),
+    )
+    .expect("queue stub as the PTY child");
+}
+
+/// One stub life over the real pipe: its identity, its seq list and its
+/// start source come from the environment, the defaults reproducing the
+/// single `startup` + seq 1 report the original test asserts.
+fn spawn_stub_life(
+    harness: &Harness,
+    session_id: &str,
+    identity: &str,
+    seqs: &str,
+    start: &str,
+) -> std::process::Child {
+    std::process::Command::new(stub_bin())
+        .env("DEVBOULE_ENV", "1")
+        .env("DEVBOULE_SESSION_ID", session_id)
+        .env("DEVBOULE_SOCKET_PATH", &harness.paths.pipe_name)
+        .env("DEVBOULE_AGENT_STUB_SESSION_ID", identity)
+        .env("DEVBOULE_AGENT_STUB_SEQS", seqs)
+        .env("DEVBOULE_AGENT_STUB_START", start)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("stub life")
+}
+
+fn attached_terminal(harness: &Harness) -> (DaemonClient, String, Arc<Mutex<Vec<SessionEvent>>>) {
+    let client = harness.client();
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let handler: EventHandler = {
+        let events = Arc::clone(&events);
+        Arc::new(move |envelope| {
+            events.lock().expect("events").push(envelope.event);
+        })
+    };
+    client
+        .session_attach(&session.id, None, handler)
+        .expect("attach");
+    (client, session.id, events)
+}
+
+fn reap(mut life: std::process::Child) {
+    let _ = life.kill();
+    let _ = life.wait();
+}
+
+/// The restart shape end to end: in a live Terminal session life A counts
+/// to seq 5, then life B — a fresh process, a fresh identity, its own
+/// `startup` — announces seq 1, and the daemon must accept the 5 → 1 fall
+/// that a per-source gate rejects.
+#[test]
+fn a_restarted_stub_announces_its_own_first_seq() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut harness = Harness::spawn();
+    queue_stub_pty(&harness);
+    let (client, session_id, events) = attached_terminal(&harness);
+
+    let first = spawn_stub_life(&harness, &session_id, "restart-a", "5", "startup");
+    wait_for(&events, Duration::from_secs(8), |events| {
+        announced(events, "restart-a", 5)
+    });
+
+    let second = spawn_stub_life(&harness, &session_id, "restart-b", "1", "startup");
+    wait_for(&events, Duration::from_secs(8), |events| {
+        announced(events, "restart-b", 1)
+    });
+    reap(second);
+    reap(first);
+
+    drop(client);
+    harness.kill_daemon();
+}
+
+/// The resume shape end to end: life A counts to seq 7, then a stub with
+/// the SAME identity announces `resume` + seq 1 — a fresh process over a
+/// kept conversation — and the daemon must reset that key so seq 1 is
+/// accepted instead of gated by the previous process's 7.
+#[test]
+fn a_resumed_stub_same_identity_announces_from_one() {
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut harness = Harness::spawn();
+    queue_stub_pty(&harness);
+    let (client, session_id, events) = attached_terminal(&harness);
+
+    let first = spawn_stub_life(&harness, &session_id, "resume-x", "7", "startup");
+    wait_for(&events, Duration::from_secs(8), |events| {
+        announced(events, "resume-x", 7)
+    });
+
+    let second = spawn_stub_life(&harness, &session_id, "resume-x", "1", "resume");
+    wait_for(&events, Duration::from_secs(8), |events| {
+        announced(events, "resume-x", 1)
+    });
+    reap(second);
+    reap(first);
+
+    drop(client);
+    harness.kill_daemon();
+}

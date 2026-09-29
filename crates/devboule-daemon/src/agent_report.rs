@@ -1,13 +1,36 @@
-//! Agent announcement: peer identity and monotonic hook `seq`.
+//! Agent announcement: peer identity, field validation, and the hook `seq`
+//! gate — one monotonic counter per `(source, agent_session_id)`, so two
+//! identities of one source never gate each other, and a sender that
+//! announces no identity keeps the one counter per source it has always
+//! had. A `startup`/`resume`/`new`/`fork`/`branch` report whose seq does
+//! not beat the stored one is a new process counting from fresh and
+//! starts its own key over; any other `session_start_source`, and any
+//! higher seq, leave the counter alone. Known residuals: two live
+//! processes announcing the SAME identity share one key — the one the
+//! user just started resets it and takes it, then the incumbent's next
+//! higher seq reclaims it and the just-started process can be the one
+//! whose seq gets rejected (a fork gives a new id; a resume of a
+//! conversation that is still live does not). And a dead life's queued
+//! `startup` re-opens the key it shared with the live one, so its stale
+//! reports are accepted and take the headline until the live agent's
+//! next report — wrong state while the live agent stays silent, never a
+//! pin. The headline is the most recently accepted report of a source,
+//! whichever identity sent it.
 //!
-//! Seq rules adapted from herdr `terminal/state.rs` `accept_hook_report`
-//! (Apache-2.0, commit 3150bd9). A report that is older than, equal to, or
-//! missing after a sequenced report for the same `source` must not replace
-//! the accepted state.
+//! The monotonic rule is adapted from herdr `terminal/state.rs`
+//! `accept_hook_report` (Apache-2.0, commit 3150bd9, `:1652`). The
+//! lifecycle handling is Devboule's own, not a translation: herdr removes
+//! a source's sequence on a witnessed exit and re-anchors under process
+//! confirmation (`:697-699`); this daemon observes no process, so the
+//! start-source transition above states the new life instead. No
+//! reporter is silenced for good: a stale seq is dropped with a
+//! rate-bounded log line, and an evicted identity counts from fresh if it
+//! reports again.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use devboule_protocol::{AgentActivityState, ErrorCode, WireError};
 
@@ -63,11 +86,26 @@ enum SourceSeq {
     Number(u64),
 }
 
-/// Last accepted report per hook `source`, plus the current visible state.
+/// One `(source, agent_session_id)` counter: the seq it last accepted, the
+/// order of that accept (what the per-source eviction reads), and when its
+/// reject line was last logged.
+#[derive(Debug)]
+struct Gate {
+    seq: SourceSeq,
+    accepted_at: u64,
+    last_reject_log: Option<Instant>,
+}
+
+/// Last accepted report per hook key, plus the current visible state: the
+/// per-`(source, identity)` counters and the headline — the most recently
+/// accepted report of any identity.
 #[derive(Debug, Default)]
 pub struct AgentReportState {
-    sequences: HashMap<String, SourceSeq>,
+    sequences: HashMap<(String, Option<String>), Gate>,
     last: Option<AcceptedAgentReport>,
+    /// Accept-order stamps for eviction; each accepted report takes the
+    /// next one.
+    clock: u64,
 }
 
 impl AgentReportState {
@@ -83,8 +121,8 @@ impl AgentReportState {
         self.last.as_ref().map(|last| (last.state, last.seq))
     }
 
-    /// Apply `report` if its `seq` is fresh for `report.source`. Returns
-    /// whether the accepted state changed.
+    /// Apply `report` if its `seq` is fresh for its `(source,
+    /// agent_session_id)` key. Returns whether the accepted state changed.
     pub fn apply(&mut self, report: AgentReport) -> Result<bool, WireError> {
         if report.seq == Some(u64::MAX) {
             return Err(WireError::new(
@@ -92,25 +130,130 @@ impl AgentReportState {
                 "Agent announcement seq u64::MAX is not a valid hook sequence.",
             ));
         }
-        let last_seq = self.sequences.get(&report.source).copied();
+        let key = (report.source.clone(), report.agent_session_id.clone());
+        let mut last_seq = self.sequences.get(&key).map(|gate| gate.seq);
+        // Read before any removal: the throttle must outlive a reset, so
+        // the bound holds however the key is re-opened.
+        let carried_reject_log = self
+            .sequences
+            .get(&key)
+            .and_then(|gate| gate.last_reject_log);
+        if matches!(
+            report.session_start_source.as_deref(),
+            Some("startup" | "resume" | "new" | "fork" | "branch")
+        ) && !accept_hook_seq(last_seq, report.seq)
+        {
+            // A new-process start source (startup, resume, new, fork,
+            // branch) counts from fresh: when its seq does not beat the
+            // stored one, the previous life's numbers must not gate it, so
+            // its key starts over. A higher seq is the same life continuing
+            // and needs no reset, and every other start source (clear,
+            // compact, select) is same-process — presence alone resets
+            // nothing.
+            self.sequences.remove(&key);
+            last_seq = None;
+        }
         if !accept_hook_seq(last_seq, report.seq) {
+            let now = Instant::now();
+            if let Some(gate) = self.sequences.get_mut(&key) {
+                if reject_log_due(gate.last_reject_log, now) {
+                    gate.last_reject_log = Some(now);
+                    // Under the app the daemon's stderr is daemon.log; a
+                    // launcher that gave stderr a real sink receives this
+                    // line there instead (daemon_log.rs).
+                    eprintln!(
+                        "hook report seq rejected: source={} identity={:?} last={:?} incoming={:?}",
+                        report.source, report.agent_session_id, last_seq, report.seq
+                    );
+                }
+            }
             return Ok(false);
         }
-        if !self.sequences.contains_key(&report.source) && self.sequences.len() >= MAX_HOOK_SOURCES
-        {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                format!("Agent announcement may track at most {MAX_HOOK_SOURCES} sources"),
-            ));
+        let source_tracked = self
+            .sequences
+            .keys()
+            .any(|(tracked, _)| tracked == &report.source);
+        if !source_tracked {
+            let distinct = self
+                .sequences
+                .keys()
+                .map(|(tracked, _)| tracked.as_str())
+                .collect::<HashSet<_>>()
+                .len();
+            if distinct >= MAX_HOOK_SOURCES {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Agent announcement may track at most {MAX_HOOK_SOURCES} sources"),
+                ));
+            }
+        }
+        if !self.sequences.contains_key(&key) {
+            self.evict_if_source_full(&report.source);
         }
         let mark = match report.seq {
             Some(seq) => SourceSeq::Number(seq),
             None => SourceSeq::Unsequenced,
         };
-        self.sequences.insert(report.source.clone(), mark);
+        self.clock = self.clock.saturating_add(1);
+        // The reject-log throttle rides the key across accepts and across
+        // resets: one line per key per minute, however the key was
+        // re-opened.
+        self.sequences.insert(
+            key,
+            Gate {
+                seq: mark,
+                accepted_at: self.clock,
+                last_reject_log: carried_reject_log,
+            },
+        );
+        // The headline is the most recently accepted report of this source,
+        // whichever identity sent it: a late report from an older life can
+        // show stale state only until the live agent's next report, so the
+        // row heals itself and can never be pinned — and the event stream,
+        // the journal row and this headline move together on every accept.
         self.last = Some(AcceptedAgentReport::from(&report));
         Ok(true)
     }
+
+    /// Room for one more identity of `source`: past the bound its least
+    /// recently accepted key makes room. The bound exists so a long-lived
+    /// session's many identities cannot grow the map without end;
+    /// eviction forgets a key, it never rejects a reporter — an evicted
+    /// identity that reports again counts from fresh, at the cost of one
+    /// open gate: its first report is believed whatever its seq, so a
+    /// lower seq than it last accepted can be taken once.
+    fn evict_if_source_full(&mut self, source: &str) {
+        let lives = self
+            .sequences
+            .keys()
+            .filter(|(tracked, _)| tracked.as_str() == source)
+            .count();
+        if lives < MAX_LIVES_PER_SOURCE {
+            return;
+        }
+        let oldest = self
+            .sequences
+            .iter()
+            .filter(|((tracked, _), _)| tracked.as_str() == source)
+            .min_by_key(|(_, gate)| gate.accepted_at)
+            .map(|(key, _)| key.clone());
+        if let Some(oldest) = oldest {
+            self.sequences.remove(&oldest);
+        }
+    }
+}
+
+/// How long one key's reject line stays quiet after logging: the first
+/// reject for a key, then at most one line a minute. Rejections can repeat
+/// forever (two lives sharing one id), and `daemon.log` stops at its 5 MiB
+/// cap with one notice — an unbounded flood would silence every other
+/// daemon diagnostic along with itself.
+const REJECT_LOG_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Whether a reject on this key deserves its log line now: the first one,
+/// then at most one per [`REJECT_LOG_INTERVAL`].
+fn reject_log_due(last_log: Option<Instant>, now: Instant) -> bool {
+    last_log.is_none_or(|at| now.saturating_duration_since(at) >= REJECT_LOG_INTERVAL)
 }
 
 /// Shared wrapper so concurrent applies serialize on one lock.
@@ -136,9 +279,10 @@ impl SharedAgentReportState {
     }
 }
 
-/// Whether an incoming hook `seq` may replace the last accepted one.
+/// Whether an incoming hook `seq` may replace the last accepted one for a
+/// `(source, agent_session_id)` key.
 ///
-/// A missing `seq` is accepted only before this `source` has any accepted
+/// A missing `seq` is accepted only before this key has any accepted
 /// report. After that, only a strictly greater `seq` may apply. Duplicates
 /// and older values are ignored so they cannot regress state.
 fn accept_hook_seq(last: Option<SourceSeq>, incoming: Option<u64>) -> bool {
@@ -180,10 +324,16 @@ pub fn unauthorized_peer(message: impl Into<String>) -> WireError {
 /// Per-field cap on announcement strings. 4 KiB is far above any legitimate
 /// agent id, source, or session path and far below the 1 MiB frame cap.
 pub const MAX_ANNOUNCEMENT_FIELD_BYTES: usize = 4096;
-/// Distinct hook `source` keys tracked per session. Official sources are
+/// Distinct hook `source` values tracked per session. Official sources are
 /// `devboule:<id>` for each known agent plus the test stub, so this cap is
-/// the actual number of keys `validate_announcement` can admit.
+/// the actual number of sources `validate_announcement` can admit.
 pub const MAX_HOOK_SOURCES: usize = crate::provider_catalog::KNOWN_AGENTS.len() + 1;
+/// Identities tracked per source. One source can announce through several
+/// agent lives over a long-lived session, and each life is a key; four
+/// bounds the history — the most recently accepting keys stay, an active
+/// life that has gone quiet is the first to go, and the least recently
+/// accepted key makes room.
+const MAX_LIVES_PER_SOURCE: usize = 4;
 
 /// Official sources have the form `devboule:<agent>` and must name the
 /// same agent they claim. Adapted from herdr `is_official_agent_source`
@@ -286,7 +436,7 @@ mod tests {
             seq,
             agent_session_id: Some("agent-1".to_string()),
             agent_session_path: None,
-            session_start_source: Some("startup".to_string()),
+            session_start_source: None,
         }
     }
 
@@ -359,6 +509,153 @@ mod tests {
             Some(AgentActivityState::Working)
         );
         assert_eq!(state.last().and_then(|last| last.seq), Some(0));
+    }
+
+    fn claude_report(
+        identity: Option<&str>,
+        seq: Option<u64>,
+        state: AgentActivityState,
+    ) -> AgentReport {
+        let mut item = report(seq, state);
+        item.source = "devboule:claude".to_string();
+        item.agent = "claude".to_string();
+        item.agent_session_id = identity.map(str::to_string);
+        item
+    }
+
+    #[test]
+    fn the_least_recently_accepted_identity_is_evicted_and_returns_fresh() {
+        let mut state = AgentReportState::default();
+        for identity in ["life-1", "life-2", "life-3", "life-4"] {
+            assert!(state
+                .apply(claude_report(
+                    Some(identity),
+                    Some(5),
+                    AgentActivityState::Working
+                ))
+                .expect("apply"));
+        }
+        assert!(
+            state
+                .apply(claude_report(
+                    Some("life-5"),
+                    Some(5),
+                    AgentActivityState::Working
+                ))
+                .expect("fifth identity"),
+            "a fifth identity fits by evicting the least recently accepted one"
+        );
+        assert!(
+            !state
+                .apply(claude_report(
+                    Some("life-2"),
+                    Some(1),
+                    AgentActivityState::Idle
+                ))
+                .expect("stale seq applied as false"),
+            "the identities still tracked keep their counters, and a rejected \
+             report does not refresh its recency"
+        );
+        assert!(
+            state
+                .apply(claude_report(
+                    Some("life-1"),
+                    Some(1),
+                    AgentActivityState::Idle
+                ))
+                .expect("evicted identity applies"),
+            "an evicted identity counts from fresh — eviction forgets, it never silences"
+        );
+    }
+
+    #[test]
+    fn an_identityless_sender_keeps_one_counter() {
+        let mut state = AgentReportState::default();
+        assert!(state
+            .apply(claude_report(None, Some(5), AgentActivityState::Working))
+            .expect("apply"));
+        assert!(
+            !state
+                .apply(claude_report(None, Some(3), AgentActivityState::Idle))
+                .expect("stale seq applied as false"),
+            "a sender that announces no identity keeps the one counter per source it always had"
+        );
+        assert_eq!(state.last().and_then(|last| last.seq), Some(5));
+    }
+
+    #[test]
+    fn the_reject_log_line_is_rate_bound_per_key() {
+        let now = Instant::now();
+        assert!(
+            reject_log_due(None, now),
+            "the first reject for a key always earns its line"
+        );
+        assert!(
+            !reject_log_due(Some(now), now),
+            "an immediate repeat stays quiet"
+        );
+        assert!(!reject_log_due(
+            Some(now),
+            now + REJECT_LOG_INTERVAL - Duration::from_secs(1)
+        ));
+        assert!(reject_log_due(Some(now), now + REJECT_LOG_INTERVAL));
+    }
+
+    #[test]
+    fn the_reject_log_throttle_survives_a_reset() {
+        let mut state = AgentReportState::default();
+        let key = ("devboule:claude".to_string(), Some("life-a".to_string()));
+        assert!(state
+            .apply(claude_report(
+                Some("life-a"),
+                Some(5),
+                AgentActivityState::Working
+            ))
+            .expect("apply"));
+        assert!(
+            !state
+                .apply(claude_report(
+                    Some("life-a"),
+                    Some(3),
+                    AgentActivityState::Idle
+                ))
+                .expect("stale seq applied as false"),
+            "the first reject earns its line"
+        );
+        let armed = state
+            .sequences
+            .get(&key)
+            .and_then(|gate| gate.last_reject_log)
+            .expect("the first reject was logged");
+        let mut reset = claude_report(Some("life-a"), Some(1), AgentActivityState::Idle);
+        reset.session_start_source = Some("startup".to_string());
+        assert!(state.apply(reset).expect("the reset accepts"));
+        assert_eq!(
+            state
+                .sequences
+                .get(&key)
+                .and_then(|gate| gate.last_reject_log),
+            Some(armed),
+            "the throttle rides the reset: the bound is per key per minute across re-opens"
+        );
+        assert!(
+            !state
+                .apply(claude_report(
+                    Some("life-a"),
+                    Some(1),
+                    AgentActivityState::Blocked
+                ))
+                .expect("stale seq applied as false"),
+            "an immediate reject after the reset stays within the interval"
+        );
+        assert_eq!(
+            state
+                .sequences
+                .get(&key)
+                .and_then(|gate| gate.last_reject_log),
+            Some(armed),
+            "the reset/reject alternation does not log again inside the interval"
+        );
     }
 
     #[test]

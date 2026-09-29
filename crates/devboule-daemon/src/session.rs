@@ -385,6 +385,16 @@ mod session_attribution_tests;
 /// the wire shape.
 #[path = "session_child_commands.rs"]
 mod session_child_commands;
+/// The hook-seq lifecycle tests on the production announce path: a
+/// restarted agent's fresh identity announces its own first seq, a
+/// startup/resume report with a lower seq resets the same identity's
+/// counter (a resume), two live identities interleave without silencing
+/// each other, the reset's closed allowlist, and the headline as the most
+/// recently accepted report; plus the identity-less key and a replayed
+/// transcript's clear headline.
+#[cfg(test)]
+#[path = "session_hook_seq_lifecycle_tests.rs"]
+mod session_hook_seq_lifecycle_tests;
 pub(crate) use session_child_commands::CancelOutcome;
 #[cfg(test)]
 #[path = "session_child_commands_tests.rs"]

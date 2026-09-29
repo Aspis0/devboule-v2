@@ -20,6 +20,14 @@ licensed under the Apache License, Version 2.0, commit `3150bd9`:
 - `herdr-src/src/terminal/state.rs` `accept_hook_report`
 - `herdr-src/src/agent_resume.rs` `is_official_agent_source`
 
+The lifecycle handling around that `seq` gate is Devboule's own and
+diverges from herdr on purpose: herdr removes a source's sequence on a
+witnessed process exit and re-anchors under process confirmation
+(`herdr-src/src/terminal/state.rs:697-699`), while Devboule observes no
+process and instead keys each counter by `(source, agent_session_id)` and
+starts a key over when a `startup`/`resume`/`new`/`fork`/`branch`
+report's seq does not beat the stored one.
+
 The known-agent executable names and aliases in
 `crates/devboule-daemon/src/provider_catalog.rs` are adapted from herdr,
 licensed under the Apache License, Version 2.0, commit `3150bd9`:
