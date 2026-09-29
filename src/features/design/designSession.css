@@ -7,14 +7,14 @@
 
 .design-session-end-button {
   flex: none;
-  min-height: 26px;
+  min-height: var(--control-default);
   padding: 0 10px;
   color: var(--ink-soft);
   background: transparent;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--type-interface);
 }
 
 .design-session-end-button:hover,
@@ -33,5 +33,5 @@
   align-items: center;
   gap: 6px;
   color: var(--danger-deep);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }

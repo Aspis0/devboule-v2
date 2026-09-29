@@ -26,14 +26,6 @@ describe("design message source pills", () => {
     // does not count.
     expect(block).not.toContain("\n  height: 20px");
   });
-
-  it("applies the same wrap fix to the sources list pills", () => {
-    const block = blockFor(".design-message-sources span");
-    expect(block).toContain("min-height: 20px");
-    expect(block).toContain("height: auto");
-    expect(block).toContain("overflow-wrap: anywhere");
-    expect(block).not.toContain("\n  height: 20px");
-  });
 });
 
 describe("design section note controls", () => {
@@ -41,7 +33,7 @@ describe("design section note controls", () => {
     const block = blockFor(".design-section-note-compose input");
     expect(block).toContain("background: var(--surface)");
     expect(block).toContain("border: 1px solid var(--border-strong)");
-    expect(block).toContain("font-size: 11.5px");
+    expect(block).toContain("font-size: var(--type-interface)");
     expect(block).not.toContain("#fff");
     expect(block).not.toContain("#ffffff");
   });

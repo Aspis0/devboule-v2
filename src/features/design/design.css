@@ -66,7 +66,7 @@
   flex: 0 1 auto;
   min-width: 0;
   max-width: 300px;
-  height: 29px;
+  height: var(--control-default);
   align-items: center;
   gap: 7px;
   padding: 0 11px;
@@ -100,7 +100,7 @@
 .design-folder-caption {
   flex: none;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .design-folder-value {
@@ -110,20 +110,20 @@
   color: var(--ink-soft);
   text-overflow: ellipsis;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-folder-chevron {
   flex: none;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1;
 }
 
 .design-folder-note {
   margin: 0 0 6px;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-small);
   line-height: 1.45;
 }
 
@@ -140,7 +140,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-folder-empty {
@@ -149,12 +149,12 @@
   justify-content: space-between;
   gap: 8px;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .design-folder-use,
 .design-folder-attach {
-  height: 24px;
+  height: var(--control-default);
   padding: 0 10px;
   color: var(--ink-soft);
   white-space: nowrap;
@@ -162,7 +162,7 @@
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: var(--type-interface);
 }
 
 .design-folder-use:hover,
@@ -182,7 +182,7 @@
 .design-folder-error {
   margin-top: 6px;
   color: var(--danger-deep);
-  font-size: 10.5px;
+  font-size: var(--type-meta);
 }
 
 .design-folder-actions {
@@ -213,7 +213,7 @@
   align-items: center;
   gap: 7px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
@@ -270,13 +270,13 @@
 }
 
 .design-history-menu-button {
-  height: 26px;
+  height: var(--control-default);
   padding: 0 10px;
   color: var(--ink-soft);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .design-history-menu-button:hover,
@@ -311,13 +311,13 @@
   flex: none;
   align-items: center;
   gap: 7px;
-  height: 26px;
+  height: var(--control-default);
   padding: 0 11px;
   color: var(--ink-soft);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--type-small);
   white-space: nowrap;
 }
 
@@ -337,10 +337,10 @@
 }
 
 .design-save-primary {
-  height: 26px;
+  height: var(--control-default);
   color: var(--white);
   background: var(--terracotta-deep);
-  font-size: 11.5px;
+  font-size: var(--type-interface);
   font-weight: 500;
 }
 
@@ -426,7 +426,6 @@
 .design-history-gone {
   color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
 }
 
 .design-history-gone {
@@ -437,7 +436,7 @@
 .design-history-current {
   grid-column: 1 / -1;
   color: var(--ink-soft);
-  font-size: 10.5px;
+  font-size: var(--type-meta);
 }
 
 .design-history-open-status {
@@ -445,21 +444,21 @@
   padding: 7px 14px;
   border-bottom: 1px solid var(--border);
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-meta);
   background: var(--surface);
 }
 
 .design-history-empty {
   margin: 0;
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .design-history-read-failure,
 .design-history-unavailable {
   margin: 0;
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .design-main {
@@ -517,7 +516,7 @@
 .design-canvas-empty-copy {
   max-width: 280px;
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   line-height: 1.5;
 }
 
@@ -612,7 +611,7 @@
   background: var(--surface-muted);
   border-radius: 999px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-node-actions {
@@ -621,24 +620,18 @@
   padding: 0 13px 13px;
 }
 
-.design-node-primary-action,
-.design-node-secondary-action {
+.design-node-primary-action {
   display: grid;
   height: 26px;
   padding: 0 12px;
   place-items: center;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .design-node-primary-action {
   color: var(--white);
   background: var(--terracotta-deep);
-}
-
-.design-node-secondary-action {
-  color: var(--ink-soft);
-  border: 1px solid var(--border);
 }
 
 .design-canvas-artifact {
@@ -712,7 +705,7 @@
      buttons above, so our own chrome passes the rule we check pages against. */
   min-height: 24px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 24px;
 }
 
@@ -787,7 +780,7 @@
   height: 34px;
   padding: 0 11px;
   color: var(--silence);
-  font-size: 9.5px;
+  font-size: var(--type-meta);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -797,7 +790,7 @@
   margin-left: auto;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-sm);
   letter-spacing: 0;
 }
 
@@ -856,7 +849,7 @@
 .design-layer-kind {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-layer-name {
@@ -864,7 +857,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: var(--type-small);
 }
 
 .design-layer-name-hidden {
@@ -907,7 +900,7 @@
   white-space: nowrap;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 /* The measured size is short and never shrinks: it shares its line only with
@@ -944,7 +937,7 @@
   background: transparent;
   border-radius: 4px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-layer-trail-step[aria-current="true"] {
@@ -960,7 +953,7 @@
 .design-layer-trail-sep {
   flex: none;
   color: var(--silence);
-  font-size: 9.5px;
+  font-size: var(--type-meta);
 }
 
 .design-layer-details-close {
@@ -974,7 +967,7 @@
   color: var(--silence);
   background: transparent;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .design-layer-details-close:hover,
@@ -992,7 +985,7 @@
   color: var(--silence);
   background: transparent;
   border-radius: 5px;
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .design-layer-visibility:hover,
@@ -1046,13 +1039,13 @@
   min-width: 46px;
   color: var(--ink);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-zoom-controls .design-fit-button {
   width: auto;
   padding: 0 10px;
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .design-assistant {
@@ -1090,7 +1083,7 @@
 .design-generation-label {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-assistant-actions {
@@ -1109,7 +1102,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 7px;
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .design-visual-check:hover,
@@ -1167,7 +1160,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--type-meta);
   line-height: 20px;
 }
 
@@ -1223,7 +1216,7 @@
   place-items: center;
   color: var(--white);
   border-radius: 999px;
-  font-size: 9px;
+  font-size: var(--type-meta);
 }
 
 .design-message-icon-working {
@@ -1265,7 +1258,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
   line-height: 18px;
   max-width: 100%;
   overflow-wrap: anywhere;
@@ -1274,7 +1267,7 @@
 .design-message-description {
   padding: 0 12px 10px;
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--type-small);
   line-height: 1.6;
 }
 
@@ -1284,32 +1277,16 @@
 .design-grounding-notice {
   padding: 0 12px 10px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.5;
   opacity: 0.85;
 }
 
-.design-message-sources,
 .design-message-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
   padding: 0 12px 10px;
-}
-
-.design-message-sources span {
-  min-height: 20px;
-  height: auto;
-  padding: 0 8px;
-  color: var(--ink-soft);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
-  line-height: 18px;
-  max-width: 100%;
-  overflow-wrap: anywhere;
 }
 
 .design-message-actions {
@@ -1332,7 +1309,7 @@
   border: 1px solid var(--border);
   border-radius: 7px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: var(--type-small);
   white-space: nowrap;
 }
 
@@ -1382,13 +1359,13 @@
   color: var(--ink-soft);
   background: transparent;
   border-style: dashed;
-  font-size: 11.5px;
+  font-size: var(--type-meta);
 }
 
 .design-transcript-tool {
   color: var(--ink-soft);
   background: var(--surface-muted);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .design-transcript-label {
@@ -1413,7 +1390,7 @@
 .design-transcript-tool-status {
   flex: none;
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-transcript-text {
@@ -1458,7 +1435,7 @@
   max-width: 100%;
   width: max-content;
   min-width: 0;
-  height: 24px;
+  height: var(--control-default);
   align-items: center;
   gap: 7px;
   padding: 0 10px;
@@ -1467,7 +1444,7 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: var(--type-small);
   font-weight: 400;
 }
 
@@ -1479,7 +1456,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10.5px;
+  font-size: var(--type-small);
 }
 
 .design-skill-mode-control-chevron {
@@ -1508,7 +1485,7 @@
 .design-skill-result {
   margin: 4px 0 0;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
   line-height: 1.35;
 }
 
@@ -1517,7 +1494,7 @@
   margin: 4px 0 0;
   color: var(--danger-deep);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-sm);
   line-height: 1.35;
 }
 
@@ -1565,7 +1542,7 @@
 
 .design-craft-sheet-heading span {
   color: var(--terracotta-deep);
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 650;
 }
 
@@ -1574,14 +1551,14 @@
   gap: 2px;
   color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-sm);
   line-height: 1.3;
   text-align: right;
 }
 
 .design-craft-budget strong {
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--type-small);
   font-weight: 650;
 }
 
@@ -1624,7 +1601,7 @@
   gap: 12px;
   margin-bottom: 6px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
   font-weight: 650;
 }
 
@@ -1635,7 +1612,7 @@
 .design-craft-budget-note {
   margin: 0 0 7px;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
   line-height: 1.35;
 }
 
@@ -1689,7 +1666,7 @@
   border: 0;
   border-radius: 5px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .design-craft-title-button > span:first-child {
@@ -1718,7 +1695,7 @@
 .design-craft-title-status {
   flex: none;
   color: var(--silence);
-  font-size: 9px;
+  font-size: var(--type-meta);
   font-weight: 500;
 }
 
@@ -1758,7 +1735,7 @@
 .design-craft-detail > p {
   margin: 0 0 10px;
   color: var(--ink-soft);
-  font-size: 10.5px;
+  font-size: var(--type-small);
   line-height: 1.45;
 }
 
@@ -1766,7 +1743,7 @@
   color: var(--ink-soft);
   column-count: 2;
   column-gap: 17px;
-  font-size: 10px;
+  font-size: var(--type-meta);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -1788,7 +1765,7 @@
   border: 1px solid var(--border);
   border-radius: 3px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.92em;
+  font-size: var(--type-mono-md);
 }
 
 .design-composer-meta .design-composer-context {
@@ -1796,7 +1773,6 @@
   margin-bottom: 0;
 }
 
-.design-skill-mode input:focus-visible,
 .design-craft-title-row input:focus-visible {
   outline: 1px solid var(--terracotta);
   outline-offset: 2px;
@@ -1835,7 +1811,7 @@
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .design-composer-context button {
@@ -1846,12 +1822,12 @@
   color: var(--silence);
   background: transparent;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--type-meta);
   transform: translateX(20px);
 }
 
 /* Imported starting points. The pill below is shaped like the editing-context chip
-   above it (muted surface, hairline border, 999px radius, 10px ink) so an attached
+   above it (muted surface, hairline border, 999px radius, 12px ink) so an attached
    file reads as the same kind of object as the context it was attached to. It does
    not reuse that chip's rule: the chip's ✕ is pulled over its own label by a
    negative margin and a transform, which assumes a single label. A pill here holds
@@ -1877,7 +1853,7 @@
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 /* The attached file itself, at the head of the pill. 16px is the size this pill
@@ -1939,7 +1915,7 @@
   border: 0;
   border-radius: 999px;
   cursor: pointer;
-  font-size: 9px;
+  font-size: var(--type-meta);
   line-height: 1;
 }
 
@@ -1967,14 +1943,14 @@
 }
 
 .design-attach-button {
-  height: 24px;
+  height: var(--control-default);
   padding: 0 10px;
   color: var(--ink-soft);
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 999px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: var(--type-small);
   white-space: nowrap;
 }
 
@@ -1991,7 +1967,7 @@
   gap: 2px;
   margin: 5px 0 0;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
   line-height: 1.35;
 }
 
@@ -2060,7 +2036,7 @@
   display: block;
   width: 100%;
   min-width: 0;
-  height: 24px;
+  height: var(--control-default);
   padding: 0 10px;
   overflow: hidden;
   color: var(--ink-soft);
@@ -2069,8 +2045,8 @@
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 10.5px;
-  line-height: 22px;
+  font-size: var(--type-small);
+  line-height: 26px;
 }
 
 .design-agent-picker-wrap {
@@ -2109,7 +2085,7 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 6px 22px rgba(var(--ink-rgb), 0.13);
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 /* The folder menu is a toolbar menu, not a composer menu: it drops below its
@@ -2162,7 +2138,7 @@
   border-radius: 6px;
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .design-skill-mode-option:hover,
@@ -2189,7 +2165,7 @@
 .design-skill-mode-option-badge {
   margin-left: auto;
   color: var(--silence);
-  font-size: 9px;
+  font-size: var(--type-meta);
   font-weight: 600;
 }
 
@@ -2214,7 +2190,7 @@
   flex: none;
   margin-left: 0;
   color: var(--terracotta-deep);
-  font-size: 9px;
+  font-size: var(--type-meta);
   font-weight: 600;
 }
 
@@ -2226,7 +2202,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--type-small);
 }
 
 .design-skill-picker-action:hover {
@@ -2254,7 +2230,7 @@
   background: var(--surface-muted);
   border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-cmd);
 }
 
 .design-agent-picker-actions {
@@ -2269,7 +2245,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--type-interface);
 }
 
 .design-agent-picker-secondary {
@@ -2294,12 +2270,6 @@
   gap: 3px;
 }
 
-.design-workspace-project {
-  display: grid;
-  gap: 4px;
-  padding-top: 3px;
-}
-
 .design-agent-picker-option {
   padding: 6px 8px;
   color: var(--ink-soft);
@@ -2308,7 +2278,7 @@
   border: 1px solid transparent;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .design-agent-picker-option:hover,
@@ -2321,12 +2291,13 @@
 
 .design-agent-picker select {
   width: 100%;
-  min-height: 24px;
+  min-height: var(--control-default);
   color: var(--ink);
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 11px;
+  /* The global reset covers button, input and textarea, not select. */
+  font-size: var(--type-small);
 }
 
 .design-agent-picker-model-name {
@@ -2358,7 +2329,7 @@
   bottom: 0;
   display: grid;
   min-width: 72px;
-  height: 24px;
+  height: var(--control-default);
   padding: 0 13px;
   place-items: center;
   color: var(--white);
@@ -2366,7 +2337,7 @@
   border: 1px solid var(--terracotta-deep);
   border-radius: 9px;
   cursor: pointer;
-  font-size: 11.5px;
+  font-size: var(--type-interface);
   font-weight: 600;
 }
 
@@ -2381,7 +2352,7 @@
 .design-composer-hint {
   margin-top: 7px;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 /* 700px is a surface height and the surface is 100vh minus the band, so the
@@ -2430,7 +2401,7 @@
   .design-craft-sheet-expanded .design-craft-title-button {
     min-height: 23px;
     padding: 3px 2px 3px 0;
-    font-size: 9px;
+    font-size: var(--type-meta);
   }
 
   .design-craft-sheet-expanded .design-craft-title-status {
@@ -2450,12 +2421,11 @@
 
   .design-craft-sheet-expanded .design-craft-detail > p {
     margin-bottom: 6px;
-    font-size: 9.5px;
+    font-size: var(--type-meta);
   }
 
   .design-craft-sheet-expanded .design-craft-detail-body {
     column-gap: 13px;
-    font-size: 9px;
     line-height: 1.35;
   }
 
@@ -2540,7 +2510,7 @@
 
 .design-layer-orphans-heading {
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-small);
   margin-bottom: 6px;
 }
 
@@ -2561,7 +2531,7 @@
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .design-layer-orphan-badge {
@@ -2570,7 +2540,7 @@
   border: 1px solid var(--terracotta);
   border-radius: 4px;
   padding: 0 4px;
-  font-size: 9px;
+  font-size: var(--type-meta);
 }
 
 .design-layer-orphan-anchor {
@@ -2581,7 +2551,7 @@
   white-space: nowrap;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-mono-sm);
 }
 
 .design-layer-orphan-text {
@@ -2604,7 +2574,7 @@
   display: flex;
   gap: 8px;
   align-items: baseline;
-  font-size: 11.5px;
+  font-size: var(--type-interface);
 }
 
 .design-section-note-text {
@@ -2632,7 +2602,7 @@
   border: 1px solid var(--border-strong);
   border-radius: 9px;
   outline: 0;
-  font-size: 11.5px;
+  font-size: var(--type-interface);
   line-height: 1.5;
 }
 
@@ -2648,7 +2618,7 @@
 .design-section-note-compose button {
   display: grid;
   flex: none;
-  height: 24px;
+  height: var(--control-default);
   margin-left: auto;
   padding: 0 10px;
   place-items: center;
@@ -2657,7 +2627,7 @@
   border: 1px solid var(--terracotta-deep);
   border-radius: 9px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--type-interface);
   font-weight: 600;
 }
 
@@ -2686,7 +2656,6 @@
   color: var(--silence);
   background: transparent;
   border-radius: 999px;
-  font-size: 11px;
 }
 
 .design-section-notes li button:hover,

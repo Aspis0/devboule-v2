@@ -3300,9 +3300,10 @@ const DesignAssistant = memo(function DesignAssistant({
                 The primary action sits beside the text, not in a row of its own.
                 The composer's content box is 313px wide (366 assistant − 1 border
                 − 28 composer-wrap padding − 2 composer border − 22 composer padding),
-                and the four controls with their gaps need 335px, so a labelled
-                button cannot join the strip below. The three selectors keep that
-                strip and Generate docks at the text's bottom-right.
+                and the four strip controls label at 13px, which needs more than
+                that column, so a labelled button cannot join the strip below.
+                The three selectors keep that strip and Generate docks at the
+                text's bottom-right.
               */}
               <button
                 className="design-generate-button"
