@@ -549,6 +549,7 @@ fn send_pending_event(
                 " agent_background_tasks_changed".to_string()
             }
             SessionEvent::AgentTasks { .. } => " agent_tasks".to_string(),
+            SessionEvent::GoalChanged { .. } => " goal_changed".to_string(),
             SessionEvent::AgentError { .. } => " agent_error".to_string(),
             SessionEvent::AgentStderr { .. } => " agent_stderr".to_string(),
             SessionEvent::PermissionRequest { .. } => " permission_request".to_string(),

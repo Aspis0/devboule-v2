@@ -159,6 +159,10 @@
     "type": "exit"
   },
   {
+    "goal": "Ship the fix",
+    "type": "goal_changed"
+  },
+  {
     "droppedBytes": 0,
     "droppedFrames": 0,
     "type": "journal_degraded"

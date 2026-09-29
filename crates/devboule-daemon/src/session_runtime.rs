@@ -223,6 +223,7 @@ pub(crate) struct SessionRuntime {
     /// paths (S2/S8). Lock discipline only in S1 — no behaviour reads it yet.
     tools_state: Mutex<crate::mcp_broker::ToolsState>,
     pub(crate) agent_kind: Mutex<Option<SessionKind>>,
+    goal: Mutex<Option<String>>,
     claude_catalog_state: Mutex<crate::claude_catalog::ClaudeCatalogState>,
     /// Attention is deliberately runtime-only. It is a user's current view
     /// state, not transcript history, so it is not journaled and does not
@@ -543,6 +544,7 @@ impl SessionRuntime {
             mcp_ready_cvar: Condvar::new(),
             tools_state: Mutex::new(crate::mcp_broker::ToolsState::Unavailable),
             agent_kind: Mutex::new(None),
+            goal: Mutex::new(None),
             claude_catalog_state: Mutex::new(
                 crate::claude_catalog::ClaudeCatalogState::Provisional,
             ),
@@ -878,6 +880,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentTaskNotification { .. }
                 | SessionEvent::AgentBackgroundTasksChanged { .. }
                 | SessionEvent::AgentTasks { .. }
+                | SessionEvent::GoalChanged { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
@@ -2640,6 +2643,20 @@ impl SessionRuntime {
         }
     }
 
+    /// The session's current goal, as `/goal` last stored it. Runtime-only,
+    /// like attention: the journal column is the durable copy, and a restart
+    /// seeds this back from it without publishing — the transcript already
+    /// holds the `GoalChanged` event that said it.
+    pub(crate) fn goal(&self) -> Option<String> {
+        self.goal.lock().ok().and_then(|stored| stored.clone())
+    }
+
+    pub(crate) fn set_goal(&self, goal: Option<String>) {
+        if let Ok(mut stored) = self.goal.lock() {
+            *stored = goal;
+        }
+    }
+
     /// Install the session's origin. Called once, by the registry, right after
     /// the runtime exists; a second call is ignored rather than a panic,
     /// because the value is a fact about the session and both writers would
@@ -2831,6 +2848,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentTaskNotification { .. }
                 | SessionEvent::AgentBackgroundTasksChanged { .. }
                 | SessionEvent::AgentTasks { .. }
+                | SessionEvent::GoalChanged { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }

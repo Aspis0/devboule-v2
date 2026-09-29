@@ -1237,12 +1237,22 @@ pub(super) fn ended_record(id: &str, user: &str) -> crate::journal::SessionRecor
 }
 
 pub(super) fn insert_transcript(registry: &SessionRegistry, id: &str, owner: OwnerId) {
+    insert_transcript_with_kind(registry, id, owner, SessionKind::Terminal);
+}
+
+pub(super) fn insert_transcript_with_kind(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    kind: SessionKind,
+) {
+    let title = if kind.is_agent() { "Agent" } else { "Terminal" };
     let metadata = Session {
         id: id.to_string(),
         workspace_id: None,
         cwd: None,
-        kind: SessionKind::Terminal,
-        title: "Terminal".to_string(),
+        kind,
+        title: title.to_string(),
         state: SessionState::Ended {
             generation: 1,
             code: Some(0),

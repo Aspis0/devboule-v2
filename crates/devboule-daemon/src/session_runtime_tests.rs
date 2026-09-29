@@ -309,6 +309,9 @@ fn session_notice_survives_detach_and_reattach() {
             overlay: None,
             // No depth either, same rule: the birth value stays.
             depth: None,
+            // No goal either, same rule: the goal road writes the column,
+            // never a lifecycle upsert.
+            goal: None,
         })
         .expect("session row");
     let runtime = Arc::new(SessionRuntime::with_journal(

@@ -2332,3 +2332,66 @@ fn a_recorded_directory_survives_a_later_upsert_that_does_not_carry_it() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn goal_column_round_trip_set_and_clear() {
+    // The v16 column is the goal's durable copy: set stores, clear lands
+    // NULL, and a lifecycle upsert with no goal never erases either.
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    journal
+        .create_session(new_session_record(
+            "s.goal",
+            "owner",
+            None,
+            SessionKind::Claude,
+            "Agent",
+        ))
+        .expect("birth");
+    let birth = journal
+        .list()
+        .expect("rows")
+        .into_iter()
+        .find(|row| row.id == "s.goal")
+        .expect("the row");
+    assert_eq!(birth.goal, None, "a birth carries no goal");
+
+    journal
+        .set_session_goal("s.goal", Some("Ship it"))
+        .expect("set");
+    let stored = journal
+        .list()
+        .expect("rows")
+        .into_iter()
+        .find(|row| row.id == "s.goal")
+        .expect("the row");
+    assert_eq!(stored.goal.as_deref(), Some("Ship it"));
+
+    let mut ended = stored.clone();
+    ended.status = PersistStatus::Ended;
+    ended.generation = 2;
+    ended.goal = None;
+    journal.upsert_blocking(ended).expect("end marker");
+    let kept = journal
+        .list()
+        .expect("rows")
+        .into_iter()
+        .find(|row| row.id == "s.goal")
+        .expect("the row");
+    assert_eq!(
+        kept.goal.as_deref(),
+        Some("Ship it"),
+        "an upsert with no goal keeps the column"
+    );
+
+    journal.set_session_goal("s.goal", None).expect("clear");
+    let cleared = journal
+        .list()
+        .expect("rows")
+        .into_iter()
+        .find(|row| row.id == "s.goal")
+        .expect("the row");
+    assert_eq!(cleared.goal, None, "a clear lands NULL");
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

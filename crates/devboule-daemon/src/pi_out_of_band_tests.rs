@@ -149,11 +149,12 @@ fn drain(conn: &crate::session::event_pull::ConnHandle, outcomes: &mut Vec<Strin
 }
 
 #[test]
-fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_prompt_text() {
+fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_a_goal_prompt() {
     // The third case, driven through the send path: the two native
     // commands go out as pi's own control frames and never as prompts, the
-    // input is still recorded, and no turn starts for them — while `/goal x`
-    // keeps the ordinary road and lands in the plain-text writer.
+    // input is still recorded, and no turn starts for them — while `/goal`
+    // is daemon-owned: it stores, emits, and reaches pi as one ordinary
+    // `Goal:` user prompt, never as the slash text.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
@@ -161,6 +162,17 @@ fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_prompt_text() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-pi-oob", "process-pi-oob");
     let session_id = "pi-out-of-band";
+    // Production creates birth the journal row; the goal road records
+    // beside the live update, so the harness births it too.
+    journal
+        .create_session(crate::journal::new_session_record(
+            session_id,
+            owner.user.clone(),
+            None,
+            SessionKind::Pi,
+            "Agent",
+        ))
+        .expect("birth row");
     let pi = answering_pi();
     let hook = Arc::new(PiOutOfBandCommands::new(Arc::clone(&pi.control)));
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -202,14 +214,20 @@ fn compact_and_autocompact_reach_pi_as_rpc_frames_and_goal_as_prompt_text() {
     let recorded = drain(&conn, &mut outcomes);
     assert_eq!(recorded, ["/compact fold it", "/autocompact on"]);
 
-    // /goal x is an ordinary slash text: it goes to the writer untouched.
+    // `/goal x` is daemon-owned: it stores, emits, and reaches pi as one
+    // ordinary `Goal:` user prompt — never as the slash text.
     registry
         .send_with_subscription(session_id, 91, "/goal x", &[], &[], &owner, &conn)
         .expect("goal send");
     let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
     assert!(
-        written.ends_with("/goal x"),
-        "any other slash text reaches the provider as prompt text, got {written:?}"
+        written.ends_with("Goal: x"),
+        "the goal reaches the provider as an ordinary prompt, got {written:?}"
+    );
+    assert_eq!(
+        runtime.goal().as_deref(),
+        Some("x"),
+        "the intercept stores before sending"
     );
     assert!(
         runtime.is_turn_active(runtime.turn_counter()),

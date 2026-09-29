@@ -243,6 +243,11 @@ use session_messaging::{
     boundary_reached_message_slot, finish_message_delivery, rearm_message_slot_boundary,
     reserve_message_brake,
 };
+/// The daemon-owned `/goal` command: one intercept in the prompt path,
+/// before provider dispatch, for every agent provider — one phrase for the
+/// file, the goal command and nothing else.
+#[path = "session_goal.rs"]
+pub(crate) mod session_goal;
 #[path = "session_items.rs"]
 mod session_items;
 #[path = "session_messaging.rs"]
@@ -1296,12 +1301,21 @@ impl SessionRegistry {
                     .map(|entry| {
                         let runtime = entry.runtime();
                         let activity = runtime.activity();
-                        (entry.to_session(), runtime.attention(), Some(activity))
+                        // The live goal is runtime state; the journal column
+                        // is its durable copy, read for rows with no runtime.
+                        let goal = runtime.goal();
+                        (
+                            entry.to_session(),
+                            runtime.attention(),
+                            Some(activity),
+                            goal,
+                        )
                     })
                     .collect::<Vec<(
                         Session,
                         Option<devboule_protocol::Attention>,
                         Option<AgentActivityState>,
+                        Option<String>,
                     )>>();
                 (sessions, hidden_ids)
             })
@@ -1309,7 +1323,7 @@ impl SessionRegistry {
         let mut sessions = sessions_from_map;
         let live_ids = sessions
             .iter()
-            .map(|(session, _, _)| session.id.clone())
+            .map(|(session, _, _, _)| session.id.clone())
             .collect::<std::collections::HashSet<_>>();
         if let Some(rows) = self.journal_roster() {
             sessions.extend(rows.into_iter().filter_map(|row| {
@@ -1318,14 +1332,16 @@ impl SessionRegistry {
                 }
                 // A journal row has no runtime to hold a turn, so it has no
                 // status: `None`, which the app must read as "unknown", never as
-                // "idle".
-                (row.owner == owner.user).then(|| (row.to_session(), None, None))
+                // "idle". Its goal comes from the row's own column — the
+                // durable copy of the last `/goal` change, clear included.
+                let goal = row.goal.clone();
+                (row.owner == owner.user).then(|| (row.to_session(), None, None, goal))
             }));
         }
         sessions.sort_by(|left, right| left.0.id.cmp(&right.0.id));
         sessions
             .into_iter()
-            .map(|(session, attention, activity)| {
+            .map(|(session, attention, activity, goal)| {
                 let delegation = self.delegation_state_for(&session);
                 SessionStateSnapshot {
                     id: session.id,
@@ -1352,6 +1368,7 @@ impl SessionRegistry {
                     labels: session.labels,
                     delegation,
                     activity,
+                    goal,
                 }
             })
             .collect()
@@ -1382,6 +1399,7 @@ impl SessionRegistry {
                         labels: session.labels,
                         delegation,
                         activity: Some(entry.runtime().activity()),
+                        goal: entry.runtime().goal(),
                     }
                 })
         });
@@ -2234,6 +2252,17 @@ impl SessionRegistry {
                 // trusted as the person's words. An untitled legacy session
                 // keeps the app's fallback until its next prompt — which
                 // titles it from the raw text — or until the user renames it.
+                // The goal is runtime state, so the respawned session starts
+                // without one: seed it back from the row's column, silently —
+                // the transcript already holds the `GoalChanged` event that
+                // said it, and a resume never re-sends the text as a prompt.
+                if let Some(resumed) = self.agent_runtime_for(session_id, owner, conn) {
+                    resumed.set_goal(record.goal.clone());
+                    // The seed emits no event, but registration may already
+                    // have cached the row: refresh it so the roster lists the
+                    // seeded goal instead of the pre-seed absence.
+                    self.refresh_state_snapshot(owner, session_id);
+                }
             }
             Err(mut error) => {
                 state.session_finished();
@@ -2394,6 +2423,9 @@ impl SessionRegistry {
         // so the peer gate and the permission card read the same fact a live
         // session would have had.
         runtime.set_origin(metadata.origin.clone());
+        // The roster prefers the runtime for mapped entries, so a hydrated
+        // transcript must seed the goal the same way it seeds the origin.
+        runtime.set_goal(record.goal.clone());
         if let Some(peer_session_id) = record.peer_session_id.clone() {
             runtime.restore_peer_session_id(peer_session_id);
         }

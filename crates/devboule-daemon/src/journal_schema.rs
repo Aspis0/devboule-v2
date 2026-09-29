@@ -300,6 +300,22 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // would die reading the column on a user's journal.
             validate_v15_columns(&tx)?;
         }
+        if version < 16 {
+            // The session's current goal, as `/goal` last stored it
+            // (`crates/devboule-daemon/src/session_goal.rs`, the one writer).
+            // NULL — every row that predates the column, and every session
+            // with no goal — reads as `None`. No backfill: a goal is a fact
+            // a human typed, and no history row can manufacture one. The
+            // lifecycle upserts never carry the column either, so an end
+            // marker cannot erase a goal and a clear lands as NULL.
+            if !session_has_column(&tx, "goal")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN goal TEXT", [])?;
+            }
+            // The pre-stamp guard, same ordering as v12 to v15: a colliding
+            // shape must leave the file at 15, openable by the previous
+            // build, rather than stamped 16.
+            validate_v16_columns(&tx)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -316,6 +332,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_v14_columns(&conn)?;
     // The v15 column, the same way (see [`is_our_cwd_shape`]).
     validate_v15_columns(&conn)?;
+    // The v16 column, the same way (see [`is_our_goal_shape`]).
+    validate_v16_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -485,6 +503,26 @@ fn validate_v15_columns(conn: &Connection) -> Result<(), JournalError> {
     if !is_our_cwd_shape(column_shape(conn, "cwd")?) {
         return Err(JournalError::Corrupt(
             "journal schema has an unexpected sessions.cwd column".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The one shape v16 may have: `goal` is `TEXT`, nullable, no default (NULL
+/// reads as no goal set, which is every row that predates it). Spelled once,
+/// like its siblings: the v16 pre-stamp guard and the post-commit check both
+/// read this predicate.
+fn is_our_goal_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
+    matches!(
+        shape,
+        Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
+    )
+}
+
+fn validate_v16_columns(conn: &Connection) -> Result<(), JournalError> {
+    if !is_our_goal_shape(column_shape(conn, "goal")?) {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected sessions.goal column".to_string(),
         ));
     }
     Ok(())

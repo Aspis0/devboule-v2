@@ -673,50 +673,64 @@ impl super::SessionRegistry {
         // it had before references existed.
         let has_prompt =
             !text.is_empty() || !attachments.is_empty() || !attachment_references.is_empty();
-        let (
-            writer,
-            image_sink,
-            static_image_sink,
-            out_of_band,
-            runtime,
-            killer,
-            mut steerer,
-            is_agent,
-            mcp_required,
-        ) = {
+        let (runtime, session_kind, out_of_band, live_parts) = {
             let map = self
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = peer_entry(&map, session_id, owner, &conn.conn_peer)?;
-            let session = entry.as_peer_visible().ok_or_else(process_gone)?;
-            // Taken under the map lock, beside the writer it resolves: the
-            // idle-close section takes that same lock, so it either sees
-            // this delivery in flight or this resolution finds no session —
-            // never a write into a child the section has just taken.
-            session.runtime.begin_delivery();
-            (
-                Arc::clone(&session.writer),
-                session.image_sink.clone(),
-                session.static_image_sink.clone(),
-                session.out_of_band.clone(),
-                Arc::clone(&session.runtime),
-                session.killer.clone_killer(),
-                session.steerer.clone_steerer(),
-                session.metadata.kind.is_agent(),
-                // S9: readiness waits only where the wait rule says so (never
-                // pi/Codex — the S8 never-block default, twin-pinned). The wait
-                // itself no-ops without `require_mcp`, so this flag is uniform
-                // while the guarantee lives in the require gate.
-                crate::mcp_broker::hosts_mcp(&session.metadata.kind),
-            )
+            let runtime = entry.runtime();
+            let kind = entry.metadata().kind.clone();
+            let oob = entry
+                .as_child_process()
+                .and_then(|live| live.out_of_band.clone());
+            // A transcript holds no child: clone the live road only when the
+            // entry is one, so a stopped `/goal` still reaches the intercept
+            // below instead of dying as `process_gone`.
+            if let Some(session) = entry.as_peer_visible() {
+                // Taken under the map lock, beside the writer it resolves: the
+                // idle-close section takes that same lock, so it either sees
+                // this delivery in flight or this resolution finds no session —
+                // never a write into a child the section has just taken.
+                session.runtime.begin_delivery();
+                let live = (
+                    Arc::clone(&session.writer),
+                    session.image_sink.clone(),
+                    session.static_image_sink.clone(),
+                    session.killer.clone_killer(),
+                    session.steerer.clone_steerer(),
+                    session.metadata.kind.is_agent(),
+                    crate::mcp_broker::hosts_mcp(&session.metadata.kind),
+                );
+                (runtime, kind, oob, Some(live))
+            } else {
+                (runtime, kind, oob, None)
+            }
         };
         // Given back only when this function returns: the prompt is not
         // through until its turn has begun, and the sweep must not take the
         // child apart anywhere in between — every early return below drops
-        // this guard with the mark still set.
-        let delivery_runtime = Arc::clone(&runtime);
-        let _delivery = ReleaseGuard::armed(move |_: bool| delivery_runtime.end_delivery());
+        // this guard with the mark still set. Transcripts hold no child, so
+        // they need no guard.
+        let delivery_guard = live_parts.as_ref().map(|_| {
+            let guard_runtime = Arc::clone(&runtime);
+            ReleaseGuard::armed(move |_: bool| guard_runtime.end_delivery())
+        });
+        let _delivery = delivery_guard;
+        // A `/goal` carrying attachments is refused before any other road:
+        // it never bypasses the intercept and never reaches the provider.
+        if let Some((name, _)) = crate::codex_commands::parse_slash(text) {
+            if name == "goal" && (!attachments.is_empty() || !attachment_references.is_empty()) {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Send /goal without attachments.",
+                ));
+            }
+        }
+        let (is_agent, mcp_required) = live_parts
+            .as_ref()
+            .map(|live| (live.5, live.6))
+            .unwrap_or((session_kind.is_agent(), false));
         // A terminal's writer is a PTY, so an appended line is typed, not
         // read: nothing there can open a path. Writing the bytes would leave a
         // file behind for a session that can never consume it, and the pipe
@@ -726,8 +740,12 @@ impl super::SessionRegistry {
         // A reference is refused by the same check for the same reason: what a
         // terminal would receive is the path line, and a path typed into a PTY
         // is input, not a file anything can open. The two halves are one
-        // refusal here because neither reaches a terminal.
-        if (!attachments.is_empty() || !attachment_references.is_empty()) && !is_agent {
+        // refusal here because neither reaches a terminal. Transcripts return
+        // `process_gone` below, so this road is live-only.
+        if live_parts.is_some()
+            && (!attachments.is_empty() || !attachment_references.is_empty())
+            && !is_agent
+        {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "This session does not accept attachments.",
@@ -743,7 +761,8 @@ impl super::SessionRegistry {
         // same check: the steer branch writes `text` and nothing else, so a
         // steer that named a stored attachment would drop it without a word —
         // the vanishing deck this whole path exists to prevent.
-        if active_turn_behavior == Some(ActiveTurnBehavior::Steer)
+        if live_parts.is_some()
+            && active_turn_behavior == Some(ActiveTurnBehavior::Steer)
             && (!attachments.is_empty() || !attachment_references.is_empty())
         {
             return Err(WireError::new(
@@ -751,10 +770,10 @@ impl super::SessionRegistry {
                 "a steer carries text only; send attachments as a new message",
             ));
         }
-        if require_attachment {
+        if live_parts.is_some() && require_attachment {
             check_attached(&runtime, conn, subscription_id)?;
         }
-        let agent_runtime = is_agent.then(|| Arc::clone(&runtime));
+        let agent_runtime = (live_parts.is_some() && is_agent).then(|| Arc::clone(&runtime));
         if let Some(runtime) = agent_runtime.as_ref() {
             if has_prompt && mcp_required {
                 runtime.wait_for_mcp_ready(mcp_timeout)?;
@@ -763,6 +782,45 @@ impl super::SessionRegistry {
                 return Err(internal("Agent input could not be recorded."));
             }
         }
+        // The daemon-owned `/goal`: one intercept for every agent provider,
+        // ahead of the out-of-band door and so of any provider dispatch. A
+        // set stores, emits and continues below as one ordinary `Goal:` user
+        // prompt — through the same composition, title and turn path a typed
+        // prompt takes, with the caller's turn behaviour unchanged, so a
+        // mid-turn goal follows the normal prompt's own rule there. A native
+        // goal road (Codex with the goals gate on) is left for the door: the
+        // intercept declines it and the RPC path below runs unchanged.
+        let mut goal_text: Option<String> = None;
+        if attachments.is_empty() && attachment_references.is_empty() {
+            match super::session_goal::intercept_goal(
+                text,
+                &session_kind,
+                &runtime,
+                out_of_band.as_ref(),
+            )? {
+                Some(super::session_goal::GoalAction::Done { turn_active }) => {
+                    return Ok(SendOutcome {
+                        message_id: None,
+                        turn_active,
+                    });
+                }
+                Some(super::session_goal::GoalAction::SendAs(replacement)) => {
+                    goal_text = Some(replacement);
+                }
+                None => {}
+            }
+        }
+        // A stopped session has no child to prompt: ordinary text is not a
+        // `/goal` command, so the intercept above declined it and it answers
+        // `process_gone` here, while a `/goal` already answered through the
+        // intercept's own refusal.
+        let Some((writer, image_sink, static_image_sink, killer, steerer, _, _)) = live_parts
+        else {
+            return Err(process_gone());
+        };
+        // `steerer` was cloned as immutable above; the turn below needs it mutable.
+        let mut steerer = steerer;
+        let text = goal_text.as_deref().unwrap_or(text);
         // Paseo calls `tryRunOutOfBand` before `startAgentRunInner` and
         // `steerOrReplaceActiveRun` — translated from Paseo's agent-prompt
         // (packages/server/src/server/agent/agent-prompt.ts); a picked Codex

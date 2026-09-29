@@ -145,11 +145,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 ///
 /// The daemon always serializes the current struct regardless of the agreed
 /// version, so negotiating down does not produce an old-shaped payload;
-/// refusing the handshake is the only protection. The additive Claude task
-/// event tags (`agent_task_started`, `agent_task_notification`,
-/// `agent_background_tasks_changed`, `agent_tasks`) are deliberately ungated:
-/// these output-only tags change no request shape.
-pub const PROTOCOL_VERSION: u32 = 15;
+/// refusing the handshake is the only protection. The additive task and
+/// goal event tags (`agent_task_started`, `agent_task_notification`,
+/// `agent_background_tasks_changed`, `agent_tasks`, `goal_changed`) are
+/// deliberately ungated: these output-only tags change no request shape.
+pub const PROTOCOL_VERSION: u32 = 16;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.

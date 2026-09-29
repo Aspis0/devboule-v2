@@ -276,3 +276,47 @@ fn a_successful_resume_keeps_its_slot_and_clears_the_mark_it_honoured() {
     let _ = fixture.registry().close(&id, &fixture.owner, &None);
     fixture.finish();
 }
+
+#[test]
+fn a_resumed_session_seeds_its_goal_from_the_row() {
+    let fixture = ResumeFixture::new("goal-resume");
+    let id = fixture.id("goal-resume");
+    fixture.write_row(acp_row(&id, &fixture.owner, "stub-session"));
+    // The column has exactly one writer; a struct field plus upsert would not
+    // touch it (lifecycle upserts never carry the goal).
+    fixture
+        .journal()
+        .set_session_goal(&id, Some("ship it"))
+        .expect("the row carries a goal");
+    let _env = AcpEnv::stub(&[]);
+    take_bystander_slot(&fixture.state);
+
+    let session = fixture
+        .resume(&id, &fixture.conn())
+        .expect("the stub honours the load");
+    assert_eq!(session.id, id);
+    let runtime = fixture
+        .registry()
+        .agent_runtime_for(&id, &fixture.owner, &fixture.conn())
+        .expect("the resumed runtime");
+    assert_eq!(
+        runtime.goal().as_deref(),
+        Some("ship it"),
+        "the respawned runtime carries the row's goal without re-sending it"
+    );
+    // The seed is silent (no GoalChanged, no roster push — the transcript already
+    // holds the event), but the live row rebuilds from the runtime, so the
+    // roster lists what the respawned runtime carries.
+    let snapshots = fixture.registry().state_snapshots(&fixture.owner);
+    let listed = snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == id)
+        .expect("the resumed row is listed");
+    assert_eq!(
+        listed.goal.as_deref(),
+        Some("ship it"),
+        "the roster lists the seeded goal"
+    );
+    let _ = fixture.registry().close(&id, &fixture.owner, &None);
+    fixture.finish();
+}

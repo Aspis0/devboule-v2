@@ -393,6 +393,11 @@ fn commands_from_update(update: &serde_json::Value) -> Option<Vec<AvailableComma
             .iter()
             .filter_map(|command| {
                 let name = command.get("name")?.as_str()?.to_string();
+                // The daemon owns `/goal`: a provider-advertised rival never
+                // reaches the menu.
+                if crate::session::session_goal::is_reserved_goal_command(&name) {
+                    return None;
+                }
                 let description = command.get("description")?.as_str()?.to_string();
                 let hint = command
                     .get("input")

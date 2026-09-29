@@ -1678,3 +1678,79 @@ fn a_v15_migration_does_not_stamp_a_colliding_cwd_column() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn v16_migration_adds_a_nullable_goal_column() {
+    // A fresh file runs every migration: the goal column exists with the
+    // shape the daemon writes — TEXT, nullable, no default — and the file
+    // stamps v16.
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    journal.shutdown();
+    let conn = Connection::open(&path).expect("reopen");
+    let shape: (String, i32, Option<String>) = conn
+        .query_row(
+            "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('sessions') WHERE name = 'goal'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("goal column");
+    assert!(
+        shape.0.eq_ignore_ascii_case("text") && shape.1 == 0 && shape.2.is_none(),
+        "unexpected sessions.goal shape: {shape:?}"
+    );
+    let version: i32 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("version");
+    assert_eq!(version, JOURNAL_SCHEMA_VERSION);
+    assert_eq!(version, 16);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn v15_journal_with_rows(rows: &[(&str, i64, &str)]) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (dir, path) = v14_journal_with_rows(rows);
+    let conn = Connection::open(&path).expect("v15 journal");
+    conn.execute("ALTER TABLE sessions ADD COLUMN cwd TEXT", [])
+        .expect("v15 column");
+    conn.pragma_update(None, "user_version", 15)
+        .expect("v15 version");
+    drop(conn);
+    (dir, path)
+}
+
+#[test]
+fn a_v16_migration_does_not_stamp_a_colliding_goal_column() {
+    let (dir, path) = v15_journal_with_rows(&[("s.before-goal", 0, "profile-x")]);
+    {
+        let conn = Connection::open(&path).expect("open the v15 journal");
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN goal INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .expect("the stray colliding column");
+    }
+    let error = match Journal::open(&path) {
+        Err(error) => error,
+        Ok(journal) => {
+            journal.shutdown();
+            panic!("the colliding column is refused");
+        }
+    };
+    assert!(
+        matches!(error, JournalError::Corrupt(_)),
+        "the corrupt-journal path is the one that refuses it: {error}"
+    );
+    assert!(
+        error.to_string().contains("goal"),
+        "the message names the column: {error}"
+    );
+    let version: i32 = Connection::open(&path)
+        .expect("open the refused journal")
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user_version");
+    assert_eq!(
+        version, 15,
+        "the stamp never commits — refused, not bricked"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

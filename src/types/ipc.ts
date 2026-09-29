@@ -1134,6 +1134,8 @@ export interface SessionStateSnapshot {
    * `state: "unknown"` for a child never described. See `workspaceSessions.ts`.
    */
   delegation?: DelegationState;
+  /** The session's current goal. `undefined`, `null`, and a missing key all mean "no goal". */
+  goal?: string | null;
 }
 
 /**
@@ -1394,6 +1396,8 @@ export type SessionEvent =
         activeForm?: string;
       }>;
     }
+  /** The session's current goal. `undefined`, `null`, and a missing key all mean "no goal". */
+  | { type: "goal_changed"; goal?: string | null }
   /** Slash commands the agent advertises for this session. */
   | {
       type: "available_commands";

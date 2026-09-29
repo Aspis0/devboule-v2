@@ -2102,9 +2102,21 @@ impl CodexReader {
             // the pre-existing notice of Codex's message. The branch is
             // exclusive so one failed request is not reported twice.
             match self.commands.answer(id, error.as_deref()) {
-                Answer::Ours(text) => {
-                    if let Some(text) = text {
+                Answer::Ours(outcome) => {
+                    if let Some(text) = outcome.line {
                         let _ = runtime.publish_daemon_event(command_notice(text, error.is_some()));
+                    }
+                    // The stored goal follows the native RPC, never leads
+                    // it: only a successful set or clear carries one, so a
+                    // failed RPC changes nothing and pause and resume pass
+                    // through untouched.
+                    if let Some(goal) = outcome.goal {
+                        if let Err(error) = super::session_goal::store_goal(runtime, goal) {
+                            let _ = runtime.publish_session_notice(
+                                error.message.clone(),
+                                NoticeSeverity::Warning,
+                            );
+                        }
                     }
                 }
                 Answer::NotOurs => {

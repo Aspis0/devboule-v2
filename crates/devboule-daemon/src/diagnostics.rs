@@ -1113,4 +1113,20 @@ mod tests {
         let reencoded = serde_json::to_value(decoded).expect("round-trip json");
         assert_eq!(reencoded, expected);
     }
+
+    #[test]
+    fn diagnostics_report_carries_no_goal() {
+        // The goal text is journalled like a prompt, but the diagnostics
+        // report carries counts only — no text, no length, not even a
+        // has-goal flag. This pins the absence, so a future snapshot field
+        // cannot leak into the report unnoticed.
+        let report = fixture_report();
+        let text = serde_json::to_value(&report)
+            .expect("report json")
+            .to_string();
+        assert!(
+            !text.contains("goal") && !text.contains("Goal"),
+            "diagnostics must not carry goal text or shape: {text}"
+        );
+    }
 }

@@ -189,6 +189,9 @@ fn session_event_samples() -> Vec<SessionEvent> {
                 },
             ],
         },
+        GoalChanged => SessionEvent::GoalChanged {
+            goal: Some("Ship the fix".to_string()),
+        },
         AgentError => SessionEvent::AgentError {
             message: String::new(),
         },

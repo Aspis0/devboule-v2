@@ -141,6 +141,7 @@ fn stop_test_snapshot(id: &str, state: SessionState) -> SessionStateSnapshot {
         delegation: None,
 
         activity: None,
+        goal: None,
     }
 }
 
@@ -747,6 +748,7 @@ fn generation_bump_discards_the_old_sequence_but_keeps_the_session_binding() {
         delegation: None,
 
         activity: None,
+        goal: None,
     }]);
     registry.reattach_all(&new_client);
 
@@ -805,6 +807,7 @@ fn ended_while_disconnected_is_delivered_as_ended_without_an_attach() {
         delegation: None,
 
         activity: None,
+        goal: None,
     }]);
     registry.reattach_all(&new_client);
 
@@ -1049,6 +1052,7 @@ fn roster_snapshot(id: &str) -> SessionStateSnapshot {
         delegation: None,
 
         activity: None,
+        goal: None,
     }
 }
 

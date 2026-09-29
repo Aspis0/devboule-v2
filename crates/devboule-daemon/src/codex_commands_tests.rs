@@ -290,6 +290,40 @@ fn a_command_with_a_blank_line_in_its_arguments_still_expands() {
 mod prompt_tests;
 
 #[test]
+fn a_successful_goal_answer_moves_the_stored_goal_and_nothing_else_does() {
+    let home = TempDir::new("goal-delta-home");
+    let workspace = TempDir::new("goal-delta-cwd");
+    let commands = home.commands(&workspace.0, true);
+    let set = commands
+        .command("/goal ship it")
+        .expect("goal set is a command");
+    assert!(commands.owe("d-set", &set));
+    assert!(matches!(
+        commands.answer(&json!("d-set"), None),
+        Answer::Ours(outcome)
+            if outcome.line.as_deref() == Some("Goal set: ship it")
+                && outcome.goal == Some(Some("ship it".to_string()))
+    ));
+    // A failed RPC changes nothing: the line says so and the goal stays.
+    assert!(commands.owe("d-fail", &set));
+    assert!(matches!(
+        commands.answer(&json!("d-fail"), Some("busy")),
+        Answer::Ours(outcome)
+            if outcome.line.as_deref() == Some("Failed to update goal: busy")
+                && outcome.goal.is_none()
+    ));
+    for text in ["/goal pause", "/goal resume", "/compact"] {
+        let command = commands.command(text).expect("a command");
+        let id = format!("d-{text}");
+        assert!(commands.owe(&id, &command));
+        assert!(matches!(
+            commands.answer(&serde_json::Value::String(id), None),
+            Answer::Ours(outcome) if outcome.goal.is_none()
+        ));
+    }
+}
+
+#[test]
 fn an_answer_is_taken_once_and_by_its_own_id_only() {
     let home = TempDir::new("owed-home");
     let workspace = TempDir::new("owed-cwd");
@@ -304,7 +338,8 @@ fn an_answer_is_taken_once_and_by_its_own_id_only() {
     );
     assert!(matches!(
         commands.answer(&json!("d-9"), None),
-        Answer::Ours(line) if line.as_deref() == Some("Goal cleared.")
+        Answer::Ours(outcome)
+            if outcome.line.as_deref() == Some("Goal cleared.") && outcome.goal == Some(None)
     ));
     assert!(
         matches!(commands.answer(&json!("d-9"), None), Answer::NotOurs),
@@ -320,13 +355,13 @@ fn an_accepted_compaction_owes_no_line_and_a_refused_one_owes_codex_words() {
     let command = commands.command("/compact").expect("compact is a command");
     commands.owe("d-1", &command);
     assert!(
-        matches!(commands.answer(&json!("d-1"), None), Answer::Ours(None)),
+        matches!(commands.answer(&json!("d-1"), None), Answer::Ours(outcome) if outcome.line.is_none() && outcome.goal.is_none()),
         "our side says nothing; the notification says the rest"
     );
     commands.owe("d-2", &command);
     assert!(matches!(
         commands.answer(&json!("d-2"), Some("busy")),
-        Answer::Ours(Some(line)) if line == "Failed to compact context: busy"
+        Answer::Ours(outcome) if outcome.line.as_deref() == Some("Failed to compact context: busy") && outcome.goal.is_none()
     ));
 }
 
@@ -350,7 +385,7 @@ fn a_full_owed_table_drops_the_notice_not_the_request() {
     // command its notice.
     assert!(matches!(
         commands.answer(&json!("d-0"), None),
-        Answer::Ours(None)
+        Answer::Ours(outcome) if outcome.line.is_none() && outcome.goal.is_none()
     ));
 }
 

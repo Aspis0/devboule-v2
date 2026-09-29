@@ -327,6 +327,12 @@ impl SessionRegistry {
             recovered_notice(&record.id, &reason.message, &context, &starts_in),
             NoticeSeverity::Info,
         );
+        // The replacement starts where the old session was: a goal the human
+        // set travels with the conversation, published in memory even when
+        // the journal write fails (the failure leaves a warning notice).
+        if let Some(goal) = record.goal.clone() {
+            super::session_goal::carry_goal_into_recovery(&runtime, goal);
+        }
         runtime.set_recovered_context(context.text);
         Ok(session)
     }

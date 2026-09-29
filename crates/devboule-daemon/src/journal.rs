@@ -57,7 +57,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 15;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 16;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -317,6 +317,11 @@ pub struct SessionRecord {
     /// session with none (a human's own sessions carry none), and for every row
     /// that predates v11.
     pub labels: std::collections::BTreeMap<String, String>,
+    /// The session's current goal, as `/goal` last stored it. NULL for a
+    /// session with no goal and for every row that predates v16: both read
+    /// as `None`. Written only by the goal road — lifecycle upserts never
+    /// carry it, so an end marker cannot erase it and a clear lands as NULL.
+    pub goal: Option<String>,
     /// The tool overlay the creation stamped on this child, as the deny list
     /// it resolved at birth. Read back at resume instead of re-resolving the
     /// profile, whose answer may have changed since. `None` is an unreadable
@@ -750,6 +755,13 @@ enum JournalCmd {
         display_name: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
+    /// A goal change's recording: the session's `goal` column and nothing
+    /// else — see [`Journal::set_session_goal`].
+    SetSessionGoal {
+        session_id: String,
+        goal: Option<String>,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
     /// The resume road's disown mark: the provider refused this handle.
     /// `expected` names the refused handle, so a concurrent respawn's NEWER
     /// handle is never silenced; the refused handle itself is never destroyed.
@@ -1172,6 +1184,24 @@ impl Journal {
         self.rpc(|reply| JournalCmd::SetDisplayName {
             session_id: session_id.to_string(),
             display_name: display_name.to_string(),
+            reply,
+        })
+    }
+
+    /// A goal change's recording, issued beside the live update: the rpc
+    /// returns only after the write is committed, so any roster read issued
+    /// after the goal's answer is behind it. A row that already carries the
+    /// goal costs no roster rebuild, by the same rule as the rename above.
+    /// `None` clears: the column lands NULL, so replay never resurrects an
+    /// older text.
+    pub fn set_session_goal(
+        &self,
+        session_id: &str,
+        goal: Option<&str>,
+    ) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::SetSessionGoal {
+            session_id: session_id.to_string(),
+            goal: goal.map(str::to_string),
             reply,
         })
     }
@@ -2012,6 +2042,24 @@ fn journal_loop(
                     Err(error) => on_write_error(error),
                     // The name is roster-visible, so a changed one moves the
                     // revision by the handle's rule above; an unchanged write costs no rebuild.
+                    Ok(true) => {
+                        session_set_revision.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Ok(false) => {}
+                }
+                let _ = reply.send(result.map(|_| ()));
+            }
+            JournalCmd::SetSessionGoal {
+                session_id,
+                goal,
+                reply,
+            } => {
+                let result = set_session_goal(&conn, &session_id, goal.as_deref());
+                match &result {
+                    Err(error) => on_write_error(error),
+                    // The goal is roster-visible, so a changed one moves the
+                    // revision by the rename's rule above; an unchanged write
+                    // costs no rebuild.
                     Ok(true) => {
                         session_set_revision.fetch_add(1, Ordering::AcqRel);
                     }
@@ -3257,6 +3305,39 @@ fn set_display_name(
     }
 }
 
+/// A goal change's recording: the session's `goal` column and nothing else.
+/// `None` clears the column to NULL — a clear is journalled like a set, so
+/// replay never resurrects an older text. A row that already carries the goal
+/// costs no roster rebuild, and a missing row stays the error it has always
+/// been.
+fn set_session_goal(
+    conn: &Connection,
+    session_id: &str,
+    goal: Option<&str>,
+) -> Result<bool, JournalError> {
+    let current: Option<String> = match conn.query_row(
+        "SELECT goal FROM sessions WHERE id = ?1",
+        [session_id],
+        |row| row.get(0),
+    ) {
+        Ok(value) => value,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(JournalError::SessionNotFound),
+        Err(error) => return Err(error.into()),
+    };
+    if current.as_deref() == goal {
+        return Ok(false);
+    }
+    let n = conn.execute(
+        "UPDATE sessions SET goal = ?1, updated_at_ms = ?2 WHERE id = ?3",
+        params![goal, now_ms() as i64, session_id],
+    )?;
+    if n == 0 {
+        Err(JournalError::SessionNotFound)
+    } else {
+        Ok(true)
+    }
+}
+
 /// The disown mark: the provider refused this exact handle, recorded beside
 /// it — `peer_session_id` itself is never destroyed, because the evidence
 /// for a refusal is approximate and the handle is the only route back to the
@@ -3557,6 +3638,9 @@ pub fn new_session_record(
         depth: None,
         // No refusal recorded: a birth has heard nothing from any provider.
         disowned_peer_session_id: None,
+        // No goal set: a birth has heard no `/goal` yet, and a row that
+        // predates the column reads the same way (NULL).
+        goal: None,
     }
 }
 

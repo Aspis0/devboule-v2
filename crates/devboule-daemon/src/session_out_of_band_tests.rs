@@ -40,7 +40,7 @@ impl OutOfBandCommands for CommandHandler {
         self.runs.fetch_add(1, Ordering::Relaxed);
         let _ = runtime.publish_agent_event(
             SessionEvent::SessionNotice {
-                text: "Goal cleared.".to_string(),
+                text: "Command ran.".to_string(),
                 severity: NoticeSeverity::Info,
             },
             None,
@@ -80,14 +80,17 @@ fn a_handled_command_is_recorded_once_and_starts_no_turn() {
     let owner = test_owner("S-1-5-21-oob", "process-oob");
     let session_id = "oob-command";
     let (runtime, checks, runs, received) =
-        session_with_command_handler(&registry, session_id, &owner, "/goal clear");
+        session_with_command_handler(&registry, session_id, &owner, "/recall yesterday");
     let conn = attach_live_agent_for_test(&runtime, session_id, 91);
 
     registry
-        .send_with_subscription(session_id, 91, "/goal clear", &[], &[], &owner, &conn)
+        .send_with_subscription(session_id, 91, "/recall yesterday", &[], &[], &owner, &conn)
         .expect("the command is accepted");
 
-    assert_eq!(checks.lock().expect("checks").as_slice(), ["/goal clear"]);
+    assert_eq!(
+        checks.lock().expect("checks").as_slice(),
+        ["/recall yesterday"]
+    );
     assert_eq!(runs.load(Ordering::Relaxed), 1, "the handler ran once");
     assert!(received.lock().expect("writer").is_empty());
     assert!(!runtime.is_turn_active(runtime.turn_counter()));
@@ -99,7 +102,7 @@ fn a_handled_command_is_recorded_once_and_starts_no_turn() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "/goal clear"))
+            .filter(|event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "/recall yesterday"))
             .count(),
         1,
         "the shared seam owns exactly one transcript write"
@@ -107,7 +110,7 @@ fn a_handled_command_is_recorded_once_and_starts_no_turn() {
     assert!(events.iter().any(|event| matches!(
         event,
         SessionEvent::SessionNotice { text, severity }
-            if text == "Goal cleared." && severity == &NoticeSeverity::Info
+            if text == "Command ran." && severity == &NoticeSeverity::Info
     )));
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -119,7 +122,7 @@ fn an_unclaimed_text_falls_through_as_an_ordinary_prompt() {
     let owner = test_owner("S-1-5-21-oob-passthrough", "process-oob-passthrough");
     let session_id = "oob-passthrough";
     let (runtime, checks, runs, received) =
-        session_with_command_handler(&registry, session_id, &owner, "/goal clear");
+        session_with_command_handler(&registry, session_id, &owner, "/recall yesterday");
     let conn = attach_live_agent_for_test(&runtime, session_id, 92);
 
     registry
@@ -146,7 +149,7 @@ fn an_attachment_bypasses_the_out_of_band_route() {
     let owner = test_owner("S-1-5-21-oob-att", "process-oob-att");
     let session_id = "oob-attachment";
     let (runtime, checks, runs, received) =
-        session_with_command_handler(&registry, session_id, &owner, "/goal clear");
+        session_with_command_handler(&registry, session_id, &owner, "/recall yesterday");
     let conn = attach_live_agent_for_test(&runtime, session_id, 93);
     let image = crate::raster_metadata::clean_png(0x31);
 
@@ -154,7 +157,7 @@ fn an_attachment_bypasses_the_out_of_band_route() {
         .send_with_subscription(
             session_id,
             93,
-            "/goal clear",
+            "/recall yesterday",
             &[super::tests::attachment("photo.png", "image/png", &image)],
             &[],
             &owner,
@@ -177,7 +180,7 @@ fn the_send_reply_says_whether_a_turn_began() {
     let owner = test_owner("S-1-5-21-oob-disp", "process-oob-disp");
     let session_id = "oob-disposition";
     let (runtime, _checks, _runs, _received) =
-        session_with_command_handler(&registry, session_id, &owner, "/goal clear");
+        session_with_command_handler(&registry, session_id, &owner, "/recall yesterday");
     let conn = attach_live_agent_for_test(&runtime, session_id, 96);
 
     assert!(
@@ -185,7 +188,7 @@ fn the_send_reply_says_whether_a_turn_began() {
             .send_with_subscription_behavior(
                 session_id,
                 96,
-                "/goal clear",
+                "/recall yesterday",
                 &[],
                 &[],
                 &owner,

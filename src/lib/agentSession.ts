@@ -935,6 +935,11 @@ export class AgentSession {
         // empty one clears it; replay and live frames ride this same path.
         this.update({ agentTasks: event.items });
         return;
+      case "goal_changed":
+        // The session's current goal, carried whole on every change. No
+        // row renders it yet; the event is accepted here so the exhaustiveness
+        // guard below stays total until one does.
+        return;
       case "agent_error":
         // A notification, not a turn ending: the daemon publishes it for one
         // malformed output line and returns to its read loop, and the turn

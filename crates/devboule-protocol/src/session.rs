@@ -400,6 +400,10 @@ pub struct SessionStateSnapshot {
     /// is never read as `idle`: an absent status has to be waited for, not acted on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<AgentActivityState>,
+    /// The session's current goal, as the human last set it with `/goal`.
+    /// Absent or null means no goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
 }
 
 /// The delegation ledger for one agent-created child (snapshot only).
@@ -949,6 +953,12 @@ pub enum SessionEvent {
     AgentTasks {
         items: Vec<AgentTaskItem>,
     },
+    /// The session's current goal, carried whole on every change.
+    /// Absent or null means no goal.
+    GoalChanged {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goal: Option<String>,
+    },
     /// A valid ACP error response or a transport/decoding error surfaced to
     /// the attached session instead of being turned into a silent hang.
     AgentError {
@@ -1226,6 +1236,7 @@ impl SessionEvent {
             Self::AgentTaskNotification { .. } => "agent_task_notification",
             Self::AgentBackgroundTasksChanged { .. } => "agent_background_tasks_changed",
             Self::AgentTasks { .. } => "agent_tasks",
+            Self::GoalChanged { .. } => "goal_changed",
             Self::AgentError { .. } => "agent_error",
             Self::AgentStderr { .. } => "agent_stderr",
             Self::PermissionRequest { .. } => "permission_request",

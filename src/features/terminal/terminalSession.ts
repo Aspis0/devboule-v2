@@ -491,6 +491,7 @@ export class TerminalSession {
       case "agent_task_notification":
       case "agent_background_tasks_changed":
       case "agent_tasks":
+      case "goal_changed":
       case "agent_error":
       case "agent_stderr":
       case "session_notice":

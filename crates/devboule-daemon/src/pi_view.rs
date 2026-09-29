@@ -125,6 +125,12 @@ fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
         if name.is_empty() {
             continue;
         }
+        // The daemon owns `/goal`: a provider-advertised rival (a pi
+        // extension such as `pi-goal-x`) never reaches the menu — the
+        // send-path intercept consumes its text before any provider sees it.
+        if crate::session::session_goal::is_reserved_goal_command(name) {
+            continue;
+        }
         accepted += 1;
         // Paseo's nullish fallback
         // (`packages/server/src/server/agent/providers/pi/agent.ts`,
@@ -450,7 +456,7 @@ mod tests {
         // because the reply omits them (`pi/agent.ts:117-130`); we keep
         // `input.hint`, which Paseo drops (`pi/agent.ts:151`).
         let reply = parse(
-            r#"{"id":"c-7","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"goal","description":"Set the session goal","source":"extension","input":{"hint":"<objective>"}},{"name":"skill:pdf","source":"skill"},{"name":"compact","description":"pi's own words","source":"prompt"}]}}"#,
+            r#"{"id":"c-7","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"review","description":"Review the session work","source":"extension","input":{"hint":"<scope>"}},{"name":"skill:pdf","source":"skill"},{"name":"compact","description":"pi's own words","source":"prompt"}]}}"#,
         );
         match events_from_line(&reply).as_slice() {
             [SessionEvent::AvailableCommands { commands }] => {
@@ -478,7 +484,7 @@ mod tests {
                             "Toggle automatic context compaction",
                             Some("[on|off|toggle]")
                         ),
-                        ("goal", "Set the session goal", Some("<objective>")),
+                        ("review", "Review the session work", Some("<scope>")),
                         // no description → Paseo's source fallback
                         ("skill:pdf", "skill", None),
                     ]
@@ -570,7 +576,7 @@ mod tests {
         // out the valid ones behind them.
         let mut entries: Vec<serde_json::Value> =
             (0..1005).map(|_| serde_json::json!({})).collect();
-        entries.push(serde_json::json!({ "name": "goal", "source": "extension" }));
+        entries.push(serde_json::json!({ "name": "review", "source": "extension" }));
         entries.push(serde_json::json!({ "name": "" }));
         entries.push(serde_json::json!({ "name": "skill:pdf", "source": "skill" }));
         let reply = parse(
@@ -590,7 +596,7 @@ mod tests {
                     .iter()
                     .map(|command| command.name.as_str())
                     .collect::<Vec<_>>();
-                assert_eq!(listed, ["compact", "autocompact", "goal", "skill:pdf"]);
+                assert_eq!(listed, ["compact", "autocompact", "review", "skill:pdf"]);
             }
             other => panic!("expected one command list, got {other:?}"),
         }

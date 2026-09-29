@@ -142,6 +142,7 @@ pub(super) fn echo_harness() -> EchoHarness {
             labels: Default::default(),
             overlay: None,
             depth: None,
+            goal: None,
         })
         .expect("session row");
     let runtime = SessionRuntime::for_acp(

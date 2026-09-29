@@ -475,6 +475,7 @@ impl ConnHandle {
                 | SessionEvent::AgentTaskNotification { .. }
                 | SessionEvent::AgentBackgroundTasksChanged { .. }
                 | SessionEvent::AgentTasks { .. }
+                | SessionEvent::GoalChanged { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }

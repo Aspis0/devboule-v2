@@ -97,6 +97,7 @@ fn attention_uses_camel_case_and_omits_absent_snapshot_value() {
         delegation: None,
 
         activity: None,
+        goal: None,
     };
     let encoded = serde_json::to_value(snapshot).expect("snapshot json");
     assert_eq!(encoded["workspaceId"], "ws-1");
@@ -136,6 +137,7 @@ fn snapshot_carries_the_display_name_and_the_creator_in_camel_case() {
         }),
 
         activity: None,
+        goal: None,
     };
     let encoded = serde_json::to_value(&snapshot).expect("snapshot json");
     assert_eq!(encoded["displayName"], "worker");
@@ -1197,6 +1199,54 @@ fn agent_tasks_round_trip_with_camel_case_wire_names() {
     assert_eq!(items[0].active_form, None);
 }
 
+#[test]
+fn goal_changed_round_trip_with_optional_text() {
+    let set = SessionEvent::GoalChanged {
+        goal: Some("Ship the fix".to_string()),
+    };
+    let encoded = serde_json::to_value(&set).expect("json");
+    assert_eq!(encoded["type"], "goal_changed");
+    assert_eq!(encoded["goal"], "Ship the fix");
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, set);
+
+    // A clear carries no text: the key is absent on the wire, never null.
+    let cleared = SessionEvent::GoalChanged { goal: None };
+    let encoded = serde_json::to_value(&cleared).expect("json");
+    assert_eq!(encoded["type"], "goal_changed");
+    assert!(encoded.get("goal").is_none());
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, cleared);
+}
+
+#[test]
+fn snapshot_without_goal_reads_as_no_goal() {
+    // A roster row written before the field existed carries no key, and
+    // reads as no goal — never as an empty one, which no write ever stores.
+    let legacy = serde_json::json!({
+        "id": "s.1",
+        "workspaceId": None::<String>,
+        "kind": "claude",
+        "title": "Tasks",
+        "state": {"type": "live", "generation": 1},
+        "elapsedMs": None::<u64>,
+    });
+    let decoded: SessionStateSnapshot = serde_json::from_value(legacy).expect("snapshot");
+    assert_eq!(decoded.goal, None);
+
+    let with_goal = serde_json::json!({
+        "id": "s.1",
+        "workspaceId": None::<String>,
+        "kind": "claude",
+        "title": "Tasks",
+        "state": {"type": "live", "generation": 1},
+        "elapsedMs": None::<u64>,
+        "goal": "Ship the fix",
+    });
+    let decoded: SessionStateSnapshot = serde_json::from_value(with_goal).expect("snapshot");
+    assert_eq!(decoded.goal.as_deref(), Some("Ship the fix"));
+}
+
 /// `Session.displayName` and `Session.createdBy` are camelCase on the wire
 /// and absent when the daemon has nothing to say (S5-09).
 #[test]
@@ -1570,6 +1620,7 @@ fn the_roster_snapshot_carries_the_marker_on_every_push() {
         delegation: None,
 
         activity: None,
+        goal: None,
     };
     for (state, word) in [
         (UnattendedState::Yes, "yes"),

@@ -33,7 +33,7 @@ const reply = () => process.stdout.write(JSON.stringify({
   success: true,
   data: { commands: [
     { name: "goal", description: "Set the session goal", source: "extension", input: { hint: "<objective>" } },
-    { name: "skill:pdf", source: "skill" }
+    { name: "skill:pdf", source: "skill", input: { hint: "<doc>" } }
   ] }
 }) + "\n");
 process.stdin.on("data", (chunk) => {
@@ -320,7 +320,7 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
         let result = send_registry.send_with_subscription(
             session_id,
             97,
-            "/goal keep it short",
+            "keep it short",
             &[],
             &[],
             &send_owner,
@@ -341,17 +341,18 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
     let commands = pull_commands(&conn, Duration::from_secs(10));
     assert_eq!(
         names(&commands),
-        ["compact", "autocompact", "goal", "skill:pdf"],
-        "the two seeds first, then the reply's own entries, despite the interleaving"
+        ["compact", "autocompact", "skill:pdf"],
+        "the two seeds first, then the reply's own entries, despite the interleaving — \
+         and no `goal`: a provider-advertised goal is daemon-owned and never published"
     );
     assert_eq!(commands[0].hint.as_deref(), Some("[instructions]"));
     assert_eq!(commands[1].hint.as_deref(), Some("[on|off|toggle]"));
     assert_eq!(
         commands[2].hint.as_deref(),
-        Some("<objective>"),
+        Some("<doc>"),
         "pi's own input.hint is kept, which Paseo drops"
     );
-    assert_eq!(commands[3].description, "skill", "source as description");
+    assert_eq!(commands[2].description, "skill", "source as description");
 
     let _ = child.kill();
     let _ = child.wait();

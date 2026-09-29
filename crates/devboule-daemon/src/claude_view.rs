@@ -307,6 +307,11 @@ impl ClaudeView {
             else {
                 continue;
             };
+            // The daemon owns `/goal`: a provider-advertised rival never
+            // reaches the menu.
+            if crate::session::session_goal::is_reserved_goal_command(name) {
+                continue;
+            }
             if !seen.insert(name) {
                 continue;
             }
@@ -348,7 +353,14 @@ impl ClaudeView {
                 .take(MAX_INSPECTED_COMMANDS)
                 .filter_map(|name| {
                     let name = name.as_str()?.trim();
-                    (!name.is_empty()).then(|| AvailableCommandView {
+                    // The daemon owns `/goal`: a provider-advertised rival
+                    // never reaches the menu.
+                    if name.is_empty()
+                        || crate::session::session_goal::is_reserved_goal_command(name)
+                    {
+                        return None;
+                    }
+                    Some(AvailableCommandView {
                         name: name.to_string(),
                         description: String::new(),
                         hint: None,
@@ -1810,8 +1822,9 @@ mod tests {
         // The bound counts accepted entries, like the init's: a thousand
         // malformed entries first must not crowd out the valid ones.
         let mut entries: Vec<Value> = (0..1005).map(|_| json!({})).collect();
-        entries
-            .push(json!({ "name": "goal", "description": "Set the goal", "argumentHint": "<o>" }));
+        entries.push(
+            json!({ "name": "review", "description": "Review the work", "argumentHint": "<o>" }),
+        );
         entries.push(json!({ "name": "" }));
         let response = json!({
             "type": "control_response",
@@ -1825,7 +1838,7 @@ mod tests {
         match mapper.ingest(&response).as_slice() {
             [SessionEvent::AvailableCommands { commands }] => {
                 assert_eq!(commands.len(), 1);
-                assert_eq!(commands[0].name, "goal");
+                assert_eq!(commands[0].name, "review");
                 assert_eq!(commands[0].hint.as_deref(), Some("<o>"));
             }
             other => panic!("expected one command list, got {other:?}"),

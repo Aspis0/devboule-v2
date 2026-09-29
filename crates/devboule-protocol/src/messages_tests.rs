@@ -1171,6 +1171,7 @@ fn session_state_broadcast_is_a_compact_event_snapshot() {
                 delegation: None,
 
                 activity: None,
+                goal: None,
             }],
         },
     });

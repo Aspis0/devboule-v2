@@ -1793,9 +1793,8 @@ fn only_the_reply_that_answers_the_live_request_becomes_the_command_list() {
         [
             ("compact", Some("[instructions]")),
             ("autocompact", Some("[on|off|toggle]")),
-            ("goal", Some("<objective>")),
         ],
-        "the two seeds with their hints, and the reply's own hint kept"
+        "the seeds list; a provider-advertised `goal` is daemon-owned and never published"
     );
 
     drop(runtime);

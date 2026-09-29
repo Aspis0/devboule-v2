@@ -107,6 +107,21 @@ impl Command {
             (Command::Goal(_), Some(message)) => Some(format!("Failed to update goal: {message}")),
         }
     }
+
+    /// The stored goal this answer moves, or `None` when it moves none.
+    /// Only a successful set or clear moves it: the daemon writes its copy
+    /// after the native RPC succeeds, so a failed RPC changes nothing, and
+    /// pause and resume pass through without touching it.
+    fn goal_delta(&self, succeeded: bool) -> Option<Option<String>> {
+        if !succeeded {
+            return None;
+        }
+        match self {
+            Command::Goal(Goal::Set { objective }) => Some(Some(objective.clone())),
+            Command::Goal(Goal::Clear) => Some(None),
+            _ => None,
+        }
+    }
 }
 
 /// What the answer to a command request produced.
@@ -114,9 +129,19 @@ pub(crate) enum Answer {
     /// Not one of this table's requests: the client's ordinary handling of the
     /// response — including its own error notice — applies.
     NotOurs,
-    /// Ours, and this is the line to show. `None` is Paseo's silent acceptance
-    /// of a compaction.
-    Ours(Option<String>),
+    /// Ours, and this is what the session shows and stores for it.
+    Ours(AnswerOutcome),
+}
+
+/// The line a command's answer shows, and the stored goal it moves.
+///
+/// `goal` is `Some` only when the native RPC succeeded for a set or a
+/// clear: a failed RPC changes nothing, and pause and resume never touch the
+/// stored goal. The outer `Some` is a new text, the inner `None` a clear.
+pub(crate) struct AnswerOutcome {
+    /// The line to show. `None` is Paseo's silent acceptance of a compaction.
+    pub(crate) line: Option<String>,
+    pub(crate) goal: Option<Option<String>>,
 }
 
 /// The commands of one Codex session: the list read at session start, whether
@@ -191,7 +216,8 @@ impl CodexCommands {
         }
     }
 
-    /// Take the answer owed to `id` and say what the session shows for it.
+    /// Take the answer owed to `id` and say what the session shows and
+    /// stores for it.
     pub(crate) fn answer(&self, id: &Value, error: Option<&str>) -> Answer {
         let Some(id) = id.as_str() else {
             return Answer::NotOurs;
@@ -199,7 +225,10 @@ impl CodexCommands {
         let Some(command) = self.owed.lock().ok().and_then(|mut owed| owed.remove(id)) else {
             return Answer::NotOurs;
         };
-        Answer::Ours(command.outcome(error))
+        Answer::Ours(AnswerOutcome {
+            line: command.outcome(error),
+            goal: command.goal_delta(error.is_none()),
+        })
     }
 
     /// Input for a picked command (`buildCommandPromptInput` :4028-4056).

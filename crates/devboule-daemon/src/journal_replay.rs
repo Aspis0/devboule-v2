@@ -141,7 +141,7 @@ pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, Jou
                 dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                 peer_session_id, provider, origin_kind, origin_device, origin_role,
                 display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                overlay, depth, disowned_peer_session_id, cwd
+                overlay, depth, disowned_peer_session_id, cwd, goal
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -166,7 +166,7 @@ pub(super) fn owned_child_record(
                 dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                 peer_session_id, provider, origin_kind, origin_device, origin_role,
                 display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                overlay, depth, disowned_peer_session_id, cwd
+                overlay, depth, disowned_peer_session_id, cwd, goal
          FROM sessions WHERE id = ?1 AND owner = ?2 AND created_by = ?3",
         params![session_id, owner, created_by],
         row_to_session,
@@ -199,7 +199,7 @@ pub(super) fn closed_child_record(
                     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                     peer_session_id, provider, origin_kind, origin_device, origin_role,
                     display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                    overlay, depth, disowned_peer_session_id, cwd
+                    overlay, depth, disowned_peer_session_id, cwd, goal
              FROM sessions WHERE id = ?1 AND owner = ?2 AND created_by = ?3 AND closed = 1",
             params![target, owner, created_by],
             row_to_session,
@@ -215,7 +215,7 @@ pub(super) fn closed_child_record(
                 dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                 peer_session_id, provider, origin_kind, origin_device, origin_role,
                 display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                overlay, depth, disowned_peer_session_id, cwd
+                overlay, depth, disowned_peer_session_id, cwd, goal
          FROM sessions WHERE owner = ?1 AND created_by = ?2 AND title = ?3 AND closed = 1
          ORDER BY id",
     )?;
@@ -279,6 +279,9 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         // launched yet: the resume road reads it as "no directory to check",
         // which is the same behaviour the column's absence had.
         cwd: row.get(33)?,
+        // NULL for every row that predates v16, and for every session with
+        // no goal: both read as `None`.
+        goal: row.get(34)?,
     })
 }
 
@@ -332,7 +335,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                     peer_session_id, provider, origin_kind, origin_device, origin_role,
                     display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                    overlay, depth, disowned_peer_session_id, cwd
+                    overlay, depth, disowned_peer_session_id, cwd, goal
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,
