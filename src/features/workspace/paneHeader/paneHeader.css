@@ -45,7 +45,7 @@
   border-radius: 7px;
   cursor: pointer;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-small);
 }
 
 .workspace-terminal-interrupt:hover,
@@ -72,7 +72,7 @@
   border-radius: 7px;
   cursor: pointer;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-small);
 }
 
 .workspace-terminal-close:hover,

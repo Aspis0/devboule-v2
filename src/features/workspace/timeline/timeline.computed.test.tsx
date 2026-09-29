@@ -220,7 +220,7 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(finish).fontSize).toBe("13px");
     expect(getComputedStyle(finish).color).toBe("#686256");
     expect(getComputedStyle(finish).fontFamily).toContain("Inter");
-    expect(getComputedStyle(typing).fontSize).toBe("11px");
+    expect(getComputedStyle(typing).fontSize).toBe("12px");
     system.remove();
     rail.remove();
   });

@@ -352,7 +352,7 @@
   border-radius: 999px;
   background: var(--surface);
   color: var(--terracotta-deep);
-  font-size: 10px;
+  font-size: var(--type-small);
   font-weight: 700;
   white-space: nowrap;
   cursor: pointer;

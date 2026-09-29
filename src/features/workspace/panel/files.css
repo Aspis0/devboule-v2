@@ -12,7 +12,6 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   flex-direction: column;
   gap: 1px;
   color: var(--ink);
-  font-size: 11px;
 }
 
 /* One row of the tree. The row is a wrapper — depth padding and the row's
@@ -42,7 +41,7 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   border-radius: 8px;
   cursor: pointer;
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: var(--type-mono-sm);
 }
 
 .workspace-tree-file {
@@ -61,7 +60,7 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   border-radius: 8px;
   cursor: pointer;
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: var(--type-mono-sm);
 }
 
 /* The row's own menu trigger: always present, quiet until hovered — the
@@ -112,7 +111,7 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   border-radius: 6px;
   cursor: pointer;
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .workspace-tree-menu-item:hover {
@@ -137,7 +136,7 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: var(--type-mono-sm);
 }
 
 .workspace-tree-label {
@@ -155,14 +154,14 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 .workspace-tree-size {
   flex: none;
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 /* Loading, a folder's own refusal, the capped note: rows inside the tree. */
 .workspace-tree-row-note {
   padding: 4px 8px;
   color: var(--silence);
-  font-size: 10.5px;
+  font-size: var(--type-meta);
   line-height: 1.6;
 }
 
@@ -172,7 +171,7 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 .workspace-file-preview-text {
   margin: 0;
   padding: 4px 11px 12px;
-  font-size: 10.5px;
+  font-size: var(--type-mono-sm);
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -226,7 +225,7 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 .workspace-files-state {
   padding: 10px;
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.6;
 }
 
@@ -236,7 +235,7 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   border: 1px solid var(--danger-deep);
   border-radius: 8px;
   color: var(--danger-deep);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.55;
 }
 
@@ -394,13 +393,14 @@ ul.workspace-files-group {
   background: var(--fill-tool);
 }
 
-/* The rename input and the row menu items are UI text, not code. Scoped:
-   the Changes panel renders its Discard item with the same menu class,
-   and this slice must not restyle merged R7b code in passing. */
+/* The rename input and the row menu items are UI text, not code — the menu
+   at the same 13 the Changes panel's own items read. Scoped: the Changes
+   panel renders its Discard item with the same menu class, and this slice
+   must not restyle merged R7b code in passing. */
 .workspace-files .workspace-tree-rename,
 .workspace-files .workspace-tree-menu-item {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-small);
 }
 
 /* The pencil after the row's trigger: the slice-8 hand-off, quiet until

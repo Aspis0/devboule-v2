@@ -51,7 +51,9 @@ function mark(kind: SessionKind | ToolTabKind) {
       );
     case "pi":
       return (
-        <text data-mark="pi" x="7" y="10.5" textAnchor="middle" fontSize="10" fill="currentColor">
+        // A π among stroke marks must carry the same optical weight as its
+        // siblings in the 14px chip mark; 10 read as a footnote.
+        <text data-mark="pi" x="7" y="11" textAnchor="middle" fontSize="12" fill="currentColor">
           π
         </text>
       );

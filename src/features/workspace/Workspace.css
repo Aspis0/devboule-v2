@@ -105,7 +105,9 @@
 
 .workspace-vertical-label {
   writing-mode: vertical-rl;
-  font-size: 9.5px;
+  /* One line: two 12px line boxes fill a 30px rail to the half-pixel. */
+  white-space: nowrap;
+  font-size: var(--type-meta);
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -252,7 +254,7 @@
 }
 
 .workspace-chat-child-said figcaption {
-  font-size: 10px;
+  font-size: var(--type-meta);
   font-weight: 700;
   font-style: italic;
   color: var(--purple-deep);
@@ -271,7 +273,7 @@
 .workspace-chat-child-said-note {
   margin: 4px 0 0 0;
   color: var(--purple-deep);
-  font-size: 10px;
+  font-size: var(--type-meta);
   font-style: italic;
 }
 
@@ -287,7 +289,7 @@
 }
 
 .workspace-chat-unattributed figcaption {
-  font-size: 10px;
+  font-size: var(--type-meta);
   font-weight: 700;
   font-style: italic;
   color: var(--silence);
@@ -390,7 +392,7 @@
   color: var(--danger-deep);
   background: transparent;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-sm);
 }
 
 /* The agent chat's pinned journal-loss notice (same voice as the terminal's). */
@@ -400,7 +402,7 @@
   color: var(--danger-deep);
   background: transparent;
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-sm);
 }
 
 .workspace-conversation {
@@ -440,13 +442,6 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-}
-
-.workspace-chat-finish,
-.workspace-chat-empty {
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
 }
 
 .workspace-chat-entry {
@@ -492,7 +487,9 @@
   line-height: 1.45;
 }
 
-.workspace-chat-thought-trigger {
+/* Descendant on purpose: `font: inherit` needs a nameable parent, and the
+   trigger never renders outside `.workspace-chat-thought`. */
+.workspace-chat-thought .workspace-chat-thought-trigger {
   display: flex;
   width: 100%;
   min-width: 0;
@@ -542,7 +539,7 @@
 .workspace-chat-thought .workspace-chat-copy {
   margin-top: 4px;
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 1.55;
 }
 
@@ -639,7 +636,7 @@
 .workspace-chat-tool-group summary::after {
   flex: none;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--type-meta);
   content: "▾";
 }
 
@@ -776,7 +773,7 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--silence);
-  font-size: 9.5px;
+  font-size: var(--type-meta);
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -824,7 +821,7 @@
   border: 1px solid var(--terracotta);
   border-radius: 6px;
   color: var(--danger-deep);
-  font-size: 11.5px;
+  font-size: var(--type-meta);
   line-height: 1.55;
 }
 
@@ -874,7 +871,7 @@
 .workspace-chat-typing {
   flex: none;
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .workspace-chat-finish {
@@ -921,10 +918,10 @@
   display: grid;
   flex: none;
   place-items: center;
-  height: 26px;
+  height: var(--control-default);
   border-radius: 8px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 .workspace-secondary-action {
@@ -1009,7 +1006,7 @@
   padding: 5px 9px;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-meta);
 }
 
 .workspace-command-menu-heading {
@@ -1047,7 +1044,7 @@
 .workspace-command-name {
   color: var(--terracotta-deep);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-mono-md);
   white-space: nowrap;
 }
 
@@ -1055,7 +1052,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--silence);
-  font-size: 10.5px;
+  font-size: var(--type-small);
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1279,7 +1276,7 @@
   align-self: flex-start;
   height: 20px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: var(--type-meta);
   line-height: 18px;
   color: var(--ink);
   background: var(--fill-tool);
@@ -1348,7 +1345,7 @@
 
 .workspace-menu-label {
   color: var(--silence);
-  font-size: 9.5px;
+  font-size: var(--type-meta);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1414,7 +1411,7 @@
 .workspace-consent-spec {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: var(--type-mono-sm);
   word-break: break-all;
 }
 
@@ -1422,7 +1419,7 @@
   margin: 0;
   padding: 6px 9px 0;
   color: var(--silence);
-  font-size: 11px;
+  font-size: var(--type-small);
   line-height: 1.45;
 }
 
@@ -1440,7 +1437,7 @@
   min-width: 0;
   padding: 9px 0;
   color: var(--ink-soft);
-  font-size: 11.5px;
+  font-size: var(--type-small);
 }
 
 /* The grounding row is [label span, button]; the label is the only span child, so it gets
@@ -1463,7 +1460,7 @@
   border: 1px solid var(--border-strong);
   border-radius: 7px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: var(--type-small);
 }
 
 .workspace-open-design:hover,
@@ -1484,14 +1481,14 @@
   align-items: center;
   gap: 8px;
   padding: 9px 11px;
-  font-size: 11.5px;
+  font-size: var(--type-interface);
   font-weight: 600;
 }
 
 .workspace-design-desc {
   padding: 0 11px 9px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-small);
   line-height: 1.55;
 }
 
@@ -1505,13 +1502,13 @@
 .workspace-design-sources span {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-size: var(--type-mono-sm);
 }
 
 .workspace-design-note {
   margin-top: 9px;
   color: var(--silence);
-  font-size: 10.5px;
+  font-size: var(--type-meta);
   line-height: 1.55;
 }
 
@@ -1563,7 +1560,7 @@
 .workspace-dialog-eyebrow {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-size: var(--type-meta);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -1615,7 +1612,7 @@
 .workspace-rename-input-label {
   display: block;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: 500;
 }
 
@@ -1641,7 +1638,7 @@
 
 .workspace-project-picker-hint {
   color: var(--silence);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
 
 .workspace-project-dialog input,
@@ -1661,7 +1658,7 @@
    and terminals. */
 .workspace-project-dialog input {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-mono-sm);
 }
 
 .workspace-rename-dialog input {
@@ -1690,7 +1687,7 @@
   margin-top: 6px;
   color: var(--danger-deep);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: var(--type-meta);
   line-height: 1.5;
 }
 
@@ -1707,14 +1704,15 @@
   margin-top: 18px;
 }
 
+/* The spec's dialog actions are the default control: the base 28px carries
+   the height, this rule only the tighter padding and radius. */
 .workspace-project-dialog-actions .workspace-secondary-action,
 .workspace-project-dialog-actions .workspace-primary-action,
 .workspace-rename-actions .workspace-secondary-action,
 .workspace-rename-actions .workspace-primary-action {
-  height: 29px;
   padding: 0 13px;
   border-radius: 9px;
-  font-size: 11px;
+  font-size: var(--type-small);
 }
 
 /* The menu's Delete entry reads as what it is: the one entry that destroys. */

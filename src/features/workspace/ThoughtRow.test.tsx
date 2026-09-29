@@ -140,7 +140,7 @@ describe("ThoughtRow", () => {
     ]);
     inject([
       ".workspace-chat-thought",
-      ".workspace-chat-thought-trigger",
+      ".workspace-chat-thought .workspace-chat-thought-trigger",
       ".workspace-chat-thought-chevron",
       ".workspace-chat-thought-preview",
       ".workspace-chat-thought .workspace-chat-copy",
@@ -162,7 +162,7 @@ describe("ThoughtRow", () => {
     expect(chevron).not.toBeNull();
     if (chevron !== null) expect(getComputedStyle(chevron).width).toBe("12px");
     expect(getComputedStyle(preview).textOverflow).toBe("ellipsis");
-    expect(getComputedStyle(body).fontSize).toBe("11px");
+    expect(getComputedStyle(body).fontSize).toBe("12px");
     expect(getComputedStyle(body).fontFamily).not.toContain("JetBrains");
   });
 });
