@@ -453,24 +453,30 @@ export function Workspace({
   // strip only wires their handlers. The "+" button's ref is the flow's
   // last focus fallback (no active tab).
   const addButtonRef = useRef<HTMLButtonElement>(null);
+  // A click away and back leaves activeToolTabId where it started — the value
+  // alone cannot see it; the counted writes bump this move counter.
+  const toolNavRef = useRef(0);
+  const writeToolTab = useCallback((id: string | null) => {
+    toolNavRef.current += 1;
+    setActiveToolTabId(id);
+  }, []);
   // Opening the same (kind, workspace, path) again focuses the existing
   // tab instead of duplicating it; opening focuses either way.
   const openToolTab = useCallback((workspaceId: string, path: string, kind: ToolTabKind) => {
     setToolTabs((prev) => openToolTabs(prev, makeToolTab(kind, workspaceId, path)));
     setActiveToolTabId(toolTabId(kind, workspaceId, path));
   }, []);
-  // Every explicit act by the person that names a session stands the tool
-  // tab down through here, so no future caller can show a session and
-  // forget the tool over it. The roster reconcile is the one caller that
-  // stays out: it maintains the session authority underneath the tool.
-  const standDownToolTab = useCallback(() => setActiveToolTabId(null), []);
+  // Every stand-down routes through here. The landed create is the only caller
+  // that may skip it (guarded below); the roster reconcile never calls it.
+  const standDownToolTab = useCallback(() => writeToolTab(null), [writeToolTab]);
   // A click on the already-active tool tab re-reads it: the pane keeps the
   // old content until the new read lands (each pane owns that), so this is
   // only the nudge, never a remount.
   const [toolRefreshNonce, setToolRefreshNonce] = useState(0);
-  // Mirrored after commit, never read during render.
+  // Mirrored after commit — layout, not passive, so a landed create can
+  // never read a stale tool tab — and never read during render.
   const activeToolTabIdRef = useRef<string | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     activeToolTabIdRef.current = activeToolTabId;
   });
   // The ONE selection write the strip-facing readers use: a tool id parks
@@ -480,22 +486,32 @@ export function Workspace({
     (id: string | null) => {
       if (id !== null && isToolTabId(id)) {
         if (id === activeToolTabIdRef.current) setToolRefreshNonce((nonce) => nonce + 1);
-        setActiveToolTabId(id);
+        writeToolTab(id);
         return;
       }
       standDownToolTab();
       selectSession(id);
     },
-    [selectSession, standDownToolTab],
+    [selectSession, standDownToolTab, writeToolTab],
   );
-  // The ONE create write: a session that lands while a tool tab is active
-  // takes the pane; one that never lands leaves the tool where it was.
+  // A landed create takes the pane only while the tool axis stood still: the
+  // same tab as at start and no counted move in between. A move keeps the pane.
   const createAndShowSession = useCallback(
-    (kind: SessionKind, provider: string | null, workspaceId: string | null) =>
-      createSession(kind, provider, workspaceId).then((session) => {
-        if (session !== null) standDownToolTab();
+    (kind: SessionKind, provider: string | null, workspaceId: string | null) => {
+      const toolTabAtStart = activeToolTabIdRef.current;
+      const toolNavAtStart = toolNavRef.current;
+      return createSession(kind, provider, workspaceId).then((session) => {
+        if (
+          session !== null &&
+          toolTabAtStart !== null &&
+          activeToolTabIdRef.current === toolTabAtStart &&
+          toolNavRef.current === toolNavAtStart
+        ) {
+          standDownToolTab();
+        }
         return session;
-      }),
+      });
+    },
     [createSession, standDownToolTab],
   );
   // Removing tool tabs forgets what they showed; the mixed close keeps the

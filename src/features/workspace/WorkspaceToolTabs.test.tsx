@@ -28,12 +28,14 @@ import {
   terminalSession,
 } from "./bulkCloseHarness";
 import {
+  sessionCreate,
   sessionStop,
   workspaceFilesList,
   workspaceFileRead,
   workspaceGitDiff,
   workspaceGitStatus,
 } from "../../lib/tauri";
+import type { Session } from "../../types/ipc";
 import { lookedAtSessionId } from "./presence";
 
 beforeEach(() => {
@@ -180,6 +182,111 @@ describe("opening from the panel", () => {
     const tab = toolTabButton("tool:diff:workspace-1:src%2Fwriter.ts");
     expect(tab.querySelector(".workspace-status-dot")).toBeNull();
     expect(tab.querySelector('[data-mark="diff"]')).not.toBeNull();
+  });
+});
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/** "+" → Terminal, with the create left in flight on this promise. */
+async function startTerminalCreate(create: Promise<Session>): Promise<void> {
+  vi.mocked(sessionCreate).mockImplementationOnce(() => create);
+  const add = document.querySelector<HTMLButtonElement>(".workspace-session-add");
+  if (add === null) throw new Error("session add control did not render");
+  await act(async () => {
+    add.click();
+  });
+  await flush();
+  await clickMenuEntry("Terminal");
+  await flush();
+}
+
+describe("a create while a tool tab owns the pane", () => {
+  it("a create that lands after the user clicked back to their file tab keeps the file view", async () => {
+    await openFilePencil("docs/SETUP.md", "SETUP.md");
+    const fileId = "tool:file:workspace-1:docs%2FSETUP.md";
+    expect(toolTabButton(fileId).getAttribute("aria-selected")).toBe("true");
+
+    const pending = deferred<Session>();
+    await startTerminalCreate(pending.promise);
+
+    // The user leaves the file tab for a session, then clicks back to the
+    // file tab while the spawn runs — a navigation either way.
+    await plainClick("session-2");
+    await act(async () => {
+      toolTabButton(fileId).click();
+    });
+    await flush();
+
+    await act(async () => {
+      pending.resolve(terminalSession("session-4", "shell four"));
+    });
+    await flush();
+    await flush();
+
+    // The create landed (its tab joined the strip) but took neither the pane
+    // nor the tab: the file view the user returned to is still what shows.
+    expect(document.querySelector("#workspace-session-tab-session-4")).not.toBeNull();
+    expect(toolTabButton(fileId).getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector("#workspace-panel-terminal")?.textContent).toContain(
+      "preview bytes",
+    );
+  });
+
+  it("a create that lands after a round trip through the file tab keeps their session", async () => {
+    await openFilePencil("docs/SETUP.md", "SETUP.md");
+    const fileId = "tool:file:workspace-1:docs%2FSETUP.md";
+    // Session A is the tab the person stands on when the create starts.
+    await plainClick("session-2");
+    const pending = deferred<Session>();
+    await startTerminalCreate(pending.promise);
+
+    // Mid-flight: bring the file tab up, then click back to session A. The
+    // round trip ends on the session axis, where the value never changes —
+    // only the explicit act can tell the epoch the person moved.
+    await act(async () => {
+      toolTabButton(fileId).click();
+    });
+    await flush();
+    await plainClick("session-2");
+
+    await act(async () => {
+      pending.resolve(terminalSession("session-4", "shell four"));
+    });
+    await flush();
+    await flush();
+
+    // The create must not take the tab back: A is still what is selected
+    // and what the pane shows.
+    expect(tabElement("session-2").getAttribute("aria-selected")).toBe("true");
+    expect(tabElement("session-4").getAttribute("aria-selected")).toBe("false");
+    expect(document.querySelector("[data-testid=terminal-surface]")?.textContent).toBe("session-2");
+  });
+
+  it("a create that lands while the tool axis never moved takes the pane", async () => {
+    await openFilePencil("docs/SETUP.md", "SETUP.md");
+    const fileId = "tool:file:workspace-1:docs%2FSETUP.md";
+    expect(toolTabButton(fileId).getAttribute("aria-selected")).toBe("true");
+
+    const pending = deferred<Session>();
+    await startTerminalCreate(pending.promise);
+
+    // Nobody moves during the flight: the landed create takes the pane,
+    // the behaviour this rule deliberately preserved from base.
+    await act(async () => {
+      pending.resolve(terminalSession("session-4", "shell four"));
+    });
+    await flush();
+    await flush();
+
+    expect(toolTabButton(fileId).getAttribute("aria-selected")).toBe("false");
+    expect(tabElement("session-4").getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector("[data-testid=terminal-surface]")?.textContent).toBe("session-4");
   });
 });
 

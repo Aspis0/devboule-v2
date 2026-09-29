@@ -132,7 +132,13 @@ vi.mock("./AgentChatSurface", () => ({
   },
 }));
 
-import { projectsList, providersList, sessionsList, workspacesList } from "../../lib/tauri";
+import {
+  projectsList,
+  providersList,
+  sessionCreate,
+  sessionsList,
+  workspacesList,
+} from "../../lib/tauri";
 import { Workspace } from "./Workspace";
 import { resetSharedCloseActionsForTests } from "./strip/closeActions";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
@@ -420,6 +426,9 @@ export function beforeEachHarness(): void {
   vi.mocked(workspacesList).mockResolvedValue([workspace]);
   vi.mocked(sessionsList).mockResolvedValue(defaultSessions());
   vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
+  // A topic file that forgets its own create stub still gets a real session
+  // instead of undefined deep inside the controller.
+  vi.mocked(sessionCreate).mockResolvedValue(terminalSession("session-9", "shell nine"));
 }
 
 export async function afterEachHarness(): Promise<void> {

@@ -588,6 +588,9 @@ export function createWorkspaceSessionController(
     creating: false,
     error: null,
   };
+  // create() compares this, not the id: every selection change bumps it, and
+  // so does an explicit select() act that lands back on the same id.
+  let selectionEpoch = 0;
   let refreshGeneration = 0;
   // Refreshes between "started" and "settled". `loading` belongs to the newest
   // of them; the counter is what lets a superseded refresh know whether some
@@ -606,6 +609,7 @@ export function createWorkspaceSessionController(
   let firstSnapshot = true;
 
   const publish = (next: WorkspaceSessionState): void => {
+    if (next.selectedSessionId !== state.selectedSessionId) selectionEpoch += 1;
     state = next;
     for (const listener of listeners) listener();
   };
@@ -798,6 +802,9 @@ export function createWorkspaceSessionController(
   ): Promise<Session | null> => {
     if (state.creating) return null;
     ++refreshGeneration;
+    // A move is any selection change during the flight — even one that lands
+    // back on the captured id — so a late create never takes the tab back.
+    const capturedEpoch = selectionEpoch;
     publish({ ...state, creating: true, error: null });
     try {
       const session = await source.create(workspaceId, kind, provider);
@@ -808,7 +815,10 @@ export function createWorkspaceSessionController(
       publish({
         ...state,
         sessions: listed,
-        selectedSessionId: chooseSelected(listed, session.id),
+        selectedSessionId:
+          selectionEpoch === capturedEpoch
+            ? chooseSelected(listed, session.id)
+            : state.selectedSessionId,
         creating: false,
         error: null,
       });
@@ -892,19 +902,25 @@ export function createWorkspaceSessionController(
     watch,
     reconnect,
     select: (sessionId: string | null) => {
-      // Null is the empty state: every tab closed, so nothing is active —
-      // never an id that only points at a pending archive.
+      // An explicit act counts as a move even when it names the tab already
+      // selected; only daemon rewrites stay value-based (an act may bump twice).
       if (sessionId === null) {
+        // Null is the empty state: every tab closed, so nothing is active —
+        // never an id that only points at a pending archive. No bump: publish
+        // counts the change, and null-to-null is no navigation at all.
         publish({ ...state, selectedSessionId: null });
         return;
       }
       if (state.sessions.some((session) => session.id === sessionId)) {
+        selectionEpoch += 1;
         publish({ ...state, selectedSessionId: sessionId });
       }
     },
     open: (session) => {
       ++refreshGeneration;
       openedIds.add(session.id);
+      // Opening is always the person's act, so reopening the selected tab still counts as a move.
+      selectionEpoch += 1;
       publish({
         ...state,
         sessions: [...state.sessions.filter((current) => current.id !== session.id), session],

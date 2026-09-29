@@ -867,6 +867,95 @@ describe("the + new-tab menu", () => {
     expect(surface?.getAttribute("data-autofocus")).toBe("false");
   });
 
+  it("a create that lands in another workspace keeps the tab the user picked meanwhile", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, workspaceTwo]);
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one", "workspace-1"),
+      terminal("session-3", "shell three", "workspace-2"),
+      terminal("session-4", "shell four", "workspace-2"),
+    ]);
+    const pending = deferred<Session>();
+    vi.mocked(sessionCreate).mockImplementationOnce(() => pending.promise);
+    ({ container, unmount } = await renderWorkspace());
+
+    await openMenu(container);
+    await act(async () => menuItem(container, "Terminal").click());
+    await act(async () => undefined);
+
+    // The user moves to the other workspace and picks its SECOND tab — not
+    // the first one the workspace switch lands on.
+    const otherRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+      (row) => row.textContent?.includes("rust") === true,
+    );
+    if (otherRow === undefined) throw new Error("second workspace row did not render");
+    await act(async () => otherRow.click());
+    const picked = container.querySelector<HTMLButtonElement>("#workspace-session-tab-session-4");
+    if (picked === null) throw new Error("session-4 tab did not render");
+    await act(async () => picked.click());
+
+    await act(async () => {
+      pending.resolve(terminal("session-2", "shell two", "workspace-1"));
+    });
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The create landed in workspace-1: the picked tab stays up and selected
+    // — no yank to workspace-1's new session, no fall to this strip's first tab.
+    expect(
+      container.querySelector("#workspace-session-tab-session-4")?.getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      container.querySelector("#workspace-session-tab-session-3")?.getAttribute("aria-selected"),
+    ).toBe("false");
+    expect(container.querySelector("#workspace-session-tab-session-2")).toBeNull();
+  });
+
+  it("a create that lands after the user moved keeps their tab selected, adds the new tab and moves no focus", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one", "workspace-1"),
+      terminal("session-2", "shell two", "workspace-1"),
+    ]);
+    const pending = deferred<Session>();
+    vi.mocked(sessionCreate).mockImplementationOnce(() => pending.promise);
+    ({ container, unmount } = await renderWorkspace());
+
+    await openMenu(container);
+    await act(async () => menuItem(container, "Terminal").click());
+    await act(async () => undefined);
+
+    // The user moves to their other tab while the spawn runs.
+    const picked = container.querySelector<HTMLButtonElement>("#workspace-session-tab-session-2");
+    if (picked === null) throw new Error("session-2 tab did not render");
+    await act(async () => picked.click());
+
+    await act(async () => {
+      pending.resolve(terminal("session-3", "shell three", "workspace-1"));
+    });
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // Their tab stays selected, the new tab joins the strip unselected, and
+    // the create's focus request died on the move — no autofocus for it.
+    expect(
+      container.querySelector("#workspace-session-tab-session-2")?.getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      container.querySelector("#workspace-session-tab-session-3")?.getAttribute("aria-selected"),
+    ).toBe("false");
+    let surface = container.querySelector("[data-testid=terminal-surface]");
+    expect(surface?.textContent).toBe("session-2");
+    expect(surface?.getAttribute("data-autofocus")).toBe("false");
+
+    // Even a deliberate click on the new tab later never replays that request:
+    // stripFocus kills it the moment the strip shows another session.
+    const created = container.querySelector<HTMLButtonElement>("#workspace-session-tab-session-3");
+    if (created === null) throw new Error("session-3 tab did not render");
+    await act(async () => created.click());
+    surface = container.querySelector("[data-testid=terminal-surface]");
+    expect(surface?.textContent).toBe("session-3");
+    expect(surface?.getAttribute("data-autofocus")).toBe("false");
+  });
+
   it("re-measures the strip when its size changes, and leaves a hand scroll alone without one", async () => {
     await withResizeObserver(async () => {
       vi.mocked(sessionsList).mockResolvedValue([
