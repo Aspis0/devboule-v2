@@ -110,11 +110,33 @@ describe("toolRowDisplay", () => {
     });
   });
 
+  it("shows a PascalCase provider tool name in sentence case", () => {
+    expect(toolRowDisplay(tool({ kind: "other", title: "AskUserQuestion" }))).toEqual({
+      displayName: "Ask user question",
+      icon: "wrench",
+    });
+  });
+
   it("shows a namespaced tool name as-is with no summary", () => {
     expect(toolRowDisplay(tool({ kind: "other", title: "mcp__probe__ping" }))).toEqual({
       displayName: "mcp__probe__ping",
       icon: "wrench",
     });
+  });
+
+  it("shows a separators-only title as sent instead of an empty label", () => {
+    expect(toolRowDisplay(tool({ kind: "other", title: "_" })).displayName).toBe("_");
+    expect(toolRowDisplay(tool({ kind: "other", title: "__" })).displayName).toBe("__");
+    expect(toolRowDisplay(tool({ kind: "other", title: "-" })).displayName).toBe("-");
+  });
+
+  it("treats a prototype-keyed kind like any unknown kind", () => {
+    for (const kind of ["__proto__", "constructor", "toString"]) {
+      expect(toolRowDisplay(tool({ kind, title: "probe_tool" }))).toEqual({
+        displayName: "Probe tool",
+        icon: "wrench",
+      });
+    }
   });
 
   it("falls back to Tool with the title as summary for unknown kinds", () => {
@@ -139,10 +161,62 @@ describe("humanizeToolName", () => {
     expect(humanizeToolName("read-file")).toBe("Read file");
   });
 
+  it("splits PascalCase and camelCase at the case boundaries", () => {
+    expect(humanizeToolName("AskUserQuestion")).toBe("Ask user question");
+    expect(humanizeToolName("webFetch")).toBe("Web fetch");
+  });
+
+  it("keeps acronym runs whole", () => {
+    expect(humanizeToolName("HTTPRequest")).toBe("HTTP request");
+    expect(humanizeToolName("readURL")).toBe("Read URL");
+  });
+
+  it("splits an uppercase run the same way at every boundary", () => {
+    expect(humanizeToolName("CMakeLists")).toBe("C make lists");
+    expect(humanizeToolName("iOSApp")).toBe("I OS app");
+    expect(humanizeToolName("macOSBuild")).toBe("Mac OS build");
+  });
+
+  it("splits snake_case into sentence case", () => {
+    expect(humanizeToolName("apply_patch")).toBe("Apply patch");
+  });
+
+  it("keeps digits attached to the word they follow", () => {
+    expect(humanizeToolName("Tool2Run")).toBe("Tool2 run");
+  });
+
+  it("capitalizes a single word", () => {
+    expect(humanizeToolName("Bash")).toBe("Bash");
+  });
+
+  it("leaves an already spaced ACP title unchanged", () => {
+    expect(humanizeToolName("Run tests")).toBe("Run tests");
+  });
+
+  it("leaves an empty string empty", () => {
+    expect(humanizeToolName("")).toBe("");
+  });
+
   it("keeps namespaced names as-is", () => {
     expect(humanizeToolName("mcp__server__foo")).toBe("mcp__server__foo");
     expect(humanizeToolName("server.tool")).toBe("server.tool");
     expect(humanizeToolName("a/b")).toBe("a/b");
     expect(humanizeToolName("mode:fast")).toBe("mode:fast");
+  });
+
+  it("returns an 80,000-character all-caps name as sent, in bounded time", () => {
+    const name = "A".repeat(80_000);
+    const startedAt = performance.now();
+    expect(humanizeToolName(name)).toBe(name);
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("returns an 80,000-character alternating-case name as sent, in bounded time", () => {
+    const name = Array.from({ length: 80_000 }, (_, index) => (index % 2 === 0 ? "a" : "B")).join(
+      "",
+    );
+    const startedAt = performance.now();
+    expect(humanizeToolName(name)).toBe(name);
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
   });
 });

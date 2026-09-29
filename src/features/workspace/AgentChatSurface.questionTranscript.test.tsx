@@ -134,6 +134,39 @@ describe("AgentChatSurface question transcript", () => {
     expect(toolRows[0]?.textContent).toContain("Barn red");
   });
 
+  it("labels a pending row by humanizing its bare provider name", async () => {
+    await mount();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "toolu_bare",
+        title: "AskUserQuestion",
+        status: "pending",
+      });
+    });
+
+    const toolRows = container.querySelectorAll(".workspace-chat-tool");
+    expect(toolRows).toHaveLength(1);
+    expect(rowLabel(toolRows[0])).toBe("Ask user question");
+  });
+
+  it("renders a prototype-keyed kind like any unknown kind", async () => {
+    await mount();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "toolu_proto",
+        title: "probe_tool",
+        status: "completed",
+        kind: "__proto__",
+      });
+    });
+
+    const toolRows = container.querySelectorAll(".workspace-chat-tool");
+    expect(toolRows).toHaveLength(1);
+    expect(rowLabel(toolRows[0])).toBe("Probe tool");
+  });
+
   it("keeps the question row out of the neighbouring tool-call group", async () => {
     const shell = (id: string): SessionEvent => ({
       type: "agent_tool_call",
