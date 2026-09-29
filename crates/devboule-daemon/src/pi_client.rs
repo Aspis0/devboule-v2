@@ -1419,9 +1419,7 @@ fn spawn_pi(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in &command.env {
-        process.env(key, value);
-    }
+    crate::agent_env::overlay_piped_child_env(&mut process, &command.env);
     // The carrier env, only when the broker minted one: URL + token as child
     // env (never argv — the argv token-free assertion in S5 tests pins this).
     if let Some(carrier) = bridge.as_ref() {

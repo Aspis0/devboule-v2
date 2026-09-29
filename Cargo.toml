@@ -18,6 +18,14 @@ resolver = "2"
 # Exit: drop this patch when upstream esaxx-rs builds with the dynamic CRT on
 # Windows, or when `tokenizers` stops depending on esaxx-rs.
 esaxx-rs = { path = "crates/oracle-core/vendor/esaxx-rs-0.1.10" }
+# Patch portable-pty to reject malformed Windows environments: a malformed
+# HKCU\Environment value (such as a REG_MULTI_SZ with embedded NULs) makes
+# CreateProcessW fail with ERROR_INVALID_PARAMETER, so every PTY spawn dies.
+# Vendored 0.9.0 plus herdr's 0003 patch (Apache-2.0, commit 56161969);
+# see vendor/portable-pty.patches.md. Must live in the workspace root —
+# patches in member Cargo.tomls are ignored.
+# Exit: drop this patch when upstream portable-pty ships the fix.
+portable-pty = { path = "vendor/portable-pty" }
 
 
 

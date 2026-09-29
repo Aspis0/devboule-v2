@@ -598,9 +598,7 @@ fn spawn_claude_child(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in &command.env {
-        process.env(key, value);
-    }
+    crate::agent_env::overlay_piped_child_env(&mut process, &command.env);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

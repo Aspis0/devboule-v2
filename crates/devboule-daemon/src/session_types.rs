@@ -48,9 +48,7 @@ impl PtyCommand {
         let mut command = CommandBuilder::new(&self.program);
         command.args(&self.args);
         command.cwd(&self.cwd);
-        for (key, value) in &self.env {
-            command.env(key, value);
-        }
+        crate::agent_env::overlay_pty_child_env(&mut command, &self.env);
         command
     }
 }
@@ -463,6 +461,47 @@ impl RegistryEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_child_builder_carries_scrubbed_terminal_identity() {
+        // The central PTY road must run the overlay: explicit env is kept
+        // verbatim, including an intentional TERM_PROGRAM opt-in. Inherited
+        // stripping itself is pinned beside the overlay (`agent_env` shed
+        // tests plus the predicate): CommandBuilder snapshots the process
+        // env at construction, and this suite must not mutate it, so seeding
+        // outer vars as explicit entries would only exercise the opt-in path.
+        let command = PtyCommand::new(
+            "probe.exe",
+            Vec::<String>::new(),
+            PathBuf::from(r"C:\work"),
+            vec![
+                ("DEVBOULE_SESSION_ID".to_string(), "s.test.1".to_string()),
+                ("KEEP".to_string(), "yes".to_string()),
+                ("ANTHROPIC_API_KEY".to_string(), "fake-key".to_string()),
+                ("TERM_PROGRAM".to_string(), "custom".to_string()),
+            ],
+        );
+        let builder = command.to_command_builder();
+        assert_eq!(
+            builder
+                .get_env("TERM_PROGRAM")
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some("custom".to_string())
+        );
+        assert_eq!(
+            builder
+                .get_env("DEVBOULE_SESSION_ID")
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some("s.test.1".to_string())
+        );
+        assert_eq!(
+            builder
+                .get_env("ANTHROPIC_API_KEY")
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some("fake-key".to_string())
+        );
+        assert!(builder.get_env("PATH").is_some());
+    }
 
     #[test]
     fn cursor_replay_is_strictly_after_last_seen_sequence() {

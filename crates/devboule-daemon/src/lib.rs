@@ -78,6 +78,8 @@ mod peer_transport;
 mod pi_view;
 #[cfg(feature = "server")]
 mod plan_text;
+#[cfg(all(test, feature = "server"))]
+mod portable_pty_tests;
 mod process_tree;
 #[cfg(feature = "server")]
 mod profile_delivery;

@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: devboule-bot <devboule-bot@devboule.invalid>
+Date: Tue, 29 Sep 2026 00:00:00 +0000
+Subject: [PATCH] local env hardening on top of 0003
+
+Local follow-up to 0003, not upstream. Removes logged registry values
+from the trace lines (names only), rejects a bare "=" key that cannot
+form a valid record, and widens reg_value_to_string and
+environment_block to pub so the daemon-side regression test can assert
+the filter through the crate our spawns link. A malformed entry is
+dropped silently at spawn: the vendored crate has no log sink in a
+Devboule build, so a visible notice waits for the daemon log sink.
+
+Local base: vendored portable-pty 0.9.0 + 0003
+Applies on top of 0003 with: patch -p1 (from the repository root)
+---
+diff --git a/vendor/portable-pty/src/cmdbuilder.rs b/vendor/portable-pty/src/cmdbuilder.rs
+index 22c10c4f1f59d57b4a2b0de9d9623308f38c1f89..af8c07cf057234f6b3fea6b03ffb067554c2f57c 100644
+--- a/vendor/portable-pty/src/cmdbuilder.rs
++++ b/vendor/portable-pty/src/cmdbuilder.rs
+@@ -72,7 +72,8 @@
+ }
+ 
+ #[cfg(windows)]
+-fn reg_value_to_string(value: &winreg::RegValue) -> anyhow::Result<OsString> {
++// `pub` for the daemon-side regression test; upstream keeps this private.
++pub fn reg_value_to_string(value: &winreg::RegValue) -> anyhow::Result<OsString> {
+     use std::os::windows::ffi::OsStringExt;
+     use winapi::um::processenv::ExpandEnvironmentStringsW;
+     use winreg::enums::RegType;
+@@ -179,7 +180,7 @@
+                         continue;
+                     }
+                     if let Ok(value) = reg_value_to_string(&value) {
+-                        log::trace!("adding SYS env: {:?} {:?}", name, value);
++                        log::trace!("adding SYS env: {:?}", name);
+                         env.insert(
+                             EnvEntry::map_key(name.clone().into()),
+                             EnvEntry {
+@@ -213,7 +214,7 @@
+                             value
+                         };
+ 
+-                        log::trace!("adding USER env: {:?} {:?}", name, value);
++                        log::trace!("adding USER env: {:?}", name);
+                         env.insert(
+                             EnvEntry::map_key(name.clone().into()),
+                             EnvEntry {
+@@ -670,7 +671,8 @@
+     /// Uses the current process environment as the base and then
+     /// adds/replaces the environment that was specified via the
+     /// `env` methods.
+-    pub(crate) fn environment_block(&self) -> Vec<u16> {
++    // `pub` for the daemon-side regression test; upstream keeps this `pub(crate)`.
++    pub fn environment_block(&self) -> Vec<u16> {
+         // encode the environment as wide characters
+         let mut block = vec![];
+ 
+@@ -681,8 +683,12 @@
+         } in self.envs.values()
+         {
+             let key: Vec<u16> = preferred_key.encode_wide().collect();
++            // Vendored-patch region (0003 filter, 0004 `=` hardening): omit
++            // entries that cannot form one complete record; see
++            // vendor/portable-pty.patches.md.
+             if key.is_empty()
+                 || key.contains(&0)
++                || key == [b'=' as u16]
+                 || key[1..].contains(&(b'=' as u16))
+                 || value.encode_wide().any(|unit| unit == 0)
+             {

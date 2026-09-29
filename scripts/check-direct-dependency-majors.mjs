@@ -33,6 +33,12 @@ const inlineExceptions = {
       exitCondition:
         "oracle-core's dependents (hf-hub, lance-namespace-reqwest-client) move to reqwest 0.13, or reqwest regains a ring-based TLS feature",
     },
+    winreg: {
+      reason:
+        "the daemon's vendored-portable-pty regression test (Windows-only) must construct the exact winreg::RegValue type portable-pty 0.9.0 validates; 0.10.1 is what the vendored crate resolves and is already in Cargo.lock",
+      exitCondition:
+        "upstream portable-pty ships the malformed-environment fix and the vendored patch (plus its daemon-side test) is dropped",
+    },
   },
 };
 

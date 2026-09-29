@@ -1092,9 +1092,7 @@ fn spawn_acp_terminal(
     let mut builder = CommandBuilder::new(program);
     builder.args(args);
     builder.cwd(cwd);
-    for (key, value) in env {
-        builder.env(key, value);
-    }
+    crate::agent_env::overlay_pty_child_env(&mut builder, env);
     let mut child = pair.slave.spawn_command(builder).map_err(|error| {
         RpcError::internal(format!("Could not start ACP terminal command: {error}"))
     })?;

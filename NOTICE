@@ -52,13 +52,38 @@ adapted from herdr, licensed under the Apache License, Version 2.0, commit
 - `herdr-src/src/worktree.rs` `leftover_worktree_checkout_matches_repo`
 - `herdr-src/src/worktree.rs` `git_common_worktrees_dir`
 
+The outer agent and terminal identity stripping in
+`crates/devboule-daemon/src/agent_env.rs` is adapted from herdr,
+licensed under the Apache License, Version 2.0, commit `8ac95427`:
+
+- `herdr-src/src/pane.rs` `apply_pane_launch_env`
+- `herdr-src/src/pane.rs` `apply_pane_terminal_env`
+
+The malformed-Windows-environment hardening in `vendor/portable-pty` is
+herdr's patch, licensed under the Apache License, Version 2.0, commit
+`56161969`, applied to the pristine `portable-pty 0.9.0` sources (MIT,
+upstream licence kept at `vendor/portable-pty/LICENSE.md`):
+
+- `herdr-src/vendor/patches/portable-pty/0003-reject-malformed-windows-environments.patch`
+- `herdr-src/vendor/portable-pty/src/cmdbuilder.rs`
+
+The local follow-up hardening on that vendored tree (trace values removed,
+bare-`=`-key rejection) is a Devboule modification, tracked as patch `0004`
+in `vendor/portable-pty.patches.md`:
+
+- `vendor/patches/portable-pty/0004-local-env-hardening.patch`
+- `vendor/portable-pty/src/cmdbuilder.rs`
+
 The provider catalog adds Devboule's installed-agent model, ACP launch
 metadata, and an explicit unknown authentication status; it does not probe
 login state.
 
-No third-party library source code beyond the explicitly attributed herdr
-portions above is copied into this repository. This does not mean that linked
-dependency code is absent from a built binary; the
+Apart from the explicitly attributed herdr portions above, the only
+third-party library source copied into this repository is the vendored
+`portable-pty` tree (`vendor/portable-pty`; upstream MIT, see its
+`LICENSE.md`, plus herdr's Apache-2.0 patch and the local Devboule
+modification noted above). This does not
+mean that linked dependency code is absent from a built binary; the
 Cargo and npm dependencies identified in THIRD_PARTY.md are compiled or
 bundled according to their respective licences. The three checked-in fonts
 and the application icon asset are listed separately there.

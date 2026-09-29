@@ -161,3 +161,10 @@ windows-sys = { version = "=0.61.2", features = [
 # how CI runs them) compile the ACP stub battery, while a normal or release build
 # keeps the feature off and ships no stub binary and no test API (audit S5B-10).
 devboule-daemon = { path = ".", features = ["test-support"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Test-only: the vendored-portable-pty regression test constructs the exact
+# registry value type the vendored crate validates. This must stay on the 0.10
+# line portable-pty 0.9.0 resolves, already in Cargo.lock, so no new package;
+# the `check:dependency-majors` exception beside it is the deliberate-lag record.
+winreg = "0.10"

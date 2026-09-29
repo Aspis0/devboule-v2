@@ -502,9 +502,7 @@ fn spawn_codex(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in &command.env {
-        process.env(key, value);
-    }
+    crate::agent_env::overlay_piped_child_env(&mut process, &command.env);
     // The carrier env, only when the broker minted one: the bearer as child
     // env (never argv — the S6 argv token-free assertion pins this).
     if let Some(carrier) = carrier.as_ref() {
