@@ -1207,7 +1207,11 @@ const xtermMocks = vi.hoisted(() => {
   };
   class MockTerminal {
     readonly options = {};
-    readonly parser = { registerCsiHandler: () => ({ dispose: () => undefined }) };
+    readonly parser = {
+      registerCsiHandler: () => ({ dispose: () => undefined }),
+      registerOscHandler: () => ({ dispose: () => undefined }),
+      registerDcsHandler: () => ({ dispose: () => undefined }),
+    };
     cols = 80;
     rows = 24;
     constructor() {

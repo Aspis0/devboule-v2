@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bannerText, TerminalSurface } from "./TerminalSurface";
+import * as createTerminalViewModule from "./createTerminalView";
 import { hasTerminalInput, requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
 
 (
@@ -59,23 +60,28 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-vi.mock("./createTerminalView", () => ({
-  createTerminalView: async (host: HTMLElement) => {
-    // What xterm's terminal.open() leaves in the host: the helper textarea
-    // the surface's autoFocus prop is expected to focus.
-    const helper = document.createElement("textarea");
-    helper.className = "xterm-helper-textarea";
-    host.appendChild(helper);
-    return {
-      write: (_data: string, callback?: () => void) => callback?.(),
-      applySnapshot: (_snapshot: unknown, callback: () => void) => callback(),
-      fit: () => true,
-      dispose: () => undefined,
-      cols: () => 80,
-      rows: () => 24,
-    };
-  },
-}));
+vi.mock("./createTerminalView", () => {
+  const viewMock = { options: [] as Array<{ onCopyFailed?: () => void }> };
+  return {
+    viewMock,
+    createTerminalView: async (host: HTMLElement, options: { onCopyFailed?: () => void }) => {
+      viewMock.options.push(options);
+      // What xterm's terminal.open() leaves in the host: the helper textarea
+      // the surface's autoFocus prop is expected to focus.
+      const helper = document.createElement("textarea");
+      helper.className = "xterm-helper-textarea";
+      host.appendChild(helper);
+      return {
+        write: (_data: string, callback?: () => void) => callback?.(),
+        applySnapshot: (_snapshot: unknown, callback: () => void) => callback(),
+        fit: () => true,
+        dispose: () => undefined,
+        cols: () => 80,
+        rows: () => 24,
+      };
+    },
+  };
+});
 
 class ResizeObserverStub {
   static instances: ResizeObserverStub[] = [];
@@ -512,6 +518,26 @@ describe("TerminalSurface observer wiring", () => {
     expect(
       vi.mocked(invoke).mock.calls.filter(([command]) => command === "session_send"),
     ).toHaveLength(0);
+  });
+
+  it("shows Copy failed when the view reports a denied clipboard write", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+    });
+    await act(async () => flush(400));
+
+    const viewMock = (
+      createTerminalViewModule as unknown as {
+        viewMock: { options: Array<{ onCopyFailed?: () => void }> };
+      }
+    ).viewMock;
+    const options = viewMock.options.at(-1);
+    expect(options).toBeDefined();
+    expect(options?.onCopyFailed).toBeTypeOf("function");
+
+    await act(async () => options?.onCopyFailed?.());
+    expect(container.textContent).toContain("Copy failed");
   });
 });
 

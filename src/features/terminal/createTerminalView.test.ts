@@ -15,6 +15,10 @@ interface TerminalMockState {
   fitCount: number;
   terminals: Array<{ cols: number; rows: number }>;
   fitAddons: Array<{ proposal: FitProposal | null }>;
+  calls: string[];
+  keyHandler: ((event: unknown) => boolean) | null;
+  selection: string;
+  hasSelection: boolean;
 }
 
 const mocks = vi.hoisted(() => {
@@ -25,12 +29,27 @@ const mocks = vi.hoisted(() => {
     fitCount: 0,
     terminals: [],
     fitAddons: [],
+    calls: [],
+    keyHandler: null,
+    selection: "",
+    hasSelection: false,
   };
 
   class MockTerminal {
     readonly options = { cursorBlink: false };
     readonly parser = {
-      registerCsiHandler: () => ({ dispose: () => undefined }),
+      registerCsiHandler: () => {
+        state.calls.push("registerCsiHandler");
+        return { dispose: () => undefined };
+      },
+      registerOscHandler: () => {
+        state.calls.push("registerOscHandler");
+        return { dispose: () => undefined };
+      },
+      registerDcsHandler: () => {
+        state.calls.push("registerDcsHandler");
+        return { dispose: () => undefined };
+      },
     };
     cols = 80;
     rows = 24;
@@ -39,9 +58,23 @@ const mocks = vi.hoisted(() => {
       state.terminals.push(this);
     }
 
-    attachCustomKeyEventHandler(): void {}
+    attachCustomKeyEventHandler(handler: (event: unknown) => boolean): void {
+      state.keyHandler = handler;
+    }
 
-    loadAddon(): void {}
+    loadAddon(): void {
+      state.calls.push("loadAddon");
+    }
+
+    getSelection(): string {
+      return state.selection;
+    }
+
+    hasSelection(): boolean {
+      return state.hasSelection;
+    }
+
+    clearSelection(): void {}
 
     onData(): { dispose: () => void } {
       return { dispose: () => undefined };
@@ -112,6 +145,10 @@ describe("createTerminalView disposal", () => {
     mocks.state.written.length = 0;
     mocks.state.writeCallbacks.length = 0;
     mocks.state.disposeCount = 0;
+    mocks.state.calls.length = 0;
+    mocks.state.keyHandler = null;
+    mocks.state.selection = "";
+    mocks.state.hasSelection = false;
     vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
     vi.stubGlobal("document", { documentElement: {} });
   });
@@ -159,6 +196,129 @@ describe("createTerminalView disposal", () => {
     completeNextWrite();
 
     expect(secondCallback).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("query suppression registration and key wiring", () => {
+  beforeEach(() => {
+    mocks.state.calls.length = 0;
+    mocks.state.keyHandler = null;
+    mocks.state.selection = "";
+    mocks.state.hasSelection = false;
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    vi.stubGlobal("document", { documentElement: {} });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("registers the query handlers after every addon, so xterm's LIFO dispatch runs them first", () => {
+    createTerminalView({} as HTMLElement, {
+      onData: () => undefined,
+      onCtrlC: () => undefined,
+    });
+
+    const addonIndex = mocks.state.calls.indexOf("loadAddon");
+    expect(addonIndex).toBeGreaterThanOrEqual(0);
+    const registrations = mocks.state.calls.flatMap((call, index) =>
+      call.startsWith("register") ? [index] : [],
+    );
+    expect(registrations.length).toBeGreaterThan(0);
+    for (const index of registrations) expect(index).toBeGreaterThan(addonIndex);
+  });
+
+  it("consumes Ctrl+Shift+C as a copy instead of forwarding it to xterm", () => {
+    createTerminalView({} as HTMLElement, {
+      onData: () => undefined,
+      onCtrlC: () => undefined,
+    });
+    const preventDefault = vi.fn();
+
+    expect(
+      mocks.state.keyHandler?.({
+        type: "keydown",
+        ctrlKey: true,
+        shiftKey: true,
+        key: "C",
+        preventDefault,
+      }),
+    ).toBe(false);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Ctrl+Shift+V to the browser's native paste", () => {
+    createTerminalView({} as HTMLElement, {
+      onData: () => undefined,
+      onCtrlC: () => undefined,
+    });
+    const preventDefault = vi.fn();
+
+    expect(
+      mocks.state.keyHandler?.({
+        type: "keydown",
+        ctrlKey: true,
+        shiftKey: true,
+        key: "V",
+        preventDefault,
+      }),
+    ).toBe(true);
+    expect(preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("routes plain Ctrl+C with no selection to the interrupt guard", () => {
+    const onCtrlC = vi.fn();
+    createTerminalView({} as HTMLElement, { onData: () => undefined, onCtrlC });
+
+    expect(
+      mocks.state.keyHandler?.({
+        type: "keydown",
+        ctrlKey: true,
+        key: "c",
+        preventDefault: vi.fn(),
+      }),
+    ).toBe(false);
+    expect(onCtrlC).toHaveBeenCalledTimes(1);
+  });
+
+  it("on macOS plain Ctrl+C with a selection interrupts and does not copy", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { platform: "MacIntel", clipboard: { writeText } });
+    mocks.state.hasSelection = true;
+    mocks.state.selection = "selected";
+    const onCtrlC = vi.fn();
+    createTerminalView({} as HTMLElement, { onData: () => undefined, onCtrlC });
+
+    expect(
+      mocks.state.keyHandler?.({
+        type: "keydown",
+        ctrlKey: true,
+        key: "c",
+        preventDefault: vi.fn(),
+      }),
+    ).toBe(false);
+    expect(onCtrlC).toHaveBeenCalledTimes(1);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("on Windows plain Ctrl+C with a selection copies and does not arm the interrupt", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { platform: "Win32", clipboard: { writeText } });
+    mocks.state.hasSelection = true;
+    mocks.state.selection = "selected";
+    const onCtrlC = vi.fn();
+    createTerminalView({} as HTMLElement, { onData: () => undefined, onCtrlC });
+
+    expect(
+      mocks.state.keyHandler?.({
+        type: "keydown",
+        ctrlKey: true,
+        key: "c",
+        preventDefault: vi.fn(),
+      }),
+    ).toBe(false);
+    expect(writeText).toHaveBeenCalledWith("selected");
+    expect(onCtrlC).not.toHaveBeenCalled();
   });
 });
 

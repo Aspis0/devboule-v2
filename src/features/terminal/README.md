@@ -16,16 +16,35 @@ the daemon replays from it instead of from the beginning.
 Nothing here survives the app closing. Persistence across runs belongs to the daemon's
 journal, not to this module.
 
-## Two places where xterm's defaults are wrong for us
+## Where xterm's defaults are wrong for us
 
-- **`terminalDsr.ts`** — xterm answers cursor-position reports itself, through `onData`.
-  The daemon owns that reply now, so a second answer would be an extra, unrequested write
-  into the process's input. Only the two CPR forms are consumed; ordinary `onData` is
-  untouched.
-- **`terminalKeyPolicy.ts`** — plain Ctrl+C does not emit a raw ETX byte. It goes through
-  the two-step interrupt guard, so an accidental keystroke cannot kill a long agent run
-  without confirmation. Every other chord, including Ctrl+Shift+C and Ctrl+Alt+C, passes
-  through unchanged. Keyup is swallowed as well, but cannot re-arm the guard.
+- **`terminalQuerySuppression.ts`** — one responder per query class: every query gets
+  exactly one answer. xterm answers protocol queries itself through `onData`, and that
+  reply would reach the child as a second answer — typed at the shell prompt once the
+  querying app has exited — for every class the daemon also answers. The suppression
+  therefore consumes xterm's reply only for the classes the daemon really answers and
+  leaves every other class with xterm as its one responder:
+
+  | query                                  | daemon  | xterm client                                                                                              |
+  | -------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+  | `CSI c` (DA1), `CSI > c` (DA2)         | answers | suppressed                                                                                                |
+  | `CSI 5 n` (DSR 5), `CSI 6 n` (CPR)     | answers | suppressed                                                                                                |
+  | `CSI Ps $ p` / `CSI ? Ps $ p` (DECRQM) | answers | suppressed                                                                                                |
+  | `CSI 18 t` (text area size)            | answers | suppressed                                                                                                |
+  | `CSI ? 6 n` (DECXCPR)                  | —       | answers                                                                                                   |
+  | `DCS $ q` (DECRQSS)                    | —       | answers                                                                                                   |
+  | `OSC 4/10/11/12 ;?` (colour queries)   | —       | answers                                                                                                   |
+  | `CSI 14 t` / `CSI 16 t` (pixel sizes)  | —       | only with `windowOptions`, which this product leaves off — nobody answers today (pre-existing, follow-up) |
+  | `CSI = c` (DA3)                        | —       | — (neither answers it, so nothing to suppress)                                                            |
+
+- **`terminalKeyPolicy.ts`** — plain Ctrl+C never emits a raw ETX byte. On Windows and
+  Linux it copies when text is selected, and otherwise goes through the two-step
+  interrupt guard, so an accidental keystroke cannot kill a long agent run without
+  confirmation; on macOS it is always the interrupt, and Cmd+C keeps the native copy.
+  Ctrl+Shift+C copies; Ctrl+Shift+V is left to the browser's own paste event on xterm's
+  textarea. A refused copy clears the selection anyway, so the interrupt stays
+  reachable, and the Ctrl+C chip shows "Copy failed" for a beat. Keyup is swallowed as
+  well, but cannot re-arm the guard.
 
 ## Banners say what was lost
 

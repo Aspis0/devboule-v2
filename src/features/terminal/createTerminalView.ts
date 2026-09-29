@@ -7,10 +7,25 @@ import { THEME_CHANGE_EVENT } from "../../lib/theme";
 import type { SessionSnapshot } from "../../types/ipc";
 import { terminalKeyPolicy } from "./terminalKeyPolicy";
 import { fitRowsCols } from "./terminalFit";
-import { suppressAutomaticDsrReplies } from "./terminalDsr";
+import { copyTerminalSelection } from "./terminalClipboard";
+import { suppressAutomaticQueryReplies } from "./terminalQuerySuppression";
 
 const SCROLLBACK = 5000;
 const FONT_SIZE = 12;
+
+/**
+ * Cmd owns copy/paste on macOS, so plain Ctrl+C stays the interrupt there
+ * whatever is selected. The platform is read when a view is created, never
+ * frozen at import: the test runtime always answers "Win32", and a
+ * module-scope constant would decide every test's outcome before it runs.
+ */
+function currentPlatform(): string {
+  return typeof navigator === "undefined" ? "" : navigator.platform;
+}
+
+function isMacPlatform(platform: string): boolean {
+  return platform.startsWith("Mac");
+}
 
 interface PendingWriteContinuation {
   callback: () => void;
@@ -60,10 +75,12 @@ export function terminalTheme(color: (variable: string) => string) {
 }
 
 export interface CreateTerminalViewOptions {
-  /** User input, paste, and terminal replies other than suppressed DSR CPRs. */
+  /** User input, paste, mouse/focus reports, and xterm's replies for the classes only it answers. */
   onData: (data: string) => void;
-  /** Route plain Ctrl+C through the controller's arm/confirm guard. */
+  /** Arm the controller's two-step interrupt guard when plain Ctrl+C has no selection to copy. */
   onCtrlC: () => void;
+  /** A copy attempt the clipboard refused, so the surface can say so. */
+  onCopyFailed?: () => void;
   /**
    * The session's resize request, called when the document's fonts settle
    * after the opening fit. Only `TerminalSession.doResize` sends
@@ -122,9 +139,13 @@ function snapshotStateSequence(snapshot: SessionSnapshot): string {
  * Mount an interactive xterm instance into the supplied host.
  *
  * ConPTY emits a DSR cursor-position query (ESC[6n) at startup and stalls
- * until the daemon answers it. stdin remains enabled for real user input; the
- * parser hook above prevents xterm from becoming a second CPR responder. The
- * key policy controls user Ctrl+C without disabling stdin.
+ * until it is answered; the daemon answers that query and the other classes
+ * it owns, and the suppression registered after the addon load keeps xterm
+ * from answering those classes a second time — a duplicate reply would reach
+ * the child as typed input. Classes the daemon does not answer are left to
+ * xterm (terminalQuerySuppression carries the class table). stdin stays
+ * enabled for real user input, and the key policy maps the copy and
+ * interrupt keys while the browser keeps its own paste road.
  */
 export function createTerminalView(
   host: HTMLElement,
@@ -132,8 +153,8 @@ export function createTerminalView(
 ): TerminalViewHandle {
   const themeFromHost = () => terminalTheme((variable) => paletteColor(host, variable));
   const terminal = new Terminal({
-    // Keep stdin enabled for user onData; the parser handler below suppresses
-    // only automatic CPR replies so the daemon remains the single responder.
+    // Keep stdin enabled for user input; the query suppression keeps xterm's
+    // own answers to the daemon's classes out of the child's input.
     disableStdin: false,
     scrollback: SCROLLBACK,
     fontSize: FONT_SIZE,
@@ -142,8 +163,28 @@ export function createTerminalView(
     theme: themeFromHost(),
   });
 
-  const dsrDisposables = suppressAutomaticDsrReplies(terminal);
-  terminal.attachCustomKeyEventHandler((event) => terminalKeyPolicy(event, options.onCtrlC));
+  const isMac = isMacPlatform(currentPlatform());
+  terminal.attachCustomKeyEventHandler((event) => {
+    const action = terminalKeyPolicy(event, () => terminal.hasSelection(), isMac);
+    if (action === "pass") return true;
+    // xterm skips its own handling on a false return but leaves the browser
+    // default alone: an uncancelled native Ctrl+C copy could write the
+    // clipboard beside the writeText copy.
+    event.preventDefault();
+    switch (action) {
+      case "copy":
+        void copyTerminalSelection(terminal).then((copied) => {
+          if (!copied) options.onCopyFailed?.();
+        });
+        break;
+      case "interrupt":
+        options.onCtrlC();
+        break;
+      case "swallow":
+        break;
+    }
+    return false;
+  });
 
   // xterm snapshots its palette at theme-application time, so a theme change
   // after the view opened must be re-read. The theme module announces every
@@ -162,6 +203,10 @@ export function createTerminalView(
 
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
+  // xterm dispatches parser handlers newest-first and an addon may register
+  // query handlers of its own, so the suppression goes last: the last
+  // registration is the one xterm tries first.
+  const querySuppressors = suppressAutomaticQueryReplies(terminal);
   const dataDisposable = terminal.onData(options.onData);
 
   // FitAddon reads the host's border box and subtracts only the terminal
@@ -327,7 +372,7 @@ export function createTerminalView(
         document.removeEventListener(THEME_CHANGE_EVENT, reapplyTheme);
       }
       completePendingWrites();
-      for (const disposable of dsrDisposables) disposable.dispose();
+      for (const disposable of querySuppressors) disposable.dispose();
       dataDisposable.dispose();
       terminal.dispose();
     },

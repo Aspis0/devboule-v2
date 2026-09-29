@@ -60,6 +60,7 @@ export interface TerminalSessionDeps {
       onData: (data: string) => void;
       onCtrlC: () => void;
       onFontFit?: () => void;
+      onCopyFailed?: () => void;
     },
   ) => Promise<TerminalViewHandle>;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -67,6 +68,8 @@ export interface TerminalSessionDeps {
   registry: TerminalSessionRegistry;
   onBanner: (banner: TerminalBanner) => void;
   onCtrlCArmed: (armed: boolean) => void;
+  /** A copy attempt the view's clipboard write refused. */
+  onCopyFailed?: () => void;
   onExited?: (code: number | null) => void;
   onPermissionRequest?: (request: PermissionRequest, subscriptionId: number) => void;
   /** The whole resolution event, so the host can read `answeredBy` off it. */
@@ -209,6 +212,7 @@ export class TerminalSession {
       view = await this.deps.createView(this.deps.host, {
         onData: (data) => this.handleViewData(data),
         onCtrlC: () => this.requestCtrlC(),
+        onCopyFailed: () => this.deps.onCopyFailed?.(),
         // A font-settle refit must end in a PTY resize like any other fit:
         // only doResize sends session_resize, so the view hands the request
         // here instead of fitting itself.

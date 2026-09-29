@@ -15,6 +15,10 @@ import { PaneHeader } from "../workspace/paneHeader/PaneHeader";
 import { headerDisplay } from "../workspace/paneHeader/paneHeaderStatus";
 import { headerMenu, type HeaderMenuSeam } from "../workspace/paneHeader/paneHeaderMenu";
 
+// How long the Ctrl+C chip wears the failure label before it goes back to
+// itself — the same beat MessageCopyButton's copy chip uses.
+const COPY_FAILED_LABEL_MS = 1500;
+
 interface TerminalSurfaceProps {
   workspaceId: string | null;
   sessionId: string;
@@ -148,6 +152,15 @@ export const TerminalSurface = memo(function TerminalSurface({
   const sessionRef = useRef<TerminalSession | null>(null);
   const [banner, setBanner] = useState<TerminalBanner>(null);
   const [ctrlCArmed, setCtrlCArmed] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copyFailedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copyFailedTimer.current !== null) clearTimeout(copyFailedTimer.current);
+    },
+    [],
+  );
 
   // The recovered flag is read at (re)start only, through this ref, so it
   // is not a dep of the session effect: the row's recovered flip arrives
@@ -199,6 +212,7 @@ export const TerminalSurface = memo(function TerminalSurface({
     let mounted = true;
     setBanner(null);
     setCtrlCArmed(false);
+    setCopyFailed(false);
 
     const session = new TerminalSession({
       workspaceId,
@@ -223,6 +237,14 @@ export const TerminalSurface = memo(function TerminalSurface({
       },
       onCtrlCArmed: (armed) => {
         if (mounted) setCtrlCArmed(armed);
+      },
+      onCopyFailed: () => {
+        if (!mounted) return;
+        // A refused copy must not be silent: the chip says so for a beat,
+        // then goes back to naming the interrupt.
+        setCopyFailed(true);
+        if (copyFailedTimer.current !== null) clearTimeout(copyFailedTimer.current);
+        copyFailedTimer.current = setTimeout(() => setCopyFailed(false), COPY_FAILED_LABEL_MS);
       },
       onExited: () => {
         if (mounted) onExited?.();
@@ -308,7 +330,7 @@ export const TerminalSurface = memo(function TerminalSurface({
                 disabled={banner?.kind === "exited" || banner?.kind === "recovered"}
                 aria-pressed={ctrlCArmed}
               >
-                {ctrlCArmed ? "Press Ctrl+C again" : "Ctrl+C"}
+                {copyFailed ? "Copy failed" : ctrlCArmed ? "Press Ctrl+C again" : "Ctrl+C"}
               </button>
             )}
             <button

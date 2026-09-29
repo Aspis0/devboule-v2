@@ -870,6 +870,57 @@ mod tests {
         assert!(screen.take_pty_writes().is_empty());
     }
 
+    // The client suppresses its own reply for exactly these classes, so the
+    // daemon's answer is the child's only one: an alacritty bump that drops
+    // one of them must fail here instead of shipping as silence.
+    #[test]
+    fn single_responder_da1() {
+        let mut screen = Screen::new(20, 4);
+        assert_eq!(screen.feed(b"\x1b[c"), vec!["\x1b[?6c"]);
+        assert!(screen.take_pty_writes().is_empty());
+    }
+
+    #[test]
+    fn single_responder_da2() {
+        let mut screen = Screen::new(20, 4);
+        // \x1b[>0;<version>;1c — alacritty picks the version number.
+        let replies = screen.feed(b"\x1b[>c");
+        assert_eq!(replies.len(), 1);
+        assert!(replies[0].starts_with("\x1b[>0;"));
+        assert!(replies[0].ends_with(";1c"));
+        assert!(screen.take_pty_writes().is_empty());
+    }
+
+    #[test]
+    fn single_responder_dsr5() {
+        let mut screen = Screen::new(20, 4);
+        assert_eq!(screen.feed(b"\x1b[5n"), vec!["\x1b[0n"]);
+        assert!(screen.take_pty_writes().is_empty());
+    }
+
+    #[test]
+    fn single_responder_decrqm_ansi() {
+        let mut screen = Screen::new(20, 4);
+        // Insert mode starts reset, and DECRQM reports that as Reset (2).
+        assert_eq!(screen.feed(b"\x1b[4$p"), vec!["\x1b[4;2$y"]);
+        assert!(screen.take_pty_writes().is_empty());
+    }
+
+    #[test]
+    fn single_responder_decrqm_private() {
+        let mut screen = Screen::new(20, 4);
+        // 2026 (synchronised output) starts reset as well.
+        assert_eq!(screen.feed(b"\x1b[?2026$p"), vec!["\x1b[?2026;2$y"]);
+        assert!(screen.take_pty_writes().is_empty());
+    }
+
+    #[test]
+    fn single_responder_text_size_chars() {
+        let mut screen = Screen::new(20, 4);
+        assert_eq!(screen.feed(b"\x1b[18t"), vec!["\x1b[8;4;20t"]);
+        assert!(screen.take_pty_writes().is_empty());
+    }
+
     #[test]
     fn title_is_bounded_and_control_free() {
         let mut screen = Screen::new(4, 2);
