@@ -1,6 +1,6 @@
 //! Translate Codex app-server notifications into Devboule agent events.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ChildStdout;
@@ -9,9 +9,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use devboule_protocol::{
-    ErrorCode, NoticeSeverity, PermissionOption, PlanCredits, PlanWindow, SessionEvent,
-    SessionModeStateView, SessionModeView, SessionModel, SessionModelEffort, ToolLocation,
-    TurnUsage, UnattendedState, WireError,
+    AgentTaskItem, AgentTaskStatus, ErrorCode, NoticeSeverity, PermissionOption, PlanCredits,
+    PlanWindow, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
+    SessionModelEffort, ToolLocation, TurnUsage, UnattendedState, WireError,
 };
 use serde_json::Value;
 
@@ -1029,7 +1029,21 @@ impl CodexView {
         }
     }
 
+    /// Live frames: plan item rows stay behind the approval card while the
+    /// mode is on.
     pub(crate) fn ingest(&mut self, value: &Value) -> Vec<SessionEvent> {
+        self.ingest_inner(value, false)
+    }
+
+    /// Replayed frames: item rows re-derive (the journal carries no plan
+    /// text) while the checklist still honors the plan mode. The road is
+    /// chosen by which method the caller uses, never by a flag a later
+    /// refactor could carry into live ingestion.
+    pub(crate) fn ingest_replay(&mut self, value: &Value) -> Vec<SessionEvent> {
+        self.ingest_inner(value, true)
+    }
+
+    fn ingest_inner(&mut self, value: &Value, replay_items: bool) -> Vec<SessionEvent> {
         let Some(method) = value.get("method").and_then(Value::as_str) else {
             return Vec::new();
         };
@@ -1044,6 +1058,16 @@ impl CodexView {
             "turn/plan/updated" => {
                 if self.capture_plan {
                     self.latest_plan = plan_steps_text(params.get("plan"));
+                    if !self.plan_mode {
+                        // Plan mode off: the steps are the session's
+                        // checklist — Paseo's `mapCodexPlanUpdateToTodo`,
+                        // status kept. The capture above stays: a plan item
+                        // frame can still replace the text before the turn
+                        // completes.
+                        return agent_tasks_from_plan(params.get("plan"))
+                            .into_iter()
+                            .collect();
+                    }
                 }
                 Vec::new()
             }
@@ -1069,8 +1093,8 @@ impl CodexView {
             }
             "item/commandExecution/outputDelta" => tool_delta(params, "execute"),
             "item/fileChange/outputDelta" => tool_delta(params, "edit"),
-            "item/started" => self.item_event(params.get("item"), false),
-            "item/completed" => self.item_event(params.get("item"), true),
+            "item/started" => self.item_event(params.get("item"), false, replay_items),
+            "item/completed" => self.item_event(params.get("item"), true, replay_items),
             "thread/tokenUsage/updated" => self.note_usage(params.get("tokenUsage")),
             "account/rateLimits/updated" => {
                 plan_usage(params.get("rateLimits")).into_iter().collect()
@@ -1091,7 +1115,12 @@ impl CodexView {
         }
     }
 
-    fn item_event(&mut self, item: Option<&Value>, completed: bool) -> Vec<SessionEvent> {
+    fn item_event(
+        &mut self,
+        item: Option<&Value>,
+        completed: bool,
+        replay_items: bool,
+    ) -> Vec<SessionEvent> {
         if item
             .and_then(|item| item.get("type"))
             .and_then(Value::as_str)
@@ -1106,7 +1135,7 @@ impl CodexView {
                     self.latest_plan = Some(text.to_string());
                 }
             }
-            if self.plan_mode && self.capture_plan {
+            if self.plan_mode && self.capture_plan && !replay_items {
                 return Vec::new();
             }
         }
@@ -1171,6 +1200,65 @@ fn plan_steps_text(value: Option<&Value>) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n");
     (!text.is_empty()).then_some(text)
+}
+
+/// Codex `turn/plan/updated` steps as checklist items: Paseo's
+/// `mapCodexPlanUpdateToTodo` — empty steps dropped, the id is the step's
+/// index in the plan array, `inProgress`/`in_progress` keep their status and
+/// anything else reads as pending.
+fn agent_tasks_from_plan(plan: Option<&Value>) -> Option<SessionEvent> {
+    let steps = plan?.as_array()?;
+    let items = steps
+        .iter()
+        .enumerate()
+        .filter_map(|(index, step)| {
+            let text = step.get("step").and_then(Value::as_str)?.trim();
+            (!text.is_empty()).then(|| AgentTaskItem {
+                id: Some(index.to_string()),
+                text: text.to_string(),
+                status: match step.get("status").and_then(Value::as_str) {
+                    Some("completed") => AgentTaskStatus::Completed,
+                    Some("inProgress") | Some("in_progress") => AgentTaskStatus::InProgress,
+                    _ => AgentTaskStatus::Pending,
+                },
+                // Codex steps carry no running form.
+                active_form: None,
+            })
+        })
+        .collect();
+    Some(SessionEvent::AgentTasks { items })
+}
+
+/// Drive one journalled envelope through a replay view with the same
+/// settings the live reader applies per frame: the capture follows the
+/// thread the session owns, and the plan mode follows the turn's card
+/// marks. Both replay paths (journal rebuild, attach pull) call this, so
+/// live and replay derive the same checklist from the same frames.
+///
+/// The completion itself stays live-only: cards and plain rows are already
+/// journalled as agent reports, and re-raising them here would double the
+/// transcript.
+pub(crate) fn drive_replay(
+    view: &mut CodexView,
+    thread_id: Option<&str>,
+    plan_turns: &HashSet<String>,
+    value: &Value,
+) -> Vec<SessionEvent> {
+    let params = value.get("params").unwrap_or(&Value::Null);
+    let root_thread =
+        thread_id.is_none_or(|root| crate::codex_compaction::is_root_thread(params, root));
+    view.set_capture_plan(root_thread);
+    // The live reader sets the mode at the root `turn/started` from the
+    // mode the turn was sent with; outbound frames are not journalled, so
+    // the replay reads the same fact back from the turn's card marks.
+    if value.get("method").and_then(Value::as_str) == Some("turn/started") && root_thread {
+        let mode = params
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .is_some_and(|turn| plan_turns.contains(turn));
+        view.set_plan_mode(mode);
+    }
+    view.ingest_replay(value)
 }
 
 #[cfg(test)]

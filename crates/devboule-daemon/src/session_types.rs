@@ -314,6 +314,13 @@ pub(super) struct AgentReplay {
     pub(super) replayed_seqs: HashSet<u64>,
     pub(super) claude_view: Option<crate::claude_view::ClaudeView>,
     pub(super) codex_view: Option<crate::codex_view::CodexView>,
+    /// Turns with a journalled plan approval mark, read lazily on the first
+    /// Codex envelope through the shared pre-scan — the same read the
+    /// rebuild makes — so attaches with nothing to replay never scan.
+    pub(super) codex_plan_turns: Option<HashSet<String>>,
+    /// The walk stopped at a page holding a Codex envelope because the marks
+    /// are not loaded; `pull_events` scans with the attachments lock released.
+    pub(super) marks_needed: bool,
     pub(super) is_pi: bool,
     pub(super) is_codex: bool,
     pub(super) manifest_emitted: bool,

@@ -779,6 +779,13 @@ enum JournalCmd {
         generation: u64,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
+    /// Plan-mode turns recovered from journalled verdict rows, session-wide:
+    /// the one read both replay paths make before the first frame, so the
+    /// attach pull and the rebuild learn the mode identically.
+    CodexPlanTurns {
+        session_id: String,
+        reply: mpsc::Sender<Result<Vec<String>, JournalError>>,
+    },
     MarkDegraded {
         session_id: String,
     },
@@ -1473,6 +1480,15 @@ impl Journal {
         })
     }
 
+    /// Plan-mode turns for one session, recovered from journalled verdict
+    /// rows: the pre-scan both replay paths read before the first frame.
+    pub(crate) fn codex_plan_turns(&self, session_id: &str) -> Result<Vec<String>, JournalError> {
+        self.rpc(|reply| JournalCmd::CodexPlanTurns {
+            session_id: session_id.to_string(),
+            reply,
+        })
+    }
+
     pub fn usage(&self) -> Result<JournalUsage, JournalError> {
         self.rpc(|reply| JournalCmd::Usage { reply })
     }
@@ -2145,6 +2161,14 @@ fn journal_loop(
                     through_seq,
                     limit,
                 ));
+            }
+            JournalCmd::CodexPlanTurns { session_id, reply } => {
+                let result = crate::codex_plan_marks::scan_conn(&conn, &session_id).map(|set| {
+                    let mut turns: Vec<String> = set.into_iter().collect();
+                    turns.sort();
+                    turns
+                });
+                let _ = reply.send(result);
             }
             JournalCmd::DeleteSession { session_id, reply } => {
                 let result = delete_session_user(&conn, &session_id);
@@ -3662,7 +3686,7 @@ pub fn acp_envelope_record(
 }
 
 #[cfg(test)]
-fn tmp_journal() -> (PathBuf, PathBuf) {
+pub(crate) fn tmp_journal() -> (PathBuf, PathBuf) {
     let dir = crate::test_dirs::test_temp_dir("devboule-journal");
     let path = dir.join("journal.db");
     (dir, path)

@@ -4190,3 +4190,209 @@ mod claude_permission_tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+fn lazy_reader() -> super::ClaudeReader {
+    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    super::ClaudeReader::new(
+        crate::claude_view::ClaudeView::new(None),
+        broker,
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(AtomicU64::new(1)),
+    )
+}
+
+const LAZY_INIT: &str = r#"{"type":"system","subtype":"init","session_id":"cli-1","permissionMode":"default","model":"m"}"#;
+const LAZY_TEXT: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"thinking out loud"}]}}"#;
+const LAZY_BASH_USE: &str = r#"{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"bash-1","name":"Bash","input":{"command":"ls"}}]}}"#;
+const LAZY_BASH_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bash-1","content":"ok"}]}}"#;
+const LAZY_TASK_USE: &str = r#"{"type":"assistant","message":{"id":"m3","role":"assistant","content":[{"type":"tool_use","id":"create-9","name":"TaskCreate","input":{"subject":"Live"}}]}}"#;
+
+#[test]
+fn taskless_live_lines_never_seed() {
+    // A shutdown journal makes ANY seed read fail loudly. Init, text and
+    // ordinary tool traffic must never trigger one: the flag stays down and
+    // the failure count stays zero — a task-less session never reads its
+    // journal for this.
+    let (dir, path) = crate::journal::tmp_journal();
+    let journal = Arc::new(crate::journal::Journal::open(&path).expect("open"));
+    let session_id = "s.claude.lazy.quiet";
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            session_id,
+            "owner",
+            None,
+            devboule_protocol::SessionKind::Claude,
+            "Lazy",
+        ))
+        .expect("upsert");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    journal.shutdown();
+    let mut reader = lazy_reader();
+    for line in [LAZY_INIT, LAZY_TEXT, LAZY_BASH_USE, LAZY_BASH_RESULT] {
+        reader.dispatch_line(line, &runtime);
+    }
+    assert!(!reader.task_state_seeded);
+    assert_eq!(runtime.task_seed_failure_count(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn first_task_tool_use_seeds_before_applying() {
+    // History holds one task; live starts with init (no seed — the flag
+    // stays down), then a live TaskCreate. The fold runs before that
+    // envelope applies, so the live list lands beside history, and the
+    // manifest-carrying init painted first, unblocked.
+    let (dir, path) = crate::journal::tmp_journal();
+    let journal = Arc::new(crate::journal::Journal::open(&path).expect("open"));
+    let session_id = "s.claude.lazy.task";
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            session_id,
+            "owner",
+            None,
+            devboule_protocol::SessionKind::Claude,
+            "Lazy",
+        ))
+        .expect("upsert");
+    let todo = serde_json::json!({"type": "assistant", "message": {"id": "h1",
+        "role": "assistant", "content": [{"type": "tool_use", "id": "todo-1",
+        "name": "TodoWrite", "input": {"todos": [{"content": "History"}]}}]}});
+    journal
+        .append_blocking(crate::journal::acp_envelope_record(session_id, 1, 1, &todo).unwrap())
+        .unwrap();
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    let mut reader = lazy_reader();
+    reader.dispatch_line(LAZY_INIT, &runtime);
+    assert!(!reader.task_state_seeded, "init carries no task tool");
+    reader.dispatch_line(LAZY_TASK_USE, &runtime);
+    assert!(reader.task_state_seeded, "the task tool_use seeds first");
+    let live_result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"create-9","content":"ok"}]},"tool_use_result":{"task":{"id":"9","subject":"Live"}}}"#;
+    let mut tasks = Vec::new();
+    for line in [live_result] {
+        for event in reader
+            .view
+            .ingest(&serde_json::from_str::<serde_json::Value>(line).expect("line"))
+        {
+            if let SessionEvent::AgentTasks { items } = event {
+                tasks.push(items);
+            }
+        }
+    }
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].len(), 2, "history plus the live task: {tasks:?}");
+    assert_eq!(runtime.task_seed_failure_count(), 0);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An attached runtime whose journal dies before any line is dispatched:
+/// every seed read fails, while live dispatch keeps working.
+fn attached_with_dead_journal(
+    session_id: &str,
+) -> (std::path::PathBuf, Arc<SessionRuntime>, Arc<ConnHandle>) {
+    let (dir, path) = crate::journal::tmp_journal();
+    let journal = Arc::new(crate::journal::Journal::open(&path).expect("open"));
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            session_id,
+            "owner",
+            None,
+            devboule_protocol::SessionKind::Claude,
+            "Lazy",
+        ))
+        .expect("upsert");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    journal.shutdown();
+    (dir, runtime, conn)
+}
+
+fn notices(events: &[SessionEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::SessionNotice { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn failed_seeds_stop_after_three_attempts_with_one_notice() {
+    // A persistently unreadable journal: attempts on the 1st, ~7th and ~38th
+    // task frames, then latch — three failures counted, exactly one notice,
+    // and no journal read after the latch however many frames follow.
+    let (dir, runtime, conn) = attached_with_dead_journal("s.claude.lazy.bound");
+    let mut reader = lazy_reader();
+    // Drained as they come: the attachment queue is bounded, and eighty
+    // undispatched tool rows would bury the notice under drops.
+    let mut all = Vec::new();
+    for _ in 0..40 {
+        reader.dispatch_line(LAZY_TASK_USE, &runtime);
+        all.extend(drain(&conn));
+    }
+    assert!(!reader.task_state_seeded);
+    assert_eq!(runtime.task_seed_failure_count(), 3);
+    assert_eq!(notices(&all), [SEED_FAILURE_NOTICE]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn failed_seed_notice_is_true_for_a_partial_list() {
+    // Broken journal, but the turn's own results land before the latch: the
+    // list holds the live task, and the notice must describe that list.
+    let (dir, runtime, conn) = attached_with_dead_journal("s.claude.notice.partial");
+    let mut reader = lazy_reader();
+    let task_use = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"live-1","name":"TaskCreate","input":{"subject":"Live"}}]}}"#;
+    let task_result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"live-1","content":"ok"}]},"tool_use_result":{"task":{"id":"9","subject":"Live"}}}"#;
+    let mut all = Vec::new();
+    reader.dispatch_line(task_use, &runtime);
+    reader.dispatch_line(task_result, &runtime);
+    all.extend(drain(&conn));
+    for _ in 0..40 {
+        reader.dispatch_line(LAZY_TASK_USE, &runtime);
+        all.extend(drain(&conn));
+    }
+    assert_eq!(runtime.task_seed_failure_count(), 3);
+    let last_list = all.iter().rev().find_map(|event| match event {
+        SessionEvent::AgentTasks { items } => Some(items),
+        _ => None,
+    });
+    assert!(
+        last_list.is_some_and(|items| items.iter().any(|item| item.text == "Live")),
+        "the turn's own task stays listed: {all:?}"
+    );
+    assert_eq!(notices(&all), [SEED_FAILURE_NOTICE]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn first_failed_seed_attempt_notices_at_once() {
+    // One task line on a broken journal: the first failure already notices.
+    let (dir, runtime, conn) = attached_with_dead_journal("s.claude.notice.first");
+    let mut reader = lazy_reader();
+    reader.dispatch_line(LAZY_TASK_USE, &runtime);
+    assert_eq!(notices(&drain(&conn)), [SEED_FAILURE_NOTICE]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

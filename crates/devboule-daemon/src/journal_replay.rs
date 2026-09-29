@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection, OptionalExtension};
 
 use devboule_protocol::{SessionEvent, SessionKind};
@@ -344,6 +346,19 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
     let mut events: Vec<SessionEvent> = Vec::new();
     let mut event_seqs: Vec<(u64, u64)> = Vec::new();
     let mut exit_event: Option<SessionEvent> = None;
+    // Turns that raised a plan approval mark, read once up front through the
+    // shared scan: turn ids are unique across the thread's life, so one pass
+    // serves every generation's replay view.
+    let plan_turns = if record.kind == SessionKind::Codex {
+        crate::codex_plan_marks::scan_conn(conn, session_id)?
+    } else {
+        HashSet::new()
+    };
+    let thread_id = record.peer_session_id.clone();
+    // The checklist is session state: each generation's fresh views start
+    // from the previous generation's list, the way a resumed CLI keeps its
+    // own. Partial-stream state stays per generation — only the tasks carry.
+    let mut carried_tasks: Option<crate::claude_task_state::ClaudeTaskState> = None;
     // The store holds the whole history: every generation up to the row's
     // own, read in journal order, so appending each one's seq-ordered rows
     // keeps the transcript in (generation, seq) order. What a reader is
@@ -353,6 +368,9 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         let mut gen_seqs: Vec<u64> = Vec::new();
         let mut covered = 0;
         let mut claude_view = crate::claude_view::ClaudeView::new(None);
+        if let Some(tasks) = carried_tasks.take() {
+            claude_view.restore_task_state(tasks);
+        }
         let mut codex_view = crate::codex_view::CodexView::new(None);
 
         let mut snap_stmt = conn.prepare(
@@ -388,6 +406,69 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 gen_seqs.push(seq);
             }
             covered = covered.max(up_to);
+        }
+
+        // Snapshots cover output seqs and raise `covered`, which would hide
+        // agent_report rows that stay in `events` (they are not compacted).
+        // Reload those rows independently and merge by stream sequence below.
+        // The covered half feeds the shared views FIRST: the checklist is
+        // one continuous machine per generation, so covered task tools must
+        // land before the uncovered results that apply them.
+        let mut covered_reports: Vec<(u64, SessionEvent)> = Vec::new();
+        if covered > 0 {
+            let mut report_stmt = conn.prepare(
+                "SELECT seq, kind, payload, checksum FROM events
+                 WHERE session_id = ?1 AND generation = ?2
+                   AND kind IN ('agent_report', 'acp_envelope')
+                   AND seq <= ?3
+                 ORDER BY seq",
+            )?;
+            let report_rows = report_stmt.query_map(
+                params![session_id, replayed_generation as i64, covered as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? as u64,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)? as u32,
+                    ))
+                },
+            )?;
+            for row in report_rows {
+                let (seq, kind, payload, checksum) = row?;
+                if crc32(&payload) != checksum {
+                    return Err(JournalError::Checksum {
+                        session_id: session_id.to_string(),
+                        seq,
+                    });
+                }
+                if kind == "agent_report" {
+                    if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                        crate::plan_text::bound_permission_request(&mut event);
+                        covered_reports.push((seq, event));
+                    }
+                } else if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload)
+                {
+                    if record.kind == SessionKind::Codex {
+                        for view in crate::codex_view::drive_replay(
+                            &mut codex_view,
+                            thread_id.as_deref(),
+                            &plan_turns,
+                            &value,
+                        ) {
+                            covered_reports.push((seq, view));
+                        }
+                    } else if record.kind == SessionKind::Pi {
+                        for view in crate::pi_view::events_from_line(&value) {
+                            covered_reports.push((seq, view));
+                        }
+                    } else {
+                        for view in crate::claude_view::drive_replay(&mut claude_view, &mut value) {
+                            covered_reports.push((seq, view));
+                        }
+                    }
+                }
+            }
         }
 
         let mut event_stmt = conn.prepare(
@@ -448,7 +529,12 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 Some(EventKind::AcpEnvelope) => {
                     if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload) {
                         if record.kind == SessionKind::Codex {
-                            for view in codex_view.ingest(&value) {
+                            for view in crate::codex_view::drive_replay(
+                                &mut codex_view,
+                                thread_id.as_deref(),
+                                &plan_turns,
+                                &value,
+                            ) {
                                 gen_events.push(view);
                                 gen_seqs.push(seq);
                             }
@@ -458,18 +544,11 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                                 gen_seqs.push(seq);
                             }
                         } else {
-                            crate::plan_text::bound_claude_envelope(&mut value);
-                            let views = crate::acp_view::view_from_envelope(&value, "");
-                            if views.is_empty() {
-                                for view in claude_view.ingest(&value) {
-                                    gen_events.push(view);
-                                    gen_seqs.push(seq);
-                                }
-                            } else {
-                                for view in views {
-                                    gen_events.push(view);
-                                    gen_seqs.push(seq);
-                                }
+                            for view in
+                                crate::claude_view::drive_replay(&mut claude_view, &mut value)
+                            {
+                                gen_events.push(view);
+                                gen_seqs.push(seq);
                             }
                         }
                     }
@@ -488,70 +567,6 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
             }
         }
 
-        // Snapshots cover output seqs and raise `covered`, which would hide
-        // agent_report rows that stay in `events` (they are not compacted).
-        // Reload those rows independently and merge by stream sequence.
-        let mut covered_reports: Vec<(u64, SessionEvent)> = Vec::new();
-        let mut covered_claude = crate::claude_view::ClaudeView::new(None);
-        let mut covered_codex = crate::codex_view::CodexView::new(None);
-        if covered > 0 {
-            let mut report_stmt = conn.prepare(
-                "SELECT seq, kind, payload, checksum FROM events
-                 WHERE session_id = ?1 AND generation = ?2
-                   AND kind IN ('agent_report', 'acp_envelope')
-                   AND seq <= ?3
-                 ORDER BY seq",
-            )?;
-            let report_rows = report_stmt.query_map(
-                params![session_id, replayed_generation as i64, covered as i64],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)? as u64,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, i64>(3)? as u32,
-                    ))
-                },
-            )?;
-            for row in report_rows {
-                let (seq, kind, payload, checksum) = row?;
-                if crc32(&payload) != checksum {
-                    return Err(JournalError::Checksum {
-                        session_id: session_id.to_string(),
-                        seq,
-                    });
-                }
-                if kind == "agent_report" {
-                    if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
-                        crate::plan_text::bound_permission_request(&mut event);
-                        covered_reports.push((seq, event));
-                    }
-                } else if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload)
-                {
-                    if record.kind == SessionKind::Codex {
-                        for view in covered_codex.ingest(&value) {
-                            covered_reports.push((seq, view));
-                        }
-                    } else if record.kind == SessionKind::Pi {
-                        for view in crate::pi_view::events_from_line(&value) {
-                            covered_reports.push((seq, view));
-                        }
-                    } else {
-                        crate::plan_text::bound_claude_envelope(&mut value);
-                        let views = crate::acp_view::view_from_envelope(&value, "");
-                        if views.is_empty() {
-                            for view in covered_claude.ingest(&value) {
-                                covered_reports.push((seq, view));
-                            }
-                        } else {
-                            for view in views {
-                                covered_reports.push((seq, view));
-                            }
-                        }
-                    }
-                }
-            }
-        }
         if !covered_reports.is_empty() {
             for (seq, event) in covered_reports {
                 gen_events.push(event);
@@ -570,6 +585,9 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 event_seqs.push((replayed_generation, seq));
             }
         }
+        // The next generation's fresh views start from this list: a resume
+        // keeps the CLI's checklist, so the replay keeps it too.
+        carried_tasks = Some(claude_view.snapshot_task_state());
     }
 
     let terminated = matches!(record.status, PersistStatus::Ended)
@@ -602,4 +620,250 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         events,
         event_seqs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::{
+        acp_envelope_record, agent_report_record, new_session_record, tmp_journal, Journal,
+    };
+    use serde_json::{json, Value};
+
+    const CLAUDE_TASKS: &str = include_str!("../fixtures/wire/claude-tasks-synthetic.jsonl");
+
+    fn claude_fixture_envelopes() -> Vec<Value> {
+        CLAUDE_TASKS
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("fixture line"))
+            .collect()
+    }
+
+    fn agent_tasks_of(events: &[SessionEvent]) -> Vec<Vec<devboule_protocol::AgentTaskItem>> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentTasks { items } => Some(items.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn append_envelopes(journal: &Journal, id: &str, generation: u64, envelopes: &[Value]) {
+        for (index, envelope) in envelopes.iter().enumerate() {
+            journal
+                .append_blocking(
+                    acp_envelope_record(id, generation, index as u64 + 1, envelope)
+                        .expect("record"),
+                )
+                .expect("append");
+        }
+    }
+
+    /// One live Codex view over frames in order, with the per-frame settings
+    /// the live reader applies: the capture follows the owned thread.
+    fn live_codex(
+        thread: &str,
+        plan_mode: bool,
+        frames: &[Value],
+    ) -> Vec<Vec<devboule_protocol::AgentTaskItem>> {
+        let mut view = crate::codex_view::CodexView::new(None);
+        let mut out = Vec::new();
+        for frame in frames {
+            view.set_capture_plan(crate::codex_compaction::is_root_thread(
+                frame.get("params").unwrap_or(&serde_json::Value::Null),
+                thread,
+            ));
+            view.set_plan_mode(plan_mode);
+            for event in view.ingest(frame) {
+                if let SessionEvent::AgentTasks { items } = event {
+                    out.push(items);
+                }
+            }
+        }
+        out
+    }
+
+    fn codex_session(journal: &Journal, id: &str, thread: &str) {
+        let mut record = new_session_record(id, "owner", None, SessionKind::Codex, "Codex");
+        record.peer_session_id = Some(thread.to_string());
+        journal.create_session(record).expect("birth");
+    }
+
+    #[test]
+    fn replay_matches_live_for_codex_plan_frames() {
+        // A plan frame on a foreign thread is dropped live and must drop on
+        // replay too; a bare second view over the same rows cannot see the
+        // thread, so it emits for both — the acde9350 behaviour this pins.
+        let started = json!({"method": "turn/started", "params": {
+            "threadId": "t-1", "turn": {"id": "turn-A"}}});
+        let root = json!({"method": "turn/plan/updated", "params": {
+            "threadId": "t-1",
+            "plan": [{"step": "One", "status": "pending"},
+                       {"step": "Two", "status": "in_progress"}]}});
+        let foreign = json!({"method": "turn/plan/updated", "params": {
+            "threadId": "t-other",
+            "plan": [{"step": "Foreign", "status": "pending"}]}});
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.codex.replay";
+        codex_session(&journal, id, "t-1");
+        append_envelopes(
+            &journal,
+            id,
+            1,
+            &[started.clone(), root.clone(), foreign.clone()],
+        );
+        let replay = journal.replay(id).expect("replay");
+        assert_eq!(
+            agent_tasks_of(&replay.events),
+            live_codex("t-1", false, &[started, root, foreign])
+        );
+        assert_eq!(agent_tasks_of(&replay.events).len(), 1);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replay_suppresses_codex_tasks_for_a_card_marked_turn() {
+        // The turn's approval verdict journals under `{turn}-plan`; the
+        // replay recovers the mode from that mark, so the turn's plan
+        // frames emit nothing — as live with plan mode on.
+        let started = json!({"method": "turn/started", "params": {
+            "threadId": "t-1", "turn": {"id": "turn-T"}}});
+        let update = json!({"method": "turn/plan/updated", "params": {
+            "threadId": "t-1",
+            "plan": [{"step": "Planned", "status": "pending"}]}});
+        let verdict = SessionEvent::AgentToolUpdate {
+            tool_call_id: "turn-T-plan".to_string(),
+            status: Some("completed".to_string()),
+            text: None,
+            title: Some("Approved".to_string()),
+            kind: Some("plan".to_string()),
+            locations: None,
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.codex.card";
+        codex_session(&journal, id, "t-1");
+        append_envelopes(&journal, id, 1, &[started, update]);
+        journal
+            .append_blocking(agent_report_record(id, 1, 3, &verdict).expect("record"))
+            .expect("verdict");
+        let replay = journal.replay(id).expect("replay");
+        assert!(
+            agent_tasks_of(&replay.events).is_empty(),
+            "a card-marked turn replays suppressed: {:?}",
+            replay.events
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replay_matches_live_for_claude_task_envelopes() {
+        // The real replay path: envelopes journalled as rows, rebuilt by
+        // `Journal::replay`, compared against one live view over the same
+        // envelopes in order.
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.tasks.replay";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Claude,
+                "Tasks",
+            ))
+            .expect("birth");
+        let envelopes = claude_fixture_envelopes();
+        append_envelopes(&journal, id, 1, &envelopes);
+        let replay = journal.replay(id).expect("replay");
+        let replay_tasks = agent_tasks_of(&replay.events);
+
+        let mut live = crate::claude_view::ClaudeView::new(None);
+        let mut live_tasks = Vec::new();
+        for envelope in &envelopes {
+            for event in live.ingest(envelope) {
+                if let SessionEvent::AgentTasks { items } = event {
+                    live_tasks.push(items);
+                }
+            }
+        }
+        assert_eq!(replay_tasks, live_tasks);
+        assert_eq!(live_tasks.len(), 4);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replay_keeps_the_checklist_across_a_resume() {
+        // A resume is a new generation with a fresh process: the replay must
+        // carry the list, or the first post-resume update finds no task and
+        // the pill freezes. A bare second view over only the new envelopes
+        // derives nothing — that is the acde9350 behaviour this pins.
+        let todo = json!({"type": "assistant", "message": {"id": "m1", "role": "assistant",
+            "content": [{"type": "tool_use", "id": "todo-1", "name": "TodoWrite",
+                "input": {"todos": [{"content": "Legacy", "status": "pending"}]}}]}});
+        let create = json!({"type": "assistant", "message": {"id": "m2", "role": "assistant",
+            "content": [{"type": "tool_use", "id": "create-1", "name": "TaskCreate",
+                "input": {"subject": "Alpha"}}]}});
+        let created = json!({"type": "user",
+            "message": {"role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "create-1", "content": "ok"}]},
+            "tool_use_result": {"task": {"id": "1", "subject": "Alpha"}}});
+        let update = json!({"type": "assistant", "message": {"id": "m3", "role": "assistant",
+            "content": [{"type": "tool_use", "id": "update-1", "name": "TaskUpdate",
+                "input": {"taskId": "1", "status": "in_progress"}}]}});
+        let updated = json!({"type": "user",
+            "message": {"role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "update-1", "content": "ok"}]},
+            "tool_use_result": {"success": true, "taskId": "1"}});
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.tasks.resume";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Claude,
+                "Tasks",
+            ))
+            .expect("birth");
+        append_envelopes(
+            &journal,
+            id,
+            1,
+            &[todo.clone(), create.clone(), created.clone()],
+        );
+        journal.start_generation(id, 2).expect("resume");
+        append_envelopes(&journal, id, 2, &[update.clone(), updated.clone()]);
+
+        let replay = journal.replay(id).expect("replay");
+        let replay_tasks = agent_tasks_of(&replay.events);
+
+        // Live is one continuous view over generation 1 then 2 in order.
+        let mut live = crate::claude_view::ClaudeView::new(None);
+        let mut live_tasks = Vec::new();
+        for envelope in &[todo, create, created, update, updated] {
+            for event in live.ingest(envelope) {
+                if let SessionEvent::AgentTasks { items } = event {
+                    live_tasks.push(items);
+                }
+            }
+        }
+        assert_eq!(replay_tasks, live_tasks);
+        assert_eq!(live_tasks.len(), 3);
+        assert_eq!(live_tasks[2].len(), 2);
+        assert_eq!(
+            live_tasks[2][1].status,
+            devboule_protocol::AgentTaskStatus::InProgress
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

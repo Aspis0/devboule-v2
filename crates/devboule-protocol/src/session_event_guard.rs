@@ -163,7 +163,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
         AgentTaskNotification => SessionEvent::AgentTaskNotification {
             task_id: "task-1".to_string(),
             tool_use_id: Some("toolu_parent".to_string()),
-            status: crate::AgentTaskStatus::Stopped,
+            status: crate::SubagentTaskStatus::Stopped,
             summary: Some("Stopped".to_string()),
         },
         AgentBackgroundTasksChanged => SessionEvent::AgentBackgroundTasksChanged {
@@ -172,6 +172,22 @@ fn session_event_samples() -> Vec<SessionEvent> {
                 task_type: "agent".to_string(),
                 title: "Find the relevant files".to_string(),
             }],
+        },
+        AgentTasks => SessionEvent::AgentTasks {
+            items: vec![
+                crate::AgentTaskItem {
+                    id: Some("task-1".to_string()),
+                    text: "Find the relevant files".to_string(),
+                    status: crate::AgentTaskStatus::InProgress,
+                    active_form: Some("Finding the relevant files".to_string()),
+                },
+                crate::AgentTaskItem {
+                    id: None,
+                    text: "Write the plan".to_string(),
+                    status: crate::AgentTaskStatus::Pending,
+                    active_form: None,
+                },
+            ],
         },
         AgentError => SessionEvent::AgentError {
             message: String::new(),

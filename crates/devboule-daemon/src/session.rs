@@ -139,6 +139,8 @@ mod acp_pending;
 mod acp_questions;
 #[path = "claude_client.rs"]
 mod claude_client;
+#[path = "claude_task_seed.rs"]
+mod claude_task_seed;
 #[path = "codex_client.rs"]
 mod codex_client;
 #[path = "codex_elicitations.rs"]

@@ -919,6 +919,11 @@ export class AgentSession {
       case "agent_background_tasks_changed":
         this.reconcileBackgroundTasks(event.tasks);
         return;
+      case "agent_tasks":
+        // The agent's plan checklist, carried whole on every update. No
+        // row renders it yet; the event is accepted here so the exhaustiveness
+        // guard below stays total until a row does.
+        return;
       case "agent_error":
         // A notification, not a turn ending: the daemon publishes it for one
         // malformed output line and returns to its read loop, and the turn

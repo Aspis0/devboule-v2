@@ -60,6 +60,21 @@
     "type": "agent_task_started"
   },
   {
+    "items": [
+      {
+        "activeForm": "Finding the relevant files",
+        "id": "task-1",
+        "status": "in_progress",
+        "text": "Find the relevant files"
+      },
+      {
+        "status": "pending",
+        "text": "Write the plan"
+      }
+    ],
+    "type": "agent_tasks"
+  },
+  {
     "messageId": null,
     "parentToolUseId": "toolu_parent",
     "spawnDepth": 1,

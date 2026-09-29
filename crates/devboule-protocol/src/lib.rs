@@ -119,16 +119,17 @@ pub use messages::{
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
 pub use session::{
-    cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskState,
-    AgentTaskStatus, Attention, AttentionReason, AvailableCommandView, CreateAgentCaps,
-    CreateAgentCard, Cursor, CursorShape, DelegationRunState, DelegationState, FinishArtifact,
-    FinishArtifactPart, FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar,
-    PermissionOption, PermissionOutcome, PermissionQuestion, PermissionQuestionOption,
-    PermissionRequestKind, Persistence, PersistenceKind, PlanCredits, PlanWindow, ResumeResult,
-    ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView,
-    SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState,
-    SessionStateSnapshot, SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
-    UnattendedState, UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
+    cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskItem,
+    AgentTaskState, AgentTaskStatus, Attention, AttentionReason, AvailableCommandView,
+    CreateAgentCaps, CreateAgentCard, Cursor, CursorShape, DelegationRunState, DelegationState,
+    FinishArtifact, FinishArtifactPart, FinishArtifactPartMetadata, NoticeSeverity,
+    PermissionEnvVar, PermissionOption, PermissionOutcome, PermissionQuestion,
+    PermissionQuestionOption, PermissionRequestKind, Persistence, PersistenceKind, PlanCredits,
+    PlanWindow, ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind,
+    SessionModeStateView, SessionModeView, SessionModel, SessionModelEffort, SessionOrigin,
+    SessionOriginKind, SessionState, SessionStateSnapshot, SubagentTaskStatus, SubscriptionId,
+    ToolLocation, TranscriptIntegrity, TurnUsage, UnattendedState, UserMessageAuthor,
+    UserMessageKind, NOTHING_OWED_CURSOR,
 };
 pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_character};
 
@@ -144,11 +145,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 ///
 /// The daemon always serializes the current struct regardless of the agreed
 /// version, so negotiating down does not produce an old-shaped payload;
-/// refusing the handshake is the only protection. The three additive Claude
-/// task event tags (`agent_task_started`, `agent_task_notification`, and
-/// `agent_background_tasks_changed`) are deliberately ungated: these
-/// output-only tags change no request shape.
-pub const PROTOCOL_VERSION: u32 = 14;
+/// refusing the handshake is the only protection. The additive Claude task
+/// event tags (`agent_task_started`, `agent_task_notification`,
+/// `agent_background_tasks_changed`, `agent_tasks`) are deliberately ungated:
+/// these output-only tags change no request shape.
+pub const PROTOCOL_VERSION: u32 = 15;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.

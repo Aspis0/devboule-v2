@@ -17,11 +17,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    ErrorCode, PermissionOption, PermissionQuestion, PermissionQuestionOption,
+    ErrorCode, NoticeSeverity, PermissionOption, PermissionQuestion, PermissionQuestionOption,
     PermissionRequestKind, SessionEvent, SessionModel, WireError,
 };
 use serde_json::Value;
 
+use super::claude_task_seed::{envelope_may_carry_tasks, seed_claude_task_state};
 use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
 use super::PtyCommand;
 use super::{
@@ -2113,11 +2114,28 @@ struct ClaudeReader {
     /// response carrying the command list the "/" menu shows before the
     /// first message.
     pending_initialize: Option<String>,
+    /// Whether the live checklist was seeded from the journal. A restart
+    /// leaves the app holding the replayed list while a fresh view holds
+    /// nothing; the seed runs lazily on the first live task line.
+    task_state_seeded: bool,
+    /// Failed seed attempts, bounded: after `SEED_MAX_ATTEMPTS` the reader
+    /// latches instead of re-reading the journal on every frame.
+    seed_attempts: u8,
+    /// Live frames to skip before the next seed attempt.
+    seed_cooldown_frames: u64,
     initial_mode_timeout: Duration,
     initial_mode_timer_started: bool,
     initial_mode_timer_cancel: Option<Sender<()>>,
     initial_mode_timer_thread: Option<JoinHandle<()>>,
 }
+
+/// Seed attempts before the reader latches and stops retrying.
+const SEED_MAX_ATTEMPTS: u8 = 3;
+
+/// Published on the first failed seed. Live results may already have landed,
+/// so the list may be partial, not empty.
+const SEED_FAILURE_NOTICE: &str =
+    "The task list could not be fully restored from this session's history; it may be incomplete.";
 
 fn observe_mcp_status(value: &Value, runtime: &SessionRuntime) {
     if value.get("type").and_then(Value::as_str) != Some("system")
@@ -2169,6 +2187,9 @@ impl ClaudeReader {
             stdin: None,
             mode_gate: None,
             pending_initialize: None,
+            task_state_seeded: false,
+            seed_attempts: 0,
+            seed_cooldown_frames: 0,
             initial_mode_timeout: CONTROL_RESPONSE_TIMEOUT,
             initial_mode_timer_started: false,
             initial_mode_timer_cancel: None,
@@ -2236,6 +2257,41 @@ impl ClaudeReader {
     }
 
     fn dispatch_line(&mut self, line: &str, runtime: &Arc<SessionRuntime>) {
+        // The seed waits for the first live line that can move a checklist:
+        // a task tool_use names its tool on the wire, while init, text and
+        // ordinary tool traffic never do — so task-less sessions never read
+        // their journal, and the first line and manifest paint unblocked. A
+        // live task result always follows its tool_use in-stream, which
+        // triggers first; the fold then runs before that envelope applies.
+        // Attempts are bounded with a frame-count backoff; the first failure
+        // notices once, and after the last attempt the reader never re-reads.
+        if self.seed_cooldown_frames > 0 {
+            self.seed_cooldown_frames -= 1;
+        }
+        if !self.task_state_seeded
+            && self.seed_attempts < SEED_MAX_ATTEMPTS
+            && self.seed_cooldown_frames == 0
+            && envelope_may_carry_tasks(line.as_bytes())
+        {
+            if seed_claude_task_state(runtime, &mut self.view) {
+                self.task_state_seeded = true;
+            } else {
+                self.seed_attempts += 1;
+                self.seed_cooldown_frames = match self.seed_attempts {
+                    1 => 5,
+                    2 => 30,
+                    _ => 0,
+                };
+                // A session may have one task line only, so waiting for the
+                // last attempt could leave the failure unannounced.
+                if self.seed_attempts == 1 {
+                    let _ = runtime.publish_session_notice(
+                        SEED_FAILURE_NOTICE.to_string(),
+                        NoticeSeverity::Warning,
+                    );
+                }
+            }
+        }
         let value = match serde_json::from_str::<Value>(line) {
             Ok(value) => value,
             Err(error) => {

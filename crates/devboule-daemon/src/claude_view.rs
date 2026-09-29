@@ -7,11 +7,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use devboule_protocol::{
-    AgentBackgroundTask, AgentTaskStatus, AvailableCommandView, SessionEvent, SessionModeStateView,
-    SessionModeView, SessionModel, ToolLocation, TurnUsage, UnattendedState,
+    AgentBackgroundTask, AvailableCommandView, SessionEvent, SessionModeStateView, SessionModeView,
+    SessionModel, SubagentTaskStatus, ToolLocation, TurnUsage, UnattendedState,
 };
 use serde_json::Value;
 
+use crate::claude_task_state::ClaudeTaskState;
 use crate::tool_paths::relativize_tool_path;
 use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
 
@@ -58,6 +59,9 @@ pub(crate) struct ClaudeView {
     /// handshake's rich list and the init frame's bare names are two readings
     /// of one menu, so a repeat publishes nothing.
     published_commands: Option<Vec<AvailableCommandView>>,
+    /// The session's plan checklist, fed by Claude's task tools. Per session
+    /// and in the view, so live and replay derive the same snapshots.
+    task_state: ClaudeTaskState,
 }
 
 impl ClaudeView {
@@ -73,7 +77,25 @@ impl ClaudeView {
             cwd,
             published_commands: None,
             question_tool_ids: HashSet::new(),
+            task_state: ClaudeTaskState::default(),
         }
+    }
+
+    /// The checklist state, for the replay seam and the live restart seed:
+    /// both rebuild one continuous machine from the same journalled
+    /// envelopes instead of starting empty.
+    pub(crate) fn snapshot_task_state(&self) -> ClaudeTaskState {
+        self.task_state.clone()
+    }
+
+    pub(crate) fn restore_task_state(&mut self, state: ClaudeTaskState) {
+        self.task_state = state;
+    }
+
+    /// Whether the view still owes a task-tool result: the seed's gate for
+    /// parsing result envelopes.
+    pub(crate) fn has_pending_task_calls(&self) -> bool {
+        self.task_state.has_pending_calls()
     }
 
     pub(crate) fn peer_session_id(&self) -> Option<&str> {
@@ -124,6 +146,16 @@ impl ClaudeView {
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
         {
+            // Another CLI session on the same view is a rebind: its
+            // checklist starts empty, as Paseo's rebind does. A repeated
+            // init for the same session changes nothing.
+            if self
+                .peer_session_id
+                .as_deref()
+                .is_some_and(|peer| peer != session_id)
+            {
+                self.task_state.reset();
+            }
             self.peer_session_id = Some(session_id.to_string());
         }
         let model = envelope
@@ -444,6 +476,16 @@ impl ClaudeView {
             if is_subagent { None } else { model },
         );
         let mut events = Vec::new();
+        // A subagent's task Tools feed the child's checklist, not this
+        // session's — Paseo's sidechain bypass (`claude/agent.ts`). The
+        // checklist reads its own rule here (a non-empty string parent id):
+        // a non-string parent id feeds the checklist while the view routes
+        // the frame to the child transcript; nothing produces one.
+        if parent_tool_use_id.is_none() {
+            if let Some(event) = self.task_state.observe(envelope) {
+                events.push(event);
+            }
+        }
         if model_changed {
             self.last_manifest_model = self.current_model.clone();
             if let Some(model) = self.current_model.clone() {
@@ -545,12 +587,19 @@ impl ClaudeView {
     fn ingest_user(&mut self, envelope: &Value) -> Vec<SessionEvent> {
         let parent_tool_use_id = parent_tool_use_id(envelope);
         let spawn_depth = spawn_depth(envelope);
+        let mut events = Vec::new();
+        // Sidechain frames do not feed this session's checklist.
+        if parent_tool_use_id.is_none() {
+            if let Some(event) = self.task_state.observe(envelope) {
+                events.push(event);
+            }
+        }
         let Some(content) = envelope
             .get("message")
             .and_then(|message| message.get("content"))
             .and_then(Value::as_array)
         else {
-            return Vec::new();
+            return events;
         };
         content
             .iter()
@@ -574,12 +623,16 @@ impl ClaudeView {
                 }
                 Some(update)
             })
-            .collect()
+            .for_each(|update| events.push(update));
+        events
     }
 
     fn ingest_result(&mut self, envelope: &Value) -> Vec<SessionEvent> {
         self.question_tool_ids.clear();
         self.plan_tool_ids.clear();
+        // Unmatched task-tool inputs die with the turn: a result never
+        // arrives after its turn's end. The list itself is session state.
+        self.task_state.end_turn();
         // Debt: stream-json has no ACP-like inactivity watchdog, so a dead
         // CLI can leave a turn without ever producing an AgentFinished event.
         let stop_reason = envelope
@@ -788,6 +841,21 @@ impl ClaudeView {
     }
 }
 
+/// One journalled envelope through the replay road shared by the rebuild
+/// (`journal_replay`), the attach pull (`event_pull`) and the live restart
+/// seed: the ACP view first, the Claude view when it models nothing. All
+/// three derive the same events because all three call this — including the
+/// rebind `reset()` and the turn-boundary clearing inside `ingest`.
+pub(crate) fn drive_replay(view: &mut ClaudeView, value: &mut Value) -> Vec<SessionEvent> {
+    crate::plan_text::bound_claude_envelope(value);
+    let views = crate::acp_view::view_from_envelope(value, "");
+    if views.is_empty() {
+        view.ingest(value)
+    } else {
+        views
+    }
+}
+
 fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
     let field = |key: &str| {
         input
@@ -931,11 +999,11 @@ fn tool_use_id(envelope: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn parse_task_status(status: &str) -> Option<AgentTaskStatus> {
+fn parse_task_status(status: &str) -> Option<SubagentTaskStatus> {
     match status {
-        "completed" => Some(AgentTaskStatus::Completed),
-        "failed" => Some(AgentTaskStatus::Failed),
-        "stopped" => Some(AgentTaskStatus::Stopped),
+        "completed" => Some(SubagentTaskStatus::Completed),
+        "failed" => Some(SubagentTaskStatus::Failed),
+        "stopped" => Some(SubagentTaskStatus::Stopped),
         _ => None,
     }
 }
@@ -1134,6 +1202,140 @@ mod tests {
         ClaudeView::new(Some(PathBuf::from(
             r"C:\Users\gualt\AppData\Local\Temp\devboule-claude-perm2-allow-host-8r8qc09c",
         )))
+    }
+
+    #[test]
+    fn rebind_to_another_session_resets_the_checklist() {
+        let task_update = |id: &str, task: &str| {
+            serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "id": format!("m_{id}"),
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": id,
+                        "name": "TaskUpdate",
+                        "input": {"taskId": task, "status": "completed"},
+                    }],
+                }
+            })
+        };
+        let task_result = |id: &str| {
+            serde_json::json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": id,
+                        "content": "ok",
+                    }],
+                }
+            })
+        };
+        let has_checklist = |events: &[SessionEvent]| {
+            events
+                .iter()
+                .any(|event| matches!(event, SessionEvent::AgentTasks { .. }))
+        };
+        let mut view = ClaudeView::new(None);
+        view.ingest(&json!({"type": "system", "subtype": "init", "session_id": "s-A"}));
+        let events = view.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m1",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "TodoWrite",
+                    "input": {"todos": [{"content": "A-task"}]},
+                }],
+            }
+        }));
+        assert!(has_checklist(&events), "the session lists its task");
+        // A repeated init for the same session keeps the list: the update
+        // still applies.
+        view.ingest(&json!({"type": "system", "subtype": "init", "session_id": "s-A"}));
+        view.ingest(&task_update("u1", "legacy:0"));
+        assert!(has_checklist(&view.ingest(&task_result("u1"))));
+        // Another session id on the same view is a rebind: the list starts
+        // empty, so the old task id applies nothing.
+        view.ingest(&json!({"type": "system", "subtype": "init", "session_id": "s-B"}));
+        view.ingest(&task_update("u2", "legacy:0"));
+        assert!(!has_checklist(&view.ingest(&task_result("u2"))));
+    }
+
+    #[test]
+    fn sidechain_frames_do_not_feed_the_checklist() {
+        let mut view = ClaudeView::new(None);
+        let events = view.ingest(&json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_parent",
+            "message": {
+                "id": "msg_child",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_child_todowrite",
+                    "name": "TodoWrite",
+                    "input": {"todos": [{"content": "Child task"}]},
+                }],
+            }
+        }));
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, SessionEvent::AgentTasks { .. })),
+            "a subagent's TodoWrite must not feed the parent's checklist: {events:?}"
+        );
+        let events = view.ingest(&json!({
+            "type": "user",
+            "parent_tool_use_id": "toolu_parent",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_child_todowrite",
+                    "content": "ok",
+                }]
+            },
+            "tool_use_result": {"task": {"id": "9", "subject": "Child task"}},
+        }));
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, SessionEvent::AgentTasks { .. })),
+            "a subagent's tool_result must not feed the parent's checklist: {events:?}"
+        );
+    }
+
+    #[test]
+    fn the_checklist_event_precedes_the_tool_rows_of_its_message() {
+        let mut view = ClaudeView::new(None);
+        let events = view.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg_todowrite",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "todowrite",
+                    "name": "TodoWrite",
+                    "input": {"todos": [{"content": "Inspect the project layout", "status": "pending"}]},
+                }],
+            }
+        }));
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|event| match event {
+                SessionEvent::AgentTasks { .. } => "agent_tasks",
+                SessionEvent::AgentToolCall { .. } => "agent_tool_call",
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, vec!["agent_tasks", "agent_tool_call"]);
     }
 
     // Reconstructed from recon/probes/claude-perm-probe2-allow-host.txt
@@ -1755,7 +1957,7 @@ mod tests {
             [SessionEvent::AgentTaskNotification {
                 task_id,
                 tool_use_id,
-                status: AgentTaskStatus::Failed,
+                status: SubagentTaskStatus::Failed,
                 summary: Some(summary),
             }]
                 if task_id == "task-1"
@@ -1774,7 +1976,7 @@ mod tests {
         assert!(matches!(
             stopped.as_slice(),
             [SessionEvent::AgentTaskNotification {
-                status: AgentTaskStatus::Stopped,
+                status: SubagentTaskStatus::Stopped,
                 summary: Some(summary),
                 ..
             }] if summary == "The task was stopped"

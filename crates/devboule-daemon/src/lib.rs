@@ -20,6 +20,8 @@ mod attachment_store;
 #[cfg(feature = "server")]
 mod claude_catalog;
 #[cfg(feature = "server")]
+mod claude_task_state;
+#[cfg(feature = "server")]
 mod claude_view;
 mod client;
 #[cfg(feature = "server")]
@@ -30,6 +32,8 @@ mod codex_commands;
 mod codex_compaction;
 #[cfg(feature = "server")]
 mod codex_goals;
+#[cfg(feature = "server")]
+mod codex_plan_marks;
 #[cfg(feature = "server")]
 mod codex_prompt_expand;
 #[cfg(feature = "server")]

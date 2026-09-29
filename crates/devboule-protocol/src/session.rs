@@ -928,7 +928,7 @@ pub enum SessionEvent {
         task_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_use_id: Option<String>,
-        status: AgentTaskStatus,
+        status: SubagentTaskStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
     },
@@ -936,6 +936,17 @@ pub enum SessionEvent {
     /// lifecycle event; its entries do not carry subagent type or status.
     AgentBackgroundTasksChanged {
         tasks: Vec<AgentBackgroundTask>,
+    },
+    /// The agent's current plan checklist, carried whole on every update.
+    ///
+    /// Replacement state, not a delta: each event carries the complete list as
+    /// the provider last described it. ACP's schema says "the client replaces
+    /// the entire plan with each update", and Claude's `TodoWrite`/`TaskList`
+    /// and Codex's `turn/plan/updated` are snapshot-shaped too, so one
+    /// vocabulary serves all three sources. A consumer keeps the latest event
+    /// per session as the current list.
+    AgentTasks {
+        items: Vec<AgentTaskItem>,
     },
     /// A valid ACP error response or a transport/decoding error surfaced to
     /// the attached session instead of being turned into a silent hang.
@@ -1384,13 +1395,51 @@ pub struct ToolLocation {
     pub line: Option<u32>,
 }
 
-/// The only terminal statuses Claude exposes for a task notification.
+/// The only terminal statuses Claude exposes for a subagent task
+/// notification.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentTaskStatus {
+pub enum SubagentTaskStatus {
     Completed,
     Failed,
     Stopped,
+}
+
+/// The checklist status of one [`AgentTaskItem`].
+///
+/// One vocabulary for the three checklist sources: ACP's `plan` entries,
+/// Claude's `TodoWrite`/`Task*` tools and Codex's `turn/plan/updated` steps
+/// are normalized onto these three values. A row written before this field
+/// existed reads as [`AgentTaskStatus::Pending`] — an item the provider never
+/// described is not started.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTaskStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// One entry of the agent's plan checklist, as carried whole by
+/// [`SessionEvent::AgentTasks`].
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskItem {
+    /// The provider's own task id when it has one: Claude's `Task*` tools key
+    /// by it and Codex numbers the step in the plan array. Absent for ACP
+    /// plan entries, which the 0.17.1 schema keys by position alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub text: String,
+    #[serde(default)]
+    pub status: AgentTaskStatus,
+    /// The running row's present-participle text ("Inspecting the project")
+    /// when the provider sent one: Claude's `activeForm` on `TodoWrite`,
+    /// `TaskCreate` and `TaskUpdate`. Absent elsewhere — ACP entries and
+    /// Codex steps carry no running form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_form: Option<String>,
 }
 
 /// One entry in Claude's replacement set of background tasks.

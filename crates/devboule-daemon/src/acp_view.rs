@@ -7,8 +7,9 @@ use std::path::Path;
 
 use crate::tool_paths::relativize_tool_path;
 use devboule_protocol::{
-    AvailableCommandView, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
-    SessionModelEffort, ToolLocation, TurnUsage, UserMessageAuthor, UserMessageKind,
+    AgentTaskItem, AgentTaskStatus, AvailableCommandView, SessionEvent, SessionModeStateView,
+    SessionModeView, SessionModel, SessionModelEffort, ToolLocation, TurnUsage, UserMessageAuthor,
+    UserMessageKind,
 };
 
 /// Kind of a JSON-RPC line. Requests carry a method *and* an id; treating a
@@ -51,7 +52,7 @@ pub(crate) fn view_from_envelope_in(
     expected_session_id: &str,
     cwd: Option<&Path>,
 ) -> Vec<SessionEvent> {
-    if value.get("method").and_then(serde_json::Value::as_str) == Some("session/update") {
+    if carries_modeled_session_update(value) {
         return view_from_session_update(value, expected_session_id, cwd)
             .into_iter()
             .collect();
@@ -68,6 +69,42 @@ pub(crate) fn view_from_envelope_in(
         return views_from_prompt_response(value, expected_session_id);
     }
     Vec::new()
+}
+
+/// Whether this envelope carries a `session/update` the view models.
+///
+/// grok splits its methods: streaming updates ride `session/update`, while
+/// seven turn-lifecycle kinds (`turn_completed`, `response_completed`,
+/// `retry_state`, `pending_interaction`, `interaction_resolved`,
+/// `tool_call_delta_chunk`, `session_summary_generated`) ride
+/// `_x.ai/session_notification`. Only the `plan` kind is read on the wrapped
+/// channel — the lifecycle kinds stay ignored there, exactly as they are on
+/// the plain one, and consistent with the broker's method-gated readers
+/// (e.g. `is_user_message_chunk`, which requires `session/update`). The
+/// recon's channel split is a measured observation of one grok version, not
+/// a second modelled carrier.
+fn carries_modeled_session_update(value: &serde_json::Value) -> bool {
+    let kind = value
+        .get("params")
+        .and_then(|params| params.get("update"))
+        .and_then(|update| update.get("sessionUpdate"))
+        .and_then(serde_json::Value::as_str);
+    match value.get("method").and_then(serde_json::Value::as_str) {
+        Some("session/update") => matches!(
+            kind,
+            Some(
+                "user_message_chunk"
+                    | "agent_message_chunk"
+                    | "agent_thought_chunk"
+                    | "available_commands_update"
+                    | "tool_call"
+                    | "tool_call_update"
+                    | "plan"
+            )
+        ),
+        Some("_x.ai/session_notification") => kind == Some("plan"),
+        _ => false,
+    }
 }
 
 fn view_from_session_update(
@@ -176,8 +213,47 @@ fn view_from_session_update(
                 spawn_depth: None,
             })
         }
+        Some("plan") => {
+            let items = plan_items_from_update(update)?;
+            Some(SessionEvent::AgentTasks { items })
+        }
         _ => None,
     }
+}
+
+/// ACP `plan` entries as checklist items: `priority` is dropped, and the
+/// running state is kept as its own status. That second half is a deliberate
+/// deviation — the pill shows running rows — not Paseo's map: Paseo's
+/// `mapPlanToTimeline` reads only `content` and `status === "completed"`,
+/// so `in_progress` collapses to not completed there. The 0.17.1 schema has
+/// no per-entry id, so the item carries none; entries are keyed by position
+/// alone.
+fn plan_items_from_update(update: &serde_json::Value) -> Option<Vec<AgentTaskItem>> {
+    let entries = update.get("entries")?.as_array()?;
+    Some(entries.iter().filter_map(plan_item_from_entry).collect())
+}
+
+/// One plan entry, or nothing when it carries no text: a blank row would
+/// pin an empty checklist line, so malformed entries drop like Claude's
+/// textless items do.
+fn plan_item_from_entry(entry: &serde_json::Value) -> Option<AgentTaskItem> {
+    let text = entry
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())?;
+    Some(AgentTaskItem {
+        id: None,
+        text: text.to_string(),
+        status: match entry.get("status").and_then(serde_json::Value::as_str) {
+            Some("in_progress") => AgentTaskStatus::InProgress,
+            Some("completed") => AgentTaskStatus::Completed,
+            // The schema allows only the three values; an off-schema status
+            // reads as not started, the default Codex's plan mapping shares.
+            _ => AgentTaskStatus::Pending,
+        },
+        active_form: None,
+    })
 }
 
 fn view_from_prompt_response(
@@ -1477,7 +1553,8 @@ mod tests {
         merge_handshake_manifest, prompt_capabilities_from_initialize,
         session_manifest_from_initialize, session_manifest_from_models_update,
         session_manifest_from_new_session, unmodeled_content_kind, view_from_envelope,
-        view_from_envelope_in, AcpLineKind, PromptCapabilities, PromptCapabilityState,
+        view_from_envelope_in, AcpLineKind, AgentTaskStatus, PromptCapabilities,
+        PromptCapabilityState,
     };
     use devboule_protocol::SessionEvent;
     use devboule_protocol::{UserMessageAuthor, UserMessageKind};
@@ -1489,6 +1566,13 @@ mod tests {
     const QWEN_CAPTURE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/fixtures/wire/qwen-v1.jsonl"
+    ));
+    // SYNTHETIC: an ACP `plan` update shaped after the 0.17.1 schema
+    // (recon §1) — invented session id, invented task texts. No measured
+    // run has sent one yet (recon §3.1: 0 plan frames across 6 grok runs).
+    const ACP_PLAN_SYNTHETIC: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/wire/acp-plan-update-synthetic.jsonl"
     ));
 
     fn measured_raw(capture: &str, needle: &str) -> serde_json::Value {
@@ -1714,6 +1798,189 @@ mod tests {
                 method: "_x.ai/mcp/servers_updated".to_string()
             })
         );
+    }
+
+    /// The one plan envelope of the synthetic ACP fixture, parsed from its
+    /// `raw` field the way the client journals it.
+    fn synthetic_plan_envelope() -> serde_json::Value {
+        ACP_PLAN_SYNTHETIC
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find_map(|row| {
+                row.get("raw")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .map(|raw| parse(&raw))
+            .expect("synthetic ACP plan fixture")
+    }
+
+    #[test]
+    fn plan_update_becomes_agent_tasks() {
+        let line = synthetic_plan_envelope();
+        let session = line["params"]["sessionId"].as_str().expect("session id");
+        let view = one_view(view_from_envelope(&line, session));
+        let SessionEvent::AgentTasks { items } = view else {
+            panic!("expected AgentTasks, got {view:?}");
+        };
+        assert_eq!(items.len(), 3);
+        // `priority` is dropped and the 0.17.1 schema has no per-entry id.
+        assert_eq!(items[0].id, None);
+        assert_eq!(items[0].text, "Inspect the project layout");
+        assert_eq!(items[0].status, AgentTaskStatus::Pending);
+        // `in_progress` keeps its own status: a deliberate deviation from
+        // Paseo's `mapPlanToTimeline`, which collapses it — the pill shows
+        // running rows.
+        assert_eq!(items[1].text, "Draft the greeting file");
+        assert_eq!(items[1].status, AgentTaskStatus::InProgress);
+        assert_eq!(items[2].text, "Verify the file on disk");
+        assert_eq!(items[2].status, AgentTaskStatus::Completed);
+    }
+
+    #[test]
+    fn plan_update_on_the_xai_channel_is_read() {
+        // grok wraps some sessionUpdates in `_x.ai/session_notification`
+        // (recon §3.1); the plan kind rides the same params shape there,
+        // and the gate keys on the kind, so it reads on either carrier.
+        let line = synthetic_plan_envelope();
+        let session = line["params"]["sessionId"].as_str().expect("session id");
+        let mut wrapped = line.clone();
+        wrapped["method"] = serde_json::json!("_x.ai/session_notification");
+        let view = one_view(view_from_envelope(&wrapped, session));
+        let SessionEvent::AgentTasks { items } = view else {
+            panic!("expected AgentTasks, got {view:?}");
+        };
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[1].status, AgentTaskStatus::InProgress);
+    }
+
+    #[test]
+    fn only_plan_reads_on_the_xai_channel() {
+        // The wrapped channel admits the `plan` kind only: a `tool_call`
+        // there stays unmodelled, consistent with the broker's method-gated
+        // readers (`is_user_message_chunk` requires `session/update`).
+        let line = parse(
+            r#"{"jsonrpc":"2.0","method":"_x.ai/session_notification","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"Run tests","status":"in_progress"}}}"#,
+        );
+        assert!(
+            view_from_envelope(&line, "s").is_empty(),
+            "only plan reads on the wrapped channel"
+        );
+    }
+
+    #[test]
+    fn xai_lifecycle_kinds_stay_ignored() {
+        // The seven kinds grok puts on the wrapped channel are turn
+        // lifecycle events, not transcript content: the gate reads `plan`
+        // only there, so they stay ignored on either carrier.
+        for kind in [
+            "turn_completed",
+            "response_completed",
+            "retry_state",
+            "pending_interaction",
+            "interaction_resolved",
+            "tool_call_delta_chunk",
+            "session_summary_generated",
+        ] {
+            let line = parse(&format!(
+                r#"{{"jsonrpc":"2.0","method":"_x.ai/session_notification","params":{{"sessionId":"{SESSION}","update":{{"sessionUpdate":"{kind}"}}}}}}"#
+            ));
+            assert!(
+                view_from_envelope(&line, SESSION).is_empty(),
+                "{kind} must stay ignored"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_plan_status_reads_as_pending() {
+        // The schema allows only the three values; an off-schema status
+        // reads as not started — the same default Codex's plan mapping
+        // uses.
+        let line = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":[{"content":"Task","priority":"low","status":"some_day"}]}}}"#,
+        );
+        match view_from_envelope(&line, "s").as_slice() {
+            [SessionEvent::AgentTasks { items }] => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].status, AgentTaskStatus::Pending);
+            }
+            other => panic!("expected AgentTasks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_plan_update_carries_the_whole_list_never_a_delta() {
+        // ACP's schema: "the client replaces the entire plan with each
+        // update". The view is stateless, so every update carries its own
+        // full list — the second event is the new whole, not the diff, and
+        // a repeat of the first is the first whole again.
+        let first = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":[{"content":"Step one","priority":"low","status":"pending"},{"content":"Step two","priority":"low","status":"pending"}]}}}"#,
+        );
+        let second = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":[{"content":"Step one","priority":"low","status":"completed"},{"content":"Step two","priority":"low","status":"in_progress"},{"content":"Step three","priority":"low","status":"pending"}]}}}"#,
+        );
+        let first_items = match view_from_envelope(&first, "s").as_slice() {
+            [SessionEvent::AgentTasks { items }] => items.clone(),
+            other => panic!("expected AgentTasks, got {other:?}"),
+        };
+        assert_eq!(first_items.len(), 2);
+        let second_items = match view_from_envelope(&second, "s").as_slice() {
+            [SessionEvent::AgentTasks { items }] => items.clone(),
+            other => panic!("expected AgentTasks, got {other:?}"),
+        };
+        assert_eq!(
+            second_items.len(),
+            3,
+            "the second update carries the whole list"
+        );
+        assert_eq!(second_items[0].status, AgentTaskStatus::Completed);
+        assert_eq!(second_items[1].status, AgentTaskStatus::InProgress);
+        assert_eq!(second_items[2].status, AgentTaskStatus::Pending);
+        let repeat_items = match view_from_envelope(&first, "s").as_slice() {
+            [SessionEvent::AgentTasks { items }] => items.clone(),
+            other => panic!("expected AgentTasks, got {other:?}"),
+        };
+        assert_eq!(repeat_items, first_items);
+    }
+
+    #[test]
+    fn malformed_plan_entries_drop_or_hold_instead_of_blank_rows() {
+        // An entry without content drops — a blank row would pin an empty
+        // checklist line — while a whitespace-only one drops too.
+        let line = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":[{"content":"Kept","priority":"low","status":"pending"},{"priority":"low","status":"pending"},{"content":"   ","priority":"low","status":"pending"}]}}}"#,
+        );
+        match view_from_envelope(&line, "s").as_slice() {
+            [SessionEvent::AgentTasks { items }] => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].text, "Kept");
+            }
+            other => panic!("expected AgentTasks, got {other:?}"),
+        }
+        // An empty list clears the checklist: the schema maps the whole
+        // array, and an empty array maps to an empty todo.
+        let empty = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":[]}}}"#,
+        );
+        match view_from_envelope(&empty, "s").as_slice() {
+            [SessionEvent::AgentTasks { items }] => assert!(items.is_empty()),
+            other => panic!("expected AgentTasks, got {other:?}"),
+        }
+        // No entries, or entries that are not an array: no event, and the
+        // list the app holds stays.
+        for raw in [
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":null}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"plan","entries":{"content":"x"}}}}"#,
+        ] {
+            let line = parse(raw);
+            assert!(
+                view_from_envelope(&line, "s").is_empty(),
+                "malformed entries must model to nothing: {raw}"
+            );
+        }
     }
 
     #[test]

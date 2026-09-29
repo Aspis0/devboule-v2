@@ -1372,6 +1372,22 @@ export type SessionEvent =
       type: "agent_background_tasks_changed";
       tasks: Array<{ taskId: string; taskType: string; title: string }>;
     }
+  /**
+   * The agent's current plan checklist, carried whole on every update
+   * (protocol `SessionEvent::AgentTasks`). Replacement state, not a delta:
+   * ACP's `plan` updates, Claude's `TodoWrite`/`TaskList` and Codex's
+   * `turn/plan/updated` are all snapshot-shaped, so the consumer keeps the
+   * latest event per session as the current list.
+   */
+  | {
+      type: "agent_tasks";
+      items: Array<{
+        id?: string;
+        text: string;
+        status: "pending" | "in_progress" | "completed";
+        activeForm?: string;
+      }>;
+    }
   /** Slash commands the agent advertises for this session. */
   | {
       type: "available_commands";

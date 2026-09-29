@@ -161,6 +161,17 @@ pub(crate) struct SessionRuntime {
     pub(crate) coalesced_bytes: AtomicU64,
     pub(crate) coalesced_frames: AtomicU64,
     pub(crate) journal_replays: AtomicU64,
+    /// Live checklist seeds that failed before installing state. A failed
+    /// seed retries on the next frame; the count names the failure in
+    /// diagnostics instead of leaving a silent freeze.
+    pub(crate) task_seed_failures: AtomicU64,
+    /// Plan-mark pre-scan reads, success or failure. A failed read notices
+    /// once (see `codex_plan_turns`) instead of failing open silently.
+    pub(crate) plan_mark_scans: AtomicU64,
+    /// Runs at the start of every plan-mark scan, so a test can observe the
+    /// locks held around the read.
+    #[cfg(test)]
+    pub(crate) plan_mark_scan_probe: Mutex<Option<Box<dyn Fn() + Send>>>,
     turn_counter: AtomicU64,
     turn_active: AtomicBool,
     /// The turn status last *published* on this session's roster row, kept so a
@@ -499,6 +510,10 @@ impl SessionRuntime {
             coalesced_bytes: AtomicU64::new(0),
             coalesced_frames: AtomicU64::new(0),
             journal_replays: AtomicU64::new(0),
+            task_seed_failures: AtomicU64::new(0),
+            plan_mark_scans: AtomicU64::new(0),
+            #[cfg(test)]
+            plan_mark_scan_probe: Mutex::new(None),
             turn_counter: AtomicU64::new(0),
             turn_active: AtomicBool::new(false),
             // Nothing has been published yet, so the first reading of a live
@@ -862,6 +877,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentTaskStarted { .. }
                 | SessionEvent::AgentTaskNotification { .. }
                 | SessionEvent::AgentBackgroundTasksChanged { .. }
+                | SessionEvent::AgentTasks { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
@@ -2811,6 +2827,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentTaskStarted { .. }
                 | SessionEvent::AgentTaskNotification { .. }
                 | SessionEvent::AgentBackgroundTasksChanged { .. }
+                | SessionEvent::AgentTasks { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
@@ -2832,6 +2849,59 @@ impl SessionRuntime {
     #[cfg(test)]
     pub(crate) fn journal_replay_count(&self) -> u64 {
         self.journal_replays.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn note_task_seed_failure(&self) {
+        self.task_seed_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task_seed_failure_count(&self) -> u64 {
+        self.task_seed_failures.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn note_plan_mark_scan(&self) {
+        self.plan_mark_scans.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn plan_mark_scan_count(&self) -> u64 {
+        self.plan_mark_scans.load(Ordering::Relaxed)
+    }
+
+    /// Plan-mode turns recovered from journalled verdict rows, for the attach
+    /// replay's Codex driver. Empty without a journal. A failed read counts
+    /// and notices once instead of failing open silently: without the marks
+    /// every plan-mode-ON turn would replay a checklist it never had.
+    pub(crate) fn codex_plan_turns(&self) -> std::collections::HashSet<String> {
+        #[cfg(test)]
+        if let Some(probe) = self
+            .plan_mark_scan_probe
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            probe();
+        }
+        let Some(journal) = &self.journal else {
+            return std::collections::HashSet::new();
+        };
+        match journal.codex_plan_turns(&self.session_id) {
+            Ok(turns) => {
+                self.note_plan_mark_scan();
+                turns.into_iter().collect()
+            }
+            Err(error) => {
+                self.note_plan_mark_scan();
+                eprintln!("plan mark scan failed: {error}");
+                let _ = self.publish_session_notice(
+                    "The agent's plan approval history could not be read; plan checklists may reappear for approved plans."
+                        .to_string(),
+                    NoticeSeverity::Warning,
+                );
+                std::collections::HashSet::new()
+            }
+        }
     }
 
     /// Attach through the same wire path used by the session registry. A

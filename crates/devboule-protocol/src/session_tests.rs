@@ -1121,6 +1121,61 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
     assert!(encoded["locations"][0].get("line").is_none());
 }
 
+#[test]
+fn agent_tasks_round_trip_with_camel_case_wire_names() {
+    let with_ids = SessionEvent::AgentTasks {
+        items: vec![
+            AgentTaskItem {
+                id: Some("task-1".to_string()),
+                text: "Find the relevant files".to_string(),
+                status: AgentTaskStatus::InProgress,
+                active_form: Some("Finding the relevant files".to_string()),
+            },
+            AgentTaskItem {
+                id: None,
+                text: "Write the plan".to_string(),
+                status: AgentTaskStatus::Pending,
+                active_form: None,
+            },
+            AgentTaskItem {
+                id: Some("task-3".to_string()),
+                text: "Run the tests".to_string(),
+                status: AgentTaskStatus::Completed,
+                active_form: None,
+            },
+        ],
+    };
+    let encoded = serde_json::to_value(&with_ids).expect("json");
+    assert_eq!(encoded["type"], "agent_tasks");
+    assert_eq!(encoded["items"][0]["id"], "task-1");
+    assert_eq!(encoded["items"][0]["text"], "Find the relevant files");
+    assert_eq!(encoded["items"][0]["status"], "in_progress");
+    assert_eq!(
+        encoded["items"][0]["activeForm"],
+        "Finding the relevant files"
+    );
+    assert!(encoded["items"][1].get("activeForm").is_none());
+    assert_eq!(encoded["items"][1]["status"], "pending");
+    assert!(encoded["items"][1].get("id").is_none());
+    assert_eq!(encoded["items"][2]["status"], "completed");
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, with_ids);
+
+    // A row written before the status field existed reads as pending: an
+    // item the provider never described is not started.
+    let legacy = serde_json::json!({
+        "type": "agent_tasks",
+        "items": [{"id": "task-2", "text": "Sweep the tests"}]
+    });
+    let decoded: SessionEvent = serde_json::from_value(legacy).expect("legacy row");
+    let SessionEvent::AgentTasks { items } = decoded else {
+        panic!("expected AgentTasks");
+    };
+    assert_eq!(items[0].id.as_deref(), Some("task-2"));
+    assert_eq!(items[0].status, AgentTaskStatus::Pending);
+    assert_eq!(items[0].active_form, None);
+}
+
 /// `Session.displayName` and `Session.createdBy` are camelCase on the wire
 /// and absent when the daemon has nothing to say (S5-09).
 #[test]

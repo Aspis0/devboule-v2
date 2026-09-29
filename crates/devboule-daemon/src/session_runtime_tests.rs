@@ -605,3 +605,46 @@ fn agent_finished_does_not_overwrite_error_attention() {
         "the turn's finish leaves the error raise standing"
     );
 }
+
+#[test]
+fn failed_plan_mark_read_notices_once_instead_of_empty() {
+    // A journal that cannot answer: the marks come back empty, but not
+    // silently — exactly one SessionNotice names the gap in the backlog.
+    let dir = crate::test_dirs::test_temp_dir("devboule-plan-mark-fail");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let session_id = "s.plan.mark.fail";
+    journal.shutdown();
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    assert!(runtime.codex_plan_turns().is_empty());
+    let notices = runtime
+        .stream
+        .lock()
+        .expect("stream")
+        .agent_backlog
+        .iter()
+        .filter(|item| {
+            matches!(item, crate::session::PendingItem::Agent { event, .. }
+                if matches!(event, SessionEvent::SessionNotice { text, .. } if text.contains("plan approval")))
+        })
+        .count();
+    assert_eq!(notices, 1, "exactly one plan-mark notice");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plan_mark_scans_are_counted() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-plan-mark-count");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let session_id = "s.plan.mark.count";
+    journal.shutdown();
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    assert!(runtime.codex_plan_turns().is_empty());
+    assert_eq!(runtime.plan_mark_scan_count(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}

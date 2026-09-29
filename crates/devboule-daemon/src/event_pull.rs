@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -286,6 +286,8 @@ impl ConnHandle {
                     replayed_seqs: std::collections::HashSet::new(),
                     claude_view: None,
                     codex_view: None,
+                    codex_plan_turns: None,
+                    marks_needed: false,
                     is_pi,
                     is_codex,
                     manifest_emitted: false,
@@ -471,6 +473,7 @@ impl ConnHandle {
                 | SessionEvent::AgentTaskStarted { .. }
                 | SessionEvent::AgentTaskNotification { .. }
                 | SessionEvent::AgentBackgroundTasksChanged { .. }
+                | SessionEvent::AgentTasks { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
@@ -507,20 +510,74 @@ impl ConnHandle {
     }
 
     pub(crate) fn pull_events(&self) -> Vec<PendingEvent> {
+        let mut events = Vec::new();
+        let mut needs_marks = self.pull_round(None, &mut events);
+        // The plan-mark scan is a session-wide journal read: it runs with
+        // `attached` released, then only the walks that asked for it resume.
+        // Each walk asks at most once, since the scan leaves its marks `Some`.
+        while !needs_marks.is_empty() {
+            let scanned: Vec<(u64, u64, HashSet<String>)> = needs_marks
+                .into_iter()
+                .map(|(id, attachment_generation, runtime)| {
+                    (id, attachment_generation, runtime.codex_plan_turns())
+                })
+                .collect();
+            let mut resumed = HashSet::new();
+            {
+                let mut map = self
+                    .attached
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                for (id, attachment_generation, marks) in scanned {
+                    let Some(pull) = map.get_mut(&id) else {
+                        continue;
+                    };
+                    if pull.attachment_generation != attachment_generation {
+                        continue;
+                    }
+                    if let Some(replay) = pull.agent_replay.as_mut() {
+                        replay.codex_plan_turns = Some(marks);
+                        replay.marks_needed = false;
+                        resumed.insert(id);
+                    }
+                }
+            }
+            needs_marks = self.pull_round(Some(&resumed), &mut events);
+        }
+        events
+    }
+
+    /// One pass over the attachments (all, or only `only`) under the lock.
+    /// Returns the walks that stopped for their Codex plan marks.
+    fn pull_round(
+        &self,
+        only: Option<&HashSet<u64>>,
+        events: &mut Vec<PendingEvent>,
+    ) -> Vec<(u64, u64, Arc<SessionRuntime>)> {
         let mut map = self
             .attached
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let mut events = Vec::new();
-        for pull in map.values_mut() {
+        let mut needs_marks = Vec::new();
+        for (id, pull) in map.iter_mut() {
+            if only.is_some_and(|only| !only.contains(id)) {
+                continue;
+            }
             let session_id = pull.runtime.session_id.clone();
             if pull.transcript {
-                pull_transcript_events(&session_id, pull, &mut events);
+                pull_transcript_events(&session_id, pull, events);
             } else {
-                pull_live_events(&session_id, pull, &mut events);
+                pull_live_events(&session_id, pull, events);
+            }
+            if pull
+                .agent_replay
+                .as_ref()
+                .is_some_and(|replay| replay.marks_needed)
+            {
+                needs_marks.push((*id, pull.attachment_generation, Arc::clone(&pull.runtime)));
             }
         }
-        events
+        needs_marks
     }
 }
 
@@ -677,13 +734,36 @@ fn pull_live_agent_replay_events(
             continue;
         }
 
+        // A Codex envelope cannot be derived without the plan marks, and the
+        // scan must not run under the attachments lock: stop before the
+        // cursor moves and let `pull_events` scan, then re-read this page.
+        if replay.is_codex
+            && replay.codex_plan_turns.is_none()
+            && page
+                .records
+                .iter()
+                .any(|record| matches!(record.kind, crate::journal::EventKind::AcpEnvelope))
+        {
+            replay.marks_needed = true;
+            return;
+        }
+
         let mut page_generation = replay.cursor_generation;
         for record in page.records {
             if record.generation != page_generation {
                 // The view builders are per-provider-process state; a resume
                 // seam is a new process, so its rows must not be parsed with
-                // the previous generation's partial view.
-                replay.claude_view = None;
+                // the previous generation's partial view. The checklist is
+                // session state, not partial state: it carries across.
+                let carried = replay
+                    .claude_view
+                    .as_ref()
+                    .map(|view| view.snapshot_task_state());
+                let mut fresh = crate::claude_view::ClaudeView::new(None);
+                if let Some(tasks) = carried {
+                    fresh.restore_task_state(tasks);
+                }
+                replay.claude_view = Some(fresh);
                 replay.codex_view = None;
                 page_generation = record.generation;
             }
@@ -717,20 +797,24 @@ fn pull_live_agent_replay_events(
                                 let view = replay
                                     .codex_view
                                     .get_or_insert_with(|| crate::codex_view::CodexView::new(None));
-                                view.ingest(&value)
+                                // The capture follows the owned thread; the
+                                // mode follows the pre-scanned plan marks.
+                                crate::codex_view::drive_replay(
+                                    view,
+                                    pull.runtime.peer_session_id().as_deref(),
+                                    replay
+                                        .codex_plan_turns
+                                        .as_ref()
+                                        .expect("a Codex page waits for its marks"),
+                                    &value,
+                                )
                             } else if replay.is_pi {
                                 crate::pi_view::events_from_line(&value)
                             } else {
-                                crate::plan_text::bound_claude_envelope(&mut value);
-                                let views = crate::acp_view::view_from_envelope(&value, "");
-                                if !views.is_empty() {
-                                    views
-                                } else {
-                                    let view = replay.claude_view.get_or_insert_with(|| {
-                                        crate::claude_view::ClaudeView::new(None)
-                                    });
-                                    view.ingest(&value)
-                                }
+                                let view = replay.claude_view.get_or_insert_with(|| {
+                                    crate::claude_view::ClaudeView::new(None)
+                                });
+                                crate::claude_view::drive_replay(view, &mut value)
                             }
                         }
                         Err(error) => {

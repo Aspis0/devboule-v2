@@ -1,0 +1,1 @@
+{"ts":"2026-09-28T00:00:00.000Z","dir":"<<","raw":"{\"method\":\"turn/plan/updated\",\"params\":{\"plan\":[{\"step\":\"Inspect the project layout\",\"status\":\"pending\"},{\"step\":\"Draft the greeting file\",\"status\":\"inProgress\"},{\"step\":\"Verify the file on disk\",\"status\":\"completed\"}]}}"}
