@@ -660,7 +660,13 @@
 }
 
 .workspace-chat-tool-label {
-  flex: none;
+  /* Shrink below 1 distributes only that fraction of the overflow and the row
+     outgrows the transcript; the summary yields first (larger flex-shrink). */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 12px;
   font-weight: 500;
@@ -703,6 +709,8 @@
 
 .workspace-chat-tool-summary-text,
 .workspace-chat-tool-group-summary-text {
+  /* Ten times the label's shrink: the summary gives up space first. */
+  flex-shrink: 10;
   min-width: 0;
   overflow: hidden;
   color: var(--ink-soft);

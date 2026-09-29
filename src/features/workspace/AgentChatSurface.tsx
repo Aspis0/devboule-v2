@@ -476,7 +476,9 @@ function renderToolItem(
     <details className={toolClassName} key={item.id} style={style}>
       <summary className="workspace-chat-tool-summary">
         <ToolIcon name={model.icon} />
-        <span className="workspace-chat-tool-label">{model.displayName}</span>
+        <span className="workspace-chat-tool-label" title={model.displayName}>
+          {model.displayName}
+        </span>
         {model.summary !== undefined ? (
           <span className="workspace-chat-tool-summary-text">{model.summary}</span>
         ) : null}

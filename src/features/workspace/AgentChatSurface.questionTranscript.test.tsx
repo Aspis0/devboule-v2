@@ -150,6 +150,24 @@ describe("AgentChatSurface question transcript", () => {
     expect(rowLabel(toolRows[0])).toBe("Ask user question");
   });
 
+  it("keeps the full text of a long tool label reachable in its title attribute", async () => {
+    await mount();
+    // A long name passes through untruncated, so the DOM holds the whole string.
+    const longName = `mcp__server__${"x".repeat(140)}`;
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "toolu_long",
+        title: longName,
+        status: "pending",
+      });
+    });
+
+    const label = container.querySelector(".workspace-chat-tool-label");
+    expect(label?.textContent).toBe(longName);
+    expect(label?.getAttribute("title")).toBe(longName);
+  });
+
   it("renders a prototype-keyed kind like any unknown kind", async () => {
     await mount();
     await act(async () => {

@@ -38,51 +38,72 @@ const ICONS = new Map<string, ToolIconName>([
   ["question", "bot"],
 ]);
 
-// Past this cap a name is shown as sent: provider strings are uncapped, and
-// the split pass is not worth its cost on them.
+// Not a cost bound — the split pass is linear: this is the INPUT length past
+// which a name is shown as sent instead of split. The function never
+// truncates; the row's CSS ellipsis bounds the label.
 const MAX_HUMANIZED_LENGTH = 128;
 
-/** Names with `:`, `.`, `/` or `__` are kept as sent. Otherwise, one linear
- * split rule: a word starts after a separator/whitespace run, after a
- * lower/digit → uppercase step, or before the last uppercase of an uppercase
- * run that a lowercase follows. */
+/** Turn a tool name into a display label. `MAX_HUMANIZED_LENGTH` (128) caps
+ * the INPUT: a longer name, or one containing `:`, `.`, `/` or `__`, comes
+ * back trimmed and as sent — nothing is ever truncated, so only the CSS
+ * ellipsis bounds what the row shows, and a name that goes through the split
+ * can come out longer than it went in. Within the cap one linear pass over
+ * code points: a word starts after a separator/whitespace run, after a
+ * lowercase/number → uppercase step (`\p{Ll}`/`\p{N}` → `\p{Lu}`), or before
+ * the last uppercase of an uppercase run that a lowercase follows; letters
+ * that are neither upper- nor lowercase (CJK, titlecase) give no boundary.
+ * Each word is case-mapped only when that keeps its code-point count,
+ * otherwise its letters stay as sent, and only the first code point is
+ * uppercased. */
 export function humanizeToolName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) return name;
   if (trimmed.length > MAX_HUMANIZED_LENGTH) return trimmed;
   if (/[:./]/.test(trimmed) || trimmed.includes("__")) return trimmed;
   const words: string[] = [];
+  const characters = Array.from(trimmed);
   let start = 0;
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const character = trimmed[i]!;
-    if (/[\s._-]/.test(character)) {
-      if (i > start) words.push(trimmed.slice(start, i));
+  for (let i = 0; i < characters.length; i += 1) {
+    const character = characters[i]!;
+    // `.`, `:`, `/` and `__` never reach the loop: they return as sent above.
+    if (/[\s_-]/.test(character)) {
+      if (i > start) words.push(characters.slice(start, i).join(""));
       start = i + 1;
       continue;
     }
     if (i === 0) continue;
-    const previous = trimmed[i - 1]!;
-    const next = trimmed[i + 1];
+    const previous = characters[i - 1]!;
+    const next = characters[i + 1];
     const breaksWord =
-      (/[a-z0-9]/.test(previous) && /[A-Z]/.test(character)) ||
-      (/[A-Z]/.test(previous) &&
-        /[A-Z]/.test(character) &&
+      (/[\p{Ll}\p{N}]/u.test(previous) && /\p{Lu}/u.test(character)) ||
+      (/\p{Lu}/u.test(previous) &&
+        /\p{Lu}/u.test(character) &&
         next !== undefined &&
-        /[a-z]/.test(next));
+        /\p{Ll}/u.test(next));
     if (breaksWord) {
-      words.push(trimmed.slice(start, i));
+      words.push(characters.slice(start, i).join(""));
       start = i;
     }
   }
-  words.push(trimmed.slice(start));
+  words.push(characters.slice(start).join(""));
   return words
     .filter((word) => word.length > 0)
     .map((word, index) => {
       const isAcronym = word.length > 1 && word === word.toUpperCase();
-      const cased = isAcronym ? word : word.toLowerCase();
-      return index === 0 ? cased.replace(/^./, (character) => character.toUpperCase()) : cased;
+      const mapped = isAcronym ? word : word.toLowerCase();
+      const cased = sameCodePointCount(mapped, word) ? mapped : word;
+      const capitalized =
+        index === 0 ? cased.replace(/^./u, (character) => character.toUpperCase()) : cased;
+      return sameCodePointCount(capitalized, cased) ? capitalized : cased;
     })
     .join(" ");
+}
+
+/** A case map may not change a word's code-point count: `ß` → `SS` or
+ * `İ` → `i` + combining dot would no longer name the tool, so such words keep
+ * their letters as sent. */
+function sameCodePointCount(mapped: string, original: string): boolean {
+  return Array.from(mapped).length === Array.from(original).length;
 }
 
 function isBareName(value: string): boolean {

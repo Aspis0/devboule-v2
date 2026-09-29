@@ -345,6 +345,27 @@ describe("tool row computed styles", () => {
     row.remove();
   });
 
+  it("makes the summary text yield to the label before the row outgrows it", () => {
+    assembleCssProof(sheets).inject([
+      ".workspace-chat-tool-label",
+      ".workspace-chat-tool-summary-text",
+    ]);
+    const label = document.createElement("span");
+    label.className = "workspace-chat-tool-label";
+    const summaryText = document.createElement("span");
+    summaryText.className = "workspace-chat-tool-summary-text";
+    document.body.append(label, summaryText);
+
+    // Shrink below 1 distributes only that fraction of the overflow, so the
+    // row outgrows the transcript; the summary must be the one that yields.
+    expect(Number.parseFloat(getComputedStyle(label).flexShrink)).toBeGreaterThanOrEqual(1);
+    expect(Number.parseFloat(getComputedStyle(summaryText).flexShrink)).toBeGreaterThan(
+      Number.parseFloat(getComputedStyle(label).flexShrink),
+    );
+    label.remove();
+    summaryText.remove();
+  });
+
   it.each(["light", "dark"] as const)(
     "keeps a running group's dot at the trailing edge in the %s theme",
     (theme: CssTheme) => {

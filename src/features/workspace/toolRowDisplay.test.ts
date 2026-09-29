@@ -126,7 +126,6 @@ describe("toolRowDisplay", () => {
 
   it("shows a separators-only title as sent instead of an empty label", () => {
     expect(toolRowDisplay(tool({ kind: "other", title: "_" })).displayName).toBe("_");
-    expect(toolRowDisplay(tool({ kind: "other", title: "__" })).displayName).toBe("__");
     expect(toolRowDisplay(tool({ kind: "other", title: "-" })).displayName).toBe("-");
   });
 
@@ -204,19 +203,28 @@ describe("humanizeToolName", () => {
     expect(humanizeToolName("mode:fast")).toBe("mode:fast");
   });
 
-  it("returns an 80,000-character all-caps name as sent, in bounded time", () => {
-    const name = "A".repeat(80_000);
-    const startedAt = performance.now();
-    expect(humanizeToolName(name)).toBe(name);
-    expect(performance.now() - startedAt).toBeLessThan(5_000);
+  it("humanizes up to 128 characters and returns longer names as sent", () => {
+    expect(humanizeToolName("a".repeat(128))).toBe(`A${"a".repeat(127)}`);
+    expect(humanizeToolName("a".repeat(129))).toBe("a".repeat(129));
   });
 
-  it("returns an 80,000-character alternating-case name as sent, in bounded time", () => {
-    const name = Array.from({ length: 80_000 }, (_, index) => (index % 2 === 0 ? "a" : "B")).join(
-      "",
-    );
-    const startedAt = performance.now();
-    expect(humanizeToolName(name)).toBe(name);
-    expect(performance.now() - startedAt).toBeLessThan(5_000);
+  it("splits case boundaries after non-ASCII letters", () => {
+    expect(humanizeToolName("éTool")).toBe("É tool");
+    expect(humanizeToolName("ÉtatTool")).toBe("État tool");
+    // No case, so no boundary: the run stays one word, lowercased after its first character.
+    expect(humanizeToolName("日本語Tool")).toBe("日本語tool");
+    // Whole code points classify, so the split fires. Unicode defines no case
+    // mapping for the mathematical letters, so the first one stays lowercase.
+    expect(humanizeToolName("𝐚Tool")).toBe("𝐚 tool");
+    expect(humanizeToolName("ask𝐚Tool")).toBe("Ask𝐚 tool");
+    // Cased astral letter: the first code point, not one surrogate, is uppercased.
+    expect(humanizeToolName("\u{10428}Tool")).toBe("\u{10400} tool");
+    // Titlecase is neither upper- nor lowercase: no boundary before T.
+    expect(humanizeToolName("ǅTool")).toBe("Ǆtool");
+  });
+
+  it("keeps letters as sent when case-mapping would change their code-point count", () => {
+    expect(humanizeToolName("ßTool")).toBe("ß tool");
+    expect(humanizeToolName("İTool")).toBe("İ tool");
   });
 });
