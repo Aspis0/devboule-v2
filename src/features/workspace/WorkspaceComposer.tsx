@@ -39,6 +39,8 @@ interface WorkspaceComposerProps {
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
   onStop?: () => void;
+  /** Rows above the composer, first: the agent's plan checklist. */
+  taskPill?: ReactNode;
   /** Rows above the composer: the session's queued follow-ups. */
   queuedTrack?: ReactNode;
   /** Draft handed back by the queue, applied once per nonce. */
@@ -81,6 +83,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   onQueue,
   enterQueues = false,
   onStop,
+  taskPill = null,
   queuedTrack = null,
   restoreDraft = null,
   captureTextarea,
@@ -242,7 +245,10 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   return (
     <div className="workspace-composer-wrap">
-      <div className="workspace-composer-track">{queuedTrack}</div>
+      <div className="workspace-composer-track">
+        {taskPill}
+        {queuedTrack}
+      </div>
       <WorkspaceCommandMenu
         open={commandMenuVisible}
         onClose={() => setMenuDismissed(true)}

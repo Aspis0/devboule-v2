@@ -70,6 +70,7 @@ import { MessageCopyButton } from "./timeline/MessageCopyButton";
 import "./timeline/timeline.css";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
+import { AgentTaskPill } from "./AgentTaskPill";
 import { setHeldAssistantText } from "./attentionNotice";
 import { ThoughtRow } from "./ThoughtRow";
 import { QueueTrack } from "./QueueTrack";
@@ -728,6 +729,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     pendingSwitch: null,
     pendingModeId: null,
     journalLoss: null,
+    agentTasks: [],
   });
   const { conversationRef, contentRef, onScroll } = useConversationScrollStick(
     state.items,
@@ -978,6 +980,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   }, [state.items, recoveredAttach, streamingThoughtId]);
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const composerDisabled = disabledReason !== null;
+  // Memoised so an `agent_tasks` frame re-renders the pill alone: the
+  // element's identity moves only when the checklist does.
+  const taskPill = useMemo(
+    () => <AgentTaskPill items={state.agentTasks ?? []} />,
+    [state.agentTasks],
+  );
   // Memoized so a streamed token re-renders the transcript, never the rows:
   // the element's identity only moves when the queue's snapshot does.
   const queuedTrack = useMemo(
@@ -1056,6 +1064,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         disabled={composerDisabled}
         disabledReason={recoveredAttach ? null : disabledReason}
         availableCommands={state.availableCommands}
+        taskPill={taskPill}
         queuedTrack={queuedTrack}
         restoreDraft={restoreDraft}
         onQueue={queue === null ? undefined : composerQueue.queueMessage}

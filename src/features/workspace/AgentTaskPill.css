@@ -1,0 +1,237 @@
+/* The agent's plan checklist above the composer: the collapsed "N of M" head
+ * on the composer's 760 rail, expanding to the list. Marks are status, so
+ * nothing on a row responds to a pointer — only the head is a control. */
+
+.agent-task-pill {
+  margin-bottom: 6px;
+  background: var(--panel-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-12);
+  overflow: hidden;
+}
+
+.agent-task-pill-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--type-interface);
+  font-weight: var(--weight-label);
+  text-align: left;
+}
+
+.agent-task-pill-head:hover {
+  background: var(--fill-hover);
+}
+
+.agent-task-pill-head:focus-visible {
+  /* The card clips its children, so an outside outline would be cut: the
+     inset ring is the only visible focus cue here. */
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.agent-task-pill-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.agent-task-pill-count {
+  flex: none;
+}
+
+.agent-task-pill-bar {
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 3px;
+  /* `--line`, not the mockup's `--fill-tool`: the empty track has to be
+     visible (1.19:1 against the card was not), while staying light enough
+     that the accent fill keeps its 3:1 (3.5:1 here, light). */
+  background: var(--line);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+}
+
+.agent-task-pill-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-2);
+}
+
+.agent-task-pill-current {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  font-weight: var(--weight-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Never ellipsised: the count of still-running steps stays readable even
+   when the current step's text has to yield its width. */
+.agent-task-pill-more {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  font-weight: var(--weight-body);
+  white-space: nowrap;
+}
+
+.agent-task-pill-chevron {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.agent-task-pill-head[aria-expanded="true"] .agent-task-pill-chevron {
+  transform: rotate(180deg);
+}
+
+.agent-task-pill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  /* The composer wrap is `flex: none`, so an uncapped body pushes the
+     textarea off the bottom of the panel — the same window-height budget the
+     composer's command menu spends (charged to the crescent band, which the
+     surface this sits in starts below). Rows keep their height because the
+     container scrolls instead of squeezing them. */
+  max-height: min(320px, calc((100vh - var(--crescent-band, 0px)) * 0.45));
+  overflow-y: auto;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+  padding: 6px 12px 8px;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.agent-task-pill-list::-webkit-scrollbar {
+  width: 9px;
+}
+
+.agent-task-pill-list::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: content-box;
+}
+
+.agent-task-pill-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* The author `display: flex` above outranks the UA's `[hidden] { display:
+   none }`, so a collapsed list would stay laid out without this. */
+.agent-task-pill-list[hidden] {
+  display: none;
+}
+
+.agent-task-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  font-size: var(--type-interface);
+  line-height: 1.45;
+}
+
+.agent-task-row[data-status="completed"] .agent-task-row-text {
+  color: var(--muted);
+}
+
+.agent-task-row[data-status="in_progress"] .agent-task-row-text {
+  color: var(--ink);
+}
+
+.agent-task-row[data-status="pending"] .agent-task-row-text {
+  color: var(--ink-soft);
+}
+
+.agent-task-row[data-status="unknown"] .agent-task-row-text {
+  color: var(--ink-soft);
+}
+
+.agent-task-row-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The status words: said, never shown — the mark carries them for the eye,
+   and the head's "Plan checklist" names the control the same way. */
+.agent-task-pill-sr,
+.agent-task-row-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.agent-task-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+/* No affordance lives on a mark: every mark rule stops at colour and shape —
+   no hover, no cursor, no focus — the head is the card's only control. */
+.agent-task-mark--pending {
+  border-color: var(--line-strong);
+}
+
+.agent-task-mark--unknown {
+  /* A status this build does not know: dashed and muted, so it is never
+     mistaken for the pending ring. */
+  border-style: dashed;
+  border-color: var(--muted);
+}
+
+.agent-task-mark--completed {
+  border-color: var(--tone-live);
+  background: color-mix(in srgb, var(--tone-live) 18%, transparent);
+}
+
+.agent-task-mark--completed::after {
+  content: "";
+  width: 3px;
+  height: 7px;
+  border: solid var(--tone-live);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.agent-task-mark--in_progress {
+  border-color: var(--tone-live);
+}
+
+.agent-task-mark--in_progress::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--tone-live);
+  border-radius: 50%;
+}

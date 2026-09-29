@@ -134,6 +134,9 @@ export interface AgentFinished {
   usage?: Extract<SessionEvent, { type: "agent_finished" }>["usage"];
 }
 
+/** One row of the agent's plan checklist, as the wire carries it. */
+export type AgentTaskItem = Extract<SessionEvent, { type: "agent_tasks" }>["items"][number];
+
 export interface AgentSessionState {
   items: AgentChatItem[];
   /**
@@ -165,6 +168,12 @@ export interface AgentSessionState {
    * cleared — what the journal dropped does not come back.
    */
   journalLoss: { frames: number; bytes: number } | null;
+  /**
+   * The agent's plan checklist: every `agent_tasks` frame replaces it whole,
+   * and `INITIAL_STATE` seeds `[]`. Optional only so fixture states written
+   * before the field still construct a state.
+   */
+  agentTasks?: AgentTaskItem[];
 }
 
 /**
@@ -215,6 +224,7 @@ const INITIAL_STATE: AgentSessionState = {
   pendingSwitch: null,
   pendingModeId: null,
   journalLoss: null,
+  agentTasks: [],
 };
 
 const SWITCH_CONFIRM_TIMEOUT_MS = 15_000;
@@ -920,9 +930,10 @@ export class AgentSession {
         this.reconcileBackgroundTasks(event.tasks);
         return;
       case "agent_tasks":
-        // The agent's plan checklist, carried whole on every update. No
-        // row renders it yet; the event is accepted here so the exhaustiveness
-        // guard below stays total until a row does.
+        // Snapshot-shaped on every road (ACP `plan`, Claude's `TodoWrite`,
+        // Codex's `turn/plan/updated`), so the newest frame IS the list and an
+        // empty one clears it; replay and live frames ride this same path.
+        this.update({ agentTasks: event.items });
         return;
       case "agent_error":
         // A notification, not a turn ending: the daemon publishes it for one
