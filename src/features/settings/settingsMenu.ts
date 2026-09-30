@@ -88,8 +88,8 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "usage",
         label: "Usage",
-        intro: "How much of each provider plan has been used.",
-        unavailable: true,
+        intro:
+          "How much of each provider plan has been used — the latest reading each provider sent while the app is open. Usage is never fetched: a provider that has not sent a reading shows none.",
       },
     ],
   },

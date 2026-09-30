@@ -13,6 +13,10 @@ import { useMenuOpen } from "../../lib/menuOpen";
 import type { PlanUsage } from "../../types/ipc";
 import {
   formatContextTokens,
+  planCreditsCopy,
+  planFrameHasContent,
+  planWindowBarPercent,
+  planWindowKey,
   planWindowLabel,
   planWindowMeta,
   type ContextMeterNumbers,
@@ -154,6 +158,7 @@ function readingBody(numbers: ContextMeterNumbers, live: boolean): ReactNode {
 }
 
 function planBody(plan: PlanUsage, nowMs: number): ReactNode {
+  const credits = planCreditsCopy(plan.credits);
   return (
     <>
       {plan.planLabel !== undefined ? (
@@ -161,31 +166,27 @@ function planBody(plan: PlanUsage, nowMs: number): ReactNode {
       ) : null}
       {plan.windows.map((window, index) => {
         const meta = planWindowMeta(window, nowMs);
+        const barPercent = planWindowBarPercent(window);
         return (
-          // The pair (position, duration) — duration alone is not a key: the
-          // frame is free to carry two windows of one length.
-          <div className="workspace-context-window" key={`${index}-${window.durationMins}`}>
+          <div className="plan-window" key={planWindowKey(index, window)}>
             <div className="workspace-context-window-row">
               <span className="workspace-context-window-label">
                 {planWindowLabel(window.durationMins)}
               </span>
               {meta !== null ? <span className="workspace-context-window-meta">{meta}</span> : null}
             </div>
-            <div className="workspace-context-window-bar">
-              {window.usedPercent !== undefined ? (
-                <div
-                  className="workspace-context-window-fill"
-                  style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }}
-                />
+            <div className="plan-window-bar">
+              {barPercent !== null ? (
+                <div className="plan-window-fill" style={{ width: `${barPercent}%` }} />
               ) : null}
             </div>
           </div>
         );
       })}
-      {plan.credits !== undefined && plan.credits.unlimited ? (
-        <div className="workspace-context-credits">Credits: unlimited</div>
-      ) : plan.credits !== undefined && plan.credits.balance !== undefined ? (
-        <div className="workspace-context-credits">Credits: {plan.credits.balance}</div>
+      {credits !== null ? (
+        <div className="workspace-context-credits">
+          {credits.title}: {credits.value}
+        </div>
       ) : null}
     </>
   );
@@ -195,8 +196,9 @@ function planBody(plan: PlanUsage, nowMs: number): ReactNode {
  * The context popover: 300 px of plain facts above the ring — the reading the
  * meter draws, then the provider's own plan windows when the session has a
  * plan reading. A `null` plan means "no reading" (a session that predates the
- * frame, or no frame arrived), never "the provider cannot", so it renders no
- * plan section and no divider. Every number here is one the provider sent.
+ * frame, or no frame arrived), never "the provider cannot"; a frame that
+ * carried nothing displayable reads the same way. Neither renders a plan
+ * section or its divider. Every number here is one the provider sent.
  *
  * It renders through a portal on `document.body` with fixed positioning: the
  * meter's pane (`.workspace-center-panel`) clips its own children, which is
@@ -313,7 +315,7 @@ export function ContextPopover({
       style={style}
     >
       <div className="workspace-context-popover-head">{readingBody(numbers, live)}</div>
-      {plan !== null ? (
+      {plan !== null && planFrameHasContent(plan) ? (
         <div className="workspace-context-popover-plan">{planBody(plan, nowMs)}</div>
       ) : null}
     </div>,

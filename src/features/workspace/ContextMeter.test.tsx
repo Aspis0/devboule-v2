@@ -198,7 +198,7 @@ describe("the context popover", () => {
       (node) => node.textContent,
     );
     expect(labels).toEqual(["5-hour", "Weekly"]);
-    expect(popover.querySelectorAll(".workspace-context-window-fill")).toHaveLength(2);
+    expect(popover.querySelectorAll(".plan-window-fill")).toHaveLength(2);
     expect(popover.textContent).toContain("Credits: 0");
   });
 
@@ -249,7 +249,7 @@ describe("the context popover", () => {
     );
     const popover = await openPopover(host);
     expect(popover.querySelector(".workspace-context-window-meta")?.textContent).toContain("105%");
-    const fill = popover.querySelector<HTMLElement>(".workspace-context-window-fill");
+    const fill = popover.querySelector<HTMLElement>(".plan-window-fill");
     expect(fill?.style.width).toBe("100%");
   });
 
@@ -266,11 +266,11 @@ describe("the context popover", () => {
       }),
     );
     const popover = await openPopover(host);
-    const row = popover.querySelector(".workspace-context-window");
+    const row = popover.querySelector(".plan-window");
     expect(row?.textContent).toContain("5-hour");
     expect(row?.textContent).not.toContain("%");
     // An empty track: no fill claims a value.
-    expect(row?.querySelectorAll(".workspace-context-window-fill")).toHaveLength(0);
+    expect(row?.querySelectorAll(".plan-window-fill")).toHaveLength(0);
     expect(popover.textContent).not.toContain("Credits");
   });
 
@@ -288,6 +288,24 @@ describe("the context popover", () => {
     expect(popover.textContent).not.toContain("does not report plan usage");
     // The reading itself stays whole.
     expect(popover.querySelector(".workspace-context-percent")?.textContent).toBe("38% used");
+  });
+
+  it("renders no plan section for a frame that carried nothing", async () => {
+    // Codex can deliver a rate-limits frame naming neither window; without
+    // the guard it would draw the plan block's divider over nothing.
+    recordPlanUsage({
+      type: "plan_usage",
+      providerId: "codex-empty-frame",
+      windows: [],
+    });
+    const host = await render(
+      meter({
+        usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }),
+        manifest: manifest({ providerId: "codex-empty-frame", models: [] }),
+      }),
+    );
+    const popover = await openPopover(host);
+    expect(popover.querySelector(".workspace-context-popover-plan")).toBeNull();
   });
 
   it("keeps the countdown moving while the popover sits open", async () => {

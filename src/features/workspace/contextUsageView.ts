@@ -1,8 +1,15 @@
-import type { ContextUsage, PlanWindow, SessionManifest } from "../../types/ipc";
+import type {
+  ContextUsage,
+  PlanCredits,
+  PlanUsage,
+  PlanWindow,
+  SessionManifest,
+} from "../../types/ipc";
 
 /**
- * The pure display logic of the context meter and its popover: which numbers
- * may be shown, how they round, and how the provider's own fields are spelled.
+ * The pure display logic of the context meter, its popover and the Settings
+ * Usage page: which numbers may be shown, how they round, and how the
+ * provider's own fields are spelled.
  *
  * The rule everything here obeys: never show a number the provider did not
  * send. A missing side of the ratio stays `null` all the way to the pixel —
@@ -95,4 +102,39 @@ export function planWindowMeta(window: PlanWindow, nowMs: number): string | null
   if (window.usedPercent !== undefined) parts.push(`${window.usedPercent}%`);
   if (window.resetsAt !== undefined) parts.push(resetsInLabel(window.resetsAt, nowMs));
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** React key for one window row: the pair (position, duration) — duration
+    alone is not a key, the frame is free to carry two windows of one length. */
+export function planWindowKey(index: number, window: PlanWindow): string {
+  return `${index}-${window.durationMins}`;
+}
+
+/** The bar's width percent: the frame's own number clamped to the bar's
+    0-100 — an overage keeps its full percent in the text and never widens the
+    bar past full — or null when the frame named no percent. */
+export function planWindowBarPercent(window: PlanWindow): number | null {
+  return window.usedPercent === undefined ? null : Math.max(0, Math.min(100, window.usedPercent));
+}
+
+/** The frame's credits row in the frame's own words, unlimited winning over a
+    balance; null when the frame carried no renderable credits. */
+export function planCreditsCopy(
+  credits: PlanCredits | undefined,
+): { title: string; value: string } | null {
+  if (credits === undefined) return null;
+  if (credits.unlimited) return { title: "Credits", value: "unlimited" };
+  if (credits.balance !== undefined) return { title: "Credits", value: credits.balance };
+  return null;
+}
+
+/** Whether a frame carries anything a reading display can show. Codex can
+    deliver a frame whose limits named neither window; without this guard it
+    renders as a heading over nothing. */
+export function planFrameHasContent(plan: PlanUsage): boolean {
+  return (
+    plan.planLabel !== undefined ||
+    plan.windows.length > 0 ||
+    planCreditsCopy(plan.credits) !== null
+  );
 }

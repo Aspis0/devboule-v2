@@ -8,6 +8,7 @@ import {
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { useAppStore } from "../../../store/appStore";
+import { providerEmptySentence } from "../../../lib/providerEmptySentence";
 import { sharedSessionController } from "../../workspace/workspaceSessions";
 import { hasTerminalInput, requestTerminalInput } from "../../terminal/pendingTerminalInput";
 import { useSettingsDaemon } from "../settingsDaemon";
@@ -769,11 +770,7 @@ export function ProvidersPanel() {
         <div role="status">Looking for agent CLIs on PATH…</div>
       ) : providers.length === 0 ? (
         <div className="provider-empty" role="status">
-          <div>
-            {unreadableDirs > 0
-              ? `No agent CLI found, but ${unreadableDirs} PATH directories could not be read`
-              : "No agent CLI found on PATH"}
-          </div>
+          <div>{providerEmptySentence(unreadableDirs)}</div>
           <p>
             Install an agent CLI such as grok, claude, or gemini and restart Devboule. Until then
             there is no provider to start a session with.

@@ -708,3 +708,25 @@ button:focus-visible {
   border: 0;
   user-select: none;
 }
+
+/* The plan-window block and its bar are rendered by two lanes — the context
+   popover and the Settings Usage page — so neither lane's sheet may own the
+   rule; its one home is this sheet, which main.tsx loads for the whole app. */
+.plan-window {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-window-bar {
+  height: 3px;
+  overflow: hidden;
+  background: var(--line-strong);
+  border-radius: 2px;
+}
+
+.plan-window-fill {
+  height: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+}

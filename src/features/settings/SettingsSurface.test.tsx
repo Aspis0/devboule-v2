@@ -505,6 +505,7 @@ describe("Settings menu shell", () => {
     for (const label of [
       "Providers",
       "Agent profiles",
+      "Usage",
       "Projects",
       "Paired devices",
       "Diagnostics",
@@ -521,6 +522,7 @@ describe("Settings menu shell", () => {
     ["appearance", "Appearance", ".machine-card"],
     ["providers", "Providers", "#settings-panel-providers"],
     ["profiles", "Agent profiles", "#settings-panel-agents"],
+    ["usage", "Usage", "#settings-panel-usage"],
     ["projects", "Projects", "#settings-panel-projects"],
     ["paired", "Paired devices", "#settings-panel-devices"],
     ["diagnostics", "Diagnostics", "#settings-panel-diagnostics"],

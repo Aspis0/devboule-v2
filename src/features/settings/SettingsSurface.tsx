@@ -9,6 +9,7 @@ import { CloseBehaviorSetting } from "./CloseBehaviorSetting";
 import { SendBehaviorSetting } from "./SendBehaviorSetting";
 import { NotificationsSection } from "./NotificationsSection";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
+import { UsagePanel } from "./UsagePanel";
 import { ProvidersPanel } from "./panels/ProvidersPanel";
 import { AgentProfilesPanel } from "./panels/AgentsPanel";
 import { ProjectsPanel } from "./panels/ProjectsPanel";
@@ -124,6 +125,8 @@ export function SettingsSurface() {
         return <ProvidersPanel />;
       case "profiles":
         return <AgentProfilesPanel />;
+      case "usage":
+        return <UsagePanel />;
       case "projects":
         return <ProjectsPanel />;
       case "oracle":

@@ -1399,11 +1399,8 @@
   border-radius: 10px;
 }
 
-.workspace-context-window {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
+/* The window block and its bar are shared with the Settings Usage page;
+   their rules live in global.css as .plan-window*. */
 
 .workspace-context-window-row {
   display: flex;
@@ -1417,19 +1414,6 @@
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
-}
-
-.workspace-context-window-bar {
-  height: 3px;
-  overflow: hidden;
-  background: var(--line-strong);
-  border-radius: 2px;
-}
-
-.workspace-context-window-fill {
-  height: 3px;
-  background: var(--accent);
-  border-radius: 2px;
 }
 
 .workspace-context-credits {

@@ -22,7 +22,10 @@ carries the transcript-history section rendered on the Diagnostics page);
 `settings.css` holds base tokens, the shell, and the shared card/stack
 primitives every page renders inside — later slices read it but do not edit
 it. The transcript-history rules live with the Diagnostics page, not with the
-component file, for exactly that reason.
+component file, for exactly that reason. The one exception is Usage: it has no
+sheet of its own, and renders its window rows and bar from the shared
+`.plan-window*` rules in `src/styles/global.css`, beside the context popover
+that draws the same block.
 
 No mock data is left in this surface. The two controls that promised
 features this product does not have — "Lock app" and "+ Pair a device" —

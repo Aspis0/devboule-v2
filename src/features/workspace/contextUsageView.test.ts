@@ -3,6 +3,10 @@ import type { ContextUsage, PlanUsage, SessionManifest } from "../../types/ipc";
 import {
   contextMeterNumbers,
   formatContextTokens,
+  planCreditsCopy,
+  planFrameHasContent,
+  planWindowBarPercent,
+  planWindowKey,
   planWindowLabel,
   planWindowMeta,
   resetsInLabel,
@@ -157,5 +161,107 @@ describe("the plan event the store holds", () => {
     };
     expect(plan.windows).toHaveLength(1);
     expect(plan.credits?.balance).toBe("0");
+  });
+});
+
+describe("planWindowKey", () => {
+  it("pairs a window with its position, so two windows of one length stay distinct", () => {
+    expect(planWindowKey(0, { durationMins: 300 })).toBe("0-300");
+    expect(planWindowKey(1, { durationMins: 300 })).toBe("1-300");
+    expect(planWindowKey(0, { durationMins: 10_080 })).toBe("0-10080");
+  });
+
+  it("is stable, so a re-render never remounts an unchanged row", () => {
+    const window = { durationMins: 300, usedPercent: 41, resetsAt: 1_789_057_213 };
+    expect(planWindowKey(1, window)).toBe(planWindowKey(1, window));
+  });
+});
+
+describe("planWindowBarPercent", () => {
+  it("returns null when the frame named no percent", () => {
+    expect(planWindowBarPercent({ durationMins: 300 })).toBe(null);
+  });
+
+  it("passes the frame's own percent through", () => {
+    expect(planWindowBarPercent({ durationMins: 300, usedPercent: 33 })).toBe(33);
+    expect(planWindowBarPercent({ durationMins: 300, usedPercent: 0 })).toBe(0);
+    expect(planWindowBarPercent({ durationMins: 300, usedPercent: 100 })).toBe(100);
+  });
+
+  it("clamps an overage to the bar's 100 while the text keeps the true figure", () => {
+    expect(planWindowBarPercent({ durationMins: 300, usedPercent: 105 })).toBe(100);
+    expect(planWindowBarPercent({ durationMins: 300, usedPercent: 300 })).toBe(100);
+  });
+});
+
+describe("planCreditsCopy", () => {
+  it("returns null when the frame carried no credits block", () => {
+    expect(planCreditsCopy(undefined)).toBe(null);
+  });
+
+  it("spells an unlimited balance, and unlimited wins over a balance", () => {
+    expect(planCreditsCopy({ unlimited: true })).toEqual({ title: "Credits", value: "unlimited" });
+    expect(planCreditsCopy({ unlimited: true, balance: "5.00" })).toEqual({
+      title: "Credits",
+      value: "unlimited",
+    });
+  });
+
+  it("carries a balance verbatim, even a zero the frame sent", () => {
+    expect(planCreditsCopy({ balance: "0", unlimited: false })).toEqual({
+      title: "Credits",
+      value: "0",
+    });
+    expect(planCreditsCopy({ balance: "$1.25" })).toEqual({ title: "Credits", value: "$1.25" });
+  });
+
+  it("returns null for a credits block that names neither unlimited nor a balance", () => {
+    expect(planCreditsCopy({})).toBe(null);
+    expect(planCreditsCopy({ unlimited: false })).toBe(null);
+  });
+});
+
+describe("planFrameHasContent", () => {
+  it("is false for the frame that carried nothing", () => {
+    expect(planFrameHasContent({ type: "plan_usage", providerId: "codex", windows: [] })).toBe(
+      false,
+    );
+  });
+
+  it("is true when any one of the three parts arrived", () => {
+    expect(
+      planFrameHasContent({
+        type: "plan_usage",
+        providerId: "codex",
+        planLabel: "plus",
+        windows: [],
+      }),
+    ).toBe(true);
+    expect(
+      planFrameHasContent({
+        type: "plan_usage",
+        providerId: "codex",
+        windows: [{ durationMins: 300 }],
+      }),
+    ).toBe(true);
+    expect(
+      planFrameHasContent({
+        type: "plan_usage",
+        providerId: "codex",
+        windows: [],
+        credits: { balance: "0" },
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for a credits block it could not render", () => {
+    expect(
+      planFrameHasContent({
+        type: "plan_usage",
+        providerId: "codex",
+        windows: [],
+        credits: {},
+      }),
+    ).toBe(false);
   });
 });
