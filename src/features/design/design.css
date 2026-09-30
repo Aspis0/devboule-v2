@@ -435,10 +435,6 @@
   font-family: "JetBrains Mono", monospace;
 }
 
-.design-history-row time {
-  overflow-wrap: normal;
-}
-
 .design-history-gone {
   grid-column: 1 / -1;
   color: var(--silence);
@@ -2181,8 +2177,8 @@
 }
 
 .design-skill-mode-option-badge {
-  /* Fixed labels break at spaces, never mid-word; nowrap would hand the shell
-     a max-content child and push the shell sideways. */
+  /* The shells' only opt-out: a long unbreakable sibling name squeezes this
+     label until inherited anywhere would split its words mid-word. */
   overflow-wrap: normal;
   margin-left: auto;
   color: var(--silence);
@@ -2209,7 +2205,6 @@
 
 .design-skill-mode-option-selected {
   flex: none;
-  overflow-wrap: normal;
   margin-left: 0;
   color: var(--accent-text);
   font-size: var(--type-meta);
@@ -2217,7 +2212,6 @@
 }
 
 .design-skill-picker-action {
-  overflow-wrap: normal;
   padding: 5px 8px;
   color: var(--ink-soft);
   text-align: left;
@@ -2264,7 +2258,6 @@
 
 .design-agent-picker-secondary,
 .design-agent-picker-primary {
-  overflow-wrap: normal;
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;

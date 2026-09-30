@@ -1,12 +1,15 @@
 // @vitest-environment happy-dom
 
 // The popover shells outside the folder one, pinned on computed style read
-// from the injected real sheets: each shell declares overflow-x clipped,
-// overflow-y scrollable where it scrolls, and overflow-wrap anywhere once;
-// fixed control labels opt out with white-space nowrap. The craft picker and
-// the history list are the real controls (the list inside a shell of the class
-// the Design surface gives it); the agent shell is mounted by class — this
-// pins declarations, not layout.
+// from the injected real sheets: every shell declares overflow-x hidden;
+// overflow-wrap anywhere is declared once on the base agent picker and once on
+// the history popover, and the scrolling history and skill shells declare
+// overflow-y auto (the base agent picker takes its y from axis pairing).
+// Fixed labels inherit that wrap, and the skill-mode badge alone opts out
+// with overflow-wrap normal. The craft picker and the history list are the
+// real controls (the list inside a shell of the class the Design surface
+// gives it); the agent shell is mounted by class — this pins declarations,
+// not layout.
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -126,25 +129,31 @@ describe("the craft picker", () => {
     expect(style.overflowWrap).toBe("anywhere");
   });
 
-  it("breaks the badge, marker and action at spaces, never mid-word", async () => {
+  it("keeps the badge opted out and marker and action on the shell's wrapping", async () => {
     const picker = await openCraftPicker();
     proof.inject([
+      ".design-agent-picker",
+      ".design-skill-picker",
       ".design-skill-mode-option-badge",
       ".design-skill-mode-option-selected",
       ".design-skill-picker-action",
     ]);
-    const tokens = [
-      ".design-skill-mode-option-badge",
-      ".design-skill-mode-option-selected",
-      ".design-skill-picker-action",
-    ].map((selector) => {
+    const styleOf = (selector: string): CSSStyleDeclaration => {
       const token = picker.querySelector<HTMLElement>(selector);
       if (token === null) throw new Error(`${selector} did not render`);
-      return token;
-    });
-    for (const token of tokens) {
-      expect(getComputedStyle(token).overflowWrap).toBe("normal");
-      expect(getComputedStyle(token).whiteSpace).not.toBe("nowrap");
+      return getComputedStyle(token);
+    };
+    const badge = styleOf(".design-skill-mode-option-badge");
+    expect(badge.overflowWrap).toBe("normal");
+    expect(badge.whiteSpace).not.toBe("nowrap");
+    // The shell's own rule is the source of the wrapping; these two labels sit
+    // under it only while their rules declare no overflow-wrap of their own.
+    expect(proof.rulesFor(".design-agent-picker")).toMatch(
+      /overflow-wrap:\s*(anywhere|break-word)/,
+    );
+    for (const selector of [".design-skill-mode-option-selected", ".design-skill-picker-action"]) {
+      expect(proof.rulesFor(selector)).not.toMatch(/overflow-wrap/);
+      expect(styleOf(selector).whiteSpace).not.toBe("nowrap");
     }
   });
 });
@@ -160,19 +169,22 @@ describe("the history popover", () => {
     expect(style.overflowWrap).toBe("anywhere");
   });
 
-  it("keeps the history title recoverable and breaks the time at spaces only", async () => {
+  it("keeps the history title recoverable and the time on the shell's wrapping", async () => {
     const shell = await mountHistoryList();
     const title = shell.querySelector<HTMLElement>(".design-history-title");
     if (title === null) throw new Error("history title did not render");
     const time = shell.querySelector<HTMLElement>(".design-history-list time");
     if (time === null) throw new Error("history time did not render");
-    proof.inject([".design-history-title", ".design-history-row time"]);
+    proof.inject([".design-history-popover", ".design-history-title", ".design-history-row time"]);
     const style = getComputedStyle(title);
     expect(style.textOverflow).toBe("ellipsis");
     expect(style.whiteSpace).toBe("nowrap");
     expect(style.overflow).toBe("hidden");
     expect(title.getAttribute("title")).toBe("Create the final card");
-    expect(getComputedStyle(time).overflowWrap).toBe("normal");
+    expect(proof.rulesFor(".design-history-popover")).toMatch(
+      /overflow-wrap:\s*(anywhere|break-word)/,
+    );
+    expect(proof.rulesFor(".design-history-row time")).not.toMatch(/overflow-wrap/);
     expect(getComputedStyle(time).whiteSpace).not.toBe("nowrap");
   });
 });
@@ -187,15 +199,21 @@ describe("the agent picker shell", () => {
     expect(style.overflowWrap).toBe("anywhere");
   });
 
-  it("breaks Cancel and Confirm at spaces, never mid-word", () => {
-    const tokens = ["design-agent-picker-secondary", "design-agent-picker-primary"].map((cls) => {
-      const token = track(document.createElement("button"));
+  it("keeps Cancel and Confirm on the shell's wrapping, never nowrap", () => {
+    const classes = ["design-agent-picker-secondary", "design-agent-picker-primary"];
+    const shell = mountAgentPicker();
+    const tokens = classes.map((cls) => {
+      const token = document.createElement("button");
       token.className = cls;
-      return token;
+      shell.appendChild(token);
+      return { cls, token };
     });
-    proof.inject([".design-agent-picker-secondary", ".design-agent-picker-primary"]);
-    for (const token of tokens) {
-      expect(getComputedStyle(token).overflowWrap).toBe("normal");
+    proof.inject([".design-agent-picker", ...classes.map((cls) => `.${cls}`)]);
+    expect(proof.rulesFor(".design-agent-picker")).toMatch(
+      /overflow-wrap:\s*(anywhere|break-word)/,
+    );
+    for (const { cls, token } of tokens) {
+      expect(proof.rulesFor(`.${cls}`)).not.toMatch(/overflow-wrap/);
       expect(getComputedStyle(token).whiteSpace).not.toBe("nowrap");
     }
   });

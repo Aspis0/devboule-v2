@@ -1824,6 +1824,43 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("falls back to the raw effort id in the select title when the manifest names an unknown effort", async () => {
+    const { session } = fakeAgentSession(
+      agentState({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4",
+        models: [
+          {
+            modelId: "grok-4",
+            name: "Grok 4",
+            currentEffort: "ghost-effort",
+            efforts: [
+              { id: "low", label: "Low" },
+              { id: "high", label: "High" },
+            ],
+          },
+        ],
+      }),
+    );
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        getAgentSession: () => session,
+      }),
+    );
+    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
+    if (modelButton === null) throw new Error("Model picker missing");
+    await act(async () => modelButton.click());
+
+    const effort = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Thinking effort"]',
+    );
+    if (effort === null) throw new Error("Effort picker missing");
+    expect(effort.getAttribute("title")).toBe("ghost-effort");
+    await act(async () => root.unmount());
+  });
+
   it("renders the session mode chip only once the manifest carries modes", async () => {
     const model: SessionModel = { modelId: "deepseek-v4-flash", name: "DeepSeek V4 Flash" };
     const { session, updateState } = fakeAgentSession(

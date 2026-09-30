@@ -897,7 +897,7 @@ export const DesignAssistant = memo(function DesignAssistant({
                             <span>Thinking effort</span>
                             <select
                               aria-label="Thinking effort"
-                              title={selectedEffortLabel}
+                              title={selectedEffortLabel ?? currentModel?.currentEffort}
                               value={confirmedEffort(currentModel)}
                               disabled={pendingSwitch}
                               onChange={(event) => onEffortSelect(event.target.value)}
