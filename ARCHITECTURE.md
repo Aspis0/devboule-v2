@@ -433,7 +433,7 @@ event: `SessionEvent::PermissionRequest` (`crates/devboule-protocol/src/session.
 tool call id, a title, the agent's own description of the command, the options the provider offered,
 and an origin stamp. The daemon publishes it on the attached subscription and the app renders it —
 `src/components/PermissionCard.tsx`, mounted at `src/features/workspace/Workspace.tsx`
-(`WorkspacePermissionCard`) and `src/features/design/DesignSurface.tsx` (the `PermissionCard`
+(`WorkspacePermissionCard`) and `src/features/design/DesignAssistant.tsx` (the `PermissionCard`
 call). The answer returns as
 `ClientMessage::SessionPermissionRespond`, which the daemon accepts only from a client that negotiated
 the `typed_permissions` capability (`crates/devboule-daemon/src/server/dispatch.rs`,
