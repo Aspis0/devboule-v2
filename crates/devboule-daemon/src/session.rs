@@ -477,6 +477,19 @@ mod session_name_tests;
 #[cfg(test)]
 #[path = "session_out_of_band_tests.rs"]
 mod session_out_of_band_tests;
+/// The permission tail of transcript hydration: the journaled requests a
+/// daemon restart orphaned resolve wire-only, in the replay alone — never
+/// journaled, no ledger row, no attribution, because nobody answered.
+#[path = "session_permission_recovery.rs"]
+mod session_permission_recovery;
+/// Its tests, through the real attach road: the wire-only resolution and
+/// the journal it never grows, the already-resolved request of either era,
+/// idempotence across hydrations as recomputation rather than storage, the
+/// live session the road must not touch, and the journal that refuses
+/// writes yet still hydrates.
+#[cfg(test)]
+#[path = "session_permission_recovery_tests.rs"]
+mod session_permission_recovery_tests;
 /// The provider on/off switch at the session roads: the create road
 /// (wire, MCP children and recovery share it), resume, and the running
 /// session the switch never touches.
@@ -2407,7 +2420,7 @@ impl SessionRegistry {
         // never advances it — so it cannot certify the history was read.
         // What this reader is owed is the pull's decision, through the
         // owed-row predicate, against the cursor.
-        let replay = match journal.replay(session_id) {
+        let mut replay = match journal.replay(session_id) {
             Ok(replay) => replay,
             Err(error) => {
                 journal.unpin(session_id);
@@ -2421,18 +2434,15 @@ impl SessionRegistry {
             }
         }
         let metadata = record.to_session();
-        let runtime =
-            SessionRuntime::from_replay(session_id.to_string(), Some(Arc::clone(journal)), replay);
-        // A recovered session carries the origin of the create that made it,
-        // so the peer gate and the permission card read the same fact a live
-        // session would have had.
-        runtime.set_origin(metadata.origin.clone());
-        // The roster prefers the runtime for mapped entries, so a hydrated
-        // transcript must seed the goal the same way it seeds the origin.
-        runtime.set_goal(record.goal.clone());
-        if let Some(peer_session_id) = record.peer_session_id.clone() {
-            runtime.restore_peer_session_id(peer_session_id);
-        }
+        // The cards a restart orphaned resolve here, before the lock: the
+        // pass is pure computation over the replayed events — no journal
+        // call, so it cannot fail and needs no error path. A session that
+        // went live concurrently takes the existing-entry arm below and the
+        // patched local replay is dropped unused, so a live card never
+        // resolves in a replay while its broker still holds it. The runtime
+        // is built from the replay only on the transcript branch, so its
+        // pull serves the synthetics after the requests.
+        session_permission_recovery::resolve_orphans(&mut replay);
         {
             let Ok(mut map) = self.inner.lock() else {
                 journal.unpin(session_id);
@@ -2453,6 +2463,24 @@ impl SessionRegistry {
                 journal.unpin(session_id);
                 return Ok(existing.runtime());
             }
+            // The runtime is built from the replay only after, so its transcript
+            // serves the wire-only resolutions this pass appended.
+            let runtime = SessionRuntime::from_replay(
+                session_id.to_string(),
+                Some(Arc::clone(journal)),
+                replay,
+            );
+            // A recovered session carries the origin of the create that made
+            // it, so the peer gate and the permission card read the same fact
+            // a live session would have had.
+            runtime.set_origin(metadata.origin.clone());
+            // The roster prefers the runtime for mapped entries, so a
+            // hydrated transcript must seed the goal the same way it seeds
+            // the origin.
+            runtime.set_goal(record.goal.clone());
+            if let Some(peer_session_id) = record.peer_session_id.clone() {
+                runtime.restore_peer_session_id(peer_session_id);
+            }
             map.insert(
                 session_id.to_string(),
                 RegistryEntry::Transcript(Box::new(TranscriptSession {
@@ -2461,8 +2489,8 @@ impl SessionRegistry {
                     runtime: Arc::clone(&runtime),
                 })),
             );
+            Ok(runtime)
         }
-        Ok(runtime)
     }
 
     #[cfg(test)]
