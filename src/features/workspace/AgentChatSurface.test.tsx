@@ -2713,6 +2713,22 @@ describe("AgentChatSurface", () => {
     expect(conversation.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
+  it("nests the conversation directly in the agent shell the rail toggles", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="shell-agent" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    // The rail toggles its gutter on this parent; any wrapper in between
+    // would silently break the composer's alignment.
+    expect(conversation.parentElement?.className).toBe("workspace-agent-shell");
+  });
+
   it("scrolls an arriving permission card into view even away from the bottom", async () => {
     root = createRoot(container);
     await act(async () => {

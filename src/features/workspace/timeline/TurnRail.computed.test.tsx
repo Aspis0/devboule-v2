@@ -43,6 +43,72 @@ describe("turn rail computed styles", () => {
     conversation.remove();
   });
 
+  it("insets the permission card and the composer with the rail and leaves the queue track on the composer card", () => {
+    railCss.inject([
+      ".workspace-conversation",
+      ".workspace-conversation.has-turn-rail > .permission-card",
+      ".workspace-composer-wrap",
+      ".workspace-composer-track",
+      ".workspace-agent-shell.has-turn-rail .workspace-composer-track",
+      ".workspace-composer",
+      ".workspace-agent-shell.has-turn-rail .workspace-composer",
+    ]);
+    const build = (
+      withRail: boolean,
+    ): {
+      shell: HTMLDivElement;
+      aux: HTMLDivElement;
+      track: HTMLDivElement;
+      composer: HTMLDivElement;
+    } => {
+      const shell = document.createElement("div");
+      shell.className = withRail ? "workspace-agent-shell has-turn-rail" : "workspace-agent-shell";
+      const conversation = document.createElement("div");
+      conversation.className = withRail
+        ? "workspace-conversation has-turn-rail"
+        : "workspace-conversation";
+      const content = document.createElement("div");
+      content.className = "workspace-conversation-content";
+      const aux = document.createElement("div");
+      aux.className = "permission-card";
+      aux.setAttribute("data-testid", "aux-node");
+      conversation.appendChild(content);
+      conversation.appendChild(aux);
+      const wrap = document.createElement("div");
+      wrap.className = "workspace-composer-wrap";
+      const track = document.createElement("div");
+      track.className = "workspace-composer-track";
+      const composer = document.createElement("div");
+      composer.className = "workspace-composer";
+      wrap.appendChild(track);
+      wrap.appendChild(composer);
+      shell.appendChild(conversation);
+      shell.appendChild(wrap);
+      document.body.appendChild(shell);
+      return { shell, aux, track, composer };
+    };
+
+    // Rail off: no sibling takes an inset; the composer keeps its 24 and the
+    // track keeps the composer's box.
+    const off = build(false);
+    expect(getComputedStyle(off.aux).marginLeft).toBe("");
+    expect(getComputedStyle(off.track).paddingLeft).toBe("");
+    expect(getComputedStyle(off.track).maxWidth).toBe("100%");
+    expect(getComputedStyle(off.composer).paddingLeft).toBe("24px");
+    off.shell.remove();
+
+    // The card takes the gutter as margin, the composer card as padding; the
+    // track takes no rail inset and keeps the card's box in both states.
+    // Separate trees per state with classes set at build: happy-dom keeps a
+    // stale computed style for deeper descendants after a later class add.
+    const on = build(true);
+    expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
+    expect(getComputedStyle(on.track).paddingLeft).toBe("");
+    expect(getComputedStyle(on.track).maxWidth).toBe("100%");
+    expect(getComputedStyle(on.composer).paddingLeft).toBe("56px");
+    on.shell.remove();
+  });
+
   it("keeps the conversation inside a 720 px pane with the rail on and off", () => {
     railCss.inject([
       ".workspace-conversation",
@@ -138,7 +204,14 @@ describe("turn rail computed styles", () => {
     const idleStyle = getComputedStyle(idle);
     expect(idleStyle.width).toBe("5px");
     expect(idleStyle.height).toBe("5px");
-    expect(idleStyle.backgroundColor).toBe("#a49b8c");
+    // The resting mark is a control's only visual: the resolved text-safe
+    // mix — never the raw idle tone. (happy-dom returns "" for color-mix,
+    // so the pin below reads the assembled declaration, not the engine.
+    // Colors resolve from the tokens like the contrast suite does; only the
+    // mix percentages are literal.)
+    expect(railCss.rulesFor(".turn-rail-glyph")).toContain(
+      `color-mix(in srgb, ${railCss.token("--tone-idle")!} 40%, ${railCss.token("--ink")!})`,
+    );
     idle.remove();
 
     const dot = document.createElement("button");
@@ -283,11 +356,11 @@ describe("turn rail computed styles", () => {
     expect(getComputedStyle(thread).backgroundColor).toBe(railCssDark.token("--line"));
     thread.remove();
 
-    const idle = document.createElement("span");
-    idle.className = "turn-rail-glyph";
-    document.body.appendChild(idle);
-    expect(getComputedStyle(idle).backgroundColor).toBe(railCssDark.token("--tone-idle"));
-    idle.remove();
+    // Same binding, dark theme: the assembled declaration carries the
+    // resolved mix, which is what the contrast suite measures.
+    expect(railCssDark.rulesFor(".turn-rail-glyph")).toContain(
+      `color-mix(in srgb, ${railCssDark.token("--tone-idle")!} 50%, ${railCssDark.token("--ink")!})`,
+    );
 
     const dot = document.createElement("button");
     dot.className = "turn-rail-dot";

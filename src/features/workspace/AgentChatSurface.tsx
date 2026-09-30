@@ -473,8 +473,8 @@ function renderToolItem(
         ? item.title
         : undefined
       : undefined;
-  // The wire line only says WHICH rows are command rows; what they show is
-  // the payload (the unwrapped title), never the line itself.
+  // The wire line only decides WHICH rows are command rows; the chip shows
+  // the row's display title, which for some providers is the line itself.
   const commandRow = item.command !== undefined;
   // The strip on the label is paid by the yielding text beside it: only a
   // block that actually carries one claims it.

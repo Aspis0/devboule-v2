@@ -45,6 +45,7 @@ interface TurnStopProps {
   fits: boolean;
   isCurrent: boolean;
   isOpen: boolean;
+  tabIndex: 0 | -1;
   /** The rail render's local day key: one decision every dot shares. */
   today: string;
   jumpTo: (turn: UserTurn) => void;
@@ -66,6 +67,7 @@ function TurnStopInner({
   fits,
   isCurrent,
   isOpen,
+  tabIndex,
   today,
   jumpTo,
   openFromFocus,
@@ -85,6 +87,7 @@ function TurnStopInner({
         className="turn-rail-dot"
         aria-current={isCurrent ? "true" : undefined}
         aria-label={userTurnLabel(turn, index, count, time)}
+        tabIndex={tabIndex}
         onClick={() => jumpTo(turn)}
         onPointerDown={pressStarted}
         onFocus={() => openFromFocus(turn)}
@@ -100,7 +103,9 @@ function TurnStopInner({
       >
         <span className="turn-rail-glyph" aria-hidden="true" />
         <span className="turn-rail-preview" aria-hidden="true">
-          <span className="turn-rail-preview-title">{turn.title}</span>
+          <span className="turn-rail-preview-title" title={turn.title}>
+            {turn.title}
+          </span>
           {time === null ? null : <span className="turn-rail-preview-time">{time}</span>}
         </span>
       </button>

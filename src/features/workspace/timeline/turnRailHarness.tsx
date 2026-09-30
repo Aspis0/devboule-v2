@@ -7,6 +7,7 @@ import { TurnRail } from "./TurnRail";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 interface RailHarness {
+  shell: HTMLDivElement;
   conversation: HTMLDivElement;
   content: HTMLDivElement;
   anchors: HTMLElement[];
@@ -36,12 +37,17 @@ export function transcript(turnCount: number): AgentChatItem[] {
 }
 
 export function mountRail(items: readonly AgentChatItem[]): RailHarness {
+  // The surface nests the conversation in the agent shell beside the
+  // composer; the rail toggles its gutter class on both levels.
+  const shell = document.createElement("div");
+  shell.className = "workspace-agent-shell";
   const conversation = document.createElement("div");
   conversation.className = "workspace-conversation workspace-scroll";
   const content = document.createElement("div");
   content.className = "workspace-conversation-content";
   conversation.appendChild(content);
-  document.body.appendChild(conversation);
+  shell.appendChild(conversation);
+  document.body.appendChild(shell);
 
   // The bubbles are the surface's to render; the rail only reads the
   // anchors they carry, so the harness mirrors that seam and nothing more.
@@ -79,6 +85,7 @@ export function mountRail(items: readonly AgentChatItem[]): RailHarness {
   render(items);
 
   return {
+    shell,
     conversation,
     content,
     anchors,
@@ -86,7 +93,7 @@ export function mountRail(items: readonly AgentChatItem[]): RailHarness {
     dots: () => [...content.querySelectorAll<HTMLButtonElement>("button.turn-rail-dot")],
     unmount: () => {
       act(() => root.unmount());
-      conversation.remove();
+      shell.remove();
     },
   };
 }

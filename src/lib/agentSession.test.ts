@@ -484,6 +484,114 @@ describe("ACP agent session", () => {
     expect(untimed.atMs).toBeUndefined();
   });
 
+  it("titles a bare command-carrying update by its command, keeping output in output", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    // The Codex completion shape with no held row: no title, a command,
+    // and the command's output as text.
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "item-9",
+      status: "failed",
+      text: "npm ERR! missing script: build",
+      kind: "execute",
+      command: "npm run build",
+      exitCode: 1,
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.command).toBe("npm run build");
+    expect(item.title).toBe("npm run build");
+    expect(item.output).toBe("npm ERR! missing script: build");
+    expect(item.exitCode).toBe(1);
+  });
+
+  it("ignores an empty command when naming a bare update", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "item-10",
+      status: "completed",
+      text: "some output",
+      kind: "execute",
+      command: "",
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.title).toBe("some output");
+    expect(item.output).toBe("");
+  });
+
+  it("replaces a borrowed command title when the real call arrives", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "item-11",
+      status: "completed",
+      text: "2 failed",
+      kind: "execute",
+      command: "npm run build -- --coverage --watchAll=false --ci",
+    });
+    // The producer's own title (truncated, unwrapped) lands late on the
+    // same row instead of opening a second one.
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "item-11",
+      title: "npm run build",
+      status: "completed",
+      kind: "execute",
+      command: "npm run build -- --coverage --watchAll=false --ci",
+    });
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    const item = items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.title).toBe("npm run build");
+    expect(item.output).toBe("2 failed");
+  });
+
+  it("lets a later text fragment fill an absent send time but never replace one", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_user_message",
+      author: "human",
+      messageId: "devboule-user-1-1",
+      messageKind: "composer",
+      text: "run the ",
+    });
+    harness.emit({
+      type: "agent_user_message",
+      author: "human",
+      messageId: "devboule-user-1-1",
+      messageKind: "composer",
+      text: "tests",
+      atMs: 1_789_053_471_559,
+    });
+    harness.emit({
+      type: "agent_user_message",
+      author: "human",
+      messageId: "devboule-user-1-1",
+      messageKind: "composer",
+      text: "!",
+      atMs: 1_789_053_471_560,
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "user") throw new Error("expected a user item");
+    expect(item.text).toBe("run the tests!");
+    expect(item.atMs).toBe(1_789_053_471_559);
+  });
+
   it("appends update text to output without touching the title", async () => {
     const harness = makeHarness();
     await harness.session.start();

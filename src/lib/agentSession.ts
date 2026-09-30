@@ -1364,7 +1364,12 @@ export class AgentSession {
     const items = [...this.state.items];
     const item = items[index];
     if (item.role !== role) return;
-    items[index] = { ...item, text: item.text + text };
+    // The first send time wins: a later fragment only fills an absent one.
+    items[index] = {
+      ...item,
+      text: item.text + text,
+      ...(item.atMs === undefined && atMs !== undefined ? { atMs } : {}),
+    };
     this.activeBlocks.set(this.activeBlockKey(role, parentToolUseId), key);
     this.update({ items });
   }
@@ -1429,7 +1434,9 @@ export class AgentSession {
     const item = this.state.items[index];
     if (item.role !== "tool") return;
     const items = [...this.state.items];
-    items[index] = { ...item, status };
+    // A later call replaces the placeholder with the producer's title
+    // (truncated for Claude, unwrapped for Codex).
+    items[index] = { ...item, status, ...(title.length > 0 ? { title } : {}) };
     this.update({ items });
   }
 
@@ -1448,16 +1455,24 @@ export class AgentSession {
     const key = this.toolRows.get(toolCallId) ?? `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
     const nextTitle = typeof title === "string" && title.length > 0 ? title : undefined;
+    const nextCommand = typeof command === "string" && command.length > 0 ? command : undefined;
     if (index === undefined) {
-      this.appendTool(toolCallId, nextTitle ?? text ?? "Tool call", status ?? "running", {
-        parentToolUseId,
-        spawnDepth,
-        kind,
-        locations,
-        output: nextTitle === undefined ? "" : (text ?? ""),
-        command,
-        exitCode,
-      });
+      // A bare command update borrows the raw command line as its title —
+      // never the output — until the call's own title replaces it above.
+      this.appendTool(
+        toolCallId,
+        nextTitle ?? nextCommand ?? text ?? "Tool call",
+        status ?? "running",
+        {
+          parentToolUseId,
+          spawnDepth,
+          kind,
+          locations,
+          output: nextCommand === undefined && nextTitle === undefined ? "" : (text ?? ""),
+          command,
+          exitCode,
+        },
+      );
       return;
     }
 

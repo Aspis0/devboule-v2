@@ -1,8 +1,10 @@
 import { useEffect, type RefObject } from "react";
 
-/** Keys that move the transcript on their own. Deliberately not filtered
- * by origin: arrows from a focused dot really scroll the container, and
- * Space's release lands in the same dispatch as the jump's re-pin. */
+/** Keys that move the transcript on their own. Rail arrows/Home/End are
+ * excluded below because the rail consumes them; Space remains because its
+ * release shares the jump's re-pin dispatch. The native conversation
+ * listener runs before React's delegated nav handler, so it cannot rely on
+ * `defaultPrevented` — hence the explicit rail test. */
 const SCROLL_KEYS = new Set([
   "PageUp",
   "PageDown",
@@ -78,6 +80,17 @@ export function useTurnRailIntent({
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
         closePreview();
+        return;
+      }
+      // The rail consumes these for roving focus and preventDefaults them:
+      // they never scroll, so they are not scroll intent from its dots.
+      if (
+        (event.key === "ArrowUp" ||
+          event.key === "ArrowDown" ||
+          event.key === "Home" ||
+          event.key === "End") &&
+        insideRail(event.target)
+      ) {
         return;
       }
       if (SCROLL_KEYS.has(event.key)) releasePin();

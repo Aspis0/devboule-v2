@@ -65,7 +65,9 @@
   width: 5px;
   height: 5px;
   border-radius: 999px;
-  background: var(--tone-idle);
+  /* The resting mark is a control's only visual, so it reads the text-safe
+     mix, not the raw idle tone. */
+  background: var(--tone-idle-text);
 }
 
 .turn-rail-dot:hover .turn-rail-glyph {

@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react";
 import type { AgentChatItem } from "../../../lib/agentSession";
@@ -128,6 +129,10 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [openPreviewId, setOpenPreviewId] = useState<string | null>(null);
+  // The stop follows the last-focused dot; the current turn takes it before
+  // focus ever moves there. Mirrors the strip's roving stop, not its selection.
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [followedActive, setFollowedActive] = useState<string | null>(null);
   const framesRef = useRef<RailFrames | null>(null);
   const pinnedTurnRef = useRef<UserTurn | null>(null);
   const openTurnRef = useRef<UserTurn | null>(null);
@@ -165,6 +170,8 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
     pointerFocusRef.current = false;
     // Neither a click nor a jump pins the preview open; the jump pins the
     // current turn instead, until the reader's scroll intent releases it.
+    // The stop follows the click like the strip's focused chip does.
+    setFocusedId(turn.id);
     setOpenPreviewId(null);
     pinnedTurnRef.current = turn;
     setPinnedId(turn.id);
@@ -177,6 +184,8 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
   }, []);
 
   const openFromFocus = useCallback((turn: UserTurn) => {
+    // The stop follows focus even when a pointer press suppresses the preview.
+    setFocusedId(turn.id);
     const fromPress = pointerFocusRef.current;
     pointerFocusRef.current = false;
     if (fromPress) return;
@@ -266,6 +275,12 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
         holdTop = holdFrame.anchor.getBoundingClientRect().top;
       }
       conversation.classList.toggle(GUTTER_CLASS, shouldShow);
+      // The composer shares the shell but not the conversation: it reads the
+      // same boolean off the shell; the per-element insets live in Workspace.css.
+      const shell = conversation.parentElement;
+      if (shell !== null && shell.classList.contains("workspace-agent-shell")) {
+        shell.classList.toggle(GUTTER_CLASS, shouldShow);
+      }
       if (holdFrame !== null) {
         conversation.scrollTop += holdFrame.anchor.getBoundingClientRect().top - holdTop;
       }
@@ -287,6 +302,26 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
     setMeasures((previous) => (sameMeasures(previous, next) ? previous : next));
     updateCurrent();
   }, [scrollRef, contentRef, overflowing, geometryTick, turns, updateCurrent]);
+
+  // The gutter's lifetime, separate from measuring: set while shown, removed
+  // on hide or unmount. The pass above owns the scroll-anchor hold, so this
+  // one only converges the classes (a no-op duplicate on the transition
+  // itself) and guarantees their removal.
+  useLayoutEffect(() => {
+    const conversation = scrollRef.current;
+    // The measuring pass needs both nodes; the gutter needs only the
+    // conversation, but it must not open without the content it insets.
+    if (conversation === null || contentRef.current === null) return;
+    const shell = conversation.parentElement;
+    const shelled =
+      shell !== null && shell.classList.contains("workspace-agent-shell") ? shell : null;
+    conversation.classList.toggle(GUTTER_CLASS, shown);
+    if (shelled !== null) shelled.classList.toggle(GUTTER_CLASS, shown);
+    return () => {
+      conversation.classList.remove(GUTTER_CLASS);
+      shelled?.classList.remove(GUTTER_CLASS);
+    };
+  }, [scrollRef, contentRef, shown]);
 
   useEffect(() => {
     const conversation = scrollRef.current;
@@ -344,8 +379,57 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
   if (!shown) return null;
 
   const activeId = pinnedId ?? currentId;
+  // Dots that survived measuring, in turn order: the only tabbable set.
+  const renderedIds = turns
+    .filter((turn) => measures?.byId[turn.id] !== undefined)
+    .map((turn) => turn.id);
+  if (followedActive !== activeId) {
+    setFollowedActive(activeId);
+    // A moved focus keeps its stop; an untouched one tracks the turn.
+    if (focusedId === followedActive) setFocusedId(activeId);
+  }
+  const stopId =
+    focusedId !== null && renderedIds.includes(focusedId)
+      ? focusedId
+      : activeId !== null && renderedIds.includes(activeId)
+        ? activeId
+        : (renderedIds[0] ?? null);
+
+  // Roving focus without selection semantics: arrows/Home/End move between
+  // dots with no wrap, and the focus itself opens the preview. preventScroll
+  // keeps the arrows from scrolling the transcript; the intent hook ignores
+  // these rail keys so they never release the jump's pin either.
+  const onRailKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const dots = [...event.currentTarget.querySelectorAll<HTMLButtonElement>(".turn-rail-dot")];
+    const at = dots.indexOf(target as HTMLButtonElement);
+    if (at === -1) return;
+    let next: number | null = null;
+    switch (event.key) {
+      case "ArrowUp":
+        next = at - 1;
+        break;
+      case "ArrowDown":
+        next = at + 1;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = dots.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    if (next === null || next < 0 || next >= dots.length || next === at) return;
+    setFocusedId(renderedIds[next] ?? null);
+    dots[next]?.focus({ preventScroll: true });
+  };
+
   return (
-    <nav className="turn-rail" aria-label="Turns">
+    <nav className="turn-rail" aria-label="Turns" onKeyDown={onRailKeyDown}>
       <span className="turn-rail-thread" aria-hidden="true" />
       {turns.map((turn, index) => {
         if (measures === null) return null;
@@ -363,6 +447,7 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
             fits={fits}
             isCurrent={turn.id === activeId}
             isOpen={openPreviewId === turn.id}
+            tabIndex={turn.id === stopId ? 0 : -1}
             today={today}
             jumpTo={jumpTo}
             openFromFocus={openFromFocus}

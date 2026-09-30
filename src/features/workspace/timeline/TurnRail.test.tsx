@@ -60,6 +60,37 @@ describe("TurnRail", () => {
       rail.unmount();
     });
 
+    it("toggles the shell gutter with the conversation, for the composer", () => {
+      const items = transcript(2);
+      const rail = mountRail(items);
+
+      stubOverflow(rail.conversation, 2000, 500);
+      rail.rerender([...items]);
+      fireResize();
+      expect(rail.conversation.classList.contains("has-turn-rail")).toBe(true);
+      expect(rail.shell.classList.contains("has-turn-rail")).toBe(true);
+
+      stubOverflow(rail.conversation, 500, 500);
+      rail.rerender([...items]);
+      fireResize();
+      expect(rail.shell.classList.contains("has-turn-rail")).toBe(false);
+      rail.unmount();
+    });
+
+    it("removes the gutter from the conversation and the shell on unmount", () => {
+      const items = transcript(2);
+      const rail = mountRail(items);
+      stubOverflow(rail.conversation, 2000, 500);
+      rail.rerender([...items]);
+      fireResize();
+      expect(rail.conversation.classList.contains("has-turn-rail")).toBe(true);
+      expect(rail.shell.classList.contains("has-turn-rail")).toBe(true);
+
+      rail.unmount();
+      expect(rail.conversation.classList.contains("has-turn-rail")).toBe(false);
+      expect(rail.shell.classList.contains("has-turn-rail")).toBe(false);
+    });
+
     it("stays absent on an overflowing transcript with no user turn", () => {
       const items: AgentChatItem[] = [
         { id: "a-1", role: "assistant", text: "no question yet", messageId: null },
@@ -90,6 +121,30 @@ describe("TurnRail", () => {
       // compensation scrolls by exactly that, so the view does not jump.
       expect(rail.conversation.classList.contains("has-turn-rail")).toBe(true);
       expect(rail.conversation.scrollTop).toBe(508);
+      rail.unmount();
+    });
+
+    it("leaves scrollTop alone on a geometry tick with the gutter already open", () => {
+      const items = transcript(2);
+      const rail = mountRail(items);
+      stubOverflow(rail.conversation, 2000, 500);
+      stubAnchor(rail.anchors[0], rail.conversation, 100, 40, 8);
+      stubAnchor(rail.anchors[1], rail.conversation, 900, 40, 8);
+      rail.conversation.scrollTop = 500;
+
+      rail.rerender([...items]);
+      fireResize();
+      expect(rail.conversation.classList.contains("has-turn-rail")).toBe(true);
+      expect(rail.conversation.scrollTop).toBe(508);
+
+      // Content below moved the last bubble, so the observer raises a tick
+      // and the rail re-measures — but the gutter needs no transition and
+      // the view must not jump a second time.
+      rail.conversation.scrollTop = 500;
+      stubAnchor(rail.anchors[1], rail.conversation, 920, 40, 8);
+      fireResize();
+      expect(rail.conversation.classList.contains("has-turn-rail")).toBe(true);
+      expect(rail.conversation.scrollTop).toBe(500);
       rail.unmount();
     });
 

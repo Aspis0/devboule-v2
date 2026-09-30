@@ -441,6 +441,12 @@
   gap: 10px;
 }
 
+/* The rail's gutter is reserved in the content box; the permission card
+   takes the same 32 px as margin, so its box sits on the rows' axis. */
+.workspace-conversation.has-turn-rail > .permission-card {
+  margin-left: 32px;
+}
+
 .workspace-agent-shell {
   display: flex;
   flex: 1;
@@ -688,8 +694,8 @@
   font-weight: 500;
 }
 
-/* The strip, only where it has a claimant: a label-only row keeps the block's
-   full width instead of ellipsizing ~8 characters early. */
+/* A fixed 48 px seat for any claimant: the label never measures the summary,
+   so even a short one holds its place beside it. */
 .workspace-chat-tool-text.has-summary .workspace-chat-tool-label {
   max-width: calc(100% - var(--space-48));
 }
@@ -1166,12 +1172,17 @@
   width: 760px;
   max-width: 100%;
   margin: 0 auto;
-  /* 24 px horizontally, not the mockup's 16: the rail's text column is
-     inset 24, and the composer's text must sit on it. */
+  /* The rail adds 32 px to the composer's own text inset; the transcript meets
+     it within the composer's 1 px border when the conversation fills its
+     capped 760 column. */
   padding: 14px 24px 12px;
   background: var(--panel-composer);
   border: 1px solid var(--line-strong);
   border-radius: 16px;
+}
+
+.workspace-agent-shell.has-turn-rail .workspace-composer {
+  padding-left: 56px;
 }
 
 .workspace-composer:focus-within {
