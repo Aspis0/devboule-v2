@@ -243,6 +243,20 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
         .get("assistantMessageEvent")
         .and_then(|event| event.get("toolCall"))?;
     let name = tool_call.get("name").and_then(Value::as_str);
+    // Arguments arrive here, so the command does too: the call row was sent
+    // bare (`toolcall_start` carries no arguments), and the app's reducer
+    // keeps this value through the later commandless updates
+    // (`agentSession.ts:1476`).
+    let command = if name.is_some_and(|name| tool_kind_from_name(name) == "execute") {
+        tool_call
+            .get("arguments")
+            .and_then(|arguments| arguments.get("command"))
+            .and_then(Value::as_str)
+            .filter(|command| !command.is_empty())
+            .map(str::to_string)
+    } else {
+        None
+    };
     Some(SessionEvent::AgentToolUpdate {
         tool_call_id: tool_call.get("id")?.as_str()?.to_string(),
         status: Some("in_progress".to_string()),
@@ -253,7 +267,7 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
-        command: None,
+        command,
         exit_code: None,
     })
 }
@@ -404,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_tool_events_update_the_same_call() {
+    fn tool_events_update_the_same_call() {
         let start = parse(
             r#"{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"toolcall_start","contentIndex":0,"id":"call_e855bd93a9d545228d528feb","toolName":"write"}}"#,
         );
@@ -424,11 +438,14 @@ mod tests {
         ));
         assert!(matches!(
             events_from_line(&end).as_slice(),
-            [SessionEvent::AgentToolUpdate { tool_call_id, status, title, kind, .. }]
+            [SessionEvent::AgentToolUpdate { tool_call_id, status, title, kind, command, .. }]
                 if tool_call_id == "call_e855bd93a9d545228d528feb"
                     && status.as_deref() == Some("in_progress")
                     && title.as_deref() == Some("probe_tool.txt")
                     && kind.as_deref() == Some("edit")
+                    // A write's arguments carry no command: the row is not a
+                    // command row.
+                    && command.is_none()
         ));
         assert!(matches!(
             events_from_line(&execution).as_slice(),
@@ -437,6 +454,66 @@ mod tests {
                     && status.as_deref() == Some("completed")
                     && text.as_deref() == Some("Successfully wrote to probe_tool.txt")
         ));
+    }
+
+    #[test]
+    fn a_shell_call_carries_the_captured_command_once_its_arguments_arrive() {
+        // The bash call is real: journal seq 48 of session
+        // s.process-13680.00000002-2b75f6627a1a612b, verbatim relevant
+        // envelope fields (wire evidence, 2026-09-30). The start frame below
+        // is the shape the mapper parses — only `id` and `toolName` are read
+        // from it. The only bash RESULT captured is the aborted one (seq 53,
+        // `details: {}`), so no exit code is pinned: none was ever seen.
+        let start = parse(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":2,"id":"chatcmpl-tool-9eed2627b0642d23","toolName":"bash"}}"#,
+        );
+        match events_from_line(&start).as_slice() {
+            [SessionEvent::AgentToolCall {
+                tool_call_id,
+                command,
+                ..
+            }] => {
+                assert_eq!(tool_call_id, "chatcmpl-tool-9eed2627b0642d23");
+                // No arguments yet: the end frame is their only carrier.
+                assert_eq!(*command, None);
+            }
+            other => panic!("expected AgentToolCall, got {other:?}"),
+        }
+        let end = parse(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":2,"toolCall":{"type":"toolCall","id":"chatcmpl-tool-9eed2627b0642d23","name":"bash","arguments":{"command":"pwd && ls -A | head -50 && rg -l --hidden --glob '!node_modules/**' -i '\\bgoal\\b' -g '*.ts' -g '*.tsx' -g '*.css' . | head -30"}}}}"#,
+        );
+        match events_from_line(&end).as_slice() {
+            [SessionEvent::AgentToolUpdate {
+                tool_call_id,
+                command,
+                exit_code,
+                ..
+            }] => {
+                // The update lands on the start frame's id: that agreement is
+                // what makes the app's row keep one line.
+                assert_eq!(tool_call_id, "chatcmpl-tool-9eed2627b0642d23");
+                assert_eq!(
+                    command.as_deref(),
+                    Some(
+                        r#"pwd && ls -A | head -50 && rg -l --hidden --glob '!node_modules/**' -i '\bgoal\b' -g '*.ts' -g '*.tsx' -g '*.css' . | head -30"#
+                    )
+                );
+                assert_eq!(*exit_code, None);
+            }
+            other => panic!("expected AgentToolUpdate, got {other:?}"),
+        }
+        // The gate is the shared kind table, not the spelling: any casing of
+        // a shell name carries its command. Constructed frame — pi's journal
+        // shows `bash` only.
+        let powershell = parse(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":3,"toolCall":{"type":"toolCall","id":"call_powershell_gate_pin","name":"powershell","arguments":{"command":"Get-ChildItem"}}}}"#,
+        );
+        match events_from_line(&powershell).as_slice() {
+            [SessionEvent::AgentToolUpdate { command, .. }] => {
+                assert_eq!(command.as_deref(), Some("Get-ChildItem"));
+            }
+            other => panic!("expected AgentToolUpdate, got {other:?}"),
+        }
     }
 
     #[test]

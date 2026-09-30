@@ -262,7 +262,80 @@ describe("command tool row", () => {
     expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 0");
   });
 
-  it("keeps a Claude row without command and exit fields exactly as it renders today", async () => {
+  it("renders a Claude shell row that carries a command as a chip with no icon, Shell label or exit marker", async () => {
+    // The command is longer than the mapper's 80-char title, so the title
+    // and the command differ: the chip must show the title, and the part of
+    // the raw line the title dropped must stay out of the DOM.
+    const longLine =
+      "npm run build && npm run test -- --coverage && ls -R src | head -50 && echo long-command-tail-9z8y7x";
+    const truncatedTitle = `${longLine.slice(0, 80)}...`;
+    await mount();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "toolu_bash",
+        title: truncatedTitle,
+        status: "pending",
+        kind: "execute",
+        command: longLine,
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "toolu_bash",
+        status: "completed",
+        text: "total 0\n",
+      });
+    });
+
+    const row = onlyRow();
+    expect(row.classList.contains("is-running")).toBe(false);
+    // Claude reports no exit code by design: neither the dot nor "exit N".
+    expect(row.querySelector(".workspace-command-dot")).toBeNull();
+    expect(row.querySelector(".workspace-command-exit")).toBeNull();
+    // Command-row chrome: the chip replaces icon and kind label.
+    expect(row.querySelector("summary > svg")).toBeNull();
+    const textBlock = row.querySelector("summary > .workspace-chat-tool-text");
+    if (textBlock === null) throw new Error("the row's text block did not render");
+    const chip = textBlock.querySelector(".workspace-command-chip");
+    if (chip === null) throw new Error("command chip did not render");
+    expect(chip.textContent).toBe(truncatedTitle);
+    expect(container.innerHTML).not.toContain("long-command-tail-9z8y7x");
+    expect(textBlock.querySelector(".workspace-chat-tool-label")).toBeNull();
+    expect(textBlock.querySelector(".workspace-chat-tool-summary-text")).toBeNull();
+    expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("total 0");
+  });
+
+  it("keeps the failure cross on a failed Claude shell row that carries no exit code", async () => {
+    await mount();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "toolu_bash",
+        title: "ls -la && echo done",
+        status: "pending",
+        kind: "execute",
+        command: "ls -la && echo done",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "toolu_bash",
+        status: "failed",
+        text: "ls: cannot access '/x': No such file or directory",
+      });
+    });
+
+    const row = onlyRow();
+    expect(row.classList.contains("is-failed")).toBe(true);
+    expect(row.querySelector('.workspace-chat-tool-failed[aria-label="Failed"]')).not.toBeNull();
+    expect(row.querySelector(".workspace-command-dot")).toBeNull();
+    expect(row.querySelector(".workspace-command-exit")).toBeNull();
+    expect(row.querySelector(".workspace-command-chip")?.textContent).toBe("ls -la && echo done");
+  });
+
+  it("keeps the icon, the Shell label and the plain summary on a commandless execute row", async () => {
+    // ACP tool calls and updates hardcode command and exit code to None
+    // (acp_view.rs:189-190, :217-218): a commandless execute row is a real
+    // wire state.
     await mount();
     await act(async () => {
       channelHarness.active?.({

@@ -427,6 +427,33 @@ describe("ACP agent session", () => {
     expect(item.exitCode).toBeUndefined();
   });
 
+  it("keeps the call's command when a later update names none", async () => {
+    // The Claude shape: the call carries the command, its result update
+    // carries none — an absent field must never clear the row's value.
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "echo zombie-check",
+      status: "pending",
+      kind: "execute",
+      command: "echo zombie-check",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "completed",
+      text: "zombie-check",
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.command).toBe("echo zombie-check");
+    expect(item.exitCode).toBeUndefined();
+  });
+
   it("carries the turn time onto the user bubble when the daemon sent one", async () => {
     const harness = makeHarness();
     await harness.session.start();

@@ -1075,7 +1075,11 @@ fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
     // The summary only; the frontend derives the display name from `kind`.
     match name {
         "ExitPlanMode" => "Plan".to_string(),
-        "Bash" | "PowerShell" => field("command").map(truncated_command).unwrap_or_default(),
+        // The same table the command gate uses: a shell name in any casing
+        // titles its row with the command, never the description fallback.
+        _ if tool_kind_from_name(name) == "execute" => {
+            field("command").map(truncated_command).unwrap_or_default()
+        }
         "Read" | "Edit" | "Write" | "NotebookEdit" => field("file_path")
             .or_else(|| field("path"))
             .map(|path| relativize_tool_path(path, cwd))
@@ -1095,6 +1099,22 @@ fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
             })
             .unwrap_or_else(|| name.to_string()),
     }
+}
+
+/// The exact line the agent sent, for the shell tools — the same
+/// case-insensitive table that classifies the row's kind. Kept separate from
+/// `title`, which `tool_title` may truncate, and kept raw: a Bash command may
+/// itself be a wrapper (`bash -lc "npm test"`), and unwrapping it would store
+/// a line the agent never sent.
+fn tool_command(name: &str, input: &Value) -> Option<String> {
+    if tool_kind_from_name(name) != "execute" {
+        return None;
+    }
+    input
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|command| !command.is_empty())
+        .map(str::to_string)
 }
 
 fn tool_locations(name: &str, input: &Value, cwd: Option<&Path>) -> Option<Vec<ToolLocation>> {
@@ -1145,7 +1165,7 @@ fn tool_call_from_block(
             .map(str::to_string),
         parent_tool_use_id,
         spawn_depth,
-        command: None,
+        command: tool_command(name, input),
         exit_code: None,
     })
 }
@@ -2768,6 +2788,111 @@ mod tests {
                 assert_eq!(kind.as_deref(), Some("execute"));
                 assert!(locations.is_none());
             }
+            other => panic!("expected AgentToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bash_call_carries_its_exact_command_and_its_result_carries_no_code() {
+        // Journal rows seq 15 (call) and seq 20 (result) of session
+        // s.process-10052.00000001-25bdfd5a2087aae2, verbatim relevant
+        // envelope fields (wire evidence, 2026-09-30). The `command` field is
+        // the bare line the agent sent, held separately from the title
+        // `tool_title` builds — equal here only because this line is short —
+        // and the result proves no numeric exit code: its `tool_use_result`
+        // has only stdout/stderr/interrupted.
+        let mut mapper = view();
+        let call = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use",
+                "id": "toolu_012DmhbRw1NNTLzF9KNNNwXu",
+                "name": "Bash",
+                "input": {"command": "echo zombie-check", "description": "Echo zombie-check"}
+            }]},
+            "session_id": "be906cf2-d86f-4091-8640-cf8f5b3236e4",
+            "wire_tool_inputs": {"toolu_012DmhbRw1NNTLzF9KNNNwXu": {
+                "command": "echo zombie-check",
+                "description": "Echo zombie-check"
+            }}
+        }));
+        match call.as_slice() {
+            [SessionEvent::AgentToolCall {
+                title,
+                command,
+                exit_code,
+                ..
+            }] => {
+                assert_eq!(command.as_deref(), Some("echo zombie-check"));
+                assert_eq!(*exit_code, None);
+                assert_eq!(title, "echo zombie-check");
+            }
+            other => panic!("expected AgentToolCall, got {other:?}"),
+        }
+        let update = mapper.ingest(&json!({
+            "type": "user",
+            "message": {"content": [{
+                "tool_use_id": "toolu_012DmhbRw1NNTLzF9KNNNwXu",
+                "type": "tool_result",
+                "content": "zombie-check",
+                "is_error": false
+            }]},
+            "session_id": "be906cf2-d86f-4091-8640-cf8f5b3236e4",
+            "tool_use_result": {
+                "stdout": "zombie-check",
+                "stderr": "",
+                "interrupted": false,
+                "isImage": false,
+                "noOutputExpected": false
+            }
+        }));
+        match update.as_slice() {
+            [SessionEvent::AgentToolUpdate {
+                command, exit_code, ..
+            }] => {
+                // `None` skips serialization, so the app's reducer keeps the
+                // call's command instead of clearing it.
+                assert_eq!(*command, None);
+                assert_eq!(*exit_code, None);
+            }
+            other => panic!("expected AgentToolUpdate, got {other:?}"),
+        }
+        // The gate is the shared kind table, not the spelling: a lowercase
+        // `bash` (constructed — every captured call is spelled `Bash`)
+        // carries its command, and the case-folded title arm titles the row
+        // with the command instead of falling through to the description.
+        let lowercase = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use",
+                "id": "toolu_lowercase_bash",
+                "name": "bash",
+                "input": {"command": "echo case-probe", "description": "A description the title must not become"}
+            }]}
+        }));
+        match lowercase.as_slice() {
+            [SessionEvent::AgentToolCall { title, command, .. }] => {
+                assert_eq!(command.as_deref(), Some("echo case-probe"));
+                assert_eq!(title, "echo case-probe");
+            }
+            other => panic!("expected AgentToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_read_call_stays_commandless() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use",
+                "id": "toolu_read_cmd",
+                "name": "Read",
+                "input": {"file_path": r"C:\some\probe.txt"}
+            }]}
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { command, .. }] => assert_eq!(*command, None),
             other => panic!("expected AgentToolCall, got {other:?}"),
         }
     }

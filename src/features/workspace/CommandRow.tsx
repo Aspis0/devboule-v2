@@ -1,8 +1,7 @@
 // The command row's chrome inside a tool-row summary: the kind word, the chip
 // that carries the command's payload, and the marker that carries its exit code.
 
-/** The kind word (visually hidden) and the payload on the mono chip — the
- * normalized line; the shell wrapper the daemon stripped stays out of the DOM. */
+/** The payload shown in the command chip, taken from the row summary. */
 export function CommandChip({ command }: { command: string }) {
   return (
     <>
