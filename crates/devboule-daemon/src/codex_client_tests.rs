@@ -1729,25 +1729,12 @@ const FAKE_CODEX_HANDSHAKE: &str = r#"
 const methods = process.env.FAKE_CODEX_METHODS || "";
 const handles = process.env.FAKE_CODEX_RESUME_HANDLES || "";
 const turnParams = process.env.FAKE_CODEX_TURN_PARAMS || "";
+// `FAKE_CODEX_HANDSHAKE_DELAY_MS` holds the FIRST reply back, the way a cold
+// app-server start holds `initialize` while it loads.
+const delayMs = parseInt(process.env.FAKE_CODEX_HANDSHAKE_DELAY_MS || "0", 10);
+let delayed = false;
 let buf = "";
-process.stdin.on("data", (chunk) => {
-  buf += chunk.toString();
-  let nl;
-  while ((nl = buf.indexOf("\n")) >= 0) {
-    const line = buf.slice(0, nl);
-    buf = buf.slice(nl + 1);
-    if (!line.trim()) continue;
-    let msg;
-    try { msg = JSON.parse(line); } catch { continue; }
-    if (msg.id === undefined || msg.id === null) continue;
-    if (methods) require("fs").appendFileSync(methods, msg.method + "\n");
-    if (turnParams && msg.method === "turn/start") {
-      require("fs").appendFileSync(turnParams, JSON.stringify(msg.params) + "\n");
-    }
-    if (handles && msg.method === "thread/resume") {
-      const handle = msg.params && msg.params.threadId;
-      require("fs").appendFileSync(handles, (handle === undefined ? "missing" : handle) + "\n");
-    }
+function respond(msg) {
     let result = {};
     let error = null;
     if (msg.method === "initialize") result = { userAgent: "fake-codex" };
@@ -1774,6 +1761,29 @@ process.stdin.on("data", (chunk) => {
       } else result = { turn: { id: "turn-fake" } };
     }
     process.stdout.write(JSON.stringify(error ? { id: msg.id, error } : { id: msg.id, result }) + "\n");
+}
+process.stdin.on("data", (chunk) => {
+  buf += chunk.toString();
+  let nl;
+  while ((nl = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, nl);
+    buf = buf.slice(nl + 1);
+    if (!line.trim()) continue;
+    let msg;
+    try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.id === undefined || msg.id === null) continue;
+    if (methods) require("fs").appendFileSync(methods, msg.method + "\n");
+    if (turnParams && msg.method === "turn/start") {
+      require("fs").appendFileSync(turnParams, JSON.stringify(msg.params) + "\n");
+    }
+    if (handles && msg.method === "thread/resume") {
+      const handle = msg.params && msg.params.threadId;
+      require("fs").appendFileSync(handles, (handle === undefined ? "missing" : handle) + "\n");
+    }
+    if (delayMs && !delayed) {
+      delayed = true;
+      setTimeout(() => respond(msg), delayMs);
+    } else respond(msg);
   }
 });
 "#;
@@ -1823,6 +1833,42 @@ fn codex_handshake_starts_a_thread_on_the_fresh_road() {
         ThreadRoad::Fresh,
     )
     .expect("the fresh handshake answers");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(handshake.thread_id, "thread-fake");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The cold app-server start the field saw: `initialize` can sit pending past
+/// the hot path's patience while the process loads. A reply held ~17 s — past
+/// the old 15 s gate, inside the 60 s one — must start the thread, and the
+/// failure text for one that never comes must name the handshake phase.
+#[test]
+fn a_slow_handshake_reply_inside_the_codex_handshake_budget_starts_the_thread() {
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-slow-handshake");
+    let mut child = std::process::Command::new("node")
+        .args(["-e", FAKE_CODEX_HANDSHAKE])
+        .env("FAKE_CODEX_HANDSHAKE_DELAY_MS", "17000")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("node is required for the fake Codex handshake");
+    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
+    let handshake = super::perform_handshake(
+        &mut stdout,
+        &stdin,
+        &AtomicU64::new(1),
+        &dir,
+        "auto",
+        ThreadRoad::Fresh,
+    )
+    .expect("a reply inside the cold budget completes the handshake");
     let _ = child.kill();
     let _ = child.wait();
     assert_eq!(handshake.thread_id, "thread-fake");

@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// A user row resolves through the same named road a
 /// catalog row rides, to its own argv and env — the row's command is
@@ -462,10 +462,11 @@ fn silent_prompt_abandonment_publishes_error_and_finishes_the_turn() {
     runtime.begin_turn();
     reader.turn.bind_runtime(&runtime);
     reader.turn.start_prompt(88);
-    *reader.turn.last_activity.lock().expect("activity lock") =
-        Instant::now() - reader.turn.silence - Duration::from_secs(1);
+    reader
+        .turn
+        .backdate_activity_for_test(Duration::from_secs(1));
 
-    reader.turn.tick();
+    reader.turn.tick_for_test();
 
     let events = conn.pull_events();
     assert_eq!(events.len(), 2, "watchdog abandonment must close the turn");
@@ -1200,7 +1201,7 @@ fn late_prompt_result_after_cancel_is_not_a_second_outcome() {
         broker,
     );
     reader.turn.start_prompt(7);
-    reader.turn.abandon_live_prompt();
+    reader.turn.abandon_for_test();
     let _ = event_kinds(&conn);
     reader
         .feed(
@@ -1231,7 +1232,7 @@ fn permission_after_turn_cancel_is_not_shown_to_the_user() {
         Arc::clone(&broker),
     );
     reader.turn.start_prompt(1);
-    reader.turn.abandon_live_prompt();
+    reader.turn.abandon_for_test();
     let _ = event_kinds(&conn);
     reader.dispatch_permission(
         &serde_json::json!({

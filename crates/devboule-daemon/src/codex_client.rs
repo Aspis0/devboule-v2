@@ -44,7 +44,11 @@ use crate::server::ServerState;
 /// written here.
 const SERVICE_TIER_FAST: &str = "fast";
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// The whole-handshake wait: `initialize` through the thread road. A cold
+/// app-server start holds the first reply while it loads, past the patience
+/// a running session's switch needs — so the handshake carries sixty
+/// seconds, and the per-steer wait below keeps fifteen.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const KILL_GRACE: Duration = Duration::from_secs(2);
 /// How long one `turn/steer` may wait for its response before the steer's fate
 /// is reported as unknown. The wait happens outside the runtime's turn-hold (see
@@ -1939,7 +1943,7 @@ fn wire_to_io(error: WireError) -> io::Error {
 fn handshake_error(message: &str) -> WireError {
     WireError::new(
         ErrorCode::Io,
-        format!("Could not start Codex session: {message}"),
+        format!("Could not complete the Codex handshake: {message}"),
     )
 }
 

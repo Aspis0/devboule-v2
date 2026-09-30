@@ -439,7 +439,7 @@ fn initial_mode_test_reader(
         gate,
         next_id,
         mode_responses,
-        CONTROL_RESPONSE_TIMEOUT,
+        INITIAL_MODE_TIMEOUT,
     )
 }
 
@@ -464,6 +464,7 @@ fn initial_mode_test_reader_with_timeout(
             timeout,
             delivery_settings: Arc::new(Mutex::new(HashMap::new())),
         },
+        None,
     )
 }
 
@@ -515,6 +516,7 @@ fn initial_claude_mode_response_flushes_prompt_without_init() {
         pending: Vec::new(),
         mode_gate: reader.mode_gate.clone(),
         abort_gate: test_abort_gate(),
+        watch: None,
     };
     writer.write_all(b"Reply DONE").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -551,6 +553,7 @@ fn initial_mode_ack_without_mode_releases_queued_prompt() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"queued prompt").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -604,6 +607,7 @@ fn claude_prompts_waiting_for_initial_mode_response_flush_in_order() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"FIRST").expect("buffer first prompt");
     writer.flush().expect("queue first prompt");
@@ -644,6 +648,7 @@ fn a_steer_while_the_mode_gate_is_awaiting_is_refused_not_queued() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     // The running turn's own prompt: queued, not written, because the gate
     // has not released yet.
@@ -717,6 +722,7 @@ fn a_refused_steer_leaves_the_gate_s_failing_batch_untouched() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"Reply DONE").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -827,6 +833,7 @@ fn initial_claude_mode_request_is_written_before_the_first_prompt() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"FIRST").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -855,6 +862,7 @@ fn initial_claude_mode_error_publishes_once_and_closes_stdin() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"DROP ME").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -906,6 +914,7 @@ fn initial_claude_mode_timeout_publishes_once_and_drops_frames() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"DROP ME").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -928,7 +937,7 @@ fn initial_claude_mode_timeout_publishes_once_and_drops_frames() {
     );
     let gate = harness.gate.lock().expect("gate");
     assert!(
-        matches!(&gate.state, ClaudeModeGateState::Failed(message) if message == "Claude mode response timed out; queued prompt(s) were not delivered because Claude never confirmed the permission mode.")
+        matches!(&gate.state, ClaudeModeGateState::Failed(message) if message == "Claude's initial permission mode was not confirmed within 0 ms; queued prompt(s) were not delivered because Claude never confirmed the initial mode.")
     );
     assert!(gate.pending_frames.is_empty());
     drop(gate);
@@ -955,6 +964,7 @@ fn initial_claude_mode_timeout_after_success_is_a_noop() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"KEEP ME").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -982,6 +992,62 @@ fn initial_claude_mode_timeout_after_success_is_a_noop() {
     let _ = harness.child.wait();
 }
 
+/// The cold start the field saw: MCP and extension loading keep the first
+/// permission-mode reply pending far past the hot path's patience. A reply
+/// that arrives late — but inside the cold budget — must confirm the spawn,
+/// not fail it. The reply here is deliberately held ~17 s: past the old
+/// 15 s gate, inside the 60 s one.
+#[test]
+fn a_slow_initial_mode_reply_inside_the_cold_budget_completes_the_spawn() {
+    let mut harness = initial_mode_test_setup();
+    let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let mut reader = initial_mode_test_reader_with_timeout(
+        &broker,
+        Arc::clone(&harness.stdin),
+        Arc::clone(&harness.gate),
+        Arc::clone(&harness.next_id),
+        Arc::new(Mutex::new(HashMap::new())),
+        INITIAL_MODE_TIMEOUT,
+    );
+    let mut writer = ClaudeWriter {
+        stdin: Arc::clone(&harness.stdin),
+        pending: Vec::new(),
+        mode_gate: Some(Arc::clone(&harness.gate)),
+        abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
+    };
+    writer.write_all(b"SLOW REPLY").expect("buffer prompt");
+    writer.flush().expect("queue prompt");
+    let request = read_json_line(&mut harness.stdout);
+    let (runtime, conn) = attached(&broker);
+    reader.feed(b"", &runtime).expect("start the cold wait");
+    std::thread::sleep(Duration::from_secs(17));
+    reader
+        .feed(
+            format!("{}\n", initial_mode_response(&request)).as_bytes(),
+            &runtime,
+        )
+        .expect("late mode response");
+    let prompt = read_json_line_bounded(&mut harness.stdout);
+    assert_eq!(
+        prompt["message"]["content"][0]["text"], "SLOW REPLY",
+        "the queued prompt flushed once the late reply confirmed the mode"
+    );
+    assert!(
+        drain(&conn)
+            .iter()
+            .all(|event| !matches!(event, SessionEvent::AgentError { .. })),
+        "a reply inside the cold budget publishes no failure"
+    );
+    let gate = harness.gate.lock().expect("gate");
+    assert!(matches!(&gate.state, ClaudeModeGateState::Ready));
+    drop(gate);
+    assert!(harness.stdin.lock().expect("stdin").is_some());
+    drop(writer);
+    let _ = harness.child.kill();
+    let _ = harness.child.wait();
+}
+
 #[test]
 fn claude_mode_timeout_on_a_ready_gate_is_a_noop() {
     let mut harness = initial_mode_test_setup();
@@ -998,6 +1064,7 @@ fn claude_mode_timeout_on_a_ready_gate_is_a_noop() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"KEEP ME").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -1057,6 +1124,7 @@ fn claude_finish_while_initial_mode_is_pending_publishes_once_without_flushing()
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"DROP ON EXIT").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -2027,6 +2095,7 @@ fn the_static_route_frames_the_blocks_it_planned_through_the_mode_gate() {
         Arc::new(Mutex::new(None)),
         Some(Arc::clone(&gate)),
         test_abort_gate(),
+        None,
     );
     let plan = route
         .plan_prompt(
@@ -2067,7 +2136,7 @@ fn the_static_route_declines_a_prompt_with_no_attachments() {
     // and the send path writes it through the writer, exactly as before.
     let temp = PlanTempDir::new("route-none");
     let store = AttachmentStore::new(&temp.0);
-    let route = ClaudeStaticPrompt::new(Arc::new(Mutex::new(None)), None, test_abort_gate());
+    let route = ClaudeStaticPrompt::new(Arc::new(Mutex::new(None)), None, test_abort_gate(), None);
     assert!(route
         .plan_prompt(
             &store,
@@ -2288,9 +2357,10 @@ fn the_effort_frame_names_the_flag_and_its_refusal_names_it_back() {
             stdin: Arc::clone(&harness.stdin),
             gate: Arc::clone(&harness.gate),
             abort_gate: test_abort_gate(),
-            timeout: CONTROL_RESPONSE_TIMEOUT,
+            timeout: INITIAL_MODE_TIMEOUT,
             delivery_settings,
         },
+        None,
     );
     let (runtime, conn) = attached(&broker);
 
@@ -2383,9 +2453,10 @@ fn a_refused_delivery_effort_fails_the_session_instead_of_passing_silently() {
             stdin: Arc::clone(&harness.stdin),
             gate: Arc::clone(&harness.gate),
             abort_gate: test_abort_gate(),
-            timeout: CONTROL_RESPONSE_TIMEOUT,
+            timeout: INITIAL_MODE_TIMEOUT,
             delivery_settings,
         },
+        None,
     );
     let (runtime, conn) = attached(&broker);
     let mut writer = ClaudeWriter {
@@ -2393,6 +2464,7 @@ fn a_refused_delivery_effort_fails_the_session_instead_of_passing_silently() {
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        watch: None,
     };
     writer.write_all(b"Reply DONE").expect("buffer prompt");
     writer.flush().expect("queue prompt");
@@ -2567,7 +2639,7 @@ fn a_delivered_fast_mode_is_confirmed_on_the_create_path_in_all_three_answers() 
         &mut prelude,
         &fast_id,
         &settings,
-        CONTROL_RESPONSE_TIMEOUT,
+        SPAWN_CONFIRM_TIMEOUT,
     )
     .expect("the CLI took the flag");
     // Everything the wait read is handed on, in order — the init line it did not
@@ -2612,7 +2684,7 @@ fn a_delivered_fast_mode_is_confirmed_on_the_create_path_in_all_three_answers() 
         &mut prelude,
         &fast_id,
         &settings,
-        CONTROL_RESPONSE_TIMEOUT,
+        SPAWN_CONFIRM_TIMEOUT,
     )
     .expect_err("a refused flag refuses the creation");
     assert!(
@@ -2647,8 +2719,9 @@ fn a_delivered_fast_mode_is_confirmed_on_the_create_path_in_all_three_answers() 
     )
     .expect_err("a CLI that never answers must not be accepted");
     assert!(
-        error.message.contains("did not answer") && error.message.contains("creation is refused"),
-        "the timeout is a refusal, not a silence: {error:?}"
+        error.message.contains("did not answer")
+            && error.message.contains("spawn confirmation is refused"),
+        "the timeout is a refusal naming the phase, not a silence: {error:?}"
     );
     assert!(
         settings.lock().expect("settings").is_empty(),
@@ -2666,7 +2739,10 @@ fn fast_mode_wait_refusals_name_claude_for_every_read_failure() {
         "ACP stdio failed: broken pipe",
         "the ACP agent wrote more than 10485760 bytes without a newline; the creation is refused rather than buffered without end",
     ] {
-        let error = delivery_wait_error(WireError::new(ErrorCode::Io, source));
+        let error = delivery_wait_error(
+            WireError::new(ErrorCode::Io, source),
+            Duration::from_secs(15),
+        );
         assert!(error.message.contains("Claude"), "{source}: {}", error.message);
         assert!(!error.message.contains("ACP"), "{source}: {}", error.message);
     }

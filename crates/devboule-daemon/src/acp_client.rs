@@ -9,7 +9,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,7 @@ use super::permission_broker::{
     PermissionBroker, PermissionResponseError, MAX_ACP_PERMISSION_FIELD_BYTES,
     MAX_ACP_PERMISSION_OPTIONS,
 };
+use super::turn_watch::{silence_from_env, TurnWatch};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
@@ -107,12 +108,7 @@ const FIRST_RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_FIRST_RESPONSE_TIMEOUT_MS
 type AcpModeResponses = Arc<Mutex<HashMap<u64, Sender<Result<(), String>>>>>;
 
 fn turn_silence() -> Duration {
-    std::env::var(TURN_TIMEOUT_ENV)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .map(Duration::from_millis)
-        .filter(|duration| !duration.is_zero())
-        .unwrap_or(ACP_TURN_SILENCE)
+    silence_from_env(TURN_TIMEOUT_ENV, ACP_TURN_SILENCE)
 }
 
 /// The bound one awaited response carries — the handshake rpcs and the
@@ -302,207 +298,19 @@ fn advertised_initialize_params() -> Result<serde_json::Value, WireError> {
     })
 }
 
-#[derive(Clone, Copy)]
-enum PromptPhase {
-    Idle,
-    Live(u64),
-    Abandoned(u64),
-}
-
-struct TurnWatch {
-    silence: Duration,
-    last_activity: Mutex<Instant>,
-    prompt: Mutex<PromptPhase>,
-    client_work: std::sync::atomic::AtomicU64,
-    stop: AtomicBool,
-    runtime: Mutex<Option<Weak<SessionRuntime>>>,
-    cancel: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    broker: Mutex<Option<Weak<PermissionBroker>>>,
-}
-
-impl TurnWatch {
-    fn new() -> Arc<Self> {
-        let watch = Arc::new(Self {
-            silence: turn_silence(),
-            last_activity: Mutex::new(Instant::now()),
-            prompt: Mutex::new(PromptPhase::Idle),
-            client_work: std::sync::atomic::AtomicU64::new(0),
-            stop: AtomicBool::new(false),
-            runtime: Mutex::new(None),
-            cancel: Mutex::new(None),
-            broker: Mutex::new(None),
-        });
-        let thread_watch = Arc::downgrade(&watch);
-        let _ = std::thread::Builder::new()
-            .name("acp-turn-timeout".to_string())
-            .spawn(move || loop {
-                let Some(watch) = thread_watch.upgrade() else {
-                    return;
-                };
-                if watch.stop.load(Ordering::Acquire) {
-                    return;
-                }
-                watch.tick();
-                drop(watch);
-                std::thread::sleep(Duration::from_millis(50));
-            });
-        watch
-    }
-
-    fn set_cancel(&self, cancel: Arc<dyn Fn() + Send + Sync>) {
-        if let Ok(mut slot) = self.cancel.lock() {
-            *slot = Some(cancel);
-        }
-    }
-
-    fn bind_runtime(&self, runtime: &Arc<SessionRuntime>) {
-        if let Ok(mut slot) = self.runtime.lock() {
-            *slot = Some(Arc::downgrade(runtime));
-        }
-    }
-
-    fn bind_broker(&self, broker: &Arc<PermissionBroker>) {
-        if let Ok(mut slot) = self.broker.lock() {
-            *slot = Some(Arc::downgrade(broker));
-        }
-    }
-
-    fn note_activity(&self) {
-        if let Ok(mut last) = self.last_activity.lock() {
-            *last = Instant::now();
-        }
-    }
-
-    fn begin_client_work(&self) {
-        self.client_work.fetch_add(1, Ordering::AcqRel);
-        self.note_activity();
-    }
-
-    fn end_client_work(&self) {
-        self.client_work
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                Some(value.saturating_sub(1))
-            })
-            .ok();
-        self.note_activity();
-    }
-
-    fn start_prompt(&self, id: u64) {
-        if let Ok(mut prompt) = self.prompt.lock() {
-            *prompt = PromptPhase::Live(id);
-        }
-        self.note_activity();
-    }
-
-    fn finish_prompt(&self, id: u64) -> bool {
-        let Ok(mut prompt) = self.prompt.lock() else {
-            return false;
-        };
-        match *prompt {
-            PromptPhase::Live(current) if current == id => {
-                *prompt = PromptPhase::Idle;
-                true
-            }
-            PromptPhase::Abandoned(current) if current == id => false,
-            _ => false,
-        }
-    }
-
-    fn prompt_is_live(&self) -> bool {
-        matches!(
-            self.prompt.lock().ok().as_deref(),
-            Some(PromptPhase::Live(_))
-        )
-    }
-
-    fn shutdown(&self) {
-        self.stop.store(true, Ordering::Release);
-    }
-
-    fn abandon_live_prompt(&self) -> Option<u64> {
-        let Ok(mut prompt) = self.prompt.lock() else {
-            return None;
-        };
-        match *prompt {
-            PromptPhase::Live(id) => {
-                *prompt = PromptPhase::Abandoned(id);
-                Some(id)
-            }
-            _ => None,
-        }
-    }
-
-    fn tick(&self) {
-        if self.stop.load(Ordering::Acquire) {
-            return;
-        }
-        if self.client_work.load(Ordering::Acquire) != 0 {
-            return;
-        }
-        let pending_permission = self
-            .broker
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
-            .map(|broker| broker.pending_len() > 0)
-            .unwrap_or(false);
-        if pending_permission {
-            return;
-        }
-        let idle = self
-            .last_activity
-            .lock()
-            .ok()
-            .map(|last| last.elapsed() >= self.silence)
-            .unwrap_or(false);
-        if !idle {
-            return;
-        }
-        if self.client_work.load(Ordering::Acquire) != 0 {
-            return;
-        }
-        if self
-            .broker
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
-            .map(|broker| broker.pending_len() > 0)
-            .unwrap_or(false)
-        {
-            return;
-        }
-        let Some(prompt_id) = self.abandon_live_prompt() else {
-            return;
-        };
-        if let Ok(cancel) = self.cancel.lock() {
-            if let Some(cancel) = cancel.as_ref() {
-                cancel();
-            }
-        }
-        if let Some(runtime) = self
-            .runtime
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
-        {
-            let _ = runtime.publish_agent_event(
-                SessionEvent::AgentError {
-                    message: format!(
-                        "ACP prompt {prompt_id} stayed silent for {}s and was cancelled.",
-                        self.silence.as_secs().max(1)
-                    ),
-                },
-                None,
-            );
-            publish_turn_finished(&runtime, "cancelled");
-        }
-    }
-}
-
-impl Drop for TurnWatch {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-    }
+/// What expiry does for this family, in the words the shared tick always
+/// used: say which prompt stayed silent, then finish the run as cancelled.
+fn turn_expired(runtime: &SessionRuntime, prompt_id: u64, silence: Duration) {
+    let _ = runtime.publish_agent_event(
+        SessionEvent::AgentError {
+            message: format!(
+                "ACP prompt {prompt_id} stayed silent for {}s and was cancelled.",
+                silence.as_secs().max(1)
+            ),
+        },
+        None,
+    );
+    publish_turn_finished(runtime, "cancelled");
 }
 
 /// The id paired with [`COMMAND_ENV`] becomes a journal row's `provider` on a
@@ -1323,7 +1131,7 @@ impl AcpTransport {
             )),
             pending_responses,
             host,
-            turn: TurnWatch::new(),
+            turn: TurnWatch::new(turn_silence(), Arc::new(turn_expired)),
             stdin,
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashSet::new())),
@@ -3263,7 +3071,7 @@ impl AcpReader {
             session_id,
             permission_broker,
             host,
-            TurnWatch::new(),
+            TurnWatch::new(turn_silence(), Arc::new(turn_expired)),
             None,
             Vec::new(),
             None,

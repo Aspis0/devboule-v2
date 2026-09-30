@@ -24,6 +24,7 @@ use serde_json::Value;
 
 use super::claude_task_seed::{envelope_may_carry_tasks, seed_claude_task_state};
 use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
+use super::turn_watch::{silence_from_env, TurnWatch};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
@@ -40,7 +41,100 @@ use crate::server::ServerState;
 
 const COMMAND_ENV: &str = "DEVBOULE_CLAUDE_COMMAND";
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
+/// The hot-path control wait: a mode switch on a session that is already
+/// running. The child has answered before, so the old patience stands.
 const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+/// The spawn-confirmation wait: the delivered fast-mode answer read on the
+/// create path before the child is accepted. MCP and extension loading ride
+/// the same prelude, and a cold start can stay quiet well past fifteen
+/// seconds while the reply is still coming — the false refusal the field
+/// chased once the hot path was measured.
+const SPAWN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
+/// The initial-mode wait: the first `set_permission_mode` answer, whose
+/// confirmation gates every queued prompt. Same cold start, same budget.
+const INITIAL_MODE_TIMEOUT: Duration = Duration::from_secs(60);
+/// The turn watchdog's silence bound: quiet stretches with nothing carded
+/// and nothing running past the tool grace. Twice the house silence mark
+/// (`SESSION_SILENCE_THRESHOLD`: 300 s earns a warning); past double that
+/// with nothing owed, a CLI that has said nothing is one that will not say
+/// anything. Tunable without a rebuild; tests inject short bounds through
+/// the watch constructor.
+const TURN_SILENCE: Duration = Duration::from_secs(600);
+const TURN_SILENCE_ENV: &str = "DEVBOULE_CLAUDE_TURN_SILENCE_MS";
+
+fn turn_silence() -> Duration {
+    silence_from_env(TURN_SILENCE_ENV, TURN_SILENCE)
+}
+
+/// The soft-interrupt road, shared by the killer and the turn watchdog's
+/// expiry: arm the stale-abort expectation, ask the CLI to stop its turn,
+/// drop open cards. A turn the watchdog ends is interrupted exactly like a
+/// turn the person stops, so its late result meets U5b's guard
+/// (`claude_abort`): abort-marked and outranked by a replacement, it is
+/// withheld; genuine, it consumes the expectation and settles like any
+/// result. A CLI deaf to interrupts still settles every turn — nothing here
+/// can strand a run, at worst an early finish.
+fn interrupt_claude_turn(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    next_id: &Arc<AtomicU64>,
+    broker: &Arc<PermissionBroker>,
+    abort_gate: &ClaudeAbortGateRef,
+    cancelled: &Arc<AtomicBool>,
+) {
+    // The expectation first, exactly as `Killer::interrupt` always did:
+    // the gate records the interrupt at the moment it is requested, even
+    // when the frame below never goes out. Skipping it when cancelled
+    // would leave the request unrecorded while its (absent) answer is
+    // still owed downstream.
+    abort_gate.note_interrupt();
+    // A kill already closed stdin and drained the broker; a late
+    // interrupt would only spawn a thread doomed to BrokenPipe.
+    if cancelled.load(Ordering::Acquire) {
+        return;
+    }
+    let request_id = format!("interrupt-{}", next_id.fetch_add(1, Ordering::Relaxed));
+    send_interrupt_frame(Arc::clone(stdin), request_id);
+    broker.cancel_pending();
+}
+
+/// The Claude family's watchdog expiry — the real finish path, not a bypass:
+/// interrupt the CLI through the shared road first, so the abandoned turn's
+/// late result is stale by U5b's epoch, then the turn transition
+/// `settle_turn_finish` decides under the turn-hold, the same lock a result
+/// envelope's finish takes, then the error notice and the settled finish
+/// row, both journaled like any daemon-authored row, so activity returns to
+/// idle and the transcript says why the run ended even after a restart.
+fn claude_turn_watch(
+    silence: Duration,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    broker: Arc<PermissionBroker>,
+    abort_gate: ClaudeAbortGateRef,
+    cancelled: Arc<AtomicBool>,
+) -> Arc<TurnWatch> {
+    TurnWatch::new(
+        silence,
+        Arc::new(move |runtime, _prompt, silence| {
+            interrupt_claude_turn(&stdin, &next_id, &broker, &abort_gate, &cancelled);
+            // Past a kill the interrupt above is a no-op and so is the
+            // rest: settling and publishing on a gone child would write
+            // an expiry for a turn the kill already ended.
+            if cancelled.load(Ordering::Acquire) {
+                return;
+            }
+            let _ = runtime.settle_turn_finish(|| false);
+            let _ = runtime.publish_agent_error(format!(
+                "Claude produced no output for {} s during the turn; the run was ended.",
+                silence.as_secs().max(1)
+            ));
+            let _ = runtime.publish_daemon_event(SessionEvent::AgentFinished {
+                stop_reason: "error".to_string(),
+                model_id: None,
+                usage: None,
+            });
+        }),
+    )
+}
 
 type ClaudeModeResponses = Arc<Mutex<HashMap<String, Sender<Result<(), String>>>>>;
 type ClaudeFrameWriter = Arc<dyn Fn(&[u8]) -> io::Result<()> + Send + Sync>;
@@ -99,7 +193,7 @@ impl ClaudeModeGateWiring {
             stdin,
             gate,
             abort_gate,
-            timeout: CONTROL_RESPONSE_TIMEOUT,
+            timeout: INITIAL_MODE_TIMEOUT,
             delivery_settings: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -774,7 +868,7 @@ fn spawn_claude_child(
             &mut prelude,
             &request_id,
             &delivery_settings,
-            CONTROL_RESPONSE_TIMEOUT,
+            SPAWN_CONFIRM_TIMEOUT,
         );
         if let Err(error) = outcome {
             if let Ok(mut process) = process.lock() {
@@ -798,11 +892,21 @@ fn spawn_claude_child(
     };
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let turn_watch = claude_turn_watch(
+        turn_silence(),
+        Arc::clone(&stdin),
+        Arc::clone(&next_id),
+        Arc::clone(&permission_broker),
+        Arc::clone(&abort_gate),
+        Arc::clone(&cancelled),
+    );
     let writer = ClaudeWriter {
         stdin: Arc::clone(&stdin),
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&mode_gate)),
         abort_gate: Arc::clone(&abort_gate),
+        watch: Some(Arc::clone(&turn_watch)),
     };
     // The static prompt route needs the same stdin and the same gate: an image
     // frame must queue behind the initial mode response exactly as a text
@@ -811,13 +915,14 @@ fn spawn_claude_child(
         Arc::clone(&stdin),
         Some(Arc::clone(&mode_gate)),
         Arc::clone(&abort_gate),
+        Some(Arc::clone(&turn_watch)),
     ));
     let killer = ClaudeKiller {
         process: Arc::clone(&process),
         stdin: Arc::clone(&stdin),
         next_id: Arc::clone(&next_id),
         permission_broker: Arc::clone(&permission_broker),
-        cancelled: Arc::new(AtomicBool::new(false)),
+        cancelled: Arc::clone(&cancelled),
         abort_gate: Arc::clone(&abort_gate),
     };
     let mut wiring = ClaudeModeGateWiring::new(
@@ -833,6 +938,7 @@ fn spawn_claude_child(
         Arc::clone(&mode_responses),
         Arc::clone(&next_id),
         wiring,
+        Some(turn_watch),
     )
     .with_pending_initialize(pending_initialize);
     // The fast-mode wait read ahead in this same pipe, and whatever it saw that
@@ -1354,6 +1460,7 @@ pub(crate) struct ClaudeStaticPrompt {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     mode_gate: Option<ClaudeModeGateRef>,
     abort_gate: ClaudeAbortGateRef,
+    watch: Option<Arc<TurnWatch>>,
 }
 
 impl ClaudeStaticPrompt {
@@ -1361,11 +1468,13 @@ impl ClaudeStaticPrompt {
         stdin: Arc<Mutex<Option<ChildStdin>>>,
         mode_gate: Option<ClaudeModeGateRef>,
         abort_gate: ClaudeAbortGateRef,
+        watch: Option<Arc<TurnWatch>>,
     ) -> Self {
         Self {
             stdin,
             mode_gate,
             abort_gate,
+            watch,
         }
     }
 }
@@ -1386,6 +1495,7 @@ impl super::StaticImageSink for ClaudeStaticPrompt {
             stdin: Arc::clone(&self.stdin),
             mode_gate: self.mode_gate.clone(),
             abort_gate: Arc::clone(&self.abort_gate),
+            watch: self.watch.clone(),
             plan,
         })))
     }
@@ -1398,6 +1508,7 @@ struct ClaudePlannedPrompt {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     mode_gate: Option<ClaudeModeGateRef>,
     abort_gate: ClaudeAbortGateRef,
+    watch: Option<Arc<TurnWatch>>,
     plan: ClaudePromptPlan,
 }
 
@@ -1423,7 +1534,11 @@ impl super::PlannedStaticPrompt for ClaudePlannedPrompt {
             &self.abort_gate,
             bytes,
         )
-        .map_err(send_failure)
+        .map_err(send_failure)?;
+        if let Some(watch) = &self.watch {
+            watch.start_turn();
+        }
+        Ok(())
     }
 }
 
@@ -1442,6 +1557,9 @@ struct ClaudeWriter {
     pending: Vec<u8>,
     mode_gate: Option<ClaudeModeGateRef>,
     abort_gate: ClaudeAbortGateRef,
+    /// Armed when a prompt reaches the child, so the watchdog counts silence
+    /// only for a turn that was actually started.
+    watch: Option<Arc<TurnWatch>>,
 }
 
 impl Write for ClaudeWriter {
@@ -1465,7 +1583,11 @@ impl Write for ClaudeWriter {
             self.mode_gate.as_ref(),
             &self.abort_gate,
             bytes,
-        )
+        )?;
+        if let Some(watch) = &self.watch {
+            watch.start_turn();
+        }
+        Ok(())
     }
 }
 
@@ -1757,9 +1879,21 @@ fn send_initial_fast_mode(
 /// no sentence at all: the human reads it and goes looking at the wrong thing.
 /// The bound, the refusal and the overflow rule are the shared ones; only the
 /// nouns are this family's.
-fn delivery_wait_error(error: WireError) -> WireError {
+fn delivery_wait_error(error: WireError, budget: Duration) -> WireError {
     if error.code != ErrorCode::Io {
         return error;
+    }
+    // The shared read's own timeout sentence: it names the wrong family and
+    // the phase as a creation, and its seconds rendering turns a sub-second
+    // bound into "0s". The spawn's confirmation is what was waited for.
+    if error.message.contains("did not answer within") {
+        return WireError::new(
+            ErrorCode::Io,
+            format!(
+                "Claude did not answer the delivered fast mode within {}; the spawn confirmation is refused rather than left on a flag nobody confirmed",
+                human_duration(budget)
+            ),
+        );
     }
     WireError::new(
         ErrorCode::Io,
@@ -1824,11 +1958,13 @@ fn confirm_delivery_settings(
         if remaining.is_zero() {
             retire(delivery_settings, request_id);
             // The wait is named in the unit that can actually describe it: a
-            // sub-second bound said "0s" and read like an unset timeout.
+            // sub-second bound said "0s" and read like an unset timeout. The
+            // phase names what was being waited for — the spawn's own
+            // confirmation, not any later control exchange.
             return Err(WireError::new(
                 ErrorCode::Io,
                 format!(
-                    "Claude did not answer the delivered fast mode within {}; the creation is refused rather than left on a flag nobody confirmed",
+                    "Claude did not answer the delivered fast mode within {}; the spawn confirmation is refused rather than left on a flag nobody confirmed",
                     human_duration(budget)
                 ),
             ));
@@ -1849,7 +1985,7 @@ fn confirm_delivery_settings(
             Ok(line) => line,
             Err(error) => {
                 retire(delivery_settings, request_id);
-                return Err(delivery_wait_error(error));
+                return Err(delivery_wait_error(error, budget));
             }
         };
         prelude.extend_from_slice(text.as_bytes());
@@ -2137,9 +2273,15 @@ impl ClaudeKiller {
 impl SessionKiller for ClaudeKiller {
     /// Soft interrupt of a running turn: the aborted result the CLI will
     /// send for it is now expected, so a stale one can be told apart.
+    /// The watchdog's expiry takes this same road (`interrupt_claude_turn`).
     fn interrupt(&mut self) {
-        self.abort_gate.note_interrupt();
-        self.send_interrupt();
+        interrupt_claude_turn(
+            &self.stdin,
+            &self.next_id,
+            &self.permission_broker,
+            &self.abort_gate,
+            &self.cancelled,
+        );
     }
 
     /// Soft interrupt with no turn running: nothing will answer it, so no
@@ -2211,6 +2353,10 @@ struct ClaudeReader {
     initial_mode_timer_started: bool,
     initial_mode_timer_cancel: Option<Sender<()>>,
     initial_mode_timer_thread: Option<JoinHandle<()>>,
+    /// The turn watchdog, set at spawn (`None` on the bare `new` the tests
+    /// and the seed use): inbound lines are its activity, a result ends its
+    /// turn, and its expiry finishes the run through the settle path.
+    watch: Option<Arc<TurnWatch>>,
 }
 
 /// Seed attempts before the reader latches and stops retrying.
@@ -2274,7 +2420,7 @@ impl ClaudeReader {
             task_state_seeded: false,
             seed_attempts: 0,
             seed_cooldown_frames: 0,
-            initial_mode_timeout: CONTROL_RESPONSE_TIMEOUT,
+            initial_mode_timeout: INITIAL_MODE_TIMEOUT,
             // Overwritten by `with_mode_gate` from the wiring; a bare `new`
             // has no writer to share a gate with, so the safe default is the
             // one that never withholds.
@@ -2282,6 +2428,7 @@ impl ClaudeReader {
             initial_mode_timer_started: false,
             initial_mode_timer_cancel: None,
             initial_mode_timer_thread: None,
+            watch: None,
         }
     }
 
@@ -2292,6 +2439,7 @@ impl ClaudeReader {
         mode_responses: ClaudeModeResponses,
         next_id: Arc<AtomicU64>,
         wiring: ClaudeModeGateWiring,
+        watch: Option<Arc<TurnWatch>>,
     ) -> Self {
         let mut reader = Self::new(view, permission_broker, controls, mode_responses, next_id);
         reader.stdin = Some(wiring.stdin);
@@ -2299,6 +2447,14 @@ impl ClaudeReader {
         reader.initial_mode_timeout = wiring.timeout;
         reader.delivery_settings = wiring.delivery_settings;
         reader.abort_gate = wiring.abort_gate;
+        // The spawn's own connection, through the same constructor the tests
+        // use: the watch observes this reader's lines and holds this
+        // session's cards, so deleting either half turns the watchdog tests
+        // red.
+        if let Some(watch) = &watch {
+            watch.bind_broker(&reader.permission_broker);
+        }
+        reader.watch = watch;
         reader
     }
 
@@ -2358,6 +2514,9 @@ impl ClaudeReader {
     }
 
     fn dispatch_line(&mut self, line: &str, runtime: &Arc<SessionRuntime>) {
+        if let Some(watch) = &self.watch {
+            watch.note_activity();
+        }
         // The seed waits for the first live line that can move a checklist:
         // a task tool_use names its tool on the wire, while init, text and
         // ordinary tool traffic never do — so task-less sessions never read
@@ -2417,24 +2576,53 @@ impl ClaudeReader {
         // precedes the decision — the finish is withheld — or finds the run
         // already finished, so it is refused and its text starts a new run.
         // Deciding before the journal append also lets the withholding be
-        // recorded ahead of the envelope it belongs to.
+        // recorded ahead of the envelope it belongs to. The watchdog loses
+        // the same race through the watch's own turn state: when this result
+        // ends the turn, the watch's turn is marked over, so its expiry can
+        // no longer fire; when the expiry already fired, the result's finish
+        // row is the watchdog's to own, and only its error rows publish.
+        // A result that arrives with no turn running — duplicate,
+        // post-kill row, or deaf CLI's late answer — finishes nothing: the
+        // turn it names is already over, and its hooks already fired for
+        // whatever ended it.
+        let mut watchdog_owns_finish = false;
+        let mut stale_result = false;
+        // Read before the settle: a result finishes only the turn that is
+        // running when it arrives.
+        let turn_was_active = runtime.is_running_turn();
         let withhold_finish = if value.get("type").and_then(Value::as_str) == Some("result") {
             let abort_marked = crate::claude_view::is_interrupted_result(&value);
-            runtime.settle_turn_finish(|| self.abort_gate.settle_result(abort_marked))
+            let withheld =
+                runtime.settle_turn_finish(|| self.abort_gate.settle_result(abort_marked));
+            if !withheld {
+                if !turn_was_active {
+                    // Disarm: a dead turn must not expire later, and the
+                    // marker below keeps replay to the same zero finishes.
+                    if let Some(watch) = &self.watch {
+                        watch.end_turn();
+                    }
+                    stale_result = true;
+                } else if let Some(watch) = &self.watch {
+                    watchdog_owns_finish = !watch.end_turn();
+                }
+            }
+            withheld
         } else {
             false
         };
-        if withhold_finish {
-            // The journal keeps the wire frame verbatim; this marker row is
-            // what replay reads to suppress the same finish on reattach.
-            // Adjacency is load-bearing: the marker owns exactly the NEXT
-            // journal row, and the view expires it on any frame that is not
-            // this result — so nothing may be journalled between the two
-            // appends, which is why they are two consecutive calls on this
-            // same reader thread with no early return between them.
-            runtime.journal_agent_envelope(&crate::claude_view::withheld_finish_marker());
-        }
-        let event_seq = runtime.journal_agent_envelope(&value);
+        // The marker and its envelope journal as one adjacent pair: the
+        // marker owns exactly the NEXT journal row, and the view expires it
+        // on any frame that is not this result. It covers all three
+        // suppressions above — a withheld finish, the watchdog's own, and
+        // a stale one — because replay has no turn state and would
+        // otherwise derive a finish from each of these envelopes. See
+        // `journal_agent_envelope_pair` for why they share one call.
+        let event_seq = if withhold_finish || watchdog_owns_finish || stale_result {
+            runtime
+                .journal_agent_envelope_pair(&crate::claude_view::withheld_finish_marker(), &value)
+        } else {
+            runtime.journal_agent_envelope(&value)
+        };
         if self.dispatch_control_response(&value, runtime) {
             return;
         }
@@ -2469,7 +2657,9 @@ impl ClaudeReader {
         }
         let settled = value.get("type").and_then(Value::as_str) == Some("result");
         for event in self.view.ingest(&view_value) {
-            if withhold_finish && matches!(event, SessionEvent::AgentFinished { .. }) {
+            if (withhold_finish || watchdog_owns_finish || stale_result)
+                && matches!(event, SessionEvent::AgentFinished { .. })
+            {
                 continue;
             }
             crate::plan_usage_cache::note_live(&event);
@@ -2487,6 +2677,14 @@ impl ClaudeReader {
             } else {
                 self.publish_with_seq(runtime, event, event_seq);
             }
+        }
+        // The watchdog's tool hold follows the frame just ingested: the
+        // view hands over the open set's latest start, so the clock holds
+        // inside the grace and lapses past it. Card frames return before
+        // the ingest loop above, and their hold lives in the broker the
+        // tick already polls.
+        if let Some(watch) = &self.watch {
+            watch.set_tool_hold(self.view.open_tool_since());
         }
     }
 
@@ -2523,7 +2721,10 @@ impl ClaudeReader {
                         &timer_runtime,
                         Some(&request_id),
                         true,
-                        "Claude mode response timed out; queued prompt(s) were not delivered because Claude never confirmed the permission mode.",
+                        &format!(
+                            "Claude's initial permission mode was not confirmed within {}; queued prompt(s) were not delivered because Claude never confirmed the initial mode.",
+                            human_duration(timer_timeout)
+                        ),
                     );
                 }
             }) {
@@ -3005,6 +3206,9 @@ impl ClaudeReader {
 
 impl ReaderDispatch for ClaudeReader {
     fn feed(&mut self, bytes: &[u8], runtime: &Arc<SessionRuntime>) -> Result<(), String> {
+        if let Some(watch) = &self.watch {
+            watch.bind_runtime(runtime);
+        }
         self.start_initial_mode_timeout(runtime);
         let mut bytes = bytes;
         if self.discarding_oversized_line {
@@ -3053,6 +3257,9 @@ impl ReaderDispatch for ClaudeReader {
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
         self.cancel_initial_mode_timeout();
+        if let Some(watch) = &self.watch {
+            watch.shutdown();
+        }
         if let Some(mode_gate) = &self.mode_gate {
             fail_initial_mode_parts(
                 mode_gate,
@@ -3174,3 +3381,15 @@ impl StderrSource for ClaudeStderr {
 #[cfg(test)]
 #[path = "claude_client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "claude_turn_watch_test_support.rs"]
+mod turn_watch_test_support;
+
+#[cfg(test)]
+#[path = "claude_turn_watch_tests.rs"]
+mod turn_watch_tests;
+
+#[cfg(test)]
+#[path = "claude_turn_watch_suppression_tests.rs"]
+mod turn_watch_suppression_tests;

@@ -1144,6 +1144,51 @@ impl SessionRuntime {
         Some(seq)
     }
 
+    /// Journal two envelopes as one adjacent pair under a single closed
+    /// check, returning the second row's seq. The suppression marker is
+    /// only meaningful immediately ahead of the envelope it owns: two
+    /// separate calls admit a `close_output` between them, which journals
+    /// a marker with no envelope to own — and replay then spends it
+    /// suppressing the next turn's genuine finish. The two appends are still
+    /// separate queue sends: a full queue can refuse either one. A refused
+    /// first row skips the second; a refused second row can still strand the
+    /// marker, in a session this already marks degraded.
+    pub(crate) fn journal_agent_envelope_pair(
+        &self,
+        first: &serde_json::Value,
+        second: &serde_json::Value,
+    ) -> Option<u64> {
+        let Ok(mut stream) = self.lock_stream() else {
+            return None;
+        };
+        if stream.output_closed {
+            return None;
+        }
+        let generation = stream.generation;
+        let first_seq = stream.next_seq;
+        stream.next_seq = stream.next_seq.saturating_add(2);
+        drop(stream);
+        if let Some(journal) = &self.journal {
+            for (seq, envelope) in [(first_seq, first), (first_seq + 1, second)] {
+                if let Some(record) = crate::journal::acp_envelope_record(
+                    self.session_id.clone(),
+                    generation,
+                    seq,
+                    envelope,
+                ) {
+                    let accepted = journal.try_append(record);
+                    if !accepted || journal.is_session_degraded(&self.session_id) {
+                        self.mark_journal_degraded();
+                    }
+                    if !accepted {
+                        break;
+                    }
+                }
+            }
+        }
+        Some(first_seq + 1)
+    }
+
     pub(crate) fn store_session_manifest(&self, event: SessionEvent) -> SessionEvent {
         let Ok(mut stored) = self.session_manifest.lock() else {
             return event;

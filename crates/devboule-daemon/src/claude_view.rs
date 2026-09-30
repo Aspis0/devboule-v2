@@ -5,10 +5,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use devboule_protocol::{
-    AgentBackgroundTask, AvailableCommandView, PlanWindow, SessionEvent, SessionModeStateView,
-    SessionModeView, SessionModel, SubagentTaskStatus, ToolLocation, TurnUsage, UnattendedState,
+    AgentBackgroundTask, AvailableCommandView, NoticeSeverity, PlanWindow, SessionEvent,
+    SessionModeStateView, SessionModeView, SessionModel, SubagentTaskStatus, ToolLocation,
+    TurnUsage, UnattendedState,
 };
 use serde_json::Value;
 
@@ -81,6 +83,17 @@ pub(crate) struct ClaudeView {
     /// This turn's `AskUserQuestion` call ids, so a granted result drops its
     /// echo text. Cleared at turn end: a late result reads as ordinary.
     question_tool_ids: HashSet<String>,
+    /// `tool_use` ids with no matching `tool_result` yet, and the latest
+    /// start among them. The reader holds the watchdog clock while the set
+    /// is non-empty, but only inside the watch's grace measured from that
+    /// start — a use never answered lapses back to ordinary silence instead
+    /// of holding forever. Every assistant `tool_use` block counts, top-
+    /// level and sidechain inner calls alike: while calls keep starting the
+    /// clock is fresh from the lines anyway, and once everything goes quiet
+    /// the grace runs from the last start. Cleared at turn end with the
+    /// rest of the turn state.
+    open_tools: HashSet<String>,
+    last_tool_start: Option<Instant>,
     /// The last published command list, by full value: the initialize
     /// handshake's rich list and the init frame's bare names are two readings
     /// of one menu, so a repeat publishes nothing.
@@ -92,6 +105,11 @@ pub(crate) struct ClaudeView {
     /// envelope derives its usual events minus the `AgentFinished` the live
     /// pass suppressed. Live stdout never carries the marker.
     withheld_finish_pending: bool,
+    /// The compaction latch: a `compact_boundary` announces once. The CLI
+    /// repeats the boundary as a heartbeat for the one compaction it marks,
+    /// so repeats stay silenced until a turn ends — only a `result` frame
+    /// re-arms, because only a turn boundary proves a new compaction.
+    compaction_announced: bool,
 }
 
 impl ClaudeView {
@@ -107,8 +125,11 @@ impl ClaudeView {
             cwd,
             published_commands: None,
             question_tool_ids: HashSet::new(),
+            open_tools: HashSet::new(),
+            last_tool_start: None,
             task_state: ClaudeTaskState::default(),
             withheld_finish_pending: false,
+            compaction_announced: false,
         }
     }
 
@@ -137,6 +158,17 @@ impl ClaudeView {
         self.current_mode = Some(mode_id.to_string());
     }
 
+    /// The open set's latest tool start, if any call is still unanswered.
+    /// The reader holds the watchdog clock while this is `Some`; the watch
+    /// bounds the hold by its grace from the stamp.
+    pub(crate) fn open_tool_since(&self) -> Option<Instant> {
+        if self.open_tools.is_empty() {
+            None
+        } else {
+            self.last_tool_start
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn current_mode_id(&self) -> Option<&str> {
         self.current_mode.as_deref()
@@ -153,6 +185,12 @@ impl ClaudeView {
         // turn's completion.
         if frame_type != Some(WITHHELD_FINISH_MARKER_TYPE) && frame_type != Some("result") {
             self.withheld_finish_pending = false;
+        }
+        // One compaction, one marker: repeats of the boundary — even with
+        // unrelated frames between them — belong to the same compaction
+        // until a turn ends. Only a `result` frame re-arms the latch.
+        if frame_type == Some("result") {
+            self.compaction_announced = false;
         }
         match frame_type {
             Some("system") => self.ingest_system(envelope),
@@ -178,6 +216,7 @@ impl ClaudeView {
                 Some("task_started") => self.ingest_task_started(envelope),
                 Some("task_notification") => self.ingest_task_notification(envelope),
                 Some("background_tasks_changed") => self.ingest_background_tasks_changed(envelope),
+                Some("compact_boundary") => self.ingest_compact_boundary(envelope),
                 Some("task_updated") => {
                     // Claude sends a partial patch here; lifecycle bookends are
                     // the only complete task state this view can reconcile.
@@ -239,6 +278,35 @@ impl ClaudeView {
             }
         }
         events
+    }
+
+    /// The compaction marker, the same notice pi's `compaction_end` shows:
+    /// the sentence names the trigger, and the latch in `ingest` keeps the
+    /// CLI's repeated boundary frames to one announcement per compaction.
+    /// The metadata key has three spellings in the wild; the first present
+    /// one wins, and anything but an explicit `manual` trigger reads
+    /// automatic — so a manual `/compact` under a camel key still says
+    /// manual instead of confidently announcing the wrong trigger.
+    fn ingest_compact_boundary(&mut self, envelope: &Value) -> Vec<SessionEvent> {
+        if self.compaction_announced {
+            return Vec::new();
+        }
+        self.compaction_announced = true;
+        let manual = ["compact_metadata", "compactMetadata", "compactionMetadata"]
+            .iter()
+            .filter_map(|key| envelope.get(key))
+            .filter_map(|metadata| metadata.get("trigger").and_then(Value::as_str))
+            .next()
+            == Some("manual");
+        vec![SessionEvent::SessionNotice {
+            text: if manual {
+                "Context manually compacted"
+            } else {
+                "Context automatically compacted"
+            }
+            .to_string(),
+            severity: NoticeSeverity::Info,
+        }]
     }
 
     fn ingest_status(&mut self, envelope: &Value) -> Vec<SessionEvent> {
@@ -594,14 +662,17 @@ impl ClaudeView {
                     let is_question =
                         block.get("name").and_then(Value::as_str) == Some("AskUserQuestion");
                     let is_plan = block.get("name").and_then(Value::as_str) == Some("ExitPlanMode");
-                    if is_question || is_plan {
-                        if let Some(id) = block.get("id").and_then(Value::as_str) {
-                            if is_question {
-                                self.question_tool_ids.insert(id.to_string());
-                            }
-                            if is_plan {
-                                self.plan_tool_ids.insert(id.to_string());
-                            }
+                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                        // Every call counts, carded or sidechain inner: the
+                        // stamp is the latest start, so the grace always runs
+                        // from the most recent call still unanswered.
+                        self.open_tools.insert(id.to_string());
+                        self.last_tool_start = Some(Instant::now());
+                        if is_question {
+                            self.question_tool_ids.insert(id.to_string());
+                        }
+                        if is_plan {
+                            self.plan_tool_ids.insert(id.to_string());
                         }
                     }
                     if let Some(event) = tool_call_from_block(
@@ -652,10 +723,41 @@ impl ClaudeView {
         let Some(content) = envelope
             .get("message")
             .and_then(|message| message.get("content"))
-            .and_then(Value::as_array)
         else {
             return events;
         };
+        // The string form carries the whole content as one text: captured
+        // history entries spell `<local-command-stdout>` this way, so the
+        // wrapper scan accepts both shapes.
+        if let Some(text) = content.as_str() {
+            if let Some(inner) = command_stdout_inner(text) {
+                events.push(SessionEvent::SessionNotice {
+                    text: inner,
+                    severity: NoticeSeverity::Info,
+                });
+            }
+            return events;
+        }
+        let Some(content) = content.as_array() else {
+            return events;
+        };
+        // A local slash command's answer rides the command's own user
+        // envelope, wrapped in the CLI's display tags; the inner text is the
+        // transcript's notice, never the wrapper.
+        for block in content {
+            if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+                if let Some(id) = block.get("tool_use_id").and_then(Value::as_str) {
+                    self.open_tools.remove(id);
+                }
+                continue;
+            }
+            if let Some(text) = local_command_stdout_text(block) {
+                events.push(SessionEvent::SessionNotice {
+                    text,
+                    severity: NoticeSeverity::Info,
+                });
+            }
+        }
         content
             .iter()
             .filter_map(|block| {
@@ -685,11 +787,11 @@ impl ClaudeView {
     fn ingest_result(&mut self, envelope: &Value) -> Vec<SessionEvent> {
         self.question_tool_ids.clear();
         self.plan_tool_ids.clear();
+        self.open_tools.clear();
+        self.last_tool_start = None;
         // Unmatched task-tool inputs die with the turn: a result never
         // arrives after its turn's end. The list itself is session state.
         self.task_state.end_turn();
-        // Debt: stream-json has no ACP-like inactivity watchdog, so a dead
-        // CLI can leave a turn without ever producing an AgentFinished event.
         // An error result's `stop_reason` is whatever the failing call was
         // mid-way through, not a reason, so the error markers decide.
         let stop_reason = if envelope.get("is_error").and_then(Value::as_bool) == Some(true) {
@@ -910,6 +1012,24 @@ impl ClaudeView {
             _ => Some(full.to_string()),
         }
     }
+}
+
+/// The inner text of a `<local-command-stdout>` wrapper, trimmed. None
+/// for a wrapper that carries nothing.
+fn command_stdout_inner(text: &str) -> Option<String> {
+    const OPEN: &str = "<local-command-stdout>";
+    const CLOSE: &str = "</local-command-stdout>";
+    let inner = text.trim().strip_prefix(OPEN)?.strip_suffix(CLOSE)?.trim();
+    (!inner.is_empty()).then(|| inner.to_string())
+}
+
+/// The inner text of a `<local-command-stdout>` wrapper block, trimmed. None
+/// for any other block, and for a wrapper that carries nothing.
+fn local_command_stdout_text(block: &Value) -> Option<String> {
+    if block.get("type").and_then(Value::as_str) != Some("text") {
+        return None;
+    }
+    command_stdout_inner(block.get("text").and_then(Value::as_str)?)
 }
 
 /// One journalled envelope through the replay road shared by the rebuild
@@ -3373,3 +3493,7 @@ mod tests {
 #[cfg(test)]
 #[path = "claude_view_rate_limit_tests.rs"]
 mod rate_limit_tests;
+
+#[cfg(test)]
+#[path = "claude_view_notices_tests.rs"]
+mod notices_tests;

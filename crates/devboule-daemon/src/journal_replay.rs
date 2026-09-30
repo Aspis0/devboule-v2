@@ -652,6 +652,16 @@ mod tests {
             .collect()
     }
 
+    fn notice_texts(events: &[SessionEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::SessionNotice { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn append_envelopes(journal: &Journal, id: &str, generation: u64, envelopes: &[Value]) {
         for (index, envelope) in envelopes.iter().enumerate() {
             journal
@@ -808,6 +818,121 @@ mod tests {
             .filter(|event| matches!(event, SessionEvent::PlanUsage { .. }))
             .cloned()
             .collect()
+    }
+
+    #[test]
+    fn replayed_claude_notices_derive_once_per_frame() {
+        // The compaction marker and the slash-command answer are derived from
+        // the journalled envelope, never journalled beside it — so the replay
+        // shows each exactly once, and the boundary's back-to-back repeat
+        // stays one marker there too.
+        let boundary = json!({"type": "system", "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "manual", "pre_tokens": 52345}});
+        let slash = json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "text",
+             "text": "<local-command-stdout>usage answer</local-command-stdout>"}]}});
+        let envelopes = vec![boundary.clone(), boundary, slash];
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.claude.notices.replay";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Claude,
+                "Notices",
+            ))
+            .expect("birth");
+        append_envelopes(&journal, id, 1, &envelopes);
+        let replay = journal.replay(id).expect("replay");
+        let replay_notices = notice_texts(&replay.events);
+        assert_eq!(
+            replay_notices,
+            vec![
+                "Context manually compacted".to_string(),
+                "usage answer".to_string(),
+            ],
+            "one marker per compaction and one per slash answer, in order"
+        );
+
+        // Live derives the same, from the same frames in the same order.
+        let mut live = crate::claude_view::ClaudeView::new(None);
+        let mut live_notices = Vec::new();
+        for envelope in &envelopes {
+            live_notices.extend(notice_texts(&live.ingest(envelope)));
+        }
+        assert_eq!(replay_notices, live_notices);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replayed_expiry_and_late_answer_show_one_finish() {
+        // The live expiry journals its error and finish rows, and the late
+        // answer's envelope carries the suppression marker the live pass
+        // used. Replay must show the same single finish — never the
+        // envelope's second one.
+        let error = SessionEvent::AgentError {
+            message: "Claude produced no output for 300 s during the turn; the run was ended."
+                .to_string(),
+        };
+        let finish = SessionEvent::AgentFinished {
+            stop_reason: "error".to_string(),
+            model_id: None,
+            usage: None,
+        };
+        let marker = crate::claude_view::withheld_finish_marker();
+        let late = json!({"type": "result", "subtype": "success", "is_error": true,
+            "terminal_reason": "aborted by interrupt", "stop_reason": "end_turn"});
+        let finishes = |id: &str, rows: Vec<EventRecord>| {
+            let (dir, path) = tmp_journal();
+            let journal = Journal::open(&path).expect("open");
+            journal
+                .create_session(new_session_record(
+                    id,
+                    "owner",
+                    None,
+                    SessionKind::Claude,
+                    "N2",
+                ))
+                .expect("birth");
+            for row in rows {
+                journal.append_blocking(row).expect("append");
+            }
+            let replay = journal.replay(id).expect("replay");
+            let count = replay
+                .events
+                .iter()
+                .filter(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+                .count();
+            journal.shutdown();
+            let _ = std::fs::remove_dir_all(&dir);
+            count
+        };
+        let reports = |id: &str, with_marker: bool| {
+            let mut rows = vec![
+                agent_report_record(id, 1, 1, &error).expect("row"),
+                agent_report_record(id, 1, 2, &finish).expect("row"),
+            ];
+            let mut seq = 3;
+            if with_marker {
+                rows.push(acp_envelope_record(id, 1, seq, &marker).expect("row"));
+                seq += 1;
+            }
+            rows.push(acp_envelope_record(id, 1, seq, &late).expect("row"));
+            rows
+        };
+        assert_eq!(
+            finishes("s.n2.marked", reports("s.n2.marked", true)),
+            1,
+            "marker plus late envelope replay to the watchdog's single finish"
+        );
+        assert_eq!(
+            finishes("s.n2.unmarked", reports("s.n2.unmarked", false)),
+            2,
+            "without the marker the envelope's finish doubles: the marker is load-bearing"
+        );
     }
 
     #[test]
