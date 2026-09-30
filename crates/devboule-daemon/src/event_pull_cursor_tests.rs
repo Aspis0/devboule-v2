@@ -225,3 +225,90 @@ fn transcript_cursor_advances_past_agent_reported() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn a_mid_generation_cursor_pull_costs_the_delta_not_the_total() {
+    // The pull attaches at the cursor between the two E1 results, so the
+    // rows that moved the running total sit before its first page. The
+    // finish it derives for the second result must still be the second
+    // turn's delta — the same dollar figure the live reader produced, which
+    // is what the latch is for.
+    let dir = crate::test_dirs::test_temp_dir("devboule-claude-cost-cursor");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.cost.cursor";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .unwrap();
+    let frames: Vec<serde_json::Value> = include_str!("../fixtures/wire/claude-e1-results.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("fixture line"))
+        .collect();
+    for (seq, frame) in frames.iter().enumerate() {
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record(
+                    session_id,
+                    1,
+                    u64::try_from(seq).expect("seq") + 1,
+                    frame,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.next_seq = 3;
+    }
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(
+            Some(Cursor {
+                generation: runtime.generation(),
+                seq: 1,
+            }),
+            &conn,
+            false,
+        )
+        .expect("attach at the mid-generation cursor");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+    let costs: Vec<f64> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            } => usage.cost_usd,
+            _ => None,
+        })
+        .collect();
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(costs.len(), 1, "one finish on the page: {costs:?}");
+    // Binary subtraction rounds, so the delta holds a tolerance.
+    assert!(
+        (costs[0] - 0.01273).abs() < 1e-9,
+        "the second turn's delta, not the cumulative total: {}",
+        costs[0]
+    );
+}

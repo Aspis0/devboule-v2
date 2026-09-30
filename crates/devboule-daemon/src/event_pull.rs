@@ -15,6 +15,7 @@ use crate::screen::{ScreenSnapshot, SnapshotCursorShape};
 use super::session_runtime::LiveAgentReplay;
 use super::session_types::{transcript_row_owed, AgentReplay, AttachmentKey};
 use super::{Disposition, PendingEvent, PendingItem, PullState, SessionRuntime};
+use crate::journal_lookback::{LookbackAnswer, LookbackRequest};
 
 /// A live agent may keep publishing while SQLite is being paged. Eight page
 /// boundary extensions give the journal a bounded chance to catch that tail;
@@ -307,7 +308,8 @@ impl ConnHandle {
                     claude_view: None,
                     codex_view: None,
                     codex_plan_turns: None,
-                    marks_needed: false,
+                    cost_baseline: None,
+                    lookback_needed: None,
                     is_pi,
                     is_codex,
                     manifest_emitted: false,
@@ -533,15 +535,18 @@ impl ConnHandle {
 
     pub(crate) fn pull_events(&self) -> Vec<PendingEvent> {
         let mut events = Vec::new();
-        let mut needs_marks = self.pull_round(None, &mut events);
-        // The plan-mark scan is a session-wide journal read: it runs with
-        // `attached` released, then only the walks that asked for it resume.
-        // Each walk asks at most once, since the scan leaves its marks `Some`.
-        while !needs_marks.is_empty() {
-            let scanned: Vec<(u64, u64, HashSet<String>)> = needs_marks
+        let mut asked = self.pull_round(None, &mut events);
+        // A walk that stops mid-page for a journal lookback (Codex plan
+        // marks, Claude cost baseline) asks before its cursor moves. The
+        // scan runs with `attached` released, the resume re-locks with the
+        // attachment generation re-checked and seeds the latch, and a walk
+        // asks at most once — the seeded latch is the flag.
+        while !asked.is_empty() {
+            let scanned: Vec<(StoppedWalk, LookbackAnswer)> = asked
                 .into_iter()
-                .map(|(id, attachment_generation, runtime)| {
-                    (id, attachment_generation, runtime.codex_plan_turns())
+                .map(|walk| {
+                    let answer = walk.runtime.journal_lookback(walk.request);
+                    (walk, answer)
                 })
                 .collect();
             let mut resumed = HashSet::new();
@@ -550,37 +555,52 @@ impl ConnHandle {
                     .attached
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                for (id, attachment_generation, marks) in scanned {
-                    let Some(pull) = map.get_mut(&id) else {
+                for (walk, answer) in scanned {
+                    let Some(pull) = map.get_mut(&walk.id) else {
                         continue;
                     };
-                    if pull.attachment_generation != attachment_generation {
+                    if pull.attachment_generation != walk.attachment_generation {
                         continue;
                     }
-                    if let Some(replay) = pull.agent_replay.as_mut() {
-                        replay.codex_plan_turns = Some(marks);
-                        replay.marks_needed = false;
-                        resumed.insert(id);
+                    let Some(replay) = pull.agent_replay.as_mut() else {
+                        continue;
+                    };
+                    if replay.lookback_needed.as_ref() != Some(&walk.request) {
+                        continue;
                     }
+                    match (walk.request, answer) {
+                        (LookbackRequest::CodexPlanMarks, LookbackAnswer::PlanMarks(marks)) => {
+                            replay.codex_plan_turns = Some(marks);
+                        }
+                        (
+                            LookbackRequest::ClaudeCostBaseline { .. },
+                            LookbackAnswer::CostBaseline(baseline),
+                        ) => {
+                            replay.cost_baseline = Some(baseline);
+                        }
+                        _ => {}
+                    }
+                    replay.lookback_needed = None;
+                    resumed.insert(walk.id);
                 }
             }
-            needs_marks = self.pull_round(Some(&resumed), &mut events);
+            asked = self.pull_round(Some(&resumed), &mut events);
         }
         events
     }
 
     /// One pass over the attachments (all, or only `only`) under the lock.
-    /// Returns the walks that stopped for their Codex plan marks.
+    /// Returns the walks that stopped mid-page for a journal lookback.
     fn pull_round(
         &self,
         only: Option<&HashSet<u64>>,
         events: &mut Vec<PendingEvent>,
-    ) -> Vec<(u64, u64, Arc<SessionRuntime>)> {
+    ) -> Vec<StoppedWalk> {
         let mut map = self
             .attached
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let mut needs_marks = Vec::new();
+        let mut asked = Vec::new();
         for (id, pull) in map.iter_mut() {
             if only.is_some_and(|only| !only.contains(id)) {
                 continue;
@@ -591,16 +611,30 @@ impl ConnHandle {
             } else {
                 pull_live_events(&session_id, pull, events);
             }
-            if pull
-                .agent_replay
-                .as_ref()
-                .is_some_and(|replay| replay.marks_needed)
-            {
-                needs_marks.push((*id, pull.attachment_generation, Arc::clone(&pull.runtime)));
+            let Some(replay) = pull.agent_replay.as_ref() else {
+                continue;
+            };
+            if let Some(request) = replay.lookback_needed {
+                asked.push(StoppedWalk {
+                    id: *id,
+                    attachment_generation: pull.attachment_generation,
+                    runtime: Arc::clone(&pull.runtime),
+                    request,
+                });
             }
         }
-        needs_marks
+        asked
     }
+}
+
+/// A walk that stopped mid-page for a journal lookback: `id` and
+/// `attachment_generation` re-address the attachment when the scan resumes
+/// it, and the request carries the read the walk stopped for.
+struct StoppedWalk {
+    id: u64,
+    attachment_generation: u64,
+    runtime: Arc<SessionRuntime>,
+    request: LookbackRequest,
 }
 
 /// The attachment state in which the only replay work left is the tail. The
@@ -833,7 +867,7 @@ fn pull_live_agent_replay_events(
                 .iter()
                 .any(|record| matches!(record.kind, crate::journal::EventKind::AcpEnvelope))
         {
-            replay.marks_needed = true;
+            replay.lookback_needed = Some(LookbackRequest::CodexPlanMarks);
             return;
         }
 
@@ -855,6 +889,22 @@ fn pull_live_agent_replay_events(
                 replay.claude_view = Some(fresh);
                 replay.codex_view = None;
                 page_generation = record.generation;
+            }
+            // A pull attaching inside the current generation never saw the
+            // results that moved the running total. The ask sits before the
+            // cursor moves, so the resumed walk re-reads this record.
+            if matches!(record.kind, crate::journal::EventKind::AcpEnvelope)
+                && !replay.is_codex
+                && !replay.is_pi
+                && replay.from_seq > 0
+                && replay.claude_view.is_none()
+                && replay.cost_baseline.is_none()
+            {
+                replay.lookback_needed = Some(LookbackRequest::ClaudeCostBaseline {
+                    generation: replay.cursor_generation,
+                    before_seq: replay.cursor,
+                });
+                return;
             }
             // Pages arrive in (generation, seq) order, so each record
             // advances the cursor lexicographically.
@@ -900,9 +950,14 @@ fn pull_live_agent_replay_events(
                             } else if replay.is_pi {
                                 crate::pi_view::events_from_line(&value)
                             } else {
-                                let view = replay.claude_view.get_or_insert_with(|| {
-                                    crate::claude_view::ClaudeView::new(None)
-                                });
+                                if replay.claude_view.is_none() {
+                                    let mut fresh = crate::claude_view::ClaudeView::new(None);
+                                    if let Some(baseline) = replay.cost_baseline {
+                                        fresh.restore_cost_baseline(baseline);
+                                    }
+                                    replay.claude_view = Some(fresh);
+                                }
+                                let view = replay.claude_view.as_mut().expect("view seeded");
                                 crate::claude_view::drive_replay(view, &mut value)
                             }
                         }

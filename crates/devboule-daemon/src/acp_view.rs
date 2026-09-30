@@ -282,31 +282,36 @@ fn view_from_prompt_response(
         .and_then(|meta| meta.get("modelId"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
-    let usage = meta.and_then(usage_from_meta).or_else(|| {
-        result.get("usage").and_then(|usage| {
-            usage_from_meta(usage).or_else(|| {
-                let usage = TurnUsage {
-                    input_tokens: usage.get("inputTokens").and_then(serde_json::Value::as_u64),
-                    output_tokens: usage
-                        .get("outputTokens")
-                        .and_then(serde_json::Value::as_u64),
-                    total_tokens: usage.get("totalTokens").and_then(serde_json::Value::as_u64),
-                    thought_tokens: usage
-                        .get("thoughtTokens")
-                        .and_then(serde_json::Value::as_u64),
-                };
-                if usage.input_tokens.is_none()
-                    && usage.output_tokens.is_none()
-                    && usage.total_tokens.is_none()
-                    && usage.thought_tokens.is_none()
-                {
-                    None
-                } else {
-                    Some(usage)
-                }
+    let usage = meta
+        .and_then(|meta| usage_from_meta(meta, model_id.as_deref()))
+        .or_else(|| {
+            result.get("usage").and_then(|usage| {
+                usage_from_meta(usage, model_id.as_deref()).or_else(|| {
+                    let usage = TurnUsage {
+                        input_tokens: usage.get("inputTokens").and_then(serde_json::Value::as_u64),
+                        output_tokens: usage
+                            .get("outputTokens")
+                            .and_then(serde_json::Value::as_u64),
+                        total_tokens: usage.get("totalTokens").and_then(serde_json::Value::as_u64),
+                        thought_tokens: usage
+                            .get("thoughtTokens")
+                            .and_then(serde_json::Value::as_u64),
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
+                        cost_usd: None,
+                    };
+                    if usage.input_tokens.is_none()
+                        && usage.output_tokens.is_none()
+                        && usage.total_tokens.is_none()
+                        && usage.thought_tokens.is_none()
+                    {
+                        None
+                    } else {
+                        Some(usage)
+                    }
+                })
             })
-        })
-    });
+        });
     Some(SessionEvent::AgentFinished {
         stop_reason,
         model_id,
@@ -340,12 +345,12 @@ fn views_from_prompt_response(
     let result = value.get("result").expect("prompt response checked above");
     let used_tokens = result
         .get("_meta")
-        .and_then(usage_from_meta)
+        .and_then(|meta| usage_from_meta(meta, model_id.as_deref()))
         .and_then(|usage| usage.total_tokens)
         .or_else(|| {
             result
                 .get("usage")
-                .and_then(usage_from_meta)
+                .and_then(|usage| usage_from_meta(usage, model_id.as_deref()))
                 .and_then(|usage| usage.total_tokens)
         });
     if let Some(used_tokens) = used_tokens {
@@ -367,7 +372,7 @@ fn text_from_content(content: Option<&serde_json::Value>) -> Option<&str> {
     content.get("text").and_then(serde_json::Value::as_str)
 }
 
-fn usage_from_meta(meta: &serde_json::Value) -> Option<TurnUsage> {
+fn usage_from_meta(meta: &serde_json::Value, model_id: Option<&str>) -> Option<TurnUsage> {
     let input_tokens = meta.get("inputTokens").and_then(serde_json::Value::as_u64);
     let output_tokens = meta.get("outputTokens").and_then(serde_json::Value::as_u64);
     let total_tokens = meta.get("totalTokens").and_then(serde_json::Value::as_u64);
@@ -375,10 +380,47 @@ fn usage_from_meta(meta: &serde_json::Value) -> Option<TurnUsage> {
         .get("thoughtTokens")
         .or_else(|| meta.get("reasoningTokens"))
         .and_then(serde_json::Value::as_u64);
+    // grok names the cached reads on `_meta` but puts the creations and the
+    // cost ticks in its nested `_meta.usage`, so each field falls back there;
+    // grok's `inputTokens` already includes the cached reads (the
+    // `views_from_prompt_response` doc measures 14,737 + 6,016 = 20,753).
+    let detail = meta.get("usage").unwrap_or(meta);
+    let cache_read_tokens = meta
+        .get("cachedReadTokens")
+        .or_else(|| detail.get("cachedReadTokens"))
+        .and_then(serde_json::Value::as_u64);
+    let cache_write_tokens = meta
+        .get("cacheCreationTokens")
+        .or_else(|| detail.get("cacheCreationTokens"))
+        .and_then(serde_json::Value::as_u64);
+    // 1 USD = 1e10 ticks is xAI's own unit — its grok-build source states it
+    // on `cost_usd_ticks` ("Server cost in USD ticks (1 USD = 1e10)"), not an
+    // ACP contract — so the conversion applies only when the frame names a
+    // grok model. The prompt response is a JSON-RPC answer and carries no
+    // method, so the `_x.ai/` namespace the notification path reads is not
+    // available here; the model name is the only in-frame signal. A grok
+    // model renamed to something else loses its cost display (fails safe); a
+    // non-xAI model named `grok*` would be converted on a guess (fails
+    // unsafe — the residual this gate accepts until the session's agent
+    // identity reaches this call site). xAI backfills 0 for unreported, so
+    // 0 ticks stay unreported.
+    let cost_usd = if model_id.is_some_and(|model| model.starts_with("grok")) {
+        meta.get("costUsdTicks")
+            .or_else(|| detail.get("costUsdTicks"))
+            .and_then(serde_json::Value::as_f64)
+            .and_then(crate::usage_cost::finite_cost)
+            .filter(|cost| *cost > 0.0)
+            .map(|ticks| ticks / 10_000_000_000.0)
+    } else {
+        None
+    };
     if input_tokens.is_none()
         && output_tokens.is_none()
         && total_tokens.is_none()
         && thought_tokens.is_none()
+        && cache_read_tokens.is_none()
+        && cache_write_tokens.is_none()
+        && cost_usd.is_none()
     {
         return None;
     }
@@ -387,6 +429,9 @@ fn usage_from_meta(meta: &serde_json::Value) -> Option<TurnUsage> {
         output_tokens,
         total_tokens,
         thought_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        cost_usd,
     })
 }
 
@@ -1001,7 +1046,7 @@ fn manifest_from_vendor_models(
     vendor_catalog_from_models(value, provider_id, modes).map(|catalog| catalog.manifest)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct VendorCatalog {
     manifest: SessionEvent,
     model_values: Vec<String>,
@@ -1057,7 +1102,7 @@ fn vendor_catalog_from_models(
 /// A model catalog parsed from the ACP v2 `configOptions` surface, plus the
 /// config-option ids the agent actually declared (the switch must send
 /// those, not hard-coded constants).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ConfigCatalog {
     pub manifest: SessionEvent,
     pub model_option_id: String,
@@ -1791,6 +1836,83 @@ mod tests {
                 assert!(!live);
             }
             other => panic!("expected finish then context usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn measured_prompt_response_carries_cache_counters_and_turn_cost() {
+        // `fixtures/wire/grok-v1.jsonl` line 100, the prompt response: the
+        // cached reads sit on `_meta` while `cacheCreationTokens` and
+        // `costUsdTicks` ride the nested `_meta.usage`. grok's `inputTokens`
+        // already includes the cached reads, and its explicit 0 cache
+        // creation is a said-zero, not an unreported one.
+        let line = measured_raw(GROK_CAPTURE, r#""id":3,"result":{"stopReason"#);
+        let session = line["result"]["_meta"]["sessionId"]
+            .as_str()
+            .expect("measured session id");
+        match view_from_envelope(&line, session).as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => {
+                assert_eq!(usage.input_tokens, Some(20_753));
+                assert_eq!(usage.cache_read_tokens, Some(6_016));
+                assert_eq!(usage.cache_write_tokens, Some(0));
+                // 55,525,400 ticks at 1e10 per USD — the scale xAI's
+                // grok-build source states on `cost_usd_ticks`.
+                assert_eq!(usage.cost_usd, Some(0.00555254));
+            }
+            other => panic!("expected AgentFinished with usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_prompt_response_without_cache_or_cost_carries_no_stand_ins() {
+        let line = parse(
+            r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","modelId":"grok-4.6","inputTokens":18883,"outputTokens":43,"totalTokens":18926}}}"#,
+        );
+        match view_from_envelope(&line, SESSION).as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => {
+                assert_eq!(usage.cache_read_tokens, None);
+                assert_eq!(usage.cache_write_tokens, None);
+                assert_eq!(usage.cost_usd, None);
+            }
+            other => panic!("expected AgentFinished with usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_non_grok_agent_s_cost_ticks_stay_unconverted() {
+        // 1 USD = 1e10 ticks is xAI's own scale, documented on its
+        // grok-build types only. Another ACP agent sending the same field
+        // name means nothing this view may convert, so the cost stays
+        // absent rather than 10x wrong.
+        let line = parse(
+            r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","modelId":"other-agent-model","inputTokens":100,"outputTokens":5,"usage":{"costUsdTicks":123}}}}"#,
+        );
+        match view_from_envelope(&line, SESSION).as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => {
+                assert_eq!(usage.cost_usd, None);
+            }
+            other => panic!("expected AgentFinished with usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grok_s_float_typed_ticks_convert_like_integer_ones() {
+        let line = parse(
+            r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","modelId":"grok-4.6","inputTokens":100,"outputTokens":5,"usage":{"costUsdTicks":55525400.0}}}}"#,
+        );
+        match view_from_envelope(&line, SESSION).as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => {
+                assert_eq!(usage.cost_usd, Some(0.00555254));
+            }
+            other => panic!("expected AgentFinished with usage, got {other:?}"),
         }
     }
 

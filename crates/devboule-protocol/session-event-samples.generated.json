@@ -23,7 +23,16 @@
   },
   {
     "stopReason": "",
-    "type": "agent_finished"
+    "type": "agent_finished",
+    "usage": {
+      "cacheReadTokens": 16519,
+      "cacheWriteTokens": 6301,
+      "costUsd": 0.093081,
+      "inputTokens": 4,
+      "outputTokens": 230,
+      "thoughtTokens": 7,
+      "totalTokens": 234
+    }
   },
   {
     "messageId": null,

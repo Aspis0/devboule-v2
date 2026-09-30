@@ -3,6 +3,7 @@
 use super::super::event_pull::ConnHandle;
 use super::*;
 use crate::journal::{PersistStatus, SessionRecord};
+use crate::journal_lookback::{LookbackAnswer, LookbackRequest};
 use devboule_protocol::{NoticeSeverity, SessionModeStateView, SessionModeView};
 
 fn pull_events(conn: &ConnHandle) -> Vec<SessionEvent> {
@@ -623,7 +624,10 @@ fn failed_plan_mark_read_notices_once_instead_of_empty() {
         session_id.to_string(),
         Some(Arc::clone(&journal)),
     ));
-    assert!(runtime.codex_plan_turns().is_empty());
+    assert!(matches!(
+        runtime.journal_lookback(LookbackRequest::CodexPlanMarks),
+        LookbackAnswer::PlanMarks(marks) if marks.is_empty()
+    ));
     let notices = runtime
         .stream
         .lock()
@@ -649,7 +653,10 @@ fn plan_mark_scans_are_counted() {
         session_id.to_string(),
         Some(Arc::clone(&journal)),
     ));
-    assert!(runtime.codex_plan_turns().is_empty());
+    assert!(matches!(
+        runtime.journal_lookback(LookbackRequest::CodexPlanMarks),
+        LookbackAnswer::PlanMarks(marks) if marks.is_empty()
+    ));
     assert_eq!(runtime.plan_mark_scan_count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }

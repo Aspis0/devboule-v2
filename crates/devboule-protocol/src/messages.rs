@@ -3191,7 +3191,9 @@ impl RemoteState {
 /// Live session event on the daemon pipe. `generation` is here, not inside
 /// [`SessionEvent`], so the TypeScript Channel contract stays unchanged
 /// while a reconnecting daemon client can still detect a recreated process.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+// `PartialEq` without `Eq`: the envelope carries `SessionEvent`, whose
+// `AgentFinished` holds a float cost.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionEventEnvelope {
     pub session_id: String,

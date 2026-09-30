@@ -3033,37 +3033,61 @@ impl SessionRuntime {
         self.plan_mark_scans.load(Ordering::Relaxed)
     }
 
-    /// Plan-mode turns recovered from journalled verdict rows, for the attach
-    /// replay's Codex driver. Empty without a journal. A failed read counts
-    /// and notices once instead of failing open silently: without the marks
-    /// every plan-mode-ON turn would replay a checklist it never had.
-    pub(crate) fn codex_plan_turns(&self) -> std::collections::HashSet<String> {
+    /// The one journal lookback read (see `journal_lookback`): the plan
+    /// marks a Codex rebuild replays from, or the cost baseline a
+    /// mid-generation Claude pull seeds its latch with. A failed read — the
+    /// rpc deadline among them — is never an answer: it maps per lookback,
+    /// to an empty set with the standing notice for the marks, and to
+    /// [`CostBaseline::Unknown`] for the baseline, so a busy journal degrades
+    /// to no figure rather than a wrong one.
+    pub(crate) fn journal_lookback(
+        &self,
+        request: crate::journal_lookback::LookbackRequest,
+    ) -> crate::journal_lookback::LookbackAnswer {
+        use crate::claude_view::CostBaseline;
+        use crate::journal_lookback::{LookbackAnswer, LookbackRequest};
         #[cfg(test)]
-        if let Some(probe) = self
-            .plan_mark_scan_probe
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-        {
-            probe();
+        if matches!(request, LookbackRequest::CodexPlanMarks) {
+            if let Some(probe) = self
+                .plan_mark_scan_probe
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+            {
+                probe();
+            }
         }
         let Some(journal) = &self.journal else {
-            return std::collections::HashSet::new();
+            return match request {
+                LookbackRequest::CodexPlanMarks => LookbackAnswer::PlanMarks(HashSet::new()),
+                LookbackRequest::ClaudeCostBaseline { .. } => {
+                    LookbackAnswer::CostBaseline(CostBaseline::Unknown)
+                }
+            };
         };
-        match journal.codex_plan_turns(&self.session_id) {
-            Ok(turns) => {
-                self.note_plan_mark_scan();
-                turns.into_iter().collect()
+        match journal.lookback(&self.session_id, request) {
+            Ok(answer) => {
+                if matches!(request, LookbackRequest::CodexPlanMarks) {
+                    self.note_plan_mark_scan();
+                }
+                answer
             }
             Err(error) => {
-                self.note_plan_mark_scan();
-                eprintln!("plan mark scan failed: {error}");
-                let _ = self.publish_session_notice(
-                    "The agent's plan approval history could not be read; plan checklists may reappear for approved plans."
-                        .to_string(),
-                    NoticeSeverity::Warning,
-                );
-                std::collections::HashSet::new()
+                eprintln!("lookback scan failed: {error}");
+                match request {
+                    LookbackRequest::CodexPlanMarks => {
+                        self.note_plan_mark_scan();
+                        let _ = self.publish_session_notice(
+                            "The agent's plan approval history could not be read; plan checklists may reappear for approved plans."
+                                .to_string(),
+                            NoticeSeverity::Warning,
+                        );
+                        LookbackAnswer::PlanMarks(HashSet::new())
+                    }
+                    LookbackRequest::ClaudeCostBaseline { .. } => {
+                        LookbackAnswer::CostBaseline(CostBaseline::Unknown)
+                    }
+                }
             }
         }
     }

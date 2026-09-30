@@ -110,6 +110,25 @@ pub(crate) struct ClaudeView {
     /// so repeats stay silenced until a turn ends — only a `result` frame
     /// re-arms, because only a turn boundary proves a new compaction.
     compaction_announced: bool,
+    /// The CLI process's running `total_cost_usd`, as the view knows it.
+    /// The turn's cost is the delta against it; the latch is view state, so
+    /// the first result after a daemon restart or a resume reports its whole
+    /// running total as that turn's cost — which for a new process is the
+    /// same number.
+    cost_baseline: CostBaseline,
+}
+
+/// What the view knows about the running total its deltas are measured
+/// against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CostBaseline {
+    /// The total at the cursor, from the journal scan: `None` when no result
+    /// sat at or before it, so the next result is the process's first.
+    Known(Option<f64>),
+    /// The scan failed (a busy journal's deadline among them): the delta
+    /// cannot be verified, so the first result carries no cost, and its own
+    /// total becomes the baseline every later delta needs.
+    Unknown,
 }
 
 impl ClaudeView {
@@ -130,6 +149,7 @@ impl ClaudeView {
             task_state: ClaudeTaskState::default(),
             withheld_finish_pending: false,
             compaction_announced: false,
+            cost_baseline: CostBaseline::Known(None),
         }
     }
 
@@ -142,6 +162,17 @@ impl ClaudeView {
 
     pub(crate) fn restore_task_state(&mut self, state: ClaudeTaskState) {
         self.task_state = state;
+    }
+
+    /// The cost latch, for the replay seam: a pull resuming at a cursor
+    /// inside the current generation seeds its fresh view with the running
+    /// total the journal recorded before the cursor, so its first result
+    /// costs the delta the live reader produced. Live and replay therefore
+    /// agree on every supported attach whose lookback scan succeeded; an
+    /// unreadable journal leaves the replayed turn without a cost rather
+    /// than with a wrong one.
+    pub(crate) fn restore_cost_baseline(&mut self, baseline: CostBaseline) {
+        self.cost_baseline = baseline;
     }
 
     /// Whether the view still owes a task-tool result: the seed's gate for
@@ -224,6 +255,14 @@ impl ClaudeView {
                 }
                 _ => Vec::new(),
             };
+        }
+        // A root init is a new CLI process, and the running `total_cost_usd`
+        // starts at zero with it — the latch resets with the process. Not a
+        // child's: a positive `spawn_depth` marks the child, and its
+        // in-band init is no process boundary. (Absence and an explicit 0
+        // are both root; no capture shows a root init carrying the key.)
+        if !spawn_depth(envelope).is_some_and(|depth| depth > 0) {
+            self.cost_baseline = CostBaseline::Known(Some(0.0));
         }
         if let Some(session_id) = envelope
             .get("session_id")
@@ -814,10 +853,14 @@ impl ClaudeView {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| self.current_model.clone());
-        let (usage, context_used) = match envelope.get("usage").and_then(usage_from_claude) {
+        let turn_cost = self.turn_cost(total_cost_from_result(envelope));
+        let (mut usage, context_used) = match envelope.get("usage").and_then(usage_from_claude) {
             Some(parsed) => (Some(parsed.turn), parsed.context_used),
             None => (None, None),
         };
+        if let Some(usage) = usage.as_mut() {
+            usage.cost_usd = turn_cost;
+        }
         let suppress_finish = self.withheld_finish_pending;
         self.withheld_finish_pending = false;
         let mut events = if suppress_finish {
@@ -841,6 +884,33 @@ impl ClaudeView {
             });
         }
         events
+    }
+
+    /// This turn's cost from the result's `total_cost_usd` — the CLI
+    /// process's **running total** (a conversation reset zeroes it, per
+    /// Anthropic's agent SDK), so the turn is billed with the delta against
+    /// the last result. A total below the latch means the totals restarted
+    /// and the turn's cost is the new total itself. Each root init zeroes
+    /// the baseline with the new process.
+    fn turn_cost(&mut self, total: Option<f64>) -> Option<f64> {
+        let total = crate::usage_cost::finite_cost(total?)?;
+        let previous = match self.cost_baseline {
+            CostBaseline::Known(previous) => previous.unwrap_or(0.0),
+            // An unreadable baseline cannot verify this delta; its own total
+            // is the baseline every later delta needs, so latch it and
+            // recover instead of staying unreadable forever.
+            CostBaseline::Unknown => {
+                self.cost_baseline = CostBaseline::Known(Some(total));
+                return None;
+            }
+        };
+        let turn = if total >= previous {
+            total - previous
+        } else {
+            total
+        };
+        self.cost_baseline = CostBaseline::Known(Some(total));
+        crate::usage_cost::finite_cost(turn)
     }
 
     fn ingest_task_started(&self, envelope: &Value) -> Vec<SessionEvent> {
@@ -1241,6 +1311,15 @@ fn spawn_depth(envelope: &Value) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
+/// The running `total_cost_usd` a `result` envelope carried, if it says —
+/// the value a mid-generation replay seeds its cost latch from.
+pub(crate) fn total_cost_from_result(envelope: &Value) -> Option<f64> {
+    if envelope.get("type").and_then(Value::as_str) != Some("result") {
+        return None;
+    }
+    envelope.get("total_cost_usd").and_then(Value::as_f64)
+}
+
 /// What one Claude `usage` object says about a finished turn: the counters
 /// the transcript line renders — the top-level object, which is what the CLI
 /// bills for the turn — and the context total the meter shows.
@@ -1314,6 +1393,14 @@ fn usage_from_claude(usage: &Value) -> Option<ClaudeUsage> {
             output_tokens,
             total_tokens: None,
             thought_tokens,
+            // Claude counts input, cache reads and cache writes separately —
+            // the context total above is their four-way sum.
+            cache_read_tokens: cache_read,
+            cache_write_tokens: cache_creation,
+            // The envelope's `total_cost_usd` is filled in by `turn_cost`:
+            // the field is the process's running total, and only its delta
+            // is the turn's cost.
+            cost_usd: None,
         },
         context_used: context_used_from_claude(usage),
     })
@@ -1382,7 +1469,7 @@ fn claude_plan_window(window: &Value, duration_mins: u64) -> PlanWindow {
         used_percent: window
             .get("utilization")
             .and_then(Value::as_f64)
-            .filter(|fraction| fraction.is_finite() && *fraction >= 0.0)
+            .and_then(crate::usage_cost::finite_cost)
             .map(|fraction| (fraction * 100.0).round() as u64),
         resets_at: window.get("resetsAt").and_then(Value::as_i64),
     }
@@ -3061,6 +3148,193 @@ mod tests {
                 assert_eq!(usage.output_tokens, Some(230));
             }
             other => panic!("expected AgentFinished then ContextUsage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn result_cost_is_the_turn_s_delta_of_the_running_total() {
+        // `total_cost_usd` is the CLI process's running total, not the
+        // turn's: the frames below are two results of ONE session (E1.jsonl
+        // lines 17 and 54), and only their difference is what the second
+        // turn billed. Anthropic's agent SDK documents the same running
+        // total — a conversation reset "zeroes the running totals reported
+        // on subsequent ResultMessage objects".
+        let frames: Vec<Value> = include_str!("../fixtures/wire/claude-e1-results.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("measured result envelope"))
+            .collect();
+        let mut mapper = view();
+        let _ = mapper.ingest(&init_frame());
+        fn finish_usage(events: &[SessionEvent]) -> &TurnUsage {
+            match events.first() {
+                Some(SessionEvent::AgentFinished {
+                    usage: Some(usage), ..
+                }) => usage,
+                other => panic!("expected AgentFinished with usage, got {other:?}"),
+            }
+        }
+        let first_events = mapper.ingest(&frames[0]);
+        let first = finish_usage(&first_events);
+        assert_eq!(first.cost_usd, Some(0.0723335));
+        assert_eq!(first.cache_read_tokens, Some(16_519));
+        assert_eq!(first.cache_write_tokens, Some(6_301));
+        let second_events = mapper.ingest(&frames[1]);
+        let second = finish_usage(&second_events);
+        // Binary subtraction rounds, so the delta holds a tolerance.
+        let second_cost = second.cost_usd.expect("second turn cost");
+        assert!((second_cost - 0.01273).abs() < 1e-9, "{second_cost}");
+        assert_eq!(second.cache_read_tokens, Some(22_820));
+        assert_eq!(second.cache_write_tokens, Some(121));
+        // A total below the latch is the documented reset — the running
+        // totals restarted — and the turn's cost is the new total itself.
+        let reset = mapper.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "total_cost_usd": 0.01,
+            "is_error": false,
+            "usage": {"input_tokens": 4, "output_tokens": 12}
+        }));
+        assert_eq!(finish_usage(&reset).cost_usd, Some(0.01));
+        // A fresh init zeroes the baseline: the next result reports its
+        // whole total as the turn's cost, not a delta of the old process.
+        let _ = mapper.ingest(&init_frame());
+        let fresh = mapper.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "total_cost_usd": 0.02,
+            "is_error": false,
+            "usage": {"input_tokens": 4, "output_tokens": 12}
+        }));
+        assert_eq!(finish_usage(&fresh).cost_usd, Some(0.02));
+        // A result whose envelope names no total carries no cost.
+        let bare = mapper.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "is_error": false,
+            "usage": {"input_tokens": 4, "output_tokens": 12}
+        }));
+        assert_eq!(finish_usage(&bare).cost_usd, None);
+    }
+
+    #[test]
+    fn a_child_init_does_not_reset_the_parent_s_cost_baseline() {
+        // A subagent's in-band `init` is not a CLI process boundary: the
+        // parent's running total keeps running across it, and the next
+        // parent result must still cost its delta.
+        let mut mapper = view();
+        let _ = mapper.ingest(&init_frame());
+        let first = mapper.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "total_cost_usd": 0.0723335,
+            "is_error": false,
+            "usage": {"input_tokens": 4, "output_tokens": 12}
+        }));
+        match first.as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => assert_eq!(usage.cost_usd, Some(0.0723335)),
+            other => panic!("expected the first finish, got {other:?}"),
+        }
+        let _ = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "child-of-cbe439d8",
+            "spawn_depth": 1
+        }));
+        let second = mapper.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "total_cost_usd": 0.0850635,
+            "is_error": false,
+            "usage": {"input_tokens": 2, "output_tokens": 4}
+        }));
+        match second.as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => {
+                let cost = usage.cost_usd.expect("second cost");
+                assert!((cost - 0.01273).abs() < 1e-9, "{cost}");
+            }
+            other => panic!("expected the second finish, got {other:?}"),
+        }
+        // An explicit depth 0 is the root marker as much as an absent key:
+        // a process init that reports it still resets the latch.
+        let _ = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "spawn_depth": 0
+        }));
+        let third = mapper.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "total_cost_usd": 0.09,
+            "is_error": false,
+            "usage": {"input_tokens": 2, "output_tokens": 4}
+        }));
+        match third.as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => assert_eq!(usage.cost_usd, Some(0.09)),
+            other => panic!("expected the third finish, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_baseline_costs_nothing_once_then_recovers() {
+        // A failed lookback scan leaves the latch unreadable: the first
+        // result shows no cost — and its own total is the baseline every
+        // later delta needs, so the view recovers from the second result
+        // on. (The init precedes the restore: a root init resets the latch
+        // to a known zero, which would erase the state under test.)
+        let mut view = ClaudeView::new(None);
+        let _ = view.ingest(&init_frame());
+        view.restore_cost_baseline(CostBaseline::Unknown);
+        let first = view.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "total_cost_usd": 0.07,
+            "is_error": false,
+            "usage": {"input_tokens": 4, "output_tokens": 12}
+        }));
+        match first.as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => assert_eq!(usage.cost_usd, None),
+            other => panic!("expected the uncosted first finish, got {other:?}"),
+        }
+        let second = view.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "total_cost_usd": 0.09,
+            "is_error": false,
+            "usage": {"input_tokens": 2, "output_tokens": 4}
+        }));
+        match second.as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => {
+                let cost = usage.cost_usd.expect("the recovered delta");
+                assert!((cost - 0.02).abs() < 1e-9, "{cost}");
+            }
+            other => panic!("expected the second finish, got {other:?}"),
         }
     }
 

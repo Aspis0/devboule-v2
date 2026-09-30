@@ -424,6 +424,65 @@ describe("AgentChatSurface", () => {
     expect(sessionDetach).toHaveBeenCalledWith(41);
   });
 
+  it("shows cached tokens and turn cost on the finished-turn usage line, and neither when absent", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="agent-cost" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "agent_finished",
+        stopReason: "end_turn",
+        modelId: "grok-4.6",
+        usage: {
+          inputTokens: 20753,
+          outputTokens: 30,
+          totalTokens: 20783,
+          cacheReadTokens: 6016,
+          cacheWriteTokens: 0,
+          costUsd: 0.00555254,
+        },
+      });
+    });
+    expect(container.textContent).toContain("cached 6,016");
+    expect(container.textContent).toContain("cache-wrote 0");
+    // 0.00555254 truncates at four decimals — the copy never bills more
+    // than the provider did.
+    expect(container.textContent).toContain("$0.0055");
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "agent_finished",
+        stopReason: "end_turn",
+        modelId: "z-ai/glm-5.3-flash",
+        usage: { inputTokens: 25848, outputTokens: 3, totalTokens: 25851 },
+      });
+    });
+    expect(container.textContent).not.toContain("cached");
+    expect(container.textContent).not.toContain("cache-wrote");
+    expect(container.textContent).not.toContain("$");
+
+    // A cost the provider said is zero shows no figure at all — "$0" would
+    // read like the provider said nothing.
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "agent_finished",
+        stopReason: "end_turn",
+        modelId: "claude-opus-5[1m]",
+        usage: { inputTokens: 2, outputTokens: 4, costUsd: 0 },
+      });
+    });
+    expect(container.textContent).toContain("in 2");
+    expect(container.textContent).not.toContain("$");
+
+    await act(async () => root?.unmount());
+    expect(sessionDetach).toHaveBeenCalledWith(41);
+  });
+
   it("recreates its session across StrictMode cleanup and can send after a remount", async () => {
     const renderSurface = () => (
       <StrictMode>

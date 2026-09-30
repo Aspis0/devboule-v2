@@ -380,11 +380,26 @@ fn usage_from_pi(value: &Value) -> Option<TurnUsage> {
         output_tokens: value.get("output").and_then(Value::as_u64),
         total_tokens: value.get("totalTokens").and_then(Value::as_u64),
         thought_tokens: value.get("reasoning").and_then(Value::as_u64),
+        // pi counts input apart from the cache: `totalTokens` is the sum of
+        // input, output, cacheRead and cacheWrite.
+        cache_read_tokens: value.get("cacheRead").and_then(Value::as_u64),
+        cache_write_tokens: value.get("cacheWrite").and_then(Value::as_u64),
+        // pi attaches usage to the turn's ending assistant message, and its
+        // `cost.total` prices that usage; no capture distinguishes a
+        // per-message total from a per-turn one.
+        cost_usd: value
+            .get("cost")
+            .and_then(|cost| cost.get("total"))
+            .and_then(Value::as_f64)
+            .and_then(crate::usage_cost::finite_cost),
     };
     (usage.input_tokens.is_some()
         || usage.output_tokens.is_some()
         || usage.total_tokens.is_some()
-        || usage.thought_tokens.is_some())
+        || usage.thought_tokens.is_some()
+        || usage.cache_read_tokens.is_some()
+        || usage.cache_write_tokens.is_some()
+        || usage.cost_usd.is_some())
     .then_some(usage)
 }
 
@@ -547,6 +562,44 @@ mod tests {
                 && max_tokens.is_none()
                 && !live
         ));
+    }
+
+    #[test]
+    fn turn_end_usage_carries_cache_counters_and_turn_cost() {
+        // The recorded turn_end (the fixture `recorded_turn_end_…` cites):
+        // `cacheRead`/`cacheWrite` are present and zero — said-zeros, which
+        // stay `Some(0)` — and `cost.total` prices the usage pi attached to
+        // the ending assistant message. Whether that total is the turn's or
+        // the last message's is not established by any capture (US4 debt).
+        let line = parse(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"stopReason":"stop","timestamp":1788993862485,"responseId":"gen-1788993862-4cxcarrKksRnXEICsFHO","rawStopReason":"stop"},"toolResults":[]}"#,
+        );
+        match events_from_line(&line).as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => {
+                assert_eq!(usage.input_tokens, Some(25_848));
+                assert_eq!(usage.cache_read_tokens, Some(0));
+                assert_eq!(usage.cache_write_tokens, Some(0));
+                assert_eq!(usage.cost_usd, Some(0.00193935));
+            }
+            other => panic!("expected AgentFinished with usage, got {other:?}"),
+        }
+        // A usage object without the cache or cost keys (synthetic) carries
+        // no stand-ins.
+        let bare = parse(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":10,"output":3},"stopReason":"stop"},"toolResults":[]}"#,
+        );
+        match events_from_line(&bare).as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }, ..] => {
+                assert_eq!(usage.cache_read_tokens, None);
+                assert_eq!(usage.cache_write_tokens, None);
+                assert_eq!(usage.cost_usd, None);
+            }
+            other => panic!("expected bare AgentFinished, got {other:?}"),
+        }
     }
 
     #[test]

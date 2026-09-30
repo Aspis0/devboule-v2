@@ -182,7 +182,7 @@ pub(super) struct Attachment {
 /// replay path touches it); the queue this sits in is bounded per observer, so
 /// the cost is fixed rather than open-ended. Recorded here so the next pass
 /// finds it rather than re-deriving it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub(super) enum PendingItem {
     /// Screen state at `as_of_seq`. Always the first item of an attachment;
@@ -316,9 +316,15 @@ pub(super) struct AgentReplay {
     /// Codex envelope through the shared pre-scan — the same read the
     /// rebuild makes — so attaches with nothing to replay never scan.
     pub(super) codex_plan_turns: Option<HashSet<String>>,
-    /// The walk stopped at a page holding a Codex envelope because the marks
-    /// are not loaded; `pull_events` scans with the attachments lock released.
-    pub(super) marks_needed: bool,
+    /// The running-total baseline a mid-generation pull seeds its Claude
+    /// view's cost latch with, read lazily on the first envelope the same
+    /// way the plan marks are. `None` distinguishes "not scanned yet" from
+    /// every scanned answer.
+    pub(super) cost_baseline: Option<crate::claude_view::CostBaseline>,
+    /// The lookback this walk stopped mid-page for, not yet scanned;
+    /// `pull_events` scans with the attachments lock released. The request
+    /// carries the cursor bound the walk stopped at.
+    pub(super) lookback_needed: Option<crate::journal_lookback::LookbackRequest>,
     pub(super) is_pi: bool,
     pub(super) is_codex: bool,
     pub(super) manifest_emitted: bool,

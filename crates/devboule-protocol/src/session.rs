@@ -715,7 +715,9 @@ pub struct FinishArtifact {
 /// so a reconnecting client can tell a recreated process from the stream it
 /// left. Putting generation on every output chunk would change the Channel
 /// payload the frontend already parses.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+// `PartialEq` without `Eq`: `AgentFinished` carries `TurnUsage`, whose
+// `cost_usd` is a float.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(
     tag = "type",
     rename_all = "snake_case",
@@ -1538,7 +1540,17 @@ pub struct AgentBackgroundTask {
 ///
 /// Schema 1.5.0 keeps `usage` behind an unstable flag; grok sends the
 /// counters on `session/prompt` result `_meta`. Optional fields keep both.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+///
+/// A `None` field means "the provider did not say" and is never a stand-in
+/// zero: an explicit 0 the frame sent stays a `Some(0)`.
+///
+/// `cache_read_tokens` has no fixed relation to `input_tokens`: grok and
+/// codex count the cached reads **inside** their input figure, Claude and pi
+/// count them **apart** from it. The wire carries no marker for which
+/// convention a value follows, so a consumer must never add the two numbers.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+// `cost_usd` is a float, so this and every type that contains it, directly
+// or through `SessionEvent`, derives `PartialEq` without `Eq`.
 #[serde(rename_all = "camelCase")]
 pub struct TurnUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1549,6 +1561,21 @@ pub struct TurnUsage {
     pub total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thought_tokens: Option<u64>,
+    /// Cache reads the frame reported, in the provider's own counter — see
+    /// the struct note above: possibly inside `input_tokens`, never to be
+    /// added to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// Cache creation (writes) the frame reported — the counter is separate
+    /// from the reads and from `input_tokens`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// The turn's billed cost in USD, as the provider priced it — the
+    /// per-turn figure, never a running session total. Absent when the frame
+    /// named none; grok backfills 0 for unreported cost, so its zeros are
+    /// `None` too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 /// One rate-limit window a plan-usage frame actually carried.

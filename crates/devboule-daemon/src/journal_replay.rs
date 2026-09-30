@@ -354,7 +354,12 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
     // shared scan: turn ids are unique across the thread's life, so one pass
     // serves every generation's replay view.
     let plan_turns = if record.kind == SessionKind::Codex {
-        crate::codex_plan_marks::scan_conn(conn, session_id)?
+        match crate::journal_lookback::LookbackRequest::CodexPlanMarks
+            .scan_conn(conn, session_id)?
+        {
+            crate::journal_lookback::LookbackAnswer::PlanMarks(turns) => turns,
+            crate::journal_lookback::LookbackAnswer::CostBaseline(_) => HashSet::new(),
+        }
     } else {
         HashSet::new()
     };
@@ -971,6 +976,158 @@ mod tests {
             2,
             "without the marker the envelope's finish doubles: the marker is load-bearing"
         );
+    }
+
+    #[test]
+    fn journaled_finish_usage_round_trips_cache_and_cost() {
+        use devboule_protocol::TurnUsage;
+        // The finished-turn record must survive journal and replay with the
+        // cache counters and the cost intact — a reconnecting client reads
+        // this row, not the provider frame.
+        let finish = SessionEvent::AgentFinished {
+            stop_reason: "end_turn".to_string(),
+            model_id: Some("grok-4.6".to_string()),
+            usage: Some(TurnUsage {
+                input_tokens: Some(20_753),
+                output_tokens: Some(30),
+                total_tokens: Some(20_783),
+                thought_tokens: Some(25),
+                cache_read_tokens: Some(6_016),
+                cache_write_tokens: Some(0),
+                cost_usd: Some(0.00555254),
+            }),
+        };
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.usage.roundtrip";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Claude,
+                "Usage",
+            ))
+            .expect("birth");
+        journal
+            .append_blocking(agent_report_record(id, 1, 1, &finish).expect("row"))
+            .expect("append");
+        let replay = journal.replay(id).expect("replay");
+        // Replay appends its own `Recovered` marker; the finish itself is the
+        // row this test wrote, fields intact.
+        let finishes: Vec<&SessionEvent> = replay
+            .events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+            .collect();
+        assert_eq!(finishes, vec![&finish]);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replayed_claude_results_cost_the_same_delta_as_live() {
+        // The per-turn cost is a delta of the running `total_cost_usd`, and
+        // the latch behind it is view state. Replay re-drives the same view
+        // over the same rows in order, so the two finishes a reconnecting
+        // client sees must cost exactly what the live ones did.
+        let envelopes: Vec<Value> = include_str!("../fixtures/wire/claude-e1-results.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("fixture line"))
+            .collect();
+        let finish_costs = |events: &[SessionEvent]| {
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    SessionEvent::AgentFinished {
+                        usage: Some(usage), ..
+                    } => usage.cost_usd,
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut live = crate::claude_view::ClaudeView::new(None);
+        let mut live_events = Vec::new();
+        for envelope in &envelopes {
+            live_events.extend(live.ingest(envelope));
+        }
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.usage.clauedereplay";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Claude,
+                "Usage",
+            ))
+            .expect("birth");
+        for (seq, envelope) in envelopes.iter().enumerate() {
+            journal
+                .append_blocking(
+                    acp_envelope_record(id, 1, u64::try_from(seq).expect("seq") + 1, envelope)
+                        .expect("row"),
+                )
+                .expect("append");
+        }
+        let replay = journal.replay(id).expect("replay");
+        let replayed = finish_costs(&replay.events);
+        let live_costs = finish_costs(&live_events);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(replayed.len(), 2, "one finish per result: {replayed:?}");
+        assert_eq!(replayed[0], 0.0723335);
+        // Binary subtraction rounds, so the delta holds a tolerance.
+        assert!((replayed[1] - 0.01273).abs() < 1e-9, "{}", replayed[1]);
+        assert_eq!(replayed, live_costs);
+    }
+
+    #[test]
+    fn a_journalled_pi_turn_end_replays_with_cache_and_cost() {
+        // Pi end to end: the raw `turn_end` line is what the journal keeps,
+        // and replay re-runs the same view derivation — so the finish a
+        // reconnecting client sees must carry the cache counters and the
+        // cost the mapper read. The line is the recorded turn_end (the
+        // pi_view fixture).
+        let turn_end: Value = serde_json::from_str(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"stopReason":"stop","timestamp":1788993862485,"responseId":"gen-1788993862-4cxcarrKksRnXEICsFHO","rawStopReason":"stop"},"toolResults":[]}"#,
+        )
+        .expect("turn end line");
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.usage.pi.replay";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Pi,
+                "Usage",
+            ))
+            .expect("birth");
+        journal
+            .append_blocking(acp_envelope_record(id, 1, 1, &turn_end).expect("row"))
+            .expect("append");
+        let replay = journal.replay(id).expect("replay");
+        let finishes: Vec<&SessionEvent> = replay
+            .events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+            .collect();
+        match finishes.as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }] => {
+                assert_eq!(usage.input_tokens, Some(25_848));
+                assert_eq!(usage.cache_read_tokens, Some(0));
+                assert_eq!(usage.cache_write_tokens, Some(0));
+                assert_eq!(usage.cost_usd, Some(0.00193935));
+            }
+            other => panic!("expected one replayed finish with usage, got {other:?}"),
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

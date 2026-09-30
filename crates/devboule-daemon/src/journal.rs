@@ -796,12 +796,13 @@ enum JournalCmd {
         generation: u64,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
-    /// Plan-mode turns recovered from journalled verdict rows, session-wide:
-    /// the one read both replay paths make before the first frame, so the
-    /// attach pull and the rebuild learn the mode identically.
-    CodexPlanTurns {
+    /// The lookback a replay walk stopped mid-page for, answered on the
+    /// journal thread: a Codex rebuild's approved plan turns session-wide,
+    /// or a Claude pull's running cost total at its cursor.
+    Lookback {
         session_id: String,
-        reply: mpsc::Sender<Result<Vec<String>, JournalError>>,
+        request: crate::journal_lookback::LookbackRequest,
+        reply: mpsc::Sender<Result<crate::journal_lookback::LookbackAnswer, JournalError>>,
     },
     MarkDegraded {
         session_id: String,
@@ -1517,9 +1518,15 @@ impl Journal {
 
     /// Plan-mode turns for one session, recovered from journalled verdict
     /// rows: the pre-scan both replay paths read before the first frame.
-    pub(crate) fn codex_plan_turns(&self, session_id: &str) -> Result<Vec<String>, JournalError> {
-        self.rpc(|reply| JournalCmd::CodexPlanTurns {
+    /// Answer one replay walk's lookback (see `journal_lookback`).
+    pub(crate) fn lookback(
+        &self,
+        session_id: &str,
+        request: crate::journal_lookback::LookbackRequest,
+    ) -> Result<crate::journal_lookback::LookbackAnswer, JournalError> {
+        self.rpc(|reply| JournalCmd::Lookback {
             session_id: session_id.to_string(),
+            request,
             reply,
         })
     }
@@ -2219,13 +2226,12 @@ fn journal_loop(
                     limit,
                 ));
             }
-            JournalCmd::CodexPlanTurns { session_id, reply } => {
-                let result = crate::codex_plan_marks::scan_conn(&conn, &session_id).map(|set| {
-                    let mut turns: Vec<String> = set.into_iter().collect();
-                    turns.sort();
-                    turns
-                });
-                let _ = reply.send(result);
+            JournalCmd::Lookback {
+                session_id,
+                request,
+                reply,
+            } => {
+                let _ = reply.send(request.scan_conn(&conn, &session_id));
             }
             JournalCmd::DeleteSession { session_id, reply } => {
                 let result = delete_session_user(&conn, &session_id);

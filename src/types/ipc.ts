@@ -1256,6 +1256,11 @@ export type SessionEvent =
   /**
    * ACP prompt completion. `modelId` and `usage` are what the agent actually
    * ran and spent, when it says so; grok reports them, others may not.
+   * An absent usage field means the provider did not say — never zero: an
+   * explicit 0 the frame sent stays a present 0. `cacheReadTokens` has no
+   * fixed relation to `inputTokens`: grok and codex count the cached reads
+   * inside their input figure, Claude and pi count them apart from it —
+   * never add the two numbers, and never treat "cached" as arithmetic.
    */
   | {
       type: "agent_finished";
@@ -1266,6 +1271,16 @@ export type SessionEvent =
         outputTokens?: number;
         totalTokens?: number;
         thoughtTokens?: number;
+        /** Cache reads the provider reported, in its own counter. */
+        cacheReadTokens?: number;
+        /** Cache creation the provider reported, separate from the reads. */
+        cacheWriteTokens?: number;
+        /**
+         * The turn's billed cost in USD, as the provider priced it — the
+         * per-turn figure, never a running session total. grok backfills 0
+         * for unreported cost, so its zeros are absent too.
+         */
+        costUsd?: number;
       };
     }
   /**

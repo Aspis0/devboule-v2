@@ -116,7 +116,21 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
         AgentFinished => SessionEvent::AgentFinished {
             stop_reason: String::new(),
             model_id: None,
-            usage: None,
+            // Carried rather than `None`: the committed snapshot is what
+            // pins the usage field names, and a `None` sample would leave
+            // them unexercised by it. The counters are the CLAUDE shape —
+            // cache counted apart from `input_tokens` (4 + 16519 + 6301 +
+            // 230 = the context total), not a subset of it; grok and codex
+            // report the opposite convention (see `TurnUsage`).
+            usage: Some(crate::TurnUsage {
+                input_tokens: Some(4),
+                output_tokens: Some(230),
+                total_tokens: Some(234),
+                thought_tokens: Some(7),
+                cache_read_tokens: Some(16_519),
+                cache_write_tokens: Some(6_301),
+                cost_usd: Some(0.093081),
+            }),
         },
         ContextUsage => SessionEvent::ContextUsage {
             model_id: Some("grok-4.6".to_string()),

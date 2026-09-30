@@ -22,6 +22,8 @@ mod claude_abort;
 #[cfg(feature = "server")]
 mod claude_catalog;
 #[cfg(feature = "server")]
+mod claude_cost_baseline;
+#[cfg(feature = "server")]
 mod claude_task_state;
 #[cfg(feature = "server")]
 mod claude_view;
@@ -59,6 +61,8 @@ mod git;
 mod idempotency;
 #[cfg(feature = "server")]
 mod journal;
+#[cfg(feature = "server")]
+mod journal_lookback;
 mod lock;
 #[cfg(all(windows, feature = "server"))]
 mod log_pipeline;
@@ -140,6 +144,8 @@ mod tool_paths;
 #[cfg(feature = "server")]
 mod tool_policy;
 mod transport;
+#[cfg(feature = "server")]
+mod usage_cost;
 #[cfg(feature = "server")]
 mod user_providers;
 // Only the server and the Windows PATH snapshot call plain_path: everywhere

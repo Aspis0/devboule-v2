@@ -1198,11 +1198,22 @@ impl CodexView {
             output_tokens: last.get("outputTokens").and_then(Value::as_u64),
             total_tokens: last.get("totalTokens").and_then(Value::as_u64),
             thought_tokens: last.get("reasoningOutputTokens").and_then(Value::as_u64),
+            // Codex counts the cached reads inside `inputTokens` —
+            // `totalTokens` is input + output only — so both cache counters
+            // are subsets. Scope: the same `last` object the input/output
+            // tokens come from, i.e. the turn's most recent model call, not
+            // the whole turn — the frame's `total` carries that, and reading
+            // it is a declared follow-up. Codex names no turn cost.
+            cache_read_tokens: last.get("cachedInputTokens").and_then(Value::as_u64),
+            cache_write_tokens: last.get("cacheWriteInputTokens").and_then(Value::as_u64),
+            cost_usd: None,
         };
         if usage.input_tokens.is_some()
             || usage.output_tokens.is_some()
             || usage.total_tokens.is_some()
             || usage.thought_tokens.is_some()
+            || usage.cache_read_tokens.is_some()
+            || usage.cache_write_tokens.is_some()
         {
             self.usage = Some(usage);
         }
@@ -2132,6 +2143,52 @@ mod tests {
         // The window still reaches the manifest latch — that is a separate
         // road this frame must keep feeding.
         assert_eq!(view.take_context_window_update(), Some(1000));
+    }
+
+    #[test]
+    fn the_latched_turn_usage_keeps_the_cached_input_counters() {
+        // `thread/tokenUsage/updated` as E1-step1-handshake line 25 recorded
+        // it, verbatim: `cachedInputTokens` and `cacheWriteInputTokens` sit
+        // beside `inputTokens`, which already includes the cached reads —
+        // `totalTokens` is input + output only. The capture's
+        // `cacheWriteInputTokens` is 0, a said-zero that stays `Some(0)`.
+        let mut view = CodexView::new(None);
+        let _ = view.ingest(&parse(
+            r#"{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"th","tokenUsage":{"last":{"totalTokens":21059,"inputTokens":21054,"cachedInputTokens":11008,"cacheWriteInputTokens":0,"outputTokens":5,"reasoningOutputTokens":0}}}}"#,
+        ));
+        let completed = parse(
+            r#"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th","turn":{"id":"tu","status":"completed"}}}"#,
+        );
+        match view.ingest(&completed).as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }] => {
+                assert_eq!(usage.input_tokens, Some(21_054));
+                assert_eq!(usage.cache_read_tokens, Some(11_008));
+                assert_eq!(usage.cache_write_tokens, Some(0));
+                assert_eq!(usage.cost_usd, None);
+            }
+            other => panic!("expected AgentFinished with latched usage, got {other:?}"),
+        }
+        // A usage that names no cache counters (synthetic) latches no
+        // stand-ins.
+        let mut view = CodexView::new(None);
+        let _ = view.ingest(&parse(
+            r#"{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"th","tokenUsage":{"last":{"totalTokens":6,"inputTokens":5,"outputTokens":1}}}}"#,
+        ));
+        let completed = parse(
+            r#"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th","turn":{"id":"tu","status":"completed"}}}"#,
+        );
+        match view.ingest(&completed).as_slice() {
+            [SessionEvent::AgentFinished {
+                usage: Some(usage), ..
+            }] => {
+                assert_eq!(usage.cache_read_tokens, None);
+                assert_eq!(usage.cache_write_tokens, None);
+                assert_eq!(usage.cost_usd, None);
+            }
+            other => panic!("expected bare AgentFinished, got {other:?}"),
+        }
     }
 
     fn parse(value: &str) -> serde_json::Value {
