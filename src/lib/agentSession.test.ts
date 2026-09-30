@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
-import type { PermissionRequest, SessionEvent } from "../types/ipc";
+import type { PermissionRequest, PermissionResolved, SessionEvent } from "../types/ipc";
 
 const historyMocks = vi.hoisted(() => ({ recordChildFinishedHistory: vi.fn(async () => true) }));
 const mirrorMocks = vi.hoisted(() => ({ scheduleDelegatedDesignMirror: vi.fn() }));
@@ -2946,5 +2946,80 @@ describe("send disposition restore", () => {
 
     await expect(harness.session.send("/compact")).resolves.toBe(true);
     expect(harness.session.getState().lastFinished?.stopReason).toBe("stop");
+  });
+});
+
+describe("permission replay pairing", () => {
+  const request: PermissionRequest = {
+    type: "permission_request",
+    toolCallId: "tool-early",
+    title: "Read file",
+    options: [],
+  };
+  const resolution: PermissionResolved = {
+    type: "permission_resolved",
+    toolCallId: "tool-early",
+  };
+
+  function deferredAttachHarness() {
+    const onPermissionRequest = vi.fn();
+    const onPermissionResolved = vi.fn();
+    let emit: (event: SessionEvent) => void = () => undefined;
+    let releaseAttach!: () => void;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "session_attach") {
+        await new Promise<void>((resolve) => {
+          releaseAttach = resolve;
+        });
+        return 41;
+      }
+      return undefined;
+    }) as unknown as AgentSessionDeps["invoke"];
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke,
+      createChannel: (onEvent) => {
+        emit = onEvent;
+        return {} as AgentChannel;
+      },
+      onPermissionRequest,
+      onPermissionResolved,
+    });
+    return {
+      session,
+      emit: (event: SessionEvent) => emit(event),
+      releaseAttach: () => releaseAttach(),
+      onPermissionRequest,
+      onPermissionResolved,
+    };
+  }
+
+  it("drops a buffered request its resolution already paired with, and still forwards the resolution", async () => {
+    const harness = deferredAttachHarness();
+    const started = harness.session.start();
+    harness.emit(request);
+    harness.emit(resolution);
+
+    // The pair arrived in stream order before the attach confirmed: the
+    // request is history, but the resolution still goes out.
+    expect(harness.onPermissionResolved).toHaveBeenCalledTimes(1);
+    expect(harness.onPermissionResolved).toHaveBeenCalledWith(resolution);
+    harness.releaseAttach();
+    await started;
+    expect(harness.onPermissionRequest).not.toHaveBeenCalled();
+  });
+
+  it("forwards both when the attach reply comes first", async () => {
+    const harness = deferredAttachHarness();
+    const started = harness.session.start();
+    harness.releaseAttach();
+    await started;
+    harness.emit(request);
+    harness.emit(resolution);
+
+    expect(harness.onPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(harness.onPermissionRequest).toHaveBeenCalledWith(request, 41);
+    expect(harness.onPermissionResolved).toHaveBeenCalledTimes(1);
+    expect(harness.onPermissionResolved).toHaveBeenCalledWith(resolution);
   });
 });

@@ -106,6 +106,7 @@ import {
   sessionClose,
   sessionStop,
 } from "../../lib/tauri";
+import { isCommandError } from "../../lib/commandError";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
 import "./panel/panel.css";
@@ -166,6 +167,16 @@ interface QueueResolution {
   selectedOptionName: string | null;
 }
 
+interface QueuedPermission {
+  sessionId: string;
+  subscriptionId: number;
+  request: PermissionRequest;
+  /** Set when an agent answered this card elsewhere; the card stays to say so. */
+  resolution?: QueueResolution;
+  /** Set when answering failed terminally; the card keeps only Clear. */
+  stale?: boolean;
+}
+
 export function Workspace({
   sidePanelRegistry = SIDE_PANEL_REGISTRY,
   delegation: delegationControllerProp,
@@ -208,15 +219,13 @@ export function Workspace({
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
-  const [permissionQueue, setPermissionQueue] = useState<
-    Array<{
-      sessionId: string;
-      subscriptionId: number;
-      request: PermissionRequest;
-      /** Set when an agent answered this card elsewhere; the card stays to say so. */
-      resolution?: QueueResolution;
-    }>
-  >([]);
+  const [permissionQueue, setPermissionQueue] = useState<QueuedPermission[]>([]);
+  // Drop one session's cards. The close acts call this on success and on a
+  // moot close, and the roster absence rule below calls it when the row is
+  // gone: a failed close while the session still exists keeps them.
+  const dropSessionPermissions = (id: string) => {
+    setPermissionQueue((queue) => queue.filter((item) => item.sessionId !== id));
+  };
   // Device id to display name, for the tab badge that names a peer session's
   // device. One read per daemon connection: the names come from pairing and do
   // not change while the connection lives.
@@ -277,6 +286,31 @@ export function Workspace({
   useEffect(() => {
     setSessionFacts(sessions);
   }, [sessions, setSessionFacts]);
+  // Sessions this Workspace has observed in the strip-visible roster, so
+  // the absence rule below never drops cards for a row it never named.
+  // The list it reads is deliberately the strip-visible one, not the
+  // daemon's full roster the message queue's `onRosterPush` gets
+  // (`sessionQueueOwner.ts`): an ended row the user never opened leaves
+  // this list while the daemon still names it, and its cards go with it.
+  // That is safe only because an ended session has no process, so no
+  // queued request is still answerable — text, which the queue keeps, has
+  // no such backstop and must read the full list.
+  const seenSessionIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const session of sessions) seenSessionIdsRef.current.add(session.id);
+    const present = new Set(sessions.map((session) => session.id));
+    setPermissionQueue((queue) => {
+      if (
+        !queue.some(
+          (item) => seenSessionIdsRef.current.has(item.sessionId) && !present.has(item.sessionId),
+        )
+      )
+        return queue;
+      return queue.filter(
+        (item) => !seenSessionIdsRef.current.has(item.sessionId) || present.has(item.sessionId),
+      );
+    });
+  }, [sessions]);
   // The strip's close acts: fire at once (the undo window is gone), hide the
   // row until the roster confirms, and own each failure by the act that
   // produced it. App-lifetime, like the acts themselves: a fire still in the
@@ -287,15 +321,36 @@ export function Workspace({
       // An explicit close or archive takes the queued messages with the
       // session: the journal keeps the row, so the roster would go on naming a
       // session the user just removed and its queue would never be dropped by
-      // the absence rule alone (`sessionQueueOwner.ts::closeSession`).
+      // the absence rule alone (`sessionQueueOwner.ts::closeSession`). Its
+      // permission cards go the same way. A close that fails while the
+      // session still exists keeps them; a moot one (`session_not_found`:
+      // the row is already gone) drops them and lets the store stay silent.
       archive: (id) =>
-        sessionStop(id).then(() => {
-          sharedSessionQueueOwner().closeSession(id);
-        }),
+        sessionStop(id).then(
+          () => {
+            sharedSessionQueueOwner().closeSession(id);
+            dropSessionPermissions(id);
+          },
+          (cause: unknown) => {
+            if (isCommandError(cause) && cause.code === "session_not_found") {
+              dropSessionPermissions(id);
+            }
+            throw cause;
+          },
+        ),
       destroy: (id) =>
-        sessionClose(id).then(() => {
-          sharedSessionQueueOwner().closeSession(id);
-        }),
+        sessionClose(id).then(
+          () => {
+            sharedSessionQueueOwner().closeSession(id);
+            dropSessionPermissions(id);
+          },
+          (cause: unknown) => {
+            if (isCommandError(cause) && cause.code === "session_not_found") {
+              dropSessionPermissions(id);
+            }
+            throw cause;
+          },
+        ),
     }),
   );
   const knownWorkspaceIds = useMemo(
@@ -1039,7 +1094,7 @@ export function Workspace({
         if (index === -1) return [...queue, { sessionId, subscriptionId, request }];
         // A remounted surface re-attaches with a fresh subscription id; the
         // queued card must adopt it or its response reaches the daemon with
-        // a dead id.
+        // a dead id. Staleness rides along: the item is replaced, not reset.
         if (queue[index].subscriptionId === subscriptionId) return queue;
         const next = [...queue];
         next[index] = { ...next[index], subscriptionId };
@@ -1056,6 +1111,22 @@ export function Workspace({
         (item) => !(item.sessionId === sessionId && item.request.toolCallId === toolCallId),
       ),
     );
+  }, []);
+  // A card whose answer the daemon refused terminally: the item records it,
+  // so every remount starts terminal instead of offering the answer again.
+  const markPermissionStale = useCallback((sessionId: string, toolCallId: string) => {
+    setPermissionQueue((queue) => {
+      const index = queue.findIndex(
+        (item) =>
+          item.sessionId === sessionId &&
+          item.request.toolCallId === toolCallId &&
+          item.stale !== true,
+      );
+      if (index === -1) return queue;
+      const next = [...queue];
+      next[index] = { ...next[index], stale: true };
+      return next;
+    });
   }, []);
   // A card resolved from somewhere else. The card NEVER leaves on the strength
   // of this event alone, and the event's silence is never read as "a person
@@ -1503,7 +1574,9 @@ export function Workspace({
                 auxiliary={
                   selectedPermission !== null ? (
                     <WorkspacePermissionCard
-                      key={selectedPermission.request.toolCallId}
+                      // Session and tool call: a new identity mounts a new
+                      // card, so its terminal flag starts from the queue item.
+                      key={`${paneSession.id}\n${selectedPermission.request.toolCallId}`}
                       sessionId={paneSession.id}
                       subscriptionId={selectedPermission.subscriptionId}
                       request={selectedPermission.request}
@@ -1513,6 +1586,8 @@ export function Workspace({
                       deviceNames={peerNames}
                       resolution={selectedPermission.resolution ?? null}
                       creatorId={paneSession.createdBy ?? null}
+                      stale={selectedPermission.stale === true}
+                      onStale={markPermissionStale}
                       onResolved={dismissResolvedPermission}
                     />
                   ) : undefined

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { boundByGraphemes } from "../lib/graphemeBound";
 import { optionOutcome } from "../lib/optionOutcome";
+import { isStalePermissionError, STALE_PERMISSION_LINE } from "./permissionStale";
 import { sessionPermissionRespond } from "../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import { ErrorText } from "./ErrorText";
@@ -365,6 +366,17 @@ export interface PermissionCardProps {
    * never earn the creator label, only the named-session one.
    */
   creatorId?: string | null;
+  /**
+   * The queue item already knows this card is terminal: a remount starts
+   * terminal instead of offering the answer once more. Set through
+   * `onStale` below, which is the only writer.
+   */
+  stale?: boolean;
+  /**
+   * Fired once when answering fails terminally, so the host can record it
+   * on the queue item and every remount starts terminal too.
+   */
+  onStale?: (sessionId: string, toolCallId: string) => void;
   onRespond?: (response: PermissionAnswer) => Promise<void>;
   onResolved?: (sessionId: string, toolCallId: string) => void;
 }
@@ -393,11 +405,18 @@ export function PermissionCard({
   deviceNames,
   resolution = null,
   creatorId = null,
+  stale: incomingStale = false,
+  onStale,
   onRespond,
   onResolved,
 }: PermissionCardProps) {
   const [permission, setPermission] = useState<PermissionState>("waiting");
   const [error, setError] = useState<ErrorSentence | null>(null);
+  // The daemon refused the answer because it no longer knows the request:
+  // the card is over, kept only so its Clear can dismiss it. Seeded from
+  // the queue item, which is the record that survives remounts and
+  // subscription rotations; the reset below never clears it.
+  const [stale, setStale] = useState(incomingStale);
   // The option a chooser answer picked, under the agent's own option name:
   // set when THIS card answers with an option id, so its resolved state says
   // which choice it was. An outside answer's name arrives on `resolution`.
@@ -471,11 +490,19 @@ export function PermissionCard({
       : shortenAnswererId(resolution.answeredBy);
   const cardLabel = resolvedByCreator
     ? resolvedCardLabel(attribution, resolution.outcome, answererHead)
-    : PERMISSION_LABELS[permission];
-  const cardTone = resolvedByCreator ? (resolution.outcome ?? "unclaimed") : permission;
+    : stale
+      ? STALE_PERMISSION_LINE
+      : PERMISSION_LABELS[permission];
+  // A stale card wears the neutral dot: it is over, but nothing was denied.
+  const cardTone = resolvedByCreator
+    ? (resolution.outcome ?? "unclaimed")
+    : stale
+      ? "unclaimed"
+      : permission;
 
   const respond = async (response: PermissionAnswer): Promise<boolean> => {
-    if (resolvedByCreator || submittingRef.current || permission !== "waiting") return false;
+    if (stale || resolvedByCreator || submittingRef.current || permission !== "waiting")
+      return false;
     const { outcome, optionId, answer } = response;
     const generation = generationRef.current;
     submittingRef.current = true;
@@ -521,6 +548,15 @@ export function PermissionCard({
     } catch (cause) {
       if (!mountedRef.current || generationRef.current !== generation) return false;
       submittingRef.current = false;
+      if (isStalePermissionError(cause)) {
+        // The same answer can never succeed, so the card ends here instead
+        // of offering it again; the label is the one announcement (the
+        // root is aria-live), only Clear remains, and the host records it
+        // so a remount starts terminal too.
+        setStale(true);
+        onStale?.(sessionId, request.toolCallId);
+        return false;
+      }
       setPermission("waiting");
       setError(errorSentence(cause));
       return false;
@@ -701,7 +737,7 @@ export function PermissionCard({
           {!denySupported ? "Deny is not offered for this request." : null}
         </div>
       ) : null}
-      {isQuestion && !resolvedByCreator ? (
+      {isQuestion && !resolvedByCreator && !stale ? (
         <div className="permission-card-questions">
           {askedQuestions.map((question, questionIndex) => (
             <fieldset key={questionIndex} className="permission-card-question">
@@ -796,7 +832,9 @@ export function PermissionCard({
         >
           {cardLabel}
         </span>
-        {resolvedByCreator ? (
+        {/* A stale card answers nothing further: like an outside answer it
+            keeps only Clear, and unlike one it says the request is gone. */}
+        {resolvedByCreator || stale ? (
           <button
             type="button"
             className="permission-card-secondary-action permission-card-dismiss-action"
@@ -804,7 +842,9 @@ export function PermissionCard({
             // answer sits in the queue for the life of the app — nothing else
             // can remove it, and two hundred answered cards are two hundred
             // permanent fixtures.
-            aria-label="Clear this answered card"
+            // A stale card was never answered, so its Clear must not claim
+            // otherwise; the resolved card keeps its own label.
+            aria-label={resolvedByCreator ? "Clear this answered card" : "Clear this request"}
             onClick={() => onResolved?.(sessionId, request.toolCallId)}
           >
             Clear

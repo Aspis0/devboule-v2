@@ -1000,6 +1000,11 @@ export class AgentSession {
         else this.deps.onPermissionRequest?.(event, this.subscriptionId);
         return;
       case "permission_resolved":
+        // A resolution that pairs with a still-buffered request in stream
+        // order: the request is already decided, so it leaves the buffer.
+        // The resolution is still forwarded — after the attach reply it
+        // annotates the live card; before it, the drain has nothing to send.
+        if (this.subscriptionId === null) this.dropBufferedPermissionRequest(event.toolCallId);
         this.deps.onPermissionResolved?.(event);
         return;
       case "permission_answered":
@@ -1243,6 +1248,14 @@ export class AgentSession {
     const requests = this.pendingPermissionRequests.splice(0);
     const subscriptionId = this.subscriptionId;
     for (const request of requests) this.deps.onPermissionRequest?.(request, subscriptionId);
+  }
+
+  /** Drop a buffered request its resolution already paired with in stream order. */
+  private dropBufferedPermissionRequest(toolCallId: string): void {
+    const index = this.pendingPermissionRequests.findIndex(
+      (request) => request.toolCallId === toolCallId,
+    );
+    if (index !== -1) this.pendingPermissionRequests.splice(index, 1);
   }
 
   private clearSwitchTimer(): void {
