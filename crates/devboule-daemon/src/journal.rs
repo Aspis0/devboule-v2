@@ -628,6 +628,13 @@ pub struct Replay {
     /// `None` where the entry has no row of its own — a snapshot chunk, a
     /// tail marker, or a wire-only synthetic. Kept in lockstep with
     /// `events` and `event_seqs` by every writer of the replay.
+    ///
+    /// The row timestamp is replay metadata; it does not replace an event's
+    /// own `at_ms`. When an event payload time is present (as on an
+    /// `agent_report` row), replay preserves it. The transcript consumer
+    /// fills absent user-turn times from these row timestamps: a kind-less
+    /// native row is timed where `journal_replay` decodes it, the hydrate
+    /// and the paged walk stamp composer rows as they read them.
     pub event_ts_ms: Vec<Option<u64>>,
     pub last_seq: u64,
     pub integrity: TranscriptIntegrity,

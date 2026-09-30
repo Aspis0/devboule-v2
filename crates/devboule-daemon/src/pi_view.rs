@@ -6,7 +6,7 @@
 use devboule_protocol::{AvailableCommandView, NoticeSeverity, SessionEvent, TurnUsage};
 use serde_json::Value;
 
-use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
+use crate::wire_json::{blocks_text, shell_command_from_tool, tool_kind_from_name, tool_status};
 
 /// The one field that matters, in the same priority as Claude's fallback:
 /// command, then path, then pattern.
@@ -62,22 +62,37 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
     }
 }
 
+/// The finish a withheld `turn_end` loses, dropped by both the live publish
+/// loop and the replay: only the `AgentFinished` goes — the turn_end's
+/// `ContextUsage` and any other derived event stay.
+pub(crate) fn suppress_withheld_finish(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    let mut events = events;
+    events.retain(|event| !matches!(event, SessionEvent::AgentFinished { .. }));
+    events
+}
+
 /// Replay's half of the withheld-finish mechanism (`claude_view` owns the
-/// row type): the marker makes the next envelope's finish — a `turn_end`
-/// the live pass withheld because the run had already been ended for it —
-/// derive nothing, so a reattach shows the one finish the daemon authored.
-/// The flag is consumed by the next envelope of any kind, the adjacency the
-/// live reader's `journal_agent_envelope_pair` guarantees.
+/// row type): the marker suppresses the `turn_end`'s finish — the one the
+/// live pass withheld because the run had already been ended for it — so a
+/// reattach shows the one finish the daemon authored. The marker owns
+/// exactly the `turn_end` written after it: any other frame between the two
+/// means the journal being read is not the journal the marker was written
+/// for — a hole dropped the pair's second row — so the marker expires there
+/// rather than silence a later turn's completion.
 pub(crate) fn drive_replay(withheld_pending: &mut bool, value: &Value) -> Vec<SessionEvent> {
-    if value.get("type").and_then(Value::as_str)
-        == Some(crate::claude_view::WITHHELD_FINISH_MARKER_TYPE)
+    let frame_type = value.get("type").and_then(Value::as_str);
+    if frame_type != Some(crate::claude_view::WITHHELD_FINISH_MARKER_TYPE)
+        && frame_type != Some("turn_end")
     {
+        *withheld_pending = false;
+    }
+    if frame_type == Some(crate::claude_view::WITHHELD_FINISH_MARKER_TYPE) {
         *withheld_pending = true;
         return Vec::new();
     }
     let mut events = events_from_line(value);
     if *withheld_pending {
-        events.retain(|event| !matches!(event, SessionEvent::AgentFinished { .. }));
+        events = suppress_withheld_finish(events);
         *withheld_pending = false;
     }
     events
@@ -247,16 +262,12 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
     // bare (`toolcall_start` carries no arguments), and the app's reducer
     // keeps this value through the later commandless updates
     // (`agentSession.ts:1476`).
-    let command = if name.is_some_and(|name| tool_kind_from_name(name) == "execute") {
+    let command = shell_command_from_tool(
+        name.unwrap_or(""),
         tool_call
             .get("arguments")
-            .and_then(|arguments| arguments.get("command"))
-            .and_then(Value::as_str)
-            .filter(|command| !command.is_empty())
-            .map(str::to_string)
-    } else {
-        None
-    };
+            .and_then(|arguments| arguments.get("command")),
+    );
     Some(SessionEvent::AgentToolUpdate {
         tool_call_id: tool_call.get("id")?.as_str()?.to_string(),
         status: Some("in_progress".to_string()),
@@ -405,15 +416,15 @@ fn usage_from_pi(value: &Value) -> Option<TurnUsage> {
 
 #[cfg(test)]
 mod tests {
-    use super::events_from_line;
+    use super::{drive_replay, events_from_line, suppress_withheld_finish};
     use devboule_protocol::SessionEvent;
 
     fn parse(line: &str) -> serde_json::Value {
-        serde_json::from_str(line).expect("recording JSON")
+        serde_json::from_str(line).expect("synthesized JSON")
     }
 
     #[test]
-    fn recorded_text_delta_is_one_agent_message_and_text_end_is_empty() {
+    fn synthesized_text_delta_is_one_agent_message_and_text_end_is_empty() {
         let delta = parse(
             r#"{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"OK"}}"#,
         );
@@ -532,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_turn_end_carries_model_stop_reason_and_usage() {
+    fn synthesized_turn_end_carries_model_stop_reason_and_usage() {
         let line = parse(
             r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"stopReason":"stop","timestamp":1788993862485,"responseId":"gen-1788993862-4cxcarrKksRnXEICsFHO","rawStopReason":"stop"},"toolResults":[]}"#,
         );
@@ -566,7 +577,8 @@ mod tests {
 
     #[test]
     fn turn_end_usage_carries_cache_counters_and_turn_cost() {
-        // The recorded turn_end (the fixture `recorded_turn_end_…` cites):
+        // The same synthesized turn_end frame
+        // `synthesized_turn_end_carries_model_stop_reason_and_usage` parses:
         // `cacheRead`/`cacheWrite` are present and zero — said-zeros, which
         // stay `Some(0)` — and `cost.total` prices the usage pi attached to
         // the ending assistant message. Whether that total is the turn's or
@@ -600,6 +612,127 @@ mod tests {
             }
             other => panic!("expected bare AgentFinished, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn replay_honours_the_withheld_finish_marker_before_the_turn_end_it_owns() {
+        // The marker is the shared producer's row type (`claude_view`,
+        // written by pi_client beside the suppressed finish); the turn_end
+        // after it is the envelope the marker owns.
+        let marker = crate::claude_view::withheld_finish_marker();
+        let turn_end = parse(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[],"model":"pi-test","usage":{"totalTokens":42},"stopReason":"end_turn"},"toolResults":[]}"#,
+        );
+        let mut withheld = false;
+        assert!(drive_replay(&mut withheld, &marker).is_empty());
+        assert!(withheld, "the marker arms the suppression");
+        let events = drive_replay(&mut withheld, &turn_end);
+        assert!(!withheld, "the owned turn_end consumes the marker");
+        // Only the finish is withheld; the turn_end's other events derive.
+        assert_eq!(
+            events,
+            vec![SessionEvent::ContextUsage {
+                model_id: Some("pi-test".to_string()),
+                used_tokens: 42,
+                max_tokens: None,
+                live: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_stranded_pi_marker_expires_after_an_intervening_frame() {
+        // A marker is expired by any non-`turn_end` frame. Assumption: the
+        // marker/`turn_end` pair is written adjacently, but a queue refusal
+        // can strand the marker; if the next frame is a genuine `turn_end`,
+        // it is still suppressed and that finish's usage is lost, the same
+        // drop live suppression makes.
+        let marker = crate::claude_view::withheld_finish_marker();
+        let unrelated = parse(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"later"}}"#,
+        );
+        let turn_end = parse(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[],"model":"pi-test","usage":{"totalTokens":42},"stopReason":"end_turn"},"toolResults":[]}"#,
+        );
+        let mut withheld = false;
+        assert!(drive_replay(&mut withheld, &marker).is_empty());
+        assert!(withheld, "the marker arms the suppression");
+        // The unrelated frame derives normally and expires the marker.
+        assert_eq!(
+            drive_replay(&mut withheld, &unrelated),
+            vec![SessionEvent::AgentMessage {
+                message_id: None,
+                text: "later".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
+            }]
+        );
+        assert!(!withheld, "the unrelated frame expires the marker");
+        let events = drive_replay(&mut withheld, &turn_end);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    SessionEvent::AgentFinished { .. },
+                    SessionEvent::ContextUsage { .. }
+                ]
+            ),
+            "a non-`turn_end` frame expires the stranded marker before this later finish; a stranded marker meeting a `turn_end` directly would still be suppressed, losing that finish and its usage: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_suppressed_turn_end_drops_only_the_finish_its_usage_included() {
+        // The withheld finish takes its cache counters and cost with it; the
+        // turn_end's ContextUsage still derives. Live publishing and replay
+        // suppress through the one `suppress_withheld_finish` filter; this
+        // pins that filter and the marker road — not the live client end to
+        // end.
+        let marker = crate::claude_view::withheld_finish_marker();
+        let turn_end = parse(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[],"model":"pi-test","usage":{"totalTokens":42,"cacheRead":7,"cacheWrite":2,"cost":{"total":0.5}},"stopReason":"end_turn"},"toolResults":[]}"#,
+        );
+        let mut withheld = false;
+        assert!(drive_replay(&mut withheld, &marker).is_empty());
+        let replayed = drive_replay(&mut withheld, &turn_end);
+        assert!(!withheld, "the owned turn_end consumes the marker");
+        assert_eq!(
+            replayed,
+            suppress_withheld_finish(events_from_line(&turn_end)),
+            "the marker road suppresses through the shared filter"
+        );
+        assert!(
+            matches!(
+                replayed.as_slice(),
+                [SessionEvent::ContextUsage {
+                    used_tokens: 42,
+                    ..
+                }]
+            ),
+            "only the finish is withheld; the context reading survives: {replayed:?}"
+        );
+    }
+
+    #[test]
+    fn an_unsuppressed_turn_end_keeps_its_cache_counters_and_cost() {
+        let turn_end = parse(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[],"model":"pi-test","usage":{"totalTokens":42,"cacheRead":7,"cacheWrite":2,"cost":{"total":0.5}},"stopReason":"end_turn"},"toolResults":[]}"#,
+        );
+        assert!(
+            matches!(
+                events_from_line(&turn_end).as_slice(),
+                [
+                    SessionEvent::AgentFinished {
+                        usage: Some(usage),
+                        ..
+                    },
+                    SessionEvent::ContextUsage { .. },
+                ] if usage.cache_read_tokens == Some(7)
+                    && usage.cache_write_tokens == Some(2)
+                    && usage.cost_usd == Some(0.5)
+            ),
+            "the run's surviving finish keeps the mapped usage"
+        );
     }
 
     #[test]

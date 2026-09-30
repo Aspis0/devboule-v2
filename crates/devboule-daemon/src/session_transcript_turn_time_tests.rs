@@ -1,10 +1,14 @@
 //! The turn rail's time on a recovered transcript, driven through the real
 //! hydrate-and-pull road, because the claim is about what a client is served
-//! after a daemon restart — not about a helper. The four row shapes the
-//! journal holds: a composer row carrying its own `at_ms` (the protocol-17
-//! writer), a composer row from between `message_kind` and `at_ms` (timed
-//! from the row's `ts_ms`, the same fill the live replay seam does), an a2a
-//! relay (no turn time), and a row older than `message_kind` (none).
+//! after a daemon restart — not about a helper. The row shapes the journal
+//! holds: a composer row carrying its own `at_ms` (the protocol-17 writer),
+//! a composer row from between `message_kind` and `at_ms` (timed from the
+//! row's `ts_ms`, the same fill the live replay seam does), an a2a relay (no
+//! turn time), a kind-less native row older than `message_kind` (it decodes
+//! as `Unknown`, but the daemon itself wrote it, so its `ts_ms` times the
+//! turn), and a provider envelope's `user_message_chunk` echo — the live
+//! client drops that echo before journaling, so it has no live time and
+//! replay gives it none.
 
 use std::sync::Arc;
 
@@ -87,13 +91,40 @@ fn a_recovered_transcript_serves_each_turn_its_own_row_time() {
         T_A2A,
         &composer("an a2a relay", UserMessageKind::OutgoingA2a, None),
     );
-    record_row(
-        &journal,
-        &id,
-        4,
-        T_LEGACY,
-        &composer("older than message_kind", UserMessageKind::Unknown, None),
-    );
+    // The payload as the pre-`message_kind` writer stored it: no
+    // `messageKind`, no `atMs`.
+    let legacy = serde_json::json!({
+        "type": "agent_user_message",
+        "messageId": "m4",
+        "text": "older than message_kind",
+        "author": "human"
+    });
+    journal
+        .append_blocking(crate::journal::EventRecord {
+            session_id: id.clone(),
+            generation: 1,
+            seq: 4,
+            kind: crate::journal::EventKind::AgentReport,
+            ts_ms: T_LEGACY,
+            payload: serde_json::to_vec(&legacy).unwrap(),
+        })
+        .expect("the row lands");
+    // A historical ACP envelope can decode as `Unknown`; the live ACP
+    // client suppresses the redundant echo before journaling or publishing
+    // it, so the row carries no live time to preserve.
+    let echo = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {"sessionId": "acp-1", "update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {"type": "text", "text": "an acp echo of the prompt"}
+        }}
+    });
+    journal
+        .append_blocking(
+            crate::journal::acp_envelope_record(&id, 1, 5, &echo).expect("the envelope serializes"),
+        )
+        .expect("the row lands");
 
     let conn = ConnHandle::new(1);
     registry
@@ -106,7 +137,8 @@ fn a_recovered_transcript_serves_each_turn_its_own_row_time() {
             ("protocol-17 writer".to_string(), Some(T_WITH_FIELD)),
             ("before the field".to_string(), Some(T_BEFORE_FIELD)),
             ("an a2a relay".to_string(), None),
-            ("older than message_kind".to_string(), None),
+            ("older than message_kind".to_string(), Some(T_LEGACY)),
+            ("an acp echo of the prompt".to_string(), None),
         ],
         "the pull times each composer turn by the live replay's rule"
     );

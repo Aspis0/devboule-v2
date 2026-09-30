@@ -159,3 +159,312 @@ fn recovered_acp_views_must_not_vanish_behind_a_high_output_cursor() {
         "reattach after seq 10 dropped the ACP thought: {events:?}"
     );
 }
+
+/// pi's withheld-finish marker must hold across a page boundary: the marker
+/// is the last row of one page, the `turn_end` it owns — written straight
+/// after it, no frame between — the first row of the next, and the finish
+/// the live pass withheld must not re-derive on reattach — the same event
+/// set the restart hydrate derives through `pi_view::drive_replay`.
+#[test]
+fn live_pi_replay_honours_the_withheld_finish_across_a_page_boundary() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-pi-withheld-replay");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.live.pi.withheld";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Pi,
+            "Pi",
+        ))
+        .unwrap();
+    // Fillers derive nothing; they push the marker onto the last slot of
+    // the first page (a page is PULL_BATCH rows).
+    for seq in 1..PULL_BATCH as u64 {
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record(
+                    session_id,
+                    1,
+                    seq,
+                    &json!({"type":"pi_filler"}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    journal
+        .append_blocking(
+            crate::journal::acp_envelope_record(
+                session_id,
+                1,
+                PULL_BATCH as u64,
+                &crate::claude_view::withheld_finish_marker(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let turn_end = json!({
+        "type": "turn_end",
+        "message": {
+            "role": "assistant",
+            "content": [],
+            "model": "pi-test",
+            "usage": {"totalTokens": 42},
+            "stopReason": "end_turn"
+        },
+        "toolResults": []
+    });
+    journal
+        .append_blocking(
+            crate::journal::acp_envelope_record(session_id, 1, PULL_BATCH as u64 + 1, &turn_end)
+                .unwrap(),
+        )
+        .unwrap();
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    runtime.set_agent_kind(SessionKind::Pi);
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.next_seq = PULL_BATCH as u64 + 2;
+    }
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach live pi session");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. })),
+        "the finish the marker withheld must not re-derive across the page boundary: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SessionEvent::ContextUsage {
+                used_tokens: 42,
+                ..
+            }
+        )),
+        "the turn_end's remaining events still derive: {events:?}"
+    );
+
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A refused second row can strand a marker. This fixture walks the paged
+/// replay over marker, unrelated envelope, `turn_end`: the intervening
+/// envelope expires the marker, so the later finish derives and the
+/// unrelated envelope's own event still arrives.
+///
+/// Assumption: the marker/`turn_end` pair is normally written adjacently. A
+/// stranded marker that meets a genuine `turn_end` directly would still
+/// suppress that finish, losing it and its usage — the same drop live
+/// suppression makes. The adjacent case is pinned one layer down in
+/// `pi_view`, the page-boundary case in the test above.
+#[test]
+fn live_pi_replay_expires_a_stranded_marker_after_an_intervening_frame() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-pi-stranded-marker");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.live.pi.stranded";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Pi,
+            "Pi",
+        ))
+        .unwrap();
+    let unrelated = json!({
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "later"}
+    });
+    let turn_end = json!({
+        "type": "turn_end",
+        "message": {
+            "role": "assistant",
+            "content": [],
+            "model": "pi-test",
+            "usage": {"totalTokens": 42},
+            "stopReason": "end_turn"
+        },
+        "toolResults": []
+    });
+    for (seq, value) in [
+        (1, &crate::claude_view::withheld_finish_marker()),
+        (2, &unrelated),
+        (3, &turn_end),
+    ] {
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record(session_id, 1, seq, value).unwrap(),
+            )
+            .unwrap();
+    }
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    runtime.set_agent_kind(SessionKind::Pi);
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.next_seq = 4;
+    }
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach live pi session");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. })),
+        "a non-`turn_end` frame expires the stranded marker before this later finish; a stranded marker meeting a `turn_end` directly would still be suppressed, losing that finish and its usage: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentMessage { text, .. } if text == "later"
+        )),
+        "the unrelated envelope still derives: {events:?}"
+    );
+
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A resume seam is a new provider process: a marker the previous
+/// generation stranded must not suppress the new generation's own
+/// `turn_end` — the bit resets with the other per-generation parser state,
+/// as the restart hydrate scopes its copy inside the generation loop.
+#[test]
+fn live_pi_replay_drops_the_withheld_marker_at_a_resume_seam() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-pi-marker-resume");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.live.pi.resume";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Pi,
+            "Pi",
+        ))
+        .unwrap();
+    // Generation 1 ends on the marker; generation 2 opens with its own
+    // turn_end. The pair cannot be adjacent across the seam — the marker
+    // belongs to the process that ended.
+    journal
+        .append_blocking(
+            crate::journal::acp_envelope_record(session_id, 1, 1, &json!({"type":"pi_filler"}))
+                .unwrap(),
+        )
+        .unwrap();
+    journal
+        .append_blocking(
+            crate::journal::acp_envelope_record(
+                session_id,
+                1,
+                2,
+                &crate::claude_view::withheld_finish_marker(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    journal.start_generation(session_id, 2).unwrap();
+    let turn_end = json!({
+        "type": "turn_end",
+        "message": {
+            "role": "assistant",
+            "content": [],
+            "model": "pi-test",
+            "usage": {"totalTokens": 7},
+            "stopReason": "end_turn"
+        },
+        "toolResults": []
+    });
+    journal
+        .append_blocking(crate::journal::acp_envelope_record(session_id, 2, 1, &turn_end).unwrap())
+        .unwrap();
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    runtime.set_agent_kind(SessionKind::Pi);
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.generation = 2;
+        stream.next_seq = 2;
+    }
+    runtime.generation.store(2, Ordering::Release);
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(
+            Some(Cursor {
+                generation: 2,
+                seq: 0,
+            }),
+            &conn,
+            true,
+        )
+        .expect("attach live pi session");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentFinished { .. }
+        )),
+        "the previous generation's stranded marker must not suppress the new generation's turn: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ContextUsage { used_tokens: 7, .. })),
+        "the new generation's turn_end derives in full: {events:?}"
+    );
+
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}

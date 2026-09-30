@@ -755,11 +755,14 @@ pub enum SessionEvent {
         /// Absent on stored rows written before this field existed.
         #[serde(default)]
         message_kind: UserMessageKind,
-        /// When the daemon published the message, in Unix ms — the same
+        /// When this daemon published the message, in Unix ms — the same
         /// instant its journal row stores as `ts_ms`, so a live event and the
-        /// row it replays from show one time. Present only for composer turns;
-        /// replay times a composer row written before this field from its
-        /// `ts_ms`, and rows older than `message_kind` carry none.
+        /// row it replays from show one time. A turn typed on a paired device
+        /// is stamped by the receiving daemon's clock. Composer sends carry
+        /// it from publication; a row older than `message_kind` — which
+        /// replays as `Unknown` — is timed from its journal row when that
+        /// row is one the daemon itself wrote, never for a provider
+        /// envelope's echo of the prompt.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at_ms: Option<u64>,
     },
@@ -805,8 +808,10 @@ pub enum SessionEvent {
         spawn_depth: Option<u32>,
         /// The exact command line, as the agent sent it — separate from
         /// `title`, which a mapper may truncate or unwrap for display.
-        /// `None` for every non-command row and for rows written before the
-        /// field existed.
+        /// Codex's array shell form is not captured: a `commandExecution`
+        /// whose wire `command` is an array carries `None` here while its
+        /// title still normalizes. `None` for every non-command row and for
+        /// rows written before the field existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command: Option<String>,
         /// The command's process exit code: `Some(0)` success, nonzero
@@ -1714,13 +1719,11 @@ pub enum UserMessageKind {
 }
 
 impl UserMessageKind {
-    /// Whether a message of this kind is a user turn the transcript shows as
-    /// a user bubble: only the composer send. `Unknown` is excluded even
-    /// though most such rows read as bubbles — it is the kind of every row
-    /// that predates `message_kind`, and the app reclassifies those by text
-    /// markers into daemon notices, peer relays and system messages
-    /// (`agentSession.ts` `handleLegacyAgentUserMessage`), so an `Unknown`
-    /// row is not provably a turn.
+    /// Whether this kind is a Composer user turn whose live publication
+    /// carries its own turn time. Historical provider-envelope rows do not
+    /// establish a live publication. Replay times a kind-less native row
+    /// from its journal row (`event_pull::time_a_kindless_report`), and the
+    /// app keeps its display authority over what an `Unknown` row shows.
     pub fn is_user_turn(self) -> bool {
         matches!(self, Self::Composer)
     }

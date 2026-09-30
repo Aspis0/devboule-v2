@@ -370,6 +370,7 @@ fn goal_correction_is_emitted_into_a_saturated_round() {
             lookback_needed: None,
             is_pi: false,
             is_codex: false,
+            pi_withheld_finish: false,
             manifest_emitted: true,
             plan_usage_delivered: true,
             catch_up_extensions: 0,

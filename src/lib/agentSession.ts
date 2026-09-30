@@ -48,7 +48,7 @@ export type AgentChatItem =
       isStreamingThought?: boolean;
       parentToolUseId?: string;
       spawnDepth?: number;
-      /** When the daemon published this user message (Unix ms). Present only for composer turns, older composer rows included (timed on replay); rows older than `messageKind` carry none. */
+      /** When the daemon published this user message (Unix ms). Present for Composer messages and for kind-less native `agent_report` rows replayed from before `messageKind` existed; provider-envelope-derived `Unknown` rows have no turn time. */
       atMs?: number;
     }
   | {

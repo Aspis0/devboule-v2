@@ -1,4 +1,4 @@
-//! What a replayed envelope carries: its own generation and turn time.
+//! What a replayed row carries: its own generation and turn time.
 
 use super::super::*;
 use super::*;
@@ -203,6 +203,172 @@ fn replay_stamps_the_user_turn_time_from_the_journal_row() {
         })
         .expect("the user message is replayed");
     assert_eq!(at, Some(row_ts), "the row's own time is the turn time");
+
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A kind-less native row — one the daemon itself wrote before
+/// `message_kind` existed — decodes as `Unknown` and still takes its turn
+/// time from its journal row: the stamp reads the row source, and the app's
+/// legacy classifier renders such a row as a composer bubble.
+#[test]
+fn replay_times_a_pre_message_kind_row_from_its_row() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-replay-legacy-turn-time");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.replay.legacy.turn.time";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .unwrap();
+    // The payload as the pre-`message_kind` writer stored it: no
+    // `messageKind`, no `atMs`.
+    let legacy = serde_json::json!({
+        "type": "agent_user_message",
+        "messageId": "m0",
+        "text": "written before message_kind existed",
+        "author": "human"
+    });
+    let row_ts = 1_789_053_471_559_u64;
+    journal
+        .append_blocking(crate::journal::EventRecord {
+            session_id: session_id.to_string(),
+            generation: 1,
+            seq: 1,
+            kind: crate::journal::EventKind::AgentReport,
+            ts_ms: row_ts,
+            payload: serde_json::to_vec(&legacy).unwrap(),
+        })
+        .unwrap();
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.generation = 1;
+        stream.next_seq = 2;
+    }
+    runtime.generation.store(1, Ordering::Release);
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach live agent");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+    let at = events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { at_ms, .. } => Some(*at_ms),
+            _ => None,
+        })
+        .expect("the legacy user message is replayed");
+    assert_eq!(
+        at,
+        Some(row_ts),
+        "a pre-message_kind turn is timed from its row, like a composer row"
+    );
+
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A historical `user_message_chunk` envelope row may derive an `Unknown`
+/// user-message view, but it receives no turn time, though its row carries a
+/// `ts_ms` the stamp could read. The live ACP client returns before
+/// journaling or publishing `user_message_chunk`; only rows written before
+/// that guard replay through this converter.
+#[test]
+fn replay_gives_an_acp_echo_no_turn_time() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-replay-acp-echo-time");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.replay.acp.echo.time";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .unwrap();
+    let echo = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {"sessionId": "acp-1", "update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {"type": "text", "text": "an acp echo of the prompt"}
+        }}
+    });
+    journal
+        .append_blocking(
+            crate::journal::acp_envelope_record(session_id, 1, 1, &echo)
+                .expect("the envelope serializes"),
+        )
+        .unwrap();
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.generation = 1;
+        stream.next_seq = 2;
+    }
+    runtime.generation.store(1, Ordering::Release);
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach live agent");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+    let (at, kind) = events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage {
+                at_ms,
+                message_kind,
+                ..
+            } => Some((*at_ms, *message_kind)),
+            _ => None,
+        })
+        .expect("the echo is replayed");
+    assert_eq!(
+        kind,
+        devboule_protocol::UserMessageKind::Unknown,
+        "a historical provider-envelope echo derives as `Unknown`"
+    );
+    assert_eq!(
+        at, None,
+        "a historical provider-envelope echo remains unstamped"
+    );
 
     drop(runtime);
     drop(journal);

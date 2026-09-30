@@ -15,8 +15,8 @@ fn transcript_replay_keeps_rows_from_different_generations() {
         generation: 2,
         last_seq: 1,
         integrity,
-        event_seqs: vec![(1, 1), (1, 2), (2, 1)],
-        event_ts_ms: vec![None; 3],
+        event_seqs: vec![(1, 1), (1, 2), (2, 1), (2, 1)],
+        event_ts_ms: vec![None; 4],
         events: vec![
             SessionEvent::AgentUserMessage {
                 message_id: Some("m1".into()),

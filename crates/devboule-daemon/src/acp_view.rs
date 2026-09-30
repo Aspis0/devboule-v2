@@ -132,9 +132,12 @@ fn view_from_session_update(
             Some(SessionEvent::AgentUserMessage {
                 message_id,
                 text: text.to_string(),
-                // A provider chunk carries no transcript role. This replay
-                // compatibility path must let the legacy parser classify
-                // historical rows; current A2A delivery is an AgentReport.
+                // A provider chunk carries no transcript role. Historical
+                // `user_message_chunk` envelopes still decode here for
+                // backward compatibility; the live ACP client drops this
+                // echo before journaling or publishing it
+                // (`acp_client.rs:3377`), so only envelopes journaled
+                // before that guard reach this converter.
                 author: UserMessageAuthor::Human,
                 message_kind: UserMessageKind::Unknown,
                 at_ms: None,

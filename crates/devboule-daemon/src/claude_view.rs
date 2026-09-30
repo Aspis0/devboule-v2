@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::claude_task_state::ClaudeTaskState;
 use crate::tool_paths::relativize_tool_path;
-use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
+use crate::wire_json::{blocks_text, shell_command_from_tool, tool_kind_from_name, tool_status};
 
 /// How many command names one list carries at most: the handshake's rich
 /// entries and the init frame's bare names share it, and so does pi's reply.
@@ -1171,20 +1171,12 @@ fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
     }
 }
 
-/// The exact line the agent sent, for the shell tools — the same
-/// case-insensitive table that classifies the row's kind. Kept separate from
+/// The exact line the agent sent, for the shell tools. Kept separate from
 /// `title`, which `tool_title` may truncate, and kept raw: a Bash command may
 /// itself be a wrapper (`bash -lc "npm test"`), and unwrapping it would store
 /// a line the agent never sent.
 fn tool_command(name: &str, input: &Value) -> Option<String> {
-    if tool_kind_from_name(name) != "execute" {
-        return None;
-    }
-    input
-        .get("command")
-        .and_then(Value::as_str)
-        .filter(|command| !command.is_empty())
-        .map(str::to_string)
+    shell_command_from_tool(name, input.get("command"))
 }
 
 fn tool_locations(name: &str, input: &Value, cwd: Option<&Path>) -> Option<Vec<ToolLocation>> {

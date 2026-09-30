@@ -152,7 +152,7 @@ mod codex_input_requests;
 #[path = "codex_questions.rs"]
 mod codex_questions;
 #[path = "event_pull.rs"]
-mod event_pull;
+pub(crate) mod event_pull;
 #[path = "pi_client.rs"]
 mod pi_client;
 /// The class-level provider seam: the `Provider` trait, one implementation
@@ -2473,10 +2473,10 @@ impl SessionRegistry {
             }
         }
         // A user turn with no time of its own — a composer row whose payload
-        // predates `at_ms`, or whatever else `stamp_turn_time` accepts —
-        // takes its journal row's time here, by the same rule the live
-        // replay stamps with, before the orphan pass below appends
-        // synthetics with no journal row and `None` times.
+        // predates `at_ms` — takes its journal row's time here, by the same
+        // rule the live replay stamps with, before the orphan pass below
+        // appends synthetics with no journal row and `None` times. A
+        // kind-less native row is already timed where the replay decoded it.
         for (event, ts_ms) in replay.events.iter_mut().zip(replay.event_ts_ms.iter()) {
             if let Some(ts_ms) = ts_ms {
                 event_pull::stamp_turn_time(event, *ts_ms);

@@ -1509,6 +1509,9 @@ fn item_event(
             // The exact line, as the wire carried it — the pwsh wrapper
             // included, not just the payload it wraps. The title built below
             // unwraps the wrapper for display; this field keeps the line.
+            // Only the string form is read: an array command (no capture of
+            // that shape exists) would yield `None` here — see
+            // `AgentToolCall::command`'s doc.
             let command = item
                 .get("command")
                 .and_then(Value::as_str)

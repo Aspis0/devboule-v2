@@ -56,6 +56,21 @@ pub(crate) fn tool_kind_from_name(name: &str) -> &'static str {
     }
 }
 
+/// The command a tool call carries, by the shared shell-only policy: `Some`
+/// only for a tool the kind table classifies as `execute`, and only for a
+/// non-empty string value. Each provider hands in the value from its own
+/// field path (Claude `input.command`, pi `toolCall.arguments.command`); the
+/// line stays raw — the display unwraps belong to `title`.
+pub(crate) fn shell_command_from_tool(name: &str, value: Option<&Value>) -> Option<String> {
+    if tool_kind_from_name(name) != "execute" {
+        return None;
+    }
+    value
+        .and_then(Value::as_str)
+        .filter(|command| !command.is_empty())
+        .map(str::to_string)
+}
+
 /// Error flag to tool status string: the ternary both adapters carried inline.
 pub(crate) fn tool_status(is_error: bool) -> &'static str {
     if is_error {
@@ -152,5 +167,29 @@ mod tests {
     fn tool_status_maps_the_error_flag() {
         assert_eq!(tool_status(true), "failed");
         assert_eq!(tool_status(false), "completed");
+    }
+
+    #[test]
+    fn shell_command_gates_on_the_execute_kind_and_a_nonempty_string() {
+        assert_eq!(
+            shell_command_from_tool("bash", Some(&json!("npm test"))),
+            Some("npm test".to_string())
+        );
+        // The gate is the kind table, not the spelling.
+        assert_eq!(
+            shell_command_from_tool("PowerShell", Some(&json!("Get-ChildItem"))),
+            Some("Get-ChildItem".to_string())
+        );
+        // Another tool's value is never a command, whatever it holds.
+        assert_eq!(
+            shell_command_from_tool("read", Some(&json!("rm -rf /"))),
+            None
+        );
+        assert_eq!(shell_command_from_tool("bash", Some(&json!(""))), None);
+        assert_eq!(
+            shell_command_from_tool("bash", Some(&json!({"cmd": 1}))),
+            None
+        );
+        assert_eq!(shell_command_from_tool("bash", None), None);
     }
 }

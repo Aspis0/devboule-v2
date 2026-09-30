@@ -3391,10 +3391,11 @@ impl PiReader {
         // finish this reader authors itself derives from no row: it takes
         // the journaled-finish road and carries the seq of the row that
         // road writes for it.
-        for event in crate::pi_view::events_from_line(&value) {
-            if suppress_finish && matches!(event, SessionEvent::AgentFinished { .. }) {
-                continue;
-            }
+        let mut events = crate::pi_view::events_from_line(&value);
+        if suppress_finish {
+            events = crate::pi_view::suppress_withheld_finish(events);
+        }
+        for event in events {
             self.publish(runtime, event, event_seq);
         }
         Ok(())

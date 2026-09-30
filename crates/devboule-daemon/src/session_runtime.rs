@@ -1394,9 +1394,9 @@ impl SessionRuntime {
         // takes the id back out of the event that was actually published rather
         // than inventing a second one.
         //
-        // The turn time rides only on the kinds the transcript shows as user
-        // bubbles — the same rule replay stamps by, so a kind agrees with its
-        // own replay.
+        // Live publication attaches `at_ms` to Composer sends. Replay
+        // additionally times kind-less native `agent_report` rows written
+        // before `message_kind` existed, from their row.
         self.publish_journaled_agent_event(|generation, seq, at_ms| {
             SessionEvent::AgentUserMessage {
                 message_id: Some(format!("devboule-user-{generation}-{seq}")),

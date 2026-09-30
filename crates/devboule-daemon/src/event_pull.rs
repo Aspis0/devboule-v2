@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use devboule_protocol::{
-    CursorShape, ErrorCode, ScreenCursor, SessionEvent, SessionEventEnvelope, WireError,
+    CursorShape, ErrorCode, ScreenCursor, SessionEvent, SessionEventEnvelope, UserMessageKind,
+    WireError,
 };
 
 use crate::agent_report::PeerIdentity;
@@ -47,13 +48,11 @@ fn mark_replay_parse_failure(
     );
 }
 
-/// Fill a user turn's time from the journal row's own `ts_ms` when the event
-/// carries none. Where the row stores the event itself, the event's `at_ms`
-/// is the authoritative reading and wins; envelope rows store the raw
-/// provider frame instead, so a view re-derived from one has no time and the
-/// row's column fills it. Only the kinds the transcript shows as user
-/// bubbles are stamped; notices, creations and a2a relays have no turn time
-/// to show.
+/// Fill a composer turn's time from the journal row's own `ts_ms` when the
+/// event carries none — the composer rows written between `message_kind` and
+/// `at_ms`. A kind-less native row is timed where it decodes
+/// (`time_a_kindless_report`); notices, creations and a2a relays have no
+/// turn time to show.
 pub(crate) fn stamp_turn_time(event: &mut SessionEvent, ts_ms: u64) {
     if let SessionEvent::AgentUserMessage {
         at_ms,
@@ -62,6 +61,24 @@ pub(crate) fn stamp_turn_time(event: &mut SessionEvent, ts_ms: u64) {
     } = event
     {
         if at_ms.is_none() && message_kind.is_user_turn() {
+            *at_ms = Some(ts_ms);
+        }
+    }
+}
+
+/// A kind-less native row predates `message_kind`: the daemon itself wrote
+/// it, so its row time is the turn's time. A provider envelope keeps the
+/// `Unknown` its payload decodes with — no turn time; the live ACP client
+/// drops that echo before journaling or publishing it, so there is no live
+/// time to agree with.
+pub(crate) fn time_a_kindless_report(event: &mut SessionEvent, ts_ms: u64) {
+    if let SessionEvent::AgentUserMessage {
+        at_ms,
+        message_kind,
+        ..
+    } = event
+    {
+        if at_ms.is_none() && *message_kind == UserMessageKind::Unknown {
             *at_ms = Some(ts_ms);
         }
     }
@@ -312,6 +329,7 @@ impl ConnHandle {
                     lookback_needed: None,
                     is_pi,
                     is_codex,
+                    pi_withheld_finish: false,
                     manifest_emitted: false,
                     plan_usage_delivered: false,
                     catch_up_extensions: 0,
@@ -888,6 +906,7 @@ fn pull_live_agent_replay_events(
                 }
                 replay.claude_view = Some(fresh);
                 replay.codex_view = None;
+                replay.pi_withheld_finish = false;
                 page_generation = record.generation;
             }
             // A pull attaching inside the current generation never saw the
@@ -915,6 +934,7 @@ fn pull_live_agent_replay_events(
                     match serde_json::from_slice::<SessionEvent>(&record.payload) {
                         Ok(mut event) => {
                             crate::plan_text::bound_permission_request(&mut event);
+                            time_a_kindless_report(&mut event, record.ts_ms);
                             vec![event]
                         }
                         Err(error) => {
@@ -948,7 +968,7 @@ fn pull_live_agent_replay_events(
                                     &value,
                                 )
                             } else if replay.is_pi {
-                                crate::pi_view::events_from_line(&value)
+                                crate::pi_view::drive_replay(&mut replay.pi_withheld_finish, &value)
                             } else {
                                 if replay.claude_view.is_none() {
                                     let mut fresh = crate::claude_view::ClaudeView::new(None);
@@ -1282,7 +1302,7 @@ mod reattach_tests;
 #[path = "event_pull_goal_correction_tests.rs"]
 mod goal_correction_tests;
 
-/// What a replayed envelope carries: its own generation and turn time.
+/// What a replayed row carries: its own generation and turn time.
 #[cfg(test)]
 #[path = "event_pull_generation_tests.rs"]
 mod generation_tests;

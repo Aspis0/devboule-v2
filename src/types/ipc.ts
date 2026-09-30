@@ -1328,10 +1328,12 @@ export type SessionEvent =
       /** Optional for frames written before this field existed. */
       messageKind?: UserMessageKind;
       /**
-       * When the daemon published the message (Unix ms — the same instant the
-       * journal row stores as `ts_ms`). Present only for composer turns;
-       * replay times a composer row written before this field from its
-       * `ts_ms`, and rows older than `messageKind` carry none.
+       * When this daemon published the message (Unix ms — the same instant
+       * the journal row stores as `ts_ms`; a turn typed on a paired device
+       * carries the receiving daemon's clock). Composer sends carry it from
+       * publication, and rows older than `messageKind` — which replay as
+       * `unknown` — are timed from their journal row when the row is one
+       * the daemon itself wrote, never for a provider envelope's echo.
        */
       atMs?: number;
     }

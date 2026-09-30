@@ -1,3 +1,14 @@
+//! Journal reads for agent sessions: transcript replay (paged and full)
+//! and the session-directory queries the live roster needs.
+//!
+//! A replayed view is re-derived by this binary's mappers, so `command` and
+//! `exit_code` reflect the mapper reading the row now, not the one that
+//! wrote it — recovery intentionally improves with the binary. `at_ms` is
+//! not re-derived for ordinary events. A kind-less `AgentUserMessage`
+//! decoded from a native `agent_report` row takes that row's `ts_ms`
+//! (`session::event_pull::time_a_kindless_report`); provider-envelope-derived
+//! `Unknown` messages do not.
+
 use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -382,8 +393,8 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
             claude_view.restore_task_state(tasks);
         }
         let mut codex_view = crate::codex_view::CodexView::new(None);
-        // pi's withheld-finish marker state, consumed by the envelope the
-        // marker owns (`pi_view::drive_replay`).
+        // pi's withheld-finish marker state, used to suppress the paired
+        // `turn_end` (`pi_view::drive_replay`).
         let mut pi_withheld_finish = false;
 
         let mut snap_stmt = conn.prepare(
@@ -462,6 +473,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 if kind == "agent_report" {
                     if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
                         crate::plan_text::bound_permission_request(&mut event);
+                        crate::session::event_pull::time_a_kindless_report(&mut event, ts_ms);
                         covered_reports.push((seq, event, Some(ts_ms)));
                     }
                 } else if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload)
@@ -541,6 +553,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 Some(EventKind::AgentReport) => {
                     if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
                         crate::plan_text::bound_permission_request(&mut event);
+                        crate::session::event_pull::time_a_kindless_report(&mut event, ts_ms);
                         gen_events.push(event);
                         gen_seqs.push(seq);
                         gen_ts_ms.push(Some(ts_ms));

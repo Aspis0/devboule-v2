@@ -327,6 +327,13 @@ pub(super) struct AgentReplay {
     pub(super) lookback_needed: Option<crate::journal_lookback::LookbackRequest>,
     pub(super) is_pi: bool,
     pub(super) is_codex: bool,
+    /// pi's withheld-finish marker (`pi_view::drive_replay`): the marker
+    /// row arms it, an immediately following `turn_end` consumes it — that
+    /// finish derives nothing — and any other frame between the two, or a
+    /// provider-process resume (generation change), drops it. The marker row
+    /// and its envelope can land on different pages, so the bit must live on
+    /// the replay itself.
+    pub(super) pi_withheld_finish: bool,
     pub(super) manifest_emitted: bool,
     /// The provider's cached live plan usage is handed to this viewer once,
     /// at the replay/live seam. A flag because the seam can be re-entered
