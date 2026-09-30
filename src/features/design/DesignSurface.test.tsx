@@ -140,6 +140,7 @@ import {
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import { ZoomControls } from "./DesignCanvas";
+import { LayerPanel } from "./DesignLayerPanel";
 import type {
   DesignAssistantMessage,
   DesignGenerationResult,
@@ -5574,5 +5575,44 @@ describe("artifact export copy", () => {
         zoomMemo.type = zoomInner;
       }
     });
+  });
+});
+
+describe("layer panel memo", () => {
+  it("an idle re-render with unchanged layers does not re-render LayerPanel", async () => {
+    // Visibility toggles are stable callbacks from the history hook, so the
+    // panel bails out whenever layers and every history value are identical.
+    const panelMemo = LayerPanel as unknown as {
+      type: (props: Record<string, unknown>) => ReactNode;
+    };
+    const panelInner = panelMemo.type;
+    let panelRenders = 0;
+    panelMemo.type = (props) => {
+      panelRenders += 1;
+      return panelInner(props);
+    };
+    try {
+      const { container, root } = await renderDesign(
+        createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+      );
+      // The counter is live: a visibility flip changes a panel prop.
+      panelRenders = 0;
+      const hide = container.querySelector<HTMLButtonElement>('[aria-label="Hide Stale queue"]');
+      if (hide === null) throw new Error("Layer visibility control missing");
+      await act(async () => hide.click());
+      expect(panelRenders).toBeGreaterThanOrEqual(1);
+      // The grounding toggle is surface state outside the panel, so its flip
+      // proves the surface re-rendered; the panel must still bail out.
+      panelRenders = 0;
+      const grounding = container.querySelector<HTMLButtonElement>(".design-grounding-toggle");
+      if (grounding === null) throw new Error("Grounding control missing");
+      const pressedBefore = grounding.getAttribute("aria-pressed");
+      await act(async () => grounding.click());
+      expect(grounding.getAttribute("aria-pressed")).not.toBe(pressedBefore);
+      expect(panelRenders).toBe(0);
+      await act(async () => root.unmount());
+    } finally {
+      panelMemo.type = panelInner;
+    }
   });
 });

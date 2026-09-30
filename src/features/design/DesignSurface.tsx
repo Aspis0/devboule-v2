@@ -33,11 +33,6 @@ import {
   type ResolvedSectionNote,
 } from "./sectionNotes";
 import {
-  ARTIFACT_PAGE_HEIGHT,
-  artifactPageHeightForCanvas,
-  shouldAdaptArtifactHeight,
-} from "./artifactViewport";
-import {
   ARTIFACT_TOO_LARGE_MESSAGE,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
   fencedBlockNotice,
@@ -102,29 +97,18 @@ import {
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store/appStore";
-import { nodesBounds } from "../../lib/canvas/viewportMath";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { Project, ProviderInfo, Session, Workspace } from "../../types/ipc";
 import type { NodeRect } from "../../types/geometry";
-import {
-  clampViewportZoom,
-  DESIGN_MAX_ZOOM,
-  DESIGN_MIN_ZOOM,
-  fitViewport,
-  type DesignViewport,
-} from "./designViewport";
+import { clampViewportZoom, DESIGN_MAX_ZOOM, DESIGN_MIN_ZOOM } from "./designViewport";
 import { DesignCanvas, ZoomControls } from "./DesignCanvas";
 import { ArtifactExportControls } from "./ArtifactExportControls";
 import { DesignAssistant } from "./DesignAssistant";
 import { LayerPanel, type LayerChainStep, type LayerViewModel } from "./DesignLayerPanel";
 import { DesignCraftSheet } from "./DesignSkillControls";
-import {
-  ARTIFACT_CONTEXT_NAME,
-  ARTIFACT_NODE_ID,
-  DESIGN_FIT_MARGIN,
-  artifactNodeRect,
-  layerRectsFor,
-} from "./designCanvasGeometry";
+import { ARTIFACT_CONTEXT_NAME, ARTIFACT_NODE_ID } from "./designCanvasGeometry";
+import { useDesignViewport } from "./useDesignViewport";
+import { useDesignUndoHistory } from "./useDesignUndoHistory";
 import {
   buildLayerTree,
   isHidden,
@@ -147,11 +131,9 @@ import {
 } from "./designMessageModel";
 import type {
   AttachmentMessage,
-  DesignHistory,
   DesignSnapshot,
   DesignViewState,
   MessageAction,
-  SnapshotChange,
   WorkspaceProject,
 } from "./designSurfaceTypes";
 import "./artifactPreview.css";
@@ -555,18 +537,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     selectedLayerId: document.selectedLayerId,
     zoom: clampViewportZoom(document.initialState.zoom),
   };
-  const [history, setHistory] = useState<DesignHistory>(() => ({
-    present: initialSnapshot,
-    past: [],
-    future: [],
-    saved: document.initialState.saved,
-  }));
-  const [viewState, setViewState] = useState<DesignViewState>(initialViewState);
-  // Adaptive frame height for the generated page: width stays 1280, height
-  // follows the live canvas aspect (see artifactViewport). Seeded at the
-  // 800 baseline so mount and tests without a measured canvas keep the
-  // canonical sheet until a real canvas size arrives with an artifact.
-  const [artifactPageHeight, setArtifactPageHeight] = useState(ARTIFACT_PAGE_HEIGHT);
   const [composerContextLayerId, setComposerContextLayerId] = useState<string | null>(
     initialViewState.selectedLayerId,
   );
@@ -674,7 +644,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
   const messagesRef = useRef(messages);
-  const documentRevisionRef = useRef(0);
   const skillSelectionInteractedRef = useRef(false);
   const skillSelectionRef = useRef(skillSelection);
   const providerSelectionInteractedRef = useRef(false);
@@ -693,6 +662,23 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const liveSessionIdRef = useRef<string | null>(agentSessionRecord?.id ?? null);
   const assistantRef = useRef<HTMLDivElement>(null);
   const designSurfaceRef = useRef<HTMLElement>(null);
+  const {
+    snapshot,
+    layers,
+    saved,
+    canUndo,
+    canRedo,
+    revisionRef,
+    markDocumentDirty,
+    toggleLayerVisibility,
+    undo,
+    redo,
+    setSaved: setHistorySaved,
+  } = useDesignUndoHistory({
+    initialSnapshot,
+    initialSaved: document.initialState.saved,
+    surfaceRef: designSurfaceRef,
+  });
   const setMessages = useCallback(
     (
       update:
@@ -929,11 +915,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     };
   }, [refreshWorkspaceProjects]);
 
-  const snapshot = history.present;
-  const layers = snapshot.layers;
-  const saved = history.saved;
   const busy = generation !== null;
-  const { pan, selectedLayerId, zoom } = viewState;
 
   const disposeHistoryOpen = useCallback(() => {
     historyOpenGenerationRef.current += 1;
@@ -1051,13 +1033,26 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       ) : null,
     [artifactHtml, artifactOutputMode, artifactSourceTitle],
   );
-  const artifactRect = useMemo(
-    () =>
-      artifactHtml !== undefined || artifactError !== undefined
-        ? artifactNodeRect(layers, artifactPageHeight)
-        : null,
-    [artifactError, artifactHtml, artifactPageHeight, layers],
-  );
+  const {
+    pan,
+    selectedLayerId,
+    zoom,
+    artifactPageHeight,
+    artifactRect,
+    setSelectedLayerId,
+    handleCanvasViewportChange,
+    zoomIn,
+    zoomOut,
+    zoomReset,
+    fitCanvas,
+  } = useDesignViewport({
+    initialViewState,
+    layers,
+    hiddenLayerIds: snapshot.hiddenLayerIds,
+    artifactHtml,
+    artifactError,
+    surfaceRef: designSurfaceRef,
+  });
 
   // Measured page structure for the current artifact. The critic feeds the
   // module cache once per new artifact (same pass, no second measurement);
@@ -1229,17 +1224,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       name: layer.name,
     }));
   }, [layerTree, selectedRow]);
-
-  const fitRects = useMemo<NodeRect[]>(() => {
-    const rects = layerRectsFor(layers).filter(
-      (layer) => !snapshot.hiddenLayerIds.includes(layer.id),
-    );
-    return artifactRect === null ? rects : [...rects, artifactRect];
-  }, [artifactRect, layers, snapshot.hiddenLayerIds]);
-  const fitRectsRef = useRef<NodeRect[]>([]);
-  useEffect(() => {
-    fitRectsRef.current = fitRects;
-  }, [fitRects]);
 
   const saveDocument = host.saveDocument;
   const generate = host.generate;
@@ -1420,39 +1404,15 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     sectionNotes,
   ]);
   const composerContextLayerName = composerContextTarget?.label ?? null;
-  const canUndo = history.past.length > 0;
-  const canRedo = history.future.length > 0;
-
-  const commitSnapshot = useCallback((change: SnapshotChange) => {
-    documentRevisionRef.current += 1;
-    setHistory((current) => {
-      const next = change(current.present);
-      if (next === null) return current;
-      return {
-        ...current,
-        present: next,
-        past: [...current.past, current.present],
-        future: [],
-        saved: false,
-      };
-    });
-  }, []);
-
-  const markDocumentDirty = useCallback(() => {
-    documentRevisionRef.current += 1;
-    setHistory((current) => (current.saved ? { ...current, saved: false } : current));
-  }, []);
 
   const selectLayer = useCallback(
     (layerId: string) => {
       const selectionChanged = selectedLayerId !== layerId || composerContextLayerId !== layerId;
       if (selectionChanged) markDocumentDirty();
-      setViewState((current) =>
-        current.selectedLayerId === layerId ? current : { ...current, selectedLayerId: layerId },
-      );
+      setSelectedLayerId(layerId);
       setComposerContextLayerId((current) => (current === layerId ? current : layerId));
     },
-    [composerContextLayerId, markDocumentDirty, selectedLayerId],
+    [composerContextLayerId, markDocumentDirty, selectedLayerId, setSelectedLayerId],
   );
   // The one deselect path: the expanded row's close control, the row's Escape
   // handler below, and an empty-canvas click all land here, and the canvas
@@ -1600,197 +1560,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     return marks;
   }, [sectionLayers, sectionNotes, snapshot.hiddenLayerIds]);
 
-  const toggleLayerVisibility = useCallback(
-    (layerId: string) => {
-      commitSnapshot((current) => ({
-        ...current,
-        hiddenLayerIds: current.hiddenLayerIds.includes(layerId)
-          ? current.hiddenLayerIds.filter((id) => id !== layerId)
-          : [...current.hiddenLayerIds, layerId],
-      }));
-    },
-    [commitSnapshot],
-  );
-
-  const setViewport = useCallback((nextViewport: DesignViewport) => {
-    setViewState((current) => {
-      if (
-        current.zoom === nextViewport.zoom &&
-        current.pan.x === nextViewport.pan.x &&
-        current.pan.y === nextViewport.pan.y
-      ) {
-        return current;
-      }
-      return { ...current, ...nextViewport };
-    });
-  }, []);
-  // True once the user pans, zooms, or wheels after the last fit, so a later
-  // reframe never tears the viewport out from under their hands. fitCanvas
-  // clears it; every manual viewport path sets it.
-  const viewportTouchedRef = useRef(false);
-  const setZoom = useCallback((nextZoom: number | ((currentZoom: number) => number)) => {
-    viewportTouchedRef.current = true;
-    setViewState((current) => {
-      const requested = typeof nextZoom === "function" ? nextZoom(current.zoom) : nextZoom;
-      const next = clampViewportZoom(requested);
-      return current.zoom === next ? current : { ...current, zoom: next };
-    });
-  }, []);
-  const handleCanvasViewportChange = useCallback(
-    (nextViewport: DesignViewport) => {
-      viewportTouchedRef.current = true;
-      setViewport(nextViewport);
-    },
-    [setViewport],
-  );
-  const zoomIn = useCallback(
-    () => setZoom((currentZoom) => Number((currentZoom + 0.1).toFixed(1))),
-    [setZoom],
-  );
-  const zoomOut = useCallback(
-    () => setZoom((currentZoom) => Number((currentZoom - 0.1).toFixed(1))),
-    [setZoom],
-  );
-  const zoomReset = useCallback(() => setZoom(1), [setZoom]);
-  const fitCanvas = useCallback(() => {
-    const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
-    if (!canvas) return;
-    const bounds = canvas.getBoundingClientRect();
-    const { pan: fittedPan, zoom: fittedZoom } = fitViewport(
-      nodesBounds(fitRectsRef.current),
-      bounds.width,
-      bounds.height,
-      DESIGN_FIT_MARGIN,
-    );
-    viewportTouchedRef.current = false;
-    setViewport({ pan: fittedPan, zoom: fittedZoom });
-  }, [setViewport]);
-
-  // The artifact frame follows the live canvas aspect (width stays 1280, height
-  // adapts), but its height re-renders the iframe, so it must not chase every
-  // pixel. The ratio gate in shouldAdaptArtifactHeight and the new-artifact
-  // trigger below are the only two reframe paths.
-  const lastCanvasSizeRef = useRef<{ width: number; height: number } | null>(null);
-  useEffect(() => {
-    const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
-    if (!canvas || typeof ResizeObserver === "undefined") return;
-    const seed = canvas.getBoundingClientRect();
-    lastCanvasSizeRef.current = { width: seed.width, height: seed.height };
-    const observer = new ResizeObserver(() => {
-      const rect = canvas.getBoundingClientRect();
-      const prev = lastCanvasSizeRef.current;
-      lastCanvasSizeRef.current = { width: rect.width, height: rect.height };
-      if (prev === null) return;
-      if (!shouldAdaptArtifactHeight(prev.width, prev.height, rect.width, rect.height)) return;
-      const desired = artifactPageHeightForCanvas(rect.width, rect.height);
-      setArtifactPageHeight((current) => (current === desired ? current : desired));
-    });
-    observer.observe(canvas);
-    return () => observer.disconnect();
-  }, []);
-
-  // A new artifact is a full page, not a thumbnail: fit it into view the moment
-  // it lands, so the whole generated page is visible without a manual Fit. The
-  // ref is seeded with the artifact already on screen at mount, so reopening a
-  // document keeps the saved viewport instead of snapping the camera. A reframe
-  // (new artifact or adapted height) refits only while the viewport is still
-  // pristine after the last fit; a manual pan/zoom owns the camera from then on.
-  const fittedArtifactRef = useRef<string | undefined>(artifactHtml ?? artifactError);
-  const fittedHeightRef = useRef(artifactPageHeight);
-  useEffect(() => {
-    const artifact = artifactHtml ?? artifactError;
-    if (artifact === undefined) return;
-    const isNewArtifact = fittedArtifactRef.current !== artifact;
-    if (isNewArtifact) {
-      fittedArtifactRef.current = artifact;
-      const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
-      if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        lastCanvasSizeRef.current = { width: rect.width, height: rect.height };
-        const desired = artifactPageHeightForCanvas(rect.width, rect.height);
-        if (desired !== artifactPageHeight) {
-          // Defer the fit until the reframed height commits, so the camera
-          // fits the sheet the user will actually see instead of the old one.
-          setArtifactPageHeight(desired);
-          return;
-        }
-      }
-    }
-    const heightChanged = fittedHeightRef.current !== artifactPageHeight;
-    if (!isNewArtifact && !heightChanged) return;
-    fittedHeightRef.current = artifactPageHeight;
-    if (!viewportTouchedRef.current) fitCanvas();
-  }, [artifactError, artifactHtml, artifactPageHeight, fitCanvas]);
-
-  const undo = useCallback(() => {
-    if (!canUndo) return;
-    documentRevisionRef.current += 1;
-    setHistory((current) => {
-      if (current.past.length === 0) return current;
-      const previous = current.past[current.past.length - 1];
-      return {
-        ...current,
-        present: previous,
-        past: current.past.slice(0, -1),
-        future: [current.present, ...current.future],
-        saved: false,
-      };
-    });
-  }, [canUndo]);
-
-  const redo = useCallback(() => {
-    if (!canRedo) return;
-    documentRevisionRef.current += 1;
-    setHistory((current) => {
-      if (current.future.length === 0) return current;
-      const next = current.future[0];
-      return {
-        ...current,
-        present: next,
-        past: [...current.past, current.present],
-        future: current.future.slice(1),
-        saved: false,
-      };
-    });
-  }, [canRedo]);
-
-  useEffect(() => {
-    const surface = designSurfaceRef.current;
-    if (!surface) return;
-
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (!event.ctrlKey || event.altKey || event.key.toLowerCase() !== "z") return;
-
-      const target = event.target;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        (target instanceof HTMLElement && target.isContentEditable)
-      ) {
-        return;
-      }
-
-      if (event.shiftKey) {
-        if (!canRedo) return;
-        event.preventDefault();
-        redo();
-        return;
-      }
-
-      if (!canUndo) return;
-      event.preventDefault();
-      undo();
-    };
-
-    surface.addEventListener("keydown", handleKeyDown);
-    return () => surface.removeEventListener("keydown", handleKeyDown);
-  }, [canRedo, canUndo, redo, undo]);
-
   const save = useCallback(async () => {
     if (saveDocument === undefined || savingRef.current) return;
 
     savingRef.current = true;
-    const revisionAtSave = documentRevisionRef.current;
+    const revisionAtSave = revisionRef.current;
     const hasWorkingMessage = messages.some(
       (message) => message.role === "assistant" && message.status === "working",
     );
@@ -1798,7 +1572,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       ...document,
       initialState: {
         ...document.initialState,
-        hiddenLayerIds: [...history.present.hiddenLayerIds],
+        hiddenLayerIds: [...snapshot.hiddenLayerIds],
       },
       selectedLayerId,
       grounded,
@@ -1811,14 +1585,14 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     setSaving(true);
     try {
       await saveDocument(documentToSave);
-      if (documentRevisionRef.current === revisionAtSave && !hasWorkingMessage) {
+      if (revisionRef.current === revisionAtSave && !hasWorkingMessage) {
         if (mountedRef.current) {
-          setHistory((current) => (current.saved ? current : { ...current, saved: true }));
+          setHistorySaved(true);
         }
       }
     } catch (error: unknown) {
       if (mountedRef.current) {
-        setHistory((current) => (current.saved ? { ...current, saved: false } : current));
+        setHistorySaved(false);
         setSaveError(
           error instanceof Error ? error.message : "The design document could not save.",
         );
@@ -1830,12 +1604,14 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   }, [
     document,
     grounded,
-    history.present,
+    snapshot,
     layers,
     messages,
     saveDocument,
     sectionNotes,
     selectedLayerId,
+    setHistorySaved,
+    revisionRef,
   ]);
   const toggleGrounding = useCallback(() => {
     markDocumentDirty();
@@ -2011,7 +1787,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         instruction: prompt,
       };
 
-      documentRevisionRef.current += 1;
+      revisionRef.current += 1;
       setMessages((current) => [...current, userMessage, assistantMessage]);
       useAppStore.getState().setDesignGeneration(host, { assistantId, controller });
       setDraft("");
@@ -2075,7 +1851,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             return;
           }
           generationInFlightRef.current = false;
-          documentRevisionRef.current += 1;
+          revisionRef.current += 1;
           setMessages((current) =>
             current.map((message) =>
               message.id === assistantId && message.role === "assistant"
@@ -2164,7 +1940,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           setAttachmentProgress(null);
           useAppStore.getState().setDesignGeneration(host, null);
           if (mountedRef.current) {
-            setHistory((current) => (current.saved ? { ...current, saved: false } : current));
+            setHistorySaved(false);
           }
         })
         .catch((error: unknown) => {
@@ -2177,7 +1953,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             return;
           }
           generationInFlightRef.current = false;
-          documentRevisionRef.current += 1;
+          revisionRef.current += 1;
           setMessages((current) =>
             current.map((message) =>
               message.id === assistantId && message.role === "assistant"
@@ -2195,7 +1971,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           setAttachmentProgress(null);
           useAppStore.getState().setDesignGeneration(host, null);
           if (mountedRef.current) {
-            setHistory((current) => (current.saved ? { ...current, saved: false } : current));
+            setHistorySaved(false);
           }
         });
     },
@@ -2218,7 +1994,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       reportPersistence,
       skillSelection.mode,
       selectedSkillSlugs,
+      setHistorySaved,
       setMessages,
+      revisionRef,
     ],
   );
 
@@ -2334,7 +2112,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
 
         activeGeneration.controller.abort();
         generationInFlightRef.current = false;
-        documentRevisionRef.current += 1;
+        revisionRef.current += 1;
         setAttachmentProgress(null);
         useAppStore.getState().setDesignGeneration(host, null);
         setMessages((current) =>
@@ -2368,7 +2146,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       const prompt = promptForMessage(messagesRef.current, message);
       if (prompt !== null) startGeneration(prompt);
     },
-    [host, selectLayer, setMessages, startGeneration],
+    [revisionRef, host, selectLayer, setMessages, startGeneration],
   );
 
   const clearComposerContext = useCallback(() => setComposerContextLayerId(null), []);
