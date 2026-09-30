@@ -141,6 +141,7 @@ import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import { ZoomControls } from "./DesignCanvas";
 import { LayerPanel } from "./DesignLayerPanel";
+import { DesignAssistant } from "./DesignAssistant";
 import type {
   DesignAssistantMessage,
   DesignGenerationResult,
@@ -5613,6 +5614,44 @@ describe("layer panel memo", () => {
       await act(async () => root.unmount());
     } finally {
       panelMemo.type = panelInner;
+    }
+  });
+});
+
+describe("design assistant memo", () => {
+  it("an idle re-render with unchanged composer values does not re-render DesignAssistant", async () => {
+    // Composer callbacks and attachment state now come from the attachments
+    // hook, so the assistant bails out whenever its composer values match.
+    const assistantMemo = DesignAssistant as unknown as {
+      type: (props: Record<string, unknown>) => ReactNode;
+    };
+    const assistantInner = assistantMemo.type;
+    let assistantRenders = 0;
+    assistantMemo.type = (props) => {
+      assistantRenders += 1;
+      return assistantInner(props);
+    };
+    try {
+      const { container, root } = await renderDesign(
+        createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+      );
+      // The counter is live: a draft keystroke changes an assistant prop.
+      assistantRenders = 0;
+      await fillDraft(container, "Create the final card.");
+      expect(assistantRenders).toBeGreaterThanOrEqual(1);
+      // Zoom is surface state outside the assistant, so the label flip proves
+      // the surface re-rendered; the assistant must still bail out.
+      assistantRenders = 0;
+      const zoomValue = container.querySelector(".design-zoom-value");
+      const zoomBefore = zoomValue?.textContent;
+      const zoomIn = container.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
+      if (zoomIn === null) throw new Error("Zoom in missing");
+      await act(async () => zoomIn.click());
+      expect(container.querySelector(".design-zoom-value")?.textContent).not.toBe(zoomBefore);
+      expect(assistantRenders).toBe(0);
+      await act(async () => root.unmount());
+    } finally {
+      assistantMemo.type = assistantInner;
     }
   });
 });
