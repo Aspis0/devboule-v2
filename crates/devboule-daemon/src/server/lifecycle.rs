@@ -34,6 +34,30 @@ pub(super) fn arm_idle_shutdown(state: Arc<ServerState>, generation: u64) {
         });
 }
 
+/// The shutdown sequence between the quit signal and teardown, in
+/// production order: wait bounded for the accepted write jobs — a delete
+/// queued behind a slow read or mid-`git worktree remove` lands its row
+/// here, while the writer is still alive — then the one terminal journal
+/// close. Past the bound, writes still queued are answered rather than run
+/// — the close they were meant to precede is next — while writes already
+/// running finish. `run` calls this; the shutdown-drain test calls the
+/// same function, so the tested order is the shipped order.
+pub(super) fn drain_writes_and_close_journal(state: &Arc<ServerState>) -> bool {
+    let drained = state.git_jobs.wait_for_write_jobs(GIT_WRITE_DRAIN_BOUND);
+    if !drained {
+        state.git_jobs.cancel_queued_writes();
+        eprintln!(
+            "shutdown: git write jobs unfinished after {GIT_WRITE_DRAIN_BOUND:?}; \
+             closing the journal anyway"
+        );
+    }
+    // The writer join below blocks this thread without bound: this is the
+    // exit path, and an unjoined writer would leave the SQLite connection
+    // open on Windows.
+    state.sessions.flush_journal();
+    drained
+}
+
 pub fn run() -> Result<(), DaemonError> {
     #[cfg(not(windows))]
     {
@@ -110,9 +134,9 @@ fn run_windows() -> Result<(), DaemonError> {
     let _ = state.ensure_remote_listener();
 
     state.wait_until_shutdown();
-    // Flush the conversation journal before the listener is torn down so a
-    // clean shutdown does not drop the last coalesced frames.
-    state.sessions.flush_journal();
+    // The one terminal journal close lives in the sequence the shutdown
+    // test also runs: drain the accepted write jobs bounded, then close.
+    let _ = drain_writes_and_close_journal(&state);
     shutdown.shutdown();
     // The peer loop polls, so its stop is a flag rather than a wake-up connect.
     state.stop_remote_listener();

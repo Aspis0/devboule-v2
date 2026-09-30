@@ -462,23 +462,37 @@ impl super::SessionRegistry {
             }
         }
         let command = crate::worktree::build_worktree_remove_command(&repo, &checkout, force);
-        if let Err(error) = crate::worktree::run_worktree_remove_command_with_recovery(
-            &command, &repo, &checkout, force,
-        ) {
-            if crate::worktree::is_dirty_worktree_remove_error(&error) {
+        // The serial `create_worktree_workspace` holds, held here too: an
+        // add and this remove both rewrite the admin side of one repository,
+        // and since the git arms left the loop they run on different threads
+        // and different queue keys. Held only across the remove: a failed
+        // remove must leave the row in place, so the failure stays retryable
+        // (with force, and at all). The shutdown race with the journal
+        // writer is closed on the other side, by the bounded write drain
+        // before `flush_journal`.
+        {
+            let _serial = self
+                .worktree_creation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Err(error) = crate::worktree::run_worktree_remove_command_with_recovery(
+                &command, &repo, &checkout, force,
+            ) {
+                if crate::worktree::is_dirty_worktree_remove_error(&error) {
+                    return Err(WireError::new(
+                        ErrorCode::InvalidRequest,
+                        crate::worktree::worktree_dirty_remove_message(&checkout),
+                    )
+                    .with_details(ErrorDetails::WorktreeDirty {
+                        path: crate::verbatim_path::plain_path(&checkout.to_string_lossy()),
+                        force_required: true,
+                    }));
+                }
                 return Err(WireError::new(
-                    ErrorCode::InvalidRequest,
-                    crate::worktree::worktree_dirty_remove_message(&checkout),
-                )
-                .with_details(ErrorDetails::WorktreeDirty {
-                    path: crate::verbatim_path::plain_path(&checkout.to_string_lossy()),
-                    force_required: true,
-                }));
+                    ErrorCode::WorkspaceUnavailable,
+                    format!("Could not remove worktree '{workspace_id}': {error}"),
+                ));
             }
-            return Err(WireError::new(
-                ErrorCode::WorkspaceUnavailable,
-                format!("Could not remove worktree '{workspace_id}': {error}"),
-            ));
         }
         journal
             .workspace_delete(workspace_id)

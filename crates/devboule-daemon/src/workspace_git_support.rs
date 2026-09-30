@@ -12,6 +12,59 @@ use crate::git::{
     GitRunError,
 };
 
+/// Test-only: the next `git` invocation per directory, armed by a test to
+/// hold one command. It lives here — at the runner every git-backed arm
+/// goes through — rather than at the worker, so a tree that runs an arm
+/// inline is held on the calling thread itself: the stall tests' red is the
+/// blocked thread, not a missing seam. Keyed by directory so concurrent
+/// tests holding their own repositories never cross.
+#[cfg(test)]
+type GitCommandTestGates = std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<
+            PathBuf,
+            (
+                std::sync::mpsc::SyncSender<()>,
+                std::sync::mpsc::Receiver<()>,
+            ),
+        >,
+    >,
+>;
+
+#[cfg(test)]
+static GIT_COMMAND_TEST_GATES: GitCommandTestGates =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Arm the gate for `root`: the next `git` call in that directory signals
+/// `entered` and waits (up to ten seconds) for `release`.
+#[cfg(test)]
+pub(crate) fn arm_git_command_gate(
+    root: &Path,
+) -> (
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::SyncSender<()>,
+) {
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    GIT_COMMAND_TEST_GATES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(root.to_path_buf(), (entered_tx, release_rx));
+    (entered_rx, release_tx)
+}
+
+#[cfg(test)]
+fn hold_git_command_for_test(root: &Path) {
+    let held = GIT_COMMAND_TEST_GATES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(root);
+    if let Some((entered, release)) = held {
+        let _ = entered.send(());
+        let _ = release.recv_timeout(std::time::Duration::from_secs(10));
+    }
+}
+
 /// A workspace folder below a repository root. Read from a subdirectory,
 /// `git status` and `git diff` answer for the whole repository with paths
 /// relative to that subdirectory, so the panel would show files of other
@@ -100,6 +153,8 @@ impl Probe {
 /// brings its own timeouts, stdout cap and Job Object; no shell, and the
 /// subcommand is a slice of `&str`, never a formatted string.
 pub(crate) fn git(root: &Path, subcommand: &[&str]) -> Result<GitOutput, GitRunError> {
+    #[cfg(test)]
+    hold_git_command_for_test(root);
     let mut arguments = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
     arguments.extend(subcommand.iter().map(|argument| (*argument).to_string()));
     run_git_args(&arguments)
@@ -113,6 +168,8 @@ pub(crate) fn git_with_cap(
     subcommand: &[&str],
     max_bytes: usize,
 ) -> Result<GitOutput, GitRunError> {
+    #[cfg(test)]
+    hold_git_command_for_test(root);
     let mut arguments = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
     arguments.extend(subcommand.iter().map(|argument| (*argument).to_string()));
     run_git_args_with_cap(&arguments, max_bytes)

@@ -135,6 +135,7 @@ pub(super) fn dispatch(
                         typed_permissions_ok,
                         devices_ok,
                         &passed,
+                        false,
                     )
                 }))
                 .unwrap_or_else(|_| {
@@ -182,6 +183,33 @@ pub(super) fn dispatch(
         }
         return None;
     }
+    // The git-backed workspace arms: each runs git — a workspace arm behind
+    // a 10 s probe for up to several 60 s-capped commands, `ProjectAdd` a
+    // 10 s probe alone — which must never hold the loop that writes replies
+    // and drains session events. They answer through the worker road: one
+    // serialized queue per repository root, reads and writes on separate
+    // permit lanes, queued reads coalesced and capped. The capability
+    // decision stays on the loop, ahead of the key resolution, exactly
+    // where dispatch_immediate made it before the offload existed.
+    if is_git_backed(&request) {
+        if !journal_ok {
+            return Some(capability_not_supported(
+                request.request_id(),
+                caps::JOURNAL,
+            ));
+        }
+        return offload(
+            state,
+            owner,
+            request,
+            conn,
+            passed,
+            sessions_ok,
+            journal_ok,
+            typed_permissions_ok,
+            devices_ok,
+        );
+    }
     Some(dispatch_immediate(
         state,
         owner,
@@ -192,6 +220,7 @@ pub(super) fn dispatch(
         typed_permissions_ok,
         devices_ok,
         &passed,
+        false,
     ))
 }
 
@@ -206,8 +235,16 @@ pub(super) fn dispatch_immediate(
     typed_permissions_ok: bool,
     devices_ok: bool,
     passed: &GatePassed,
+    queued_write: bool,
 ) -> DaemonMessage {
-    if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
+    // A write the queue accepted before the flag went up must run to its
+    // end: a delete stopped here would strand a half-removed checkout with
+    // its row still in the journal. New requests never reach this guard —
+    // dispatch refuses them on the loop before anything is queued.
+    if state.is_shutting_down()
+        && !matches!(request, ClientMessage::Shutdown { .. })
+        && !queued_write
+    {
         return DaemonMessage::Error({
             let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
             if let Some(id) = request.request_id() {
@@ -238,10 +275,17 @@ pub(super) fn dispatch_immediate(
             // blocks the last app out.
             match state.request_local_shutdown() {
                 Ok(()) => {
-                    // The reply is the app's last chance to know the journal
-                    // is on disk. Flush before accepting so a follow-up
-                    // kill/restart cannot race the shutdown path.
-                    state.sessions.flush_journal();
+                    // Paid only by a quit that was actually accepted: the
+                    // checkpoint pushes coalesced frames to the disk
+                    // without closing the writer, and it is one round trip
+                    // to the writer bounded by the journal's RPC_WAIT —
+                    // up to 10 s on this loop, not a formality. The
+                    // terminal close — flush plus writer join — runs once,
+                    // on the shutdown path, after the bounded drain, so a
+                    // write the queue accepted (a delete's row among
+                    // them) can still land its journal write. A refused
+                    // quit touches no journal and replies at once.
+                    state.sessions.checkpoint_journal();
                     DaemonMessage::Shutdown {
                         id,
                         accepted: true,

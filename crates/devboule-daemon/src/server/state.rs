@@ -70,6 +70,10 @@ pub struct ServerState {
             std::sync::mpsc::Receiver<()>,
         )>,
     >,
+    /// The per-root git job queues the offloaded workspace git arms run on
+    /// (`server/git_queue.rs` substrate, `server/git_workers.rs` request
+    /// side).
+    pub(super) git_jobs: super::git_queue::GitQueue,
     pub(crate) mcp: Arc<crate::mcp_broker::McpBroker>,
     /// Per-provider tool policy, read by the MCP broker on every
     /// `tools/list` and `tools/call` and written by `ToolPolicySet`. One
@@ -392,6 +396,7 @@ impl ServerState {
             idempotency: Mutex::new(IdempotencyStore::default()),
             #[cfg(test)]
             session_create_test_gate: Mutex::new(None),
+            git_jobs: super::git_queue::GitQueue::default(),
             mcp,
             tool_policy,
             provider_switches,

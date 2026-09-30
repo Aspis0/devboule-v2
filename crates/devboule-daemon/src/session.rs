@@ -713,6 +713,8 @@ pub struct SessionRegistry {
     #[cfg(test)]
     journal_list_calls: Arc<AtomicU64>,
     #[cfg(test)]
+    journal_checkpoint_calls: Arc<AtomicU64>,
+    #[cfg(test)]
     workspace_delete_calls: Arc<AtomicU64>,
     #[cfg(test)]
     full_roster_builds: Arc<AtomicU64>,
@@ -816,6 +818,8 @@ impl SessionRegistry {
             display_name_epochs: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             journal_list_calls: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            journal_checkpoint_calls: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
             workspace_delete_calls: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
@@ -1617,6 +1621,24 @@ impl SessionRegistry {
                 failed_frames: snapshot.failed_frames,
             }
         })
+    }
+
+    /// Flush coalesced frames without closing the writer. The non-terminal
+    /// half of [`Self::flush_journal`]: a caller on a hot road (the Shutdown
+    /// arm) checkpoints here, and the terminal close stays on the shutdown
+    /// path, after the write drain it protects.
+    pub fn checkpoint_journal(&self) {
+        #[cfg(test)]
+        self.journal_checkpoint_calls
+            .fetch_add(1, Ordering::Relaxed);
+        if let Some(journal) = &self.journal {
+            let _ = journal.flush();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn journal_checkpoint_call_count(&self) -> u64 {
+        self.journal_checkpoint_calls.load(Ordering::Relaxed)
     }
 
     pub fn flush_journal(&self) {

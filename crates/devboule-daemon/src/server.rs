@@ -94,6 +94,14 @@ use peer_roster::*;
 mod journal_domain;
 use journal_domain::*;
 
+#[path = "server/git_queue.rs"]
+mod git_queue;
+use git_queue::GIT_WRITE_DRAIN_BOUND;
+
+#[path = "server/git_workers.rs"]
+mod git_workers;
+use git_workers::{is_git_backed, offload};
+
 #[path = "server/sessions.rs"]
 mod sessions;
 /// The real send path for the disposition tests: `dispatch` is peer-gated,
