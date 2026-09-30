@@ -96,6 +96,32 @@ in `vendor/portable-pty.patches.md`:
 - `vendor/patches/portable-pty/0004-local-env-hardening.patch`
 - `vendor/portable-pty/src/cmdbuilder.rs`
 
+The ConPTY loader in `vendor/portable-pty/src/win/conpty_loader.rs` is
+translated from herdr, licensed under the Apache License, Version 2.0,
+commit `3150bd92` (`herdr-src/vendor/portable-pty/src/win/psuedocon.rs`, the
+app-local loader and its kernel32 fallback). It diverges in these recorded
+ways: herdr panics when a hash-verified app-local bundle fails to load, while
+Devboule verifies the staged files at staging time and the loader falls back
+to kernel32 without panicking; herdr hashes the bundle at load time, while
+this loader does not. Both use herdr's deployed layout: a `conpty/`
+subdirectory beside the executable holding `conpty.dll` and the `x64` and
+`arm64` `OpenConsole.exe` hosts under their architecture subdirectories, with
+the licence and notice texts in `THIRD-PARTY-NOTICES/`
+(`herdr-src/distribution/install.ps1` verifies exactly that tree). The
+reparse-point rejection herdr applies to its
+bundle directory and every file is kept for the two staged files: a
+`conpty.dll` or `OpenConsole.exe` that is a symlink or junction is not
+trusted, and the bundle is all-or-nothing — the inbox path is used unless
+both files are present. The loader has no logger; it reports the one-time
+choice through `conpty_source()`, and the daemon prints it at startup through
+its own daemon log. The pinned package values in
+`packaging/windows/conpty.json` and the verify-then-stage shape of
+`scripts/stage-conpty.ps1` are taken from herdr's
+`packaging/windows/conpty.json` and `scripts/package_windows_conpty.py` /
+`.ps1` at the same commit. The licence and notice texts under
+`packaging/windows/licenses/` are herdr's copies of Microsoft's texts
+(MIT, Copyright (c) Microsoft Corporation).
+
 The provider catalog adds Devboule's installed-agent model, ACP launch
 metadata, and an explicit unknown authentication status; it does not probe
 login state.

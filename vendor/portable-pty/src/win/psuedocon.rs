@@ -1,19 +1,17 @@
 use super::WinChild;
+use super::conpty_loader::CONPTY;
 use crate::cmdbuilder::CommandBuilder;
 use crate::win::procthreadattr::ProcThreadAttributeList;
 use anyhow::{bail, ensure, Error};
 use filedescriptor::{FileDescriptor, OwnedHandle};
-use lazy_static::lazy_static;
-use shared_library::shared_library;
 use std::ffi::OsString;
 use std::io::Error as IoError;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
-use std::path::Path;
 use std::sync::Mutex;
 use std::{mem, ptr};
 use winapi::shared::minwindef::DWORD;
-use winapi::shared::winerror::{HRESULT, S_OK};
+use winapi::shared::winerror::S_OK;
 use winapi::um::handleapi::*;
 use winapi::um::processthreadsapi::*;
 use winapi::um::winbase::{
@@ -29,39 +27,6 @@ pub const PSEUDOCONSOLE_RESIZE_QUIRK: DWORD = 0x2;
 pub const PSEUDOCONSOLE_WIN32_INPUT_MODE: DWORD = 0x4;
 #[allow(dead_code)]
 pub const PSEUDOCONSOLE_PASSTHROUGH_MODE: DWORD = 0x8;
-
-shared_library!(ConPtyFuncs,
-    pub fn CreatePseudoConsole(
-        size: COORD,
-        hInput: HANDLE,
-        hOutput: HANDLE,
-        flags: DWORD,
-        hpc: *mut HPCON
-    ) -> HRESULT,
-    pub fn ResizePseudoConsole(hpc: HPCON, size: COORD) -> HRESULT,
-    pub fn ClosePseudoConsole(hpc: HPCON),
-);
-
-fn load_conpty() -> ConPtyFuncs {
-    // If the kernel doesn't export these functions then their system is
-    // too old and we cannot run.
-    let kernel = ConPtyFuncs::open(Path::new("kernel32.dll")).expect(
-        "this system does not support conpty.  Windows 10 October 2018 or newer is required",
-    );
-
-    // We prefer to use a sideloaded conpty.dll and openconsole.exe host deployed
-    // alongside the application.  We check for this after checking for kernel
-    // support so that we don't try to proceed and do something crazy.
-    if let Ok(sideloaded) = ConPtyFuncs::open(Path::new("conpty.dll")) {
-        sideloaded
-    } else {
-        kernel
-    }
-}
-
-lazy_static! {
-    static ref CONPTY: ConPtyFuncs = load_conpty();
-}
 
 pub struct PsuedoCon {
     con: HPCON,
@@ -84,9 +49,7 @@ impl PsuedoCon {
                 size,
                 input.as_raw_handle() as _,
                 output.as_raw_handle() as _,
-                PSUEDOCONSOLE_INHERIT_CURSOR
-                    | PSEUDOCONSOLE_RESIZE_QUIRK
-                    | PSEUDOCONSOLE_WIN32_INPUT_MODE,
+                PSUEDOCONSOLE_INHERIT_CURSOR | PSEUDOCONSOLE_RESIZE_QUIRK | PSEUDOCONSOLE_WIN32_INPUT_MODE,
                 &mut con,
             )
         };

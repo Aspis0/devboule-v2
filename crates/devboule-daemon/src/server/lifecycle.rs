@@ -71,6 +71,11 @@ pub fn run() -> Result<(), DaemonError> {
 
 #[cfg(windows)]
 fn run_windows() -> Result<(), DaemonError> {
+    // One startup line through the daemon's own log (stderr, which
+    // daemon_log mirrors into daemon.log): which ConPTY implementation this
+    // process pinned. The vendored loader deliberately has no logger of its
+    // own; forcing the source here also fails fast on a kernel without ConPTY.
+    eprintln!("ConPTY: using {}", portable_pty::conpty_source());
     let paths = RuntimePaths::from_env()?;
     let mut lock = SingleInstanceLock::acquire(&paths)?;
     // Only now — the single-instance lock is ours — may the log rotate: a

@@ -54,6 +54,8 @@ pub use cmdbuilder::CommandBuilder;
 pub mod unix;
 #[cfg(windows)]
 pub mod win;
+#[cfg(windows)]
+pub use win::conpty_loader::conpty_source;
 
 pub mod serial;
 

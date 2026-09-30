@@ -43,10 +43,6 @@ path = "examples/narrow.rs"
 name = "whoami"
 path = "examples/whoami.rs"
 
-[[example]]
-name = "whoami_async"
-path = "examples/whoami_async.rs"
-
 [dependencies.anyhow]
 version = "1.0"
 
@@ -83,12 +79,6 @@ version = "0.2"
 [dependencies.shell-words]
 version = "1.1"
 
-[dev-dependencies.futures]
-version = "0.3"
-
-[dev-dependencies.smol]
-version = "2.0"
-
 [features]
 default = []
 serde_support = [
@@ -102,9 +92,6 @@ version = "1.3"
 [target."cfg(windows)".dependencies.lazy_static]
 version = "1.4"
 
-[target."cfg(windows)".dependencies.shared_library]
-version = "0.1"
-
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3"
 features = [
@@ -112,6 +99,7 @@ features = [
     "consoleapi",
     "handleapi",
     "fileapi",
+    "libloaderapi",
     "namedpipeapi",
     "synchapi",
 ]
