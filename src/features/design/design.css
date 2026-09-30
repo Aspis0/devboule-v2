@@ -128,6 +128,9 @@
 }
 
 .design-folder-record {
+  /* The grid child that carries the nowrap path: its automatic min-width
+     would hold the column open past the popover's edge. */
+  min-width: 0;
   margin-top: 7px;
   padding-top: 7px;
   border-top: 1px solid var(--border);
@@ -294,7 +297,11 @@
   z-index: 50;
   width: min(360px, calc(100vw - 28px));
   max-height: min(calc((100vh - var(--crescent-band)) * 0.6), 430px);
+  /* Without an explicit x, overflow-y: auto pairs it to auto and the shell
+     scrolls sideways; text breaks anywhere so no token outgrows the clip. */
+  overflow-x: hidden;
   overflow-y: auto;
+  overflow-wrap: anywhere;
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 12px;
@@ -426,6 +433,10 @@
 .design-history-gone {
   color: var(--ink-soft);
   font-family: "JetBrains Mono", monospace;
+}
+
+.design-history-row time {
+  overflow-wrap: normal;
 }
 
 .design-history-gone {
@@ -2086,6 +2097,10 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 6px 22px rgba(var(--ink-rgb), 0.13);
+  /* Pairing rule: the hidden x computes the visible y to auto, so children are
+     clipped at the padding box; text breaks anywhere so none outgrows its box. */
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
   font-size: var(--type-small);
 }
 
@@ -2101,6 +2116,7 @@
   max-height: min(420px, calc(100vh - var(--crescent-band) - 24px));
   min-width: min(260px, calc(100vw - 28px));
   max-width: min(320px, calc(100vw - 28px));
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -2108,6 +2124,7 @@
   min-width: min(320px, calc(100vw - 28px));
   max-width: min(320px, calc(100vw - 28px));
   max-height: min(420px, calc(100vh - var(--crescent-band) - 24px));
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -2164,6 +2181,9 @@
 }
 
 .design-skill-mode-option-badge {
+  /* Fixed labels break at spaces, never mid-word; nowrap would hand the shell
+     a max-content child and push the shell sideways. */
+  overflow-wrap: normal;
   margin-left: auto;
   color: var(--silence);
   font-size: var(--type-meta);
@@ -2189,6 +2209,7 @@
 
 .design-skill-mode-option-selected {
   flex: none;
+  overflow-wrap: normal;
   margin-left: 0;
   color: var(--accent-text);
   font-size: var(--type-meta);
@@ -2196,6 +2217,7 @@
 }
 
 .design-skill-picker-action {
+  overflow-wrap: normal;
   padding: 5px 8px;
   color: var(--ink-soft);
   text-align: left;
@@ -2242,6 +2264,7 @@
 
 .design-agent-picker-secondary,
 .design-agent-picker-primary {
+  overflow-wrap: normal;
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;

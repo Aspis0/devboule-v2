@@ -1815,6 +1815,7 @@ describe("DesignSurface host capabilities", () => {
       'select[aria-label="Thinking effort"]',
     );
     if (effort === null) throw new Error("Effort picker missing");
+    expect(effort.getAttribute("title")).toBe("High");
     await act(async () => {
       effort.value = "low";
       effort.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1904,6 +1905,7 @@ describe("DesignSurface host capabilities", () => {
 
     const modelSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
     if (modelSelect === null) throw new Error("Model select missing");
+    expect(modelSelect.getAttribute("title")).toBe(firstModel.name);
     await act(async () => {
       modelSelect.value = secondModel.modelId;
       modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1941,6 +1943,34 @@ describe("DesignSurface host capabilities", () => {
     expect(settledModelButton.getAttribute("aria-label")).toBe(`Model: ${secondModel.name}`);
     expect(settledPicker.getAttribute("aria-busy")).not.toBe("true");
     expect(settledSelect.disabled).toBe(false);
+    expect(settledSelect.getAttribute("title")).toBe(secondModel.name);
+    await act(async () => root.unmount());
+  });
+
+  it("falls back to the model id in the select title when the manifest names an unknown model", async () => {
+    const { session } = fakeAgentSession(
+      agentState({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "ghost-model",
+        models: [
+          { modelId: "grok-4", name: "Grok 4" },
+          { modelId: "grok-4-mini", name: "Grok 4 Mini" },
+        ],
+      }),
+    );
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        getAgentSession: () => session,
+      }),
+    );
+    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
+    if (modelButton === null) throw new Error("Model picker missing");
+    await act(async () => modelButton.click());
+    const modelSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    if (modelSelect === null) throw new Error("Model select missing");
+    expect(modelSelect.getAttribute("title")).toBe("ghost-model");
     await act(async () => root.unmount());
   });
 

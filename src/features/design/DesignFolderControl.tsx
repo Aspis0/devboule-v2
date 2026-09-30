@@ -195,7 +195,9 @@ export const DesignFolderControl = memo(function DesignFolderControl({
                 folders.map((folder) => (
                   <div className="design-folder-record" key={folder.id}>
                     <div className="design-agent-picker-label">{folder.name}</div>
-                    <div className="design-folder-path">{folder.path}</div>
+                    <div className="design-folder-path" title={folder.path}>
+                      {folder.path}
+                    </div>
                     {folder.workspaceError !== undefined ? (
                       <div className="design-agent-picker-status">{folder.workspaceError}</div>
                     ) : folder.workspaces.length === 0 ? (

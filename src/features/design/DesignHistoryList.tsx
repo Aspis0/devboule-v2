@@ -80,7 +80,9 @@ export function DesignHistoryList({
               const dateTime = Number.isNaN(savedAt.getTime()) ? undefined : savedAt.toISOString();
               const content = (
                 <>
-                  <span className="design-history-title">{entry.title || "Untitled design"}</span>
+                  <span className="design-history-title" title={entry.title || "Untitled design"}>
+                    {entry.title || "Untitled design"}
+                  </span>
                   <time {...(dateTime === undefined ? {} : { dateTime })}>
                     {formatSavedAt(entry.savedAtMs)}
                   </time>

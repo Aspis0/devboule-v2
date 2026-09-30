@@ -339,6 +339,9 @@ export const DesignAssistant = memo(function DesignAssistant({
       : `Unavailable: ${unavailableProviderId}`;
   const providerLabel = selectedProvider?.id ?? manifest?.providerId ?? providerFallback;
   const efforts = currentModel?.efforts ?? [];
+  const selectedEffortLabel = efforts.find(
+    (effort) => effort.id === confirmedEffort(currentModel),
+  )?.label;
   const pendingSwitch =
     agentState?.pendingSwitch !== null && agentState?.pendingSwitch !== undefined;
   const providerButtonDisabled = busy;
@@ -873,6 +876,7 @@ export const DesignAssistant = memo(function DesignAssistant({
                         {manifest.models.length > 1 ? (
                           <select
                             aria-label="Model"
+                            title={currentModel?.name ?? manifest?.currentModelId ?? undefined}
                             value={manifest.currentModelId ?? ""}
                             disabled={pendingSwitch}
                             onChange={(event) => onModelSelect(event.target.value)}
@@ -893,6 +897,7 @@ export const DesignAssistant = memo(function DesignAssistant({
                             <span>Thinking effort</span>
                             <select
                               aria-label="Thinking effort"
+                              title={selectedEffortLabel}
                               value={confirmedEffort(currentModel)}
                               disabled={pendingSwitch}
                               onChange={(event) => onEffortSelect(event.target.value)}
