@@ -591,6 +591,7 @@
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-failed,
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-location,
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted,
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-command-exit,
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary::after,
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary > svg {
   color: var(--code-text);
@@ -662,17 +663,35 @@
   outline-offset: 3px;
 }
 
-.workspace-chat-tool-label {
-  /* Shrink below 1 distributes only that fraction of the overflow and the row
-     outgrows the transcript; the summary yields first (larger flex-shrink). */
-  flex: 0 1 auto;
+/* The row's text block; its overflow lands here first. Basis 100% pins the
+   width the label's cap resolves against: the row, never content. */
+.workspace-chat-tool-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 10 100%;
   min-width: 0;
+  overflow: hidden;
+}
+
+.workspace-chat-tool-label {
+  /* Never yields: capped at the block. The strip in the rule below binds
+     only while a yielding summary shares the block. */
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
   font-size: 12px;
   font-weight: 500;
+}
+
+/* The strip, only where it has a claimant: a label-only row keeps the block's
+   full width instead of ellipsizing ~8 characters early. */
+.workspace-chat-tool-text.has-summary .workspace-chat-tool-label {
+  max-width: calc(100% - var(--space-48));
 }
 
 .workspace-chat-tool-group-count {
@@ -712,7 +731,7 @@
 
 .workspace-chat-tool-summary-text,
 .workspace-chat-tool-group-summary-text {
-  /* Ten times the label's shrink: the summary gives up space first. */
+  /* The yielding span: it gives up space first when the row is tight. */
   flex-shrink: 10;
   min-width: 0;
   overflow: hidden;
@@ -724,6 +743,55 @@
 .workspace-chat-tool-group-summary-text::before {
   content: "·";
   margin-inline: 2px 8px;
+}
+
+/* The command row's chip (SPEC-regions "Command"): the payload on --code-bg,
+   one line with an ellipsis, yielding like the summary text. */
+.workspace-command-chip {
+  flex: 0 10 auto;
+  min-width: 0;
+  /* Border counted: 22 − 2 keeps the 20 px line box, 6 + 1 the 7 px inset. */
+  height: 22px;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Decorative boundary in the copyable block's form (SPEC-regions:79): the
+     mono text is what identifies the chip. */
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+/* The exit dot and the sentence that reads its number: the colour is never
+   the only carrier of the code. */
+.workspace-command-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone-live);
+}
+
+.workspace-command-dot.is-failed {
+  background: var(--danger);
+}
+
+/* The open row's ground is --code-bg, where the collapsed ground's red
+   measures 2.43:1 in light; the code-ground red is what stays visible. */
+.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-command-dot.is-failed {
+  background: var(--diff-del);
+}
+
+.workspace-command-exit {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .workspace-chat-tool-body {

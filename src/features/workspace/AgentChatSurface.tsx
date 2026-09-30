@@ -48,6 +48,7 @@ import {
 } from "../../lib/toolCallGroups";
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
+import { CommandChip, ExitMarker } from "./CommandRow";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { useConversationScrollStick } from "./useConversationScrollStick";
 import { PaneHeader } from "./paneHeader/PaneHeader";
@@ -472,24 +473,40 @@ function renderToolItem(
         ? item.title
         : undefined
       : undefined;
+  // The wire line only says WHICH rows are command rows; what they show is
+  // the payload (the unwrapped title), never the line itself.
+  const commandRow = item.command !== undefined;
+  // The strip on the label is paid by the yielding text beside it: only a
+  // block that actually carries one claims it.
+  const hasSummary = model.summary !== undefined || planDecision !== undefined;
   const toolClassName = `${className}${item.kind === "plan" ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
     <details className={toolClassName} key={item.id} style={style}>
       <summary className="workspace-chat-tool-summary">
-        <ToolIcon name={model.icon} />
-        <span className="workspace-chat-tool-label" title={model.displayName}>
-          {model.displayName}
+        {/* A command row is chip + exit marker (SPEC-regions line 77): no icon, no label. */}
+        {commandRow ? null : <ToolIcon name={model.icon} />}
+        <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
+          {commandRow ? null : (
+            <span className="workspace-chat-tool-label" title={model.displayName}>
+              {model.displayName}
+            </span>
+          )}
+          {commandRow && model.summary !== undefined ? (
+            <CommandChip command={model.summary} />
+          ) : null}
+          {!commandRow && model.summary !== undefined ? (
+            <span className="workspace-chat-tool-summary-text">{model.summary}</span>
+          ) : null}
+          {planDecision !== undefined ? (
+            <span className="workspace-chat-tool-summary-text">{planDecision}</span>
+          ) : null}
         </span>
-        {model.summary !== undefined ? (
-          <span className="workspace-chat-tool-summary-text">{model.summary}</span>
-        ) : null}
-        {planDecision !== undefined ? (
-          <span className="workspace-chat-tool-summary-text">{planDecision}</span>
-        ) : null}
+        {item.exitCode !== undefined ? <ExitMarker exitCode={item.exitCode} /> : null}
         {interrupted ? (
           <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
         ) : null}
-        {failed ? (
+        {/* A zero code carries no failure of its own: the status mark stays. */}
+        {failed && (item.exitCode === undefined || item.exitCode === 0) ? (
           <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
             ×
           </span>

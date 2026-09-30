@@ -345,25 +345,50 @@ describe("tool row computed styles", () => {
     row.remove();
   });
 
-  it("makes the summary text yield to the label before the row outgrows it", () => {
+  it("keeps the label whole by routing the row's overflow through its text block", () => {
     assembleCssProof(sheets).inject([
+      ".workspace-chat-tool-text",
+      ".workspace-chat-tool-text.has-summary .workspace-chat-tool-label",
       ".workspace-chat-tool-label",
       ".workspace-chat-tool-summary-text",
     ]);
+    const block = document.createElement("span");
+    block.className = "workspace-chat-tool-text has-summary";
     const label = document.createElement("span");
     label.className = "workspace-chat-tool-label";
     const summaryText = document.createElement("span");
     summaryText.className = "workspace-chat-tool-summary-text";
-    document.body.append(label, summaryText);
+    block.append(label, summaryText);
+    document.body.append(block);
 
-    // Shrink below 1 distributes only that fraction of the overflow, so the
-    // row outgrows the transcript; the summary must be the one that yields.
-    expect(Number.parseFloat(getComputedStyle(label).flexShrink)).toBeGreaterThanOrEqual(1);
-    expect(Number.parseFloat(getComputedStyle(summaryText).flexShrink)).toBeGreaterThan(
-      Number.parseFloat(getComputedStyle(label).flexShrink),
-    );
-    label.remove();
-    summaryText.remove();
+    // The block shrinks at row level, so the row never outgrows the
+    // transcript; inside it only the summary yields, never the label.
+    expect(getComputedStyle(label).flexShrink).toBe("0");
+    // The floor, when a summary shares the block: the cap leaves the gap plus
+    // a 40 px strip, so the yielding text keeps ~6 characters.
+    expect(getComputedStyle(label).maxWidth).toBe("calc(100% - 48px)");
+    expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
+    expect(getComputedStyle(label).whiteSpace).toBe("nowrap");
+    expect(getComputedStyle(block).flexShrink).toBe("10");
+    expect(getComputedStyle(block).flexBasis).toBe("100%");
+    expect(getComputedStyle(block).gap).toBe("8px");
+    expect(getComputedStyle(block).minWidth).toBe("0");
+    expect(getComputedStyle(block).overflow).toBe("hidden");
+    expect(getComputedStyle(summaryText).textOverflow).toBe("ellipsis");
+    expect(getComputedStyle(summaryText).minWidth).toBe("0");
+    expect(Number.parseFloat(getComputedStyle(summaryText).flexShrink)).toBeGreaterThan(0);
+    block.remove();
+
+    // Without a claimant the label keeps the block's full width: the strip
+    // would otherwise ellipsize a long bare name ~8 characters early.
+    const loneBlock = document.createElement("span");
+    loneBlock.className = "workspace-chat-tool-text";
+    const loneLabel = document.createElement("span");
+    loneLabel.className = "workspace-chat-tool-label";
+    loneBlock.append(loneLabel);
+    document.body.append(loneBlock);
+    expect(getComputedStyle(loneLabel).maxWidth).toBe("100%");
+    loneBlock.remove();
   });
 
   it.each(["light", "dark"] as const)(
