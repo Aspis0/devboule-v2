@@ -322,10 +322,24 @@ fn validate_archive_scope(
                 )));
             }
             Ok(false) => {}
-            Err(error) => return Err(Refused(format!("Could not check worktree status: {error}"))),
+            Err(error) => return Err(dirty_check_refusal(error)),
         }
     }
     Ok(target)
+}
+
+/// The dirty pre-check's refusal. The worktree family's failures carry git's
+/// stderr, and this one travels in an MCP reply: the repository-level
+/// dubious-ownership refusal is answered with the shared static sentence, so
+/// the repository's absolute path never reaches the calling agent on the
+/// failure every archive approval can hit.
+fn dirty_check_refusal(error: String) -> WorkspaceError {
+    let reason = if crate::workspace_git_support::is_dubious_ownership_message(&error) {
+        crate::workspace_git_support::DUBIOUS_OWNERSHIP.to_string()
+    } else {
+        error
+    };
+    Refused(format!("Could not check worktree status: {reason}"))
 }
 
 fn live_sessions(

@@ -335,16 +335,17 @@ pub(crate) fn run_git_args(args: &[String]) -> Result<GitOutput, GitRunError> {
     run_git_args_with_cap(args, GIT_STDOUT_MAX_BYTES)
 }
 
-/// Run `git` with the given argv under `max_bytes` — a caller whose output
-/// is not the working tree (the log read's is the history) gets a ceiling
-/// sized to its own job. Same closed argv, timeouts and Job Object as
-/// [`run_git_args`].
-pub(crate) fn run_git_args_with_cap(
-    args: &[String],
-    max_bytes: usize,
-) -> Result<GitOutput, GitRunError> {
+/// The captured-output git runner: closed argv, piped stdio, and the locale
+/// pinned to C so the removal and collision classifiers match Git's English
+/// diagnostics (informed by herdr `aff99878`). This is not the daemon's only
+/// spawn: the repository probe (`detect_git_repository_with_program`) builds
+/// its own command — it injects the program for its tests, reads no stderr,
+/// and classifies nothing by message text — so it stays unpinned. No network
+/// verbs run through this runner, so no credential helper inherits the pin.
+fn new_git_command(args: &[String]) -> Command {
     let mut command = Command::new("git");
     command.args(args);
+    command.env("LC_ALL", "C");
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -354,6 +355,18 @@ pub(crate) fn run_git_args_with_cap(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
+    command
+}
+
+/// Run `git` with the given argv under `max_bytes` — a caller whose output
+/// is not the working tree (the log read's is the history) gets a ceiling
+/// sized to its own job. Same closed argv, timeouts and Job Object as
+/// [`run_git_args`].
+pub(crate) fn run_git_args_with_cap(
+    args: &[String],
+    max_bytes: usize,
+) -> Result<GitOutput, GitRunError> {
+    let command = new_git_command(args);
 
     let mut process = match spawn_captured_git_process(command, max_bytes) {
         Ok(process) => process,
@@ -543,9 +556,22 @@ mod tests {
 
     use super::{
         append_git_stdout, bounded_reap, classify_git_probe, detect_git_repository,
-        detect_git_repository_with_program, parse_git_root, GitReapOutcome, GitReapPoll,
-        GitRepositoryStatus, GIT_STDOUT_MAX_BYTES,
+        detect_git_repository_with_program, new_git_command, parse_git_root, GitReapOutcome,
+        GitReapPoll, GitRepositoryStatus, GIT_STDOUT_MAX_BYTES,
     };
+
+    #[test]
+    fn the_git_runner_pins_the_locale_to_c() {
+        let command = new_git_command(&["status".to_string()]);
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(key, _)| *key == std::ffi::OsStr::new("LC_ALL"))
+                .map(|(_, value)| value),
+            Some(Some(std::ffi::OsStr::new("C"))),
+            "the captured-output runner pins LC_ALL=C",
+        );
+    }
 
     #[test]
     fn a_nested_folder_is_not_reported_as_the_repository_root() {

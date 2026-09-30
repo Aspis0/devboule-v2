@@ -104,6 +104,26 @@ pub(crate) const INDEX_LOCKED: &str =
 /// static sentence instead of `exited with code 1`, which would be true
 /// and useless. Pathless like every sentence here.
 pub(crate) const NOTHING_STAGED: &str = "there is nothing staged to commit";
+/// Git's `safe.directory` refusal (exit 128, stderr matched locally): a
+/// repository owned by another user dead-ends every command, and the static
+/// sentence is the remedy this slice offers — git's own wording carries the
+/// repository's absolute path, and `error` on these frames is not redacted.
+/// No trust flow and no scoped `-c safe.directory` here yet.
+pub(crate) const DUBIOUS_OWNERSHIP: &str = "git refuses this repository because the folder is \
+     owned by another user; if you trust it, add it to git's safe.directory";
+/// The measured literal git writes on that refusal (`fatal: detected dubious
+/// ownership in repository at '<path>'`), anchored so a path or a name git
+/// merely echoes — a `git mv` destination, a branch-adjacent string — cannot
+/// classify as this refusal.
+pub(crate) const DUBIOUS_OWNERSHIP_MARKER: &str =
+    "fatal: detected dubious ownership in repository at '";
+
+/// Whether a git failure message is the repository-level dubious-ownership
+/// refusal. The message-based half of [`exit_error`]'s detection: the
+/// worktree family's mappers carry `String` errors, not [`GitOutput`]s.
+pub(crate) fn is_dubious_ownership_message(message: &str) -> bool {
+    message.contains(DUBIOUS_OWNERSHIP_MARKER)
+}
 pub(crate) const LINK_FINAL: &str = "the requested path is a symbolic link; its target is not read";
 const LINK_CROSSED: &str = "the requested path crosses a link and is not read";
 
@@ -191,6 +211,9 @@ pub(crate) fn run_error(error: GitRunError, operation: &str) -> String {
 /// detail is dropped on purpose, not lost by accident — a local debug
 /// session that needs it should print `output.stderr` at the call site.
 pub(crate) fn exit_error(operation: &str, output: &GitOutput) -> String {
+    if output.code == Some(128) && output.stderr.contains(DUBIOUS_OWNERSHIP_MARKER) {
+        return DUBIOUS_OWNERSHIP.to_string();
+    }
     match output.code {
         Some(code) => format!("{operation} exited with code {code}"),
         None => format!("{operation} was terminated before it could report a code"),

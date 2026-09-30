@@ -60,6 +60,20 @@ adapted from herdr, licensed under the Apache License, Version 2.0, commit
 - `herdr-src/src/worktree.rs` `leftover_worktree_checkout_matches_repo`
 - `herdr-src/src/worktree.rs` `git_common_worktrees_dir`
 
+The submodule-removal clause of `is_dirty_worktree_remove_error` and the
+`LC_ALL=C` locale pin on the shared git runner in
+`crates/devboule-daemon/src/worktree.rs` and
+`crates/devboule-daemon/src/git.rs` are adapted from herdr, licensed under
+the Apache License, Version 2.0, commit `aff99878`
+(`herdr-src/src/worktree.rs` `is_dirty_worktree_remove_error` and the
+runner's locale comment).
+
+The bounded rebase ref-file read in
+`crates/devboule-daemon/src/workspace_git_log_base.rs` — the 64 KiB cap and
+the `File::take` overflow check — is adapted from herdr, licensed under the
+Apache License, Version 2.0, commit `03ce02e1`
+(`herdr-src/src/workspace/git/discovery.rs` `MAX_GIT_REF_FILE_BYTES`).
+
 The outer agent and terminal identity stripping in
 `crates/devboule-daemon/src/agent_env.rs` is adapted from herdr,
 licensed under the Apache License, Version 2.0, commit `8ac95427`:
@@ -129,6 +143,9 @@ source, and that line is the authority for the entry:
   `packages/server/src/server/agent/providers/codex/tool-call-mapper.ts`
   (`unwrapShellCommand`, `stripMatchingEdgeQuotes`,
   `normalizeCommandExecutionCommand`, `isWindowsShellCommand`)
+- `crates/devboule-daemon/src/worktree.rs` —
+  `packages/protocol/src/branch-slug.ts` (the `slugify` 50-character cap,
+  commit `666a0f2fa`)
 - `crates/devboule-daemon/src/workspace_git_log.rs` —
   `packages/server/src/utils/checkout-git.ts` (`listCheckoutCommits`)
 - `crates/devboule-daemon/src/workspace_git_log_base.rs` — the same file

@@ -17,6 +17,33 @@ pub(crate) struct WorkspaceArchivingGuard<'a> {
     workspace_id: String,
 }
 
+/// The delete's own hold on the archiving mark. `owned` records whether THIS
+/// call inserted the mark: the MCP archive flow holds it across its own
+/// delete, and that holder's guard must stay the one that removes it.
+struct WorkspaceDeleteReservation<'a> {
+    registry: &'a super::SessionRegistry,
+    workspace_id: String,
+    owned: bool,
+}
+
+impl Drop for WorkspaceDeleteReservation<'_> {
+    fn drop(&mut self) {
+        if !self.owned {
+            return;
+        }
+        let _gate = self
+            .registry
+            .workspace_creation_gate
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        self.registry
+            .archiving_workspaces
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.workspace_id);
+    }
+}
+
 impl Drop for WorkspaceArchivingGuard<'_> {
     fn drop(&mut self) {
         let _gate = self
@@ -36,6 +63,56 @@ impl Drop for WorkspaceArchivingGuard<'_> {
 /// `plain_path` for what stays verbatim.
 pub(super) fn plain_cwd(path: &Path) -> PathBuf {
     crate::verbatim_path::plain_path(&path.to_string_lossy()).into()
+}
+
+/// What the filesystem says about a folder a delete is asked to judge.
+/// Only `NotFound` **on a present volume** is `Vanished`: an unassigned or
+/// deleted drive letter answers `NotFound` exactly like a deleted folder
+/// does, so the volume root — `X:\` or `\\server\share\` — must be there
+/// for that answer to be trusted. Every other metadata error is
+/// `Unavailable`, and a delete never acts on cannot-tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FolderPresence {
+    Present,
+    Vanished,
+    Unavailable,
+}
+
+/// The volume root of `path` — `X:\`, `\\?\C:\`, `\\server\share\`: the
+/// path's disk/UNC prefix plus its root separator, which is itself statable.
+/// `None` for a path with no such prefix or no root separator (a relative
+/// path; a stored workspace path always has both), and the caller then
+/// answers `Unavailable`.
+pub(super) fn volume_root(path: &Path) -> Option<PathBuf> {
+    use std::path::{Component, Prefix};
+    let mut components = path.components();
+    let prefix = match components.next()? {
+        Component::Prefix(prefix) => prefix,
+        _ => return None,
+    };
+    match components.next()? {
+        Component::RootDir => {}
+        _ => return None,
+    }
+    match prefix.kind() {
+        Prefix::Disk(_) | Prefix::VerbatimDisk(_) | Prefix::UNC(..) | Prefix::VerbatimUNC(..) => {
+            Some(PathBuf::from(prefix.as_os_str()).join(std::path::MAIN_SEPARATOR.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// Test-only replacement for the metadata probe the presence decision rests
+/// on: a test cannot fabricate an unassigned drive letter portably. The
+/// boxed fn answers for the folder **and** for its volume root — the
+/// decision asks it for both.
+#[cfg(test)]
+pub(crate) type PresenceMetadataFn =
+    Box<dyn Fn(&Path) -> std::io::Result<std::fs::Metadata> + Send + Sync>;
+
+#[cfg(test)]
+pub(crate) struct PresenceProbe {
+    pub(crate) metadata: PresenceMetadataFn,
 }
 
 impl super::SessionRegistry {
@@ -86,6 +163,89 @@ impl super::SessionRegistry {
             registry: self,
             workspace_id: workspace_id.to_string(),
         })
+    }
+
+    /// The queued delete's reservation: the mark blocks new session creation
+    /// into this workspace (`workspace_creation_guard` refuses it), so a
+    /// session cannot start between the live-session check and the removal.
+    /// Insert-if-absent, never failing: when the archive flow already holds
+    /// the mark, its guard stays the owner and this one removes nothing.
+    fn reserve_workspace_for_delete(&self, workspace_id: &str) -> WorkspaceDeleteReservation<'_> {
+        let _gate = self
+            .workspace_creation_gate
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        let owned = self
+            .archiving_workspaces
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(workspace_id.to_string());
+        WorkspaceDeleteReservation {
+            registry: self,
+            workspace_id: workspace_id.to_string(),
+            owned,
+        }
+    }
+
+    /// Test-only face of the archiving mark, so the mark-ownership tests
+    /// observe release and non-removal directly.
+    #[cfg(test)]
+    pub(crate) fn workspace_is_marked_archiving(&self, workspace_id: &str) -> bool {
+        self.archiving_workspaces
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(workspace_id)
+    }
+
+    /// Test-only window on the delete's own reservation: `probe` runs while
+    /// the delete's mark is held, the way a mid-flight delete's concurrent
+    /// archive would see it. The reservation type never leaves this module.
+    #[cfg(test)]
+    pub(crate) fn hold_workspace_delete_reservation(
+        &self,
+        workspace_id: &str,
+        probe: impl FnOnce(),
+    ) {
+        let _reservation = self.reserve_workspace_for_delete(workspace_id);
+        probe();
+    }
+
+    /// Arm the presence seam for this registry (test-only).
+    #[cfg(test)]
+    pub(crate) fn set_presence_probe_for_test(&self, probe: PresenceProbe) {
+        *self
+            .presence_probe
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(probe);
+    }
+
+    /// The folder's own metadata, through the presence seam when one is
+    /// armed.
+    fn presence_metadata(&self, path: &Path) -> std::io::Result<std::fs::Metadata> {
+        #[cfg(test)]
+        {
+            let probe = self
+                .presence_probe
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(probe) = probe.as_ref() {
+                return (probe.metadata)(path);
+            }
+        }
+        std::fs::symlink_metadata(path)
+    }
+
+    /// The presence decision both delete gates share: see
+    /// [`FolderPresence`] for the rule.
+    fn folder_presence(&self, path: &Path) -> FolderPresence {
+        match self.presence_metadata(path) {
+            Ok(_) => FolderPresence::Present,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => match volume_root(path) {
+                Some(root) if self.presence_metadata(&root).is_ok() => FolderPresence::Vanished,
+                _ => FolderPresence::Unavailable,
+            },
+            Err(_) => FolderPresence::Unavailable,
+        }
     }
 
     pub fn projects_list(&self) -> Result<Vec<Project>, WireError> {
@@ -273,6 +433,16 @@ impl super::SessionRegistry {
         if let Err(error) =
             crate::worktree::run_worktree_add_command(&project_path, &checkout, &branch, "HEAD")
         {
+            // The add's failure text is git's stderr; the repository-level
+            // dubious-ownership refusal is answered with the static sentence,
+            // so the repository's absolute path never travels on a create
+            // failure.
+            let error = match error {
+                crate::worktree::WorktreeAddError::Failed(message) => {
+                    crate::worktree::WorktreeAddError::Failed(worktree_error_reason(message))
+                }
+                other => other,
+            };
             let checkout_path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
             // A killed add is repaired, not judged: git may have registered
             // the path before dying, which no listing can tell from a
@@ -368,6 +538,19 @@ impl super::SessionRegistry {
             }
             WorkspaceIsolation::Worktree => {}
         }
+        // At execution time on the worker, not at dispatch: the queue can
+        // delay this job arbitrarily, so the sessions live NOW are the ones
+        // that decide. The reservation taken first closes the gap the check
+        // leaves — no session can be created into this workspace between the
+        // check and the removal.
+        let _reservation = self.reserve_workspace_for_delete(workspace_id);
+        let live = self.live_sessions_in_workspace(workspace_id)?;
+        if !live.is_empty() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "sessions or terminals are still running in this workspace; close them first",
+            ));
+        }
         let checkout = PathBuf::from(&workspace.path);
         let project = journal
             .project_get(&workspace.project_id)
@@ -381,13 +564,25 @@ impl super::SessionRegistry {
             );
         };
         let repo = PathBuf::from(&project.path);
-        if !repo.is_dir() {
-            return self.detach_worktree_row(
-                journal,
-                workspace_id,
-                &checkout,
-                "its project folder is gone",
-            );
+        match self.folder_presence(&repo) {
+            FolderPresence::Vanished => {
+                return self.detach_worktree_row(
+                    journal,
+                    workspace_id,
+                    &checkout,
+                    "its project folder is gone",
+                );
+            }
+            // Not "gone" but not provably there either — a drive or share
+            // that is unreachable right now, a denied path: refuse, keep the
+            // row, let the owner retry when the volume returns.
+            FolderPresence::Unavailable => {
+                return Err(WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    "the folder's drive or share is not reachable right now",
+                ));
+            }
+            FolderPresence::Present => {}
         }
         let Some(root) = crate::worktree::worktree_root_beside_project(&repo) else {
             return Err(WireError::new(
@@ -405,6 +600,68 @@ impl super::SessionRegistry {
             .with_details(ErrorDetails::WorktreeNotConfined { path, root }));
         }
         let expected_branch = workspace.branch.as_deref().unwrap_or("");
+        // The same presence rule the project gate runs, on the checkout:
+        // only `NotFound` on a present volume means gone. An unavailable
+        // checkout — unreachable volume, denied path — refuses, pathless;
+        // a checkout that is a **file** is present, and the listing and
+        // removal below refuse on their own terms.
+        match self.folder_presence(&checkout) {
+            FolderPresence::Unavailable => {
+                return Err(WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    "the folder's drive or share is not reachable right now",
+                ));
+            }
+            FolderPresence::Present => {}
+            FolderPresence::Vanished => {
+                // The listing is a precondition, on purpose: the lock check
+                // below is only as good as it, so a vanished checkout in a
+                // repository whose `git worktree list` fails stays refused
+                // and the row keeps the workspace findable until git can
+                // answer. Deliberate — see the report.
+                let entries = match crate::worktree::list_existing_worktrees(&repo) {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        let reason = worktree_error_reason(error);
+                        return Err(WireError::new(
+                            ErrorCode::WorkspaceUnavailable,
+                            format!("Could not list worktrees for '{workspace_id}': {reason}"),
+                        ));
+                    }
+                };
+                // A locked registration survives every prune: detaching the
+                // row would orphan it behind no app surface, so the lock
+                // keeps its refusal. The comparison cannot canonicalize —
+                // the folder is gone, and the journal's verbatim spelling
+                // and git's plain one only agree through canonicalization —
+                // so the plain keys are compared.
+                let checkout_key = vanished_path_key(&checkout);
+                if entries
+                    .iter()
+                    .any(|entry| entry.is_locked && vanished_path_key(&entry.path) == checkout_key)
+                {
+                    let path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
+                    return Err(locked_worktree_error(&path));
+                }
+                // The prune rewrites the admin side of the repository, like
+                // the add and the remove: it runs under the same creation
+                // serial.
+                let _serial = self
+                    .worktree_creation
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                self.detach_worktree_row(
+                    journal,
+                    workspace_id,
+                    &checkout,
+                    "its checkout folder is gone",
+                )?;
+                let _ = crate::worktree::run_worktree_command(
+                    &crate::worktree::build_worktree_prune_command(&repo),
+                );
+                return Ok(());
+            }
+        }
         match crate::worktree::list_existing_worktrees(&repo) {
             Ok(entries) => {
                 match crate::worktree::identify_worktree_at_path(
@@ -414,13 +671,7 @@ impl super::SessionRegistry {
                 ) {
                     crate::worktree::WorktreeIdentity::Locked => {
                         let path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
-                        return Err(WireError::new(
-                            ErrorCode::InvalidRequest,
-                            format!(
-                                "Worktree '{path}' is locked. Unlock it before removing; --force does not override a lock."
-                            ),
-                        )
-                        .with_details(ErrorDetails::WorktreeLocked { path }));
+                        return Err(locked_worktree_error(&path));
                     }
                     crate::worktree::WorktreeIdentity::BranchMismatch { observed } => {
                         let path = crate::verbatim_path::plain_path(&checkout.to_string_lossy());
@@ -443,9 +694,10 @@ impl super::SessionRegistry {
                 }
             }
             Err(error) => {
+                let reason = worktree_error_reason(error);
                 return Err(WireError::new(
                     ErrorCode::WorkspaceUnavailable,
-                    format!("Could not list worktrees for '{workspace_id}': {error}"),
+                    format!("Could not list worktrees for '{workspace_id}': {reason}"),
                 ));
             }
         }
@@ -478,6 +730,18 @@ impl super::SessionRegistry {
             if let Err(error) = crate::worktree::run_worktree_remove_command_with_recovery(
                 &command, &repo, &checkout, force,
             ) {
+                if crate::worktree::is_submodule_worktree_remove_error(&error) {
+                    return Err(WireError::new(
+                        ErrorCode::InvalidRequest,
+                        crate::worktree::worktree_submodule_remove_message(),
+                    )
+                    // The details are the client's force hint, not a
+                    // diagnosis: a submodule worktree need not be dirty.
+                    .with_details(ErrorDetails::WorktreeDirty {
+                        path: crate::verbatim_path::plain_path(&checkout.to_string_lossy()),
+                        force_required: true,
+                    }));
+                }
                 if crate::worktree::is_dirty_worktree_remove_error(&error) {
                     return Err(WireError::new(
                         ErrorCode::InvalidRequest,
@@ -488,9 +752,10 @@ impl super::SessionRegistry {
                         force_required: true,
                     }));
                 }
+                let reason = worktree_error_reason(error);
                 return Err(WireError::new(
                     ErrorCode::WorkspaceUnavailable,
-                    format!("Could not remove worktree '{workspace_id}': {error}"),
+                    format!("Could not remove worktree '{workspace_id}': {reason}"),
                 ));
             }
         }
@@ -776,6 +1041,51 @@ fn workspace_unavailable(workspace_id: &str, reason: &str) -> WireError {
         ErrorCode::WorkspaceUnavailable,
         format!("Workspace '{workspace_id}' is unavailable: {reason}."),
     )
+}
+
+/// A comparable key for a recorded worktree path whose folder may be gone:
+/// canonicalization needs the folder, so the plain spelling stands in, and
+/// on Windows it compares the way `crate::worktree::path_is_within` compares.
+/// The fold is ASCII-only and a miss is the safe direction: the lock refusal
+/// then does not fire and the ghost can return, but nothing is ever refused
+/// or detached by mistake. Off Windows the plain spelling compares as-is —
+/// case-sensitive is correct there, and no separator translation applies.
+fn vanished_path_key(path: &Path) -> String {
+    let plain = crate::verbatim_path::plain_path(&path.to_string_lossy());
+    #[cfg(windows)]
+    {
+        plain.replace('/', "\\").to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        plain
+    }
+}
+
+/// The worktree family's failures carry git's stderr; the repository-level
+/// dubious-ownership refusal is replaced with the shared static sentence, so
+/// the repository's absolute path never travels on a create or delete
+/// failure.
+fn worktree_error_reason(error: String) -> String {
+    if crate::workspace_git_support::is_dubious_ownership_message(&error) {
+        crate::workspace_git_support::DUBIOUS_OWNERSHIP.to_string()
+    } else {
+        error
+    }
+}
+
+/// The locked worktree's refusal — the vanished-checkout road and the normal
+/// removal road answer with the same sentence and the same details.
+fn locked_worktree_error(path: &str) -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        format!(
+            "Worktree '{path}' is locked. Unlock it before removing; --force does not override a lock."
+        ),
+    )
+    .with_details(ErrorDetails::WorktreeLocked {
+        path: path.to_string(),
+    })
 }
 
 fn workspace_journal_error(workspace_id: &str, error: crate::journal::JournalError) -> WireError {

@@ -128,6 +128,41 @@ fn a_modified_file_is_one_row_with_gits_line_counts() {
     );
 }
 
+/// The runner pins `LC_ALL=C` (defense-in-depth for git builds that
+/// translate diagnostics; unobservable on this machine's git). What this
+/// test pins is the encoding half the pin must not break: non-ASCII paths
+/// round-trip the status porcelain and the numstat counts byte-identically
+/// (both commands run `-z`, which never quotes paths, whatever the locale
+/// says).
+#[test]
+fn non_ascii_file_names_round_trip_through_the_status_read() {
+    let repo = Repo::new("non-ascii-names");
+    repo.write("café.txt", "one\n");
+    repo.write("你好.txt", "one\n");
+    repo.commit("initial");
+    repo.write("café.txt", "one\ntwo\n");
+    repo.write("你好.txt", "one\ntwo\n");
+
+    let status = status_of(&repo.root);
+
+    assert_eq!(status.error, None, "{:?}", status.error);
+    assert!(status.dirty);
+    let paths: Vec<&str> = status.rows.iter().map(|row| row.path.as_str()).collect();
+    assert!(
+        paths.contains(&"café.txt") && paths.contains(&"你好.txt"),
+        "both non-ASCII names must come back unchanged: {paths:?}"
+    );
+    for name in ["café.txt", "你好.txt"] {
+        let changed = row(&status, name);
+        assert_eq!(changed.status, WorkspaceGitFileStatus::Modified);
+        assert_eq!(
+            (changed.additions, changed.deletions),
+            (1, 0),
+            "the numstat half resolves the same name"
+        );
+    }
+}
+
 /// Mutant `m:c` end to end: an untracked file is in neither numstat, so only
 /// this path puts it in the reply.
 #[test]

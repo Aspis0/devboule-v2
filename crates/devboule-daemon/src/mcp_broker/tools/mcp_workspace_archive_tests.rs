@@ -62,6 +62,41 @@ fn add_worktree(state: &ServerState, project: &str, branch: &str) -> (String, st
     (workspace.id, path)
 }
 
+/// The dirty pre-check's refusal routes the repository-level
+/// dubious-ownership failure through the shared static sentence: the error
+/// travels in an MCP reply, and git's own wording carries the repository's
+/// absolute path. Every other failure keeps its wording (the family's
+/// by-design behavior).
+#[test]
+fn the_dirty_pre_check_refusal_answers_the_dubious_ownership_sentence() {
+    let dubious = "fatal: detected dubious ownership in repository at 'C:/Users/someone/repo'";
+    match dirty_check_refusal(dubious.to_string()) {
+        WorkspaceError::Refused(sentence) => {
+            assert_eq!(
+                sentence,
+                "Could not check worktree status: git refuses this repository because the \
+                 folder is owned by another user; if you trust it, add it to git's safe.directory"
+            );
+            assert!(
+                !sentence.contains('\\') && !sentence.contains('/'),
+                "no path in the reply: {sentence}"
+            );
+            assert!(
+                !sentence.contains("dubious ownership in repository"),
+                "git's own wording leaked: {sentence}"
+            );
+        }
+        other => panic!("the dirty check refuses, not {other:?}"),
+    }
+    match dirty_check_refusal("fatal: not a git repository: '/nowhere/repo'".to_string()) {
+        WorkspaceError::Refused(sentence) => assert_eq!(
+            sentence,
+            "Could not check worktree status: fatal: not a git repository: '/nowhere/repo'"
+        ),
+        other => panic!("the dirty check refuses, not {other:?}"),
+    }
+}
+
 fn run_with_answer(
     state: &Arc<ServerState>,
     session: &str,

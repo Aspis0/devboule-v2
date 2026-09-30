@@ -96,7 +96,7 @@ fn answered(
     match state.sessions.workspace_cwd(workspace_id) {
         Ok(root) => {
             let lock = state.git_write_lock(&root);
-            let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+            let _guard = lock.lock();
             act(&root).err()
         }
         Err(error) => Some(error.message),

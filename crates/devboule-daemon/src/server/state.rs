@@ -219,9 +219,12 @@ pub struct ServerState {
     /// acts — take it before spawning, so two of our own writers never
     /// cross and meet `index.lock` (the first cause of a spurious exit
     /// 128). Keyed by the resolved root rather than the workspace id, so
-    /// two ids naming one checkout share one lock; entries are never
-    /// removed (a bounded set: one per workspace this daemon ever wrote).
-    git_write_locks: Mutex<HashMap<std::path::PathBuf, Arc<Mutex<()>>>>,
+    /// two ids naming one checkout share one lock; the guard
+    /// (`super::git_write_lock`) retires an entry when its last holder
+    /// drops, so the map never grows past the roots being written. Private
+    /// on purpose: the only way in is [`Self::git_write_lock`], which is
+    /// what keeps every entry retired.
+    git_write_locks: super::git_write_lock::GitWriteLocks,
     /// Test-only: real `peers` loads, so a test can prove the cache held.
     #[cfg(test)]
     peer_table_loads: AtomicU64,
@@ -482,17 +485,25 @@ impl ServerState {
         self.conn_ids.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// This repository root's write mutex: fetched (created on first use)
-    /// under the map lock, then locked by the caller across the whole act
-    /// — the map lock is never held across a spawn. A poisoned guard is
-    /// unwrapped (`into_inner`): a panicking act must not stop the next
-    /// write for the life of the process.
-    pub(crate) fn git_write_lock(&self, root: &Path) -> Arc<Mutex<()>> {
-        let mut locks = self
-            .git_write_locks
+    /// This repository root's write mutex, as a guard: fetched (created on
+    /// first use) under the map lock — never held across an act — and the
+    /// caller locks it across the whole act. The guard retires the map entry
+    /// when the last holder drops (`super::git_write_lock`).
+    pub(crate) fn git_write_lock<'a>(
+        &'a self,
+        root: &Path,
+    ) -> super::git_write_lock::GitWriteLock<'a> {
+        super::git_write_lock::acquire(&self.git_write_locks, root)
+    }
+
+    /// Test-only count of the map's live entries, so the retirement tests
+    /// observe the registry without the map itself leaving this module.
+    #[cfg(test)]
+    pub(super) fn git_write_lock_roots(&self) -> usize {
+        self.git_write_locks
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        Arc::clone(locks.entry(root.to_path_buf()).or_default())
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
     }
 
     pub(super) fn watch_sessions(&self, owner: &OwnerId, conn: &Arc<ConnHandle>) {

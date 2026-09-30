@@ -14,9 +14,16 @@
 //! `packages/server/src/utils/checkout-git.ts`), modified for this daemon.
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::Path;
 
 use crate::workspace_git_support::{exit_error, git, run_error};
+
+/// The rebase state file is written by git — or shipped by whatever the
+/// checkout carries — so its size is the repository's choice, not ours. The
+/// cap (with one overflow byte) is herdr's `MAX_GIT_REF_FILE_BYTES`
+/// (`03ce02e1`, Apache-2.0).
+const MAX_REBASE_HEAD_NAME_BYTES: usize = 64 * 1024;
 
 /// The branch HEAD sits on, or `None` when it does not — a detached HEAD
 /// outside a rebase, a repository with no commit yet, or git refusing to
@@ -53,9 +60,21 @@ fn rebase_branch(root: &Path) -> Option<String> {
         if !output.success {
             continue;
         }
-        let Ok(name) = std::fs::read_to_string(root.join(output.stdout.trim())) else {
+        let Ok(file) = std::fs::File::open(root.join(output.stdout.trim())) else {
             continue;
         };
+        let mut name = String::new();
+        // A read error, invalid UTF-8, and a genuine overflow (one byte past
+        // the cap tells a file at the cap from one over it) are all the same
+        // answer: the file is refused, never read whole.
+        let rejected = file
+            .take(MAX_REBASE_HEAD_NAME_BYTES as u64 + 1)
+            .read_to_string(&mut name)
+            .is_err()
+            || name.len() > MAX_REBASE_HEAD_NAME_BYTES;
+        if rejected {
+            continue;
+        }
         let name = name.trim();
         let branch = name.strip_prefix("refs/heads/").unwrap_or(name);
         if !branch.is_empty() {

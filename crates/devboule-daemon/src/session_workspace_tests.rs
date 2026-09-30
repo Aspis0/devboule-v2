@@ -9,6 +9,7 @@
 
 use super::tests::{test_owner, tmp_delete_registry};
 use super::*;
+use crate::session::session_workspaces::PresenceProbe;
 
 #[test]
 fn a_worktree_workspace_records_its_base_branch_and_a_local_one_records_none() {
@@ -567,6 +568,364 @@ fn workspace_delete_refuses_a_checkout_outside_the_project_worktree_root() {
     assert!(outsider.is_dir(), "outsider checkout must be untouched");
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A checkout whose folder was removed by hand while its project stands:
+/// there is nothing left to `git worktree remove`, so the delete detaches
+/// the row and prunes the stale registration instead of removing.
+#[test]
+fn workspace_delete_detaches_a_row_whose_checkout_vanished() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let root = dir.join("VanishedProject");
+    std::fs::create_dir_all(&root).expect("project folder");
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    run(&["init"]);
+    std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
+    run(&["add", "seed.txt"]);
+    run(&["commit", "-m", "seed"]);
+    let project = registry
+        .project_add(root.to_str().expect("project path"))
+        .expect("project row");
+    let workspace = registry
+        .workspace_create(
+            &project.id,
+            WorkspaceIsolation::Worktree,
+            Some("vanishing-branch".to_string()),
+        )
+        .expect("worktree workspace");
+    let checkout = std::path::PathBuf::from(&workspace.path);
+    assert!(checkout.is_dir(), "the create made a real checkout");
+    std::fs::remove_dir_all(&checkout).expect("remove the checkout by hand");
+
+    registry
+        .workspace_delete(&workspace.id, false)
+        .expect("a vanished checkout deletes without a git remove");
+
+    assert!(
+        journal.workspace_get(&workspace.id).expect("get").is_none(),
+        "the stale row is detached"
+    );
+    let list = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&root)
+        .output()
+        .expect("git list runs");
+    let list = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        !list.contains("vanishing"),
+        "the prune cleared the stale registration: {list}"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The shared fixture of the vanished-checkout refusals: a real repository
+/// with one real worktree workspace, the checkout path, and a `git` runner
+/// for the test's own arrangements.
+type GitRunner = Box<dyn Fn(&[&str])>;
+
+struct RefusedVanishFixture {
+    dir: std::path::PathBuf,
+    registry: SessionRegistry,
+    journal: Arc<Journal>,
+    run: GitRunner,
+    root: std::path::PathBuf,
+    checkout: std::path::PathBuf,
+    workspace_id: String,
+}
+
+fn refused_vanish_fixture(tag: &str) -> RefusedVanishFixture {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let root = dir.join(format!("{tag}-project"));
+    std::fs::create_dir_all(&root).expect("project folder");
+    let run_root = root.clone();
+    let run = move |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&run_root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    run(&["init"]);
+    std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
+    run(&["add", "seed.txt"]);
+    run(&["commit", "-m", "seed"]);
+    let project = registry
+        .project_add(root.to_str().expect("project path"))
+        .expect("project row");
+    let workspace = registry
+        .workspace_create(
+            &project.id,
+            WorkspaceIsolation::Worktree,
+            Some(format!("{tag}-branch")),
+        )
+        .expect("worktree workspace");
+    // The checkout in the journal's own (verbatim) spelling — the spelling
+    // the delete's presence gates are asked about, not the wire's plain one.
+    let checkout = std::path::PathBuf::from(
+        journal
+            .workspace_get(&workspace.id)
+            .expect("journal get")
+            .expect("row")
+            .path,
+    );
+    assert!(checkout.is_dir(), "the create made a real checkout");
+    let workspace_id = workspace.id;
+    RefusedVanishFixture {
+        dir,
+        registry,
+        journal,
+        run: Box::new(run),
+        root,
+        checkout,
+        workspace_id,
+    }
+}
+
+/// Only a **NotFound** metadata error means the checkout is gone. A checkout
+/// path that exists as a file is present, not vanished: the road falls
+/// through to the listing and the removal, which refuse ("is not a working
+/// tree"), and the row survives for the real cause to be fixed.
+#[test]
+fn a_checkout_that_is_a_file_still_refuses_and_keeps_its_row() {
+    let fix = refused_vanish_fixture("filecheckout");
+    std::fs::remove_dir_all(&fix.checkout).expect("remove the checkout");
+    std::fs::write(&fix.checkout, "a file, not a folder").expect("a file at the checkout path");
+
+    let error = fix
+        .registry
+        .workspace_delete(&fix.workspace_id, false)
+        .expect_err("a file at the checkout path must refuse, not detach");
+    assert_eq!(error.code, ErrorCode::WorkspaceUnavailable);
+    assert!(
+        fix.journal
+            .workspace_get(&fix.workspace_id)
+            .expect("get")
+            .is_some(),
+        "the row survives a refusal: {error:?}"
+    );
+    fix.journal.shutdown();
+    let _ = std::fs::remove_dir_all(&fix.dir);
+}
+
+/// An unassigned or deleted drive letter answers `NotFound` exactly like a
+/// deleted folder does: a project whose metadata says NotFound but whose
+/// volume root is missing is **unavailable**, not gone — the delete refuses,
+/// pathless, and the row stays. Red on 05a41568 together with the denied-path
+/// test (same seam): there the project gate read `is_dir()` and detached on
+/// any metadata failure.
+#[test]
+fn a_project_on_a_missing_volume_is_refused_not_detached() {
+    let fix = refused_vanish_fixture("missingvol");
+    std::fs::remove_dir_all(&fix.root).expect("remove the real project folder");
+    fix.registry.set_presence_probe_for_test(PresenceProbe {
+        metadata: Box::new(|_path: &std::path::Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no volume",
+            ))
+        }),
+    });
+
+    let error = fix
+        .registry
+        .workspace_delete(&fix.workspace_id, false)
+        .expect_err("a project on a missing volume must refuse, not detach");
+    assert!(
+        error.message.contains("not reachable right now"),
+        "the refusal is the pathless volume sentence: {error:?}"
+    );
+    assert!(
+        !error.message.contains('\\') && !error.message.contains('/'),
+        "the refusal names no path: {error:?}"
+    );
+    assert!(
+        fix.journal
+            .workspace_get(&fix.workspace_id)
+            .expect("get")
+            .is_some(),
+        "the row survives: {error:?}"
+    );
+    fix.journal.shutdown();
+    let _ = std::fs::remove_dir_all(&fix.dir);
+}
+
+/// A denied path is "cannot tell" too: the delete refuses with the same
+/// pathless sentence and the row stays — a delete never acts on a metadata
+/// error it cannot name.
+#[test]
+fn a_denied_project_path_is_refused_not_detached() {
+    let fix = refused_vanish_fixture("deniedproj");
+    std::fs::remove_dir_all(&fix.root).expect("remove the real project folder");
+    fix.registry.set_presence_probe_for_test(PresenceProbe {
+        metadata: Box::new(|_path: &std::path::Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            ))
+        }),
+    });
+
+    let error = fix
+        .registry
+        .workspace_delete(&fix.workspace_id, false)
+        .expect_err("a denied project path must refuse, not detach");
+    assert!(
+        error.message.contains("not reachable right now"),
+        "the refusal is the pathless volume sentence: {error:?}"
+    );
+    assert!(
+        fix.journal
+            .workspace_get(&fix.workspace_id)
+            .expect("get")
+            .is_some(),
+        "the row survives: {error:?}"
+    );
+    fix.journal.shutdown();
+    let _ = std::fs::remove_dir_all(&fix.dir);
+}
+
+/// The same rule at the checkout gate: the checkout answers `NotFound` but
+/// its volume root answers missing — unavailable, refused, row kept. The
+/// project answers present so the checkout gate is the one that decides.
+#[test]
+fn a_checkout_on_a_missing_volume_is_refused_not_judged_vanished() {
+    let fix = refused_vanish_fixture("checkoutmissingvol");
+    // The checkout and its volume root answer NotFound; everything else —
+    // the project folder included, whatever spelling the journal keeps —
+    // answers from the real filesystem, which is present.
+    let checkout = fix.checkout.clone();
+    let dead_root =
+        crate::session::session_workspaces::volume_root(&fix.checkout).expect("volume root");
+    fix.registry.set_presence_probe_for_test(PresenceProbe {
+        metadata: Box::new(move |path: &std::path::Path| {
+            if path == checkout.as_path() || path == dead_root.as_path() {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no volume",
+                ))
+            } else {
+                std::fs::symlink_metadata(path)
+            }
+        }),
+    });
+
+    let error = fix
+        .registry
+        .workspace_delete(&fix.workspace_id, false)
+        .expect_err("a checkout on a missing volume must refuse, not detach");
+    assert!(
+        error.message.contains("not reachable right now"),
+        "the refusal is the pathless volume sentence: {error:?}"
+    );
+    assert!(
+        fix.journal
+            .workspace_get(&fix.workspace_id)
+            .expect("get")
+            .is_some(),
+        "the row survives: {error:?}"
+    );
+    assert!(fix.checkout.is_dir(), "the real checkout is untouched");
+    fix.journal.shutdown();
+    let _ = std::fs::remove_dir_all(&fix.dir);
+}
+
+/// The half the volume-root rule stands on: a folder whose metadata says
+/// `NotFound` on a **present** volume is still vanished — the delete
+/// detaches the row and prunes the stale registration.
+#[test]
+fn a_missing_folder_on_a_present_volume_still_detaches() {
+    let fix = refused_vanish_fixture("presentvol");
+    std::fs::remove_dir_all(&fix.checkout).expect("remove the checkout");
+    // Only the checkout answers NotFound; the volume root and the project —
+    // whatever spelling the journal keeps — answer from the real, present
+    // filesystem.
+    let checkout = fix.checkout.clone();
+    fix.registry.set_presence_probe_for_test(PresenceProbe {
+        metadata: Box::new(move |path: &std::path::Path| {
+            if path == checkout.as_path() {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"))
+            } else {
+                std::fs::symlink_metadata(path)
+            }
+        }),
+    });
+
+    fix.registry
+        .workspace_delete(&fix.workspace_id, false)
+        .expect("a vanished checkout on a present volume deletes");
+    assert!(
+        fix.journal
+            .workspace_get(&fix.workspace_id)
+            .expect("get")
+            .is_none(),
+        "the stale row is detached"
+    );
+    let list = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&fix.root)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git list runs");
+    let list = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        !list.contains(".worktrees"),
+        "the prune cleared the stale registration: {list}"
+    );
+    fix.journal.shutdown();
+    let _ = std::fs::remove_dir_all(&fix.dir);
+}
+
+/// A **locked** registration whose folder was removed by hand keeps the
+/// actionable refusal: the prune provably skips locked worktrees, so
+/// detaching the row would orphan a ghost registration no app surface can
+/// unlock or clean.
+#[test]
+fn a_locked_vanished_registration_keeps_its_locked_refusal() {
+    let fix = refused_vanish_fixture("lockedvanish");
+    let plain_checkout = crate::verbatim_path::plain_path(fix.checkout.to_string_lossy().as_ref());
+    (fix.run)(&["worktree", "lock", plain_checkout.as_str()]);
+    std::fs::remove_dir_all(&fix.checkout).expect("remove the checkout by hand");
+
+    let error = fix
+        .registry
+        .workspace_delete(&fix.workspace_id, false)
+        .expect_err("a locked registration must keep its refusal");
+    assert!(
+        error.message.contains("locked"),
+        "the refusal names the lock: {error:?}"
+    );
+    assert!(matches!(
+        error.details,
+        Some(devboule_protocol::ErrorDetails::WorktreeLocked { .. })
+    ));
+    assert!(
+        fix.journal
+            .workspace_get(&fix.workspace_id)
+            .expect("get")
+            .is_some(),
+        "the row survives the refusal: {error:?}"
+    );
+    fix.journal.shutdown();
+    let _ = std::fs::remove_dir_all(&fix.dir);
 }
 
 #[test]

@@ -98,6 +98,9 @@ use journal_domain::*;
 mod git_queue;
 use git_queue::GIT_WRITE_DRAIN_BOUND;
 
+#[path = "server/git_write_lock.rs"]
+mod git_write_lock;
+
 #[path = "server/git_workers.rs"]
 mod git_workers;
 use git_workers::{is_git_backed, offload};

@@ -763,6 +763,12 @@ pub struct SessionRegistry {
     /// this registry's maximum.
     #[cfg(test)]
     worktree_probe: Arc<session_workspaces::WorktreeCreationProbe>,
+    /// Test-only replacement for the metadata probe the delete's presence
+    /// decision rests on: a test cannot fabricate an unassigned drive letter
+    /// portably, and an unassigned letter answers `NotFound` exactly like a
+    /// deleted folder does.
+    #[cfg(test)]
+    presence_probe: std::sync::Arc<std::sync::Mutex<Option<session_workspaces::PresenceProbe>>>,
 }
 
 impl SessionRegistry {
@@ -842,6 +848,8 @@ impl SessionRegistry {
             worktree_add_in_flight: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             worktree_probe: Arc::new(session_workspaces::WorktreeCreationProbe::default()),
+            #[cfg(test)]
+            presence_probe: std::sync::Arc::new(std::sync::Mutex::new(None)),
         };
         spawn_os_liveness_sweeper(&registry);
         registry.reconcile_worktree_journal();

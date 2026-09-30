@@ -317,6 +317,61 @@ fn a_failure_that_is_not_the_lock_is_operation_and_code_without_stderr() {
     assert!(!error.contains("hook exploded"), "stderr leaked: {error}");
 }
 
+/// Git's dubious-ownership refusal (exit 128) is answered with the static,
+/// pathless remedy sentence, never with the exit code — which is true and
+/// useless here — and never with git's stderr, which carries the repository's
+/// absolute path.
+#[test]
+fn dubious_ownership_is_answered_with_the_static_remedy() {
+    let output = crate::git::GitOutput {
+        success: false,
+        code: Some(128),
+        stdout: String::new(),
+        stderr: "fatal: detected dubious ownership in repository at 'C:/Users/someone/repo'"
+            .to_string(),
+    };
+
+    let error = write_failure("git status", &output);
+
+    assert_eq!(
+        error,
+        "git refuses this repository because the folder is owned by another user; if you \
+         trust it, add it to git's safe.directory"
+    );
+    assert_no_path(&error);
+    assert!(
+        !error.contains("dubious ownership in repository"),
+        "git's own wording leaked: {error}"
+    );
+    // Only the refusal it names: an exit 128 with other stderr keeps the
+    // operation-and-code sentence.
+    let other = crate::git::GitOutput {
+        success: false,
+        code: Some(128),
+        stdout: String::new(),
+        stderr: "fatal: not a git repository: '/nowhere/secret'".to_string(),
+    };
+    assert_eq!(
+        write_failure("git status", &other),
+        "git status exited with code 128"
+    );
+    // The match is anchored on git's refusal literal: a `git mv` failure
+    // whose echoed destination merely carries the words is
+    // operation-and-code, never the repository refusal.
+    let renamed = crate::git::GitOutput {
+        success: false,
+        code: Some(128),
+        stdout: String::new(),
+        stderr: "fatal: not under version control, source=untracked.txt, destination=detected \
+                 dubious ownership"
+            .to_string(),
+    };
+    assert_eq!(
+        write_failure("git mv", &renamed),
+        "git mv exited with code 128"
+    );
+}
+
 /// The unstage's own truth: the index entry goes back to `HEAD`, the
 /// worktree keeps its bytes. Mutant `u:1` — drop the reset entirely: the
 /// path stays staged and `diff --cached` keeps naming it.

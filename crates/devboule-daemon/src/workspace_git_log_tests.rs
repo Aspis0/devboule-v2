@@ -483,6 +483,28 @@ fn a_detached_head_inside_a_rebase_keeps_its_branch() {
     assert_eq!(subjects, ["Main work", "initial"]);
 }
 
+/// An oversized rebase state file is refused, never read whole: the file is
+/// the checkout's to ship, so its size is not ours to trust. A detached HEAD
+/// whose `rebase-merge/head-name` carries a mebibyte answers no branch at
+/// all — the empty-history answer — instead of allocating the file whole.
+#[test]
+fn an_oversized_rebase_head_name_is_rejected_not_read() {
+    let repo = Repo::new("rebase-oversized");
+    repo.write("file.txt", "base\n");
+    repo.commit("initial");
+    repo.run(&["checkout", "--quiet", "--detach", "HEAD"]);
+    let rebase_merge = repo.root.join(".git/rebase-merge");
+    std::fs::create_dir_all(&rebase_merge).expect("rebase state dir");
+    std::fs::write(rebase_merge.join("head-name"), vec![b'a'; 1024 * 1024])
+        .expect("oversized head-name");
+
+    assert_eq!(
+        super::base::current_branch(&repo.root),
+        None,
+        "a mebibyte head-name must not become a branch"
+    );
+}
+
 /// A repository with no commit yet has no branch: the answer is an empty
 /// history, not a refusal.
 #[test]

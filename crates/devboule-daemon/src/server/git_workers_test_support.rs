@@ -91,9 +91,11 @@ impl ReplyStore {
             .clone()
     }
 
-    /// Poll until `n` replies have been recorded (bounded, generous).
+    /// Poll until `n` replies have been recorded. The bound only catches a
+    /// lost reply: every reply is real git work, and the gate runs these
+    /// repos in parallel.
     pub(super) fn wait_len(&self, n: usize) {
-        self.wait_len_within(n, Duration::from_secs(5));
+        self.wait_len_within(n, Duration::from_secs(30));
     }
 
     /// The same wait under an explicit budget: a released burst drains its

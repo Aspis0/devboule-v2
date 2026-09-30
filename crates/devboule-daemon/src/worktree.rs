@@ -18,6 +18,12 @@ use crate::verbatim_path::plain_path;
 
 const DEFAULT_WORKTREE_PREFIX: &str = "worktree";
 
+/// A branch is a path segment on Windows, where MAX_PATH is 260: the cap
+/// bounds this one segment and keeps ordinary checkout paths under the
+/// limit — a project already near the limit can still exceed it. The
+/// `-<8 hex>` suffix keeps distinct branches distinct in practice.
+const MAX_SLUG_CHARS: usize = 50;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorktreeCommand {
     pub program: String,
@@ -63,9 +69,20 @@ pub(crate) fn branch_to_path_slug(branch: &str) -> String {
 
     let trimmed = slug.trim_matches('-').to_string();
     if trimmed.is_empty() {
-        DEFAULT_WORKTREE_PREFIX.to_string()
-    } else {
-        trimmed
+        return DEFAULT_WORKTREE_PREFIX.to_string();
+    }
+    // The 50-char cap and the hyphen-boundary cut are translated from
+    // Paseo's `slugify` (`666a0f2fa`, Apache-2.0).
+    if trimmed.len() <= MAX_SLUG_CHARS {
+        return trimmed;
+    }
+    let mut truncated = trimmed;
+    truncated.truncate(MAX_SLUG_CHARS);
+    match truncated.rfind('-') {
+        // The slug is ASCII by construction, and a cut past the midpoint
+        // never drops more than half the name.
+        Some(cut) if cut > MAX_SLUG_CHARS / 2 => truncated[..cut].to_string(),
+        _ => truncated.trim_end_matches('-').to_string(),
     }
 }
 
@@ -80,7 +97,9 @@ pub(crate) fn default_checkout_path(root: &Path, repo_name: &str, branch: &str) 
 
 /// Directory name for a checkout. `branch_to_path_slug` collapses `feature/a`
 /// and `feature.a` to the same folder; the FNV-1a suffix of the exact branch
-/// name makes two distinct branches never share a directory.
+/// name keeps two distinct branches distinct in practice (a 32-bit hash
+/// collides by birthday past ~65k branches, and a collision is a refused
+/// `git worktree add`, not silent sharing).
 pub(crate) fn unique_checkout_dir_name(branch: &str) -> String {
     format!(
         "{}-{:08x}",
@@ -198,6 +217,22 @@ pub(crate) fn is_dirty_worktree_remove_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("contains modified or untracked files")
         && lower.contains("use --force to delete it")
+}
+
+/// The submodule refusal is its own case, not the dirty one: a worktree with
+/// an initialised submodule refuses **even when it is clean**, so answering
+/// with the dirty sentence would send the user looking for modified files
+/// that do not exist.
+pub(crate) fn is_submodule_worktree_remove_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("working trees containing submodules cannot be moved or removed")
+}
+
+/// The submodule refusal's own answer: pathless like the refusal that
+/// triggers it, and the force is the only actionable part.
+pub(crate) fn worktree_submodule_remove_message() -> String {
+    "the worktree cannot be removed because it contains submodules; remove it with --force"
+        .to_string()
 }
 
 pub(crate) fn is_not_working_tree_remove_error(message: &str) -> bool {
@@ -792,6 +827,70 @@ locked hold
         assert!(is_not_working_tree_remove_error(
             "fatal: '/w/herdr' is not a working tree"
         ));
+    }
+
+    #[test]
+    fn the_submodule_sentence_is_its_own_force_required_refusal() {
+        let submodule = "fatal: working trees containing submodules cannot be moved or removed";
+        assert!(
+            is_submodule_worktree_remove_error(submodule),
+            "the submodule refusal must classify force-required"
+        );
+        assert!(
+            !is_dirty_worktree_remove_error(submodule),
+            "a clean worktree with an initialised submodule is not dirty; the dirty sentence would lie"
+        );
+        assert!(worktree_submodule_remove_message().contains("--force"));
+    }
+
+    #[test]
+    fn a_very_long_branch_caps_its_slug_at_fifty_characters() {
+        let branch = "feature/".repeat(38);
+        assert_eq!(branch.len(), 304);
+        let slug = branch_to_path_slug(&branch);
+        assert!(
+            slug.len() <= 50,
+            "a 304-character branch must cap its slug: {slug} ({} chars)",
+            slug.len()
+        );
+        assert!(!slug.ends_with('-'), "no trailing dash: {slug}");
+        let checkout = unique_checkout_dir_name(&branch);
+        assert!(
+            checkout.len() <= 59,
+            "the checkout dir stays bounded beside its hash: {checkout}"
+        );
+    }
+
+    #[test]
+    fn long_branches_sharing_their_head_still_get_distinct_checkouts() {
+        let shared = "feature/".repeat(8);
+        let first = format!("{shared}alpha");
+        let second = format!("{shared}beta");
+        assert_eq!(
+            branch_to_path_slug(&first),
+            branch_to_path_slug(&second),
+            "the cap collapses the shared head"
+        );
+        assert_ne!(
+            unique_checkout_dir_name(&first),
+            unique_checkout_dir_name(&second),
+            "the hash suffix keeps the checkouts apart"
+        );
+    }
+
+    #[test]
+    fn a_non_ascii_branch_still_maps_to_a_slug() {
+        assert_eq!(
+            branch_to_path_slug("feature/café-ünïcode"),
+            "feature-caf-n-code",
+            "non-ASCII characters become separators, the ASCII stem maps on"
+        );
+        assert_eq!(branch_to_path_slug("日本語ブランチ"), "worktree");
+        assert_ne!(
+            unique_checkout_dir_name("feature/café"),
+            unique_checkout_dir_name("feature/caf\u{0301}"),
+            "the hash is taken over the exact branch bytes, so both spellings stay distinct"
+        );
     }
 
     #[test]

@@ -73,7 +73,7 @@ pub(crate) fn reply_rename(
             // so it takes the same per-workspace write lock as the four
             // git writes — two of our own writers never cross.
             let lock = state.git_write_lock(&root);
-            let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+            let _guard = lock.lock();
             match renamed(&root, path, name) {
                 Ok(new_path) => answered(new_path),
                 Err(sentence) => refused(sentence),
