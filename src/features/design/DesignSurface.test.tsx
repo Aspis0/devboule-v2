@@ -142,6 +142,7 @@ import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSur
 import { ZoomControls } from "./DesignCanvas";
 import { LayerPanel } from "./DesignLayerPanel";
 import { DesignAssistant } from "./DesignAssistant";
+import { DesignFolderControl } from "./DesignFolderControl";
 import type {
   DesignAssistantMessage,
   DesignGenerationResult,
@@ -5652,6 +5653,45 @@ describe("design assistant memo", () => {
       await act(async () => root.unmount());
     } finally {
       assistantMemo.type = assistantInner;
+    }
+  });
+});
+
+describe("workspace memo", () => {
+  it("an idle re-render with unchanged workspace values does not re-render DesignFolderControl", async () => {
+    // Provider, workspace and folder state now come from the workspace hook,
+    // so the folder control bails out whenever its selection values match.
+    const folderMemo = DesignFolderControl as unknown as {
+      type: (props: Record<string, unknown>) => ReactNode;
+    };
+    const folderInner = folderMemo.type;
+    let folderRenders = 0;
+    folderMemo.type = (props) => {
+      folderRenders += 1;
+      return folderInner(props);
+    };
+    try {
+      const { container, root } = await renderDesign(
+        createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+      );
+      // The counter is live: mounting the toolbar renders the control.
+      expect(folderRenders).toBeGreaterThanOrEqual(1);
+      // A draft keystroke settles pending loads and re-renders the surface
+      // through state the folder control never receives.
+      await fillDraft(container, "Create the final card.");
+      // Zoom is surface state outside the folder control, so the label flip
+      // proves the surface re-rendered; the control must still bail out.
+      folderRenders = 0;
+      const zoomValue = container.querySelector(".design-zoom-value");
+      const zoomBefore = zoomValue?.textContent;
+      const zoomIn = container.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
+      if (zoomIn === null) throw new Error("Zoom in missing");
+      await act(async () => zoomIn.click());
+      expect(container.querySelector(".design-zoom-value")?.textContent).not.toBe(zoomBefore);
+      expect(folderRenders).toBe(0);
+      await act(async () => root.unmount());
+    } finally {
+      folderMemo.type = folderInner;
     }
   });
 });

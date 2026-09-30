@@ -3,13 +3,10 @@ import type { ChangeEvent, KeyboardEvent, ReactNode } from "react";
 import type {
   DesignAssistantMessage,
   DesignDocument,
-  DesignAgentSession,
   DesignHost,
   DesignLayer,
   DesignMessage,
   DesignOutputMode,
-  DesignTranscriptItem,
-  PendingPermission,
 } from "./designHost";
 import { ErrorText } from "../../components/ErrorText";
 import { isImeComposition } from "../../lib/imeComposition";
@@ -34,7 +31,6 @@ import {
   ARTIFACT_TOO_LARGE_MESSAGE,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
   fencedBlockNotice,
-  transcriptItems,
   type SessionError,
 } from "./agentHost";
 import {
@@ -45,15 +41,9 @@ import {
 import {
   DEFAULT_DESIGN_SKILL_SELECTION,
   loadDesignOutputMode,
-  loadDesignProviderId,
   loadDesignSkillSelection,
-  loadDesignWorkspaceId,
-  loadStoredDesignProviderId,
-  loadStoredDesignWorkspaceId,
   saveDesignOutputMode,
-  saveDesignProviderId,
   saveDesignSkillSelection,
-  saveDesignWorkspaceId,
   selectedSlugs,
   SKILL_MODE_LABELS,
   type DesignSkillSelection,
@@ -77,21 +67,12 @@ import {
 } from "./delegatedDesignMirror";
 import { buildSkillBlock } from "./skillLoader";
 import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
-import { chatCapableProviders } from "../workspace/workspaceSessions";
-import type { PermissionAnswer } from "../../components/PermissionCard";
 import { useModalOpen } from "../../lib/modalOpen";
-import {
-  projectAdd,
-  projectsList,
-  providersList,
-  workspaceCreate,
-  workspacesList,
-} from "../../lib/tauri";
+import { projectAdd, workspaceCreate, workspacesList } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store/appStore";
-import type { AgentSessionState } from "../../lib/agentSession";
-import type { Project, ProviderInfo, Session, Workspace } from "../../types/ipc";
+import type { Project, Workspace } from "../../types/ipc";
 import type { NodeRect } from "../../types/geometry";
 import { clampViewportZoom, DESIGN_MAX_ZOOM, DESIGN_MIN_ZOOM } from "./designViewport";
 import { DesignCanvas, ZoomControls } from "./DesignCanvas";
@@ -103,6 +84,8 @@ import { ARTIFACT_CONTEXT_NAME, ARTIFACT_NODE_ID } from "./designCanvasGeometry"
 import { useDesignViewport } from "./useDesignViewport";
 import { useDesignUndoHistory } from "./useDesignUndoHistory";
 import { useDesignAttachments } from "./useDesignAttachments";
+import { useDesignAgentSession } from "./useDesignAgentSession";
+import { useDesignWorkspace } from "./useDesignWorkspace";
 import {
   buildLayerTree,
   isHidden,
@@ -117,18 +100,12 @@ import {
   EMPTY_RESOLVED_NOTES,
   EMPTY_SECTION_NOTES,
   EMPTY_SECTIONS,
-  EMPTY_TRANSCRIPT,
   HISTORY_OPEN_MESSAGE_PREFIX,
   isHistoryOpenMessage,
   promptForMessage,
   terminalMessagesForSave,
 } from "./designMessageModel";
-import type {
-  DesignSnapshot,
-  DesignViewState,
-  MessageAction,
-  WorkspaceProject,
-} from "./designSurfaceTypes";
+import type { DesignSnapshot, DesignViewState, MessageAction } from "./designSurfaceTypes";
 import "./artifactPreview.css";
 import "./design.css";
 import "./designSession.css";
@@ -171,10 +148,6 @@ interface DesignToolbarProps {
    */
   onHistoryOpen: (entry: DesignHistoryEntry) => boolean;
 }
-
-const WORKSPACE_NOT_REGISTERED_NOTICE = "The attached folder is no longer registered.";
-const WORKSPACE_UNCONFIRMED_NOTICE =
-  "The attached folder could not be confirmed because its record failed to load.";
 
 // The persistence calls report a boolean: false means the value never reached disk and will
 // revert on reload. One notice region serves all five callers because they fail the same way,
@@ -561,32 +534,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const [appliedSkillSlugs, setAppliedSkillSlugs] = useState<readonly string[] | null>(null);
   const [skillResultNotice, setSkillResultNotice] = useState<string | null>(null);
   const [craftSheetMode, setCraftSheetMode] = useState<"manual" | "readonly" | null>(null);
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [providersLoading, setProvidersLoading] = useState(true);
-  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
-  const [unavailableProviderId, setUnavailableProviderId] = useState<string | null>(null);
-  const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProject[]>([]);
-  const [workspacesLoading, setWorkspacesLoading] = useState(true);
-  const [workspacesRefreshing, setWorkspacesRefreshing] = useState(false);
-  const [workspacesError, setWorkspacesError] = useState<ErrorSentence | null>(null);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
-  const [workspaceSelectionNotice, setWorkspaceSelectionNotice] = useState<string | null>(null);
-  const [workspaceSelectionUnresolved, setWorkspaceSelectionUnresolved] = useState(false);
-  const [agentSession, setAgentSession] = useState<DesignAgentSession | null>(
-    () => host.getAgentSession?.() ?? null,
-  );
-  const [agentState, setAgentState] = useState<AgentSessionState | null>(
-    () => host.getAgentSession?.()?.getState() ?? null,
-  );
-  const [agentSessionRecord, setAgentSessionRecord] = useState<Session | null>(
-    () => host.getAgentSessionRecord?.() ?? null,
-  );
-  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(
-    () => host.getPendingPermission?.() ?? null,
-  );
-  const [permissionNotice, setPermissionNotice] = useState<string | null>(
-    () => host.getPermissionNotice?.() ?? null,
-  );
+
   const [historyOpenResult, setHistoryOpenResult] = useState<DesignHistoryOpenResult | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
@@ -595,11 +543,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const messagesRef = useRef(messages);
   const skillSelectionInteractedRef = useRef(false);
   const skillSelectionRef = useRef(skillSelection);
-  const providerSelectionInteractedRef = useRef(false);
-  const workspaceSelectionInteractedRef = useRef(false);
-  const workspaceSelectionIdRef = useRef<string | null>(null);
-  const workspaceSelectionUnresolvedRef = useRef(false);
-  const workspaceRequestTokenRef = useRef(0);
+
   // Which kind the currently shown persistence notice belongs to, so a later successful save
   // clears only its own kind's warning and leaves the others untouched.
   const persistenceNoticeKindRef = useRef<PersistenceNoticeKind | null>(null);
@@ -608,7 +552,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const historyOpenGenerationRef = useRef(0);
   const historyOpenMessageCounterRef = useRef(0);
   const generationInFlightRef = useRef(generation !== null);
-  const liveSessionIdRef = useRef<string | null>(agentSessionRecord?.id ?? null);
   const assistantRef = useRef<HTMLDivElement>(null);
   const designSurfaceRef = useRef<HTMLElement>(null);
   const {
@@ -656,215 +599,41 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     }
   }, []);
 
-  const updateWorkspaceSelection = useCallback(
-    (workspaceId: string | null, unresolved: boolean, notice: string | null): void => {
-      workspaceSelectionIdRef.current = workspaceId;
-      workspaceSelectionUnresolvedRef.current = unresolved;
-      setSelectedWorkspaceId(workspaceId);
-      setWorkspaceSelectionUnresolved(unresolved);
-      setWorkspaceSelectionNotice(notice);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    const updateAgentSession = (): void => {
-      const next = host.getAgentSession?.() ?? null;
-      const nextRecord = host.getAgentSessionRecord?.() ?? null;
-      // An absent record means this host has no live session to protect from a history attach.
-      liveSessionIdRef.current = nextRecord?.id ?? null;
-      setAgentSession(next);
-      setAgentState(next?.getState() ?? null);
-      setAgentSessionRecord(nextRecord);
-      setPendingPermission(host.getPendingPermission?.() ?? null);
-      setPermissionNotice(host.getPermissionNotice?.() ?? null);
-    };
-    const unsubscribe = host.subscribeAgentSession?.(updateAgentSession);
-    updateAgentSession();
-    return () => unsubscribe?.();
-  }, [host]);
-
-  const [streamingTranscript, setStreamingTranscript] =
-    useState<readonly DesignTranscriptItem[]>(EMPTY_TRANSCRIPT);
-  // Read by startGeneration's failure path and the stop/retry actions below.
-  // Those callbacks must see the rows live at the moment they run, not the
-  // rows live at the moment they were created, so they read this ref instead
-  // of taking streamingTranscript as a dependency (which would recreate them
-  // on every stream chunk).
-  const streamingTranscriptRef = useRef(streamingTranscript);
-
-  useEffect(() => {
-    if (agentSession === null) return;
-    // This subscription is the surface's single live view of the session, and it also keeps the
-    // transcript rows. The boundary comes from the host because it is recorded after the
-    // craft-selection pre-flight, whose items are the host's own question, not the agent's
-    // answer. Stop and failure run outside render, so they read the same rows the working card
-    // renders instead of taking a dependency on every chunk.
-    const update = (): void => {
-      const state = agentSession.getState();
-      setAgentState(state);
-      const start = host.getRunTranscriptStart?.() ?? null;
-      const next = start === null ? EMPTY_TRANSCRIPT : transcriptItems(state.items, start);
-      streamingTranscriptRef.current = next;
-      setStreamingTranscript(next);
-    };
-    update();
-    return agentSession.subscribe(update);
-  }, [agentSession, host]);
-
-  useEffect(() => {
-    let active = true;
-    void providersList()
-      .then((catalog) => {
-        if (!active) return;
-        const available = chatCapableProviders(catalog.providers);
-        setProviders(available);
-        return loadDesignProviderId(available.map((provider) => provider.id)).then((storedId) => {
-          if (!active) return;
-          if (providerSelectionInteractedRef.current) return;
-          setSelectedProviderId(storedId);
-          setUnavailableProviderId(null);
-          if (storedId !== null) {
-            const storedProvider = available.find((provider) => provider.id === storedId);
-            if (storedProvider !== undefined) {
-              // Mount restores the preference only; the first generation owns session creation.
-              (host.setProviderPreference ?? host.selectProvider)?.(storedProvider);
-            }
-            return;
-          }
-          return loadStoredDesignProviderId().then((rawStoredId) => {
-            if (!active || providerSelectionInteractedRef.current) return;
-            if (
-              rawStoredId !== null &&
-              !available.some((provider) => provider.id === rawStoredId)
-            ) {
-              setUnavailableProviderId(rawStoredId);
-            }
-          });
-        });
-      })
-      .catch(() => {
-        if (active) {
-          setProviders([]);
-          setSelectedProviderId(null);
-          setUnavailableProviderId(null);
-        }
-      })
-      .finally(() => {
-        if (active) setProvidersLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [host]);
-
-  const refreshWorkspaceProjects = useCallback(
-    async (initialLoad: boolean, isActive: () => boolean = () => true): Promise<void> => {
-      const requestToken = ++workspaceRequestTokenRef.current;
-      if (initialLoad) setWorkspacesLoading(true);
-      else setWorkspacesRefreshing(true);
-      setWorkspacesError(null);
-
-      // active only rejects updates after unmount; opening twice can leave an older response alive
-      // while a newer request is current, so the token also orders concurrent refreshes.
-      const isCurrent = (): boolean =>
-        isActive() && mountedRef.current && requestToken === workspaceRequestTokenRef.current;
-
-      try {
-        const projects = await projectsList();
-        const records = await Promise.all(
-          projects.map(async (project): Promise<WorkspaceProject> => {
-            try {
-              return { ...project, workspaces: await workspacesList(project.id) };
-            } catch {
-              return {
-                ...project,
-                workspaces: [],
-                workspaceError: "Workspaces could not be loaded.",
-              };
-            }
-          }),
-        );
-        if (!isCurrent()) return;
-
-        setWorkspaceProjects(records);
-        const workspaceIds = records.flatMap((project) =>
-          project.workspaces.map((workspace) => workspace.id),
-        );
-        const failedProjectExists = records.some((project) => project.workspaceError !== undefined);
-        const existingSession = host.getAgentSessionRecord?.() ?? null;
-        const wasUnresolved = workspaceSelectionUnresolvedRef.current;
-        let storedSelection = false;
-        let candidateId: string | null;
-
-        if (existingSession !== null) {
-          candidateId = existingSession.workspaceId;
-        } else if (!initialLoad || workspaceSelectionInteractedRef.current) {
-          candidateId = workspaceSelectionIdRef.current;
-        } else {
-          storedSelection = true;
-          candidateId = failedProjectExists
-            ? await loadStoredDesignWorkspaceId()
-            : await loadDesignWorkspaceId(workspaceIds);
-          if (!isCurrent()) return;
-          if (workspaceSelectionInteractedRef.current) {
-            candidateId = workspaceSelectionIdRef.current;
-            storedSelection = false;
-          }
-        }
-
-        if (!isCurrent()) return;
-        const selectedWorkspace =
-          candidateId === null
-            ? undefined
-            : records
-                .flatMap((project) => project.workspaces)
-                .find((workspace) => workspace.id === candidateId);
-
-        if (candidateId !== null && selectedWorkspace !== undefined) {
-          updateWorkspaceSelection(candidateId, false, null);
-          if (existingSession === null && (storedSelection || (!initialLoad && wasUnresolved))) {
-            (host.setWorkspacePreference ?? host.selectWorkspace)?.(selectedWorkspace);
-          }
-        } else if (candidateId !== null && failedProjectExists) {
-          updateWorkspaceSelection(candidateId, true, WORKSPACE_UNCONFIRMED_NOTICE);
-          if (!initialLoad && !wasUnresolved) {
-            (host.setWorkspacePreference ?? host.selectWorkspace)?.(null);
-          }
-        } else if (!initialLoad && candidateId !== null) {
-          updateWorkspaceSelection(null, false, WORKSPACE_NOT_REGISTERED_NOTICE);
-          (host.setWorkspacePreference ?? host.selectWorkspace)?.(null);
-          void saveDesignWorkspaceId(null).then((saved) => reportPersistence("workspace", saved));
-        } else if (candidateId !== null || initialLoad) {
-          updateWorkspaceSelection(null, false, null);
-        }
-      } catch (cause: unknown) {
-        if (!isCurrent()) return;
-        const mapped = errorSentence(cause);
-        setWorkspacesError({
-          sentence: `Could not load workspaces: ${mapped.sentence}`,
-          detail: mapped.detail,
-        });
-      }
-      if (!isCurrent()) return;
-      if (initialLoad) setWorkspacesLoading(false);
-      else {
-        setWorkspacesRefreshing(false);
-        setWorkspacesLoading(false);
-      }
-    },
-    [host, reportPersistence, updateWorkspaceSelection],
-  );
-
-  useEffect(() => {
-    let active = true;
-    void refreshWorkspaceProjects(true, () => active);
-    return () => {
-      active = false;
-    };
-  }, [refreshWorkspaceProjects]);
-
   const busy = generation !== null;
+
+  const {
+    agentSession,
+    agentState,
+    agentSessionRecord,
+    pendingPermission,
+    permissionNotice,
+    streamingTranscript,
+    streamingTranscriptRef,
+    liveSessionIdRef,
+    setPermissionNotice,
+    selectModel,
+    selectEffort,
+    respondPermission,
+    endSession,
+  } = useDesignAgentSession({ host, busy });
+
+  const {
+    providers,
+    providersLoading,
+    selectedProviderId,
+    unavailableProviderId,
+    workspaceProjects,
+    workspacesLoading,
+    workspacesRefreshing,
+    workspacesError,
+    selectedWorkspaceId,
+    workspaceSelectionNotice,
+    workspaceSelectionUnresolved,
+    refreshWorkspaceProjects,
+    selectProvider,
+    selectWorkspace,
+    openWorkspacePicker,
+  } = useDesignWorkspace({ host, busy, mountedRef, reportPersistence });
 
   const disposeHistoryOpen = useCallback(() => {
     historyOpenGenerationRef.current += 1;
@@ -1180,34 +949,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const generate = host.generate;
   const canSave = saveDocument !== undefined;
   const canGenerate = generate !== undefined;
-  const selectProvider = useCallback(
-    (provider: ProviderInfo) => {
-      if (busy) return;
-      providerSelectionInteractedRef.current = true;
-      setSelectedProviderId(provider.id);
-      setUnavailableProviderId(null);
-      (host.setProviderPreference ?? host.selectProvider)?.(provider);
-      void saveDesignProviderId(provider.id).then((saved) => reportPersistence("provider", saved));
-    },
-    [busy, host, reportPersistence],
-  );
-  const selectWorkspace = useCallback(
-    (workspace: Workspace | null) => {
-      if (busy) return;
-      workspaceSelectionInteractedRef.current = true;
-      updateWorkspaceSelection(workspace?.id ?? null, false, null);
-      (host.setWorkspacePreference ?? host.selectWorkspace)?.(workspace);
-      const workspaceId = workspace?.id ?? null;
-      void saveDesignWorkspaceId(workspaceId).then((saved) =>
-        reportPersistence("workspace", saved),
-      );
-    },
-    [busy, host, reportPersistence, updateWorkspaceSelection],
-  );
-  const openWorkspacePicker = useCallback(() => {
-    if (busy) return;
-    void refreshWorkspaceProjects(false);
-  }, [busy, refreshWorkspaceProjects]);
+
   const [folderAttachBusy, setFolderAttachBusy] = useState(false);
   const [folderAttachError, setFolderAttachError] = useState<ErrorSentence | null>(null);
 
@@ -1274,32 +1016,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       workspaceProjects,
     ],
   );
-  const selectModel = useCallback(
-    (modelId: string) => {
-      void agentSession?.setModel(modelId);
-    },
-    [agentSession],
-  );
-  const selectEffort = useCallback(
-    (effort: string) => {
-      void agentSession?.setModel(undefined, effort);
-    },
-    [agentSession],
-  );
-  const respondPermission = useCallback(
-    // The card's answer object travels whole to the host: this layer names
-    // no fields, so a new answer carrier cannot be dropped here.
-    (response: PermissionAnswer): Promise<void> =>
-      host.respondPermission?.(response) ?? Promise.resolve(),
-    [host],
-  );
-  const endSession = useCallback(() => {
-    if (busy || agentSession === null) return;
-    // Ending the session closes the reading too: the pin goes with it, so
-    // the next delegation may mirror again.
-    clearDelegatedMirrorPin();
-    void host.closeAgentSession?.();
-  }, [agentSession, busy, host]);
 
   const generationCount = useMemo(
     () =>
@@ -1656,7 +1372,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       historyOpenRef.current = handle;
       return true;
     },
-    [busy, disposeHistoryOpen, markDocumentDirty, setMessages],
+    [busy, disposeHistoryOpen, liveSessionIdRef, markDocumentDirty, setMessages],
   );
 
   /**
@@ -1915,7 +1631,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       selectedSkillSlugs,
       setHistorySaved,
       setMessages,
+      setPermissionNotice,
       revisionRef,
+      streamingTranscriptRef,
     ],
   );
 
@@ -1987,7 +1705,15 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       const prompt = promptForMessage(messagesRef.current, message);
       if (prompt !== null) startGeneration(prompt);
     },
-    [revisionRef, host, selectLayer, setMessages, startGeneration, clearAttachmentProgress],
+    [
+      revisionRef,
+      host,
+      selectLayer,
+      setMessages,
+      startGeneration,
+      clearAttachmentProgress,
+      streamingTranscriptRef,
+    ],
   );
 
   const clearComposerContext = useCallback(() => setComposerContextLayerId(null), []);
