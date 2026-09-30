@@ -71,16 +71,20 @@ pub fn run() -> Result<(), DaemonError> {
 
 #[cfg(windows)]
 fn run_windows() -> Result<(), DaemonError> {
-    // One startup line through the daemon's own log (stderr, which
-    // daemon_log mirrors into daemon.log): which ConPTY implementation this
-    // process pinned. The vendored loader deliberately has no logger of its
-    // own; forcing the source here also fails fast on a kernel without ConPTY.
-    eprintln!("ConPTY: using {}", portable_pty::conpty_source());
     let paths = RuntimePaths::from_env()?;
     let mut lock = SingleInstanceLock::acquire(&paths)?;
     // Only now — the single-instance lock is ours — may the log rotate: a
     // losing second daemon must never move the running daemon's log aside.
     crate::daemon_log::rotate_after_lock(&paths.dir);
+    // One startup line through the daemon's own log (stderr, which
+    // daemon_log mirrors into daemon.log): which ConPTY implementation this
+    // process pinned. The vendored loader deliberately has no logger of its
+    // own. The line prints below `rotate_after_lock` because stderr bytes
+    // queued earlier are appended to the over-cap log the rotation must move
+    // aside whole — and a losing second daemon would write them into the
+    // running daemon's log. Forcing the source still fails fast on a kernel
+    // without ConPTY: the panic precedes anything served or recorded.
+    eprintln!("ConPTY: using {}", portable_pty::conpty_source());
     let pid = std::process::id();
     let instance_id = format!(
         "{pid}-{}",
