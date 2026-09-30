@@ -1,0 +1,297 @@
+// @vitest-environment happy-dom
+
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { assembleCssProof, removeCssProof } from "../cssProof";
+
+const rootDir = resolve(import.meta.dirname, "../../../..");
+const read = (path: string) => readFileSync(resolve(rootDir, path), "utf8");
+const railSheets = () => [
+  read("src/styles/tokens.css"),
+  read("src/features/workspace/Workspace.css"),
+  read("src/features/workspace/timeline/TurnRail.css"),
+];
+const railCss = assembleCssProof(railSheets());
+const railCssDark = assembleCssProof(railSheets(), "dark");
+
+afterEach(removeCssProof);
+
+describe("turn rail computed styles", () => {
+  it("keeps the conversation's own padding and reserves the gutter in the content box", () => {
+    railCss.inject([
+      ".workspace-conversation",
+      ".workspace-conversation.has-turn-rail",
+      ".workspace-conversation.has-turn-rail .workspace-conversation-content",
+    ]);
+    const conversation = document.createElement("div");
+    conversation.className = "workspace-conversation";
+    const content = document.createElement("div");
+    content.className = "workspace-conversation-content";
+    conversation.appendChild(content);
+    document.body.appendChild(conversation);
+
+    expect(getComputedStyle(conversation).paddingLeft).toBe("24px");
+
+    conversation.classList.add("has-turn-rail");
+    // The conversation's own box does not change with the rail; the
+    // content box gives up 32 px of column — 24 + 32 = 56 from the edge.
+    expect(getComputedStyle(conversation).paddingLeft).toBe("24px");
+    expect(getComputedStyle(content).paddingLeft).toBe("32px");
+    expect(getComputedStyle(conversation).position).toBe("relative");
+    expect(getComputedStyle(content).position).toBe("relative");
+    conversation.remove();
+  });
+
+  it("keeps the conversation inside a 720 px pane with the rail on and off", () => {
+    railCss.inject([
+      ".workspace-conversation",
+      ".workspace-conversation.has-turn-rail",
+      ".workspace-conversation.has-turn-rail .workspace-conversation-content",
+      ".turn-rail",
+    ]);
+    const build = (withRail: boolean): HTMLDivElement => {
+      const pane = document.createElement("div");
+      pane.className = "workspace-agent-shell";
+      pane.style.width = "720px";
+      const conversation = document.createElement("div");
+      conversation.className = withRail
+        ? "workspace-conversation has-turn-rail"
+        : "workspace-conversation";
+      const content = document.createElement("div");
+      content.className = "workspace-conversation-content";
+      const row = document.createElement("div");
+      // A long unbreakable row: it scrolls itself, never the conversation.
+      row.style.whiteSpace = "pre";
+      row.style.overflowX = "auto";
+      row.textContent = "y".repeat(900);
+      content.appendChild(row);
+      conversation.appendChild(content);
+      pane.appendChild(conversation);
+      document.body.appendChild(pane);
+      return conversation;
+    };
+    const off = build(false);
+    const on = build(true);
+
+    // The pane cap: min(760px, 100% of the 720 px parent) is 720 — the
+    // conversation is bounded by the pane and the chat cap in both states.
+    expect(getComputedStyle(off).maxWidth).toBe("min(760px, 100%)");
+    expect(getComputedStyle(on).maxWidth).toBe("min(760px, 100%)");
+    // The gutter comes out of the column: the conversation's own padding
+    // is the same with the rail on and off.
+    expect(getComputedStyle(off).paddingLeft).toBe("24px");
+    expect(getComputedStyle(on).paddingLeft).toBe("24px");
+    expect(getComputedStyle(on.querySelector(".workspace-conversation-content")!).paddingLeft).toBe(
+      "32px",
+    );
+
+    // Never horizontally scrollable, by the same cap plus the row
+    // containing itself. happy-dom stores scrollWidth/clientWidth at 0
+    // (no layout engine — happy-dom's Element.js), so these three lines
+    // hold the invariant in the test's terms; the numbers are the live
+    // check's to measure.
+    for (const conversation of [off, on]) {
+      expect(conversation.scrollWidth).toBeLessThanOrEqual(conversation.clientWidth);
+      expect(conversation.scrollWidth).toBeLessThanOrEqual(720);
+      expect(conversation.scrollWidth).toBeLessThanOrEqual(760);
+    }
+    off.parentElement!.remove();
+    on.parentElement!.remove();
+  });
+
+  it("threads the gutter at 1 px of line and parks the rail in it", () => {
+    railCss.inject([".turn-rail", ".turn-rail-thread", ".turn-rail-stop"]);
+    const rail = document.createElement("div");
+    rail.className = "turn-rail";
+    const thread = document.createElement("span");
+    thread.className = "turn-rail-thread";
+    const stop = document.createElement("span");
+    stop.className = "turn-rail-stop";
+    rail.appendChild(thread);
+    rail.appendChild(stop);
+    document.body.appendChild(rail);
+
+    const railStyle = getComputedStyle(rail);
+    expect(railStyle.position).toBe("absolute");
+    expect(railStyle.width).toBe("56px");
+    // The content box starts 24 px in (the conversation's padding), so
+    // -24 reaches the conversation's left edge and the thread its 24 px.
+    expect(railStyle.left).toBe("-24px");
+    expect(railStyle.pointerEvents).toBe("none");
+    const threadStyle = getComputedStyle(thread);
+    expect(threadStyle.width).toBe("1px");
+    expect(threadStyle.backgroundColor).toBe("#ded6c4");
+    expect(getComputedStyle(stop).position).toBe("absolute");
+    rail.remove();
+  });
+
+  it("rests the dot at 5 px idle, grows it on hover, and rings the current one at 9", () => {
+    railCss.inject([
+      ".turn-rail-glyph",
+      ".turn-rail-dot:hover .turn-rail-glyph",
+      '.turn-rail-dot[aria-current="true"] .turn-rail-glyph',
+    ]);
+    const idle = document.createElement("span");
+    idle.className = "turn-rail-glyph";
+    document.body.appendChild(idle);
+    const idleStyle = getComputedStyle(idle);
+    expect(idleStyle.width).toBe("5px");
+    expect(idleStyle.height).toBe("5px");
+    expect(idleStyle.backgroundColor).toBe("#a49b8c");
+    idle.remove();
+
+    const dot = document.createElement("button");
+    dot.className = "turn-rail-dot";
+    dot.setAttribute("aria-current", "true");
+    const glyph = document.createElement("span");
+    glyph.className = "turn-rail-glyph";
+    dot.appendChild(glyph);
+    document.body.appendChild(dot);
+    const currentStyle = getComputedStyle(glyph);
+    expect(currentStyle.width).toBe("9px");
+    expect(currentStyle.height).toBe("9px");
+    expect(currentStyle.backgroundColor).toBe("#bd4a26");
+    expect(currentStyle.boxShadow).toContain("3px");
+    dot.remove();
+
+    // Hover grows a resting dot to 8; the current rule comes after it in
+    // the sheet, so a hovered current dot keeps its 9.
+    expect(railCss.rulesFor(".turn-rail-dot:hover .turn-rail-glyph")).toContain("width: 8px");
+    const selectors = railCss.rules.map((rule) => rule.selector);
+    expect(selectors.indexOf(".turn-rail-dot:hover .turn-rail-glyph")).toBeLessThan(
+      selectors.indexOf('.turn-rail-dot[aria-current="true"] .turn-rail-glyph'),
+    );
+  });
+
+  it("opens a 224 px card beside the dot with a 12 px title", () => {
+    railCss.inject([".turn-rail-preview", ".turn-rail-preview-title"]);
+    const preview = document.createElement("span");
+    preview.className = "turn-rail-preview";
+    const title = document.createElement("span");
+    title.className = "turn-rail-preview-title";
+    preview.appendChild(title);
+    document.body.appendChild(preview);
+
+    const previewStyle = getComputedStyle(preview);
+    expect(previewStyle.position).toBe("absolute");
+    expect(previewStyle.width).toBe("224px");
+    expect(previewStyle.borderRadius).toBe("8px");
+    expect(previewStyle.backgroundColor).toBe("#fbf8f1");
+    expect(previewStyle.display).toBe("none");
+    // Left, not the UA button centre the card would otherwise inherit.
+    expect(previewStyle.textAlign).toBe("left");
+    const titleStyle = getComputedStyle(title);
+    expect(titleStyle.fontSize).toBe("12px");
+    expect(titleStyle.color).toBe("#1c1a17");
+    expect(titleStyle.textOverflow).toBe("ellipsis");
+    preview.remove();
+  });
+
+  it("shows the card only on a focus-opened dot whose turn leaves canvas", () => {
+    railCss.inject([
+      ".turn-rail-preview",
+      ".turn-rail-stop[data-preview-fits] .turn-rail-dot:hover .turn-rail-preview",
+      ".turn-rail-stop[data-preview-fits][data-preview-open] .turn-rail-preview",
+    ]);
+    const buildStop = (fits: boolean): { stop: HTMLElement; preview: HTMLElement } => {
+      const stop = document.createElement("span");
+      stop.className = "turn-rail-stop";
+      if (fits) stop.setAttribute("data-preview-fits", "");
+      stop.setAttribute("data-preview-open", "");
+      const dot = document.createElement("button");
+      dot.className = "turn-rail-dot";
+      const preview = document.createElement("span");
+      preview.className = "turn-rail-preview";
+      dot.appendChild(preview);
+      stop.appendChild(dot);
+      document.body.appendChild(stop);
+      return { stop, preview };
+    };
+    // happy-dom serves a stale computed style when an element's attributes
+    // change after a getComputedStyle call, so each state gets its own
+    // stop instead of one stop mutated between reads.
+    const fitting = buildStop(true);
+    expect(getComputedStyle(fitting.preview).display).toBe("block");
+    fitting.stop.remove();
+
+    // No free canvas: even the focus-open must not cover the turn's bubble.
+    const crowded = buildStop(false);
+    expect(getComputedStyle(crowded.preview).display).toBe("none");
+    crowded.stop.remove();
+
+    // The hover path: happy-dom cannot compute :hover, so the rule text
+    // is the sanctioned proof for it (cssProof.rulesFor).
+    expect(
+      railCss.rulesFor(
+        ".turn-rail-stop[data-preview-fits] .turn-rail-dot:hover .turn-rail-preview",
+      ),
+    ).toContain("display: block");
+  });
+
+  it("keeps the dot a pointer target with an accent focus ring and no motion", () => {
+    railCss.inject([".turn-rail", ".turn-rail-dot", ".turn-rail-dot:focus-visible"]);
+    const dot = document.createElement("button");
+    dot.className = "turn-rail-dot";
+    document.body.appendChild(dot);
+    expect(getComputedStyle(dot).pointerEvents).toBe("auto");
+    expect(getComputedStyle(dot).backgroundColor).toBe("transparent");
+    // WCAG 2.5.8's 24 px minimum target — only the button box is sized
+    // here; the glyph inside stays the spec's 5/8/9.
+    expect(getComputedStyle(dot).width).toBe("24px");
+    expect(getComputedStyle(dot).height).toBe("24px");
+    dot.remove();
+    expect(railCss.rulesFor(".turn-rail-dot:focus-visible")).toContain("outline: 2px solid");
+    expect(railCss.rulesFor(".turn-rail-dot:focus-visible")).toContain("#bd4a26");
+
+    // The working pulse is the one animation this design defines; the rail
+    // adds no transition or animation of its own.
+    const railRules = railCss.rules.filter(
+      (rule) => rule.selector.includes("turn-rail") || rule.selector.includes("has-turn-rail"),
+    );
+    expect(railRules.length).toBeGreaterThan(0);
+    for (const rule of railRules) {
+      expect(rule.body).not.toMatch(/transition|animation/);
+    }
+  });
+
+  it("resolves the rail's theme tokens in the dark theme as well", () => {
+    railCssDark.inject([
+      ".turn-rail-thread",
+      ".turn-rail-glyph",
+      '.turn-rail-dot[aria-current="true"] .turn-rail-glyph',
+    ]);
+    expect(railCssDark.token("--line")).toBeDefined();
+    expect(railCssDark.token("--accent-soft")).toBeDefined();
+    expect(railCssDark.token("--accent-soft")).not.toBe(railCss.token("--accent-soft"));
+    expect(railCssDark.token("--line")).not.toBe(railCss.token("--line"));
+    expect(railCssDark.token("--tone-idle")).not.toBe(railCss.token("--tone-idle"));
+    expect(railCssDark.token("--accent")).not.toBe(railCss.token("--accent"));
+
+    const thread = document.createElement("span");
+    thread.className = "turn-rail-thread";
+    document.body.appendChild(thread);
+    expect(getComputedStyle(thread).backgroundColor).toBe(railCssDark.token("--line"));
+    thread.remove();
+
+    const idle = document.createElement("span");
+    idle.className = "turn-rail-glyph";
+    document.body.appendChild(idle);
+    expect(getComputedStyle(idle).backgroundColor).toBe(railCssDark.token("--tone-idle"));
+    idle.remove();
+
+    const dot = document.createElement("button");
+    dot.className = "turn-rail-dot";
+    dot.setAttribute("aria-current", "true");
+    const glyph = document.createElement("span");
+    glyph.className = "turn-rail-glyph";
+    dot.appendChild(glyph);
+    document.body.appendChild(dot);
+    const currentStyle = getComputedStyle(glyph);
+    expect(currentStyle.backgroundColor).toBe(railCssDark.token("--accent"));
+    expect(currentStyle.boxShadow).toContain("3px");
+    // The ring is accent @ 16% in this theme: it carries the dark accent.
+    expect(currentStyle.boxShadow).toContain(railCssDark.token("--accent")!);
+    dot.remove();
+  });
+});

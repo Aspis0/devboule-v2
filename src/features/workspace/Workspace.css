@@ -412,7 +412,10 @@
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  max-width: 760px;
+  /* Never wider than its parent: the box is fit-content, so an
+     unbreakable row could push it to the 760 cap and out of a narrower
+     pane, where the center panel's overflow: hidden clipped it. */
+  max-width: min(760px, 100%);
   margin: 0 auto;
   gap: 10px;
   padding: 4px 24px 0;

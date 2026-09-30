@@ -69,6 +69,7 @@ import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
 import { MarkdownText } from "../../components/MarkdownText";
 import { MessageCopyButton } from "./timeline/MessageCopyButton";
+import { TurnRail } from "./timeline/TurnRail";
 import "./timeline/timeline.css";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
@@ -720,7 +721,7 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
 
   if (item.role === "user") {
     return (
-      <div className={className} key={item.id} style={style}>
+      <div className={className} key={item.id} data-turn-anchor={item.id} style={style}>
         <div className="workspace-chat-bubble">
           <div className="workspace-chat-copy">{item.text}</div>
           <MessageCopyButton text={item.text} />
@@ -1118,6 +1119,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         onScroll={onScroll}
       >
         <div ref={contentRef} className="workspace-conversation-content">
+          <TurnRail scrollRef={conversationRef} contentRef={contentRef} items={state.items} />
           {state.items.length === 0 && state.status === "idle" && !osGone ? (
             <div className="workspace-chat-empty">Start a conversation with the agent.</div>
           ) : null}

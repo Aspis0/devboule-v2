@@ -32,7 +32,10 @@ describe("timeline computed styles", () => {
     document.body.appendChild(rail);
 
     const style = getComputedStyle(rail);
-    expect(style.maxWidth).toBe("760px");
+    // Capped by the pane as well: min(760px, 100%) — the chat cap still
+    // applies wherever the pane is wider, and the box can never outgrow
+    // a narrower one.
+    expect(style.maxWidth).toBe("min(760px, 100%)");
     expect(style.marginLeft).toBe("auto");
     expect(style.marginRight).toBe("auto");
     expect(style.paddingTop).toBe("4px");
