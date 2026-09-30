@@ -1506,6 +1506,7 @@ fn live_agent_replay_delivers_the_generations_before_the_attach() {
         text: "gen-1 user".into(),
         author: devboule_protocol::UserMessageAuthor::Human,
         message_kind: devboule_protocol::UserMessageKind::Unknown,
+        at_ms: None,
     };
     let answer_before = SessionEvent::AgentMessage {
         message_id: Some("m2".into()),
@@ -1587,6 +1588,81 @@ fn live_agent_replay_delivers_the_generations_before_the_attach() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A replayed user message takes its time from the journal row's own
+/// `ts_ms` column — the same clock the live event was set from — so a row
+/// whose payload predates `at_ms` still gives its turn a time.
+#[test]
+fn replay_stamps_the_user_turn_time_from_the_journal_row() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-replay-turn-time");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.replay.turn.time";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .unwrap();
+    let untimed = SessionEvent::AgentUserMessage {
+        message_id: Some("m1".into()),
+        text: "written before the turn time existed".into(),
+        author: devboule_protocol::UserMessageAuthor::Human,
+        message_kind: devboule_protocol::UserMessageKind::Composer,
+        at_ms: None,
+    };
+    let row_ts = 1_789_053_471_559_u64;
+    journal
+        .append_blocking(crate::journal::EventRecord {
+            session_id: session_id.to_string(),
+            generation: 1,
+            seq: 1,
+            kind: crate::journal::EventKind::AgentReport,
+            ts_ms: row_ts,
+            payload: serde_json::to_vec(&untimed).unwrap(),
+        })
+        .unwrap();
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.generation = 1;
+        stream.next_seq = 2;
+    }
+    runtime.generation.store(1, Ordering::Release);
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach live agent");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+    let at = events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { at_ms, .. } => Some(*at_ms),
+            _ => None,
+        })
+        .expect("the user message is replayed");
+    assert_eq!(at, Some(row_ts), "the row's own time is the turn time");
+
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Pre-attach history is history: a row from below the attach generation
 /// is delivered with its own generation on the envelope and no transcript
 /// position, so it can advance neither reader's cursor into a numbering
@@ -1624,6 +1700,7 @@ fn live_agent_replay_stamps_history_envelopes_with_their_own_generation() {
         text: "after resume".into(),
         author: devboule_protocol::UserMessageAuthor::Human,
         message_kind: devboule_protocol::UserMessageKind::Unknown,
+        at_ms: None,
     };
     let answer_after = SessionEvent::AgentMessage {
         message_id: Some("m2".into()),
@@ -1742,6 +1819,7 @@ fn history_does_not_move_the_transcript_cursor_or_starve_the_reattach() {
                 text: "gen-2 user".into(),
                 author: devboule_protocol::UserMessageAuthor::Human,
                 message_kind: devboule_protocol::UserMessageKind::Unknown,
+                at_ms: None,
             },
             SessionEvent::AgentMessage {
                 message_id: Some("m2".into()),
@@ -1922,6 +2000,7 @@ fn reattach_to_history_serves_the_whole_conversation() {
                 text: "gen-1 report".into(),
                 author: devboule_protocol::UserMessageAuthor::Human,
                 message_kind: devboule_protocol::UserMessageKind::Unknown,
+                at_ms: None,
             },
             SessionEvent::Output {
                 seq: 6,
@@ -2074,6 +2153,7 @@ fn a_stop_tail_cursor_owes_nothing_not_even_history() {
                 text: "gen-1 report".into(),
                 author: devboule_protocol::UserMessageAuthor::Human,
                 message_kind: devboule_protocol::UserMessageKind::Unknown,
+                at_ms: None,
             },
             SessionEvent::AgentMessage {
                 message_id: Some("m2".into()),
@@ -2156,6 +2236,7 @@ fn transcript_replay_keeps_rows_from_different_generations() {
                 text: "gen-1 user".into(),
                 author: devboule_protocol::UserMessageAuthor::Human,
                 message_kind: devboule_protocol::UserMessageKind::Unknown,
+                at_ms: None,
             },
             SessionEvent::AgentMessage {
                 message_id: Some("m2".into()),
@@ -3204,6 +3285,8 @@ fn attach_replay_suppresses_codex_tasks_for_a_card_marked_turn() {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     };
     let mut rows = codex_plan_rows(session_id);
     rows.push(crate::journal::agent_report_record(session_id, 1, 3, &verdict).unwrap());

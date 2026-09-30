@@ -82,6 +82,8 @@
     "type": "agent_thought"
   },
   {
+    "command": "cargo test",
+    "exitCode": 0,
     "kind": "plan",
     "locations": [
       {
@@ -97,6 +99,8 @@
     "type": "agent_tool_call"
   },
   {
+    "command": "cargo test",
+    "exitCode": 1,
     "kind": "edit",
     "locations": [
       {
@@ -112,6 +116,7 @@
     "type": "agent_tool_update"
   },
   {
+    "atMs": 1789053471559,
     "author": "human",
     "messageId": null,
     "messageKind": "unknown",

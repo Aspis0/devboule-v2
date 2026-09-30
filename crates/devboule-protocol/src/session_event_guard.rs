@@ -62,6 +62,10 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             text: String::new(),
             author: crate::UserMessageAuthor::Human,
             message_kind: crate::UserMessageKind::Unknown,
+            // The sample carries the journal time rather than `None`: the
+            // committed snapshot is what pins the wire name, and a sample
+            // that omitted the field would leave `atMs` unexercised by it.
+            at_ms: Some(1_789_053_471_559),
         },
         Steered => SessionEvent::Steered {
             message_id: None,
@@ -88,6 +92,11 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             subagent_type: None,
             parent_tool_use_id: Some("toolu_parent".to_string()),
             spawn_depth: Some(1),
+            // Both carried rather than `None`: the committed snapshot is what
+            // pins the wire names, and a sample that omitted them would leave
+            // `command`/`exitCode` unexercised by it.
+            command: Some("cargo test".to_string()),
+            exit_code: Some(0),
         },
         AgentToolUpdate => SessionEvent::AgentToolUpdate {
             tool_call_id: "toolu_plan".to_string(),
@@ -101,6 +110,8 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             }]),
             parent_tool_use_id: Some("toolu_parent".to_string()),
             spawn_depth: Some(1),
+            command: Some("cargo test".to_string()),
+            exit_code: Some(1),
         },
         AgentFinished => SessionEvent::AgentFinished {
             stop_reason: String::new(),

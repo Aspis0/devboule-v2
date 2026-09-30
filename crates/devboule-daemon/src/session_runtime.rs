@@ -1117,6 +1117,8 @@ impl SessionRuntime {
         was_silent
     }
 
+    /// Journal the raw provider envelope — the row an ACP, Claude, Codex or
+    /// Pi frame replays from — and hand back the stream seq it took.
     pub(crate) fn journal_agent_envelope(&self, envelope: &serde_json::Value) -> Option<u64> {
         let Ok(mut stream) = self.lock_stream() else {
             return None;
@@ -1391,11 +1393,18 @@ impl SessionRuntime {
         // journal row that links to it (`Steered`) name one message: the caller
         // takes the id back out of the event that was actually published rather
         // than inventing a second one.
-        self.publish_journaled_agent_event(|generation, seq| SessionEvent::AgentUserMessage {
-            message_id: Some(format!("devboule-user-{generation}-{seq}")),
-            text,
-            author,
-            message_kind,
+        //
+        // The turn time rides only on the kinds the transcript shows as user
+        // bubbles — the same rule replay stamps by, so a kind agrees with its
+        // own replay.
+        self.publish_journaled_agent_event(|generation, seq, at_ms| {
+            SessionEvent::AgentUserMessage {
+                message_id: Some(format!("devboule-user-{generation}-{seq}")),
+                text,
+                author,
+                message_kind,
+                at_ms: message_kind.is_user_turn().then_some(at_ms),
+            }
         })
         .and_then(|event| match event {
             SessionEvent::AgentUserMessage { message_id, .. } => message_id,
@@ -1404,7 +1413,7 @@ impl SessionRuntime {
     }
 
     pub(crate) fn publish_agent_error(&self, message: String) -> bool {
-        self.publish_journaled_agent_event(|_, _| SessionEvent::AgentError { message })
+        self.publish_journaled_agent_event(|_, _, _| SessionEvent::AgentError { message })
             .is_some()
     }
 
@@ -1414,7 +1423,8 @@ impl SessionRuntime {
     /// a decision made here: no provider row carries it, so the envelope
     /// path has nothing to re-derive from.
     pub(crate) fn publish_daemon_event(&self, event: SessionEvent) -> bool {
-        self.publish_journaled_agent_event(|_, _| event).is_some()
+        self.publish_journaled_agent_event(|_, _, _| event)
+            .is_some()
     }
 
     /// Publish a finish the daemon decided itself — no provider row carries
@@ -1429,7 +1439,9 @@ impl SessionRuntime {
     pub(crate) fn publish_journaled_finish(&self, event: SessionEvent) -> bool {
         let ends_the_turn = matches!(&event, SessionEvent::AgentFinished { .. });
         self.record_agent_outcome(&event);
-        let published = self.publish_journaled_agent_event(|_, _| event).is_some();
+        let published = self
+            .publish_journaled_agent_event(|_, _, _| event)
+            .is_some();
         if published && ends_the_turn {
             self.finish_turn();
         }
@@ -1484,8 +1496,12 @@ impl SessionRuntime {
     /// error.
     fn publish_journaled_agent_event<F>(&self, build: F) -> Option<SessionEvent>
     where
-        F: FnOnce(u64, u64) -> SessionEvent,
+        F: FnOnce(u64, u64, u64) -> SessionEvent,
     {
+        // One reading of the journal's clock for the event's `at_ms` and the
+        // row's `ts_ms`: replay carries the column back, so the two must be
+        // the same instant, not two ticks of the same source.
+        let at_ms = crate::journal::now_ms();
         let (event, generation, seq, was_silent) = {
             let Ok(mut stream) = self.lock_stream() else {
                 // `None` means the stream cannot accept the event.
@@ -1501,7 +1517,7 @@ impl SessionRuntime {
             let generation = stream.generation;
             let seq = stream.next_seq;
             stream.next_seq = stream.next_seq.saturating_add(1);
-            let event = build(generation, seq);
+            let event = build(generation, seq, at_ms);
             stream.last_publish = Some(Instant::now());
             self.record_activity(Some(seq), &event);
             enqueue_agent(&mut stream, event.clone(), Some(seq));
@@ -1516,11 +1532,12 @@ impl SessionRuntime {
             (event, generation, seq, was_silent)
         };
         if let Some(journal) = &self.journal {
-            if let Some(record) = crate::journal::agent_report_record(
+            if let Some(record) = crate::journal::agent_report_record_at(
                 self.session_id.clone(),
                 generation,
                 seq,
                 &event,
+                at_ms,
             ) {
                 let accepted = journal.try_append(record);
                 if !accepted || journal.is_session_degraded(&self.session_id) {
@@ -1836,9 +1853,12 @@ impl SessionRuntime {
         event_seq: Option<u64>,
         finish_the_turn: bool,
     ) -> bool {
-        // Every published agent event passes through here, which is the one
-        // place the finish hook's raw material can be remembered without a
-        // second matching pass over the stream (`S5` decisions 7 and 10).
+        // The provider publish path's one pass over the event —
+        // `publish_agent_event` and the `*_with_seq` wrappers land here. The
+        // journaled daemon-owned publisher (`publish_journaled_agent_event`)
+        // keeps its own path and does not. This is where the finish hook's
+        // raw material is remembered without a second matching pass over the
+        // stream (`S5` decisions 7 and 10).
         self.record_agent_outcome(&event);
         // One place, every publisher: a provider client writes `local` as a
         // placeholder and never has to know which device asked for the session,
@@ -2122,7 +2142,7 @@ impl SessionRuntime {
         provider: &str,
         profile: &str,
     ) -> bool {
-        self.publish_journaled_agent_event(|generation, seq| SessionEvent::AgentCreated {
+        self.publish_journaled_agent_event(|generation, seq, _| SessionEvent::AgentCreated {
             message_id: Some(format!("devboule-agent-created-{generation}-{seq}")),
             child_session_id: child_session_id.to_string(),
             display_name: display_name.to_string(),
@@ -2158,7 +2178,8 @@ impl SessionRuntime {
         // Journaled like the creation record: the creator's journal is what
         // an unattached Workspace, or one that restarts, reads the finish
         // out of, so the structured record cannot live on the stream alone.
-        self.publish_journaled_agent_event(|_, _| event).is_some()
+        self.publish_journaled_agent_event(|_, _, _| event)
+            .is_some()
     }
 
     pub(crate) fn can_publish_agent_event(&self) -> bool {

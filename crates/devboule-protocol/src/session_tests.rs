@@ -441,9 +441,147 @@ fn agent_user_message_kind_defaults_for_legacy_rows_and_serializes_current_rows(
         text: "outgoing words".to_string(),
         author: UserMessageAuthor::Agent,
         message_kind: UserMessageKind::OutgoingA2a,
+        at_ms: None,
     };
     let encoded = serde_json::to_value(&current).expect("current event");
     assert_eq!(encoded["messageKind"], "outgoing_a2a");
+}
+
+#[test]
+fn user_message_at_ms_round_trips_and_is_skipped_when_absent() {
+    let timed = SessionEvent::AgentUserMessage {
+        message_id: Some("devboule-user-1-4".to_string()),
+        text: "run the tests".to_string(),
+        author: UserMessageAuthor::Human,
+        message_kind: UserMessageKind::Composer,
+        at_ms: Some(1_789_053_471_559),
+    };
+    let encoded = serde_json::to_value(&timed).expect("json");
+    assert_eq!(encoded["atMs"], 1_789_053_471_559_u64);
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, timed);
+
+    let untimed = SessionEvent::AgentUserMessage {
+        message_id: None,
+        text: "old row".to_string(),
+        author: UserMessageAuthor::Human,
+        message_kind: UserMessageKind::Composer,
+        at_ms: None,
+    };
+    let encoded = serde_json::to_value(&untimed).expect("json");
+    assert!(encoded.get("atMs").is_none(), "absent time stays absent");
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, untimed);
+}
+
+#[test]
+fn user_message_without_at_ms_still_parses_from_an_old_row() {
+    let old = serde_json::json!({
+        "type": "agent_user_message",
+        "messageId": "m-old",
+        "text": "written before the turn time existed",
+        "author": "human",
+        "messageKind": "composer"
+    });
+    let decoded: SessionEvent = serde_json::from_value(old).expect("old row");
+    assert!(matches!(
+        decoded,
+        SessionEvent::AgentUserMessage { at_ms: None, .. }
+    ));
+}
+
+#[test]
+fn tool_call_command_and_exit_code_round_trip_and_are_skipped_when_absent() {
+    let command = SessionEvent::AgentToolCall {
+        tool_call_id: "exec-1".to_string(),
+        title: "git status".to_string(),
+        status: "in_progress".to_string(),
+        kind: Some("execute".to_string()),
+        locations: None,
+        subagent_type: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: Some(
+            "\"C:\\Users\\gualt\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe\" -Command 'git status'"
+                .to_string(),
+        ),
+        exit_code: None,
+    };
+    let encoded = serde_json::to_value(&command).expect("json");
+    assert_eq!(
+        encoded["command"],
+        "\"C:\\Users\\gualt\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe\" -Command 'git status'"
+    );
+    assert!(
+        encoded.get("exitCode").is_none(),
+        "a running call has no exit"
+    );
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, command);
+
+    let update = SessionEvent::AgentToolUpdate {
+        tool_call_id: "exec-1".to_string(),
+        status: Some("failed".to_string()),
+        text: None,
+        title: None,
+        kind: Some("execute".to_string()),
+        locations: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: None,
+        exit_code: Some(1),
+    };
+    let encoded = serde_json::to_value(&update).expect("json");
+    assert_eq!(encoded["exitCode"], 1);
+    assert!(encoded.get("command").is_none());
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, update);
+}
+
+#[test]
+fn old_tool_rows_without_command_and_exit_code_still_parse() {
+    let old_call = serde_json::json!({
+        "type": "agent_tool_call",
+        "toolCallId": "exec-9",
+        "title": "git status",
+        "status": "completed",
+        "kind": "execute"
+    });
+    let decoded: SessionEvent = serde_json::from_value(old_call).expect("old call row");
+    assert!(matches!(
+        decoded,
+        SessionEvent::AgentToolCall {
+            command: None,
+            exit_code: None,
+            ..
+        }
+    ));
+
+    let old_update = serde_json::json!({
+        "type": "agent_tool_update",
+        "toolCallId": "exec-9",
+        "status": "completed",
+        "text": null
+    });
+    let decoded: SessionEvent = serde_json::from_value(old_update).expect("old update row");
+    assert!(matches!(
+        decoded,
+        SessionEvent::AgentToolUpdate {
+            command: None,
+            exit_code: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn user_turn_kinds_are_the_ones_the_transcript_shows_as_bubbles() {
+    assert!(UserMessageKind::Composer.is_user_turn());
+    assert!(!UserMessageKind::Unknown.is_user_turn());
+    assert!(!UserMessageKind::OutgoingA2a.is_user_turn());
+    assert!(!UserMessageKind::IncomingA2a.is_user_turn());
+    assert!(!UserMessageKind::SystemNotice.is_user_turn());
+    assert!(!UserMessageKind::Creation.is_user_turn());
 }
 
 #[test]
@@ -1096,6 +1234,8 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
         subagent_type: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     };
     let encoded = serde_json::to_value(&with).expect("json");
     assert_eq!(encoded["type"], "agent_tool_call");
@@ -1115,6 +1255,8 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
         subagent_type: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     };
     let encoded = serde_json::to_value(&without).expect("json");
     assert!(encoded.get("kind").is_none());
@@ -1134,6 +1276,8 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
         }]),
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     };
     let encoded = serde_json::to_value(&update).expect("json");
     assert_eq!(encoded["type"], "agent_tool_update");

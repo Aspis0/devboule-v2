@@ -1867,6 +1867,7 @@ fn replay_returns_whole_history_across_generations() {
         text: "gen-1 user".into(),
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Unknown,
+        at_ms: None,
     };
     let answer_before = SessionEvent::AgentMessage {
         message_id: Some("m2".into()),
@@ -1925,6 +1926,7 @@ fn a_previous_generations_exit_row_does_not_speak_for_the_session() {
         text: "gen-1 user".into(),
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Unknown,
+        at_ms: None,
     };
     journal
         .append_blocking(agent_report_record(id, 1, 1, &frame).unwrap())
@@ -1987,6 +1989,7 @@ fn agent_page_spans_generations_in_journal_order() {
         text: "gen-1 user".into(),
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Unknown,
+        at_ms: None,
     };
     let answer_before = SessionEvent::AgentMessage {
         message_id: Some("m2".into()),
@@ -2042,6 +2045,7 @@ fn the_nothing_owed_sentinel_cannot_widen_a_page_range() {
         text: "gen-1 user".into(),
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Unknown,
+        at_ms: None,
     };
     let answer_after = SessionEvent::AgentMessage {
         message_id: Some("m2".into()),

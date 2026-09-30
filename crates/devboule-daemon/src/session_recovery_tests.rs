@@ -21,6 +21,7 @@ fn user(text: &str) -> SessionEvent {
         text: text.to_string(),
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Composer,
+        at_ms: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn the_context_carries_what_the_two_sides_said_and_merges_one_message() {
             text: "Agent 'kid' created".to_string(),
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
+            at_ms: None,
         },
     ];
     let context = recovered_context("s.old", "it is gone", &events, 4096).expect("a conversation");
@@ -135,6 +137,7 @@ fn a_session_where_nothing_was_said_yields_no_context() {
             text: "Recovered session.".to_string(),
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::SystemNotice,
+            at_ms: None,
         },
     ];
     assert!(

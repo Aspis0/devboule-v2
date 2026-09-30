@@ -401,6 +401,8 @@ fn plan_card_marks_its_turn() {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     };
     assert_eq!(
         crate::codex_plan_marks::plan_card_turn_id(&outcome),
@@ -420,6 +422,8 @@ fn plan_card_marks_its_turn() {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     };
     assert_eq!(
         crate::codex_plan_marks::plan_card_turn_id(&item_update),

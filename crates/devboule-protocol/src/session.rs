@@ -753,6 +753,13 @@ pub enum SessionEvent {
         /// Absent on stored rows written before this field existed.
         #[serde(default)]
         message_kind: UserMessageKind,
+        /// When the daemon published the message, in Unix ms — the same
+        /// instant its journal row stores as `ts_ms`, so a live event and the
+        /// row it replays from show one time. Present only for composer turns;
+        /// replay times a composer row written before this field from its
+        /// `ts_ms`, and rows older than `message_kind` carry none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_ms: Option<u64>,
     },
     /// A prompt accepted by a running turn. This is journaled for audit but
     /// intentionally not pushed to live observers; the normal user-message
@@ -794,6 +801,17 @@ pub enum SessionEvent {
         parent_tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spawn_depth: Option<u32>,
+        /// The exact command line, as the agent sent it — separate from
+        /// `title`, which a mapper may truncate or unwrap for display.
+        /// `None` for every non-command row and for rows written before the
+        /// field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        /// The command's process exit code: `Some(0)` success, nonzero
+        /// failure. `None` while running, for providers that report only a
+        /// boolean outcome, and for rows written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
     },
     /// An agent tool-call status update. The optional text is the textual part
     /// of any content the agent supplied with the update.
@@ -815,6 +833,15 @@ pub enum SessionEvent {
         parent_tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spawn_depth: Option<u32>,
+        /// The exact command line, as the agent sent it. `None` for
+        /// non-command rows and for rows written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        /// The command's process exit code, when the update completes it.
+        /// `None` while running, for providers that report only a boolean
+        /// outcome, and for rows written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
     },
     /// The response to one `session/prompt` request.
     AgentFinished {
@@ -1660,6 +1687,17 @@ pub enum UserMessageKind {
 }
 
 impl UserMessageKind {
+    /// Whether a message of this kind is a user turn the transcript shows as
+    /// a user bubble: only the composer send. `Unknown` is excluded even
+    /// though most such rows read as bubbles — it is the kind of every row
+    /// that predates `message_kind`, and the app reclassifies those by text
+    /// markers into daemon notices, peer relays and system messages
+    /// (`agentSession.ts` `handleLegacyAgentUserMessage`), so an `Unknown`
+    /// row is not provably a turn.
+    pub fn is_user_turn(self) -> bool {
+        matches!(self, Self::Composer)
+    }
+
     /// Whether a send of this kind may title its session from its raw text:
     /// the person's composer message and the creator agent's task. Both are
     /// someone's own words; a2a envelopes and daemon notices never qualify,

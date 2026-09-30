@@ -14,6 +14,7 @@ fn user(text: &str) -> SessionEvent {
         text: text.to_string(),
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Composer,
+        at_ms: None,
     }
 }
 

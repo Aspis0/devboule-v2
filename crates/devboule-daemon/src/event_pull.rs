@@ -46,6 +46,26 @@ fn mark_replay_parse_failure(
     );
 }
 
+/// Fill a user turn's time from the journal row's own `ts_ms` when the event
+/// carries none. Where the row stores the event itself, the event's `at_ms`
+/// is the authoritative reading and wins; envelope rows store the raw
+/// provider frame instead, so a view re-derived from one has no time and the
+/// row's column fills it. Only the kinds the transcript shows as user
+/// bubbles are stamped; notices, creations and a2a relays have no turn time
+/// to show.
+fn stamp_turn_time(event: &mut SessionEvent, ts_ms: u64) {
+    if let SessionEvent::AgentUserMessage {
+        at_ms,
+        message_kind,
+        ..
+    } = event
+    {
+        if at_ms.is_none() && message_kind.is_user_turn() {
+            *at_ms = Some(ts_ms);
+        }
+    }
+}
+
 fn extend_live_agent_watermark(runtime: &SessionRuntime, replay: &mut AgentReplay) -> bool {
     let current_seq = runtime.current_agent_seq();
     if current_seq <= replay.watermark {
@@ -911,13 +931,14 @@ fn pull_live_agent_replay_events(
             if !derived.is_empty() && record.generation == replay.generation {
                 replay.replayed_seqs.insert(record.seq);
             }
-            for event in derived {
+            for mut event in derived {
                 // A journaled manifest is historical catalog state and can
                 // clobber the live provider/effort enrichment. The stored
                 // runtime manifest is emitted at the replay seam instead.
                 if matches!(event, SessionEvent::SessionManifest { .. }) {
                     continue;
                 }
+                stamp_turn_time(&mut event, record.ts_ms);
                 replay
                     .pending
                     .push_back((record.generation, record.seq, event));

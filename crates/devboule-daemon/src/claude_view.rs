@@ -700,6 +700,8 @@ impl ClaudeView {
                                 locations: None,
                                 parent_tool_use_id: parent_tool_use_id.clone(),
                                 spawn_depth,
+                                command: None,
+                                exit_code: None,
                             });
                         }
                     }
@@ -1143,6 +1145,8 @@ fn tool_call_from_block(
             .map(str::to_string),
         parent_tool_use_id,
         spawn_depth,
+        command: None,
+        exit_code: None,
     })
 }
 
@@ -1172,6 +1176,8 @@ fn tool_update_from_result(
         locations: None,
         parent_tool_use_id,
         spawn_depth,
+        command: None,
+        exit_code: None,
     })
 }
 
@@ -2865,6 +2871,8 @@ mod tests {
                 locations: None,
                 parent_tool_use_id: None,
                 spawn_depth: None,
+                command: None,
+                exit_code: None,
             }]
         );
         let err = mapper.ingest(&json!({
@@ -2890,6 +2898,8 @@ mod tests {
                 locations: None,
                 parent_tool_use_id: None,
                 spawn_depth: None,
+                command: None,
+                exit_code: None,
             }]
         );
     }

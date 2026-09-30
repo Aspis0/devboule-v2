@@ -756,6 +756,8 @@ mod tests {
             locations: None,
             parent_tool_use_id: None,
             spawn_depth: None,
+            command: None,
+            exit_code: None,
         };
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");

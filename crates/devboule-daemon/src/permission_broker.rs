@@ -1199,6 +1199,8 @@ impl PermissionBroker {
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    command: None,
+                    exit_code: None,
                 };
                 let update = SessionEvent::AgentToolUpdate {
                     tool_call_id: pending.tool_call_id.clone(),
@@ -1209,6 +1211,8 @@ impl PermissionBroker {
                     locations: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    command: None,
+                    exit_code: None,
                 };
                 // Both halves are attempted even if the first fails. A row
                 // the stream refuses is a wordless log line — ids only —
@@ -1609,6 +1613,8 @@ fn publish_plan_outcome(
             locations: None,
             parent_tool_use_id: None,
             spawn_depth: None,
+            command: None,
+            exit_code: None,
         });
         if !published {
             eprintln!("could not publish the completed plan row");

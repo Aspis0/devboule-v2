@@ -1232,6 +1232,10 @@ export type SessionEvent =
       subagentType?: string;
       parentToolUseId?: string;
       spawnDepth?: number;
+      /** The exact command line, as the agent sent it. Absent when unknown. */
+      command?: string;
+      /** The command's exit code. Absent while running or when unknown. */
+      exitCode?: number;
     }
   /** ACP update for an existing tool call. */
   | {
@@ -1244,6 +1248,10 @@ export type SessionEvent =
       locations?: ToolLocation[];
       parentToolUseId?: string;
       spawnDepth?: number;
+      /** The exact command line, as the agent sent it. Absent when unknown. */
+      command?: string;
+      /** The command's exit code. Absent while running or when unknown. */
+      exitCode?: number;
     }
   /**
    * ACP prompt completion. `modelId` and `usage` are what the agent actually
@@ -1304,6 +1312,13 @@ export type SessionEvent =
       author: UserMessageAuthor;
       /** Optional for frames written before this field existed. */
       messageKind?: UserMessageKind;
+      /**
+       * When the daemon published the message (Unix ms — the same instant the
+       * journal row stores as `ts_ms`). Present only for composer turns;
+       * replay times a composer row written before this field from its
+       * `ts_ms`, and rows older than `messageKind` carry none.
+       */
+      atMs?: number;
     }
   /**
    * An agent created a child session (protocol `SessionEvent::AgentCreated`).

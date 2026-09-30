@@ -48,6 +48,8 @@ export type AgentChatItem =
       isStreamingThought?: boolean;
       parentToolUseId?: string;
       spawnDepth?: number;
+      /** When the daemon published this user message (Unix ms). Present only for composer turns, older composer rows included (timed on replay); rows older than `messageKind` carry none. */
+      atMs?: number;
     }
   | {
       id: string;
@@ -61,6 +63,10 @@ export type AgentChatItem =
       parentToolUseId?: string;
       spawnDepth?: number;
       subagentType?: string;
+      /** The exact command line, as the agent sent it. */
+      command?: string;
+      /** The command's exit code. Absent while running or when unknown. */
+      exitCode?: number;
     }
   | {
       id: string;
@@ -779,7 +785,7 @@ export class AgentSession {
   ): void {
     this.ensureTurn();
     this.closeActiveBlocks();
-    this.appendText("user", event.messageId, event.text);
+    this.appendText("user", event.messageId, event.text, undefined, undefined, event.atMs);
   }
 
   private appendOutgoingA2aMessage(text: string): void {
@@ -1052,16 +1058,15 @@ export class AgentSession {
           this.toolRows.delete(event.toolCallId);
           this.ensureTurn();
         }
-        this.appendTool(
-          event.toolCallId,
-          event.title,
-          event.status,
-          event.parentToolUseId,
-          event.spawnDepth,
-          event.subagentType,
-          event.kind,
-          event.locations,
-        );
+        this.appendTool(event.toolCallId, event.title, event.status, {
+          parentToolUseId: event.parentToolUseId,
+          spawnDepth: event.spawnDepth,
+          subagentType: event.subagentType,
+          kind: event.kind,
+          locations: event.locations,
+          command: event.command,
+          exitCode: event.exitCode,
+        });
         return;
       case "agent_tool_update":
         // Only an id no row carries opens a turn: a card answered after its
@@ -1076,6 +1081,8 @@ export class AgentSession {
           event.kind,
           event.locations,
           event.title,
+          event.command,
+          event.exitCode,
         );
         return;
       case "exit":
@@ -1334,6 +1341,7 @@ export class AgentSession {
     text: string,
     parentToolUseId?: string,
     spawnDepth?: number,
+    atMs?: number,
   ): void {
     this.prepareRole(role);
     const key = this.blockKey(role, messageId, parentToolUseId);
@@ -1345,6 +1353,7 @@ export class AgentSession {
         text,
         messageId,
         ...itemParentage(parentToolUseId, spawnDepth),
+        ...(atMs === undefined ? {} : { atMs }),
       };
       this.blocks.set(key, this.state.items.length);
       this.activeBlocks.set(this.activeBlockKey(role, parentToolUseId), key);
@@ -1364,13 +1373,27 @@ export class AgentSession {
     toolCallId: string,
     title: string,
     status: string,
-    parentToolUseId?: string,
-    spawnDepth?: number,
-    subagentType?: string,
-    kind?: string,
-    locations?: ToolLocation[],
-    output = "",
+    fields: {
+      parentToolUseId?: string;
+      spawnDepth?: number;
+      subagentType?: string;
+      kind?: string;
+      locations?: ToolLocation[];
+      output?: string;
+      command?: string;
+      exitCode?: number;
+    } = {},
   ): void {
+    const {
+      parentToolUseId,
+      spawnDepth,
+      subagentType,
+      kind,
+      locations,
+      output = "",
+      command,
+      exitCode,
+    } = fields;
     const currentKey = `tool:${this.turn}:${toolCallId}`;
     const key = this.toolRows.get(toolCallId) ?? currentKey;
     // A tool-call item is a transcript boundary in its own turn. Tool updates
@@ -1395,6 +1418,8 @@ export class AgentSession {
             ...(locations === undefined ? {} : { locations }),
             ...itemParentage(parentToolUseId, spawnDepth),
             ...(subagentType === undefined ? {} : { subagentType }),
+            ...(command === undefined ? {} : { command }),
+            ...(exitCode === undefined ? {} : { exitCode }),
           },
         ],
       });
@@ -1417,22 +1442,22 @@ export class AgentSession {
     kind?: string,
     locations?: ToolLocation[],
     title?: string,
+    command?: string,
+    exitCode?: number,
   ): void {
     const key = this.toolRows.get(toolCallId) ?? `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
     const nextTitle = typeof title === "string" && title.length > 0 ? title : undefined;
     if (index === undefined) {
-      this.appendTool(
-        toolCallId,
-        nextTitle ?? text ?? "Tool call",
-        status ?? "running",
+      this.appendTool(toolCallId, nextTitle ?? text ?? "Tool call", status ?? "running", {
         parentToolUseId,
         spawnDepth,
-        undefined,
         kind,
         locations,
-        nextTitle === undefined ? "" : (text ?? ""),
-      );
+        output: nextTitle === undefined ? "" : (text ?? ""),
+        command,
+        exitCode,
+      });
       return;
     }
 
@@ -1448,6 +1473,8 @@ export class AgentSession {
       ...(nextTitle === undefined ? {} : { title: nextTitle }),
       ...(kind === undefined ? {} : { kind }),
       ...(locations === undefined ? {} : { locations }),
+      ...(command === undefined ? {} : { command }),
+      ...(exitCode === undefined ? {} : { exitCode }),
     };
     this.update({ items });
   }

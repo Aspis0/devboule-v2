@@ -357,6 +357,106 @@ describe("ACP agent session", () => {
     expect(item.locations).toEqual([{ path: "src/lib.rs", line: 12 }]);
   });
 
+  it("carries the command and the exit code onto the tool row", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "exec-1",
+      title: "git status",
+      status: "in_progress",
+      kind: "execute",
+      command: "\"pwsh.exe\" -Command 'git status'",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "exec-1",
+      status: "failed",
+      text: null,
+      exitCode: 1,
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.command).toBe("\"pwsh.exe\" -Command 'git status'");
+    expect(item.exitCode).toBe(1);
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "exec-2",
+      title: "pnpm build",
+      status: "in_progress",
+      kind: "execute",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "exec-2",
+      status: "failed",
+      text: null,
+      exitCode: 3,
+      command: "pnpm build",
+    });
+
+    const fromUpdate = harness.session.getState().items[1];
+    if (fromUpdate.role !== "tool") throw new Error("expected a tool item");
+    expect(fromUpdate.command).toBe("pnpm build");
+    expect(fromUpdate.exitCode).toBe(3);
+  });
+
+  it("leaves command and exit code off rows the events did not name them", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "Read file",
+      status: "running",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "completed",
+      text: null,
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.command).toBeUndefined();
+    expect(item.exitCode).toBeUndefined();
+  });
+
+  it("carries the turn time onto the user bubble when the daemon sent one", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_user_message",
+      author: "human",
+      messageId: "devboule-user-1-1",
+      messageKind: "composer",
+      text: "run the tests",
+      atMs: 1_789_053_471_559,
+    });
+    harness.emit({
+      type: "agent_user_message",
+      author: "human",
+      messageId: "devboule-user-1-2",
+      messageKind: "composer",
+      text: "an old row",
+    });
+
+    const items = harness.session.getState().items;
+    const timed = items[0];
+    const untimed = items[1];
+    if (timed.role !== "user" || untimed.role !== "user") {
+      throw new Error("expected user items");
+    }
+    expect(timed.atMs).toBe(1_789_053_471_559);
+    expect(untimed.atMs).toBeUndefined();
+  });
+
   it("appends update text to output without touching the title", async () => {
     const harness = makeHarness();
     await harness.session.start();

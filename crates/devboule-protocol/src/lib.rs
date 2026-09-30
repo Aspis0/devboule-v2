@@ -148,12 +148,19 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// refusing the handshake is the only protection. The additive task and
 /// goal event tags (`agent_task_started`, `agent_task_notification`,
 /// `agent_background_tasks_changed`, `agent_tasks`, `goal_changed`) are
-/// deliberately ungated: these output-only tags change no request shape.
-pub const PROTOCOL_VERSION: u32 = 16;
-/// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
-/// after a required-field change: agreeing on an older version would still
-/// emit the new struct, and the peer would fail to parse it.
-pub const PROTOCOL_MIN_VERSION: u32 = PROTOCOL_VERSION;
+/// deliberately ungated: these output-only tags change no request shape. The
+/// additive command-row fields (`command`/`exitCode` on the tool events,
+/// `atMs` on the user echo) are likewise output-only and skipped when absent,
+/// so a v16 peer parses every v17 event; the version bump marks the dialect,
+/// and the floor below stays put.
+pub const PROTOCOL_VERSION: u32 = 17;
+/// Oldest dialect this crate still accepts. Protocol 17 added only optional
+/// output-only fields, so a v16 peer still interoperates — it just shows no
+/// command chip or turn time until rebuilt. The floor moves only for a
+/// required-field or type change (`created_at_ms`, `Workspace.path`), which
+/// forces it up to [`PROTOCOL_VERSION`]: agreeing on an older version would
+/// still emit the new struct, and the peer would fail to parse it.
+pub const PROTOCOL_MIN_VERSION: u32 = 16;
 
 /// Well-known capability names. These are strings on the wire so a peer that
 /// does not know a name can still complete the handshake.
@@ -754,8 +761,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protocol_version_and_min_match() {
-        assert_eq!(PROTOCOL_MIN_VERSION, PROTOCOL_VERSION);
+    fn protocol_min_still_accepts_a_v16_peer() {
+        // 17 added only optional output-only fields, so the floor holds at
+        // 16; it may only reach the version for a required-field or type
+        // change (see the constants above).
+        assert_eq!(PROTOCOL_MIN_VERSION, 16);
     }
 
     #[test]

@@ -137,6 +137,7 @@ fn view_from_session_update(
                 // historical rows; current A2A delivery is an AgentReport.
                 author: UserMessageAuthor::Human,
                 message_kind: UserMessageKind::Unknown,
+                at_ms: None,
             })
         }
         Some("agent_thought_chunk") => {
@@ -185,6 +186,8 @@ fn view_from_session_update(
             subagent_type: None,
             parent_tool_use_id: None,
             spawn_depth: None,
+            command: None,
+            exit_code: None,
         }),
         Some("tool_call_update") => {
             let text = text_from_content(update.get("content")).map(str::to_string);
@@ -211,6 +214,8 @@ fn view_from_session_update(
                 locations: locations_from_value(update.get("locations"), cwd, true),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+                command: None,
+                exit_code: None,
             })
         }
         Some("plan") => {
@@ -1637,6 +1642,7 @@ mod tests {
                 text: "Reply with exactly one word: PONG".to_string(),
                 author: UserMessageAuthor::Human,
                 message_kind: UserMessageKind::Unknown,
+                at_ms: None,
             }
         );
         assert_eq!(

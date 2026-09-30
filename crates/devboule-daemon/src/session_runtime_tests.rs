@@ -446,6 +446,8 @@ fn plan_rows_and_agent_report_outcomes_replay_from_the_journal() {
             locations: None,
             parent_tool_use_id: None,
             spawn_depth: None,
+            command: None,
+            exit_code: None,
         }));
     }
     journal.flush().expect("flush decision rows");
@@ -690,4 +692,192 @@ fn an_unsetled_publish_still_ends_the_turn() {
         None,
     );
     assert!(!runtime.is_running_turn());
+}
+
+/// The slice's headline invariant: the echo's `at_ms` and its row's `ts_ms`
+/// are one reading of the journal's clock, and replay carries that same
+/// instant back — so a turn cannot change its time across a restart.
+#[test]
+fn the_user_echo_and_its_journal_row_name_one_time() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-echo-one-time");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let session_id = "s.echo.one.time";
+    let mut record = crate::journal::new_session_record(
+        session_id,
+        "S-1-5-21-1",
+        None,
+        SessionKind::Acp,
+        "Agent",
+    );
+    record.closed = false;
+    journal.upsert_blocking(record).expect("session row");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.generation = 1;
+        stream.next_seq = 1;
+    }
+    runtime
+        .publish_agent_user_message(
+            "one clock".to_string(),
+            devboule_protocol::UserMessageAuthor::Human,
+            devboule_protocol::UserMessageKind::Composer,
+        )
+        .expect("published");
+    journal.flush().expect("flush the row");
+
+    let row = journal
+        .replay_agent_page(session_id, 1, 0, 0, u64::MAX, 100)
+        .expect("rows")
+        .records
+        .into_iter()
+        .find(|record| {
+            matches!(
+                serde_json::from_slice::<devboule_protocol::SessionEvent>(&record.payload),
+                Ok(devboule_protocol::SessionEvent::AgentUserMessage { .. })
+            )
+        })
+        .expect("the echo row");
+    let live_at_ms = match serde_json::from_slice::<devboule_protocol::SessionEvent>(&row.payload) {
+        Ok(devboule_protocol::SessionEvent::AgentUserMessage { at_ms, .. }) => at_ms,
+        other => panic!("expected the echo row, got {other:?}"),
+    };
+    assert_eq!(
+        live_at_ms,
+        Some(row.ts_ms),
+        "one reading of the clock for the echo and its row"
+    );
+
+    let recovered = SessionRuntime::from_replay(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+        journal.replay(session_id).expect("replay"),
+    );
+    let connection = ConnHandle::new(1);
+    let attached = recovered
+        .try_attach_with_replay(None, &connection, false)
+        .expect("recovered attach");
+    connection.track_with_agent_replay(
+        session_id,
+        Arc::clone(&recovered),
+        true,
+        None,
+        attached.generation,
+        attached.live_agent_replay,
+    );
+    let replayed_at = pull_events(&connection)
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { at_ms, .. } => Some(*at_ms),
+            _ => None,
+        })
+        .expect("the echo is replayed");
+    assert_eq!(
+        replayed_at,
+        Some(row.ts_ms),
+        "replay carries the row's instant, not a second stamping"
+    );
+
+    drop(runtime);
+    drop(journal);
+    drop(recovered);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A kind that is not a user turn carries no turn time on either path: the
+/// echo does not stamp it live, and replay does not fill it — the two rules
+/// agree, so a relay never grows a time across a restart.
+#[test]
+fn a_non_turn_kind_carries_no_time_live_or_on_replay() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-non-turn-time");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let session_id = "s.non.turn.time";
+    let mut record = crate::journal::new_session_record(
+        session_id,
+        "S-1-5-21-1",
+        None,
+        SessionKind::Acp,
+        "Agent",
+    );
+    record.closed = false;
+    journal.upsert_blocking(record).expect("session row");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.generation = 1;
+        stream.next_seq = 1;
+    }
+    runtime
+        .publish_agent_user_message(
+            "relayed words".to_string(),
+            devboule_protocol::UserMessageAuthor::Agent,
+            devboule_protocol::UserMessageKind::OutgoingA2a,
+        )
+        .expect("published");
+    journal.flush().expect("flush the row");
+
+    let row = journal
+        .replay_agent_page(session_id, 1, 0, 0, u64::MAX, 100)
+        .expect("rows")
+        .records
+        .into_iter()
+        .find(|record| {
+            matches!(
+                serde_json::from_slice::<devboule_protocol::SessionEvent>(&record.payload),
+                Ok(devboule_protocol::SessionEvent::AgentUserMessage { .. })
+            )
+        })
+        .expect("the relay row");
+    let live_at_ms = match serde_json::from_slice::<devboule_protocol::SessionEvent>(&row.payload) {
+        Ok(devboule_protocol::SessionEvent::AgentUserMessage { at_ms, .. }) => at_ms,
+        other => panic!("expected the relay row, got {other:?}"),
+    };
+    assert_eq!(
+        live_at_ms, None,
+        "a non-turn kind is not stamped live, though the clock was read"
+    );
+
+    let recovered = SessionRuntime::from_replay(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+        journal.replay(session_id).expect("replay"),
+    );
+    let connection = ConnHandle::new(1);
+    let attached = recovered
+        .try_attach_with_replay(None, &connection, false)
+        .expect("recovered attach");
+    connection.track_with_agent_replay(
+        session_id,
+        Arc::clone(&recovered),
+        true,
+        None,
+        attached.generation,
+        attached.live_agent_replay,
+    );
+    let replayed_at = pull_events(&connection)
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { at_ms, .. } => Some(*at_ms),
+            _ => None,
+        })
+        .expect("the relay is replayed");
+    assert_eq!(
+        replayed_at, None,
+        "replay does not fill a non-turn kind either"
+    );
+
+    drop(runtime);
+    drop(journal);
+    drop(recovered);
+    let _ = std::fs::remove_dir_all(&dir);
 }

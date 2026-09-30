@@ -246,12 +246,12 @@ mod tests {
         assert!(err.message.contains("Update the app"));
     }
 
-    /// A peer that predates live-row activity must fail at the handshake in both directions,
-    /// before the queue can mistake a missing reading for an idle session. Reverting the
-    /// minimum makes both `unwrap_err()`s panic.
+    /// A peer older than the floor must fail at the handshake in both directions,
+    /// before the queue can mistake a missing reading for an idle session. Reverting
+    /// the floor's guard makes both `unwrap_err()`s panic.
     #[test]
-    fn current_crate_refuses_pre_activity_peer() {
-        let older = PROTOCOL_VERSION - 1;
+    fn current_crate_refuses_pre_floor_peer() {
+        let older = PROTOCOL_MIN_VERSION - 1;
         let err = negotiate(
             &client(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
             &daemon(older, older),
@@ -270,6 +270,25 @@ mod tests {
         assert_eq!(err.code, ErrorCode::ProtocolVersionMismatch);
         assert!(err.message.contains("daemon is newer"));
         assert!(err.message.contains("Update the app"));
+    }
+
+    /// 17 added only optional output-only fields, so the current crate and a
+    /// floor peer still speak: the older side keeps its version.
+    #[test]
+    fn current_crate_still_speaks_with_a_floor_peer() {
+        let agreed = negotiate(
+            &client(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
+            &daemon(PROTOCOL_MIN_VERSION, PROTOCOL_MIN_VERSION),
+        )
+        .expect("the floor peer still overlaps");
+        assert_eq!(agreed.protocol_version, PROTOCOL_MIN_VERSION);
+
+        let agreed = negotiate(
+            &client(PROTOCOL_MIN_VERSION, PROTOCOL_MIN_VERSION),
+            &daemon(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
+        )
+        .expect("the floor daemon still overlaps");
+        assert_eq!(agreed.protocol_version, PROTOCOL_MIN_VERSION);
     }
 
     #[test]

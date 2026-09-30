@@ -1439,6 +1439,8 @@ fn tool_delta(params: &Value, kind: &str) -> Vec<SessionEvent> {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     }]
 }
 
@@ -1469,6 +1471,8 @@ fn item_event(
                     locations: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    command: None,
+                    exit_code: None,
                 }]
             } else {
                 vec![SessionEvent::AgentToolCall {
@@ -1484,11 +1488,21 @@ fn item_event(
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    command: None,
+                    exit_code: None,
                 }]
             }
         }
         Some("commandExecution") => {
             let kind = Some("execute".to_string());
+            // The exact line, as the wire carried it — the pwsh wrapper
+            // included, not just the payload it wraps. The title built below
+            // unwraps the wrapper for display; this field keeps the line.
+            let command = item
+                .get("command")
+                .and_then(Value::as_str)
+                .filter(|command| !command.is_empty())
+                .map(str::to_string);
             if completed {
                 vec![SessionEvent::AgentToolUpdate {
                     tool_call_id: id.to_string(),
@@ -1503,6 +1517,8 @@ fn item_event(
                     locations: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    exit_code: codex_exit_code(item),
+                    command,
                 }]
             } else {
                 vec![SessionEvent::AgentToolCall {
@@ -1521,6 +1537,8 @@ fn item_event(
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    exit_code: codex_exit_code(item),
+                    command,
                 }]
             }
         }
@@ -1536,6 +1554,8 @@ fn item_event(
                     locations,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    command: None,
+                    exit_code: None,
                 }]
             } else {
                 vec![SessionEvent::AgentToolCall {
@@ -1551,6 +1571,8 @@ fn item_event(
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    command: None,
+                    exit_code: None,
                 }]
             }
         }
@@ -1607,6 +1629,15 @@ fn status_name(value: &str) -> String {
         "inProgress" => "in_progress".to_string(),
         other => other.to_string(),
     }
+}
+
+/// The frame's `exitCode`, when it is a number an `i32` can hold. A running
+/// item sends `null`, and a code outside `i32` is not a code this field can
+/// carry — both stay absent rather than clamping to a lie.
+fn codex_exit_code(item: &Value) -> Option<i32> {
+    item.get("exitCode")
+        .and_then(Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok())
 }
 
 /// Whether `turn_id` was adopted before `tracked`: the only proof that a
@@ -2188,6 +2219,46 @@ mod tests {
             }
             other => panic!("expected commandExecution tool call, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn command_execution_rows_carry_the_command_line_and_the_exit_code() {
+        // Measured wire (E1 step 1): a `git status` under the pwsh wrapper.
+        // The started item carries the exact command line and no exit; the
+        // completed item repeats the command and reports exit 1. The frames
+        // are inline because the probe's journal double-escaped path
+        // separators in `raw`, which would fail this exact-line assertion.
+        let mut view = CodexView::new(None);
+        let mut events = view.ingest(&parse(
+            r#"{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"th","turnId":"tu","item":{"type":"commandExecution","id":"exec-1","status":"inProgress","command":"\"C:\\Users\\gualt\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe\" -Command 'git status'","aggregatedOutput":null,"exitCode":null}}}"#,
+        ));
+        events.extend(view.ingest(&parse(
+            r#"{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"th","turnId":"tu","item":{"type":"commandExecution","id":"exec-1","status":"failed","command":"\"C:\\Users\\gualt\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe\" -Command 'git status'","aggregatedOutput":"fatal: not a git repository (or any of the parent directories): .git\n","exitCode":1}}}"#,
+        )));
+
+        let command_line = r#""C:\Users\gualt\AppData\Local\Microsoft\WindowsApps\pwsh.exe" -Command 'git status'"#;
+        let call = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::AgentToolCall {
+                    command, exit_code, ..
+                } => Some((command.clone(), *exit_code)),
+                _ => None,
+            })
+            .expect("command row");
+        let update = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::AgentToolUpdate {
+                    command, exit_code, ..
+                } => Some((command.clone(), *exit_code)),
+                _ => None,
+            })
+            .expect("command update");
+        assert_eq!(call.0.as_deref(), Some(command_line));
+        assert_eq!(call.1, None, "a started item has no exit yet");
+        assert_eq!(update.0.as_deref(), Some(command_line));
+        assert_eq!(update.1, Some(1), "the measured git status failed with 1");
     }
 
     #[test]

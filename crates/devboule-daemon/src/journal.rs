@@ -3574,7 +3574,7 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(0))
@@ -3727,12 +3727,25 @@ pub fn agent_report_record(
     seq: u64,
     event: &SessionEvent,
 ) -> Option<EventRecord> {
+    agent_report_record_at(session_id, generation, seq, event, now_ms())
+}
+
+/// The same record with the caller's instant as the row's `ts_ms`. The
+/// journaled-publish seam uses it so an event's `at_ms` and its row's
+/// `ts_ms` are one reading of the clock, not two.
+pub fn agent_report_record_at(
+    session_id: impl Into<String>,
+    generation: u64,
+    seq: u64,
+    event: &SessionEvent,
+    ts_ms: u64,
+) -> Option<EventRecord> {
     Some(EventRecord {
         session_id: session_id.into(),
         generation,
         seq,
         kind: EventKind::AgentReport,
-        ts_ms: now_ms(),
+        ts_ms,
         payload: serde_json::to_vec(event).ok()?,
     })
 }

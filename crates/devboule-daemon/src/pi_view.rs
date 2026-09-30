@@ -207,6 +207,8 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+                    command: None,
+                    exit_code: None,
                 }]
             })
             .unwrap_or_default(),
@@ -230,6 +232,8 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     })
 }
 
@@ -246,6 +250,8 @@ fn tool_execution_start(value: &Value) -> Option<SessionEvent> {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     })
 }
 
@@ -269,6 +275,8 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
+        command: None,
+        exit_code: None,
     }];
     if let Some(tool_name) = value.get("toolName").and_then(Value::as_str) {
         if let Some(items) =
