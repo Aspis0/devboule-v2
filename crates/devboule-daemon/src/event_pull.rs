@@ -1193,6 +1193,87 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
     }
 }
 
+/// The harness the event-pull test topics share: the pull drain, the tracked
+/// attach, and the two live-agent replay fixtures.
 #[cfg(test)]
-#[path = "event_pull_tests.rs"]
-mod tests;
+#[path = "event_pull_test_support.rs"]
+mod test_support;
+
+/// The subscription table: subscription identity, the per-connection cap, a
+/// poisoned stream, and the exit wake.
+#[cfg(test)]
+#[path = "event_pull_subscription_tests.rs"]
+mod subscription_tests;
+
+/// The live-agent replay walk: complete, ordered, deduplicated, and paged
+/// under the pull budget.
+#[cfg(test)]
+#[path = "event_pull_replay_tests.rs"]
+mod replay_tests;
+
+/// What a journalled row becomes on replay: its event, or a degraded notice.
+#[cfg(test)]
+#[path = "event_pull_replay_payload_tests.rs"]
+mod replay_payload_tests;
+
+/// What a reattach or a late observer is served: preserved pending, the
+/// shared backlog, and the manifest exactly once.
+#[cfg(test)]
+#[path = "event_pull_reattach_tests.rs"]
+mod reattach_tests;
+
+/// The goal correction a short replay emits after its rows.
+#[cfg(test)]
+#[path = "event_pull_goal_correction_tests.rs"]
+mod goal_correction_tests;
+
+/// What a replayed envelope carries: its own generation and turn time.
+#[cfg(test)]
+#[path = "event_pull_generation_tests.rs"]
+mod generation_tests;
+
+/// The origin a permission card carries, on publish and on replay.
+#[cfg(test)]
+#[path = "event_pull_permission_origin_tests.rs"]
+mod permission_origin_tests;
+
+/// The transcript cursor a reattach keeps and the history it is owed.
+#[cfg(test)]
+#[path = "event_pull_transcript_history_tests.rs"]
+mod transcript_history_tests;
+
+/// What the journal still owes a reattach, and the stop tail that owes
+/// nothing.
+#[cfg(test)]
+#[path = "event_pull_transcript_journal_tests.rs"]
+mod transcript_journal_tests;
+
+/// Rows from different generations sharing one replay.
+#[cfg(test)]
+#[path = "event_pull_cross_generation_tests.rs"]
+mod cross_generation_tests;
+
+/// The views a replay re-derives from journal rows, and must not drop.
+#[cfg(test)]
+#[path = "event_pull_replay_views_tests.rs"]
+mod replay_views_tests;
+
+/// The transcript cursor: what advances it and what replays after it.
+#[cfg(test)]
+#[path = "event_pull_cursor_tests.rs"]
+mod cursor_tests;
+
+/// What a live attach delivers, and what a recovered pull ends with.
+#[cfg(test)]
+#[path = "event_pull_attach_exit_tests.rs"]
+mod attach_exit_tests;
+
+/// The Codex attach replay: the plan-mark scan and the turn it suppresses.
+#[cfg(test)]
+#[path = "event_pull_codex_attach_tests.rs"]
+mod codex_attach_tests;
+
+/// The live plan-usage cache a fresh attach is served.
+#[cfg(test)]
+#[path = "event_pull_plan_usage_tests.rs"]
+mod plan_usage_tests;
