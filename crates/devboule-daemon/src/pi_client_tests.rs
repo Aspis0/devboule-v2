@@ -1814,6 +1814,7 @@ fn the_static_route_answers_for_the_model_current_at_prompt_time() {
         Arc::new(Mutex::new(None)),
         Arc::new(AtomicU64::new(1)),
         Arc::clone(&catalog),
+        Arc::new(super::local_commands::SlashPromptFate::new()),
     );
     let attachment = plan_attachment("photo.png", "image/png", &clean_png(0x41));
     catalog.lock().expect("catalog").current_model_id = Some("minimax-m3".to_string());
@@ -2549,12 +2550,14 @@ mod lifecycle_tests {
                 stdin: Arc::clone(&pi.stdin),
                 next_id: Arc::clone(&pi.next_id),
                 pending: Vec::new(),
+                fate: Arc::new(super::super::local_commands::SlashPromptFate::new()),
             }) as Box<dyn std::io::Write + Send>)),
             image_sink: None,
             static_image_sink: Some(Arc::new(PiStaticPrompt::new(
                 Arc::clone(&pi.stdin),
                 Arc::clone(&pi.next_id),
                 Arc::clone(&pi.catalog),
+                Arc::new(super::super::local_commands::SlashPromptFate::new()),
             ))),
             reader: Box::new(stdout),
             reader_dispatch: Some(Box::new(reader)),

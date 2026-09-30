@@ -184,6 +184,16 @@ pub(super) fn parse_slash_invocation(text: &str) -> Option<SlashInvocation> {
     })
 }
 
+/// The invocation names pi executes out of band — the one list the
+/// out-of-band door answers to and the prompt-fate tracking excludes, so a
+/// command added here is guarded and untracked together.
+pub(super) fn is_out_of_band_command(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "compact" | "autocompact"
+    )
+}
+
 /// JavaScript's whitespace set (ECMA-262 WhiteSpace + LineTerminator): it
 /// includes U+FEFF and excludes U+0085, both of which differ from Rust's
 /// `char::is_whitespace`. The upstream parse runs on JS `trim()` and `/\s/`,

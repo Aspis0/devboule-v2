@@ -1417,6 +1417,25 @@ impl SessionRuntime {
         self.publish_journaled_agent_event(|_, _| event).is_some()
     }
 
+    /// Publish a finish the daemon decided itself — no provider row carries
+    /// it, so the envelope path has nothing to re-derive from — journaled on
+    /// the same road every daemon-authored event takes, ending the turn only
+    /// when the event really is an `AgentFinished` (the guard
+    /// [`Self::publish_agent_event_with_seq`] keeps). The outcome is
+    /// recorded first because the publish's own finish notify reads it
+    /// back, so a publish the stream refuses (a closed session) leaves the
+    /// outcome recorded with no event and no turn end — a session already
+    /// over, and the one case where the two do not travel together.
+    pub(crate) fn publish_journaled_finish(&self, event: SessionEvent) -> bool {
+        let ends_the_turn = matches!(&event, SessionEvent::AgentFinished { .. });
+        self.record_agent_outcome(&event);
+        let published = self.publish_journaled_agent_event(|_, _| event).is_some();
+        if published && ends_the_turn {
+            self.finish_turn();
+        }
+        published
+    }
+
     pub(crate) fn publish_session_notice(&self, text: String, severity: NoticeSeverity) -> bool {
         let (event, generation, seq) = {
             let Ok(mut stream) = self.lock_stream() else {

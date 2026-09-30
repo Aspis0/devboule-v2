@@ -15,8 +15,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    ErrorCode, PermissionOption, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
-    SessionModelEffort, UnattendedState, WireError,
+    ErrorCode, NoticeSeverity, PermissionOption, SessionEvent, SessionModeStateView,
+    SessionModeView, SessionModel, SessionModelEffort, UnattendedState, WireError,
 };
 use serde_json::Value;
 
@@ -39,6 +39,11 @@ use crate::server::ServerState;
 /// lives here, and its tests drive this client's reader.
 #[path = "pi_commands.rs"]
 mod commands;
+/// A slash prompt Pi answers without a model turn: the tracking that lets
+/// its run end. A child of this file like its siblings — the reader and
+/// both prompt writers share its state.
+#[path = "pi_local_commands.rs"]
+mod local_commands;
 /// The two commands pi executes itself, out of band. A child of this file
 /// for the same control channel; its tests drive this client's writer.
 #[path = "pi_out_of_band.rs"]
@@ -1615,10 +1620,12 @@ fn spawn_pi(
     let handler = out_of_band::PiOutOfBandCommands::new(Arc::clone(&control));
     let compact_guard = handler.compact_guard();
     let out_of_band: Option<Arc<dyn OutOfBandCommands>> = Some(Arc::new(handler));
+    let prompt_fate = Arc::new(local_commands::SlashPromptFate::new());
     let writer = PiWriter {
         stdin: Arc::clone(&stdin),
         next_id: Arc::clone(&next_id),
         pending: Vec::new(),
+        fate: Arc::clone(&prompt_fate),
     };
     let killer = PiKiller {
         process: Arc::clone(&process),
@@ -1641,7 +1648,8 @@ fn spawn_pi(
     )
     .with_extension_path(extension_path.clone())
     .with_commands_reply(commands_reply)
-    .with_compact_guard(compact_guard);
+    .with_compact_guard(compact_guard)
+    .with_prompt_fate(Arc::clone(&prompt_fate));
     // The static prompt route reads the live model from the same catalog the
     // switcher keeps, so the two share one `Arc`. The switcher is built before
     // the session is assembled because the delivery runs through it: the same
@@ -1670,6 +1678,7 @@ fn spawn_pi(
         Arc::clone(&stdin),
         Arc::clone(&next_id),
         Arc::clone(&catalog),
+        prompt_fate,
     ));
     Ok(SpawnedSession {
         process_job,
@@ -2328,6 +2337,7 @@ pub(crate) struct PiStaticPrompt {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     catalog: Arc<Mutex<PiCatalog>>,
+    fate: Arc<local_commands::SlashPromptFate>,
 }
 
 impl PiStaticPrompt {
@@ -2335,11 +2345,13 @@ impl PiStaticPrompt {
         stdin: Arc<Mutex<Option<ChildStdin>>>,
         next_id: Arc<AtomicU64>,
         catalog: Arc<Mutex<PiCatalog>>,
+        fate: Arc<local_commands::SlashPromptFate>,
     ) -> Self {
         Self {
             stdin,
             next_id,
             catalog,
+            fate,
         }
     }
 }
@@ -2376,6 +2388,7 @@ impl super::StaticImageSink for PiStaticPrompt {
             stdin: Arc::clone(&self.stdin),
             next_id: Arc::clone(&self.next_id),
             plan,
+            fate: Arc::clone(&self.fate),
         })))
     }
 }
@@ -2387,6 +2400,7 @@ struct PiPlannedPrompt {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     plan: PiPromptPlan,
+    fate: Arc<local_commands::SlashPromptFate>,
 }
 
 impl PiPlannedPrompt {
@@ -2413,7 +2427,15 @@ impl super::PlannedStaticPrompt for PiPlannedPrompt {
     }
 
     fn send(&self) -> Result<(), WireError> {
-        let mut bytes = serde_json::to_vec(&self.frame()).map_err(|error| {
+        let frame = self.frame();
+        // The note rides the write, before the frame, as the writer's does.
+        let id = frame
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        self.fate.note_prompt(&id, &self.plan.fallback_text);
+        let mut bytes = serde_json::to_vec(&frame).map_err(|error| {
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not encode the Pi prompt frame: {error}"),
@@ -2433,6 +2455,7 @@ struct PiWriter {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     pending: Vec<u8>,
+    fate: Arc<local_commands::SlashPromptFate>,
 }
 
 impl Write for PiWriter {
@@ -2447,13 +2470,17 @@ impl Write for PiWriter {
         }
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
+        let id = format!("p-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        // The note rides the write, before the frame: a response that beats
+        // it must still find the prompt tracked.
+        self.fate.note_prompt(&id, &text);
         // The text-only frame, unchanged. A prompt that carries images is
         // sent by the static route's own `prompt` frame instead of by this
         // writer, so `pi_prompt_frame` has one production caller and this
         // literal keeps the other: with no entry the two build the same frame,
         // which `a_frame_without_entries_is_the_text_only_frame` pins.
         let frame = serde_json::json!({
-            "id": format!("p-{}", self.next_id.fetch_add(1, Ordering::Relaxed)),
+            "id": id,
             "type": "prompt",
             "message": text,
         });
@@ -2943,6 +2970,7 @@ struct PiReader {
     permission_extension_active: Arc<AtomicBool>,
     commands_reply: Option<commands::PiCommandsReply>,
     compact: Arc<out_of_band::CompactGuard>,
+    fate: Arc<local_commands::SlashPromptFate>,
     extension_path: PathBuf,
 }
 
@@ -2971,6 +2999,7 @@ impl PiReader {
             permission_extension_active,
             commands_reply: None,
             compact: Arc::new(out_of_band::CompactGuard::default()),
+            fate: Arc::new(local_commands::SlashPromptFate::new()),
             extension_path: PathBuf::new(),
         }
     }
@@ -2994,8 +3023,44 @@ impl PiReader {
         self
     }
 
+    /// The prompt-fate tracking shared with the writers. The note is taken
+    /// before the write, so a response that beats it still finds its prompt
+    /// tracked; a write that then fails leaves the note armed until the next
+    /// prompt replaces it, and nothing answers a prompt that never went out.
+    fn with_prompt_fate(mut self, fate: Arc<local_commands::SlashPromptFate>) -> Self {
+        self.fate = fate;
+        self
+    }
+
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent, seq: Option<u64>) {
         let _ = runtime.publish_agent_event_with_seq(event, None, seq);
+    }
+
+    /// The one `get_state` that decides a slash prompt's fate, written here
+    /// on the reader thread so the next dispatch recognizes the answer by
+    /// id. A child that cannot take the frame answers nothing, and the run
+    /// ends exactly as it would have before this path existed.
+    fn probe_local_command(&self) {
+        let id = format!("c-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let frame = pi_control_frame(&id, "get_state", serde_json::json!({}));
+        if send_json(&self.stdin, &frame, "Pi").is_err() {
+            return;
+        }
+        self.fate.arm_probe(&id);
+    }
+
+    /// The local-command ending: the finish published on the journaled road,
+    /// so a restart's replay derives it back the way it derives a `turn_end`'s
+    /// — the provider row this decision was read from could never carry it —
+    /// and the turn it ends actually ended. The command's output went out as
+    /// notices when its response arrived; an end carries nothing.
+    fn end_local_command(&self, runtime: &SessionRuntime) {
+        self.fate.note_local_end();
+        runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+            stop_reason: "completed".to_string(),
+            model_id: None,
+            usage: None,
+        });
     }
 
     fn dispatch_value(
@@ -3020,6 +3085,33 @@ impl PiReader {
             for event in crate::pi_view::events_from_line(&value) {
                 self.publish(runtime, event, event_seq);
             }
+            // A slash prompt's own response: its windowed output goes out
+            // now — a losing race keeps its words, and so does a rejected
+            // prompt — and when the response succeeded with no model turn
+            // since the write, one get_state settles whether the command
+            // was handled locally; the answer's dispatch ends the run
+            // when it was.
+            if value.get("command").and_then(Value::as_str) == Some("prompt") {
+                let success = value.get("success").and_then(Value::as_bool) == Some(true);
+                let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
+                if let Some((notifies, probe)) = self.fate.prompt_responded(id, success) {
+                    for text in notifies {
+                        let _ = runtime.publish_daemon_event(SessionEvent::SessionNotice {
+                            text,
+                            severity: NoticeSeverity::Info,
+                        });
+                    }
+                    if probe {
+                        self.probe_local_command();
+                    }
+                }
+            }
+            if self
+                .fate
+                .state_answered(value.get("id").and_then(Value::as_str), &value)
+            {
+                self.end_local_command(runtime);
+            }
             return Ok(());
         }
         // A late end for a run the transcript already completed synthetically
@@ -3027,6 +3119,16 @@ impl PiReader {
         // live showed instead of a second completion marker.
         if self.compact.observe(&value) {
             return Ok(());
+        }
+        // A slash prompt whose model turn has begun ends the normal way; a
+        // probe still awaiting its answer decides nothing any more. And an
+        // `agent_start` after a local end begins its turn here: a prompt
+        // write would have cleared the flag, so nothing else will begin it,
+        // and pi's own turn_end then ends it exactly once.
+        if value.get("type").and_then(Value::as_str) == Some("agent_start")
+            && self.fate.note_agent_start()
+        {
+            runtime.begin_turn();
         }
         let event_seq = runtime.journal_agent_envelope(&value);
         if let Some(session_id) = session_id_from_value(&value) {
@@ -3051,7 +3153,10 @@ impl PiReader {
         // the contract claude, acp and codex keep — so an attach's replay
         // seam can match a backlog copy against the copy replay derives from
         // the same row. A `None` here would make the finish's context reading
-        // survive the seam beside its replayed twin and deliver twice.
+        // survive the seam beside its replayed twin and deliver twice. A
+        // finish this reader authors itself derives from no row: it takes
+        // the journaled-finish road and carries the seq of the row that
+        // road writes for it.
         for event in crate::pi_view::events_from_line(&value) {
             self.publish(runtime, event, event_seq);
         }
@@ -3073,6 +3178,14 @@ impl PiReader {
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        // An extension's notify between a slash prompt's write and its
+        // response is that command's output; the fate tracking says whether
+        // the window is open.
+        if method == "notify" {
+            if let Some(message) = value.get("message").and_then(Value::as_str) {
+                self.fate.note_notify(message);
+            }
+        }
         let request_id = value.get("id").and_then(Value::as_str);
         if method != "confirm" || request_id.is_none() {
             send_extension_response(&self.stdin, request_id, false)
@@ -3130,6 +3243,10 @@ impl PiReader {
                 .map_err(|error| format!("Could not deny Pi permission request: {error}"))?;
             return Ok(());
         }
+        // The card below waits on a person: the window a slash prompt holds
+        // stops collecting here, or a human's seconds of an unrelated
+        // extension's text become the command's journaled output.
+        self.fate.stop_collecting();
         self.publish(runtime, event, event_seq);
         Ok(())
     }
@@ -3743,3 +3860,21 @@ fn publish_stderr_line(runtime: &SessionRuntime, data: String) {
 #[cfg(test)]
 #[path = "pi_client_tests.rs"]
 mod tests;
+
+/// The fake pi child and the frame builders the two files below share.
+#[cfg(test)]
+#[path = "pi_local_command_test_support.rs"]
+mod local_command_test_support;
+
+#[cfg(test)]
+#[path = "pi_local_command_tests.rs"]
+mod local_command_tests;
+
+#[cfg(test)]
+#[path = "pi_local_command_replay_tests.rs"]
+mod local_command_replay_tests;
+
+/// What a slash prompt's window publishes, apart from when its run ends.
+#[cfg(test)]
+#[path = "pi_local_command_window_tests.rs"]
+mod local_command_window_tests;

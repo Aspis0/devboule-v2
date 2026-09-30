@@ -286,6 +286,7 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
         stdin: Arc::clone(&stdin),
         next_id: Arc::new(AtomicU64::new(100)),
         pending: Vec::new(),
+        fate: Arc::new(super::super::local_commands::SlashPromptFate::new()),
     };
     let runtime = insert_live_agent_with_kind_writer_and_sink(
         &registry,

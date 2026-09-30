@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{NoticeSeverity, SessionEvent};
 use serde_json::Value;
 
-use super::commands::{js_trim, parse_slash_invocation, REQUEST_TIMEOUT};
+use super::commands::{is_out_of_band_command, js_trim, parse_slash_invocation, REQUEST_TIMEOUT};
 use super::PiControl;
 use crate::session::{OutOfBandCommands, SessionRuntime};
 
@@ -311,10 +311,8 @@ impl PiOutOfBandCommands {
 
 impl OutOfBandCommands for PiOutOfBandCommands {
     fn handles_out_of_band(&self, text: &str) -> bool {
-        matches!(
-            parse_slash_invocation(text).map(|invocation| invocation.name.to_ascii_lowercase()),
-            Some(name) if name == "compact" || name == "autocompact"
-        )
+        parse_slash_invocation(text)
+            .is_some_and(|invocation| is_out_of_band_command(&invocation.name))
     }
 
     fn run_out_of_band(&self, text: &str, runtime: &Arc<SessionRuntime>) {
