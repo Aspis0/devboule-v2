@@ -72,8 +72,9 @@ fn a_rejected_slash_prompt_still_shows_its_output() {
         }),
     );
 
-    // The rejection ends nothing and probes nothing, but the words pi
-    // wrote between the write and that rejection are still its answer.
+    // The rejection ends the run on pi's own words — a rejection means no
+    // `turn_end` is coming — and probes nothing, but the words pi wrote
+    // between the write and that rejection are still its answer.
     let output = notices(&conn);
     assert_eq!(
         output.len(),
@@ -82,9 +83,9 @@ fn a_rejected_slash_prompt_still_shows_its_output() {
     );
     assert!(output[0].starts_with("No open goals."), "{output:?}");
     assert_eq!(
-        runtime.agent_stop_reason(),
-        None,
-        "a rejection ends nothing"
+        runtime.agent_stop_reason().as_deref(),
+        Some("error"),
+        "a rejected prompt's run is ended, on the journaled road"
     );
     let frames = pi.sent_frames();
     assert!(

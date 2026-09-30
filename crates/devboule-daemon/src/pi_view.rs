@@ -62,6 +62,27 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
     }
 }
 
+/// Replay's half of the withheld-finish mechanism (`claude_view` owns the
+/// row type): the marker makes the next envelope's finish — a `turn_end`
+/// the live pass withheld because the run had already been ended for it —
+/// derive nothing, so a reattach shows the one finish the daemon authored.
+/// The flag is consumed by the next envelope of any kind, the adjacency the
+/// live reader's `journal_agent_envelope_pair` guarantees.
+pub(crate) fn drive_replay(withheld_pending: &mut bool, value: &Value) -> Vec<SessionEvent> {
+    if value.get("type").and_then(Value::as_str)
+        == Some(crate::claude_view::WITHHELD_FINISH_MARKER_TYPE)
+    {
+        *withheld_pending = true;
+        return Vec::new();
+    }
+    let mut events = events_from_line(value);
+    if *withheld_pending {
+        events.retain(|event| !matches!(event, SessionEvent::AgentFinished { .. }));
+        *withheld_pending = false;
+    }
+    events
+}
+
 /// The two built-ins pi's own `get_commands` reply omits — measured: neither
 /// `compact` nor `autocompact` is among the names a live reply returned —
 /// seeded here with the argument hints they carry.

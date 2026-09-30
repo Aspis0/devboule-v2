@@ -84,6 +84,7 @@ fn ask_mode_is_rejected_until_the_permission_extension_reports_in() {
         catalog: Arc::new(Mutex::new(PiCatalog::default())),
         mode_id: Arc::new(Mutex::new("bypass".to_string())),
         permission_extension_active: Arc::clone(&active),
+        budget: super::ControlBudget::hot(),
     };
     let error = switcher.set_mode("ask").expect_err("extension is inactive");
     assert_eq!(error.message, "Pi permission extension not active.");
@@ -924,6 +925,9 @@ fn a_turn_end_line_delivers_each_event_exactly_once_across_a_fresh_attach() {
         Arc::clone(&stdin),
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
     );
+    // The turn the turn_end ends: a bare reader still arbitrates the end
+    // against a live turn.
+    runtime.begin_turn();
     // The recorded turn_end of `pi_view.rs`'s own fixture: totalTokens 25 851.
     let turn_end = serde_json::from_str::<serde_json::Value>(
         r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"stopReason":"stop","timestamp":1788993862485,"responseId":"gen-1788993862-4cxcarrKksRnXEICsFHO","rawStopReason":"stop"},"toolResults":[]}"#,
@@ -1815,6 +1819,7 @@ fn the_static_route_answers_for_the_model_current_at_prompt_time() {
         Arc::new(AtomicU64::new(1)),
         Arc::clone(&catalog),
         Arc::new(super::local_commands::SlashPromptFate::new()),
+        super::pi_turn_arbiter::TurnArbiter::bare(),
     );
     let attachment = plan_attachment("photo.png", "image/png", &clean_png(0x41));
     catalog.lock().expect("catalog").current_model_id = Some("minimax-m3".to_string());
@@ -1953,6 +1958,7 @@ mod delivery_tests {
             catalog: Arc::new(Mutex::new(catalog)),
             mode_id: Arc::new(Mutex::new("ask".to_string())),
             permission_extension_active: Arc::new(AtomicBool::new(false)),
+            budget: super::super::ControlBudget::hot(),
         };
         switcher
             .set_model(Some("pi-model"), Some("low"))
@@ -2013,6 +2019,7 @@ mod delivery_tests {
             })),
             mode_id: Arc::new(Mutex::new("ask".to_string())),
             permission_extension_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            budget: super::super::ControlBudget::hot(),
         };
         let error = switcher
             .set_model(Some("pi-model"), None)
@@ -2394,15 +2401,17 @@ const FAKE_BEARER: &str = "FAKE-BEARER-REDACTION-PROBE-7f3a";
 mod lifecycle_tests {
     use super::super::PtyCommand;
     use super::super::{
-        pending_pi_delivery, spawn_process, spawn_process_resuming, PiCatalog, PiControl,
-        PiInputKinds, PiKiller, PiModel, PiReader, PiStaticPrompt, PiStderr, PiStdout, PiSwitcher,
-        PiWriter,
+        pending_pi_delivery, pending_pi_delivery_within, spawn_process, spawn_process_resuming,
+        PiCatalog, PiControl, PiInputKinds, PiKiller, PiModel, PiReader, PiStaticPrompt, PiStderr,
+        PiStdout, PiSwitcher, PiWriter,
     };
     use crate::process_tree::JobObject;
     use crate::profile_delivery::ProfileDelivery;
     use crate::server::ServerState;
     use crate::session::permission_broker::PermissionBroker;
-    use crate::session::{start_spawned_session, SpawnedSession, StdioWaitableChild};
+    use crate::session::{
+        start_spawned_session, ModelSwitcher, ReaderDispatch, SpawnedSession, StdioWaitableChild,
+    };
     use devboule_protocol::{OwnerId, SessionEvent, SessionModelEffort};
     use std::collections::HashMap;
     use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
@@ -2527,6 +2536,7 @@ mod lifecycle_tests {
             catalog: Arc::clone(&pi.catalog),
             mode_id: Arc::new(Mutex::new("ask".to_string())),
             permission_extension_active: Arc::new(AtomicBool::new(true)),
+            budget: super::super::ControlBudget::hot(),
         };
         let pending_delivery = pending_pi_delivery(&switcher, &pi_delivery());
         SpawnedSession {
@@ -2537,6 +2547,7 @@ mod lifecycle_tests {
                 stdin: Arc::clone(&pi.stdin),
                 next_id: Arc::clone(&pi.next_id),
                 permission_broker: Arc::clone(&permission_broker),
+                arbiter: super::super::pi_turn_arbiter::TurnArbiter::bare(),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 extension_path: crate::test_dirs::test_temp_dir("devboule-pi-lifecycle-ext")
                     .join("extension.ts"),
@@ -2551,6 +2562,7 @@ mod lifecycle_tests {
                 next_id: Arc::clone(&pi.next_id),
                 pending: Vec::new(),
                 fate: Arc::new(super::super::local_commands::SlashPromptFate::new()),
+                arbiter: super::super::pi_turn_arbiter::TurnArbiter::bare(),
             }) as Box<dyn std::io::Write + Send>)),
             image_sink: None,
             static_image_sink: Some(Arc::new(PiStaticPrompt::new(
@@ -2558,6 +2570,7 @@ mod lifecycle_tests {
                 Arc::clone(&pi.next_id),
                 Arc::clone(&pi.catalog),
                 Arc::new(super::super::local_commands::SlashPromptFate::new()),
+                super::super::pi_turn_arbiter::TurnArbiter::bare(),
             ))),
             reader: Box::new(stdout),
             reader_dispatch: Some(Box::new(reader)),
@@ -3547,6 +3560,215 @@ mod lifecycle_tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A child that stays alive and absorbs whatever is written without
+    /// ever answering: the never-answered control rpc the cold-wait test
+    /// needs, on a system binary so it needs no node.
+    fn never_answering_pi() -> (Child, Arc<Mutex<Option<ChildStdin>>>) {
+        let mut child = Command::new("ping")
+            .args(["-t", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("ping is a Windows system binary");
+        let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+        (child, stdin)
+    }
+
+    /// The cold budget is the delivery's own: the closure the spawn hooks
+    /// waits with the delivery budget, and its timeout names the phase it
+    /// sat out — not the bare hot-path sentence. The wait is injected, so
+    /// the refusal is observed without sitting out sixty seconds.
+    #[test]
+    fn the_initial_delivery_waits_its_cold_budget_and_names_its_phase() {
+        let (mut child, stdin) = never_answering_pi();
+        let switcher = PiSwitcher {
+            control: Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1)))),
+            catalog: Arc::new(Mutex::new(delivery_catalog())),
+            mode_id: Arc::new(Mutex::new("ask".to_string())),
+            permission_extension_active: Arc::new(AtomicBool::new(true)),
+            budget: super::super::ControlBudget::hot(),
+        };
+        let pending =
+            pending_pi_delivery_within(&switcher, &pi_delivery(), Duration::from_millis(40));
+        let error = (pending.expect("a profile with a model has a delivery"))()
+            .expect_err("the fake answers nothing");
+        assert!(
+            error.message.contains("initial profile delivery"),
+            "the timeout names its phase: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("40ms"),
+            "the timeout names the wait it sat out: {}",
+            error.message
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// A fake pi that answers every control rpc at once except the FIRST
+    /// `set_model`, whose answer it holds past any short budget — the
+    /// delivery's timeout road, with the rollback's own round trips answered.
+    /// Each logged line names the rpc and the model it carried.
+    const FAKE_PI_DELIVERY_STALLS_FIRST_SET_MODEL: &str = r#"
+const fs = require("fs");
+let buffered = "";
+let held = true;
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    let frame;
+    try { frame = JSON.parse(line); } catch { continue; }
+    fs.appendFileSync(process.env.DEVBOULE_FAKE_PI_LOG, frame.type + " " + (frame.modelId || "") + "\n");
+    const answer = () => process.stdout.write(JSON.stringify({ id: frame.id, type: "response", command: frame.type, success: true }) + "\n");
+    if (frame.type === "set_model" && held) { held = false; setTimeout(answer, 400); } else { answer(); }
+  }
+});
+"#;
+
+    /// The rollback must not write back the snapshot the delivery took: a
+    /// hot switch that landed while the delivery sat waiting survives the
+    /// delivery's own timeout. The fake holds the first `set_model` answer
+    /// past the injected budget, the switch lands meanwhile, and the
+    /// rollback must restore what the catalog says NOW.
+    #[test]
+    fn a_delivery_timeout_rolls_back_to_the_catalog_as_it_is_not_as_it_was() {
+        let log = log_path("rollback");
+        let pi = spawned_pi(FAKE_PI_DELIVERY_STALLS_FIRST_SET_MODEL, &log);
+        let switcher = PiSwitcher {
+            control: Arc::new(PiControl::new(
+                Arc::clone(&pi.stdin),
+                Arc::clone(&pi.next_id),
+            )),
+            catalog: Arc::clone(&pi.catalog),
+            mode_id: Arc::new(Mutex::new("ask".to_string())),
+            permission_extension_active: Arc::new(AtomicBool::new(true)),
+            budget: super::super::ControlBudget::hot(),
+        };
+        let pending =
+            pending_pi_delivery_within(&switcher, &pi_delivery(), Duration::from_millis(40))
+                .expect("a profile with a model has a delivery");
+        // The delivery waits on its stalled answer; the hot switch lands
+        // while it waits, the way a runtime switch during a cold start does.
+        let delivery = std::thread::Builder::new()
+            .name("pi-delivery-rollback".to_string())
+            .spawn(pending)
+            .expect("delivery thread");
+        std::thread::sleep(Duration::from_millis(10));
+        {
+            let mut catalog = pi.catalog.lock().expect("catalog");
+            catalog.current_model_id = Some("hot-model".to_string());
+            catalog.current_provider = Some("hot-provider".to_string());
+        }
+        let error = delivery
+            .join()
+            .expect("the delivery thread ends")
+            .expect_err("the stalled set_model times out");
+        assert!(
+            error.message.contains("initial profile delivery"),
+            "the timeout names its phase: {}",
+            error.message
+        );
+        // The rollback restored the catalog as it is now, not its snapshot.
+        let commands = wait_for_commands(&log, &["set_model pi-model", "set_model hot-model"]);
+        assert!(
+            commands.contains(&"set_model hot-model".to_string()),
+            "the rollback wrote the current model, not the snapshot: {commands:?}"
+        );
+        assert_eq!(
+            pi.catalog.lock().expect("catalog").current_model_id,
+            Some("hot-model".to_string()),
+            "the hot switch survived the delivery's timeout"
+        );
+        if let Ok(mut process) = pi.process.lock() {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+        let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
+    }
+
+    /// A clone of the switcher never inherits the delivery's deadline: the
+    /// clone runs on the hot budget, so a delivery deadline that is already
+    /// spent cannot fail every request a clone makes instantly. The fake
+    /// answers everything, so the only way the switch can fail is a spent
+    /// deadline riding along.
+    #[test]
+    fn a_cloned_switcher_runs_on_the_hot_budget_not_the_spent_delivery_deadline() {
+        let log = log_path("clone-budget");
+        let pi = spawned_pi(super::FAKE_PI_DELIVERY_ANSWERS, &log);
+        // The fake's answers are delivered by a reader, as production's are:
+        // one control instance shared by the switcher and the reader, and
+        // the reader draining the fake's stdout on its own thread.
+        let control = Arc::new(PiControl::new(
+            Arc::clone(&pi.stdin),
+            Arc::clone(&pi.next_id),
+        ));
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = PiReader::new(
+            Vec::new(),
+            SessionEvent::SessionManifest {
+                provider_id: Some("pi".to_string()),
+                current_model_id: None,
+                models: Vec::new(),
+                modes: None,
+            },
+            Arc::clone(&broker),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::clone(&pi.next_id),
+            Arc::clone(&control),
+            Arc::clone(&pi.stdin),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let feeder_runtime = Arc::new(super::super::SessionRuntime::new());
+        let feeder_runtime_for_thread = Arc::clone(&feeder_runtime);
+        let mut stdout = std::io::BufReader::new(pi.stdout);
+        let feeder = std::thread::spawn(move || {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match std::io::BufRead::read_line(&mut stdout, &mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {}
+                }
+                let _ = reader.feed(line.as_bytes(), &feeder_runtime_for_thread);
+            }
+        });
+        let switcher = PiSwitcher {
+            control,
+            catalog: Arc::clone(&pi.catalog),
+            mode_id: Arc::new(Mutex::new("ask".to_string())),
+            permission_extension_active: Arc::new(AtomicBool::new(true)),
+            budget: super::super::ControlBudget::delivery(Duration::from_millis(30)),
+        };
+        // The delivery deadline is spent before the clone is taken.
+        std::thread::sleep(Duration::from_millis(60));
+        let clone = switcher.clone_switcher();
+        clone
+            .set_model(Some("pi-model"), Some("low"))
+            .expect("the clone runs on the hot budget, not the spent delivery deadline");
+        if let Ok(mut process) = pi.process.lock() {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+        let _ = feeder.join();
+        let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
+    }
+
+    /// The waits themselves: hot model and effort switches keep the old
+    /// patience, the delivery got the cold one.
+    #[test]
+    fn the_hot_switch_keeps_the_old_wait_and_the_delivery_got_the_cold_one() {
+        assert_eq!(super::super::RESPONSE_TIMEOUT, Duration::from_secs(15));
+        assert_eq!(
+            super::super::INITIAL_DELIVERY_TIMEOUT,
+            Duration::from_secs(60)
+        );
     }
 }
 

@@ -375,6 +375,9 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
             claude_view.restore_task_state(tasks);
         }
         let mut codex_view = crate::codex_view::CodexView::new(None);
+        // pi's withheld-finish marker state, consumed by the envelope the
+        // marker owns (`pi_view::drive_replay`).
+        let mut pi_withheld_finish = false;
 
         let mut snap_stmt = conn.prepare(
             "SELECT from_seq, up_to_seq, blob, checksum FROM snapshots
@@ -462,7 +465,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                             covered_reports.push((seq, view));
                         }
                     } else if record.kind == SessionKind::Pi {
-                        for view in crate::pi_view::events_from_line(&value) {
+                        for view in crate::pi_view::drive_replay(&mut pi_withheld_finish, &value) {
                             covered_reports.push((seq, view));
                         }
                     } else {
@@ -542,7 +545,9 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                                 gen_seqs.push(seq);
                             }
                         } else if record.kind == SessionKind::Pi {
-                            for view in crate::pi_view::events_from_line(&value) {
+                            for view in
+                                crate::pi_view::drive_replay(&mut pi_withheld_finish, &value)
+                            {
                                 gen_events.push(view);
                                 gen_seqs.push(seq);
                             }

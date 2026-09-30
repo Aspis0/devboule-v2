@@ -48,6 +48,19 @@ mod local_commands;
 /// for the same control channel; its tests drive this client's writer.
 #[path = "pi_out_of_band.rs"]
 mod out_of_band;
+/// The finish arbitration those feed: what a rejection answers, what a
+/// turn boundary means, and when an end belongs to the watchdog or the
+/// abort gate instead of the wire. A child of this file like the watchdog
+/// — the reader hands it every frame, the writers and the killer report
+/// through it.
+#[path = "pi_turn_arbiter.rs"]
+mod pi_turn_arbiter;
+/// The pi family's turn watchdog: what arms the shared clock, what feeds
+/// it, and the expiry road for a run pi went silent on. A child of this
+/// file — its expiry writes this client's abort frame, and its tests drive
+/// this client's reader.
+#[path = "pi_turn_watch.rs"]
+mod pi_turn_watch;
 
 const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
 const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
@@ -56,6 +69,53 @@ const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
 /// should never reach, not a wait anyone expects to sit through.
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+/// The initial profile delivery's wait: the first `set_model`, its
+/// thinking-level query and its set, answered by a child spawned seconds
+/// ago whose extensions and models are still loading — the same cold start
+/// the handshake budgets 60 s for. Hot model and effort switches keep
+/// [`RESPONSE_TIMEOUT`].
+const INITIAL_DELIVERY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One control exchange's patience: how long the answer may take and the
+/// phase a timeout names. A shared budget measures its wait from the
+/// caller's entry across every round trip — the handshake's own shape; the
+/// hot budget renews for each round trip.
+#[derive(Clone, Copy)]
+struct ControlBudget {
+    wait: Duration,
+    phase: Option<&'static str>,
+    deadline: Option<Instant>,
+}
+
+impl ControlBudget {
+    /// The hot path: every round trip gets the full wait, from its own
+    /// start. A model switch mid-session is answered by a child that has
+    /// answered before.
+    fn hot() -> Self {
+        Self {
+            wait: RESPONSE_TIMEOUT,
+            phase: None,
+            deadline: None,
+        }
+    }
+
+    /// The initial profile delivery: one deadline for all its round trips,
+    /// set when the delivery runs — the extensions and models a cold child
+    /// loads once stand behind every one of them together.
+    fn delivery(wait: Duration) -> Self {
+        Self {
+            wait,
+            phase: Some("the initial profile delivery"),
+            deadline: Some(Instant::now() + wait),
+        }
+    }
+
+    fn remaining(&self) -> Duration {
+        self.deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(self.wait)
+    }
+}
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
@@ -1607,6 +1667,24 @@ fn spawn_pi(
         Arc::clone(&controls),
     ));
     let control = Arc::new(PiControl::new(Arc::clone(&stdin), Arc::clone(&next_id)));
+    // The turn watchdog shares the session's handles the way the killer
+    // does: the stdin its abort frame rides, the broker whose cards hold
+    // the clock, and the killer's cancelled flag, so an expiry past a kill
+    // writes nothing.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let owed_late_end = Arc::new(pi_turn_watch::OwedTurnEnd::default());
+    let turn_watch = pi_turn_watch::pi_turn_watch(
+        pi_turn_watch::turn_silence(),
+        Arc::clone(&stdin),
+        Arc::clone(&next_id),
+        Arc::clone(&permission_broker),
+        Arc::clone(&cancelled),
+        Arc::clone(&owed_late_end),
+    );
+    let arbiter = Arc::new(pi_turn_arbiter::TurnArbiter::new(
+        Some(turn_watch),
+        owed_late_end,
+    ));
     // The list request goes out immediately after the handshake: registered
     // and written, never awaited on this thread — the
     // reply was measured to take tens of seconds, and neither the session's
@@ -1626,13 +1704,15 @@ fn spawn_pi(
         next_id: Arc::clone(&next_id),
         pending: Vec::new(),
         fate: Arc::clone(&prompt_fate),
+        arbiter: Arc::clone(&arbiter),
     };
     let killer = PiKiller {
         process: Arc::clone(&process),
         stdin: Arc::clone(&stdin),
         next_id: Arc::clone(&next_id),
         permission_broker: Arc::clone(&permission_broker),
-        cancelled: Arc::new(AtomicBool::new(false)),
+        arbiter: Arc::clone(&arbiter),
+        cancelled,
         extension_path: extension_path.clone(),
         bridge_path: bridge_path.clone(),
     };
@@ -1649,7 +1729,8 @@ fn spawn_pi(
     .with_extension_path(extension_path.clone())
     .with_commands_reply(commands_reply)
     .with_compact_guard(compact_guard)
-    .with_prompt_fate(Arc::clone(&prompt_fate));
+    .with_prompt_fate(Arc::clone(&prompt_fate))
+    .with_turn_arbiter(Arc::clone(&arbiter));
     // The static prompt route reads the live model from the same catalog the
     // switcher keeps, so the two share one `Arc`. The switcher is built before
     // the session is assembled because the delivery runs through it: the same
@@ -1663,6 +1744,7 @@ fn spawn_pi(
         catalog: Arc::clone(&catalog),
         mode_id: Arc::clone(&mode_id_state),
         permission_extension_active: Arc::clone(&permission_extension_active),
+        budget: ControlBudget::hot(),
     };
     // The delivery is NOT awaited here. `set_model` is an awaited control
     // rpc, and the only code that can deliver its answer is the session
@@ -1679,6 +1761,7 @@ fn spawn_pi(
         Arc::clone(&next_id),
         Arc::clone(&catalog),
         prompt_fate,
+        Arc::clone(&arbiter),
     ));
     Ok(SpawnedSession {
         process_job,
@@ -1714,13 +1797,37 @@ fn pending_pi_delivery(
     switcher: &PiSwitcher,
     delivery: &ProfileDelivery,
 ) -> Option<Box<dyn FnOnce() -> Result<(), WireError> + Send>> {
+    pending_pi_delivery_within(switcher, delivery, INITIAL_DELIVERY_TIMEOUT)
+}
+
+/// The same, with the delivery's wait spelled: the seam the cold-wait test
+/// injects a short budget through.
+fn pending_pi_delivery_within(
+    switcher: &PiSwitcher,
+    delivery: &ProfileDelivery,
+    wait: Duration,
+) -> Option<Box<dyn FnOnce() -> Result<(), WireError> + Send>> {
     if delivery.model_id.is_none() && delivery.thinking_option_id.is_none() {
         return None;
     }
-    let switcher = switcher.clone_switcher();
+    let control = Arc::clone(&switcher.control);
+    let catalog = Arc::clone(&switcher.catalog);
+    let mode_id = Arc::clone(&switcher.mode_id);
+    let permission_extension_active = Arc::clone(&switcher.permission_extension_active);
     let model_id = delivery.model_id.clone();
     let effort = delivery.thinking_option_id.clone();
     Some(Box::new(move || {
+        // Built when the delivery RUNS, not when it is packaged: the
+        // shared deadline starts with the first round trip, not with the
+        // spawn that queued the closure behind a reader that did not exist
+        // yet.
+        let switcher = PiSwitcher {
+            control,
+            catalog,
+            mode_id,
+            permission_extension_active,
+            budget: ControlBudget::delivery(wait),
+        };
         switcher.set_model(model_id.as_deref(), effort.as_deref())
     }))
 }
@@ -2338,6 +2445,7 @@ pub(crate) struct PiStaticPrompt {
     next_id: Arc<AtomicU64>,
     catalog: Arc<Mutex<PiCatalog>>,
     fate: Arc<local_commands::SlashPromptFate>,
+    arbiter: Arc<pi_turn_arbiter::TurnArbiter>,
 }
 
 impl PiStaticPrompt {
@@ -2346,12 +2454,14 @@ impl PiStaticPrompt {
         next_id: Arc<AtomicU64>,
         catalog: Arc<Mutex<PiCatalog>>,
         fate: Arc<local_commands::SlashPromptFate>,
+        arbiter: Arc<pi_turn_arbiter::TurnArbiter>,
     ) -> Self {
         Self {
             stdin,
             next_id,
             catalog,
             fate,
+            arbiter,
         }
     }
 }
@@ -2389,6 +2499,7 @@ impl super::StaticImageSink for PiStaticPrompt {
             next_id: Arc::clone(&self.next_id),
             plan,
             fate: Arc::clone(&self.fate),
+            arbiter: Arc::clone(&self.arbiter),
         })))
     }
 }
@@ -2401,6 +2512,7 @@ struct PiPlannedPrompt {
     next_id: Arc<AtomicU64>,
     plan: PiPromptPlan,
     fate: Arc<local_commands::SlashPromptFate>,
+    arbiter: Arc<pi_turn_arbiter::TurnArbiter>,
 }
 
 impl PiPlannedPrompt {
@@ -2447,7 +2559,9 @@ impl super::PlannedStaticPrompt for PiPlannedPrompt {
                 ErrorCode::Io,
                 format!("Could not send input to the terminal: {error}"),
             )
-        })
+        })?;
+        self.arbiter.note_prompt_delivered();
+        Ok(())
     }
 }
 
@@ -2456,6 +2570,7 @@ struct PiWriter {
     next_id: Arc<AtomicU64>,
     pending: Vec<u8>,
     fate: Arc<local_commands::SlashPromptFate>,
+    arbiter: Arc<pi_turn_arbiter::TurnArbiter>,
 }
 
 impl Write for PiWriter {
@@ -2487,7 +2602,9 @@ impl Write for PiWriter {
         let mut bytes = serde_json::to_vec(&frame)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         bytes.push(b'\n');
-        write_child_stdin(&self.stdin, &bytes, "Pi")
+        write_child_stdin(&self.stdin, &bytes, "Pi")?;
+        self.arbiter.note_prompt_delivered();
+        Ok(())
     }
 }
 
@@ -2496,6 +2613,7 @@ struct PiKiller {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     permission_broker: Arc<PermissionBroker>,
+    arbiter: Arc<pi_turn_arbiter::TurnArbiter>,
     cancelled: Arc<AtomicBool>,
     extension_path: PathBuf,
     bridge_path: Option<PathBuf>,
@@ -2503,19 +2621,16 @@ struct PiKiller {
 
 impl PiKiller {
     fn abort(&self) {
-        let frame = serde_json::json!({
-            "id": format!("a-{}", self.next_id.fetch_add(1, Ordering::Relaxed)),
-            "type": "abort",
-        });
-        if let Ok(mut bytes) = serde_json::to_vec(&frame) {
-            bytes.push(b'\n');
-            let _ = write_child_stdin(&self.stdin, &bytes, "Pi");
-        }
+        pi_turn_watch::write_abort_frame(&self.stdin, &self.next_id);
     }
 }
 
 impl SessionKiller for PiKiller {
     fn interrupt(&mut self) {
+        // The snapshot rides the interrupt REQUEST, before the frame: a
+        // replacement delivered after this is one the aborted turn's own
+        // end must not finish.
+        self.arbiter.note_interrupt();
         self.abort();
         self.permission_broker.cancel_pending();
     }
@@ -2543,10 +2658,33 @@ impl SessionKiller for PiKiller {
             stdin: Arc::clone(&self.stdin),
             next_id: Arc::clone(&self.next_id),
             permission_broker: Arc::clone(&self.permission_broker),
+            arbiter: Arc::clone(&self.arbiter),
             cancelled: Arc::clone(&self.cancelled),
             extension_path: self.extension_path.clone(),
             bridge_path: self.bridge_path.clone(),
         })
+    }
+}
+
+/// The timeout sentence one control round trip reports. A timeout that
+/// names its phase tells the reader which wait expired — the cold
+/// delivery's does; the hot path keeps the bare sentence it always had.
+fn control_timeout_message(
+    budget: &ControlBudget,
+    command: &str,
+    error: RecvTimeoutError,
+) -> String {
+    // A shared deadline is spent by the phase's round trips together, so
+    // the sentence names the budget that ran out, never a per-call wait the
+    // failing call may not have sat out at all — and stops there, because
+    // the budget IS the cause; the hot path's per-call failure keeps the
+    // channel error.
+    match budget.phase {
+        Some(phase) => format!(
+            "Pi {command} response timed out; {phase} ran out of its {:?}",
+            budget.wait
+        ),
+        None => format!("Pi {command} response timed out: {error}"),
     }
 }
 
@@ -2594,17 +2732,21 @@ impl PiControl {
 
     /// Wait for the response one command is answered with, refusing a
     /// `success: false` the way the control protocol spells a rejection.
+    /// `budget` is this round trip's own patience and `phase` names it in a
+    /// timeout — the cold delivery says which phase was waiting; hot
+    /// switches keep the bare sentence.
     fn await_response(
         &self,
         command: &str,
         id: &str,
         response: mpsc::Receiver<Result<Value, String>>,
+        budget: &ControlBudget,
     ) -> Result<Value, WireError> {
-        let response = response.recv_timeout(RESPONSE_TIMEOUT).map_err(|error| {
+        let response = response.recv_timeout(budget.remaining()).map_err(|error| {
             let _ = self.pending.lock().map(|mut pending| pending.remove(id));
             WireError::new(
                 ErrorCode::Io,
-                format!("Pi {command} response timed out: {error}"),
+                control_timeout_message(budget, command, error),
             )
         })?;
         let response = response.map_err(|message| WireError::new(ErrorCode::Io, message))?;
@@ -2623,9 +2765,14 @@ impl PiControl {
         Ok(response)
     }
 
-    fn request(&self, command: &str, fields: Value) -> Result<Value, WireError> {
+    fn request_within(
+        &self,
+        command: &str,
+        fields: Value,
+        budget: &ControlBudget,
+    ) -> Result<Value, WireError> {
         let (id, response) = self.begin(command, fields)?;
-        self.await_response(command, &id, response)
+        self.await_response(command, &id, response, budget)
     }
 
     fn deliver(&self, value: &Value) -> bool {
@@ -2689,6 +2836,7 @@ struct PiSwitcher {
     catalog: Arc<Mutex<PiCatalog>>,
     mode_id: Arc<Mutex<String>>,
     permission_extension_active: Arc<AtomicBool>,
+    budget: ControlBudget,
 }
 
 struct PiSteerer {
@@ -2718,7 +2866,7 @@ impl SessionSteerer for PiSteerer {
         let (id, response) =
             turn.write_then_release(|| self.control.begin("steer", pi_steer_fields(text)))?;
         self.control
-            .await_response("steer", &id, response)
+            .await_response("steer", &id, response, &ControlBudget::hot())
             .map(|_response| true)
             .or_else(map_pi_steer_error)
     }
@@ -2731,7 +2879,11 @@ impl SessionSteerer for PiSteerer {
 }
 
 impl ModelSwitcher for PiSwitcher {
+    /// The budget is the switcher's own: hot for the session's runtime
+    /// switch, the delivery's shared cold deadline for the clone the
+    /// profile delivery runs.
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError> {
+        let budget = &self.budget;
         let current = self
             .catalog
             .lock()
@@ -2747,8 +2899,11 @@ impl ModelSwitcher for PiSwitcher {
                         ),
                     ));
                 }
-                self.control
-                    .request("set_thinking_level", serde_json::json!({"level": effort}))?;
+                self.control.request_within(
+                    "set_thinking_level",
+                    serde_json::json!({"level": effort}),
+                    budget,
+                )?;
                 self.catalog
                     .lock()
                     .map_err(|_| WireError::new(ErrorCode::Io, "Pi model catalog is unavailable."))?
@@ -2796,20 +2951,22 @@ impl ModelSwitcher for PiSwitcher {
                 }
             }
         }
-        let model_request = self.control.request(
+        let model_request = self.control.request_within(
             "set_model",
             serde_json::json!({"provider": provider, "modelId": model_id}),
+            budget,
         );
         if let Err(error) = model_request {
-            return Err(self.rollback_error(&current, error));
+            return Err(self.rollback_error(error));
         }
-        let levels_response = match self
-            .control
-            .request("get_available_thinking_levels", Value::Null)
-        {
-            Ok(response) => response,
-            Err(error) => return Err(self.rollback_error(&current, error)),
-        };
+        let levels_response =
+            match self
+                .control
+                .request_within("get_available_thinking_levels", Value::Null, budget)
+            {
+                Ok(response) => response,
+                Err(error) => return Err(self.rollback_error(error)),
+            };
         let levels = levels_response
             .get("data")
             .and_then(|data| data.get("levels"))
@@ -2831,7 +2988,7 @@ impl ModelSwitcher for PiSwitcher {
                     ErrorCode::InvalidRequest,
                     format!("Pi model '{model_id}' has no thinking options; the profile names one, so the creation is refused"),
                 );
-                return Err(self.rollback_error(&current, error));
+                return Err(self.rollback_error(error));
             }
             if !thinking_level_allowed(effort, &levels) {
                 let error = WireError::new(
@@ -2840,13 +2997,14 @@ impl ModelSwitcher for PiSwitcher {
                         "Pi thinking level '{effort}' is not available for model '{model_id}'."
                     ),
                 );
-                return Err(self.rollback_error(&current, error));
+                return Err(self.rollback_error(error));
             }
-            if let Err(error) = self
-                .control
-                .request("set_thinking_level", serde_json::json!({"level": effort}))
-            {
-                return Err(self.rollback_error(&current, error));
+            if let Err(error) = self.control.request_within(
+                "set_thinking_level",
+                serde_json::json!({"level": effort}),
+                budget,
+            ) {
+                return Err(self.rollback_error(error));
             }
         }
         let current_effort = effort.map(str::to_string).or_else(|| {
@@ -2859,7 +3017,7 @@ impl ModelSwitcher for PiSwitcher {
             Ok(catalog) => catalog,
             Err(_) => {
                 let error = WireError::new(ErrorCode::Io, "Pi model catalog is unavailable.");
-                return Err(self.rollback_error(&current, error));
+                return Err(self.rollback_error(error));
             }
         };
         catalog.current_model_id = Some(model_id.to_string());
@@ -2904,6 +3062,10 @@ impl ModelSwitcher for PiSwitcher {
             catalog: Arc::clone(&self.catalog),
             mode_id: Arc::clone(&self.mode_id),
             permission_extension_active: Arc::clone(&self.permission_extension_active),
+            // Always hot: a budget is time-relative, and a clone of the
+            // delivery's switcher would inherit a deadline that is already
+            // partly spent — or spent whole — and fail instantly.
+            budget: ControlBudget::hot(),
         })
     }
 
@@ -2915,8 +3077,8 @@ impl ModelSwitcher for PiSwitcher {
 }
 
 impl PiSwitcher {
-    fn rollback_error(&self, current: &PiCatalog, error: WireError) -> WireError {
-        match self.restore_model(current) {
+    fn rollback_error(&self, error: WireError) -> WireError {
+        match self.restore_model() {
             Ok(()) => error,
             Err(rollback) => WireError::new(
                 ErrorCode::Io,
@@ -2928,7 +3090,17 @@ impl PiSwitcher {
         }
     }
 
-    fn restore_model(&self, current: &PiCatalog) -> Result<(), WireError> {
+    /// The model as the catalog has it NOW, not as the failed switch found
+    /// it: a switch that waited out its whole budget — the delivery's cold
+    /// wait — may overlap a hot switch, and writing the snapshot back would
+    /// revert the winner. The rollback's own round trips run on the hot
+    /// budget: the failed switch's deadline is already spent.
+    fn restore_model(&self) -> Result<(), WireError> {
+        let current = self
+            .catalog
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "Pi model catalog is unavailable."))?
+            .clone();
         let provider = current.current_provider.clone().ok_or_else(|| {
             WireError::new(
                 ErrorCode::Io,
@@ -2941,13 +3113,17 @@ impl PiSwitcher {
                 "Pi cannot roll back a model without the previous model.",
             )
         })?;
-        self.control.request(
+        self.control.request_within(
             "set_model",
             serde_json::json!({"provider": provider, "modelId": model_id}),
+            &ControlBudget::hot(),
         )?;
         if let Some(effort) = &current.current_effort {
-            self.control
-                .request("set_thinking_level", serde_json::json!({"level": effort}))?;
+            self.control.request_within(
+                "set_thinking_level",
+                serde_json::json!({"level": effort}),
+                &ControlBudget::hot(),
+            )?;
         }
         Ok(())
     }
@@ -2972,6 +3148,10 @@ struct PiReader {
     compact: Arc<out_of_band::CompactGuard>,
     fate: Arc<local_commands::SlashPromptFate>,
     extension_path: PathBuf,
+    /// The finish arbiter, set at spawn (bare on the `new` the tests use):
+    /// every frame the reader dispatches is reported here, and every
+    /// end-of-run decision comes back from here.
+    arbiter: Arc<pi_turn_arbiter::TurnArbiter>,
 }
 
 impl PiReader {
@@ -3001,6 +3181,7 @@ impl PiReader {
             compact: Arc::new(out_of_band::CompactGuard::default()),
             fate: Arc::new(local_commands::SlashPromptFate::new()),
             extension_path: PathBuf::new(),
+            arbiter: pi_turn_arbiter::TurnArbiter::bare(),
         }
     }
 
@@ -3032,6 +3213,15 @@ impl PiReader {
         self
     }
 
+    /// The spawn's own wiring: the arbiter observes this reader's frames
+    /// and holds this session's cards, so deleting either half turns the
+    /// watchdog tests red.
+    fn with_turn_arbiter(mut self, arbiter: Arc<pi_turn_arbiter::TurnArbiter>) -> Self {
+        arbiter.bind_broker(&self.permission_broker);
+        self.arbiter = arbiter;
+        self
+    }
+
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent, seq: Option<u64>) {
         let _ = runtime.publish_agent_event_with_seq(event, None, seq);
     }
@@ -3055,12 +3245,13 @@ impl PiReader {
     /// and the turn it ends actually ended. The command's output went out as
     /// notices when its response arrived; an end carries nothing.
     fn end_local_command(&self, runtime: &SessionRuntime) {
-        self.fate.note_local_end();
-        runtime.publish_journaled_finish(SessionEvent::AgentFinished {
-            stop_reason: "completed".to_string(),
-            model_id: None,
-            usage: None,
-        });
+        if self.arbiter.owns_finish() {
+            runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+                stop_reason: "completed".to_string(),
+                model_id: None,
+                usage: None,
+            });
+        }
     }
 
     fn dispatch_value(
@@ -3068,6 +3259,10 @@ impl PiReader {
         value: Value,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<(), String> {
+        // One hook for what every frame means to the clock: activity, the
+        // tool-call bookkeeping, and the hold they give it — early-return
+        // frames included.
+        self.arbiter.note_frame(&value);
         if value.get("type").and_then(Value::as_str) == Some("response") {
             let claimed = self.control.deliver(&value);
             // A response no pending entry waits for returns without effect;
@@ -3105,6 +3300,22 @@ impl PiReader {
                         self.probe_local_command();
                     }
                 }
+                // pi refuses a prompt in its preflight — compaction active,
+                // no model, an auth or extension failure. Whether that
+                // refusal answers THIS prompt, shows its error, and ends the
+                // run is the arbiter's call; the window's output, if any,
+                // went out above, and `prompt_responded` grants the deciding
+                // `get_state` probe only on success.
+                if !success {
+                    let current = self.fate.take_current_prompt(id);
+                    let reason = value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("the prompt was refused");
+                    self.arbiter.prompt_rejected(runtime, current, id, reason);
+                } else {
+                    self.fate.take_current_prompt(id);
+                }
             }
             if self
                 .fate
@@ -3125,12 +3336,34 @@ impl PiReader {
         // `agent_start` after a local end begins its turn here: a prompt
         // write would have cleared the flag, so nothing else will begin it,
         // and pi's own turn_end then ends it exactly once.
-        if value.get("type").and_then(Value::as_str) == Some("agent_start")
-            && self.fate.note_agent_start()
-        {
+        if value.get("type").and_then(Value::as_str) == Some("agent_start") {
+            // A turn pi begins is begun here whatever started it — the send
+            // path's own begin_turn, a local-end rearm, or an extension's
+            // own turn — and the watch arms with it.
+            self.fate.note_agent_start();
             runtime.begin_turn();
+            self.arbiter.note_agent_start();
         }
-        let event_seq = runtime.journal_agent_envelope(&value);
+        if value.get("type").and_then(Value::as_str) == Some("agent_end") {
+            self.arbiter.note_agent_end(runtime);
+        }
+        // A `turn_end`'s finish is the run's own ending — unless another
+        // road already ended it: the watchdog's expiry, the abort gate, or
+        // the run is over (EOF, a rejection, a local end). For a tool-using
+        // turn suppression is the NORMAL case, not an anomaly — pi ends
+        // every loop iteration, and the run carries one finish — so the
+        // extra marker row per iteration is the shape, not a leak. The
+        // suppressed finish still journals — beside the marker replay reads
+        // to withhold the same finish — so a reattach derives the one
+        // finish the live pass showed.
+        let suppress_finish = value.get("type").and_then(Value::as_str) == Some("turn_end")
+            && self.arbiter.turn_end_suppressed(runtime, &value);
+        let event_seq = if suppress_finish {
+            runtime
+                .journal_agent_envelope_pair(&crate::claude_view::withheld_finish_marker(), &value)
+        } else {
+            runtime.journal_agent_envelope(&value)
+        };
         if let Some(session_id) = session_id_from_value(&value) {
             runtime.set_peer_session_id(session_id);
         }
@@ -3158,6 +3391,9 @@ impl PiReader {
         // the journaled-finish road and carries the seq of the row that
         // road writes for it.
         for event in crate::pi_view::events_from_line(&value) {
+            if suppress_finish && matches!(event, SessionEvent::AgentFinished { .. }) {
+                continue;
+            }
             self.publish(runtime, event, event_seq);
         }
         Ok(())
@@ -3341,6 +3577,7 @@ fn send_extension_response(
 
 impl ReaderDispatch for PiReader {
     fn feed(&mut self, bytes: &[u8], runtime: &Arc<SessionRuntime>) -> Result<(), String> {
+        self.arbiter.bind_runtime(runtime);
         if self.manifest.is_some() {
             let manifest = self.manifest.take().expect("checked above");
             let manifest = runtime.store_session_manifest(manifest);
@@ -3416,6 +3653,14 @@ impl ReaderDispatch for PiReader {
     }
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
+        // The watchdog's expiry and this end share one finish between them,
+        // and the watch's prompt state is the coin that decides which road
+        // publishes it — arbitrate before the shutdown, so a tick already in
+        // flight cannot double it. A turn still running at EOF ends here,
+        // with the error and the journaled finish every other daemon-authored
+        // end takes, instead of sitting on Working forever.
+        let end_the_run = self.arbiter.eof_ends_run(runtime);
+        self.arbiter.shutdown();
         // The child's output is over, so the control channel is: every waiter
         // still holding a response channel is answered here with what that end
         // means, rather than being left to time out on a reply the reader can
@@ -3431,6 +3676,16 @@ impl ReaderDispatch for PiReader {
                 },
                 None,
             );
+        }
+        if end_the_run {
+            let _ = runtime.publish_agent_error(
+                "Pi's output ended while a turn was running; the run was ended.".to_string(),
+            );
+            let _ = runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+                stop_reason: "error".to_string(),
+                model_id: None,
+                usage: None,
+            });
         }
         remove_permission_extension(&self.extension_path);
     }

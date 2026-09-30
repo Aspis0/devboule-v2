@@ -41,11 +41,10 @@ struct Probe {
 struct FateState {
     in_flight: Option<InFlight>,
     probe: Option<Probe>,
-    /// This reader just ended a run for a locally handled command. While
-    /// this stands no new prompt has been written — a write clears it — so
-    /// the next `agent_start` is a turn no submit will begin, and the
-    /// reader owes it its `begin_turn`.
-    ended_local_run: bool,
+    /// The id of the last prompt written and not yet answered — plain and
+    /// slash alike. A prompt response answers it; a refusal answers for it
+    /// and for nothing else on the wire.
+    current_prompt: Option<String>,
 }
 
 /// Which slash prompts may end their own run, held between the prompt
@@ -74,7 +73,7 @@ impl SlashPromptFate {
             return;
         };
         state.probe = None;
-        state.ended_local_run = false;
+        state.current_prompt = Some(id.to_string());
         state.in_flight = parse_slash_invocation(text)
             .filter(|invocation| !is_out_of_band_command(&invocation.name))
             .map(|_| InFlight {
@@ -85,21 +84,31 @@ impl SlashPromptFate {
             });
     }
 
-    /// An `agent_start` on the wire: a model turn began. A prompt whose
-    /// response is still outstanding ends the normal way, and a probe whose
-    /// answer has not arrived decides nothing. Answers `true` when this
-    /// turn begins right after a local end — the one case where the reader,
-    /// not the send path, owes the turn its `begin_turn`.
-    pub(super) fn note_agent_start(&self) -> bool {
+    /// A prompt response on the wire. `true` when it answers the prompt we
+    /// wrote and have not seen answered — the id is consumed either way, so
+    /// a duplicate or a late refusal for an earlier prompt is foreign.
+    pub(super) fn take_current_prompt(&self, id: &str) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
-        let rearm = std::mem::take(&mut state.ended_local_run);
+        let matched = state.current_prompt.as_deref() == Some(id);
+        if matched {
+            state.current_prompt = None;
+        }
+        matched
+    }
+
+    /// An `agent_start` on the wire: a model turn began. A prompt whose
+    /// response is still outstanding ends the normal way, and a probe whose
+    /// answer has not arrived decides nothing any more.
+    pub(super) fn note_agent_start(&self) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         if let Some(in_flight) = state.in_flight.as_mut() {
             in_flight.agent_start_seen = true;
         }
         state.probe = None;
-        rearm
     }
 
     /// A `notify` on the wire. Only the window between a slash prompt's
@@ -167,15 +176,6 @@ impl SlashPromptFate {
         state.probe = Some(Probe {
             id: probe_id.to_string(),
         });
-    }
-
-    /// The reader ended a run for a locally handled command: until a new
-    /// prompt or an `agent_start` says otherwise, pi starting a model turn
-    /// now is one the send path never began.
-    pub(super) fn note_local_end(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.ended_local_run = true;
-        }
     }
 
     /// A response on the wire. `true`: this is the probe's answer and Pi

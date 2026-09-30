@@ -287,6 +287,7 @@ fn the_list_reply_lands_after_interleaved_ui_frames_and_a_prompt_that_did_not_wa
         next_id: Arc::new(AtomicU64::new(100)),
         pending: Vec::new(),
         fate: Arc::new(super::super::local_commands::SlashPromptFate::new()),
+        arbiter: super::super::pi_turn_arbiter::TurnArbiter::bare(),
     };
     let runtime = insert_live_agent_with_kind_writer_and_sink(
         &registry,
@@ -411,6 +412,9 @@ fn a_failed_reply_publishes_only_the_seeds_and_the_session_still_turns() {
     ));
     let reply = begin_get_commands(&control);
     let (runtime, conn) = attached_runtime("pi-commands-refused");
+    // The prompt below goes out the way a send does: its turn is begun
+    // before pi's turn_end for it can arrive.
+    runtime.begin_turn();
     let mut reader = reader_for(Arc::clone(&control), &stdin).with_commands_reply(reply);
     let feeder_runtime = Arc::clone(&runtime);
     let feeder = std::thread::spawn(move || {
@@ -501,7 +505,10 @@ fn a_reply_that_never_comes_leaves_only_the_seeds() {
         "the timed-out waiter's registration is not left behind"
     );
 
-    // The session still works: a later row still derives its events.
+    // The session still works: a later row still derives its events. The
+    // turn the turn_end ends is begun first — a bare reader still
+    // arbitrates the end against a live turn.
+    runtime.begin_turn();
     let mut reader = reader_for(Arc::clone(&control), &stdin);
     let turn_end = serde_json::from_str::<serde_json::Value>(
         r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"model":"test-model","usage":{"input":1,"totalTokens":1},"stopReason":"stop"}}"#,

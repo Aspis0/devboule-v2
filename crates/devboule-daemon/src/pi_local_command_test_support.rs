@@ -77,6 +77,7 @@ impl LocalPi {
             next_id: Arc::clone(&self.next_id),
             pending: Vec::new(),
             fate: Arc::clone(&self.fate),
+            arbiter: super::pi_turn_arbiter::TurnArbiter::bare(),
         }
     }
 

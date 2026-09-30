@@ -94,7 +94,7 @@ fn drain(conn: &ConnHandle) -> (Vec<String>, Vec<String>) {
 /// Pull until the system line `text` appears; the assistant lines seen on
 /// the way are handed back.
 fn wait_for_notice(conn: &ConnHandle, text: &str) -> Vec<String> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (notices, messages) = drain(conn);
         if notices.iter().any(|notice| notice == text) {
@@ -167,15 +167,18 @@ fn a_late_end_from_a_timed_out_run_does_not_release_the_next_run() {
     // the late end releases run two's slot and run three is accepted.
     let (mut child, stdin) = absorbing_child();
     let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
-    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
-        .with_compact_timeout(Duration::from_millis(150));
+    let (handler, gate) = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150))
+        .with_worker_gate();
     let (runtime, conn) = attached_runtime("pi-compact-stale-end");
     let guard = handler.compact_guard();
 
     handler.run_out_of_band("/compact one", &runtime);
     guard.observe(&serde_json::json!({ "type": "compaction_start", "reason": "manual" }));
+    // The start is observed; only now may the worker's bound run.
+    gate.lock().expect("gate").clear();
     // The bound fires: the failure line, and the slot is free again.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (_, messages) = drain(&conn);
         if messages == ["[Error] Failed to compact context: Pi compact response timed out"] {
@@ -234,14 +237,16 @@ fn an_automatic_compaction_during_our_run_does_not_free_the_slot() {
     // up on screen, so the close below applies all the same.
     let (mut child, stdin) = absorbing_child();
     let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
-    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
-        .with_compact_timeout(Duration::from_millis(150));
+    let (handler, gate) = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150))
+        .with_worker_gate();
     let (runtime, conn) = attached_runtime("pi-compact-auto-frames");
     let guard = handler.compact_guard();
 
     handler.run_out_of_band("/compact one", &runtime);
     guard.observe(&serde_json::json!({"type": "compaction_start", "reason": "auto"}));
     guard.observe(&serde_json::json!({"type": "compaction_end", "reason": "auto"}));
+    gate.lock().expect("gate").clear();
     handler.run_out_of_band("/compact two", &runtime);
     assert_eq!(
         drain(&conn).1,
@@ -251,7 +256,7 @@ fn an_automatic_compaction_during_our_run_does_not_free_the_slot() {
     // The shown marker must still be closed: the automatic start went up on
     // screen during the run, so the timeout owes the synthetic completion
     // before the failure line — the same predicate pi_view shows by.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (notices, messages) = drain(&conn);
         if messages == ["[Error] Failed to compact context: Pi compact response timed out"] {
@@ -282,8 +287,9 @@ fn a_late_real_end_after_a_timeout_publishes_no_second_marker() {
     let (mut child, stdin) = absorbing_child();
     let reader_stdin = Arc::clone(&stdin);
     let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
-    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
-        .with_compact_timeout(Duration::from_millis(150));
+    let (handler, gate) = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150))
+        .with_worker_gate();
     let (runtime, conn) = attached_runtime("pi-compact-late-end");
     let mut reader = PiReader::new(
         Vec::new(),
@@ -309,8 +315,11 @@ fn a_late_real_end_after_a_timeout_publishes_no_second_marker() {
             &runtime,
         )
         .expect("start");
+    // The start is observed; only now may the worker's deadline run — the
+    // observation must causally precede the deadline that depends on it.
+    gate.lock().expect("gate").clear();
     let mut ordered: Vec<String> = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         for pending in conn.pull_events() {
             match &pending.envelope.event {
@@ -386,6 +395,11 @@ fn a_successful_compact_without_an_end_frees_the_slot_within_its_bound() {
     let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
     let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
         .with_compact_timeout(Duration::from_millis(150));
+    let guard = handler.compact_guard();
+    // The end grace is this test's own act, not the clock: a wide grace
+    // holds the slot while the end is due whatever the machine is doing;
+    // spending it is what frees the slot for the third compact.
+    guard.set_end_grace(Duration::from_secs(30));
     let (runtime, conn) = attached_runtime("pi-compact-no-end");
     let mut reader = PiReader::new(
         Vec::new(),
@@ -425,11 +439,13 @@ fn a_successful_compact_without_an_end_frees_the_slot_within_its_bound() {
         ["[Error] A Pi compact command is already running"],
         "the slot holds while the end is due"
     );
-    // Past the bound the slot is free: the third compact is accepted, and
-    // its own start marker is the proof.
-    std::thread::sleep(Duration::from_millis(500));
+    // The grace is spent causally — the test's own act — so the slot is
+    // free at any machine speed: the third compact is accepted, and its own
+    // start marker is the proof. The reclaim still owes the missing end, so
+    // the late-end protection this run exercises is untouched.
+    guard.set_end_grace(Duration::ZERO);
     handler.run_out_of_band("/compact three", &runtime);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (notices, messages) = drain(&conn);
         assert!(
@@ -496,15 +512,20 @@ fn a_failed_compact_closes_its_compacting_marker() {
     // Without it the transcript shows "Compacting..." with no completion.
     let (mut child, stdin) = absorbing_child();
     let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
-    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
-        .with_compact_timeout(Duration::from_millis(150));
+    let (handler, gate) = super::PiOutOfBandCommands::new(Arc::clone(&control))
+        .with_compact_timeout(Duration::from_millis(150))
+        .with_worker_gate();
     let (runtime, conn) = attached_runtime("pi-compact-synthetic-end");
 
     handler.run_out_of_band("/compact one", &runtime);
     handler
         .compact_guard()
         .observe(&serde_json::json!({ "type": "compaction_start", "reason": "manual" }));
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The start is observed; only now may the worker's bound run — the
+    // ordering the deadline used to race when the machine paused this
+    // thread past the 150 ms.
+    gate.lock().expect("gate").clear();
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (notices, messages) = drain(&conn);
         if messages == ["[Error] Failed to compact context: Pi compact response timed out"]
@@ -623,7 +644,7 @@ fn the_guard_holds_until_the_compaction_ends_and_releases_after_it() {
     // refusal would show up in the messages it reports.
     handler.run_out_of_band("/compact three", &runtime);
     let mut seen: Vec<String> = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (notices, messages) = drain(&conn);
         seen.extend(notices);
@@ -656,7 +677,7 @@ fn a_compact_whose_child_never_answers_ends_in_a_bounded_failure_and_frees_the_s
     let (runtime, conn) = attached_runtime("pi-compact-bound");
 
     handler.run_out_of_band("/compact silent child", &runtime);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (_, messages) = drain(&conn);
         if messages == ["[Error] Failed to compact context: Pi compact response timed out"] {

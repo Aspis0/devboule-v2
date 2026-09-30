@@ -232,6 +232,12 @@ pub(super) struct PiOutOfBandCommands {
     control: Arc<PiControl>,
     compact: Arc<CompactGuard>,
     compact_timeout: Duration,
+    /// A test's brake on the compact workers: every run's worker holds on
+    /// its own fresh channel — one slot per compact — until the test drops
+    /// the senders it holds, so a deadline can never beat the frames the
+    /// test must observe first, for every run, not just the first.
+    /// Production holds none.
+    worker_gate: Option<Arc<Mutex<Vec<mpsc::Sender<()>>>>>,
 }
 
 impl PiOutOfBandCommands {
@@ -240,6 +246,7 @@ impl PiOutOfBandCommands {
             control,
             compact: Arc::new(CompactGuard::default()),
             compact_timeout: COMPACT_TIMEOUT,
+            worker_gate: None,
         }
     }
 
@@ -251,6 +258,17 @@ impl PiOutOfBandCommands {
         self.compact_timeout = timeout;
         self.compact.set_end_grace(timeout);
         self
+    }
+
+    /// Gate every compact worker: the returned handle drops the senders to
+    /// release whichever runs are held. The test's observations therefore
+    /// causally precede any deadline — the failure the 150 ms bound used to
+    /// race.
+    #[cfg(test)]
+    pub(super) fn with_worker_gate(mut self) -> (Self, Arc<Mutex<Vec<mpsc::Sender<()>>>>) {
+        let gate = Arc::new(Mutex::new(Vec::new()));
+        self.worker_gate = Some(Arc::clone(&gate));
+        (self, gate)
     }
 
     /// The compact slot, shared with the reader that observes pi's own
@@ -279,7 +297,16 @@ impl PiOutOfBandCommands {
             None => serde_json::json!({}),
         };
         let guard = Arc::clone(&self.compact);
-        run_out_of_band_request(
+        // This run's own brake: a fresh channel per compact, so gating the
+        // first run never leaves the second ungated.
+        let hold = self.worker_gate.as_ref().map(|gate| {
+            let (release, held) = mpsc::channel();
+            if let Ok(mut slots) = gate.lock() {
+                slots.push(release);
+            }
+            held
+        });
+        run_out_of_band_request_with(
             &self.control,
             "compact",
             fields,
@@ -305,6 +332,7 @@ impl PiOutOfBandCommands {
                     );
                 }
             },
+            compact_worker_spawn(hold),
         );
     }
 }
@@ -436,6 +464,26 @@ fn spawn_worker(
     job: Box<dyn FnOnce() + Send + 'static>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     builder.spawn(job)
+}
+
+/// The compact worker's spawn. Without a hold — always, in production — a
+/// plain worker thread; with one, this run's worker waits on its own
+/// channel until the test drops the sender, so its bounded wait cannot
+/// start before the test's observations.
+fn compact_worker_spawn(
+    hold: Option<mpsc::Receiver<()>>,
+) -> impl FnOnce(
+    std::thread::Builder,
+    Box<dyn FnOnce() + Send + 'static>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    move |builder, job| {
+        builder.spawn(move || {
+            if let Some(held) = hold {
+                let _ = held.recv();
+            }
+            job();
+        })
+    }
 }
 
 /// The same, with the thread spawn as a parameter so the no-worker branch —
