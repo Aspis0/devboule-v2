@@ -463,6 +463,7 @@ fn initial_mode_test_reader_with_timeout(
             abort_gate: test_abort_gate(),
             timeout,
             delivery_settings: Arc::new(Mutex::new(HashMap::new())),
+            steer_latch: Arc::new(ClaudeSteerLatch::default()),
         },
         None,
     )
@@ -661,9 +662,10 @@ fn a_steer_while_the_mode_gate_is_awaiting_is_refused_not_queued() {
         stdin: Arc::clone(&harness.stdin),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        steer_latch: Arc::new(ClaudeSteerLatch::default()),
     };
     let steered = runtime.with_active_turn(runtime.turn_counter(), |turn| {
-        steerer.steer_active_turn("Turn left instead", turn)
+        steerer.steer_active_turn("Turn left instead", turn, SteerOrigin::Person)
     });
     assert!(
         matches!(steered, Some(Ok(false))),
@@ -731,9 +733,10 @@ fn a_refused_steer_leaves_the_gate_s_failing_batch_untouched() {
         stdin: Arc::clone(&harness.stdin),
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        steer_latch: Arc::new(ClaudeSteerLatch::default()),
     };
     let steered = runtime.with_active_turn(runtime.turn_counter(), |turn| {
-        steerer.steer_active_turn("Turn left instead", turn)
+        steerer.steer_active_turn("Turn left instead", turn, SteerOrigin::Person)
     });
     assert!(matches!(steered, Some(Ok(false))));
     assert_eq!(
@@ -801,6 +804,7 @@ fn the_steer_write_holds_the_gate_while_it_writes() {
         stdin: Arc::clone(&stdin),
         mode_gate: Some(Arc::clone(&gate)),
         abort_gate: test_abort_gate(),
+        steer_latch: Arc::new(ClaudeSteerLatch::default()),
     };
     let text = "x".repeat(1024 * 1024);
     let steer = std::thread::spawn(move || {
@@ -1175,6 +1179,7 @@ fn user_mode_switch_during_initial_mode_is_fifo_and_wins_in_the_view() {
         mode_responses,
         mode_gate: Some(Arc::clone(&harness.gate)),
         abort_gate: Arc::clone(&harness.abort_gate),
+        steer_latch: Arc::new(ClaudeSteerLatch::default()),
     };
     let user_mode = std::thread::spawn(move || switcher.set_mode("acceptEdits"));
     let initial_request = read_json_line(&mut harness.stdout);
@@ -1728,6 +1733,7 @@ fn soft_interrupt_cancels_the_pending_permission_and_keeps_the_broker_open() {
         permission_broker: Arc::clone(&broker),
         cancelled: Arc::new(AtomicBool::new(false)),
         abort_gate: test_abort_gate(),
+        steer_latch: Arc::new(ClaudeSteerLatch::default()),
     };
     killer.interrupt();
     let stopped = drain(&conn);
@@ -1817,6 +1823,7 @@ fn kill_does_not_wait_for_the_child_to_cooperate() {
         permission_broker: broker,
         cancelled: Arc::new(AtomicBool::new(false)),
         abort_gate: test_abort_gate(),
+        steer_latch: Arc::new(ClaudeSteerLatch::default()),
     };
     killer.kill();
     let started = std::time::Instant::now();
@@ -2359,6 +2366,7 @@ fn the_effort_frame_names_the_flag_and_its_refusal_names_it_back() {
             abort_gate: test_abort_gate(),
             timeout: INITIAL_MODE_TIMEOUT,
             delivery_settings,
+            steer_latch: Arc::new(ClaudeSteerLatch::default()),
         },
         None,
     );
@@ -2455,6 +2463,7 @@ fn a_refused_delivery_effort_fails_the_session_instead_of_passing_silently() {
             abort_gate: test_abort_gate(),
             timeout: INITIAL_MODE_TIMEOUT,
             delivery_settings,
+            steer_latch: Arc::new(ClaudeSteerLatch::default()),
         },
         None,
     );

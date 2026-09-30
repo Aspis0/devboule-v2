@@ -152,14 +152,32 @@ pub(crate) trait SessionSteerer: Send + Sync {
     /// provider whose command is a round-trip). An adapter that cannot take a
     /// steer for that turn answers `Ok(false)` without writing; a transport
     /// failure is `Err`.
+    ///
+    /// `origin` states, from the ingress, whose words these are: only a
+    /// person's own send may dismiss what a person is being asked
+    /// (permission cards), so an adapter that supersedes cards on a steer
+    /// does it for [`SteerOrigin::Person`] alone.
     fn steer_active_turn(
         &mut self,
         _text: &str,
         _turn: &mut TurnToken<'_>,
+        _origin: SteerOrigin,
     ) -> Result<bool, WireError> {
         Ok(false)
     }
     fn clone_steerer(&self) -> Box<dyn SessionSteerer>;
+}
+
+/// Whose words a delivery carries, stated explicitly at the ingress and
+/// never inferred from the shape of the call: the local composer and the
+/// paired device's composer are a person; an agent-to-agent message and a
+/// daemon-authored prompt are not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SteerOrigin {
+    /// A person's own send: it may dismiss permission cards.
+    Person,
+    /// An agent-to-agent message or a daemon-authored prompt: it may not.
+    Agent,
 }
 
 pub(super) struct UnsupportedSteerer;

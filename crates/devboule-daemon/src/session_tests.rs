@@ -3159,6 +3159,7 @@ impl SessionSteerer for ScriptedSteerer {
         &mut self,
         _text: &str,
         _turn: &mut TurnToken<'_>,
+        _origin: SteerOrigin,
     ) -> Result<bool, WireError> {
         self.calls.fetch_add(1, Ordering::AcqRel);
         if let Some(on_steer) = &self.on_steer {
@@ -3197,6 +3198,7 @@ impl SessionSteerer for RoundTripSteerer {
         &mut self,
         _text: &str,
         turn: &mut TurnToken<'_>,
+        _origin: SteerOrigin,
     ) -> Result<bool, WireError> {
         self.calls.fetch_add(1, Ordering::AcqRel);
         turn.write_then_release(|| (self.at_write)());
@@ -3970,6 +3972,234 @@ fn an_accepted_steer_cancels_the_pending_cards_once() {
         resolved_cards(&conn),
         vec!["call-52".to_string()],
         "exactly one resolved card, and it is the one that was pending"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An agent-to-agent steer carries no person's hand: a card a person is
+/// looking at stays open, because neither the message the target received
+/// nor any later request it provokes may be answered over the person's head.
+/// Only the composer paths — the local send and the paired device's —
+/// dismiss cards on a steer.
+#[test]
+fn an_agent_to_agent_steer_leaves_the_permission_cards_where_they_are() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-cards-a2a", "process-cards-a2a");
+    let calls = Arc::new(AtomicU64::new(0));
+    let (target, _interrupted, target_conn) = steer_session(
+        &registry,
+        "s.steer.cards-a2a",
+        &owner,
+        SessionKind::Pi,
+        SteerAnswer::Steered,
+        calls,
+        Some(76),
+    );
+    insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.steer.cards-a2a-sender",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    let broker = target
+        .permission_broker()
+        .expect("the session has a broker");
+    broker
+        .register(53, permission_card("call-53"), &target)
+        .expect("a card is pending");
+    target.begin_turn();
+
+    registry
+        .agent_message_send(
+            "s.steer.cards-a2a-sender",
+            "s.steer.cards-a2a",
+            "hello",
+            &owner,
+            &ConnHandle::new(0),
+        )
+        .expect("the provider took the steer");
+    assert_eq!(
+        broker.pending_len(),
+        1,
+        "an agent's steer must not dismiss a card the person is looking at"
+    );
+    assert!(
+        resolved_cards(&target_conn).is_empty(),
+        "no cancellation went out for an agent's steer"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A peer **daemon** relaying an `AgentMessageSend` carries an agent's
+/// words, not a person's: authorship, not reachability, decides. The relay
+/// must not dismiss a card the person at this machine is looking at, and
+/// must not arm the Claude latch for words the person never wrote.
+#[test]
+fn a_peer_daemons_agent_message_steer_leaves_the_permission_cards_alone() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("peer_dev-phone", "daemon");
+    let calls = Arc::new(AtomicU64::new(0));
+    let (target, _interrupted, target_conn) = steer_session(
+        &registry,
+        "s.steer.peer-daemon",
+        &owner,
+        SessionKind::Pi,
+        SteerAnswer::Steered,
+        calls,
+        Some(77),
+    );
+    let broker = target
+        .permission_broker()
+        .expect("the session has a broker");
+    broker
+        .register(54, permission_card("call-54"), &target)
+        .expect("a card is pending");
+    target.begin_turn();
+
+    registry
+        .agent_message_send_from_peer_at(
+            "s.far.00000001",
+            "s.steer.peer-daemon",
+            "hello from a relayed agent",
+            &owner,
+            // The daemon peer is paired by the target's own user: the send
+            // capability is scoped to that user's local sessions.
+            &remote_conn(PeerRole::Daemon, Some("peer_dev-phone")),
+            Instant::now(),
+        )
+        .expect("the provider took the steer");
+    assert_eq!(
+        broker.pending_len(),
+        1,
+        "a peer daemon's relay is an agent's message: the card stays open"
+    );
+    assert!(
+        resolved_cards(&target_conn).is_empty(),
+        "no cancellation went out for a relayed agent's steer"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other half of the authorship rule: a peer record that says a
+/// **person's device** is speaking keeps today's rule — the paired device's
+/// composer send is a person's send, and it dismisses the cards.
+#[test]
+fn a_paired_devices_agent_message_steer_still_dismisses_the_cards() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    // A client peer speaks for the user who paired it: the sessions it
+    // reaches are owned by that user, so the target is created under the
+    // paired user's own id.
+    let owner = test_owner("S-1-5-21-peer", "client");
+    let calls = Arc::new(AtomicU64::new(0));
+    let (target, _interrupted, target_conn) = steer_session(
+        &registry,
+        "s.steer.peer-client",
+        &owner,
+        SessionKind::Pi,
+        SteerAnswer::Steered,
+        calls,
+        Some(78),
+    );
+    let broker = target
+        .permission_broker()
+        .expect("the session has a broker");
+    broker
+        .register(55, permission_card("call-55"), &target)
+        .expect("a card is pending");
+    target.begin_turn();
+
+    registry
+        .agent_message_send_from_peer_at(
+            "s.far.00000002",
+            "s.steer.peer-client",
+            "the person on the paired device says so",
+            &owner,
+            &remote_conn(PeerRole::Client, Some("S-1-5-21-peer")),
+            Instant::now(),
+        )
+        .expect("the provider took the steer");
+    assert_eq!(
+        broker.pending_len(),
+        0,
+        "a person's paired-device send dismisses the cards"
+    );
+    assert_eq!(
+        resolved_cards(&target_conn),
+        vec!["call-55".to_string()],
+        "exactly the pending card was resolved"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The child's completion report may steer its creator's turn, but it is
+/// the daemon speaking: the steer lands and the creator's open card stays
+/// exactly where it was, because no person asked for it to move.
+#[test]
+fn a_childs_report_steers_its_creator_and_leaves_the_creators_cards_alone() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-child-report", "process-child-report");
+    let calls = Arc::new(AtomicU64::new(0));
+    let (creator, _interrupted, creator_conn) = steer_session(
+        &registry,
+        "creator-child-report",
+        &owner,
+        SessionKind::Acp,
+        SteerAnswer::Steered,
+        Arc::clone(&calls),
+        Some(79),
+    );
+    let broker = creator
+        .permission_broker()
+        .expect("the session has a broker");
+    broker
+        .register(56, permission_card("call-56"), &creator)
+        .expect("a card is pending");
+    creator.begin_turn();
+    registry
+        .test_ticket("creator-child-report", 1)
+        .expect("reserve");
+    registry.accept_agent_creation("creator-child-report");
+    registry.commit_agent_child_for_test("creator-child-report", "child-report", true);
+    let child_runtime = insert_live_agent_with_kind_and_writer(
+        &registry,
+        "child-report",
+        owner.clone(),
+        SessionKind::Acp,
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    let child_view = registry
+        .inner
+        .lock()
+        .expect("registry map")
+        .get("child-report")
+        .map(|entry| entry.to_session())
+        .expect("the child's own view");
+
+    registry.child_ended_with(
+        "child-report",
+        Some(&child_view),
+        Some(&child_runtime),
+        Some(&owner),
+    );
+
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        1,
+        "the report still steers the creator's running turn"
+    );
+    assert_eq!(
+        broker.pending_len(),
+        1,
+        "the daemon's own report never dismisses a card the person is looking at"
+    );
+    assert!(
+        resolved_cards(&creator_conn).is_empty(),
+        "no cancellation went out for a child's report"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);

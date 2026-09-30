@@ -1598,14 +1598,35 @@ fn publish_plan_outcome(
     pending: &PendingPermission,
     outcome: PlanOutcome,
 ) {
+    publish_plan_outcome_for(runtime, &pending.tool_call_id, &pending.request, outcome);
+}
+
+/// The plan row's terminal state, from a request that was denied before any
+/// card existed: the same daemon event the drain writes for
+/// [`PlanOutcome::Steered`], so a restart replays a record that a steer —
+/// not a rejection — ended the plan.
+pub(crate) fn publish_plan_steered_row(
+    runtime: &super::session_runtime::SessionRuntime,
+    tool_call_id: &str,
+    request: &SessionEvent,
+) {
+    publish_plan_outcome_for(runtime, tool_call_id, request, PlanOutcome::Steered);
+}
+
+fn publish_plan_outcome_for(
+    runtime: &super::session_runtime::SessionRuntime,
+    tool_call_id: &str,
+    request: &SessionEvent,
+    outcome: PlanOutcome,
+) {
     if let SessionEvent::PermissionRequest {
         kind: Some(PermissionRequestKind::Plan),
         ..
-    } = &pending.request
+    } = request
     {
         let (status, title) = outcome.status_and_title();
         let published = runtime.publish_daemon_event(SessionEvent::AgentToolUpdate {
-            tool_call_id: pending.tool_call_id.clone(),
+            tool_call_id: tool_call_id.to_string(),
             status: Some(status.to_string()),
             text: None,
             title: Some(title.to_string()),

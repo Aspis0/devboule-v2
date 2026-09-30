@@ -22,13 +22,14 @@ use devboule_protocol::{
 };
 use serde_json::Value;
 
+use super::claude_steer_latch::{ClaudeSteerLatch, STEER_SUPERSEDED_MESSAGE};
 use super::claude_task_seed::{envelope_may_carry_tasks, seed_claude_task_state};
 use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
 use super::turn_watch::{silence_from_env, TurnWatch};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
-    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
+    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, SteerOrigin, TurnToken,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::claude_abort::ClaudeAbortGate;
@@ -80,6 +81,7 @@ fn interrupt_claude_turn(
     broker: &Arc<PermissionBroker>,
     abort_gate: &ClaudeAbortGateRef,
     cancelled: &Arc<AtomicBool>,
+    steer_latch: &ClaudeSteerLatch,
 ) {
     // The expectation first, exactly as `Killer::interrupt` always did:
     // the gate records the interrupt at the moment it is requested, even
@@ -87,6 +89,10 @@ fn interrupt_claude_turn(
     // would leave the request unrecorded while its (absent) answer is
     // still owed downstream.
     abort_gate.note_interrupt();
+    // An interrupt ends the turn the steer was armed in: the latch must not
+    // outlive it, or the next turn's permissions would be denied for a
+    // prompt that no longer exists.
+    steer_latch.clear();
     // A kill already closed stdin and drained the broker; a late
     // interrupt would only spawn a thread doomed to BrokenPipe.
     if cancelled.load(Ordering::Acquire) {
@@ -111,11 +117,19 @@ fn claude_turn_watch(
     broker: Arc<PermissionBroker>,
     abort_gate: ClaudeAbortGateRef,
     cancelled: Arc<AtomicBool>,
+    steer_latch: Arc<ClaudeSteerLatch>,
 ) -> Arc<TurnWatch> {
     TurnWatch::new(
         silence,
         Arc::new(move |runtime, _prompt, silence| {
-            interrupt_claude_turn(&stdin, &next_id, &broker, &abort_gate, &cancelled);
+            interrupt_claude_turn(
+                &stdin,
+                &next_id,
+                &broker,
+                &abort_gate,
+                &cancelled,
+                &steer_latch,
+            );
             // Past a kill the interrupt above is a no-op and so is the
             // rest: settling and publishing on a gone child would write
             // an expiry for a turn the kill already ended.
@@ -181,6 +195,10 @@ struct ClaudeModeGateWiring {
     abort_gate: ClaudeAbortGateRef,
     timeout: Duration,
     delivery_settings: ClaudeDeliverySettings,
+    /// The unread-steer latch shared with the steerer and the killer: the
+    /// reader consults it when a `can_use_tool` arrives and releases it on
+    /// the CLI's `command_lifecycle` frames.
+    steer_latch: Arc<ClaudeSteerLatch>,
 }
 
 impl ClaudeModeGateWiring {
@@ -195,6 +213,7 @@ impl ClaudeModeGateWiring {
             abort_gate,
             timeout: INITIAL_MODE_TIMEOUT,
             delivery_settings: Arc::new(Mutex::new(HashMap::new())),
+            steer_latch: Arc::new(ClaudeSteerLatch::default()),
         }
     }
 }
@@ -883,12 +902,14 @@ fn spawn_claude_child(
     // an old CLI's error — or silence — only costs the early list.
     let pending_initialize = begin_initialize(&stdin, &next_id);
     let abort_gate: ClaudeAbortGateRef = Arc::new(ClaudeAbortGate::default());
+    let steer_latch = Arc::new(ClaudeSteerLatch::default());
     let switcher = ClaudeSwitcher {
         stdin: Arc::clone(&stdin),
         next_id: Arc::clone(&next_id),
         mode_responses: Arc::clone(&mode_responses),
         mode_gate: Some(Arc::clone(&mode_gate)),
         abort_gate: Arc::clone(&abort_gate),
+        steer_latch: Arc::clone(&steer_latch),
     };
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
@@ -900,6 +921,7 @@ fn spawn_claude_child(
         Arc::clone(&permission_broker),
         Arc::clone(&abort_gate),
         Arc::clone(&cancelled),
+        Arc::clone(&steer_latch),
     );
     let writer = ClaudeWriter {
         stdin: Arc::clone(&stdin),
@@ -924,6 +946,7 @@ fn spawn_claude_child(
         permission_broker: Arc::clone(&permission_broker),
         cancelled: Arc::clone(&cancelled),
         abort_gate: Arc::clone(&abort_gate),
+        steer_latch: Arc::clone(&steer_latch),
     };
     let mut wiring = ClaudeModeGateWiring::new(
         Arc::clone(&stdin),
@@ -931,6 +954,7 @@ fn spawn_claude_child(
         Arc::clone(&abort_gate),
     );
     wiring.delivery_settings = Arc::clone(&delivery_settings);
+    wiring.steer_latch = Arc::clone(&steer_latch);
     let mut reader_dispatch = ClaudeReader::with_mode_gate(
         ClaudeView::new(Some(command.cwd.clone())),
         Arc::clone(&permission_broker),
@@ -1052,6 +1076,26 @@ fn plan_target_mode(
     }
 }
 
+/// The deny sentence an outcome names for itself, when it carries one —
+/// read only for a `cancelled` outcome, the case that exists for: the
+/// steer-supersession text rides a cancellation, never a selection.
+fn deny_message_override(result: &Value) -> Option<&str> {
+    result
+        .pointer("/outcome/message")
+        .and_then(Value::as_str)
+        .filter(|message| !message.is_empty())
+}
+
+/// Printed when a steer-superseded request's denial could not be journaled:
+/// the row is the denial's only record, because no card and therefore no
+/// resolution row exists for it.
+const STEER_DENY_UNJOURNALED: &str = "claude steer-superseded denial was not journaled:";
+
+/// Printed when a steer-superseded request's deny frame could not reach the
+/// CLI: parked on its permission callback, it would wait out the person's
+/// steer and run the tool the person overrode.
+const STEER_DENY_UNDELIVERED: &str = "claude steer-superseded denial was not delivered:";
+
 fn control_response_frame(
     request_id: &str,
     input: &Value,
@@ -1101,10 +1145,17 @@ fn control_response_frame(
         }
         response
     } else {
-        let message = match outcome {
-            "cancelled" => "The permission request was cancelled.",
-            _ if is_plan => "The user rejected this plan.",
-            _ => "The user declined this command.",
+        // A cancelled answer may carry its own sentence (the steer
+        // supersession text); without one, the house text stands. The
+        // override is local to `cancelled`: that is the only outcome built
+        // with a `message`, so a selection's house text can never be
+        // displaced by whatever a future producer stuffs into the field.
+        let message = if outcome == "cancelled" {
+            deny_message_override(result).unwrap_or("The permission request was cancelled.")
+        } else if is_plan {
+            "The user rejected this plan."
+        } else {
+            "The user declined this command."
         };
         serde_json::json!({
             "behavior": "deny",
@@ -1683,6 +1734,7 @@ struct ClaudeKiller {
     permission_broker: Arc<PermissionBroker>,
     cancelled: Arc<AtomicBool>,
     abort_gate: ClaudeAbortGateRef,
+    steer_latch: Arc<ClaudeSteerLatch>,
 }
 
 struct ClaudeSwitcher {
@@ -1693,12 +1745,15 @@ struct ClaudeSwitcher {
     /// Not for switching: `clone_steerer` is where the session's steerer is
     /// born, and the steerer needs the gate to count its own deliveries.
     abort_gate: ClaudeAbortGateRef,
+    /// Born here so `clone_steerer` can hand the same latch to the steerer.
+    steer_latch: Arc<ClaudeSteerLatch>,
 }
 
 struct ClaudeSteerer {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     mode_gate: Option<ClaudeModeGateRef>,
     abort_gate: ClaudeAbortGateRef,
+    steer_latch: Arc<ClaudeSteerLatch>,
 }
 
 impl SessionSteerer for ClaudeSteerer {
@@ -1706,6 +1761,7 @@ impl SessionSteerer for ClaudeSteerer {
         &mut self,
         text: &str,
         _turn: &mut TurnToken<'_>,
+        origin: SteerOrigin,
     ) -> Result<bool, WireError> {
         if text.trim_start().starts_with('/') {
             return Ok(false);
@@ -1731,6 +1787,12 @@ impl SessionSteerer for ClaudeSteerer {
         )
         .map_err(send_failure)?
         {
+            // Only a person's own send may deny what a person is being asked:
+            // an agent-to-agent steer joins the turn without touching a card,
+            // so its uuid never arms the latch.
+            if origin == SteerOrigin::Person {
+                self.steer_latch.arm(&uuid);
+            }
             Ok(true)
         } else {
             Ok(false)
@@ -1742,6 +1804,7 @@ impl SessionSteerer for ClaudeSteerer {
             stdin: Arc::clone(&self.stdin),
             mode_gate: self.mode_gate.clone(),
             abort_gate: Arc::clone(&self.abort_gate),
+            steer_latch: Arc::clone(&self.steer_latch),
         })
     }
 }
@@ -2220,7 +2283,14 @@ impl ModelSwitcher for ClaudeSwitcher {
             ));
         }
         match receiver.recv_timeout(CONTROL_RESPONSE_TIMEOUT) {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                // A confirmed mode switch is the person taking the asking
+                // back into their own hands: a steer that is still unread
+                // loses its supersession, so the mode they just chose is
+                // not silently overridden by it.
+                self.steer_latch.clear();
+                Ok(())
+            }
             Ok(Err(message)) => Err(WireError::new(ErrorCode::InvalidRequest, message)),
             Err(error) => {
                 let _ = self
@@ -2242,6 +2312,7 @@ impl ModelSwitcher for ClaudeSwitcher {
             mode_responses: Arc::clone(&self.mode_responses),
             mode_gate: self.mode_gate.clone(),
             abort_gate: Arc::clone(&self.abort_gate),
+            steer_latch: Arc::clone(&self.steer_latch),
         })
     }
 
@@ -2250,6 +2321,7 @@ impl ModelSwitcher for ClaudeSwitcher {
             stdin: Arc::clone(&self.stdin),
             mode_gate: self.mode_gate.clone(),
             abort_gate: self.abort_gate.clone(),
+            steer_latch: Arc::clone(&self.steer_latch),
         })
     }
 }
@@ -2266,6 +2338,7 @@ impl ClaudeKiller {
         }
         let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         send_interrupt_frame(Arc::clone(&self.stdin), request_id);
+        self.steer_latch.clear();
         self.permission_broker.cancel_pending();
     }
 }
@@ -2281,6 +2354,7 @@ impl SessionKiller for ClaudeKiller {
             &self.permission_broker,
             &self.abort_gate,
             &self.cancelled,
+            &self.steer_latch,
         );
     }
 
@@ -2295,6 +2369,7 @@ impl SessionKiller for ClaudeKiller {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
             self.abort_gate.note_interrupt();
+            self.steer_latch.clear();
             send_interrupt_frame(Arc::clone(&self.stdin), request_id);
             self.permission_broker.close();
         }
@@ -2314,6 +2389,7 @@ impl SessionKiller for ClaudeKiller {
             permission_broker: Arc::clone(&self.permission_broker),
             cancelled: Arc::clone(&self.cancelled),
             abort_gate: Arc::clone(&self.abort_gate),
+            steer_latch: Arc::clone(&self.steer_latch),
         })
     }
 }
@@ -2357,6 +2433,10 @@ struct ClaudeReader {
     /// and the seed use): inbound lines are its activity, a result ends its
     /// turn, and its expiry finishes the run through the settle path.
     watch: Option<Arc<TurnWatch>>,
+    /// The unread-steer latch shared with the steerer and the killer: a
+    /// `can_use_tool` arriving while a person's steer is unread is denied,
+    /// and the CLI's `command_lifecycle` frames release what they name.
+    steer_latch: Arc<ClaudeSteerLatch>,
 }
 
 /// Seed attempts before the reader latches and stops retrying.
@@ -2429,6 +2509,7 @@ impl ClaudeReader {
             initial_mode_timer_cancel: None,
             initial_mode_timer_thread: None,
             watch: None,
+            steer_latch: Arc::new(ClaudeSteerLatch::default()),
         }
     }
 
@@ -2447,6 +2528,7 @@ impl ClaudeReader {
         reader.initial_mode_timeout = wiring.timeout;
         reader.delivery_settings = wiring.delivery_settings;
         reader.abort_gate = wiring.abort_gate;
+        reader.steer_latch = wiring.steer_latch;
         // The spawn's own connection, through the same constructor the tests
         // use: the watch observes this reader's lines and holds this
         // session's cards, so deleting either half turns the watchdog tests
@@ -2567,6 +2649,12 @@ impl ClaudeReader {
         let mut value = runtime.redact_mcp_value(&value);
         crate::plan_text::bound_claude_envelope(&mut value);
         observe_mcp_status(&value, runtime);
+        // A `command_lifecycle` started/completed frame is the CLI saying it
+        // read the steered prompt: its supersession ends exactly there, so a
+        // permission the agent asks for after acting on the message reaches
+        // the person. `queued` — the buffer ack sent while the CLI is still
+        // parked in its permission callback — releases nothing.
+        self.steer_latch.release_read(&value);
         // The initialize answer carries the account identity next to the
         // commands; the journal keeps only what the menu reads.
         let value = self.minimize_initialize_answer(value);
@@ -2606,6 +2694,16 @@ impl ClaudeReader {
                     watchdog_owns_finish = !watch.end_turn();
                 }
             }
+            // The turn question above is settled under the turn lock before
+            // the latch is emptied, and an arm takes that same lock: a steer
+            // is either admitted first — and this clear retires it with the
+            // turn it joined — or refused after the turn ended. A withheld
+            // finish clears too, deliberately: that is the fail-open
+            // direction, fewer denials and never a denial inside a live
+            // turn. Clearing before the settle would leave the window
+            // between the two open for an arm on a turn that no longer
+            // exists.
+            self.steer_latch.clear();
             withheld
         } else {
             false
@@ -3151,6 +3249,23 @@ impl ClaudeReader {
                 },
             );
         }
+        // A person's unread steer is already the answer: the CLI is parked
+        // inside its permission callback with the steered prompt queued
+        // behind it, so a request that opens now belongs to the intent the
+        // person overrode. It is denied before any card exists — no park
+        // hook, no resolved row for a card nobody saw, no word to a creator
+        // agent — except in a mode where the cards would have been answered
+        // automatically anyway.
+        let tool_call_id = match &event {
+            SessionEvent::PermissionRequest { tool_call_id, .. } => tool_call_id,
+            _ => return,
+        };
+        if !matches!(runtime.mode_gate(), crate::provider_catalog::ModeGate::Auto)
+            && self.steer_latch.is_armed()
+        {
+            self.deny_superseded_by_steer(acp_id, tool_call_id, &event, runtime);
+            return;
+        }
         if let Err(error) = self
             .permission_broker
             .register(acp_id, event.clone(), runtime)
@@ -3181,10 +3296,6 @@ impl ClaudeReader {
             );
             return;
         }
-        let tool_call_id = match &event {
-            SessionEvent::PermissionRequest { tool_call_id, .. } => tool_call_id.as_str(),
-            _ => return,
-        };
         match self.permission_broker.auto_answer(tool_call_id, runtime) {
             Ok(true) => return,
             Ok(false) => {}
@@ -3201,6 +3312,48 @@ impl ClaudeReader {
             }
         }
         self.publish_with_seq(runtime, event, event_seq);
+    }
+
+    /// The latch's answer: the deny frame the parked CLI is waiting on, and
+    /// one journal row saying why — `denied_by_steer` is the record a person
+    /// can find later, since no card and therefore no resolution row exists.
+    /// A deny that cannot reach the CLI must not vanish silently: the CLI
+    /// would stay parked and the person's steer would be overridden without
+    /// a word anywhere.
+    fn deny_superseded_by_steer(
+        &self,
+        acp_id: u64,
+        tool_call_id: &str,
+        request: &SessionEvent,
+        runtime: &Arc<SessionRuntime>,
+    ) {
+        // The row is stamped the way `register_with` stamps every stored
+        // copy: the audit trail must say which origin's conversation the
+        // denial belongs to. The request's size bound is the reader's
+        // (`bound_claude_envelope` ran on the whole frame upstream), which is
+        // the bound every other row gets from `register_with`.
+        let stamped = super::permission_broker::stamp_chooser(
+            super::permission_broker::stamp_origin(request.clone(), runtime.origin()),
+        );
+        if !runtime.record_permission_decision(tool_call_id, "denied_by_steer", &stamped) {
+            eprintln!(
+                "{STEER_DENY_UNJOURNALED} session {} card {}",
+                runtime.session_id, tool_call_id
+            );
+        }
+        // A plan denied by the steer keeps the terminal row the drain would
+        // have given it — otherwise the row ends on the provider's echo, in
+        // the CLI's wording, with nothing saying a steer ended it.
+        super::permission_broker::publish_plan_steered_row(runtime, tool_call_id, &stamped);
+        let result = serde_json::json!({
+            "outcome": { "outcome": "cancelled", "message": STEER_SUPERSEDED_MESSAGE },
+        });
+        if let Err(error) = self.permission_broker.send(acp_id, result) {
+            eprintln!(
+                "{STEER_DENY_UNDELIVERED} session {} card {}: {error}",
+                runtime.session_id, tool_call_id
+            );
+        }
     }
 }
 
@@ -3257,6 +3410,7 @@ impl ReaderDispatch for ClaudeReader {
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
         self.cancel_initial_mode_timeout();
+        self.steer_latch.clear();
         if let Some(watch) = &self.watch {
             watch.shutdown();
         }
@@ -3385,6 +3539,14 @@ mod tests;
 #[cfg(test)]
 #[path = "claude_turn_watch_test_support.rs"]
 mod turn_watch_test_support;
+
+#[cfg(test)]
+#[path = "claude_steer_latch_test_support.rs"]
+mod steer_latch_test_support;
+
+#[cfg(test)]
+#[path = "claude_steer_latch_tests.rs"]
+mod steer_latch_tests;
 
 #[cfg(test)]
 #[path = "claude_turn_watch_tests.rs"]

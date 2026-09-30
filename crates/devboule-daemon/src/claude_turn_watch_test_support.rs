@@ -70,6 +70,7 @@ fn build(
         Arc::clone(broker),
         Arc::clone(&abort_gate),
         Arc::new(AtomicBool::new(cancelled)),
+        Arc::new(ClaudeSteerLatch::default()),
     );
     let wiring = ClaudeModeGateWiring::new(
         Arc::clone(&stdin),

@@ -111,6 +111,7 @@ fn the_spawn_prompt_travels_the_send_road_in_front_of_the_preamble() {
             spawn_prompt: Some("spawn"),
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
+            steer_origin: SteerOrigin::Agent,
         })
         .expect("the spawn-shaped creation send writes");
     assert_eq!(
@@ -152,6 +153,7 @@ fn the_spawn_prompt_travels_the_send_road_in_front_of_the_preamble() {
             spawn_prompt: None,
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
+            steer_origin: SteerOrigin::Agent,
         })
         .expect("the bare creation-shaped send writes");
     assert_eq!(

@@ -498,6 +498,7 @@ impl SessionSteerer for ErroringSteerer {
         &mut self,
         _text: &str,
         _turn: &mut TurnToken<'_>,
+        _origin: super::session_items::SteerOrigin,
     ) -> Result<bool, WireError> {
         Err(WireError::new(
             ErrorCode::InvalidRequest,

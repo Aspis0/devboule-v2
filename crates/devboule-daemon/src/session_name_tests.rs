@@ -250,6 +250,7 @@ fn the_creation_send_titles_from_the_task_not_the_composition() {
             spawn_prompt: Some("the profile spawn prompt"),
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
+            steer_origin: SteerOrigin::Agent,
         })
         .expect("the creation's prompt is accepted");
 
@@ -391,6 +392,7 @@ fn an_a2a_envelope_never_becomes_the_title() {
             spawn_prompt: None,
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::IncomingA2a,
+            steer_origin: SteerOrigin::Agent,
         })
         .expect("the relay is accepted");
 
@@ -436,6 +438,7 @@ fn a_daemon_notice_never_becomes_the_title() {
             spawn_prompt: None,
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::SystemNotice,
+            steer_origin: SteerOrigin::Agent,
         })
         .expect("the notice is accepted");
 
@@ -482,6 +485,7 @@ fn a_composed_first_prompt_titles_from_the_persons_words() {
             spawn_prompt: None,
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::SystemNotice,
+            steer_origin: SteerOrigin::Agent,
         })
         .expect("the notice is accepted");
     assert_eq!(
@@ -511,6 +515,7 @@ fn a_composed_first_prompt_titles_from_the_persons_words() {
             spawn_prompt: Some("SPAWN-MARKER"),
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
+            steer_origin: SteerOrigin::Person,
         })
         .expect("the prompt is accepted");
 

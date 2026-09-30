@@ -139,6 +139,8 @@ mod acp_pending;
 mod acp_questions;
 #[path = "claude_client.rs"]
 mod claude_client;
+#[path = "claude_steer_latch.rs"]
+mod claude_steer_latch;
 #[path = "claude_task_seed.rs"]
 mod claude_task_seed;
 #[path = "codex_client.rs"]
@@ -281,7 +283,7 @@ use session_items::{
 use session_items::{check_owner, elapsed_ms_since_last_life, session_nonce, session_unique};
 pub(crate) use session_items::{
     session_origin_for, ModelSwitcher, OutOfBandCommands, ReaderDispatch, SessionKiller,
-    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild,
+    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, SteerOrigin,
 };
 pub use session_items::{
     COALESCE_FLUSH, COALESCE_MAX_BYTES, PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES,

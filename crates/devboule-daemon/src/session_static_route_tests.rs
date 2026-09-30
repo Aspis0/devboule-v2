@@ -275,6 +275,7 @@ fn the_first_picked_command_expands_from_the_raw_message() {
             spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
+            steer_origin: SteerOrigin::Person,
         })
         .expect("send");
     assert_eq!(

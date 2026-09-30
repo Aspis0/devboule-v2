@@ -1965,9 +1965,13 @@ fn journal_loop(
                 let _ = reply.send(Ok(count > 0));
             }
             JournalCmd::PermissionCount { session_id, reply } => {
+                // The steer-supersession row records a decision made on a
+                // card nobody was ever shown; the delegation ledger counts
+                // answers to cards.
                 let count: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM permissions WHERE session_id = ?1",
+                        "SELECT COUNT(*) FROM permissions \
+                         WHERE session_id = ?1 AND outcome IS NOT 'denied_by_steer'",
                         params![&session_id],
                         |row| row.get(0),
                     )

@@ -739,6 +739,7 @@ impl SessionSteerer for CodexSteerer {
         &mut self,
         text: &str,
         turn: &mut TurnToken<'_>,
+        _origin: super::SteerOrigin,
     ) -> Result<bool, WireError> {
         // Listed slash commands are refused as steers so the caller replaces
         // the turn and `buildCommandPromptInput` can expand them.

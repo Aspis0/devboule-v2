@@ -170,6 +170,7 @@ fn a_killed_killer_interrupt_still_arms_the_gate() {
         &broker,
         &abort_gate,
         &Arc::new(AtomicBool::new(true)),
+        &ClaudeSteerLatch::default(),
     );
     abort_gate.note_prompt_delivered();
     assert!(

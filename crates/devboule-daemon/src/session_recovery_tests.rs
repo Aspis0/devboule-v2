@@ -344,6 +344,7 @@ fn a_resume_for_a_gone_directory_recovers_the_conversation_into_a_new_session() 
             spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
+            steer_origin: SteerOrigin::Person,
         })
         .expect("the first prompt reaches the recovered session");
 

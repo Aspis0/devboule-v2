@@ -318,6 +318,9 @@ impl super::SessionRegistry {
             spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
+            // The person at this machine, or a person at a paired device: a
+            // person's send may dismiss what a person is being asked.
+            steer_origin: SteerOrigin::Person,
         })
         .map(|outcome| outcome.turn_active)
     }
@@ -560,6 +563,17 @@ impl super::SessionRegistry {
             spawn_prompt: None,
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::IncomingA2a,
+            // The ingress decides — by authorship, not by reachability. The
+            // local road is the MCP agent-to-agent tool: an agent's message,
+            // never a person's. A far sender is a person only when its peer
+            // record says a person's device is speaking; a peer daemon
+            // relaying an agent's message stays an agent, however the bytes
+            // reached us.
+            steer_origin: if far_sender && caller_origin.role == Some(PeerRole::Client) {
+                SteerOrigin::Person
+            } else {
+                SteerOrigin::Agent
+            },
         });
         if result.is_ok() {
             if let Some(from_runtime) = from_runtime {
@@ -618,6 +632,8 @@ impl super::SessionRegistry {
             spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
+            // The MCP road, even in a test: an agent's message.
+            steer_origin: SteerOrigin::Agent,
         })
         .map(|_| ())
     }
@@ -643,6 +659,7 @@ impl super::SessionRegistry {
             spawn_prompt,
             author,
             message_kind,
+            steer_origin,
         } = *request;
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -871,7 +888,7 @@ impl super::SessionRegistry {
             // send it would have been if the caller had not asked to join a
             // turn, with no interrupt, because nothing is running to replace.
             let steered = runtime.with_active_turn(expected_turn_id, |turn| {
-                steerer.steer_active_turn(text, turn)
+                steerer.steer_active_turn(text, turn, steer_origin)
             });
             match steered {
                 Some(Ok(true)) => {
@@ -884,8 +901,15 @@ impl super::SessionRegistry {
                     // No provider needs them cleared *before* it can accept: on
                     // a refusal the local fallback's own `interrupt()` clears
                     // them, and each provider's killer does the same.
-                    if let Some(permission_broker) = runtime.permission_broker() {
-                        permission_broker.cancel_pending_for_steer();
+                    // The dismissal is a person's act: an agent-to-agent steer
+                    // and a daemon-authored report join the turn without
+                    // touching a card the person is looking at. (The Claude
+                    // unread-steer latch is armed under the same rule, inside
+                    // the steerer.)
+                    if steer_origin == SteerOrigin::Person {
+                        if let Some(permission_broker) = runtime.permission_broker() {
+                            permission_broker.cancel_pending_for_steer();
+                        }
                     }
                     // The steered text is echoed into the session's own
                     // transcript as the `AgentUserMessage` every accepted input

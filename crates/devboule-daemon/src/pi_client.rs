@@ -2848,6 +2848,7 @@ impl SessionSteerer for PiSteerer {
         &mut self,
         text: &str,
         turn: &mut TurnToken<'_>,
+        _origin: super::SteerOrigin,
     ) -> Result<bool, WireError> {
         // Pi rejects steer RPCs that are extension commands, so a slash
         // input keeps the interrupt-and-replace fallback where the text can

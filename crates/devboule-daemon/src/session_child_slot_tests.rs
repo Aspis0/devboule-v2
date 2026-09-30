@@ -277,6 +277,7 @@ fn the_creators_slot_survives_its_childs_birth_and_death() {
             spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
+            steer_origin: SteerOrigin::Person,
         })
         .expect("the prompt reaches the living child");
 

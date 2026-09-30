@@ -105,6 +105,9 @@ Mohamed Boudra, Apache-2.0. Its source was translated, ported or copied into
 the files below; each file carries its own attribution line naming the Paseo
 source, and that line is the authority for the entry:
 
+- `crates/devboule-daemon/src/claude_steer_latch.rs` —
+  `packages/server/src/server/agent/providers/claude/agent.ts`
+  (`STEER_SUPERSEDED_PERMISSION_MESSAGE`, commit `c6b04f302`)
 - `crates/devboule-daemon/src/claude_task_state.rs` — `claude/task-state.ts`
   (commit `d6861f8`)
 - `crates/devboule-daemon/src/codex_command_catalog.rs` —

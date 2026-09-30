@@ -35,7 +35,7 @@ pub(crate) fn steer_through_the_turn(
     let runtime = std::sync::Arc::new(crate::session::SessionRuntime::new());
     runtime.begin_turn();
     runtime.with_active_turn(runtime.turn_counter(), |turn| {
-        steerer.steer_active_turn(text, turn)
+        steerer.steer_active_turn(text, turn, crate::session::SteerOrigin::Person)
     })
 }
 

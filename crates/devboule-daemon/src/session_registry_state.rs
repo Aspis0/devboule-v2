@@ -969,6 +969,11 @@ pub struct SendRequest<'a> {
     /// Required so every caller states both facts independently.
     pub author: UserMessageAuthor,
     pub message_kind: UserMessageKind,
+    /// Whose words these are, stated at the ingress: a steer from a person
+    /// may dismiss permission cards a person is looking at (the one-shot
+    /// drain and the Claude unread-steer latch); an agent-to-agent message
+    /// and a daemon-authored prompt may never touch a card.
+    pub steer_origin: super::SteerOrigin,
 }
 
 /// What one delivery needs to re-key its brake slot (S4-10): the table, the

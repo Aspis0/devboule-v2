@@ -533,6 +533,9 @@ impl super::SessionRegistry {
             spawn_prompt: (!spawn_prompt.is_empty()).then_some(spawn_prompt.as_str()),
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
+            // Daemon-authored, stated for the day this delivery ever learns
+            // to steer: the creation's first prompt is no person's send.
+            steer_origin: SteerOrigin::Agent,
         });
         if let Err(error) = sent {
             // The same pairing as the abandon above: the close removes an
@@ -1304,6 +1307,9 @@ impl super::SessionRegistry {
             // words: rendered as non-human alongside agent echoes.
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::SystemNotice,
+            // A child's report may steer its creator's turn, but it is the
+            // daemon speaking: it never dismisses a card the person is looking at.
+            steer_origin: SteerOrigin::Agent,
         })
         .map(|outcome| outcome.message_id)
     }

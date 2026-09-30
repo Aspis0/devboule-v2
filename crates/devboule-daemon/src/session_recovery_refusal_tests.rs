@@ -149,6 +149,7 @@ fn a_provider_that_refuses_the_handle_recovers_the_conversation_into_a_new_sessi
             spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
+            steer_origin: SteerOrigin::Person,
         })
         .expect("the first prompt reaches the recovered session");
 
