@@ -114,6 +114,7 @@ import {
   type DesignViewport,
 } from "./designViewport";
 import { DesignCanvas, ZoomControls } from "./DesignCanvas";
+import { ArtifactExportControls } from "./ArtifactExportControls";
 import { DesignAssistant } from "./DesignAssistant";
 import { LayerPanel, type LayerChainStep, type LayerViewModel } from "./DesignLayerPanel";
 import { DesignCraftSheet } from "./DesignSkillControls";
@@ -1001,16 +1002,12 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         : [],
     [artifactError, artifactHtml],
   );
-  // The slides contract, read back from the artifact that came out of it. The
-  // mode is the one the producing run recorded on the artifact, never the
-  // toggle's current position: flipping the toggle regenerates nothing, so it
-  // states what the next run will ask for and cannot describe what is already
-  // on screen. An artifact with no recorded mode is neither page nor slides —
-  // it has no contract to report on, so it is silent rather than assumed.
-  // The gate sits before the parse: a page-mode artifact is allowed to contain
-  // <section> landmarks, and reporting on it would state a contract that never
-  // applied (see `artifactSlides.ts`). Keyed on the markup and the recorded
-  // mode, so the parse reruns when either changes — not once per canvas event.
+  // No recorded mode means no slides contract: the notice stays silent rather
+  // than assuming one. The gate sits before the parse: a page-mode artifact is
+  // allowed to contain <section> landmarks, and reporting on it would state a
+  // contract that never applied (see `artifactSlides.ts`). Keyed on the markup
+  // and the recorded mode, so the parse reruns when either changes — not once
+  // per canvas event.
   const artifactSlideShapeNotice = useMemo(
     () =>
       artifactOutputMode === "slides" && artifactHtml !== undefined
@@ -1041,6 +1038,19 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     }
     return undefined;
   }, [artifactHtml, messages]);
+  // The export paginates by the mode recorded on the artifact, not the switch (next run);
+  // a reopened artifact with no recorded mode stays undefined and print falls back to shape.
+  const artifactExportControls = useMemo(
+    () =>
+      artifactHtml !== undefined ? (
+        <ArtifactExportControls
+          html={artifactHtml}
+          title={artifactSourceTitle}
+          outputMode={artifactOutputMode}
+        />
+      ) : null,
+    [artifactHtml, artifactOutputMode, artifactSourceTitle],
+  );
   const artifactRect = useMemo(
     () =>
       artifactHtml !== undefined || artifactError !== undefined
@@ -2499,10 +2509,14 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             onZoomOut={zoomOut}
             onZoomReset={zoomReset}
             onFit={fitCanvas}
-            artifactHtml={artifactHtml}
-            artifactTitle={artifactSourceTitle}
-            artifactOutputMode={artifactOutputMode}
-          />
+          >
+            {/* The export acts on the artifact on screen, so it lives with the
+                canvas controls, not the session: the 365px assistant header held
+                four items already and cut the fifth ("Copy HTM", live 2026-09-11).
+                The pill sizes to its content and is anchored right, so it cannot
+                overflow its box toward the layer panel in the opposite corner. */}
+            {artifactExportControls}
+          </ZoomControls>
         </div>
 
         <DesignAssistant

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
@@ -138,6 +139,7 @@ import {
 } from "./designViewport";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
+import { ZoomControls } from "./DesignCanvas";
 import type {
   DesignAssistantMessage,
   DesignGenerationResult,
@@ -5353,6 +5355,32 @@ describe("artifact export copy", () => {
     await act(async () => root.unmount());
   });
 
+  it("renders the pill actions in canvas order: zoom, fit, then exports", async () => {
+    // Position, not just membership: the pill is display:flex, so a moved
+    // slot would show immediately while every querySelector assertion above
+    // still passed. Element children only: the moved JSX comment emits
+    // nothing and the ternary collapses to a single children prop.
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const pill = container.querySelector(".design-zoom-controls");
+    if (pill === null) throw new Error("Canvas controls missing");
+    const order = [...pill.children].map(
+      (child) => child.getAttribute("aria-label") ?? child.textContent,
+    );
+    expect(order).toEqual([
+      "Zoom out",
+      "Reset zoom to 100%",
+      "Zoom in",
+      "Fit",
+      "Copy HTML",
+      "Save HTML",
+      "Print / PDF",
+    ]);
+    await act(async () => root.unmount());
+  });
+
   it("canvas controls do not overflow their box", async () => {
     // happy-dom reports no layout (0 <= 0); this pins the gate so a real
     // browser harness or CDP probe can fail it honestly.
@@ -5506,5 +5534,45 @@ describe("artifact export copy", () => {
     expect(deckSrcDoc).toContain("size: A4 landscape");
     expect(deckSrcDoc).toContain("break-before: page");
     await act(async () => slides.root.unmount());
+  });
+
+  describe("zoom controls memo", () => {
+    it("an idle re-render with unchanged zoom and artifact values does not re-render ZoomControls", async () => {
+      // The export slot is memoized where it is composed, so the pill bails out
+      // whenever zoom and every artifact value are identical.
+      const zoomMemo = ZoomControls as unknown as {
+        type: (props: Record<string, unknown>) => ReactNode;
+      };
+      const zoomInner = zoomMemo.type;
+      let zoomRenders = 0;
+      zoomMemo.type = (props) => {
+        zoomRenders += 1;
+        return zoomInner(props);
+      };
+      try {
+        const { container, root } = await renderDesign(
+          createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+        );
+        await generateArtifact(container, "Create the final card.");
+        // The counter is live: a zoom change re-renders the pill.
+        zoomRenders = 0;
+        const zoomIn = container.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
+        if (zoomIn === null) throw new Error("Zoom in missing");
+        await act(async () => zoomIn.click());
+        expect(zoomRenders).toBeGreaterThanOrEqual(1);
+        // The grounding toggle is surface state outside the assistant, so its
+        // flip proves the surface re-rendered; the pill must still bail out.
+        zoomRenders = 0;
+        const grounding = container.querySelector<HTMLButtonElement>(".design-grounding-toggle");
+        if (grounding === null) throw new Error("Grounding control missing");
+        const pressedBefore = grounding.getAttribute("aria-pressed");
+        await act(async () => grounding.click());
+        expect(grounding.getAttribute("aria-pressed")).not.toBe(pressedBefore);
+        expect(zoomRenders).toBe(0);
+        await act(async () => root.unmount());
+      } finally {
+        zoomMemo.type = zoomInner;
+      }
+    });
   });
 });

@@ -1,8 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArtifactCopyControl } from "./ArtifactCopyControl";
-import { ArtifactPrintControl } from "./ArtifactPrintControl";
-import { ArtifactSaveControl } from "./ArtifactSaveControl";
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import { artifactSrcDoc } from "./artifactCsp";
 import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
 import {
@@ -11,7 +12,7 @@ import {
   revealArtifactRect,
   scrollArtifactBy,
 } from "./artifactViewport";
-import type { DesignLayer, DesignOutputMode } from "./designHost";
+import type { DesignLayer } from "./designHost";
 import type { NodeRect } from "../../types/geometry";
 import { hitTest } from "../../lib/canvas/hitTest";
 import type { Pan } from "../../lib/canvas/viewportMath";
@@ -46,17 +47,11 @@ interface ZoomControlsProps {
   onZoomOut: () => void;
   onZoomReset: () => void;
   onFit: () => void;
-  /** Current artifact markup; absent when nothing is on screen, so the copy action cannot exist without one. */
-  artifactHtml?: string;
-  /** Title of the assistant message that produced the artifact, for the exported document. */
-  artifactTitle?: string;
   /**
-   * The output shape the producing run recorded on the artifact, or undefined
-   * when it recorded none (an artifact reopened from design history). It decides
-   * how the artifact paginates when printed, so it travels from the artifact
-   * rather than from the output switch, which answers about the next run.
+   * The pill's trailing actions, or nothing. Opaque on purpose: the zoom
+   * controls own the container, never the artifact the actions act on.
    */
-  artifactOutputMode?: DesignOutputMode;
+  children?: ReactNode;
 }
 
 const CanvasNode = memo(function CanvasNode({ layer, hidden, selected }: CanvasNodeProps) {
@@ -104,9 +99,7 @@ export const ZoomControls = memo(function ZoomControls({
   onZoomOut,
   onZoomReset,
   onFit,
-  artifactHtml,
-  artifactTitle,
-  artifactOutputMode,
+  children,
 }: ZoomControlsProps) {
   const zoomLabel = `${Math.round(zoom * 100)}%`;
 
@@ -142,22 +135,7 @@ export const ZoomControls = memo(function ZoomControls({
       <button className="design-fit-button" type="button" title="Fit canvas" onClick={onFit}>
         Fit
       </button>
-      {/* The export acts on the artifact on screen, so it lives with the
-          canvas controls, not the session: the 365px assistant header held
-          four items already and cut the fifth ("Copy HTM", live 2026-09-11).
-          The pill sizes to its content and is anchored right, so it cannot
-          overflow its box toward the layer panel in the opposite corner. */}
-      {artifactHtml !== undefined ? (
-        <>
-          <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
-          <ArtifactSaveControl html={artifactHtml} title={artifactTitle} />
-          <ArtifactPrintControl
-            html={artifactHtml}
-            title={artifactTitle}
-            outputMode={artifactOutputMode}
-          />
-        </>
-      ) : null}
+      {children}
     </div>
   );
 });
