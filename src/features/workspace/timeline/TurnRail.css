@@ -123,3 +123,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Under the title: the spec gives title and time 12 px each and draws no
+   layout, and a time beside an ellipsised title would fight it for the
+   card's 224 px. */
+.turn-rail-preview-time {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}

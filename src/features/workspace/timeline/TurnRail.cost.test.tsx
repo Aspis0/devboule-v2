@@ -2,6 +2,7 @@
 
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentChatItem } from "../../../lib/agentSession";
 import * as turnGrouping from "./turnGrouping";
 import {
   fireResize,
@@ -130,8 +131,7 @@ function instrument(rail: ReturnType<typeof mountRail>): ReadCounts {
   return counts;
 }
 
-function showRail(turnCount: number) {
-  const items = transcript(turnCount);
+function showRail(items: readonly AgentChatItem[]) {
   const rail = mountRail(items);
   stubOverflow(rail.conversation, 60_000, 500);
   rail.anchors.forEach((anchor, index) =>
@@ -139,7 +139,7 @@ function showRail(turnCount: number) {
   );
   rail.rerender([...items]);
   fireResize();
-  expect(rail.dots()).toHaveLength(turnCount);
+  expect(rail.dots()).toHaveLength(items.filter((item) => item.role === "user").length);
   return { rail, items };
 }
 
@@ -149,7 +149,7 @@ function layoutTotal(reads: ReadCounts): number {
 
 describe("turn rail read budget at 300 turns", () => {
   it("measures the dots once per geometry change, not twice", () => {
-    const { rail, items } = showRail(300);
+    const { rail, items } = showRail(transcript(300));
 
     // Every bubble moves down 100 px (content above rewrapped): one
     // geometry change, so one measuring pass over the 300 bubbles —
@@ -178,7 +178,7 @@ describe("turn rail read budget at 300 turns", () => {
   });
 
   it("spends no layout reads on one streamed token, observer delivery included", () => {
-    const { rail, items } = showRail(300);
+    const { rail, items } = showRail(transcript(300));
 
     const reads = instrument(rail);
     resetProtoBudget();
@@ -205,7 +205,7 @@ describe("turn rail read budget at 300 turns", () => {
   });
 
   it("renders nothing on one streamed token", () => {
-    const { rail, items } = showRail(300);
+    const { rail, items } = showRail(transcript(300));
 
     // A render with a new items array misses the memo and groups the
     // turns; a skipped render never calls it.
@@ -221,7 +221,7 @@ describe("turn rail read budget at 300 turns", () => {
   });
 
   it("pays for a new turn arriving: two subtree scans, one measure, every stop", () => {
-    const { rail, items } = showRail(300);
+    const { rail, items } = showRail(transcript(300));
     const reads = instrument(rail);
     resetProtoBudget();
     const label = vi.spyOn(turnGrouping, "userTurnLabel");
@@ -257,23 +257,33 @@ describe("turn rail read budget at 300 turns", () => {
   });
 
   it("re-renders only the touched dots when a preview opens", () => {
-    const { rail } = showRail(300);
+    // A send time on every turn: the label path this pins is the timed one.
+    const askedAt = new Date(2024, 8, 28, 14, 32);
+    const items = transcript(300).map((item) =>
+      item.role === "user" ? { ...item, atMs: askedAt.getTime() } : item,
+    );
+    const { rail } = showRail(items);
 
     // The dot's label is built inside its own render, so its calls count
     // exactly the stops React actually rendered.
     const label = vi.spyOn(turnGrouping, "userTurnLabel");
     const dots = rail.dots();
-    act(() => dots[1].focus());
+    act(() => dots[1]!.focus());
     const renders = label.mock.calls.length;
     console.log(`preview opened on one of 300 dots: ${renders} stop renders`);
     expect(renders).toBeGreaterThanOrEqual(1);
     expect(renders).toBeLessThanOrEqual(2);
+    // The focused dot's label is the one the counted render rebuilt,
+    // and its time rode that render.
+    const time = label.mock.calls[0]![3];
+    expect(time).not.toBeNull();
+    expect(dots[1]!.getAttribute("aria-label")).toBe(`Turn 2 of 300, ${time}: Question 2`);
     label.mockRestore();
     rail.unmount();
   });
 
   it("spends one scroll frame's read budget", () => {
-    const { rail } = showRail(300);
+    const { rail } = showRail(transcript(300));
     const reads = instrument(rail);
     resetProtoBudget();
 

@@ -164,13 +164,16 @@ describe("turn rail computed styles", () => {
     );
   });
 
-  it("opens a 224 px card beside the dot with a 12 px title", () => {
-    railCss.inject([".turn-rail-preview", ".turn-rail-preview-title"]);
+  it("opens a 224 px card beside the dot with a 12 px title and time", () => {
+    railCss.inject([".turn-rail-preview", ".turn-rail-preview-title", ".turn-rail-preview-time"]);
     const preview = document.createElement("span");
     preview.className = "turn-rail-preview";
     const title = document.createElement("span");
     title.className = "turn-rail-preview-title";
+    const time = document.createElement("span");
+    time.className = "turn-rail-preview-time";
     preview.appendChild(title);
+    preview.appendChild(time);
     document.body.appendChild(preview);
 
     const previewStyle = getComputedStyle(preview);
@@ -185,6 +188,12 @@ describe("turn rail computed styles", () => {
     expect(titleStyle.fontSize).toBe("12px");
     expect(titleStyle.color).toBe("#1c1a17");
     expect(titleStyle.textOverflow).toBe("ellipsis");
+    // The time sits under the title: the spec sizes it 12 like the title,
+    // and small transcript metadata is muted.
+    const timeStyle = getComputedStyle(time);
+    expect(timeStyle.display).toBe("block");
+    expect(timeStyle.fontSize).toBe("12px");
+    expect(timeStyle.color).toBe(railCss.token("--muted"));
     preview.remove();
   });
 

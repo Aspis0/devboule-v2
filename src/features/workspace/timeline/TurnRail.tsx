@@ -11,7 +11,7 @@ import {
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { currentTurnIndex } from "./currentTurn";
 import { sameUserItems, userTurns, type UserTurn } from "./turnGrouping";
-import { TurnStop } from "./TurnStop";
+import { TurnStop, dayKey } from "./TurnStop";
 import { useTurnRailIntent } from "./useTurnRailIntent";
 import "./TurnRail.css";
 
@@ -136,6 +136,10 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
   // the press, so a swallowed keyboard focus cannot outlive it.
   const pointerFocusRef = useRef(false);
   const shown = overflowing && turns.length > 0;
+  // One day decision per render, handed to every dot: a per-stop clock
+  // lets memoised dots straddle midnight showing two formats. No timer runs.
+  // oxlint-disable-next-line react/purity -- the next rail render re-decides the day.
+  const today = dayKey(Date.now());
 
   const updateCurrent = useCallback(() => {
     const conversation = scrollRef.current;
@@ -359,6 +363,7 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
             fits={fits}
             isCurrent={turn.id === activeId}
             isOpen={openPreviewId === turn.id}
+            today={today}
             jumpTo={jumpTo}
             openFromFocus={openFromFocus}
             pressStarted={pressStarted}

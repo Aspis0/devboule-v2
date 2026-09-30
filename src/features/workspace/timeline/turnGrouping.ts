@@ -11,26 +11,42 @@ export interface UserTurn {
   id: string;
   /** The user message's first non-blank line, bounded for display. */
   title: string;
+  /** When the daemon published the user message (Unix ms); the same value
+   * the user item carries, so none when the daemon sent none. */
+  atMs?: number;
 }
 
 /**
  * The user turns of one item sequence: every user item, in order, with its
- * title — one dot per turn, keyed by the user item's id. Items that are
- * not user items open nothing, and an empty transcript has no turns, so
- * the rail renders nothing.
+ * title and its time — one dot per turn, keyed by the user item's id. Items
+ * that are not user items open nothing, and an empty transcript has no
+ * turns, so the rail renders nothing.
  */
 export function userTurns(items: readonly AgentChatItem[]): UserTurn[] {
   const turns: UserTurn[] = [];
   for (const item of items) {
-    if (item.role === "user") turns.push({ id: item.id, title: turnTitle(item.text) });
+    if (item.role === "user") {
+      turns.push({
+        id: item.id,
+        title: turnTitle(item.text),
+        ...(item.atMs === undefined ? {} : { atMs: item.atMs }),
+      });
+    }
   }
   return turns;
 }
 
-/** The dot's accessible label: its position in the rail and its title. */
-export function userTurnLabel(turn: UserTurn, index: number, count: number): string {
+/** The dot's accessible label: its position in the rail, its time, and
+ * its title. */
+export function userTurnLabel(
+  turn: UserTurn,
+  index: number,
+  count: number,
+  time: string | null,
+): string {
   const position = `Turn ${index + 1} of ${count}`;
-  return turn.title === "" ? position : `${position}: ${turn.title}`;
+  const head = time === null ? position : `${position}, ${time}`;
+  return turn.title === "" ? head : `${head}: ${turn.title}`;
 }
 
 /** Whether two item arrays open the same user turns: a streamed chunk

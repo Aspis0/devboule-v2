@@ -33,6 +33,7 @@ describe("the turn rail through the surface", () => {
     if (mounted !== null) act(() => mounted.unmount());
     container.remove();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("takes the surface's user bubbles as turns: anchor, gutter, dot", async () => {
@@ -87,5 +88,54 @@ describe("the turn rail through the surface", () => {
     if (dot === null) throw new Error("the rail rendered no dot");
     expect(dot.getAttribute("aria-label")).toBe("Turn 1 of 1: Line the transcript up");
     expect(dot.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("carries the daemon's turn time onto the dot and the card", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 30, 12, 0, 0));
+    const surfaceRoot = createRoot(container);
+    root = surfaceRoot;
+    await act(async () => {
+      surfaceRoot.render(
+        <AgentChatSurface daemonState="connected" sessionId="time-session" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+
+    const askedAt = new Date(2026, 8, 30, 9, 5);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "user-time-1",
+        messageKind: "composer",
+        text: "Ask at nine",
+        atMs: askedAt.getTime(),
+      });
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "answer-time-1",
+        text: "Answered.",
+      });
+    });
+
+    const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
+    const content = container.querySelector<HTMLElement>(".workspace-conversation-content");
+    if (conversation === null || content === null) throw new Error("transcript did not render");
+    Object.defineProperty(conversation, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(conversation, "clientHeight", { value: 500, configurable: true });
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_message", messageId: "answer-time-2", text: "More." });
+    });
+    fireResize();
+
+    const dot = content.querySelector<HTMLButtonElement>("button.turn-rail-dot");
+    if (dot === null) throw new Error("the rail rendered no dot");
+    const expected = new Intl.DateTimeFormat(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(askedAt);
+    expect(dot.getAttribute("aria-label")).toBe(`Turn 1 of 1, ${expected}: Ask at nine`);
+    expect(dot.querySelector(".turn-rail-preview-time")?.textContent).toBe(expected);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatItem } from "../../../lib/agentSession";
-import { userTurns } from "./turnGrouping";
+import { userTurnLabel, userTurns } from "./turnGrouping";
 
 function user(id: string, text: string): AgentChatItem {
   return { id, role: "user", text, messageId: null };
@@ -52,5 +52,26 @@ describe("userTurns", () => {
 
   it("titles an empty message with nothing, not with filler", () => {
     expect(userTurns([user("u-1", "   \n")])[0]!.title).toBe("");
+  });
+
+  it("carries the user item's send time onto its turn, and none when it has none", () => {
+    const timed = userTurns([
+      { id: "u-1", role: "user", text: "Timed", messageId: null, atMs: 1_789_053_471_559 },
+    ]);
+    expect(timed[0]!.atMs).toBe(1_789_053_471_559);
+    expect(userTurns([user("u-2", "Untimed")])[0]!.atMs).toBeUndefined();
+  });
+});
+
+describe("userTurnLabel", () => {
+  it("labels a dot with its position, its time and its title", () => {
+    const turn = userTurns([user("u-1", "Sort the files")])[0]!;
+    expect(userTurnLabel(turn, 2, 5, "14:32")).toBe("Turn 3 of 5, 14:32: Sort the files");
+  });
+
+  it("leaves the time out of a label whose turn has none", () => {
+    const turn = userTurns([user("u-1", "Sort the files")])[0]!;
+    expect(userTurnLabel(turn, 0, 1, null)).toBe("Turn 1 of 1: Sort the files");
+    expect(userTurnLabel(userTurns([user("u-2", "   \n")])[0]!, 0, 1, null)).toBe("Turn 1 of 1");
   });
 });
