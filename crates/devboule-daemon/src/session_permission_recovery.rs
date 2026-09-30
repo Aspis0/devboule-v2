@@ -32,9 +32,10 @@ use crate::journal::Replay;
 /// `event_seqs` entry past `last_seq`, because `from_replay` drops rows with
 /// no seq and the pull serves map rows in key order after the request; with
 /// `last_seq` advanced past the tail the runtime's `next_seq` starts past
-/// the synthetics, the way journaled rows maintain it. The journal's own
-/// `last_seq` is never written, so every hydration recomputes the same tail
-/// and the journal row count never moves.
+/// the synthetics, the way journaled rows maintain it. Its `event_ts_ms`
+/// entry is `None`: the synthetic has no journal row to read a time from.
+/// The journal's own `last_seq` is never written, so every hydration
+/// recomputes the same tail and the journal row count never moves.
 pub(super) fn resolve_orphans(replay: &mut Replay) {
     let (requests, resolved) = scan(&replay.events);
     let mut added = 0u64;
@@ -53,6 +54,7 @@ pub(super) fn resolve_orphans(replay: &mut Replay) {
         replay
             .event_seqs
             .push((replay.generation, replay.last_seq.saturating_add(added + 1)));
+        replay.event_ts_ms.push(None);
         added += 1;
     }
     if added > 0 {
@@ -60,6 +62,8 @@ pub(super) fn resolve_orphans(replay: &mut Replay) {
         // hydration re-reads the same rows and rebuilds the same tail.
         replay.last_seq = replay.last_seq.saturating_add(added);
     }
+    debug_assert_eq!(replay.events.len(), replay.event_seqs.len());
+    debug_assert_eq!(replay.events.len(), replay.event_ts_ms.len());
 }
 
 /// The request cards in journal order, and the ids a `PermissionResolved`

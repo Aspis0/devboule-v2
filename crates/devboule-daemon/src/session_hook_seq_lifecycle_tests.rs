@@ -356,6 +356,7 @@ fn a_replayed_transcript_keeps_the_hook_headline_clear() {
         last_seq: 4,
         integrity: devboule_protocol::TranscriptIntegrity::Complete,
         event_seqs: vec![(1, 2), (1, 3)],
+        event_ts_ms: vec![None; 2],
         events: vec![
             SessionEvent::AgentReported {
                 seq: 2,

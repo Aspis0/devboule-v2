@@ -51,6 +51,7 @@ fn journal_copies_of_history_survive_the_reattach() {
         last_seq: 7,
         integrity,
         event_seqs: vec![(2, 7), (2, 7)],
+        event_ts_ms: vec![None; 2],
         events: vec![
             SessionEvent::Output {
                 seq: 7,
@@ -104,6 +105,7 @@ fn a_stop_tail_cursor_owes_nothing_not_even_history() {
         last_seq: 1,
         integrity,
         event_seqs: vec![(1, 1), (1, 2), (2, 1), (2, 1)],
+        event_ts_ms: vec![None; 4],
         events: vec![
             SessionEvent::Output {
                 seq: 1,

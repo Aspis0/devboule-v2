@@ -624,6 +624,11 @@ pub struct Replay {
     /// Stream seqs restart per generation, so the pair — the order the
     /// `events_session` index serves — is the transcript's real order.
     pub event_seqs: Vec<(u64, u64)>,
+    /// Each `events` entry's journal row write time: the row's `ts_ms`, or
+    /// `None` where the entry has no row of its own — a snapshot chunk, a
+    /// tail marker, or a wire-only synthetic. Kept in lockstep with
+    /// `events` and `event_seqs` by every writer of the replay.
+    pub event_ts_ms: Vec<Option<u64>>,
     pub last_seq: u64,
     pub integrity: TranscriptIntegrity,
 }
@@ -3794,7 +3799,7 @@ pub(crate) fn tmp_journal() -> (PathBuf, PathBuf) {
 }
 
 #[cfg(test)]
-fn snapshot_limits() -> JournalLimits {
+pub(crate) fn snapshot_limits() -> JournalLimits {
     JournalLimits {
         snapshot_every_bytes: 32,
         session_max_bytes: JOURNAL_SESSION_MAX_BYTES,

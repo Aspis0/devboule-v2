@@ -348,6 +348,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
     let generation = record.generation;
     let mut events: Vec<SessionEvent> = Vec::new();
     let mut event_seqs: Vec<(u64, u64)> = Vec::new();
+    let mut event_ts_ms: Vec<Option<u64>> = Vec::new();
     let mut exit_event: Option<SessionEvent> = None;
     // Turns that raised a plan approval mark, read once up front through the
     // shared scan: turn ids are unique across the thread's life, so one pass
@@ -369,6 +370,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
     for replayed_generation in 1..=generation {
         let mut gen_events: Vec<SessionEvent> = Vec::new();
         let mut gen_seqs: Vec<u64> = Vec::new();
+        let mut gen_ts_ms: Vec<Option<u64>> = Vec::new();
         let mut covered = 0;
         let mut claude_view = crate::claude_view::ClaudeView::new(None);
         if let Some(tasks) = carried_tasks.take() {
@@ -410,6 +412,9 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                     data: String::from_utf8_lossy(&data).into_owned(),
                 });
                 gen_seqs.push(seq);
+                // A snapshot blob compresses many rows into one and keeps
+                // none of their timestamps.
+                gen_ts_ms.push(None);
             }
             covered = covered.max(up_to);
         }
@@ -420,10 +425,10 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         // The covered half feeds the shared views FIRST: the checklist is
         // one continuous machine per generation, so covered task tools must
         // land before the uncovered results that apply them.
-        let mut covered_reports: Vec<(u64, SessionEvent)> = Vec::new();
+        let mut covered_reports: Vec<(u64, SessionEvent, Option<u64>)> = Vec::new();
         if covered > 0 {
             let mut report_stmt = conn.prepare(
-                "SELECT seq, kind, payload, checksum FROM events
+                "SELECT seq, kind, payload, ts_ms, checksum FROM events
                  WHERE session_id = ?1 AND generation = ?2
                    AND kind IN ('agent_report', 'acp_envelope')
                    AND seq <= ?3
@@ -436,12 +441,13 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                         row.get::<_, i64>(0)? as u64,
                         row.get::<_, String>(1)?,
                         row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, i64>(3)? as u32,
+                        row.get::<_, i64>(3)? as u64,
+                        row.get::<_, i64>(4)? as u32,
                     ))
                 },
             )?;
             for row in report_rows {
-                let (seq, kind, payload, checksum) = row?;
+                let (seq, kind, payload, ts_ms, checksum) = row?;
                 if crc32(&payload) != checksum {
                     return Err(JournalError::Checksum {
                         session_id: session_id.to_string(),
@@ -451,7 +457,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 if kind == "agent_report" {
                     if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
                         crate::plan_text::bound_permission_request(&mut event);
-                        covered_reports.push((seq, event));
+                        covered_reports.push((seq, event, Some(ts_ms)));
                     }
                 } else if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload)
                 {
@@ -462,15 +468,15 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                             &plan_turns,
                             &value,
                         ) {
-                            covered_reports.push((seq, view));
+                            covered_reports.push((seq, view, Some(ts_ms)));
                         }
                     } else if record.kind == SessionKind::Pi {
                         for view in crate::pi_view::drive_replay(&mut pi_withheld_finish, &value) {
-                            covered_reports.push((seq, view));
+                            covered_reports.push((seq, view, Some(ts_ms)));
                         }
                     } else {
                         for view in crate::claude_view::drive_replay(&mut claude_view, &mut value) {
-                            covered_reports.push((seq, view));
+                            covered_reports.push((seq, view, Some(ts_ms)));
                         }
                     }
                 }
@@ -478,7 +484,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         }
 
         let mut event_stmt = conn.prepare(
-            "SELECT seq, kind, payload, checksum FROM events
+            "SELECT seq, kind, payload, ts_ms, checksum FROM events
              WHERE session_id = ?1 AND generation = ?2 AND seq > ?3
              ORDER BY seq",
         )?;
@@ -489,12 +495,13 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                     row.get::<_, i64>(0)? as u64,
                     row.get::<_, String>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, i64>(3)? as u32,
+                    row.get::<_, i64>(3)? as u64,
+                    row.get::<_, i64>(4)? as u32,
                 ))
             },
         )?;
         for row in event_rows {
-            let (seq, kind, payload, checksum) = row?;
+            let (seq, kind, payload, ts_ms, checksum) = row?;
             if crc32(&payload) != checksum {
                 return Err(JournalError::Checksum {
                     session_id: session_id.to_string(),
@@ -508,6 +515,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                         data: String::from_utf8_lossy(&payload).into_owned(),
                     });
                     gen_seqs.push(seq);
+                    gen_ts_ms.push(Some(ts_ms));
                 }
                 Some(EventKind::Exit) => {
                     let code = if payload.len() == 4 {
@@ -530,6 +538,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                         crate::plan_text::bound_permission_request(&mut event);
                         gen_events.push(event);
                         gen_seqs.push(seq);
+                        gen_ts_ms.push(Some(ts_ms));
                     }
                 }
                 Some(EventKind::AcpEnvelope) => {
@@ -543,6 +552,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                             ) {
                                 gen_events.push(view);
                                 gen_seqs.push(seq);
+                                gen_ts_ms.push(Some(ts_ms));
                             }
                         } else if record.kind == SessionKind::Pi {
                             for view in
@@ -550,6 +560,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                             {
                                 gen_events.push(view);
                                 gen_seqs.push(seq);
+                                gen_ts_ms.push(Some(ts_ms));
                             }
                         } else {
                             for view in
@@ -557,6 +568,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                             {
                                 gen_events.push(view);
                                 gen_seqs.push(seq);
+                                gen_ts_ms.push(Some(ts_ms));
                             }
                         }
                     }
@@ -576,21 +588,34 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         }
 
         if !covered_reports.is_empty() {
-            for (seq, event) in covered_reports {
+            for (seq, event, ts_ms) in covered_reports {
                 gen_events.push(event);
                 gen_seqs.push(seq);
+                gen_ts_ms.push(ts_ms);
             }
-            let mut paired: Vec<(u64, SessionEvent)> =
-                gen_seqs.into_iter().zip(gen_events).collect();
-            paired.sort_by_key(|(seq, _)| *seq);
-            for (seq, event) in paired {
+            // The zips below truncate to the shortest vector; a writer that
+            // drops one push would silently cut the generation's tail.
+            debug_assert_eq!(gen_events.len(), gen_seqs.len());
+            debug_assert_eq!(gen_seqs.len(), gen_ts_ms.len());
+            let mut paired: Vec<(u64, SessionEvent, Option<u64>)> = gen_seqs
+                .into_iter()
+                .zip(gen_events)
+                .zip(gen_ts_ms)
+                .map(|((seq, event), ts_ms)| (seq, event, ts_ms))
+                .collect();
+            paired.sort_by_key(|(seq, _, _)| *seq);
+            for (seq, event, ts_ms) in paired {
                 events.push(event);
                 event_seqs.push((replayed_generation, seq));
+                event_ts_ms.push(ts_ms);
             }
         } else {
-            for (seq, event) in gen_seqs.into_iter().zip(gen_events) {
+            debug_assert_eq!(gen_events.len(), gen_seqs.len());
+            debug_assert_eq!(gen_seqs.len(), gen_ts_ms.len());
+            for ((seq, event), ts_ms) in gen_seqs.into_iter().zip(gen_events).zip(gen_ts_ms) {
                 events.push(event);
                 event_seqs.push((replayed_generation, seq));
+                event_ts_ms.push(ts_ms);
             }
         }
         // The next generation's fresh views start from this list: a resume
@@ -602,7 +627,9 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         || matches!(record.status, PersistStatus::Live) && record.reaped;
     let integrity = record.integrity(terminated);
     // The terminal marker sits at the current generation's end — the
-    // session's end. Earlier generations' rows all sort before it.
+    // session's end. Earlier generations' rows all sort before it. A tail
+    // marker comes from the sessions row, not from an event row, so it
+    // carries no row time.
     let tail_seq = (generation, record.last_seq);
     if terminated {
         if record.degraded {
@@ -611,14 +638,17 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 dropped_bytes: record.dropped_bytes,
             });
             event_seqs.push(tail_seq);
+            event_ts_ms.push(None);
         }
         events.push(exit_event.unwrap_or(SessionEvent::Exit {
             code: record.exit_code,
         }));
         event_seqs.push(tail_seq);
+        event_ts_ms.push(None);
     } else {
         events.push(SessionEvent::Recovered { integrity });
         event_seqs.push(tail_seq);
+        event_ts_ms.push(None);
     }
 
     Ok(Replay {
@@ -627,6 +657,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         integrity,
         events,
         event_seqs,
+        event_ts_ms,
     })
 }
 

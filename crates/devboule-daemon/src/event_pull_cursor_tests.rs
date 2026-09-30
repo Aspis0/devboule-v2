@@ -51,6 +51,7 @@ fn observers_replay_from_independent_cursors() {
         last_seq: 3,
         integrity,
         event_seqs: vec![(1, 1), (1, 2), (1, 3), (1, 3)],
+        event_ts_ms: vec![None; 4],
         events: vec![
             SessionEvent::Output {
                 seq: 1,
@@ -138,6 +139,7 @@ fn transcript_cursor_advances_past_agent_reported() {
         last_seq: 3,
         integrity,
         event_seqs: vec![(1, 2), (1, 3), (1, 3)],
+        event_ts_ms: vec![None; 3],
         events: vec![
             SessionEvent::Output {
                 seq: 2,

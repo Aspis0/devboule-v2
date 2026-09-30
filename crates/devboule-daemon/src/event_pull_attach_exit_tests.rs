@@ -226,6 +226,7 @@ fn recovered_pull_ends_with_recovered_not_exit() {
             trimmed_bytes: 0,
         },
         event_seqs: vec![(1, 1), (1, 1)],
+        event_ts_ms: vec![None; 2],
         events: vec![
             SessionEvent::Output {
                 seq: 1,

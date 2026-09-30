@@ -17,6 +17,7 @@ fn history_does_not_move_the_transcript_cursor_or_starve_the_reattach() {
         last_seq: 2,
         integrity,
         event_seqs: vec![(1, 100), (2, 1), (2, 2), (2, 2)],
+        event_ts_ms: vec![None; 4],
         events: vec![
             SessionEvent::AgentReported {
                 seq: 100,
@@ -205,6 +206,7 @@ fn reattach_to_history_serves_the_whole_conversation() {
         last_seq: 7,
         integrity,
         event_seqs: vec![(1, 2), (1, 3), (2, 6), (2, 7), (2, 7)],
+        event_ts_ms: vec![None; 5],
         events: vec![
             SessionEvent::Output {
                 seq: 2,

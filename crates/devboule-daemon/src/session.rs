@@ -623,6 +623,11 @@ mod session_terminal_silence_tests;
 #[cfg(test)]
 #[path = "session_terminal_transcript_tests.rs"]
 mod session_terminal_transcript_tests;
+/// The turn rail's time on a recovered transcript: what the hydrate-and-pull
+/// road serves for each row shape the journal holds.
+#[cfg(test)]
+#[path = "session_transcript_turn_time_tests.rs"]
+mod session_transcript_turn_time_tests;
 /// The workspace road's tests carved out of `session_tests`: the spawn error's
 /// workspace id and display path, the local workspace's cwd and the cache in front
 /// of it, the resume road's created-at and record-own kind, the ACP override
@@ -2465,6 +2470,16 @@ impl SessionRegistry {
             if let Err(error) = cursor_replay_ok(replay.generation, cursor) {
                 journal.unpin(session_id);
                 return Err(error);
+            }
+        }
+        // A user turn with no time of its own — a composer row whose payload
+        // predates `at_ms`, or whatever else `stamp_turn_time` accepts —
+        // takes its journal row's time here, by the same rule the live
+        // replay stamps with, before the orphan pass below appends
+        // synthetics with no journal row and `None` times.
+        for (event, ts_ms) in replay.events.iter_mut().zip(replay.event_ts_ms.iter()) {
+            if let Some(ts_ms) = ts_ms {
+                event_pull::stamp_turn_time(event, *ts_ms);
             }
         }
         let metadata = record.to_session();

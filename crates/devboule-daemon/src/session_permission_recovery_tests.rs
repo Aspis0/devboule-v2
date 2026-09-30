@@ -466,3 +466,79 @@ fn a_journal_that_refuses_writes_still_hydrates() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn composer_turn(text: &str, at_ms: Option<u64>) -> SessionEvent {
+    SessionEvent::AgentUserMessage {
+        message_id: None,
+        text: text.to_string(),
+        author: devboule_protocol::UserMessageAuthor::Human,
+        message_kind: devboule_protocol::UserMessageKind::Composer,
+        at_ms,
+    }
+}
+
+fn record_row_at(journal: &Journal, id: &str, seq: u64, ts_ms: u64, event: &SessionEvent) {
+    let record = crate::journal::agent_report_record_at(id.to_string(), 1, seq, event, ts_ms)
+        .expect("the event is reportable");
+    journal.append_blocking(record).expect("the row lands");
+}
+
+/// The pass appends its synthetics onto a replay whose turns are already
+/// stamped: an orphan resolved beside two composer turns leaves each turn
+/// serving its own row's time on the wire, and the synthetic after the
+/// request. What it does not see is the synthetic's own `event_ts_ms` entry
+/// — the stamp runs before the pass — so that lockstep is fenced by the
+/// `debug_assert_eq!`s in `resolve_orphans`, not here.
+/// Mutant: a synthetic appended without its seq (it is then skipped by
+/// from_replay), or the turn-time fill dropped from hydration.
+#[test]
+fn resolving_an_orphan_leaves_the_turns_beside_it_timed_as_journaled() {
+    const T_OWN: u64 = 1_759_000_300_000;
+    const T_ROW: u64 = 1_759_000_360_000;
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-zombie-6", "process-1111");
+    let id = compose_session_id(&owner.session_token(), "zombie6").expect("id");
+    setup(&journal, &owner, &id);
+    record_row_at(
+        &journal,
+        &id,
+        1,
+        T_OWN,
+        &composer_turn("own time", Some(T_OWN)),
+    );
+    record_row_at(&journal, &id, 2, T_ROW, &composer_turn("row time", None));
+    record_event(&journal, &id, 3, &request("card-6"));
+
+    let conn = ConnHandle::new(1);
+    registry
+        .attach(&id, None, &conn, &owner, false)
+        .expect("the hydration runs");
+
+    let events: Vec<SessionEvent> = conn
+        .pull_events()
+        .into_iter()
+        .map(|pending| pending.envelope.event)
+        .collect();
+    let times: Vec<(String, Option<u64>)> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentUserMessage { text, at_ms, .. } => Some((text.clone(), *at_ms)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        times,
+        vec![
+            ("own time".to_string(), Some(T_OWN)),
+            ("row time".to_string(), Some(T_ROW)),
+        ],
+        "each turn keeps its own pairing through the orphan pass"
+    );
+    assert_eq!(
+        count_resolved(&events, "card-6"),
+        1,
+        "the orphan still resolves, after the turns it sits beside"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -260,6 +260,7 @@ pub(super) fn insert_transcript(registry: &SessionRegistry, id: &str, owner: Own
             last_seq: 0,
             integrity: TranscriptIntegrity::Complete,
             event_seqs: Vec::new(),
+            event_ts_ms: Vec::new(),
             events: Vec::new(),
         },
     );

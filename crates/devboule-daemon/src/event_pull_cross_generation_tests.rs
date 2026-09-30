@@ -16,6 +16,7 @@ fn transcript_replay_keeps_rows_from_different_generations() {
         last_seq: 1,
         integrity,
         event_seqs: vec![(1, 1), (1, 2), (2, 1)],
+        event_ts_ms: vec![None; 3],
         events: vec![
             SessionEvent::AgentUserMessage {
                 message_id: Some("m1".into()),
@@ -80,6 +81,7 @@ fn transcript_outputs_from_different_generations_do_not_collide() {
         last_seq: 1,
         integrity,
         event_seqs: vec![(1, 1), (2, 1), (2, 1)],
+        event_ts_ms: vec![None; 3],
         events: vec![
             SessionEvent::Output {
                 seq: 1,

@@ -1279,6 +1279,7 @@ pub(super) fn insert_transcript_with_kind(
             last_seq: 0,
             integrity: TranscriptIntegrity::Complete,
             event_seqs: Vec::new(),
+            event_ts_ms: Vec::new(),
             events: Vec::new(),
         },
     );

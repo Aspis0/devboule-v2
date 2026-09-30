@@ -53,7 +53,7 @@ fn mark_replay_parse_failure(
 /// row's column fills it. Only the kinds the transcript shows as user
 /// bubbles are stamped; notices, creations and a2a relays have no turn time
 /// to show.
-fn stamp_turn_time(event: &mut SessionEvent, ts_ms: u64) {
+pub(crate) fn stamp_turn_time(event: &mut SessionEvent, ts_ms: u64) {
     if let SessionEvent::AgentUserMessage {
         at_ms,
         message_kind,

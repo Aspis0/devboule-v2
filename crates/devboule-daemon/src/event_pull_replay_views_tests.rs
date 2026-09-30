@@ -122,6 +122,7 @@ fn recovered_acp_views_must_not_vanish_behind_a_high_output_cursor() {
         last_seq: 11,
         integrity,
         event_seqs: vec![(1, 10), (1, 11), (1, 11)],
+        event_ts_ms: vec![None; 3],
         events: vec![
             SessionEvent::Output {
                 seq: 10,
