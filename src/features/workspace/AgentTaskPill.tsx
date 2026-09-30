@@ -56,14 +56,15 @@ export const AgentTaskPill = memo(function AgentTaskPill({ items }: AgentTaskPil
   const pending = items.filter((item) => item.status === "pending");
   const allDone = completed === items.length;
   // The head copy tells the truth about where the agent is: the step it runs,
-  // "next" only when nothing runs, "All done" only when nothing is left.
-  const current: { text: string; title?: string } | null = allDone
-    ? { text: "All done" }
-    : running.length > 0
+  // "next" only when nothing runs; with nothing left at all the count carries
+  // the spec's collapsed copy instead of a label.
+  const current: { text: string; title?: string } | null =
+    running.length > 0
       ? { text: running[0].activeForm || running[0].text, title: running[0].text }
       : pending.length > 0
         ? { text: `next: ${pending[0].text}`, title: pending[0].text }
         : null;
+  const count = `${completed} of ${items.length}${allDone ? " done" : ""}`;
   const moreRunning = running.length > 1 ? `+${running.length - 1} more running` : null;
 
   function headKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
@@ -103,7 +104,7 @@ export const AgentTaskPill = memo(function AgentTaskPill({ items }: AgentTaskPil
           <path d="M13 12h8" />
           <path d="M13 18h8" />
         </svg>
-        <span className="agent-task-pill-count">{`${completed} of ${items.length}`}</span>
+        <span className="agent-task-pill-count">{count}</span>
         <span className="agent-task-pill-bar" aria-hidden="true">
           <span
             className="agent-task-pill-bar-fill"

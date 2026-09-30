@@ -116,15 +116,15 @@ describe("AgentTaskPill", () => {
       expect(head).toContain("1 of 2");
     });
 
-    it("says All done once every item is completed", async () => {
+    it("says 2 of 2 done once every item is completed", async () => {
       await renderPill([
         { id: "t-1", text: "Read the journal", status: "completed" },
         { id: "t-2", text: "Write the report", status: "completed" },
       ]);
 
       const head = headText();
-      expect(head).toContain("2 of 2");
-      expect(head).toContain("All done");
+      expect(head).toContain("2 of 2 done");
+      expect(head).not.toContain("next:");
     });
 
     it("titles the collapsed line with the item's full text", async () => {

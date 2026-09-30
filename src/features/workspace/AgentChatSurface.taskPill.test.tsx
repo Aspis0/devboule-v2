@@ -80,4 +80,35 @@ describe("the checklist pill in the composer track", () => {
     const children = [...track.children];
     expect(children.indexOf(pill)).toBeLessThan(children.indexOf(queueTrack));
   });
+
+  it("counts and names the next item from the list the reducer kept", async () => {
+    const queue = createInMemoryMessageQueue("agent-1", idleSender());
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="agent-1"
+          title="Agent"
+          queue={queue}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tasks",
+        items: [
+          { id: "t-1", text: "Read the journal", status: "completed" },
+          { id: "t-3", text: "Write the report", status: "pending" },
+        ],
+      });
+    });
+
+    const head = container.querySelector('[data-testid="agent-task-pill-toggle"]');
+    if (head === null) throw new Error("no head rendered");
+    expect(head.textContent).toContain("1 of 2");
+    expect(head.textContent).toContain("next: Write the report");
+  });
 });
