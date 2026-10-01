@@ -6,7 +6,9 @@ import type { ChipDisplay } from "./stripDisplay";
 import { StripKindMark } from "./StripKindMark";
 import { toolTabLabel, type ToolTab } from "./toolTabs";
 
-const DOT_CLASS: Record<ChipDisplay["dot"], string> = {
+/** The spec's dot tones, one class per state in the strip's vocabulary —
+ * shared with the end-of-strip overview, which paints the same dots. */
+export const DOT_CLASS: Record<ChipDisplay["dot"], string> = {
   live: "strip-dot-live",
   attention: "strip-dot-attention",
   unattended: "strip-dot-unattended",

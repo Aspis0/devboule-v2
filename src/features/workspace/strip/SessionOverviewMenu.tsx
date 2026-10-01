@@ -1,0 +1,287 @@
+// The end-of-strip all-sessions popover: every roster session of the
+// selected workspace stays reachable here, with a preview of what the
+// roster already holds. No transcript fetch in this slice — a snippet of
+// the conversation would need transcript/journal hydration, which no
+// roster row carries.
+
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+} from "react";
+import type { Session } from "../../../types/ipc";
+import { relativeTime } from "../../../lib/relativeTime";
+import { isImeComposition } from "../../../lib/imeComposition";
+import { useMenuOpen } from "../../../lib/menuOpen";
+import { AnchoredPopover } from "../popoverPlace";
+import { sessionKindWord, sessionTitle } from "../workspaceSessions";
+import { chipDisplay } from "./stripDisplay";
+import { orderOverviewSessions, sessionLastActiveMs, sessionStartedLabel } from "./sessionOverview";
+import { StripKindMark } from "./StripKindMark";
+import { DOT_CLASS } from "./StripChip";
+
+interface SessionOverviewMenuProps {
+  /** The menu is up; the owner owns the open state and says so. */
+  open: boolean;
+  /** The count button the menu hangs from. */
+  triggerRef: RefObject<HTMLButtonElement | null>;
+  /** The popover root, owned here but read by the owner for focus restore. */
+  contentRef: RefObject<HTMLDivElement | null>;
+  /** Every roster session of the selected workspace, unordered. */
+  sessions: readonly Session[];
+  /** The strip's session ids in strip order: membership here marks a row open. */
+  stripOrder: readonly string[];
+  activeSessionId: string | null;
+  /** The selected workspace's title; null renders no workspace line. */
+  workspaceName: string | null;
+  onOpen: (sessionId: string) => void;
+  onClose: () => void;
+  onListEnter: () => void;
+  onListLeave: () => void;
+}
+
+export function SessionOverviewMenu({
+  open,
+  triggerRef,
+  contentRef,
+  sessions,
+  stripOrder,
+  activeSessionId,
+  workspaceName,
+  onOpen,
+  onClose,
+  onListEnter,
+  onListLeave,
+}: SessionOverviewMenuProps) {
+  useMenuOpen(open, onClose);
+
+  // One clock for every row and the preview, seeded at mount — the owner
+  // remounts the menu per opening, so mount time is open time — and
+  // ticking while the menu stands open, the History panel's arrangement.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!open) return;
+    const id = window.setInterval(() => {
+      setNow(Date.now());
+    }, 30_000);
+    return () => window.clearInterval(id);
+  }, [open]);
+
+  const ordered = useMemo(
+    () => orderOverviewSessions(sessions, stripOrder),
+    [sessions, stripOrder],
+  );
+  const openIds = useMemo(() => new Set(stripOrder), [stripOrder]);
+  // One rule for the initial row, shared by the seed and the first
+  // focus: the active id only when it names a row, else the first row.
+  // It matches the roving fallback below, so tabIndex=0 and DOM focus
+  // never disagree about which row is current.
+  const seedId = ordered.some((session) => session.id === activeSessionId)
+    ? activeSessionId
+    : (ordered[0]?.id ?? null);
+  // Hovering or keyboarding a row previews it; otherwise the seed row —
+  // the preview never sits empty. Seeded in the initializers: the owner
+  // remounts per opening, and a roster push must move neither behind a
+  // live pointer.
+  const [previewId, setPreviewId] = useState<string | null>(() => seedId);
+  const [focusedId, setFocusedId] = useState<string | null>(() => seedId);
+
+  const focusOption = (id: string) => {
+    contentRef.current
+      ?.querySelector<HTMLElement>(`[data-overview-option="${CSS.escape(id)}"]`)
+      ?.focus({ preventScroll: true });
+  };
+
+  // Focus enters the list on opening only, and only when the trigger holds
+  // it — a hover-open never steals the pane's focus, and a roster push
+  // never refocuses. No state is set here, so this stays an effect.
+  const openedRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      openedRef.current = false;
+      return;
+    }
+    if (openedRef.current) return;
+    openedRef.current = true;
+    if (triggerRef.current?.contains(document.activeElement) === true && seedId !== null) {
+      focusOption(seedId);
+    }
+  });
+
+  // While open: an outside press, a resize, and Escape anywhere all close
+  // through the owner's close, which restores focus only when it was
+  // inside. Hover opens leave focus outside the portal, so the list's own
+  // Escape never fires there — this listener closes those too. An IME
+  // owns Escape mid-composition, never the menu.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (contentRef.current?.contains(event.target)) return;
+      if (triggerRef.current?.contains(event.target)) return;
+      onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isImeComposition(event)) return;
+      onClose();
+    };
+    const onResize = () => onClose();
+    window.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [contentRef, onClose, open, triggerRef]);
+
+  if (!open) return null;
+
+  const currentId = ordered.some((session) => session.id === focusedId)
+    ? focusedId
+    : (ordered[0]?.id ?? null);
+  const preview =
+    ordered.find((session) => session.id === previewId) ??
+    ordered.find((session) => session.id === activeSessionId) ??
+    ordered[0] ??
+    null;
+
+  const step = (from: string | null, delta: 1 | -1): string | null => {
+    if (ordered.length === 0) return null;
+    const index = ordered.findIndex((session) => session.id === from);
+    if (index === -1) return ordered[delta === 1 ? 0 : ordered.length - 1]?.id ?? null;
+    return ordered[(index + delta + ordered.length) % ordered.length]?.id ?? null;
+  };
+
+  const onListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // The IME owns every key it can hold mid-composition — arrows and Tab
+    // included — so the list takes none of them from it. Escape travels
+    // the document listener instead, which guards the same way.
+    if (isImeComposition(event.nativeEvent)) return;
+    if (event.key === "Tab") {
+      // A body portal: letting Tab continue from here would resume at the
+      // end of document.body. The owner's close hands focus back.
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    let next: string | null = null;
+    if (event.key === "ArrowDown") next = step(currentId, 1);
+    else if (event.key === "ArrowUp") next = step(currentId, -1);
+    else if (event.key === "Home") next = ordered[0]?.id ?? null;
+    else if (event.key === "End") next = ordered[ordered.length - 1]?.id ?? null;
+    else return;
+    if (next === null) return;
+    event.preventDefault();
+    setFocusedId(next);
+    setPreviewId(next);
+    focusOption(next);
+  };
+
+  const onOptionKeyDown = (id: string, event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onOpen(id);
+    }
+  };
+
+  return (
+    <AnchoredPopover
+      containerRef={contentRef}
+      anchorRef={triggerRef}
+      onDismiss={onClose}
+      className="workspace-surface-menu workspace-overview"
+      onMouseEnter={onListEnter}
+      onMouseLeave={onListLeave}
+    >
+      {ordered.length === 0 ? (
+        <div className="workspace-overview-empty">No sessions in this workspace.</div>
+      ) : (
+        <div
+          className="workspace-overview-list"
+          role="listbox"
+          aria-label="All sessions"
+          onKeyDown={onListKeyDown}
+        >
+          {ordered.map((session) => {
+            const display = chipDisplay(session);
+            const title = sessionTitle(session);
+            const isOpen = openIds.has(session.id);
+            const lastActive = sessionLastActiveMs(session, now);
+            return (
+              <div
+                key={session.id}
+                role="option"
+                tabIndex={session.id === currentId ? 0 : -1}
+                aria-label={`${title}, ${display.stateLine}${isOpen ? ", open tab" : ""}`}
+                data-overview-option={session.id}
+                className="workspace-overview-option"
+                onClick={() => onOpen(session.id)}
+                onMouseEnter={() => setPreviewId(session.id)}
+                onFocus={() => {
+                  setFocusedId(session.id);
+                  setPreviewId(session.id);
+                }}
+                onKeyDown={(event) => onOptionKeyDown(session.id, event)}
+              >
+                <span
+                  className={`workspace-status-dot ${DOT_CLASS[display.dot]}${display.pulse ? " dot-pulse" : ""}`}
+                />
+                <StripKindMark kind={session.kind} />
+                <span className="workspace-overview-title">{title}</span>
+                {isOpen ? <span className="workspace-overview-open">Open</span> : null}
+                {lastActive === null ? null : (
+                  <span className="workspace-overview-time">{relativeTime(lastActive, now)}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {preview !== null ? (
+        <OverviewPreview session={preview} workspaceName={workspaceName} now={now} />
+      ) : null}
+    </AnchoredPopover>
+  );
+}
+
+function OverviewPreview({
+  session,
+  workspaceName,
+  now,
+}: {
+  session: Session;
+  workspaceName: string | null;
+  now: number;
+}) {
+  const display = chipDisplay(session);
+  const lastActive = sessionLastActiveMs(session, now);
+  // Creation is not activity: a row with no last-activity fact says when
+  // it started, never "active", and a row with neither stamp says nothing.
+  const started = sessionStartedLabel(session.createdAtMs, now);
+  let activityLine: string | null = null;
+  if (lastActive !== null) activityLine = `active ${relativeTime(lastActive, now)}`;
+  else if (started !== null) activityLine = `started ${started}`;
+  const workspaceLine = session.workspaceId === null ? "No workspace" : (workspaceName ?? null);
+  const meta = [
+    session.provider ?? sessionKindWord(session.kind),
+    workspaceLine,
+    activityLine,
+  ].filter((line) => line !== null);
+  const goal = session.goal?.trim() || null;
+  return (
+    <div className="workspace-overview-preview">
+      <div className="workspace-overview-preview-title">{sessionTitle(session)}</div>
+      <div className="workspace-overview-preview-state">{display.stateLine}</div>
+      {display.detailLines.length > 0 ? (
+        <div className="workspace-overview-preview-state">{display.detailLines.join(" ")}</div>
+      ) : null}
+      <div className="workspace-overview-preview-meta">{meta.join(" · ")}</div>
+      {goal !== null ? <div className="workspace-overview-preview-goal">{goal}</div> : null}
+    </div>
+  );
+}

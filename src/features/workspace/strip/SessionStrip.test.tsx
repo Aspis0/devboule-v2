@@ -79,6 +79,10 @@ function propsOf(sessions: Session[], activeTabId: string | null) {
     takeBackAvailable: false,
     onTakeBack: vi.fn(),
     statusText: `${sessions.length} sessions`,
+    overviewSessions: sessions,
+    workspaceName: "workspace one",
+    onOpenSession: vi.fn(),
+    selectedSessionId: sessions[0]?.id ?? null,
   };
 }
 

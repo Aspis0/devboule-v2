@@ -12,7 +12,8 @@ import {
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { currentTurnIndex } from "./currentTurn";
 import { sameUserItems, userTurns, type UserTurn } from "./turnGrouping";
-import { TurnStop, dayKey } from "./TurnStop";
+import { TurnStop } from "./TurnStop";
+import { dayKey } from "../../../lib/dayClock";
 import { useTurnRailIntent } from "./useTurnRailIntent";
 import "./TurnRail.css";
 

@@ -1,8 +1,10 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
+  useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
@@ -14,6 +16,7 @@ import type { useTabCloseFlow } from "./useTabCloseFlow";
 import type { useTabSelection } from "./useTabSelection";
 import { useSelectedTabVisible } from "./stripScroll";
 import { SessionTabMenu } from "./SessionTabMenu";
+import { SessionOverviewMenu } from "./SessionOverviewMenu";
 import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
 import { chipDisplay } from "./stripDisplay";
 import { useStripFade } from "./useStripFade";
@@ -58,6 +61,16 @@ export interface SessionStripProps {
   takeBackAvailable: boolean;
   onTakeBack: () => void;
   statusText: string;
+  /** Every roster session of the selected workspace: the strip shows a
+   * subset, the end-of-strip overview lists all of it. */
+  overviewSessions: readonly Session[];
+  /** The selected workspace's title for the overview preview. */
+  workspaceName: string | null;
+  /** Opens an overview row through Workspace's existing open path, by id. */
+  onOpenSession: (sessionId: string) => void;
+  /** The selected session id for the overview's initial row; the tab id
+   * stays the strip's and may name a tool tab. */
+  selectedSessionId: string | null;
 }
 
 /** The tab strip region: the scrolling tablist, the fade on the sides that
@@ -76,6 +89,10 @@ export function SessionStrip({
   takeBackAvailable,
   onTakeBack,
   statusText,
+  overviewSessions,
+  workspaceName,
+  onOpenSession,
+  selectedSessionId,
 }: SessionStripProps) {
   const scrollportRef = useRef<HTMLDivElement>(null);
   const sessions = useMemo(
@@ -98,6 +115,92 @@ export function SessionStrip({
     closeTab: closeSingle,
   });
   const { tabIndexFor, onChipKeyDown: keyboardChipKeyDown } = keyboard;
+  // The end-of-strip overview: the count is its trigger. Hover opens on
+  // intent and survives the crossing into the list; press opens at once.
+  // A click on a hover-opened list pins it instead of dismissing it.
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  // Fresh mount per opening, so the menu's clock and seed start at open.
+  const [overviewEpoch, setOverviewEpoch] = useState(0);
+  const overviewTriggerRef = useRef<HTMLButtonElement>(null);
+  const overviewRootRef = useRef<HTMLDivElement>(null);
+  const overviewSourceRef = useRef<"hover" | "press" | null>(null);
+  const overviewOpenTimer = useRef<number | null>(null);
+  const overviewCloseTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (overviewOpenTimer.current !== null) window.clearTimeout(overviewOpenTimer.current);
+      if (overviewCloseTimer.current !== null) window.clearTimeout(overviewCloseTimer.current);
+    },
+    [],
+  );
+  const cancelOverviewTimers = useCallback(() => {
+    if (overviewOpenTimer.current !== null) {
+      window.clearTimeout(overviewOpenTimer.current);
+      overviewOpenTimer.current = null;
+    }
+    if (overviewCloseTimer.current !== null) {
+      window.clearTimeout(overviewCloseTimer.current);
+      overviewCloseTimer.current = null;
+    }
+  }, []);
+  const { open: newTabOpen, onCloseMenu: closeNewTabMenu } = newTab;
+  const { menu: tabMenu, closeMenu: closeTabMenu } = tabClose;
+  const openOverview = useCallback(
+    (source: "hover" | "press") => {
+      cancelOverviewTimers();
+      // The standing strip siblings yield to the overview; anything else
+      // registered — a provider choice, a consent gate — stays standing.
+      if (newTabOpen) closeNewTabMenu();
+      if (tabMenu !== null) closeTabMenu();
+      overviewSourceRef.current = source;
+      setOverviewEpoch((epoch) => epoch + 1);
+      setOverviewOpen(true);
+    },
+    [cancelOverviewTimers, newTabOpen, closeNewTabMenu, tabMenu, closeTabMenu],
+  );
+  // The one close every path runs through: focus comes back only when the
+  // closing menu held it, so a hover-close never steals the pane's focus.
+  const closeOverview = useCallback(() => {
+    cancelOverviewTimers();
+    overviewSourceRef.current = null;
+    if (overviewRootRef.current?.contains(document.activeElement) === true) {
+      overviewTriggerRef.current?.focus({ preventScroll: true });
+    }
+    setOverviewOpen(false);
+  }, [cancelOverviewTimers]);
+  const scheduleOverviewOpen = useCallback(() => {
+    if (overviewCloseTimer.current !== null) {
+      window.clearTimeout(overviewCloseTimer.current);
+      overviewCloseTimer.current = null;
+    }
+    // A re-entry during the grace continues the standing menu: arming an
+    // open would dismiss it against its own registration on fire.
+    if (overviewOpen) return;
+    if (overviewOpenTimer.current !== null) return;
+    overviewOpenTimer.current = window.setTimeout(() => {
+      overviewOpenTimer.current = null;
+      openOverview("hover");
+    }, 150);
+  }, [openOverview, overviewOpen]);
+  const scheduleOverviewClose = useCallback(() => {
+    if (overviewOpenTimer.current !== null) {
+      window.clearTimeout(overviewOpenTimer.current);
+      overviewOpenTimer.current = null;
+    }
+    if (overviewCloseTimer.current !== null) return;
+    overviewCloseTimer.current = window.setTimeout(closeOverview, 150);
+  }, [closeOverview]);
+  const stripOrder = useMemo(
+    () => tabs.flatMap((tab) => (tab.type === "session" ? [tab.session.id] : [])),
+    [tabs],
+  );
+  const handleOverviewOpen = useCallback(
+    (sessionId: string) => {
+      closeOverview();
+      onOpenSession(sessionId);
+    },
+    [closeOverview, onOpenSession],
+  );
 
   const handleChipKeyDown = useCallback(
     (id: string, event: ReactKeyboardEvent<HTMLElement>) => {
@@ -249,7 +352,37 @@ export function SessionStrip({
         {providerMenu}
       </div>
       <span className="workspace-tabs-spacer" />
-      <span className="workspace-rate">{statusText}</span>
+      <button
+        ref={overviewTriggerRef}
+        type="button"
+        className="workspace-rate"
+        aria-haspopup="listbox"
+        aria-expanded={overviewOpen}
+        aria-label={`${statusText} — show all ${overviewSessions.length} sessions`}
+        onClick={() => {
+          if (!overviewOpen) openOverview("press");
+          else if (overviewSourceRef.current === "hover") overviewSourceRef.current = "press";
+          else closeOverview();
+        }}
+        onMouseEnter={scheduleOverviewOpen}
+        onMouseLeave={scheduleOverviewClose}
+      >
+        {statusText}
+      </button>
+      <SessionOverviewMenu
+        key={overviewEpoch}
+        open={overviewOpen}
+        triggerRef={overviewTriggerRef}
+        contentRef={overviewRootRef}
+        sessions={overviewSessions}
+        stripOrder={stripOrder}
+        activeSessionId={selectedSessionId}
+        workspaceName={workspaceName}
+        onOpen={handleOverviewOpen}
+        onClose={closeOverview}
+        onListEnter={cancelOverviewTimers}
+        onListLeave={scheduleOverviewClose}
+      />
       <div className="workspace-sr-only" role="status" aria-live="polite">
         {tabSelection.announcement}
       </div>

@@ -316,6 +316,10 @@ describe("walking every menu the source finds — the band's open is the outside
           takeBackAvailable={false}
           onTakeBack={() => undefined}
           statusText="0 sessions"
+          overviewSessions={[]}
+          workspaceName={null}
+          onOpenSession={() => undefined}
+          selectedSessionId={null}
         />
       </ShellWith>,
     );

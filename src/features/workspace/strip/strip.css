@@ -245,6 +245,137 @@
   white-space: nowrap;
 }
 
+/* The count is the all-sessions trigger: a quiet button until hovered, so
+   the strip keeps its one "+" affordance. */
+button.workspace-rate {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+button.workspace-rate:hover,
+button.workspace-rate:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+/* The all-sessions overview hangs off the count: a flex column whose
+   list scrolls inside the remaining space. When the preview alone exceeds
+   the portal's viewport cap, the root scrolls under that cap. */
+.workspace-overview {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  min-height: 0;
+}
+
+/* Order-proof padding: the shared menu rule is equally specific, so the
+   overview names both classes and wins whatever the sheet order is. */
+.workspace-surface-menu.workspace-overview {
+  padding: 4px;
+}
+
+.workspace-overview-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.workspace-overview-option {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.workspace-overview-option:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+/* The keyboard ring the app's buttons carry, on the same token: hover and
+   focus share the fill, so the ring is what tells them apart. Inset, so
+   the list's own scrollport never clips it. */
+.workspace-overview-option:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-overview-option .workspace-status-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+}
+
+.workspace-overview-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.workspace-overview-open {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace-overview-time {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.workspace-overview-empty {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.workspace-overview-preview {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 8px;
+  border-top: 1px solid var(--line-strong);
+  font-size: 12px;
+}
+
+.workspace-overview-preview-title {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.workspace-overview-preview-state,
+.workspace-overview-preview-meta {
+  color: var(--muted);
+}
+
+.workspace-overview-preview-goal {
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+}
+
 /* One row per session tab: the tab button, the trailing close chip, and the
    take-back. Rows share a shortfall proportionally down to the 96 px floor
    and only then scroll: the floor is explicit, so a long nowrap label can

@@ -382,22 +382,35 @@ export function Workspace({
     closeActions.subscribe,
     closeActions.getFailuresSnapshot,
   );
+  // Selection is navigation: one predicate names the selected workspace's
+  // rows for both the strip and the end-of-strip overview, so the two
+  // cannot drift apart. A session with no workspace (a legacy record) has
+  // no home to navigate to, so it renders in every strip; hiding it would
+  // make it unreachable.
+  const inSelectedWorkspace = useCallback(
+    (session: Session) => session.workspaceId === selectedWorkspace || session.workspaceId === null,
+    [selectedWorkspace],
+  );
   const visibleSessions = useMemo(() => {
     const hiding = new Set(closingIds);
-    // Selection is navigation: the strip shows only the
-    // selected workspace's tabs, so an empty workspace shows the empty state
-    // instead of another workspace's tabs.
-    // A session with no workspace (a legacy record) has no home to navigate
-    // to, so it renders in every strip; hiding it would make it unreachable.
-    return sessions.filter(
-      (session) =>
-        !hiding.has(session.id) &&
-        (session.workspaceId === selectedWorkspace || session.workspaceId === null),
-    );
-  }, [sessions, closingIds, selectedWorkspace]);
+    return sessions.filter((session) => !hiding.has(session.id) && inSelectedWorkspace(session));
+  }, [sessions, closingIds, inSelectedWorkspace]);
   const visibleToolTabs = useMemo(
     () => toolTabs.filter((tab) => tab.workspaceId === selectedWorkspace),
     [toolTabs, selectedWorkspace],
+  );
+  // The end-of-strip overview reads the roster, not the strip: a session
+  // the strip hides (an in-flight close, or one never opened) stays
+  // reachable there.
+  const overviewSessions = useMemo(
+    () => sessions.filter(inSelectedWorkspace),
+    [sessions, inSelectedWorkspace],
+  );
+  const workspaceName = useMemo(
+    () =>
+      projects.flatMap((project) => project.workspaces).find((w) => w.id === selectedWorkspace)
+        ?.title ?? null,
+    [projects, selectedWorkspace],
   );
   const activeTool = visibleToolTabs.find((tab) => tab.id === activeToolTabId) ?? null;
   const activeToolId = activeTool?.id ?? null;
@@ -764,6 +777,19 @@ export function Workspace({
       setHistorySearch("");
     },
     [openSession, setSelectedWorkspace, standDownToolTab],
+  );
+  const handleOpenOverviewSession = useCallback(
+    (sessionId: string) => {
+      const session = sessions.find((row) => row.id === sessionId);
+      if (session === undefined) return;
+      // The overview's explicit open: the tool tab stands down and the
+      // existing open path tabs and selects the session. No workspace
+      // switch: every non-null overview row already lives in the selected
+      // workspace, and a legacy null-workspace row has no home to go to.
+      standDownToolTab();
+      openSession(session);
+    },
+    [sessions, openSession, standDownToolTab],
   );
   // A failed resume leaves the row's verdict changed on the daemon side; the
   // bar must not keep its offer on the roster data this surface already held.
@@ -1414,6 +1440,10 @@ export function Workspace({
           takeBackAvailable={takeBackAvailable}
           onTakeBack={takeBack}
           statusText={sessionStatusText}
+          overviewSessions={overviewSessions}
+          workspaceName={workspaceName}
+          onOpenSession={handleOpenOverviewSession}
+          selectedSessionId={selectedSessionId}
         />
         <DaemonRestartNotice
           instanceId={daemon.instanceId}
