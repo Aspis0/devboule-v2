@@ -13,6 +13,7 @@ import {
   clickMenuEntry,
   contextMenuKey,
   defaultSessions,
+  endedAgentSession,
   DIALOG_SELECTOR,
   dialog,
   headerMenuSeamFor,
@@ -37,6 +38,7 @@ import {
   sessionStop,
   sessionsList,
 } from "../../lib/tauri";
+import { sharedSessionController } from "./workspaceSessions";
 
 beforeEach(() => {
   beforeEachHarness();
@@ -105,7 +107,7 @@ describe("the tab context menu", () => {
     expect(menuLabels()).toHaveLength(5);
   });
 
-  it("Close on an agent without a process archives at once — no ask", async () => {
+  it("Close removes an agent tab without stopping its session", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       recoveredAgentSession("agent-old", "Old transcript"),
       terminalSession("session-2", "shell two"),
@@ -118,7 +120,7 @@ describe("the tab context menu", () => {
     await settleCloseActs();
 
     expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
-    expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
+    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
     expect(document.querySelector("#workspace-session-tab-agent-old")).toBeNull();
   });
 
@@ -314,7 +316,7 @@ describe("the tab menu rename", () => {
 
   it("the pane kebab hides Rename on a recovered session", async () => {
     // The seam's second gate, at the pane: the flow's entry is pinned in
-    // useTabCloseFlow.rename.test.tsx, this is Workspace's own condition.
+    // strip/useSessionRename.test.tsx, this is Workspace's own condition.
     daemonWithCapabilities(["sessions"]);
     vi.mocked(sessionsList).mockResolvedValue([recoveredAgentSession("agent-one", "Agent one")]);
     await renderWorkspace();
@@ -341,10 +343,16 @@ describe("the tab menu rename", () => {
     expect(menuLabels()).not.toContain("Rename");
   });
 
-  // The ended-but-live half of the recovered decision is pinned in
-  // useTabCloseFlow.rename.test.tsx instead: the strip's stripSessions drops
-  // ended rows the daemon still lists, so an ended agent never reaches a
-  // tab to right-click — the entry logic is the flow's to assert.
+  // An ended agent reaches a tab only when the user opens it from History.
+  it("offers Rename on an explicitly opened ended agent tab", async () => {
+    const ended = endedAgentSession("agent-ended", "Ended agent");
+    vi.mocked(sessionsList).mockResolvedValue([ended]);
+    await renderWorkspace(false);
+    expect(document.querySelector("#workspace-session-tab-agent-ended")).toBeNull();
+    await act(async () => sharedSessionController().open(ended));
+    await rightClick(ended.id);
+    expect(menuLabels()).toContain("Rename");
+  });
 
   it("keeps the draft and shows the daemon's refusal verbatim", async () => {
     // A refusal the client mirror cannot predict: the session departed

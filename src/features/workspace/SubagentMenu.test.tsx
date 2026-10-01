@@ -34,10 +34,6 @@ vi.mock("./popoverPlace", async (importOriginal) => {
           if (props.containerRef) props.containerRef.current = node;
         }}
         data-open-above={props.openAbove === true ? "true" : "false"}
-        // The focus-return branch needs the menu to hold focus; nothing in
-        // the real menu is focusable today (the rows are inert), so the
-        // mock's container is focusable to stand in for a later focusable
-        // row.
         tabIndex={-1}
         className={props.className}
         id={props.id}
@@ -342,7 +338,13 @@ describe("SubagentMenu list", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="list-escape" title="Agent" />
+          <AgentChatSurface
+            daemonState="connected"
+            sessionId="list-escape"
+            title="Agent"
+            onOpenSubagent={() => undefined}
+            subagentSessionIds={new Set(["task-child"])}
+          />
         </StrictMode>,
       );
     });
@@ -369,10 +371,7 @@ describe("SubagentMenu list", () => {
     expect(list?.querySelectorAll(".workspace-subagent-row")).toHaveLength(1);
     expect(list?.textContent).toContain("Child task");
 
-    // The focus-return branch needs the menu to hold focus; the rows are
-    // inert, so the test focuses the menu itself (the mock's container is
-    // focusable for exactly this) and Escape must hand focus to the pill.
-    list?.focus();
+    list?.querySelector<HTMLButtonElement>("button")?.focus();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
@@ -581,10 +580,9 @@ describe("the subagent sheet", () => {
     expect(chevron).toContain("stroke: currentColor;");
   });
 
-  it("gives the rows no hover tint — they are inert", () => {
-    // A row click does nothing (open-as-tab is slice C9/C12): a hover
-    // highlight would promise a press the row cannot keep.
-    expect(css).not.toContain(".workspace-subagent-row:hover");
+  it("highlights rows on hover and keyboard focus", () => {
+    expect(css).toContain(".workspace-subagent-row:hover");
+    expect(css).toContain(".workspace-subagent-row:focus-visible");
   });
 
   it("sizes its dots at the mockup's 6 px with the one rule that governs them", () => {

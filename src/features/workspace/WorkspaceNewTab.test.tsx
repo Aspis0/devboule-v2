@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 
 // The tab strip's "+" menu: what a new tab can be. Pins the menu's contents
 // (exactly Agent, Terminal), the Terminal entry's create
@@ -155,6 +156,7 @@ const terminal = (
   workspaceId: string | null = "workspace-1",
 ): Session => ({
   id,
+  createdAtMs: 1,
   workspaceId,
   kind: "terminal",
   title,
@@ -312,7 +314,10 @@ async function renderWorkspace() {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  await act(async () => root.render(<Workspace />));
+  await act(async () => {
+    await openListedSessionsForTest();
+    root.render(<Workspace />);
+  });
   for (let hop = 0; hop < 4; hop += 1) {
     await act(async () => undefined);
   }
@@ -344,6 +349,7 @@ describe("the + new-tab menu", () => {
   let unmount: () => Promise<void>;
 
   beforeEach(() => {
+    localStorage.removeItem("devboule.openSessionTabs");
     resetSharedSessionControllerForTests();
     vi.mocked(projectsList).mockResolvedValue([project]);
     vi.mocked(workspacesList).mockResolvedValue([workspace]);

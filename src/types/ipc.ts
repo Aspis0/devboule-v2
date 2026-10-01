@@ -855,7 +855,7 @@ export interface Session {
    * Optional here and never optional on the wire: every session from
    * `sessionsList` has it. It is absent only on a session this frontend
    * synthesized from a roster push (`sessions_watch`) for an id it had not
-   * listed yet, because the tab strip does not need creation time. The
+   * listed yet; durable tab identity requires a full-list birth stamp. The
    * snapshot carries workspace and kind identity separately. Absent therefore
    * means "this row came from a roster push", never "the creation time is
    * unknown" — do not fill it in.

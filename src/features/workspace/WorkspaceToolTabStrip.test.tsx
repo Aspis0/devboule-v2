@@ -14,9 +14,7 @@ import {
   menuLabels,
   middleClick,
   chipClick,
-  clickDialogButton,
   clickMenuEntry,
-  dialog,
   plainClick,
   pushSnapshots,
   renderWorkspace,
@@ -123,16 +121,13 @@ describe("tool chips", () => {
     const id = await openActiveDiffTab();
     await rightClick(id);
     await clickMenuEntry("Close other tabs");
-    const confirm = dialog();
-    expect(confirm.textContent).toContain("Close other tabs?");
-    expect(confirm.textContent).not.toContain("tab closes too");
+    expect(document.querySelector("[role='alertdialog']")).toBeNull();
 
-    await clickDialogButton("Close");
     await settleCloseActs();
     await flush();
     await flush();
     await act(async () => {});
-    expect(vi.mocked(sessionStop)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
     expect(tabTitles()).toHaveLength(1);
     expect(tabElement(id).getAttribute("aria-selected")).toBe("true");
   });

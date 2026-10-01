@@ -283,7 +283,7 @@ describe("workspace session controller", () => {
     ).toEqual(["claude-acp", "pi"]);
   });
 
-  it("loads terminal and ACP sessions and selects the first real session", async () => {
+  it("loads the full roster without opening or selecting tabs", async () => {
     const list = vi.fn(async () => [
       liveSession("terminal-1", "shell one"),
       {
@@ -303,7 +303,8 @@ describe("workspace session controller", () => {
         { ...liveSession("agent-1", "agent"), kind: "acp" },
         liveSession("terminal-2", "shell two"),
       ],
-      selectedSessionId: "terminal-1",
+      openSessions: [],
+      selectedSessionId: null,
       error: null,
     });
   });
@@ -491,9 +492,8 @@ describe("workspace session controller", () => {
       },
     ]);
 
-    // The process is gone, so the tab leaves the strip; nothing stays selected
-    // behind a tab that no longer renders.
-    expect(controller.getState().sessions).toEqual([]);
+    expect(controller.getState().sessions[0].state.type).toBe("ended");
+    expect(controller.getState().openSessions).toEqual([]);
     expect(controller.getState().selectedSessionId).toBeNull();
     release();
   });
@@ -1695,7 +1695,7 @@ describe("recovered rows in the strip", () => {
     ...overrides,
   });
 
-  it("includes recovered rows automatically: attaching is reading, not resuming", async () => {
+  it("keeps recovered rows in the roster without opening tabs", async () => {
     const controller = createWorkspaceSessionController({
       list: vi.fn(async () => [recoveredSession("rec-1"), liveSession("live-1")]),
       create: vi.fn(async () => liveSession("live-2")),
@@ -1704,6 +1704,7 @@ describe("recovered rows in the strip", () => {
 
     expect(isRecoveredSession(recoveredSession("rec-1"))).toBe(true);
     expect(isRecoveredSession(liveSession("live-1"))).toBe(false);
+    expect(controller.getState().openSessions).toEqual([]);
     expect(controller.getState().sessions.map((session) => session.id)).toEqual([
       "rec-1",
       "live-1",
@@ -1721,16 +1722,13 @@ describe("recovered rows in the strip", () => {
     });
     await controller.refresh();
 
-    expect(controller.getState().sessions.map((session) => session.id)).toEqual(["rec-1"]);
+    expect(controller.getState().openSessions).toEqual([]);
 
     controller.open(ended);
-    expect(controller.getState().sessions.map((session) => session.id)).toEqual([
-      "rec-1",
-      "ended-1",
-    ]);
+    expect(controller.getState().openSessions.map((session) => session.id)).toEqual(["ended-1"]);
   });
 
-  it("keeps a recovered row pushed after mount, without an explicit open", async () => {
+  it("keeps a recovered push in the roster without opening a tab", async () => {
     const watched: {
       listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
     } = { listener: null };

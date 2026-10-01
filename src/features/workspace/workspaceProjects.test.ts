@@ -26,6 +26,21 @@ const session = (over: Partial<Session> = {}): Session => ({
 });
 
 describe("workspaceView", () => {
+  it("ignores an ended session's stale attention and unattended marker", () => {
+    const ended = session({
+      state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+      attention: { reason: "permission", atMs: 1 },
+      unattended: "yes",
+    });
+    expect(workspaceView(workspace, [ended]).stateDot).toBeNull();
+    expect(workspaceView(workspace, [ended, session()]).stateDot).toBe("pulse");
+  });
+
+  it.each(["finished", "error"] as const)("does not mark %s as needing approval", (reason) => {
+    expect(workspaceView(workspace, [session({ attention: { reason, atMs: 1 } })]).stateDot).toBe(
+      "pulse",
+    );
+  });
   it("shows no meta line for a row that matches the norm", () => {
     const view = workspaceView(workspace, [session()]);
     expect(view.meta).toBeNull();

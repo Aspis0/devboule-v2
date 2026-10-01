@@ -1,31 +1,11 @@
-// The bulk close's confirmation: the titles, and the counting line written
-// to what a close does here — a terminal close is an archive (session_stop),
-// so the process stops and every message stays in History.
-
 import { describe, expect, it } from "vitest";
 import type { Session } from "../../../types/ipc";
 import { sessionTitle } from "../workspaceSessions";
 import {
   archiveRunningAgentConfirm,
-  bulkActionTitle,
-  bulkCloseMessage,
-  bulkSelectionConfirmLabel,
-  bulkSelectionTitle,
   closeTerminalConfirm,
-  countSessions,
   deleteSessionConfirm,
 } from "./bulkCloseCopy";
-
-function sessions(kinds: Session["kind"][]): Session[] {
-  return kinds.map((kind, index) => ({
-    id: `s${index}`,
-    workspaceId: "workspace-1",
-    kind,
-    title: `${kind} ${index}`,
-    state: { type: "live", generation: 1 } as Session["state"],
-    elapsedMs: 0,
-  }));
-}
 
 function terminalSession(id: string, title: string): Session {
   return {
@@ -48,66 +28,6 @@ function agentSession(id: string, title: string): Session {
     elapsedMs: 0,
   };
 }
-
-describe("bulkActionTitle", () => {
-  it("titles each tab-relative action as a question", () => {
-    expect(bulkActionTitle("left")).toBe("Close tabs to the left?");
-    expect(bulkActionTitle("right")).toBe("Close tabs to the right?");
-    expect(bulkActionTitle("others")).toBe("Close other tabs?");
-  });
-});
-
-describe("bulkSelectionTitle", () => {
-  it("counts the selection in our own multi-select title", () => {
-    expect(bulkSelectionTitle(4)).toBe("Close 4 tabs?");
-  });
-
-  it("asks about one tab in the singular: the ask names the live set", () => {
-    expect(bulkSelectionTitle(1)).toBe("Close 1 tab?");
-  });
-});
-
-describe("bulkSelectionConfirmLabel", () => {
-  it("is the title without the question mark: the button matches what the title asks", () => {
-    expect(bulkSelectionConfirmLabel(3)).toBe("Close 3 tabs");
-    expect(bulkSelectionTitle(3)).toBe(`${bulkSelectionConfirmLabel(3)}?`);
-  });
-
-  it("keeps the singular in step with the title", () => {
-    expect(bulkSelectionConfirmLabel(1)).toBe("Close 1 tab");
-  });
-});
-
-describe("countSessions", () => {
-  it("splits agents from terminals by kind", () => {
-    expect(countSessions(sessions(["acp", "claude", "terminal", "pi"]))).toEqual({
-      agents: 3,
-      terminals: 1,
-    });
-    expect(countSessions(sessions(["terminal"]))).toEqual({ agents: 0, terminals: 1 });
-    expect(countSessions(sessions(["codex"]))).toEqual({ agents: 1, terminals: 0 });
-  });
-});
-
-describe("bulkCloseMessage", () => {
-  it("mixed: archives both kinds, and says the processes stop and the messages stay", () => {
-    expect(bulkCloseMessage({ agents: 2, terminals: 1 })).toBe(
-      "This will archive 2 agent(s) and archive 1 terminal(s). " +
-        "The processes stop and every message stays in History.",
-    );
-  });
-
-  it("agents only: names the archived agents", () => {
-    expect(bulkCloseMessage({ agents: 3, terminals: 0 })).toBe("This will archive 3 agent(s).");
-  });
-
-  it("terminals only: archived, not closed, and History keeps the messages", () => {
-    expect(bulkCloseMessage({ agents: 0, terminals: 2 })).toBe(
-      "This will archive 2 terminal(s). " +
-        "The processes stop and every message stays in History.",
-    );
-  });
-});
 
 describe("the single-close confirmations", () => {
   it("a terminal: names the shell the tab shows, our archive's sentence", () => {

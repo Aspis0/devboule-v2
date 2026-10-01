@@ -139,6 +139,8 @@ function shapeSentence(message: string): string | null {
  * sentence.
  */
 export function errorSentence(error: unknown): ErrorSentence {
+  // Tauri rejects with plain { code, message } WireErrors as well as Errors;
+  // String(error) would hide the daemon's message behind [object Object].
   if (isCommandError(error)) {
     const shaped = shapeSentence(error.message);
     // A newer daemon can send a code this build's union lacks; `Object.hasOwn`

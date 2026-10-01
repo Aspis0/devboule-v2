@@ -27,7 +27,6 @@ import {
   makeToolTab,
   openToolTabs,
   pruneToolTabsForWorkspaces,
-  restoreToolTabs,
   toolTabId,
   type ToolTab,
   type ToolTabKind,
@@ -40,6 +39,11 @@ import { useTabSelection } from "./strip/useTabSelection";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
 import { useSessionRename } from "./strip/useSessionRename";
 import { buildTabCloseEntries } from "./strip/tabCloseMenu";
+import {
+  activeSessionAttention,
+  sessionAttentionLabel,
+  sessionNeedsApproval,
+} from "./sessionAttention";
 import { SessionStrip } from "./strip/SessionStrip";
 import { SessionRenameDialog } from "./strip/SessionRenameDialog";
 import { discardPersistedPendingCloses, sharedCloseActions } from "./strip/closeActions";
@@ -243,6 +247,7 @@ export function Workspace({
   const selectSurface = useAppStore((state) => state.selectSurface);
   const {
     sessions,
+    openSessions,
     selectedSessionId,
     loading: sessionsLoading,
     creating: sessionCreating,
@@ -252,6 +257,7 @@ export function Workspace({
     create: createSession,
     select: selectSession,
     open: openSession,
+    closeTabs: closeSessionTabs,
     dismissError: dismissSessionsError,
   } = useWorkspaceSessions(selectedWorkspace);
   // Tool tabs live beside the sessions; the last session stays selected
@@ -267,13 +273,17 @@ export function Workspace({
     () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
     [visibleProjects],
   );
+  const sidebarIdSet = useMemo(() => new Set(sidebarWorkspaceIds), [sidebarWorkspaceIds]);
   const endedKey = useMemo(
     () =>
       sessions
-        .filter((session) => session.state.type === "ended")
+        .filter(
+          (session) =>
+            session.state.type === "ended" && sidebarIdSet.has(session.workspaceId ?? ""),
+        )
         .map((session) => session.id)
         .join("\n"),
-    [sessions],
+    [sessions, sidebarIdSet],
   );
   const { stats: workspaceStats, refresh: refreshWorkspaceStats } = useWorkspaceStats(
     sidebarWorkspaceIds,
@@ -286,19 +296,13 @@ export function Workspace({
   useEffect(() => {
     setSessionFacts(sessions);
   }, [sessions, setSessionFacts]);
-  // Sessions this Workspace has observed in the strip-visible roster, so
-  // the absence rule below never drops cards for a row it never named.
-  // The list it reads is deliberately the strip-visible one, not the
-  // daemon's full roster the message queue's `onRosterPush` gets
-  // (`sessionQueueOwner.ts`): an ended row the user never opened leaves
-  // this list while the daemon still names it, and its cards go with it.
-  // That is safe only because an ended session has no process, so no
-  // queued request is still answerable — text, which the queue keeps, has
-  // no such backstop and must read the full list.
+  // Tab membership cannot discard cards; roster absence or an ended process can.
   const seenSessionIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const session of sessions) seenSessionIdsRef.current.add(session.id);
-    const present = new Set(sessions.map((session) => session.id));
+    const present = new Set(
+      sessions.filter((session) => session.state.type !== "ended").map((session) => session.id),
+    );
     setPermissionQueue((queue) => {
       if (
         !queue.some(
@@ -382,29 +386,39 @@ export function Workspace({
     closeActions.subscribe,
     closeActions.getFailuresSnapshot,
   );
-  // Selection is navigation: one predicate names the selected workspace's
-  // rows for both the strip and the end-of-strip overview, so the two
-  // cannot drift apart. A session with no workspace (a legacy record) has
-  // no home to navigate to, so it renders in every strip; hiding it would
-  // make it unreachable.
+  // One workspace predicate serves both the strip and overview so navigation cannot drift.
+  // Legacy sessions have no workspace to navigate to, so they stay reachable in every strip.
   const inSelectedWorkspace = useCallback(
     (session: Session) => session.workspaceId === selectedWorkspace || session.workspaceId === null,
     [selectedWorkspace],
   );
   const visibleSessions = useMemo(() => {
     const hiding = new Set(closingIds);
-    return sessions.filter((session) => !hiding.has(session.id) && inSelectedWorkspace(session));
-  }, [sessions, closingIds, inSelectedWorkspace]);
+    return openSessions.filter(
+      (session) => !hiding.has(session.id) && inSelectedWorkspace(session),
+    );
+  }, [openSessions, closingIds, inSelectedWorkspace]);
   const visibleToolTabs = useMemo(
     () => toolTabs.filter((tab) => tab.workspaceId === selectedWorkspace),
     [toolTabs, selectedWorkspace],
   );
-  // The end-of-strip overview reads the roster, not the strip: a session
-  // the strip hides (an in-flight close, or one never opened) stays
-  // reachable there.
+  const openEndedIds = useMemo(
+    () => new Set(openSessions.filter((row) => row.state.type === "ended").map((row) => row.id)),
+    [openSessions],
+  );
+  // Ended sessions belong to History unless the user already has their tab open.
+  // Durable membership keeps them reachable during a pending lifecycle close.
   const overviewSessions = useMemo(
-    () => sessions.filter(inSelectedWorkspace),
-    [sessions, inSelectedWorkspace],
+    () =>
+      sessions.filter(
+        (row) =>
+          inSelectedWorkspace(row) &&
+          (isRecoveredSession(row) ||
+            row.state.type === "live" ||
+            row.state.type === "silent" ||
+            openEndedIds.has(row.id)),
+      ),
+    [sessions, inSelectedWorkspace, openEndedIds],
   );
   const workspaceName = useMemo(
     () =>
@@ -459,6 +473,7 @@ export function Workspace({
   // the selected session from the selected workspace's strip falls to that
   // workspace's first tab or the empty state.
   useEffect(() => {
+    if (sessionsLoading || projectsLoading) return;
     if (!userNavigatedRef.current) {
       const selected = sessions.find((session) => session.id === selectedSessionId);
       if (
@@ -475,6 +490,8 @@ export function Workspace({
     selectSession(visibleSessions[0]?.id ?? null);
   }, [
     sessions,
+    sessionsLoading,
+    projectsLoading,
     selectedSessionId,
     selectedWorkspace,
     knownWorkspaceIds,
@@ -504,6 +521,7 @@ export function Workspace({
           .filter((workspaceId) => workspaceId !== null && workspaceId !== undefined),
       );
       if (closedWorkspaceIds.size > 0) refreshWorkspaceStats([...closedWorkspaceIds]);
+      closeSessionTabs(matched.map((session) => session.id));
       for (const session of matched) {
         closeActions.act(
           kind,
@@ -512,11 +530,16 @@ export function Workspace({
             title: sessionTitle(session),
             generation: session.state.generation,
           },
-          onFailed === undefined ? undefined : () => onFailed(session.id),
+          () => {
+            const selected = sharedSessionController().getState().selectedSessionId;
+            openSession(session);
+            selectSession(selected);
+            onFailed?.(session.id);
+          },
         );
       }
     },
-    [closeActions, refreshWorkspaceStats, sessions],
+    [closeActions, closeSessionTabs, openSession, selectSession, refreshWorkspaceStats, sessions],
   );
   // Multi-select and the tab close flow live in the strip's folder; the
   // strip only wires their handlers. The "+" button's ref is the flow's
@@ -583,32 +606,16 @@ export function Workspace({
     },
     [createSession, standDownToolTab],
   );
-  // Removing tool tabs forgets what they showed; the mixed close keeps the
-  // restore for its session failure path, which puts them back without
-  // touching selection or focus.
-  // The restore runs a round trip after the click, so it reads the workspace
-  // set through a ref: a closed-over set would predate a flap in between.
-  const knownWorkspaceIdsRef = useRef(knownWorkspaceIds);
-  useEffect(() => {
-    knownWorkspaceIdsRef.current = knownWorkspaceIds;
-  });
   const closeToolTabs = useCallback(
-    (ids: readonly string[]): (() => void) => {
-      if (ids.length === 0) return () => undefined;
+    (ids: readonly string[]): void => {
+      if (ids.length === 0) return;
       const gone = new Set(ids);
-      // One updater filters and records from the same snapshot, so two
-      // closes in one tick cannot describe each other's tabs.
-      let removed: Array<{ tab: ToolTab; index: number }> = [];
       setToolTabs((prev) => {
-        removed = prev.flatMap((tab, index) => (gone.has(tab.id) ? [{ tab, index }] : []));
-        for (const entry of removed) {
-          evictToolContent(toolContentCache, entry.tab.workspaceId, entry.tab.path);
+        for (const tab of prev) {
+          if (gone.has(tab.id)) evictToolContent(toolContentCache, tab.workspaceId, tab.path);
         }
-        return removed.length === 0 ? prev : prev.filter((tab) => !gone.has(tab.id));
+        return prev.filter((tab) => !gone.has(tab.id));
       });
-      return () => {
-        setToolTabs((prev) => restoreToolTabs(prev, removed, knownWorkspaceIdsRef.current));
-      };
     },
     [toolContentCache],
   );
@@ -625,6 +632,7 @@ export function Workspace({
     activeTabId,
     selection: tabSelection.selection,
     onClose: runClose,
+    onCloseTabs: closeSessionTabs,
     onCloseTools: closeToolTabs,
     selectTab,
     clearSelection: tabSelection.clearSelection,
@@ -790,6 +798,17 @@ export function Workspace({
       openSession(session);
     },
     [sessions, openSession, standDownToolTab],
+  );
+  const handleOpenSubagent = useCallback(
+    (sessionId: string) => {
+      const session = sessions.find((row) => row.id === sessionId);
+      if (session !== undefined) {
+        handleReopenSession(session);
+      } else {
+        void refreshSessions();
+      }
+    },
+    [sessions, handleReopenSession, refreshSessions],
   );
   // A failed resume leaves the row's verdict changed on the daemon side; the
   // bar must not keep its offer on the roster data this surface already held.
@@ -960,9 +979,9 @@ export function Workspace({
       // The session selection moves with the navigation: the workspace's
       // first tab, or none (its empty state). Routing through selectTab
       // leaves the old workspace's tool tab behind with it.
-      selectTab(sessions.find((session) => session.workspaceId === workspaceId)?.id ?? null);
+      selectTab(openSessions.find((session) => session.workspaceId === workspaceId)?.id ?? null);
     },
-    [selectTab, sessions, setSelectedWorkspace],
+    [selectTab, openSessions, setSelectedWorkspace],
   );
   const handleNewSession = useCallback(
     (trigger: HTMLButtonElement | null) => {
@@ -1248,8 +1267,19 @@ export function Workspace({
   // behind another card keeps its row — a hidden plan with no card on screen
   // is worse than a duplicate.
   const pendingPlanToolCallId = pendingPlanId(selectedPermission);
-  // The creator lookup the strip's tooltips resolve against: one map per
-  // roster, so a chip never scans the roster for its own row.
+  const subagentSessionIds = useMemo(() => new Set(sessions.map((row) => row.id)), [sessions]);
+  const subagentAttention = useMemo(
+    () =>
+      new Map(
+        sessions.flatMap((row) => {
+          if (!sessionNeedsApproval(row)) return [];
+          const label = sessionAttentionLabel(row);
+          return label === null ? [] : [[row.id, label] as const];
+        }),
+      ),
+    [sessions],
+  );
+  // Cache creator lookup so each chip does not scan the roster.
   const creatorById = useMemo(() => new Map(sessions.map((row) => [row.id, row])), [sessions]);
   // Stable across renders of the same roster, so the strip's per-row memo
   // below only recomputes when its inputs change.
@@ -1264,12 +1294,7 @@ export function Workspace({
     ? "Starting session…"
     : sessionsLoading && sessions.length === 0
       ? "Loading sessions…"
-      : // The count reads the strip, not the roster: a session the strip has
-        // dropped (its close succeeded) is not a session on screen. The
-        // daemon still owes a roster push after session_stop (a recorded
-        // daemon item); runClose refreshes the closed sessions' stats, not
-        // the roster — a roster refresh would resurrect the closed rows.
-        `${visibleSessions.length} session${visibleSessions.length === 1 ? "" : "s"}`;
+      : `${visibleSessions.length} open session${visibleSessions.length === 1 ? "" : "s"}`;
 
   // One instance of the provider choice UI, anchored where the flow was
   // opened. It renders only the choice and consent; what happens afterwards
@@ -1587,9 +1612,13 @@ export function Workspace({
                 initialGoal={paneSession.goal}
                 elapsedMs={paneSession.elapsedMs}
                 activity={paneSession.activity}
-                attention={paneSession.attention}
+                attention={activeSessionAttention(paneSession)}
                 daemonState={daemon.state}
                 sessionRoster={sessions}
+                onOpenSubagent={handleOpenSubagent}
+                subagentSessionIds={subagentSessionIds}
+                subagentAttention={subagentAttention}
+                onRefreshSubagents={refreshSessions}
                 headerMenuSeam={{
                   closeEntries: buildTabCloseEntries(
                     composedTabs.findIndex((tab) => tab.id === paneSession.id),
@@ -1646,7 +1675,7 @@ export function Workspace({
                 observedState={paneSession.state}
                 cwd={paneSession.cwd}
                 activity={paneSession.activity}
-                attention={paneSession.attention}
+                attention={activeSessionAttention(paneSession)}
                 autoFocus={terminalAutoFocus}
                 autoFocusGuard={mayTakeTerminalFocus}
                 onAutoFocusTaken={takeTerminalFocus}

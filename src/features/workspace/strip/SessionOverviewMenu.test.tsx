@@ -141,6 +141,7 @@ const noMenu = {
   openMenu: vi.fn(),
   closeMenu: vi.fn(),
   closeSingle: vi.fn(),
+  closeTab: vi.fn(),
   activateEntry: vi.fn(),
   activatePaneEntry: vi.fn(),
   confirmClose: vi.fn(),

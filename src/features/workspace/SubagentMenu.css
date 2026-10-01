@@ -88,6 +88,11 @@
 }
 
 .workspace-subagent-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -97,6 +102,12 @@
   color: var(--ink-soft);
   font-family: var(--font-ui);
   font-size: 13px;
+}
+
+.workspace-subagent-row:hover,
+.workspace-subagent-row:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
 }
 
 .workspace-subagent-row-chevron {
@@ -115,4 +126,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-subagent-row:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+.workspace-subagent-attention {
+  color: var(--tone-attention);
+  font-size: 12px;
 }

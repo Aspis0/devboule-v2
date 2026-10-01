@@ -1,9 +1,6 @@
 // @vitest-environment happy-dom
 
-// The tab's trailing "×" and its neighbouring paths: a plain click selects
-// and fires nothing; the chip runs the close policy; a middle click closes;
-// an older build's persisted undo records are startup litter. Hit areas are
-// wiring + CSS here; only the live check sees pixels.
+// Tab removal, the pane's separate session close and focus restoration.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import {
@@ -12,6 +9,7 @@ import {
   beforeEachHarness,
   chipButton,
   chipClick,
+  lifecycleClose,
   clickDialogButton,
   DIALOG_SELECTOR,
   dialog,
@@ -77,10 +75,10 @@ describe("the close chip", () => {
     expect(chipButton("agent-one").getAttribute("aria-label")).toBe("Close Agent one");
   });
 
-  it("closing a terminal chip asks first, and confirming fires at once", async () => {
+  it("closing a terminal from its pane asks before stopping", async () => {
     await renderWorkspace();
 
-    await chipClick("session-2");
+    await lifecycleClose("session-2");
 
     // A terminal's close is destructive: the ask stands between the click
     // and the daemon, and nothing fires without it.
@@ -102,7 +100,7 @@ describe("the close chip", () => {
   it("the ask owns the chord and Delete: the tab does not move and no second ask opens", async () => {
     await renderWorkspace();
     await plainClick("session-2");
-    await chipClick("session-2");
+    await lifecycleClose("session-2");
 
     const confirm = dialog();
     expect(confirm.textContent).toContain("Close terminal “shell two”?");
@@ -138,7 +136,7 @@ describe("the close chip", () => {
     // the turn has ended.
     await renderWorkspace();
 
-    await chipClick("agent-one");
+    await lifecycleClose("agent-one");
 
     const confirm = dialog();
     expect(confirm.textContent).toContain("Archive running agent?");
@@ -156,7 +154,7 @@ describe("the close chip", () => {
     ]);
     await renderWorkspace();
 
-    await chipClick("agent-old");
+    await lifecycleClose("agent-old");
 
     expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     await settleCloseActs();
@@ -171,7 +169,7 @@ describe("the close chip", () => {
     ]);
     await renderWorkspace();
 
-    await chipClick("agent-live");
+    await lifecycleClose("agent-live");
 
     const confirm = dialog();
     expect(confirm.textContent).toContain("Archive running agent?");
@@ -185,14 +183,12 @@ describe("the close chip", () => {
     expect(document.querySelector("#workspace-session-tab-agent-live")).not.toBeNull();
   });
 
-  it("a middle click closes by the same policy: a silent agent asks", async () => {
+  it("a middle click removes a silent agent tab without stopping it", async () => {
     await renderWorkspace();
-
     await middleClick("agent-one");
-
-    expect(document.querySelector(DIALOG_SELECTOR)).not.toBeNull();
-    expect(dialog().textContent).toContain("Archive running agent?");
-    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
+    expect(document.querySelector("#workspace-session-tab-agent-one")).toBeNull();
+    expect(sessionStop).not.toHaveBeenCalled();
   });
 
   it("a close takes the queued messages with the tab", async () => {
@@ -209,17 +205,17 @@ describe("the close chip", () => {
     queue.add("queued before the close", []);
     expect(queuedTexts(queue)).toEqual(["queued before the close"]);
 
-    await chipClick("agent-old");
+    await lifecycleClose("agent-old");
     await settleCloseActs();
 
     expect(queuedTexts(queue)).toEqual([]);
     expect(sharedSessionQueueOwner().queueFor("agent-old")).not.toBe(queue);
   });
 
-  it("after a chip cancel, focus returns to the tab the ask came from", async () => {
+  it("after cancelling a session close, focus returns to its tab", async () => {
     await renderWorkspace();
 
-    await chipClick("session-2");
+    await lifecycleClose("session-2");
     await clickDialogButton("Cancel");
 
     expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
@@ -232,7 +228,6 @@ describe("the close chip", () => {
     expect(tabElement("session-2").getAttribute("aria-selected")).toBe("true");
 
     await chipClick("session-2");
-    await clickDialogButton("Close");
     await settleCloseActs();
 
     expect(document.querySelector("#workspace-session-tab-session-2")).toBeNull();
@@ -275,17 +270,14 @@ describe("the strip's session count", () => {
     await renderWorkspace();
     const countText = () => document.body.textContent ?? "";
 
-    expect(countText()).toContain("3 sessions");
-    expect(countText()).not.toContain("2 sessions");
+    expect(countText()).toContain("3 open sessions");
+    expect(countText()).not.toContain("2 open sessions");
 
     await chipClick("session-2");
-    await clickDialogButton("Close");
     await settleCloseActs();
 
-    // The daemon does not push a roster update after session_stop, so the
-    // roster still carries the row — the count reads the strip's rows and
-    // falls the moment the tab is gone.
-    expect(countText()).toContain("2 sessions");
-    expect(countText()).not.toContain("3 sessions");
+    // Removing the tab changes the count while the roster still has the session.
+    expect(countText()).toContain("2 open sessions");
+    expect(countText()).not.toContain("3 open sessions");
   });
 });

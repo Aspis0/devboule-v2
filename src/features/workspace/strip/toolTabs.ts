@@ -85,23 +85,3 @@ export function pruneToolTabsForWorkspaces(
   if (tabs.every((tab) => knownWorkspaceIds.has(tab.workspaceId))) return tabs;
   return tabs.filter((tab) => knownWorkspaceIds.has(tab.workspaceId));
 }
-
-/** A failed mixed close puts its tool tabs back at their old indices, or the
- * end when the list shrank since. Reopened tabs — and tabs whose workspace
- * is no longer known — stay out; selection and focus never move. */
-export function restoreToolTabs(
-  prev: ToolTab[],
-  removed: ReadonlyArray<{ tab: ToolTab; index: number }>,
-  knownWorkspaceIds: ReadonlySet<string>,
-): ToolTab[] {
-  const prevIds = new Set(prev.map((tab) => tab.id));
-  const missing = removed.filter(
-    (entry) => !prevIds.has(entry.tab.id) && knownWorkspaceIds.has(entry.tab.workspaceId),
-  );
-  if (missing.length === 0) return prev;
-  const next = [...prev];
-  for (const entry of [...missing].sort((a, b) => a.index - b.index)) {
-    next.splice(Math.min(entry.index, next.length), 0, entry.tab);
-  }
-  return next;
-}

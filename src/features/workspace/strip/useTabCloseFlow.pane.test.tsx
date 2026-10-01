@@ -33,6 +33,7 @@ function renderFlow(
   onClose: OnClose,
   selection: ReadonlySet<string> = new Set<string>(),
 ) {
+  const onCloseTabs = vi.fn();
   const store: { flow: Flow | null } = { flow: null };
   function Probe() {
     const flow = useTabCloseFlow({
@@ -41,7 +42,8 @@ function renderFlow(
       activeTabId: "agent-one",
       selection,
       onClose,
-      onCloseTools: () => () => undefined,
+      onCloseTabs: onCloseTabs,
+      onCloseTools: () => undefined,
       selectTab: () => undefined,
       clearSelection: () => undefined,
       addButtonRef: { current: null },
@@ -70,6 +72,7 @@ function renderFlow(
   return {
     host,
     root,
+    onCloseTabs,
     async mount() {
       await act(async () => {
         root.render(<Probe />);
@@ -93,15 +96,14 @@ async function mount(sessions: Session[], onClose: OnClose, selection?: Readonly
 }
 
 describe("activatePaneEntry", () => {
-  it("asks the bulk confirm for close-others, anchored at the pane session", async () => {
+  it("removes other tabs locally, anchored at the pane session", async () => {
     const onClose = vi.fn();
-    const { host, root, flow } = await mount(SESSIONS, onClose);
+    const { host, root, flow, onCloseTabs } = await mount(SESSIONS, onClose);
     await act(async () => {
       flow().activatePaneEntry("agent-two", "others");
     });
-    expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toBe(
-      "Close other tabs?",
-    );
+    expect(host.querySelector("[data-testid='close-confirm-title']")).toBeNull();
+    expect(onCloseTabs).toHaveBeenCalledWith(["agent-one", "term-three"]);
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
@@ -156,18 +158,17 @@ describe("activatePaneEntry", () => {
     await act(async () => root.unmount());
   });
 
-  it("leaves the tab menu's own path working", async () => {
+  it("removes a tab locally through its tab menu", async () => {
     const onClose = vi.fn();
-    const { host, root, flow } = await mount(SESSIONS, onClose);
+    const { host, root, flow, onCloseTabs } = await mount(SESSIONS, onClose);
     await act(async () => {
       flow().openMenu("agent-one");
     });
     await act(async () => {
       flow().activateEntry("close");
     });
-    expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toBe(
-      "Archive running agent?",
-    );
+    expect(host.querySelector("[data-testid='close-confirm-title']")).toBeNull();
+    expect(onCloseTabs).toHaveBeenCalledWith(["agent-one"]);
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
@@ -191,9 +192,9 @@ describe("activatePaneEntry", () => {
     });
   });
 
-  it("opens the selection confirm from the tab menu's selection entry", async () => {
+  it("removes the selection locally from its menu", async () => {
     const onClose = vi.fn();
-    const { host, root, flow } = await mount(
+    const { host, root, flow, onCloseTabs } = await mount(
       SESSIONS,
       onClose,
       new Set(["agent-one", "agent-two"]),
@@ -204,29 +205,20 @@ describe("activatePaneEntry", () => {
     await act(async () => {
       flow().activateEntry("close-selection");
     });
-    expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toContain(
-      "Close",
-    );
-    expect(host.querySelector("[data-testid='close-confirm-targets']")?.textContent).toBe(
-      "agent-one agent-two",
-    );
+    expect(host.querySelector("[data-testid='close-confirm-title']")).toBeNull();
+    expect(onCloseTabs).toHaveBeenCalledWith(["agent-one", "agent-two"]);
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 
   it("targets the tabs after the anchor for close-to-the-right", async () => {
     const onClose = vi.fn();
-    const { host, root, flow } = await mount(SESSIONS, onClose);
+    const { host, root, flow, onCloseTabs } = await mount(SESSIONS, onClose);
     await act(async () => {
       flow().activatePaneEntry("agent-two", "right");
     });
-    expect(host.querySelector("[data-testid='close-confirm-title']")?.textContent).toBe(
-      "Close tabs to the right?",
-    );
-    // The anchor itself is never in its own target set.
-    expect(host.querySelector("[data-testid='close-confirm-targets']")?.textContent).toBe(
-      "term-three",
-    );
+    expect(host.querySelector("[data-testid='close-confirm-title']")).toBeNull();
+    expect(onCloseTabs).toHaveBeenCalledWith(["term-three"]);
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });

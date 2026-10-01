@@ -19,6 +19,7 @@ import { SessionTabMenu } from "./SessionTabMenu";
 import { SessionOverviewMenu } from "./SessionOverviewMenu";
 import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
 import { chipDisplay } from "./stripDisplay";
+import { sessionNeedsApproval } from "../sessionAttention";
 import { useStripFade } from "./useStripFade";
 import { useStripKeyboard } from "./useStripKeyboard";
 import { StripChip, ToolStripChip } from "./StripChip";
@@ -99,6 +100,18 @@ export function SessionStrip({
     () => tabs.flatMap((tab) => (tab.type === "session" ? [tab.session] : [])),
     [tabs],
   );
+  const openIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
+  const unopenedAttentionCount = useMemo(
+    () =>
+      overviewSessions.filter(
+        (session) => sessionNeedsApproval(session) && !openIds.has(session.id),
+      ).length,
+    [overviewSessions, openIds],
+  );
+  const attentionSummary =
+    unopenedAttentionCount === 0
+      ? ""
+      : ` — ${unopenedAttentionCount} session${unopenedAttentionCount === 1 ? " needs" : "s need"} your approval`;
   const toolTabs = useMemo(
     () => tabs.flatMap((tab) => (tab.type === "tool" ? [tab.tool] : [])),
     [tabs],
@@ -106,13 +119,13 @@ export function SessionStrip({
   useSelectedTabVisible(scrollportRef, activeTabId, tabs);
   const fade = useStripFade(scrollportRef, tabs);
   const { selection, handleTabClick } = tabSelection;
-  const { menu, openMenu, closeSingle } = tabClose;
+  const { menu, openMenu, closeTab } = tabClose;
   const menuAnchorId = menu?.anchorId;
   const keyboard = useStripKeyboard({
     tabs,
     activeTabId,
     selectTab,
-    closeTab: closeSingle,
+    closeTab,
   });
   const { tabIndexFor, onChipKeyDown: keyboardChipKeyDown } = keyboard;
   // The end-of-strip overview: the count is its trigger. Hover opens on
@@ -261,7 +274,7 @@ export function SessionStrip({
           onTabAuxClick={(event) => {
             if (event.button === 1) {
               event.preventDefault();
-              closeSingle(session.id);
+              closeTab(session.id);
             }
           }}
           onRowContextMenu={(event) => {
@@ -269,7 +282,7 @@ export function SessionStrip({
             openMenu(session.id);
           }}
           onChipKeyDown={(event) => handleChipKeyDown(session.id, event)}
-          onClose={() => closeSingle(session.id)}
+          onClose={() => closeTab(session.id)}
         />
       )),
       ...toolTabs.map((tool) => (
@@ -285,7 +298,7 @@ export function SessionStrip({
           onTabAuxClick={(event) => {
             if (event.button === 1) {
               event.preventDefault();
-              closeSingle(tool.id);
+              closeTab(tool.id);
             }
           }}
           onRowContextMenu={(event) => {
@@ -293,7 +306,7 @@ export function SessionStrip({
             openMenu(tool.id);
           }}
           onChipKeyDown={(event) => handleChipKeyDown(tool.id, event)}
-          onClose={() => closeSingle(tool.id)}
+          onClose={() => closeTab(tool.id)}
         />
       )),
     ],
@@ -306,7 +319,7 @@ export function SessionStrip({
       menuAnchorId,
       onTakeBack,
       handleTabClick,
-      closeSingle,
+      closeTab,
       openMenu,
       handleChipKeyDown,
     ],
@@ -358,7 +371,7 @@ export function SessionStrip({
         className="workspace-rate"
         aria-haspopup="listbox"
         aria-expanded={overviewOpen}
-        aria-label={`${statusText} — show all ${overviewSessions.length} sessions`}
+        aria-label={`${statusText} — show all ${overviewSessions.length} sessions${attentionSummary}`}
         onClick={() => {
           if (!overviewOpen) openOverview("press");
           else if (overviewSourceRef.current === "hover") overviewSourceRef.current = "press";
@@ -367,6 +380,9 @@ export function SessionStrip({
         onMouseEnter={scheduleOverviewOpen}
         onMouseLeave={scheduleOverviewClose}
       >
+        {unopenedAttentionCount > 0 ? (
+          <span className="workspace-status-dot strip-dot-attention" aria-hidden="true" />
+        ) : null}
         {statusText}
       </button>
       <SessionOverviewMenu

@@ -10,17 +10,13 @@ import {
   afterEachHarness,
   agentSession,
   beforeEachHarness,
-  bulkErrorBlock,
   chipClick,
-  clickDialogButton,
   clickMenuEntry,
-  dialog,
   flush,
   liveSnapshot,
   plainClick,
   pushSnapshots,
   renderWorkspace,
-  resizeWindow,
   rightClick,
   settleCloseActs,
   tabElement,
@@ -370,302 +366,44 @@ describe("closing a tool tab", () => {
 const DIALOG_SELECTOR_NULL = "[role='dialog'], [role='alertdialog']";
 
 describe("mixed bulk close", () => {
-  it("a failed mixed close puts the tool tabs back", async () => {
+  it("removes session and tool tabs together without stopping sessions", async () => {
     await openDiffPencil("src/writer.ts");
     const id = "tool:diff:workspace-1:src%2Fwriter.ts";
-    const before = tabTitles();
-    expect(toolTabButton(id).getAttribute("aria-selected")).toBe("true");
-    // Once-only, so the refusal cannot leak into the next test: the harness
-    // clears calls between tests, never implementations.
-    vi.mocked(sessionStop).mockRejectedValueOnce(new Error("daemon refused"));
-    vi.mocked(sessionStop).mockRejectedValueOnce(new Error("daemon refused"));
-
     await rightClick("session-3");
     await clickMenuEntry("Close other tabs");
-    await clickDialogButton("Close");
-    await settleCloseActs();
-    await flush();
-    await flush();
-
-    // The sessions failed and say so; the tool tab left with the confirm
-    // and came back at its index. The restore moves no selection: the
-    // successor the close landed on keeps the pane.
-    expect(tabTitles()).toEqual(before);
-    expect(toolTabButton(id).getAttribute("aria-selected")).toBe("false");
-    expect(tabElement("session-3").getAttribute("aria-selected")).toBe("true");
-    expect(bulkErrorBlock().textContent).toContain("These closes didn't go through:");
-  });
-
-  it("a navigation after the confirm is never overridden", async () => {
-    await openDiffPencil("src/writer.ts");
-    const gates: Array<() => void> = [];
-    vi.mocked(sessionStop).mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          gates.push(() => resolve(undefined));
-        }),
-    );
-    vi.mocked(sessionStop).mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          gates.push(() => resolve(undefined));
-        }),
-    );
-
-    await rightClick("session-3");
-    await clickMenuEntry("Close other tabs");
-    await clickDialogButton("Close");
-    // The mixed close already landed synchronously on session-3. Open a
-    // file tab before the session acts settle.
-    vi.mocked(workspaceFilesList).mockResolvedValue(filesWithEntry("docs/SETUP.md", "SETUP.md"));
-    await act(async () => {
-      document.querySelector<HTMLElement>('[data-panel-tab="files"]')?.click();
-    });
-    await flush();
-    await act(async () => {
-      document.querySelector<HTMLButtonElement>(".workspace-tree-file")?.click();
-    });
-    await flush();
-    await act(async () => {
-      document.querySelector<HTMLButtonElement>('[aria-label="Open file in a tab"]')?.click();
-    });
-    await flush();
-    const fileId = "tool:file:workspace-1:docs%2FSETUP.md";
-    expect(toolTabButton(fileId).getAttribute("aria-selected")).toBe("true");
-
-    await act(async () => {
-      for (const resolve of gates) resolve();
-    });
-    await settleCloseActs();
-    await flush();
-    await flush();
-    // The settle moves nothing: the file tab keeps the pane.
-    expect(toolTabButton(fileId).getAttribute("aria-selected")).toBe("true");
-    expect(document.querySelector("#workspace-panel-terminal")?.textContent).toContain(
-      "preview bytes",
-    );
-  });
-
-  it("focus never sits on the body during a confirm-close", async () => {
-    await openDiffPencil("src/writer.ts");
-    const gates: Array<() => void> = [];
-    vi.mocked(sessionStop).mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          gates.push(() => resolve(undefined));
-        }),
-    );
-    vi.mocked(sessionStop).mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          gates.push(() => resolve(undefined));
-        }),
-    );
-
-    await rightClick("session-3");
-    await clickMenuEntry("Close other tabs");
-    await clickDialogButton("Close");
-    // The dialog unmounted on the click; the focus restore already ran in
-    // the same tick — no window with the body holding focus.
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement?.id).toBe("workspace-session-tab-session-3");
-
-    await act(async () => {
-      for (const resolve of gates) resolve();
-    });
-    await settleCloseActs();
-    await flush();
-  });
-
-  it("a restore after another tool tab keeps the new selection", async () => {
-    await openDiffPencil("src/writer.ts");
-    const id = "tool:diff:workspace-1:src%2Fwriter.ts";
-    const rejecters: Array<(cause: unknown) => void> = [];
-    vi.mocked(sessionStop).mockImplementationOnce(
-      () =>
-        new Promise<void>((_, reject) => {
-          rejecters.push(reject);
-        }),
-    );
-    vi.mocked(sessionStop).mockImplementationOnce(
-      () =>
-        new Promise<void>((_, reject) => {
-          rejecters.push(reject);
-        }),
-    );
-
-    await rightClick("session-3");
-    await clickMenuEntry("Close other tabs");
-    await clickDialogButton("Close");
-    // Before the refusal lands, open another tool tab: it takes the selection.
-    vi.mocked(workspaceFilesList).mockResolvedValue(filesWithEntry("docs/SETUP.md", "SETUP.md"));
-    await act(async () => {
-      document.querySelector<HTMLElement>('[data-panel-tab="files"]')?.click();
-    });
-    await flush();
-    await act(async () => {
-      document.querySelector<HTMLButtonElement>(".workspace-tree-file")?.click();
-    });
-    await flush();
-    await act(async () => {
-      document.querySelector<HTMLButtonElement>('[aria-label="Open file in a tab"]')?.click();
-    });
-    await flush();
-    const fileId = "tool:file:workspace-1:docs%2FSETUP.md";
-    expect(toolTabButton(fileId).getAttribute("aria-selected")).toBe("true");
-
-    await act(async () => {
-      for (const reject of rejecters) reject(new Error("daemon refused"));
-    });
-    await settleCloseActs();
-    await flush();
-    await flush();
-    // The failed close puts the diff tab back without moving selection.
-    expect(toolTabGone(id)).toBe(false);
-    expect(toolTabButton(fileId).getAttribute("aria-selected")).toBe("true");
-    expect(toolTabButton(id).getAttribute("aria-selected")).toBe("false");
-    expect(bulkErrorBlock().textContent).toContain("These closes didn't go through:");
-  });
-
-  it("a restore drops tabs whose workspace vanished during the act window", async () => {
-    const { workspacesList, daemonStatus, sessionsList } = await import("../../lib/tauri");
-    const main = {
-      id: "workspace-1",
-      projectId: "project-1",
-      title: "main",
-      isolation: "local" as const,
-      path: "C:\\devboule",
-    };
-    const side = {
-      id: "workspace-2",
-      projectId: "project-1",
-      title: "side",
-      isolation: "local" as const,
-      path: "C:\\side",
-    };
-    vi.mocked(workspacesList).mockResolvedValue([main, side]);
-    await openDiffPencil("src/writer.ts");
-    const id = "tool:diff:workspace-1:src%2Fwriter.ts";
-    const rejecters: Array<(cause: unknown) => void> = [];
-    vi.mocked(sessionStop).mockImplementationOnce(
-      () =>
-        new Promise<void>((_, reject) => {
-          rejecters.push(reject);
-        }),
-    );
-    vi.mocked(sessionStop).mockImplementationOnce(
-      () =>
-        new Promise<void>((_, reject) => {
-          rejecters.push(reject);
-        }),
-    );
-
-    await rightClick("session-3");
-    await clickMenuEntry("Close other tabs");
-    await clickDialogButton("Close");
-    expect(toolTabGone(id)).toBe(true);
-
-    // The daemon stops listing the tab's workspace while the acts are in
-    // flight. The roster re-read fails, so the closing marks stand and the
-    // refusals still land; the projects re-read succeeds, so the workspace
-    // is gone when the restore runs.
-    vi.mocked(workspacesList).mockResolvedValue([side]);
-    vi.mocked(sessionsList).mockRejectedValue(new Error("daemon down"));
-    vi.mocked(daemonStatus).mockRejectedValueOnce(new Error("daemon down"));
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000);
-    });
-    await flush();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000);
-    });
-    await flush();
-    await flush();
-
-    await act(async () => {
-      for (const reject of rejecters) reject(new Error("daemon refused"));
-    });
-    await settleCloseActs();
-    await flush();
-    await flush();
-    // The session acts failed and say so.
-    expect(bulkErrorBlock().textContent).toContain("These closes didn't go through:");
-
-    // The orphan is state, not DOM: the view sits on the surviving workspace
-    // now, which hides it. Re-list and go back — a resurrected tab for the
-    // dropped workspace would render here.
-    vi.mocked(workspacesList).mockResolvedValue([main, side]);
-    vi.mocked(daemonStatus).mockRejectedValueOnce(new Error("daemon down"));
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000);
-    });
-    await flush();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000);
-    });
-    await flush();
-    await flush();
-    await act(async () => {
-      const rows = [...document.querySelectorAll<HTMLButtonElement>(".workspace-row")];
-      rows.find((row) => row.textContent?.includes("main"))?.click();
-    });
-    await flush();
-    expect(toolTabGone(id)).toBe(true);
-  });
-
-  it("the tool menu offers close entries only, and the confirm counts sessions", async () => {
-    await openDiffPencil("src/writer.ts");
-    const id = "tool:diff:workspace-1:src%2Fwriter.ts";
-    await rightClick(id);
-    const labels = [...document.querySelectorAll("[role='menuitem']")].map(
-      (item) => item.textContent,
-    );
-    expect(labels).toEqual([
-      "Close to the left",
-      "Close to the right",
-      "Close other tabs",
-      "Close",
-    ]);
-    await resizeWindow();
-
-    // "Close other tabs" from a session anchor covers the tool tab too:
-    // the ask counts the sessions, and the tool rides along unnamed by archive.
-    await rightClick("agent-one");
-    await clickMenuEntry("Close other tabs");
-    const confirm = dialog();
-    expect(confirm.textContent).toContain("Close other tabs?");
-    expect(confirm.textContent).toContain(
-      "This will archive 2 terminal(s). The processes stop and every message stays in History.",
-    );
-    expect(confirm.textContent).toContain("1 tab closes too.");
-    expect(confirm.textContent).not.toContain("archive 1 tab");
-
-    await clickDialogButton("Close");
-    await settleCloseActs();
-    // The close lands in the same tick as the click; the flushes below only
-    // settle the daemon promises the store already fired.
-    await flush();
-    await flush();
-    await act(async () => {});
-    expect(vi.mocked(sessionStop)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(sessionStop)).not.toHaveBeenCalledWith(id);
+    expect(document.querySelector(DIALOG_SELECTOR_NULL)).toBeNull();
+    expect(sessionStop).not.toHaveBeenCalled();
     expect(toolTabGone(id)).toBe(true);
     expect(tabTitles()).toHaveLength(1);
+    expect(tabElement("session-3").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tabElement("session-3"));
   });
 
-  it("a tools-only selection closes at once, with no ask", async () => {
+  it("the tool menu offers tab close entries and no Delete", async () => {
     await openDiffPencil("src/writer.ts");
     const id = "tool:diff:workspace-1:src%2Fwriter.ts";
-    await act(async () => {
-      toolTabButton(id).dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
-    });
+    await rightClick(id);
+    expect(
+      [...document.querySelectorAll("[role='menuitem']")].map((item) => item.textContent),
+    ).toEqual(["Close to the left", "Close to the right", "Close other tabs", "Close"]);
+    await clickMenuEntry("Close other tabs");
+    expect(tabTitles()).toHaveLength(1);
+    expect(toolTabButton(id).getAttribute("aria-selected")).toBe("true");
+    expect(sessionStop).not.toHaveBeenCalled();
+  });
+
+  it("a tools-only selection closes at once", async () => {
+    await openDiffPencil("src/writer.ts");
+    const id = "tool:diff:workspace-1:src%2Fwriter.ts";
+    await act(async () =>
+      toolTabButton(id).dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true })),
+    );
     await rightClick(id);
     await clickMenuEntry("Close");
-    await settleCloseActs();
     expect(document.querySelector(DIALOG_SELECTOR_NULL)).toBeNull();
-    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
     expect(toolTabGone(id)).toBe(true);
     expect(tabTitles()).toHaveLength(3);
+    expect(sessionStop).not.toHaveBeenCalled();
   });
 });
 

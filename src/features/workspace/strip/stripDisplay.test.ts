@@ -15,6 +15,17 @@ function base(overrides: Partial<Session> = {}): Session {
 }
 
 describe("chipDisplay", () => {
+  it("shows the stopped state instead of stale attention on an open ended tab", () => {
+    const display = chipDisplay(
+      base({
+        state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+        attention: { reason: "permission", atMs: 1 },
+      }),
+    );
+    expect(display.dot).toBe("ended");
+    expect(display.tooltip).not.toContain("Needs your approval");
+    expect(display.detailLines).toEqual([]);
+  });
   it("marks a running session with the pulse and no painted words", () => {
     const display = chipDisplay(base({ activity: "working" }));
     expect(display.dot).toBe("live");
@@ -165,7 +176,7 @@ describe("chipDisplay", () => {
     expect(permission.detailLines).toContain("Needs your approval");
   });
 
-  it("keeps the state line when attention is set", () => {
+  it("keeps recovered state first and every attention/unattended detail in the tooltip", () => {
     const display = chipDisplay(
       base({
         state: {
@@ -174,12 +185,15 @@ describe("chipDisplay", () => {
           integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
         },
         attention: { reason: "permission", atMs: 7 },
+        unattended: "yes",
       }),
     );
     expect(display.dot).toBe("attention");
     expect(display.detailLines).toContain("Needs your approval");
     expect(display.tooltip).toContain("Recovered");
+    expect(display.tooltip.split("\n")[0]).toMatch(/^Recovered/);
     expect(display.tooltip).toContain("Needs your approval");
+    expect(display.tooltip).toContain("auto-accepting");
   });
 });
 

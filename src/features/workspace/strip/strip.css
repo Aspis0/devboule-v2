@@ -240,6 +240,9 @@
 }
 
 .workspace-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
@@ -498,4 +501,10 @@ button.workspace-rate:focus-visible {
   .workspace-session-chip {
     transition: none;
   }
+}
+
+.workspace-overview-attention {
+  color: var(--tone-attention);
+  font-size: 12px;
+  white-space: nowrap;
 }

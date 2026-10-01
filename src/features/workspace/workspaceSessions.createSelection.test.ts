@@ -11,6 +11,7 @@ import { createWorkspaceSessionController } from "./workspaceSessions";
 const liveSession = (id: string, workspaceId = "workspace-1"): Session => ({
   id,
   workspaceId,
+  createdAtMs: 1,
   kind: "terminal",
   title: id,
   state: { type: "live", generation: 1 },
@@ -42,6 +43,8 @@ describe("a create that resolves after the selection moved", () => {
       create: vi.fn(() => pending.promise),
     });
     await controller.refresh();
+    controller.open(liveSession("tab-b"));
+    controller.open(liveSession("tab-a"));
     expect(controller.getState().selectedSessionId).toBe("tab-a");
 
     const creating = controller.create();
@@ -66,6 +69,8 @@ describe("a create that resolves after the selection moved", () => {
       },
     });
     await controller.refresh();
+    controller.open(liveSession("tab-b"));
+    controller.open(liveSession("tab-a"));
     expect(controller.getState().selectedSessionId).toBe("tab-a");
 
     const release = controller.watch();
@@ -91,6 +96,8 @@ describe("a create that resolves after the selection moved", () => {
       create: vi.fn(() => pending.promise),
     });
     await controller.refresh();
+    controller.open(liveSession("tab-b"));
+    controller.open(liveSession("tab-a"));
 
     const creating = controller.create();
     controller.select("tab-b");
@@ -108,6 +115,8 @@ describe("a create that resolves after the selection moved", () => {
       create: vi.fn(() => pending.promise),
     });
     await controller.refresh();
+    controller.open(liveSession("tab-b"));
+    controller.open(liveSession("tab-a"));
     expect(controller.getState().selectedSessionId).toBe("tab-a");
 
     const creating = controller.create();

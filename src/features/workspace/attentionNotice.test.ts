@@ -641,6 +641,33 @@ describe("the toast gate holds raises for the session in view", () => {
     release();
   });
 
+  it("never offers an ended permission raise to the tray, but announces the same live raise", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { release } = harness(send, hiddenInTray);
+    watched.listener?.(roster(null));
+    const live = roster(null).map((row) =>
+      row.id === "agent-two"
+        ? { ...row, attention: { reason: "permission" as const, atMs: 2000 } }
+        : row,
+    );
+    const ended: SessionStateSnapshot[] = live.map((row) =>
+      row.id === "agent-two"
+        ? {
+            ...row,
+            state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+          }
+        : row,
+    );
+    watched.listener?.(ended);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    watched.listener?.(live);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].title).toBe("agent-two — needs approval");
+    release();
+  });
+
   it("stays silent for the raise of the session this window shows", async () => {
     const send = vi.fn(async (_content: ToastContent) => undefined);
     const { release } = harness(send, onScreenFocused);
@@ -802,11 +829,8 @@ describe("the toast gate holds raises for the session in view", () => {
     release();
   });
 
-  it("a refresh that drops a row from the strip does not re-announce its raise", async () => {
-    // `stripSessions` drops an ended row the daemon still lists. The dedupe
-    // is keyed to the daemon's roster, not to the strip's view, so the
-    // standing raise stays spent and the next push is silence: pruning
-    // against the stripped set made one event toast twice.
+  it("ending an open session preserves its tab and does not re-announce its spent raise", async () => {
+    // Dedupe follows roster lifetime; ending a process does not remove its journal row.
     const send = vi.fn(async (_content: ToastContent) => undefined);
     let ended = false;
     const { controller, release } = harness(send, onScreenFocused, async () => [
@@ -815,6 +839,7 @@ describe("the toast gate holds raises for the session in view", () => {
         workspaceId: "workspace-b",
         kind: "acp" as const,
         title: "agent-two",
+        createdAtMs: 1,
         state: ended
           ? {
               type: "ended" as const,
@@ -832,9 +857,14 @@ describe("the toast gate holds raises for the session in view", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
 
+    const row = controller.getState().sessions.find((session) => session.id === "agent-two");
+    if (row === undefined) throw new Error("agent-two missing from roster");
+    controller.open({ ...row, createdAtMs: 1 });
+    expect(controller.getState().openSessions.map((session) => session.id)).toContain("agent-two");
     ended = true;
     await controller.refresh();
-    expect(controller.getState().sessions.map((session) => session.id)).not.toContain("agent-two");
+    const opened = controller.getState().openSessions.find((session) => session.id === "agent-two");
+    expect(opened?.state.type).toBe("ended");
 
     // The daemon lists the row again with the SAME raise standing: silence.
     ended = false;

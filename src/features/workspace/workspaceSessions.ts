@@ -22,6 +22,7 @@ import { errorSentence } from "../../lib/errorSentence";
 import { lastFittedGrid } from "../terminal/lastFittedGrid";
 import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
+import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -49,6 +50,7 @@ export interface WorkspaceSessionError {
 
 export interface WorkspaceSessionState {
   sessions: Session[];
+  openSessions: Session[];
   selectedSessionId: string | null;
   loading: boolean;
   creating: boolean;
@@ -66,6 +68,7 @@ export interface WorkspaceSessionController {
   ) => Promise<Session | null>;
   select: (sessionId: string | null) => void;
   open: (session: Session) => void;
+  closeTabs: (sessionIds: readonly string[]) => void;
   watch: () => () => void;
   reconnect: () => Promise<void>;
   dismissError: () => void;
@@ -97,27 +100,10 @@ const LIST_ERROR: WorkspaceSessionError = {
   workspaceId: null,
 };
 
-/**
- * What belongs in the tab strip: a running process (live/silent) plus a
- * recovered transcript. Attaching is reading — replay from the journal, no
- * process, no cost — so recovered rows appear by themselves. Ended rows stay
- * out: they remain reachable from History and join only once opened there.
- * Resuming (a child process, a new bearer, a live turn) never happens here.
- */
-function sessionHasProcess(session: Session): boolean {
-  return session.state.type === "live" || session.state.type === "silent";
-}
-
 export function isRecoveredSession(session: Pick<Session, "state">): boolean {
   return session.state.type === "recovered";
 }
 
-/**
- * Message from a rejected invoke. Tauri rejections are not always `Error`s:
- * the daemon's serialized WireError arrives as a plain
- * `{ code, message }` object, which `String(cause)` would render as
- * "[object Object]".
- */
 export function workspaceSessions(sessions: readonly Session[]): Session[] {
   return [...sessions];
 }
@@ -579,16 +565,17 @@ export function createWorkspaceSessionController(
   source: WorkspaceSessionSource = DEFAULT_SOURCE,
   onAttention?: AttentionObserver,
   /**
-   * Called with the FULL roster of every daemon push — the list before
-   * `stripSessions` cuts it, and before `openedIds` puts anything back. A list
+   * Called with the full roster of every daemon push. A list
    * refresh and a reconnect do not reach it: an app-level owner may discard
    * state on the daemon's word that a session is gone, and only a push is that
    * word. Queue ownership is its only current reader.
    */
   onRosterPush?: (sessions: readonly Session[]) => void,
+  storage = openTabsStorage(),
 ): WorkspaceSessionController {
   let state: WorkspaceSessionState = {
     sessions: [],
+    openSessions: [],
     selectedSessionId: null,
     loading: true,
     creating: false,
@@ -603,9 +590,7 @@ export function createWorkspaceSessionController(
   // newer refresh still owns the flag it may no longer clear.
   let refreshesInFlight = 0;
   const listeners = new Set<() => void>();
-  // Ids the user opened explicitly (from History) in this app run. They keep
-  // their tab even when the daemon reports no running process.
-  const openedIds = new Set<string>();
+  const tabs = createOpenSessionTabs(storage);
   let watchLeases = 0;
   let watchPromise: Promise<() => void> | null = null;
   let watchStop: (() => void) | null = null;
@@ -617,14 +602,9 @@ export function createWorkspaceSessionController(
   const publish = (next: WorkspaceSessionState): void => {
     if (next.selectedSessionId !== state.selectedSessionId) selectionEpoch += 1;
     state = next;
+    tabs.persist(state.sessions, state.selectedSessionId);
     for (const listener of listeners) listener();
   };
-
-  const stripSessions = (candidates: readonly Session[]): Session[] =>
-    candidates.filter(
-      (session) =>
-        sessionHasProcess(session) || isRecoveredSession(session) || openedIds.has(session.id),
-    );
 
   const chooseSelected = (
     candidates: readonly Session[],
@@ -646,22 +626,25 @@ export function createWorkspaceSessionController(
       const roster = workspaceSessions(await source.list()).map((row) =>
         carrySession(row, known.get(row.id)),
       );
-      if (generation !== refreshGeneration) return;
-      const listed = stripSessions(roster);
+      if (generation !== refreshGeneration) {
+        if (tabs.needsIdentity() && refreshesInFlight === 1) void refresh();
+        return;
+      }
+      const preferred = tabs.reconcile(roster, state.selectedSessionId, true);
+      const listed = tabs.sessions(roster);
       publish({
         ...state,
-        sessions: listed,
-        selectedSessionId: chooseSelected(listed, state.selectedSessionId),
+        sessions: roster,
+        openSessions: listed,
+        selectedSessionId: chooseSelected(listed, preferred),
         loading: false,
         error: null,
       });
       // A list refresh can be the only roster update that removes a row: it
       // prunes the row's dedupe entry the same way a push does, so a session
       // that returns re-announces, and the map cannot grow for the process
-      // lifetime while the watch is down. The prune asks the DAEMON's roster,
-      // never the strip's view: `stripSessions` drops ended rows the daemon
-      // still lists, and forgetting one of those lets its standing raise
-      // re-announce on the next push (a second toast for the same event).
+      // lifetime while the watch is down. Closed tabs still belong to the
+      // roster and must keep their attention dedupe entry.
       forgetAttentionFor(new Set(roster.map((session) => session.id)));
     } catch {
       if (generation !== refreshGeneration) return;
@@ -767,21 +750,23 @@ export function createWorkspaceSessionController(
       // held back (the user was looking at that session) stays due and gets its
       // chance the next time the roster speaks, once they have looked away.
       // The first roster of a run is the exception: it is claimed unseen below.
-      if (notifyAttention !== undefined && snapshot.attention !== undefined) {
+      if (
+        snapshot.state.type !== "ended" &&
+        notifyAttention !== undefined &&
+        snapshot.attention !== undefined
+      ) {
         if (baseline) standing.push({ sessionId: snapshot.id, attention: snapshot.attention });
         else offers.push({ session, attention: snapshot.attention });
       }
       return session;
     });
-    const visible = stripSessions(sessions);
-    // The roster is authoritative for opened ids too: a session the daemon no
-    // longer reports (deleted from the journal) must not keep a History tab.
-    const rosterIds = new Set(sessions.map((session) => session.id));
-    for (const id of openedIds) if (!rosterIds.has(id)) openedIds.delete(id);
+    const preferred = tabs.reconcile(sessions, state.selectedSessionId, false);
+    const visible = tabs.sessions(sessions);
     publish({
       ...state,
-      sessions: visible,
-      selectedSessionId: chooseSelected(visible, state.selectedSessionId),
+      sessions,
+      openSessions: visible,
+      selectedSessionId: chooseSelected(visible, preferred),
       loading: false,
       error: null,
     });
@@ -792,9 +777,7 @@ export function createWorkspaceSessionController(
     // without a toast, so no later application announces them as if they were
     // news the user never saw.
     markAttentionSeen(standing);
-    // The full list, not the stripped one: an owner that dropped a queue
-    // because a view-level filter hid a row would delete the user's text on a
-    // reconnect (review F2).
+    // Queues follow the full roster; hiding a tab must not delete the user's text on reconnect.
     if (onRosterPush !== undefined) onRosterPush(sessions);
     // Rows that left the roster take their dedupe slot with them, so a
     // session that returns re-announces like the first arrival it is.
@@ -814,13 +797,13 @@ export function createWorkspaceSessionController(
     publish({ ...state, creating: true, error: null });
     try {
       const session = await source.create(workspaceId, kind, provider);
-      const listed = stripSessions([
-        ...state.sessions.filter((current) => current.id !== session.id),
-        session,
-      ]);
+      tabs.open(session);
+      const roster = [...state.sessions.filter((current) => current.id !== session.id), session];
+      const listed = tabs.sessions(roster);
       publish({
         ...state,
-        sessions: listed,
+        sessions: roster,
+        openSessions: listed,
         selectedSessionId:
           selectionEpoch === capturedEpoch
             ? chooseSelected(listed, session.id)
@@ -914,24 +897,40 @@ export function createWorkspaceSessionController(
         // Null is the empty state: every tab closed, so nothing is active —
         // never an id that only points at a pending archive. No bump: publish
         // counts the change, and null-to-null is no navigation at all.
-        publish({ ...state, selectedSessionId: null });
+        if (state.selectedSessionId !== null) publish({ ...state, selectedSessionId: null });
         return;
       }
-      if (state.sessions.some((session) => session.id === sessionId)) {
+      if (state.openSessions.some((session) => session.id === sessionId)) {
         selectionEpoch += 1;
         publish({ ...state, selectedSessionId: sessionId });
       }
     },
     open: (session) => {
       ++refreshGeneration;
-      openedIds.add(session.id);
+      tabs.open(session);
       // Opening is always the person's act, so reopening the selected tab still counts as a move.
       selectionEpoch += 1;
+      const roster = [...state.sessions.filter((current) => current.id !== session.id), session];
       publish({
         ...state,
-        sessions: [...state.sessions.filter((current) => current.id !== session.id), session],
+        sessions: roster,
+        openSessions: tabs.sessions(roster),
         selectedSessionId: session.id,
         error: null,
+      });
+      if (session.createdAtMs === undefined) void refresh();
+    },
+    closeTabs: (sessionIds) => {
+      const closed = new Set(sessionIds);
+      if (closed.size === 0) return;
+      tabs.close(sessionIds);
+      const remaining = tabs.sessions(state.sessions);
+      publish({
+        ...state,
+        openSessions: remaining,
+        selectedSessionId: closed.has(state.selectedSessionId ?? "")
+          ? null
+          : state.selectedSessionId,
       });
     },
     dismissError: () => {
@@ -1007,6 +1006,7 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
   ) => Promise<Session | null>;
   select: (sessionId: string | null) => void;
   open: (session: Session) => void;
+  closeTabs: (sessionIds: readonly string[]) => void;
   dismissError: () => void;
 } {
   const [controller] = useState<WorkspaceSessionController>(() => sharedSessionController());
@@ -1038,7 +1038,11 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
     [controller],
   );
   const open = useCallback((session: Session) => controller.open(session), [controller]);
+  const closeTabs = useCallback(
+    (sessionIds: readonly string[]) => controller.closeTabs(sessionIds),
+    [controller],
+  );
   const dismissError = useCallback(() => controller.dismissError(), [controller]);
 
-  return { ...state, refresh, reconnect, create, select, open, dismissError };
+  return { ...state, refresh, reconnect, create, select, open, closeTabs, dismissError };
 }

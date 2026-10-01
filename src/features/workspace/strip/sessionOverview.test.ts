@@ -15,6 +15,19 @@ function session(id: string, overrides: Partial<Session> = {}): Session {
 }
 
 describe("orderOverviewSessions", () => {
+  it("puts attention ahead of open tabs, preserving strip order and recency within groups", () => {
+    const ask = { reason: "permission", atMs: 1 } as const;
+    const rows = [
+      session("quiet"),
+      session("older", { attention: ask, elapsedMs: 20 }),
+      session("newer", { attention: ask, elapsedMs: 10 }),
+      session("open-b", { attention: ask }),
+      session("open-a", { attention: ask }),
+    ];
+    expect(orderOverviewSessions(rows, ["quiet", "open-a", "open-b"]).map((row) => row.id)).toEqual(
+      ["open-a", "open-b", "newer", "older", "quiet"],
+    );
+  });
   it("lists open tabs first in strip order, ahead of recency", () => {
     const roster = [
       session("a", { elapsedMs: 1_000 }),
@@ -54,6 +67,50 @@ describe("orderOverviewSessions", () => {
   it("keeps every roster row exactly once", () => {
     const roster = [session("a"), session("b"), session("c")];
     expect(orderOverviewSessions(roster, ["b"]).map((row) => row.id)).toEqual(["b", "a", "c"]);
+  });
+
+  it("keeps the full approval/open/recency/id contract regardless of roster order", () => {
+    const ask = { reason: "permission", atMs: 1 } as const;
+    const roster = [
+      session("quiet-open-b", { elapsedMs: 0 }),
+      session("ask-open-b", { attention: ask, elapsedMs: 0 }),
+      session("quiet-missing-z", { elapsedMs: null }),
+      session("ask-missing-z", { attention: ask, elapsedMs: null }),
+      session("quiet-new-z", { elapsedMs: 10, attention: { reason: "finished", atMs: 1 } }),
+      session("ask-new-z", { attention: ask, elapsedMs: 10 }),
+      session("quiet-open-a", { elapsedMs: 500 }),
+      session("ask-open-a", { attention: ask, elapsedMs: 500 }),
+      session("quiet-old", { elapsedMs: 100 }),
+      session("ask-old", { attention: ask, elapsedMs: 100 }),
+      session("quiet-missing-a", { elapsedMs: null }),
+      session("ask-missing-a", { attention: ask, elapsedMs: null }),
+      session("quiet-new-a", { elapsedMs: 10, attention: { reason: "error", atMs: 1 } }),
+      session("ask-new-a", { attention: ask, elapsedMs: 10 }),
+    ];
+    const stripOrder = ["quiet-open-a", "ask-open-a", "quiet-open-b", "ask-open-b"];
+    const expected = [
+      "ask-open-a",
+      "ask-open-b",
+      "ask-new-a",
+      "ask-new-z",
+      "ask-old",
+      "ask-missing-a",
+      "ask-missing-z",
+      "quiet-open-a",
+      "quiet-open-b",
+      "quiet-new-a",
+      "quiet-new-z",
+      "quiet-old",
+      "quiet-missing-a",
+      "quiet-missing-z",
+    ];
+    for (const input of [roster, [...roster].reverse()]) {
+      const ordered = orderOverviewSessions(input, stripOrder);
+      expect(ordered.map((row) => row.id)).toEqual(expected);
+      expect(ordered).toHaveLength(roster.length);
+      expect(new Set(ordered.map((row) => row.id)).size).toBe(roster.length);
+      expect(new Set(ordered)).toEqual(new Set(roster));
+    }
   });
 });
 

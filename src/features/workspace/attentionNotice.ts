@@ -7,7 +7,8 @@ import { lookedAtSessionId } from "./presence";
  * reason, the decision of when an OS toast may fire, what the toast says,
  * and the one place that sends it.
  *
- * The gate rule: a raise is announced unless the user is looking at THIS
+ * The controller excludes ended rows before offering raises. The gate
+ * announces an eligible raise unless the user is looking at THIS
  * session — the window actively seen AND this session the one this window
  * shows. Which rows the tab strip draws is not the question the gate asks,
  * so nothing here is parked or flushed: a raise for a session in another
@@ -26,8 +27,7 @@ const REASON_PRIORITY: Record<AttentionReason, number> = {
   permission: 3,
 };
 
-/** Human words for why a session wants attention, as the tab pill renders them. */
-export function sessionAttentionLabel(reason: AttentionReason): string {
+function toastAttentionLabel(reason: AttentionReason): string {
   if (reason === "permission") return "needs approval";
   return reason;
 }
@@ -140,12 +140,12 @@ export function toastContent(
   reason: AttentionReason,
   held: HeldContent | undefined,
 ): ToastContent {
-  const title = `${sessionTitle} — ${sessionAttentionLabel(reason)}`;
+  const title = `${sessionTitle} — ${toastAttentionLabel(reason)}`;
   if (reason === "permission") {
     const permissionText = held?.permissionText?.trim();
     return {
       title,
-      body: permissionText ? previewFrom(permissionText) : sessionAttentionLabel(reason),
+      body: permissionText ? previewFrom(permissionText) : toastAttentionLabel(reason),
     };
   }
   if (reason === "finished" && held?.lastAssistantText) {

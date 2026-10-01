@@ -1,12 +1,20 @@
-// The shared harness for the tab strip's close-machinery tests: the daemon
-// mocks, the roster fixtures, the roster push, and the gestures (right-click,
-// menu and dialog clicks, selection clicks). The topic files — the tab
-// context menu, multi-select, bulk archive outcomes — render the same
-// Workspace through this harness so their scenarios stay comparable.
+// Shared daemon doubles and gestures keep tab-menu, selection and lifecycle-close
+// scenarios comparable across their topic files.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { vi } from "vitest";
-import type { Project, Session, SessionStateSnapshot } from "../../types/ipc";
+import type {
+  Attention,
+  Project,
+  Session,
+  SessionState,
+  SessionStateSnapshot,
+} from "../../types/ipc";
+import type {
+  AgentSubagent,
+  AgentSubagentStatus,
+  AgentSubagentStatusCounts,
+} from "../../lib/agentSession";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(async () => false) }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -107,30 +115,131 @@ vi.mock("../../lib/tauri", () => ({
   devicesList: vi.fn(async () => ({ selfInfo: undefined, peers: [], pending: [] })),
 }));
 
-vi.mock("../terminal/TerminalSurface", () => ({
-  TerminalSurface: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="terminal-surface">{sessionId}</div>
-  ),
-}));
+vi.mock("../terminal/TerminalSurface", async () => {
+  const { PaneHeader } = await import("./paneHeader/PaneHeader");
+  const { headerDisplay } = await import("./paneHeader/paneHeaderStatus");
+  const { headerMenu } = await import("./paneHeader/paneHeaderMenu");
+  return {
+    TerminalSurface: ({
+      sessionId,
+      headerMenuSeam,
+      observedState,
+      attention,
+    }: {
+      sessionId: string;
+      observedState?: SessionState | null;
+      attention?: Attention;
+      headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
+    }) => {
+      headerMenuSeams.bySession.set(sessionId, headerMenuSeam);
+      const menu = headerMenu(undefined, headerMenuSeam);
+      return (
+        <>
+          <div data-testid="terminal-surface">{sessionId}</div>
+          <PaneHeader
+            kind="terminal"
+            title={sessionId}
+            display={headerDisplay(observedState, null, null, undefined, attention)}
+            menu={menu}
+          />
+        </>
+      );
+    },
+  };
+});
 
 // The pane's header menu seam, per session: Workspace builds it and the
 // (mocked) surface receives it, so the kebab's wiring is asserted here.
 const headerMenuSeams = vi.hoisted(() => ({
   bySession: new Map<string, import("./paneHeader/paneHeaderMenu").HeaderMenuSeam | undefined>(),
+  permissionBySession: new Map<
+    string,
+    | ((
+        sessionId: string,
+        subscriptionId: number,
+        request: import("../../types/ipc").PermissionRequest,
+      ) => void)
+    | undefined
+  >(),
 }));
 
-vi.mock("./AgentChatSurface", () => ({
-  AgentChatSurface: ({
-    sessionId,
-    headerMenuSeam,
-  }: {
-    sessionId: string;
-    headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
-  }) => {
-    headerMenuSeams.bySession.set(sessionId, headerMenuSeam);
-    return <div data-testid="agent-chat-surface">{sessionId}</div>;
-  },
-}));
+vi.mock("./AgentChatSurface", async () => {
+  const { SubagentMenu } = await import("./SubagentMenu");
+  const { PaneHeaderKebab } = await import("./paneHeader/PaneHeaderKebab");
+  const { headerMenu } = await import("./paneHeader/paneHeaderMenu");
+  function statusFromRoster(row: Session): AgentSubagentStatus {
+    if (row.state.type === "live" || row.state.type === "silent") return "running";
+    if (row.state.type === "recovered") return "unknown";
+    if (row.state.code === null) return "stopped";
+    return row.state.code === 0 ? "finished" : "failed";
+  }
+  return {
+    AgentChatSurface: ({
+      sessionId,
+      headerMenuSeam,
+      sessionRoster = [],
+      onOpenSubagent,
+      subagentSessionIds,
+      subagentAttention,
+      onRefreshSubagents,
+      auxiliary,
+      onPermissionRequest,
+    }: {
+      sessionId: string;
+      headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
+      sessionRoster?: Session[];
+      onOpenSubagent?: (sessionId: string) => void;
+      subagentSessionIds?: ReadonlySet<string>;
+      subagentAttention?: ReadonlyMap<string, string>;
+      onRefreshSubagents?: () => Promise<void>;
+      auxiliary?: import("react").ReactNode;
+      onPermissionRequest?: (
+        sessionId: string,
+        subscriptionId: number,
+        request: import("../../types/ipc").PermissionRequest,
+      ) => void;
+    }) => {
+      headerMenuSeams.bySession.set(sessionId, headerMenuSeam);
+      headerMenuSeams.permissionBySession.set(sessionId, onPermissionRequest);
+      const menu = headerMenu(undefined, headerMenuSeam);
+      const children = sessionRoster.filter((row) => row.createdBy === sessionId);
+      const subagents: AgentSubagent[] = children.map((row) => ({
+        id: row.id,
+        title: row.title,
+        status: statusFromRoster(row),
+        subagentType: null,
+        isBackground: false,
+        rawStatus: null,
+        summary: null,
+        parentToolUseId: null,
+        spawnDepth: null,
+      }));
+      const statusCounts: AgentSubagentStatusCounts = {
+        running: 0,
+        failed: 0,
+        stopped: 0,
+        finished: 0,
+        unknown: 0,
+      };
+      for (const row of subagents) statusCounts[row.status] += 1;
+      return (
+        <div data-testid="agent-chat-surface">
+          {sessionId}
+          {auxiliary}
+          {menu === null ? null : <PaneHeaderKebab menu={menu} />}
+          <SubagentMenu
+            subagents={subagents}
+            statusCounts={statusCounts}
+            onOpenSession={onOpenSubagent}
+            sessionIds={subagentSessionIds}
+            attentionById={subagentAttention}
+            onRefreshSessions={onRefreshSubagents}
+          />
+        </div>
+      );
+    },
+  };
+});
 
 import {
   projectsList,
@@ -140,6 +249,8 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import { Workspace } from "./Workspace";
+import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
+import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetSharedCloseActionsForTests } from "./strip/closeActions";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe } from "./queueSenderDouble";
@@ -153,6 +264,7 @@ export function agentSession(
   return {
     id,
     workspaceId: "workspace-1",
+    createdAtMs: 1,
     kind: "acp",
     title,
     state,
@@ -193,6 +305,7 @@ export function terminalSession(id: string, title: string): Session {
   return {
     id,
     workspaceId: "workspace-1",
+    createdAtMs: 1,
     kind: "terminal",
     title,
     state: { type: "live", generation: 1 },
@@ -274,14 +387,15 @@ export function tabElement(id: string): HTMLButtonElement {
   return tab;
 }
 
-export async function renderWorkspace(): Promise<void> {
+export async function renderWorkspace(openRosterTabs = true): Promise<void> {
+  if (openRosterTabs) await openListedSessionsForTest();
   root = createRoot(container);
   await act(async () => {
     root.render(<Workspace />);
   });
   await flush();
   await flush();
-  if (tabTitles().length === 0) throw new Error("session tabs did not render");
+  if (openRosterTabs && tabTitles().length === 0) throw new Error("session tabs did not render");
 }
 
 export async function unmountWorkspace(): Promise<void> {
@@ -353,6 +467,30 @@ export async function plainClick(id: string): Promise<void> {
   await act(async () => tabElement(id).click());
 }
 
+export async function lifecycleClose(id: string): Promise<void> {
+  await plainClick(id);
+  const kebab = document.querySelector<HTMLButtonElement>(".pane-header-kebab");
+  if (kebab === null) throw new Error(`pane menu did not render: ${id}`);
+  await act(async () => kebab.click());
+  await clickMenuEntry("Close");
+}
+
+export async function requestChildPermission(parentId: string, childId: string): Promise<void> {
+  const request = headerMenuSeams.permissionBySession.get(parentId);
+  if (request === undefined) throw new Error(`permission callback missing: ${parentId}`);
+  await act(async () =>
+    request(childId, 41, {
+      type: "permission_request",
+      toolCallId: "child-ask",
+      title: "Run command",
+      command: "cmd.exe",
+      args: [],
+      cwd: "C:\\devboule",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    }),
+  );
+}
+
 export async function modifiedClick(id: string, modifier: "ctrlKey" | "metaKey"): Promise<void> {
   await act(async () => {
     tabElement(id).dispatchEvent(new MouseEvent("click", { bubbles: true, [modifier]: true }));
@@ -411,6 +549,8 @@ export function bulkErrorBlock(): HTMLElement {
 }
 
 export function beforeEachHarness(): void {
+  localStorage.removeItem("devboule.openSessionTabs");
+  resetSharedSessionControllerForTests();
   vi.useFakeTimers();
   resetSharedCloseActionsForTests();
   // The queue owner is app-lifetime like the close store, and a close now

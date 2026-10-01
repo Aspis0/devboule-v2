@@ -41,6 +41,7 @@ const noMenu = {
   openMenu: vi.fn(),
   closeMenu: vi.fn(),
   closeSingle: vi.fn(),
+  closeTab: vi.fn(),
   activateEntry: vi.fn(),
   activatePaneEntry: vi.fn(),
   confirmClose: vi.fn(),
@@ -62,7 +63,7 @@ function propsOf(sessions: Session[], activeTabId: string | null) {
     activeTabId,
     selectTab: vi.fn(),
     tabSelection: selectionStub(),
-    tabClose: { ...noMenu, closeSingle: vi.fn(), openMenu: vi.fn() },
+    tabClose: { ...noMenu, closeTab: vi.fn(), openMenu: vi.fn() },
     addButtonRef: { current: null },
     newTab: {
       open: false,
@@ -120,7 +121,7 @@ afterEach(() => {
 });
 
 describe("SessionStrip", () => {
-  it("renders one tab per session with a dot, a kind mark and a clipped label", () => {
+  it("renders one tab per explicitly supplied open session with a dot, a kind mark and a clipped label", () => {
     renderStrip([session("a", "agent a"), session("b", "agent b")], "a");
     const tabs = [...container!.querySelectorAll<HTMLElement>(".workspace-session-tab")];
     expect(tabs).toHaveLength(2);
@@ -313,7 +314,7 @@ describe("SessionStrip", () => {
       tabs[1].focus();
       tabs[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
     });
-    expect(props.tabClose.closeSingle).toHaveBeenCalledWith("b");
+    expect(props.tabClose.closeTab).toHaveBeenCalledWith("b");
   });
 
   it("switches tabs on Alt+Shift+] and Alt+Shift+[", () => {

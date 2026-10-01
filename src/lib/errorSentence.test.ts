@@ -32,6 +32,12 @@ const NEUTRAL_MESSAGE = "";
 const rejection = (code: ErrorCode, message: string): unknown => ({ code, message });
 
 describe("the walked code table", () => {
+  it("reads a plain Tauri WireError without rendering [object Object]", () => {
+    const cause = { code: "io", message: "the named pipe is busy" };
+    expect(cause).not.toBeInstanceOf(Error);
+    expect(errorSentence(cause)).toEqual({ sentence: CODE_SENTENCES.io, detail: cause.message });
+  });
+
   it("has a row for every code the daemon can send, and no row nobody sends", () => {
     for (const code of ALL_CODES) {
       expect(CODE_SENTENCES[code], `no row for ${code}`).toBeTruthy();

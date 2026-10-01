@@ -29,18 +29,26 @@ function subagentDotClass(status: AgentSubagentStatus): string {
 export interface SubagentMenuProps {
   subagents: AgentSubagent[];
   statusCounts: AgentSubagentStatusCounts;
+  onOpenSession?: (sessionId: string) => void;
+  sessionIds?: ReadonlySet<string>;
+  attentionById?: ReadonlyMap<string, string>;
+  onRefreshSessions?: () => Promise<void>;
 }
 
-export function SubagentMenu({ subagents, statusCounts }: SubagentMenuProps) {
+export function SubagentMenu({
+  subagents,
+  statusCounts,
+  onOpenSession,
+  sessionIds,
+  attentionById,
+  onRefreshSessions,
+}: SubagentMenuProps) {
   const pillRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const listId = useId();
   const [open, setOpen] = useState(false);
 
   const close = useCallback(() => {
-    // Focus returns only when the menu had it: the rows are inert, so the
-    // menu never holds focus itself — the guard keeps a later focusable row
-    // from stranding focus on unmount.
     if (menuRef.current?.contains(document.activeElement)) {
       pillRef.current?.focus({ preventScroll: true });
     }
@@ -75,12 +83,14 @@ export function SubagentMenu({ subagents, statusCounts }: SubagentMenuProps) {
 
   const failed = statusCounts.failed;
   const working = statusCounts.running;
+  const attentionCount = subagents.filter((row) => attentionById?.has(row.id)).length;
   const counts = [
+    ...(attentionCount > 0
+      ? [`${attentionCount} ${attentionCount === 1 ? "needs" : "need"} your approval`]
+      : []),
     ...(failed > 0 ? [`${failed} failed`] : []),
     ...(working > 0 ? [`${working} working`] : []),
   ].join(", ");
-  // The pill is the only place the app names a subagent: a settled run
-  // leaves it chevron-only, every part hidden.
   const pillLabel = counts === "" ? "Subagents" : `Subagents: ${counts}`;
 
   return (
@@ -93,8 +103,23 @@ export function SubagentMenu({ subagents, statusCounts }: SubagentMenuProps) {
         aria-label={pillLabel}
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          if (!open && subagents.some((row) => !sessionIds?.has(row.id)))
+            void onRefreshSessions?.();
+          setOpen((value) => !value);
+        }}
       >
+        {attentionCount > 0 ? (
+          <span className="workspace-subagent-pill-group workspace-subagent-attention">
+            <span
+              className="workspace-subagent-status-dot workspace-subagent-status-failed"
+              aria-hidden="true"
+            />
+            <span>
+              {attentionCount} {attentionCount === 1 ? "needs" : "need"} your approval
+            </span>
+          </span>
+        ) : null}
         {failed > 0 ? (
           <span className="workspace-subagent-pill-group">
             <span
@@ -136,27 +161,45 @@ export function SubagentMenu({ subagents, statusCounts }: SubagentMenuProps) {
           <div className="workspace-subagent-list-head">Subagents</div>
           <div role="list">
             {subagents.map((subagent) => (
-              <div className="workspace-subagent-row" key={subagent.id} role="listitem">
-                <span
-                  className={`workspace-subagent-status-dot ${subagentDotClass(subagent.status)}`}
-                  aria-hidden="true"
-                />
-                <span
-                  className="workspace-subagent-row-title"
-                  title={subagentTitle(subagent.title, subagent.id)}
+              <div key={subagent.id} role="listitem">
+                <button
+                  type="button"
+                  className="workspace-subagent-row"
+                  disabled={!sessionIds?.has(subagent.id) || onOpenSession === undefined}
+                  aria-label={`${subagentTitle(subagent.title, subagent.id)}, ${subagent.status}${attentionById?.has(subagent.id) ? `, ${attentionById.get(subagent.id)}` : ""}, ${sessionIds?.has(subagent.id) && onOpenSession !== undefined ? "Open in tab" : "Session unavailable"}`}
+                  title={!sessionIds?.has(subagent.id) ? "Session unavailable" : undefined}
+                  onClick={() => {
+                    close();
+                    onOpenSession?.(subagent.id);
+                  }}
                 >
-                  {subagentTitle(subagent.title, subagent.id)}
-                </span>
-                <svg
-                  className="workspace-subagent-row-chevron"
-                  width={12}
-                  height={12}
-                  viewBox="0 0 24 24"
-                  aria-hidden="true"
-                  focusable="false"
-                >
-                  <path d="m9 18 6-6-6-6" />
-                </svg>
+                  <span
+                    className={`workspace-subagent-status-dot ${subagentDotClass(subagent.status)}`}
+                    aria-hidden="true"
+                  />
+                  <span
+                    className="workspace-subagent-row-title"
+                    title={subagentTitle(subagent.title, subagent.id)}
+                  >
+                    {subagentTitle(subagent.title, subagent.id)}
+                  </span>
+                  {attentionById?.has(subagent.id) ? (
+                    <span className="workspace-subagent-attention">
+                      {attentionById.get(subagent.id)}
+                    </span>
+                  ) : null}
+                  {!sessionIds?.has(subagent.id) ? <span>Unavailable</span> : null}
+                  <svg
+                    className="workspace-subagent-row-chevron"
+                    width={12}
+                    height={12}
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path d="m9 18 6-6-6-6" />
+                  </svg>
+                </button>
               </div>
             ))}
           </div>

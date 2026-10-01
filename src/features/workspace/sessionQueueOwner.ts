@@ -25,11 +25,8 @@ import { SESSION_NOT_RUNNING } from "./queueStatus";
  * `agent_finished` it saw was history.
  *
  * **When a queue ends.** A row the full push no longer names, or the
- * app's own close, archive or delete (`closeSession`). A row `stripSessions`
- * hides, a list refresh, and any state the push still carries — including
- * `recovered`, a daemon death this app survived — discard nothing. A
- * discarded queue is never handed out again, so a half-dead state — a queue
- * of sends whose session is gone — cannot be reached.
+ * app's lifecycle close, archive or delete (`closeSession`). Rows still in the full
+ * roster, including recovered, retain queued text even when their tabs are hidden.
  */
 
 interface Entry {
@@ -45,12 +42,11 @@ export interface SessionQueueOwner {
    * track on every keystroke, and a stable identity is the queue's contract. */
   queueFor(sessionId: string): MessageQueue;
   /**
-   * The app's own close, archive or delete. The journal keeps a stopped
-   * session's row, so the absence rule would never fire for it and its text
-   * would sit on behind a tab the user removed.
+   * Lifecycle close, archive or delete. The journal retains stopped rows,
+   * so roster absence cannot dispose of their queues.
    */
   closeSession(sessionId: string): void;
-  /** One full daemon roster push — the list before `stripSessions` cuts it. */
+  /** Full daemon roster push, as published by workspaceSessions; tab visibility cannot discard text. */
   onRosterPush(sessions: readonly Session[]): void;
   /** A disconnected daemon invalidates every cached turn reading. */
   onDisconnect(): void;

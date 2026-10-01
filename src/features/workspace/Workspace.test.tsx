@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act, type ReactNode } from "react";
+import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonStatus, PermissionRequest, PermissionResolved, Session } from "../../types/ipc";
@@ -339,6 +340,7 @@ const terminal = (
 ): Session => ({
   id,
   workspaceId,
+  createdAtMs: 1,
   kind: "terminal",
   title,
   state: { type: "live", generation: 1 },
@@ -527,6 +529,7 @@ describe("Workspace sessions", () => {
   beforeEach(() => {
     // The shared controller is app-lifetime in production; a test must not
     // inherit the roster a previous test left in it.
+    localStorage.removeItem("devboule.openSessionTabs");
     resetSharedSessionControllerForTests();
     // The queue owner is app-lifetime too, and its sender is the wire a queued
     // message leaves on: both are reset and counted, never left to the last test.
@@ -571,7 +574,10 @@ describe("Workspace sessions", () => {
       },
     ]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     // Projects load exactly once — from the daemon's connected transition,
@@ -591,7 +597,10 @@ describe("Workspace sessions", () => {
   it("publishes the selected workspace for surfaces it never mounts alongside", async () => {
     setLastSelectedWorkspaceId(null);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(getLastSelectedWorkspaceId()).toBe("workspace-1");
@@ -618,7 +627,10 @@ describe("Workspace sessions", () => {
         terminal("session-w2", "other shell", "workspace-2"),
       ]);
       root = createRoot(container);
-      await act(async () => root.render(<Workspace />));
+      await act(async () => {
+        await openListedSessionsForTest();
+        root.render(<Workspace />);
+      });
       await act(async () => answer(daemonConnected));
       await act(async () => vi.advanceTimersByTimeAsync(2_100));
       await act(async () => undefined);
@@ -677,7 +689,10 @@ describe("Workspace sessions", () => {
         terminal("session-w2", "other shell", "workspace-2"),
       ]);
       root = createRoot(container);
-      await act(async () => root.render(<Workspace />));
+      await act(async () => {
+        await openListedSessionsForTest();
+        root.render(<Workspace />);
+      });
       await act(async () => answer(daemonConnected));
       await act(async () => vi.advanceTimersByTimeAsync(2_100));
       await act(async () => undefined);
@@ -724,7 +739,10 @@ describe("Workspace sessions", () => {
         terminal("session-w2", "other shell", "workspace-2"),
       ]);
       root = createRoot(container);
-      await act(async () => root.render(<Workspace />));
+      await act(async () => {
+        await openListedSessionsForTest();
+        root.render(<Workspace />);
+      });
       await act(async () => answer(daemonConnected));
       await act(async () => vi.advanceTimersByTimeAsync(2_100));
       await act(async () => undefined);
@@ -764,7 +782,10 @@ describe("Workspace sessions", () => {
         .mockResolvedValue([workspace]);
       vi.mocked(sessionsList).mockResolvedValue([]);
       root = createRoot(container);
-      await act(async () => root.render(<Workspace />));
+      await act(async () => {
+        await openListedSessionsForTest();
+        root.render(<Workspace />);
+      });
       await act(async () => answer(daemonConnected));
       await act(async () => undefined);
       await act(async () => vi.advanceTimersByTimeAsync(2_100));
@@ -802,7 +823,10 @@ describe("Workspace sessions", () => {
     vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
     vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one", "workspace-1")]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(container.querySelector("#workspace-session-tab-session-1")).not.toBeNull();
@@ -843,7 +867,10 @@ describe("Workspace sessions", () => {
     });
     vi.mocked(journalUsage).mockResolvedValue(historyUsage);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     // Start from the empty workspace-2.
@@ -887,7 +914,10 @@ describe("Workspace sessions", () => {
     };
     vi.mocked(workspacesList).mockResolvedValue([worktreeWorkspace, bareWorkspace]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const rows = container.querySelectorAll<HTMLButtonElement>("button.workspace-row");
@@ -904,7 +934,10 @@ describe("Workspace sessions", () => {
     // user's hands.
     vi.mocked(projectsList).mockRejectedValueOnce(new Error("journal is unavailable"));
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
@@ -950,7 +983,10 @@ describe("Workspace sessions", () => {
         );
       vi.mocked(projectsList).mockRejectedValueOnce(new Error("journal is unavailable"));
       root = createRoot(container);
-      await act(async () => root.render(<Workspace />));
+      await act(async () => {
+        await openListedSessionsForTest();
+        root.render(<Workspace />);
+      });
       await act(async () => answerFirst(daemonConnected));
       await act(async () => undefined);
 
@@ -993,7 +1029,10 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionsList).mockRejectedValueOnce(new Error("pipe not open"));
     vi.mocked(sessionsWatch).mockRejectedValueOnce(new Error("pipe not open"));
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(container.textContent).toContain("Could not load sessions");
@@ -1004,6 +1043,11 @@ describe("Workspace sessions", () => {
 
     expect(sessionsList).toHaveBeenCalledTimes(2);
     expect(sessionsWatch).toHaveBeenCalledTimes(2);
+    expect(
+      sharedSessionController()
+        .getState()
+        .openSessions.map((row) => row.id),
+    ).toContain("session-1");
     expect(container.querySelector("[data-testid=terminal-surface]")?.textContent).toContain(
       "session-1",
     );
@@ -1023,7 +1067,10 @@ describe("Workspace sessions", () => {
       terminal("live-1", "running agent"),
     ]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const tabs = [...container.querySelectorAll(".workspace-session-tab")];
@@ -1047,7 +1094,10 @@ describe("Workspace sessions", () => {
       return [workspace];
     });
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(container.textContent).toContain("devboule");
@@ -1097,7 +1147,10 @@ describe("Workspace sessions", () => {
     );
     vi.mocked(projectAdd).mockResolvedValue(createdProject);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const newProject = container.querySelector<HTMLButtonElement>('[aria-label="New project"]');
@@ -1126,6 +1179,7 @@ describe("Workspace sessions", () => {
   it("renders real session tabs, creates an ACP session, and never renders the permission card", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1160,6 +1214,7 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionCreate).mockRejectedValue(new Error("Authentication required: test-reason"));
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1189,7 +1244,10 @@ describe("Workspace sessions", () => {
       { ...terminal("session-cwd", "shell"), cwd: "C:\\real\\workspace" },
     ]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(container.querySelector("[data-testid=terminal-surface]")?.textContent).toContain(
@@ -1200,6 +1258,7 @@ describe("Workspace sessions", () => {
   it("starts an ACP session when a new workspace is added", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1220,7 +1279,10 @@ describe("Workspace sessions", () => {
       new Error("worktree isolation is unimplemented"),
     );
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
@@ -1269,6 +1331,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1305,6 +1368,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1324,7 +1388,10 @@ describe("Workspace sessions", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
@@ -1346,7 +1413,10 @@ describe("Workspace sessions", () => {
   it("surfaces a provider-list failure without creating a workspace or session", async () => {
     vi.mocked(providersList).mockRejectedValueOnce(new Error("provider catalog unavailable"));
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
@@ -1372,6 +1442,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1419,6 +1490,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1442,6 +1514,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1472,6 +1545,7 @@ describe("Workspace sessions", () => {
     vi.mocked(providersList).mockImplementation(() => pending);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1509,6 +1583,7 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionsList).mockResolvedValue([
       {
         id: "legacy-1",
+        createdAtMs: 1,
         workspaceId: null,
         kind: "terminal",
         title: "legacy shell",
@@ -1517,7 +1592,10 @@ describe("Workspace sessions", () => {
       },
     ]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(container.querySelector("#workspace-session-tab-legacy-1")).not.toBeNull();
@@ -1545,7 +1623,10 @@ describe("Workspace sessions", () => {
       unreadableDirs: 0,
     });
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
@@ -1574,7 +1655,10 @@ describe("Workspace sessions", () => {
     const pendingCreate = deferred<IpcWorkspace>();
     vi.mocked(workspaceCreate).mockImplementationOnce(() => pendingCreate.promise);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const projectAdd = container.querySelector<HTMLButtonElement>(".workspace-project-add");
@@ -1605,6 +1689,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1639,6 +1724,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1660,6 +1746,7 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionsList).mockResolvedValue([]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1703,6 +1790,7 @@ describe("Workspace sessions", () => {
   it("does not render a permission card before typed_permissions is negotiated", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -1720,6 +1808,7 @@ describe("Workspace sessions", () => {
   it("sends one real allow-once response for a negotiated permission card", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -1761,6 +1850,7 @@ describe("Workspace sessions", () => {
     };
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-2"
@@ -1796,6 +1886,7 @@ describe("Workspace sessions", () => {
   it("sends the deny outcome without an option id when deny is clicked", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-2"
@@ -1849,6 +1940,7 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionPermissionRespond).mockImplementationOnce(() => respondGate);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           key="tool-a"
@@ -1870,6 +1962,7 @@ describe("Workspace sessions", () => {
     );
 
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           key="tool-b"
@@ -1897,6 +1990,7 @@ describe("Workspace sessions", () => {
   it("disables every outcome and never responds when no options are offered", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -1926,6 +2020,7 @@ describe("Workspace sessions", () => {
   it("renders the permission card inside the conversation, above the composer", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -1959,6 +2054,7 @@ describe("Workspace sessions", () => {
     // fact is asserted end-to-end, not only at the prop.
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2039,6 +2135,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2076,6 +2173,7 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2116,6 +2214,7 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2144,6 +2243,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2173,6 +2273,7 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2199,6 +2300,7 @@ describe("Workspace sessions", () => {
   it("renders the description in its own compact class", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -2217,6 +2319,7 @@ describe("Workspace sessions", () => {
   it("disables permission outcomes that the request did not offer", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -2240,6 +2343,7 @@ describe("Workspace sessions", () => {
     expect(sessionPermissionRespond).not.toHaveBeenCalled();
 
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -2265,6 +2369,7 @@ describe("Workspace sessions", () => {
   it("shows the command, args, and cwd that will be spawned", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -2286,6 +2391,7 @@ describe("Workspace sessions", () => {
   it("shows permission requests FIFO and advances after a response", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2330,6 +2436,7 @@ describe("Workspace sessions", () => {
   it("adopts the fresh subscription id when the same request is re-emitted after a remount", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2370,6 +2477,7 @@ describe("Workspace sessions", () => {
   it("quotes args that contain spaces so they are not split visually", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -2395,6 +2503,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2425,6 +2534,7 @@ describe("Workspace sessions", () => {
     const suffix = "& del secrets.txt";
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -2446,6 +2556,7 @@ describe("Workspace sessions", () => {
   it("lists env name=value on the permission card when present", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
@@ -2469,6 +2580,7 @@ describe("Workspace sessions", () => {
     // unnamed, and only the human's Clear removes it.
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2505,6 +2617,7 @@ describe("Workspace sessions", () => {
     // behind it and takes the slot back once the waiting one is answered.
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2557,6 +2670,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2622,6 +2736,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2653,6 +2768,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2704,6 +2820,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2738,6 +2855,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2774,6 +2892,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2810,6 +2929,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2857,6 +2977,7 @@ describe("Workspace sessions", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -2907,6 +3028,7 @@ describe("Workspace sessions", () => {
       ]);
       root = createRoot(container);
       await act(async () => {
+        await openListedSessionsForTest();
         root.render(<Workspace />);
       });
       await act(async () => undefined);
@@ -2941,6 +3063,7 @@ describe("Workspace sessions", () => {
       ]);
       root = createRoot(container);
       await act(async () => {
+        await openListedSessionsForTest();
         root.render(<Workspace />);
       });
       await act(async () => undefined);
@@ -2978,6 +3101,7 @@ describe("Workspace sessions", () => {
     it("shows the daemon's unresponsive sentence verbatim in the status strip", async () => {
       root = createRoot(container);
       await act(async () => {
+        await openListedSessionsForTest();
         root.render(<Workspace />);
       });
       await act(async () => undefined);
@@ -2992,6 +3116,7 @@ describe("Workspace sessions", () => {
       vi.mocked(ask).mockResolvedValue(false);
       root = createRoot(container);
       await act(async () => {
+        await openListedSessionsForTest();
         root.render(<Workspace />);
       });
       await act(async () => undefined);
@@ -3017,6 +3142,7 @@ describe("Workspace sessions", () => {
       vi.mocked(ask).mockResolvedValue(true);
       root = createRoot(container);
       await act(async () => {
+        await openListedSessionsForTest();
         root.render(<Workspace />);
       });
       await act(async () => undefined);
@@ -3030,6 +3156,7 @@ describe("Workspace sessions", () => {
       vi.mocked(daemonRestart).mockRejectedValue(new Error("daemon identity changed"));
       root = createRoot(container);
       await act(async () => {
+        await openListedSessionsForTest();
         root.render(<Workspace />);
       });
       await act(async () => undefined);
@@ -3052,6 +3179,7 @@ describe("Workspace sessions", () => {
     vi.mocked(devicesList).mockReturnValue(devicesRead.promise);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await vi.waitFor(() => {
@@ -3075,6 +3203,7 @@ describe("Workspace sessions", () => {
     // sends: the tooltip says so instead of reading as a local session.
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
 
@@ -3099,6 +3228,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
 
@@ -3123,6 +3253,7 @@ describe("Workspace sessions", () => {
     vi.mocked(devicesList).mockReturnValue(devicesRead.promise);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await vi.waitFor(() => {
@@ -3148,6 +3279,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
 
@@ -3172,6 +3304,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
 
@@ -3201,6 +3334,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
 
@@ -3232,6 +3366,7 @@ describe("Workspace sessions", () => {
     vi.mocked(sessionsList).mockResolvedValue([acpSession("session-auto", "")]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
 
@@ -3281,6 +3416,7 @@ describe("Workspace sessions", () => {
     ]);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
 
@@ -3313,6 +3449,7 @@ describe("Workspace sessions", () => {
     vi.mocked(devicesList).mockReturnValue(devicesRead.promise);
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await vi.waitFor(() => {
@@ -3357,7 +3494,10 @@ describe("Workspace sessions", () => {
     it("reaches Discard through the real Workspace: the dialog stands and the wire stays quiet", async () => {
       vi.mocked(workspaceGitStatus).mockResolvedValue(dirtyChanges);
       root = createRoot(container);
-      await act(async () => root.render(<Workspace />));
+      await act(async () => {
+        await openListedSessionsForTest();
+        root.render(<Workspace />);
+      });
       await act(async () => undefined);
 
       const trigger = container.querySelector<HTMLButtonElement>(
@@ -3396,7 +3536,10 @@ describe("Workspace sessions", () => {
         error: null,
       });
       root = createRoot(container);
-      await act(async () => root.render(<Workspace />));
+      await act(async () => {
+        await openListedSessionsForTest();
+        root.render(<Workspace />);
+      });
       await act(async () => undefined);
 
       const filesTab = container.querySelector<HTMLButtonElement>(
@@ -3511,11 +3654,17 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace delegation={delegation} />);
     });
     await act(async () => undefined);
 
     await pushRoster([unattendedChild, activeChild]);
+    await act(async () => {
+      const controller = sharedSessionController();
+      for (const row of controller.getState().sessions)
+        controller.open({ ...row, createdAtMs: row.createdAtMs ?? 1 });
+    });
     await act(async () => undefined);
 
     const loud = container.querySelector(".strip-dot-unattended");
@@ -3583,10 +3732,16 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace delegation={delegation} />);
     });
     await act(async () => undefined);
     await pushRoster([activeChild]);
+    await act(async () => {
+      const controller = sharedSessionController();
+      for (const row of controller.getState().sessions)
+        controller.open({ ...row, createdAtMs: row.createdAtMs ?? 1 });
+    });
     await act(async () => undefined);
 
     const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
@@ -3614,10 +3769,16 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace delegation={delegation} />);
     });
     await act(async () => undefined);
     await pushRoster([activeChild]);
+    await act(async () => {
+      const controller = sharedSessionController();
+      for (const row of controller.getState().sessions)
+        controller.open({ ...row, createdAtMs: row.createdAtMs ?? 1 });
+    });
     await act(async () => undefined);
 
     // Unknown is not off: the control stands on the active row.
@@ -3662,10 +3823,16 @@ describe("delegation on the roster", () => {
       const delegation = createDelegationController({ get, set: vi.fn(async () => undefined) });
       root = createRoot(container);
       await act(async () => {
+        await openListedSessionsForTest();
         root.render(<Workspace delegation={delegation} />);
       });
       await act(async () => undefined);
       await pushRoster([activeChild]);
+      await act(async () => {
+        const controller = sharedSessionController();
+        for (const row of controller.getState().sessions)
+          controller.open({ ...row, createdAtMs: row.createdAtMs ?? 1 });
+      });
       await act(async () => undefined);
 
       // The first daemon holds off: no take-back, honestly.
@@ -3692,6 +3859,7 @@ describe("delegation on the roster", () => {
     const delegation = enabledController();
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace delegation={delegation} />);
     });
     await act(async () => undefined);
@@ -3705,6 +3873,11 @@ describe("delegation on the roster", () => {
         elapsedMs: 0,
       },
     ]);
+    await act(async () => {
+      const controller = sharedSessionController();
+      for (const row of controller.getState().sessions)
+        controller.open({ ...row, createdAtMs: row.createdAtMs ?? 1 });
+    });
     await act(async () => undefined);
 
     expect(container.querySelector(".workspace-tab-delegation")).toBeNull();
@@ -3716,6 +3889,7 @@ describe("delegation on the roster", () => {
     const delegation = enabledController();
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace delegation={delegation} />);
     });
     await act(async () => undefined);
@@ -3728,6 +3902,11 @@ describe("delegation on the roster", () => {
         unattended: "no",
       },
     ]);
+    await act(async () => {
+      const controller = sharedSessionController();
+      for (const row of controller.getState().sessions)
+        controller.open({ ...row, createdAtMs: row.createdAtMs ?? 1 });
+    });
     await act(async () => undefined);
 
     expect(container.querySelector(".workspace-tab-delegation-active")).toBeNull();
@@ -3748,6 +3927,7 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -3786,6 +3966,7 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -3821,6 +4002,7 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -3859,6 +4041,7 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -3895,6 +4078,7 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
@@ -3929,6 +4113,7 @@ describe("delegation on the roster", () => {
     });
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);

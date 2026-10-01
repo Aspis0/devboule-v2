@@ -108,6 +108,7 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import { Workspace } from "./Workspace";
+import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe } from "./queueSenderDouble";
@@ -151,6 +152,7 @@ function acpSession(id: string, title: string): Session {
   return {
     id,
     workspaceId: "workspace-1",
+    createdAtMs: 1,
     kind: "acp",
     title,
     state: { type: "live", generation: 1 },
@@ -162,6 +164,7 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
 beforeEach(() => {
+  localStorage.removeItem("devboule.openSessionTabs");
   resetSharedSessionControllerForTests();
   resetSharedSessionQueueOwnerForTests();
   const sender = createSenderProbe();
@@ -201,6 +204,7 @@ describe("the workspace goal seam", () => {
   it("shows the roster goal on the Goal line", async () => {
     root = createRoot(container);
     await act(async () => {
+      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);

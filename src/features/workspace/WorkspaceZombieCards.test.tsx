@@ -103,6 +103,7 @@ const surfaceHooks = vi.hoisted(() => ({
     {
       request: (sessionId: string, subscriptionId: number, request: PermissionRequest) => void;
       resolved: (sessionId: string, resolution: PermissionResolved) => void;
+      close: () => void;
     }
   >(),
 }));
@@ -113,9 +114,11 @@ vi.mock("./AgentChatSurface", () => ({
     auxiliary,
     onPermissionRequest,
     onPermissionResolved,
+    headerMenuSeam,
   }: {
     sessionId: string;
     auxiliary?: import("react").ReactNode;
+    headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
     onPermissionRequest?: (
       sessionId: string,
       subscriptionId: number,
@@ -126,6 +129,7 @@ vi.mock("./AgentChatSurface", () => ({
     surfaceHooks.bySession.set(sessionId, {
       request: onPermissionRequest ?? (() => undefined),
       resolved: onPermissionResolved ?? (() => undefined),
+      close: () => headerMenuSeam?.onCloseEntry("close"),
     });
     return (
       <div data-testid="agent-chat-surface">
@@ -145,6 +149,8 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import { Workspace } from "./Workspace";
+import { sharedSessionController, resetSharedSessionControllerForTests } from "./workspaceSessions";
+import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedCloseActionsForTests } from "./strip/closeActions";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe } from "./queueSenderDouble";
@@ -153,6 +159,7 @@ function recoveredAgent(id: string, title: string): Session {
   return {
     id,
     workspaceId: "workspace-1",
+    createdAtMs: 1,
     kind: "acp",
     title,
     state: {
@@ -168,6 +175,7 @@ function liveAgent(id: string, title: string): Session {
   return {
     id,
     workspaceId: "workspace-1",
+    createdAtMs: 1,
     kind: "acp",
     title,
     state: { type: "live", generation: 1 },
@@ -179,6 +187,7 @@ function terminalSession(id: string, title: string): Session {
   return {
     id,
     workspaceId: "workspace-1",
+    createdAtMs: 1,
     kind: "terminal",
     title,
     state: { type: "live", generation: 1 },
@@ -254,6 +263,7 @@ function snapshotOf(session: Session): SessionStateSnapshot {
 async function renderWorkspace(): Promise<void> {
   root = createRoot(container);
   await act(async () => {
+    await openListedSessionsForTest();
     root.render(<Workspace />);
   });
   await flush();
@@ -261,6 +271,13 @@ async function renderWorkspace(): Promise<void> {
 }
 
 async function selectTab(id: string): Promise<void> {
+  if (container.querySelector(`#${CSS.escape(`workspace-session-tab-${id}`)}`) === null) {
+    await act(async () => {
+      const controller = sharedSessionController();
+      const row = controller.getState().sessions.find((session) => session.id === id);
+      if (row !== undefined) controller.open(row);
+    });
+  }
   await act(async () => tabElement(id).click());
   await flush();
 }
@@ -281,13 +298,6 @@ async function emitResolved(sessionId: string, toolCallId: string): Promise<void
     hooks.resolved(sessionId, { type: "permission_resolved", toolCallId });
   });
   await flush();
-}
-
-function chipButton(id: string): HTMLButtonElement {
-  const row = tabElement(id).closest(".workspace-session-row");
-  const chip = row?.querySelector<HTMLButtonElement>(".workspace-session-chip-close");
-  if (chip === null || chip === undefined) throw new Error(`close chip did not render: ${id}`);
-  return chip;
 }
 
 const DIALOG_SELECTOR = "[role='dialog'], [role='alertdialog']";
@@ -319,6 +329,7 @@ async function answerCard(): Promise<void> {
 }
 
 beforeEach(() => {
+  resetSharedSessionControllerForTests();
   vi.useFakeTimers();
   resetSharedCloseActionsForTests();
   resetSharedSessionQueueOwnerForTests();
@@ -347,6 +358,53 @@ afterEach(async () => {
 });
 
 describe("closing a session and its permission cards", () => {
+  it("discovers a permission on a non-open session through the overview and answers it", async () => {
+    const parent = liveAgent("parent", "Coordinator");
+    const child = liveAgent("child", "Approval needed");
+    vi.mocked(sessionsList).mockResolvedValue([parent, child]);
+    await renderWorkspace();
+    await act(async () => sharedSessionController().closeTabs([child.id]));
+    await act(async () => {
+      surfaceHooks.bySession.get(parent.id)?.request(child.id, 41, makeRequest("hidden-ask"));
+    });
+    await pushSnapshots([
+      snapshotOf(parent),
+      { ...snapshotOf(child), attention: { reason: "permission", atMs: 1 } },
+    ]);
+    expect(cards()).toHaveLength(0);
+    expect(container.querySelector("#workspace-session-tab-child")).toBeNull();
+    const trigger = () => {
+      const button = container.querySelector<HTMLButtonElement>(".workspace-rate");
+      if (button === null) throw new Error("Overview trigger did not render");
+      return button;
+    };
+    expect(trigger().getAttribute("aria-label")).toContain("1 session needs your approval");
+    expect(trigger().querySelector(".strip-dot-attention")).not.toBeNull();
+    await act(async () => trigger().click());
+    const options = [...document.querySelectorAll<HTMLElement>("[data-overview-option]")];
+    expect(options[0]?.dataset.overviewOption).toBe(child.id);
+    expect(options[0]?.textContent).toContain("Needs your approval");
+    await act(async () => options[0]?.click());
+    expect(tabElement(child.id).getAttribute("aria-selected")).toBe("true");
+    expect(cards()).toHaveLength(1);
+    await answerCard();
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      child.id,
+      41,
+      "hidden-ask",
+      "allow_once",
+      undefined,
+      undefined,
+    );
+    await act(async () => sharedSessionController().closeTabs([child.id]));
+    expect(trigger().getAttribute("aria-label")).toContain("1 session needs your approval");
+    expect(trigger().querySelector(".strip-dot-attention")).not.toBeNull();
+    await pushSnapshots([snapshotOf(parent), snapshotOf(child)]);
+    expect(trigger().getAttribute("aria-label")).not.toContain("your approval");
+    expect(trigger().querySelector(".strip-dot-attention")).toBeNull();
+    expect(container.querySelector(".sidebar-row-dot-attention")).toBeNull();
+  });
+
   it("a successful archive of a live agent drops its cards", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       liveAgent("agent-live", "Busy one"),
@@ -357,7 +415,7 @@ describe("closing a session and its permission cards", () => {
     await emitRequest("agent-live", "tool-a");
     expect(cards().length).toBe(1);
 
-    await act(async () => chipButton("agent-live").click());
+    await act(async () => surfaceHooks.bySession.get("agent-live")?.close());
     expect(dialog().textContent).toContain("Archive running agent?");
     await clickDialogButton("Archive");
     await flush();
@@ -387,7 +445,7 @@ describe("closing a session and its permission cards", () => {
     await emitRequest("agent-old", "tool-a");
     expect(cards().length).toBe(1);
 
-    await act(async () => chipButton("agent-old").click());
+    await act(async () => surfaceHooks.bySession.get("agent-old")?.close());
     await flush();
 
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
@@ -407,7 +465,7 @@ describe("closing a session and its permission cards", () => {
     await emitRequest("agent-old", "tool-a");
     expect(cards().length).toBe(1);
 
-    await act(async () => chipButton("agent-old").click());
+    await act(async () => surfaceHooks.bySession.get("agent-old")?.close());
     await flush();
 
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
@@ -527,10 +585,8 @@ describe("absence rule boundary", () => {
     };
   }
 
-  it("an ended row the strip hides drops its unanswerable cards", async () => {
-    // The daemon still lists the row, but `stripSessions` hides ended rows
-    // the user never opened: the rule reads that visible list, so the cards
-    // go. Safe only because an ended session has no process left to answer.
+  it("an ended process drops its unanswerable cards", async () => {
+    // An ended process has no pending request left to answer.
     const live = liveAgent("agent-live", "Busy one");
     const shellTwo = terminalSession("session-2", "shell two");
     vi.mocked(sessionsList).mockResolvedValue([live, shellTwo]);

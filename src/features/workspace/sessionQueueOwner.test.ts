@@ -353,6 +353,22 @@ describe("the queue owner and the roster's turn status", () => {
     expect(texts(queue)).toEqual([]);
   });
 
+  it.each([ENDED, RECOVERED])(
+    "retains queued text while a %j row remains in the full roster",
+    (state) => {
+      const { owner, probe } = harness();
+      owner.onRosterPush([sessionOf("s.a", { activity: "working" })]);
+      const queue = owner.queueFor("s.a");
+      queue.add("keep until the roster removes it", []);
+      owner.onRosterPush([sessionOf("s.a", { state })]);
+      expect(owner.queueFor("s.a")).toBe(queue);
+      expect(texts(queue)).toEqual(["keep until the roster removes it"]);
+      expect(probe.sent).toEqual([]);
+      owner.onRosterPush([]);
+      expect(texts(queue)).toEqual([]);
+    },
+  );
+
   it("a push that has never named a session discards nothing", () => {
     const { owner } = harness();
     const queue = owner.queueFor("s.new");

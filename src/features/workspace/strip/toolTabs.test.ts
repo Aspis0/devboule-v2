@@ -8,7 +8,6 @@ import {
   makeToolTab,
   openToolTabs,
   pruneToolTabsForWorkspaces,
-  restoreToolTabs,
   successorOf,
   toolTabId,
   toolTabLabel,
@@ -124,55 +123,5 @@ describe("pruneToolTabsForWorkspaces", () => {
       tabs[0].id,
     ]);
     expect(pruneToolTabsForWorkspaces(tabs, new Set())).toEqual([]);
-  });
-});
-
-describe("restoreToolTabs", () => {
-  const known = new Set(["ws"]);
-  it("puts each tab back at the index it held", () => {
-    const tabs = [
-      makeToolTab("diff", "ws", "a.ts"),
-      makeToolTab("diff", "ws", "b.ts"),
-      makeToolTab("diff", "ws", "c.ts"),
-    ];
-    const prev = [tabs[1]];
-    const removed = [
-      { tab: tabs[0], index: 0 },
-      { tab: tabs[2], index: 2 },
-    ];
-    expect(restoreToolTabs(prev, removed, known).map((tab) => tab.id)).toEqual(
-      tabs.map((tab) => tab.id),
-    );
-  });
-
-  it("leaves a reopened tab alone and appends tabs opened since at the end", () => {
-    const first = makeToolTab("diff", "ws", "a.ts");
-    const second = makeToolTab("diff", "ws", "b.ts");
-    const fresh = makeToolTab("diff", "ws", "c.ts");
-    const prev = [second, fresh];
-    const next = restoreToolTabs(prev, [{ tab: first, index: 0 }], known);
-    expect(next.map((tab) => tab.id)).toEqual([first.id, second.id, fresh.id]);
-    expect(restoreToolTabs(next, [{ tab: second, index: 1 }], known)).toBe(next);
-  });
-
-  it("clamps a stale index to the end, behind tabs opened since", () => {
-    const first = makeToolTab("diff", "ws", "a.ts");
-    const fresh = makeToolTab("diff", "ws", "c.ts");
-    const next = restoreToolTabs([fresh], [{ tab: first, index: 7 }], known);
-    expect(next.map((tab) => tab.id)).toEqual([fresh.id, first.id]);
-  });
-
-  it("drops tabs whose workspace is no longer known", () => {
-    const kept = makeToolTab("diff", "ws", "a.ts");
-    const orphan = makeToolTab("diff", "gone", "b.ts");
-    const next = restoreToolTabs(
-      [],
-      [
-        { tab: kept, index: 0 },
-        { tab: orphan, index: 1 },
-      ],
-      known,
-    );
-    expect(next.map((tab) => tab.id)).toEqual([kept.id]);
   });
 });

@@ -1,7 +1,7 @@
-// Human-path proof at the Workspace level: a recovered roster row renders
-// a tab, selecting it shows its surface, Reopen follows the daemon's
-// `resumable` verdict, and mount never resumes by itself.
 // @vitest-environment happy-dom
+// Human-path proof at the Workspace level: opening a recovered row renders
+// a tab and its surface, Reopen follows the daemon's
+// `resumable` verdict, and mount never resumes by itself.
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
@@ -79,6 +79,7 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import { Workspace } from "./Workspace";
+import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -108,6 +109,7 @@ function liveAgent(id: string, title: string): Session {
   return {
     id,
     workspaceId: workspace.id,
+    createdAtMs: 1,
     kind: "claude",
     title,
     state: { type: "live", generation: 1 },
@@ -119,6 +121,7 @@ function recoveredAgent(id: string, title: string, resumable: boolean | undefine
   return {
     id,
     workspaceId: workspace.id,
+    createdAtMs: 1,
     kind: "claude",
     title,
     state: {
@@ -132,6 +135,7 @@ function recoveredAgent(id: string, title: string, resumable: boolean | undefine
 }
 
 beforeEach(() => {
+  localStorage.removeItem("devboule.openSessionTabs");
   resetSharedSessionControllerForTests();
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -153,13 +157,16 @@ afterEach(async () => {
 });
 
 describe("Workspace recovered path", () => {
-  it("renders a recovered tab, shows its surface on select, and never resumes on mount", async () => {
+  it("renders explicitly opened recovered tabs and never resumes on mount", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       liveAgent("live-1", "running chat"),
       recoveredAgent("rec-1", "recovered chat", true),
     ]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const tabs = [...container.querySelectorAll(".workspace-session-tab")];
@@ -184,7 +191,10 @@ describe("Workspace recovered path", () => {
   it("offers Reopen exactly when resumable is true, and reports it cannot come back otherwise", async () => {
     vi.mocked(sessionsList).mockResolvedValue([recoveredAgent("rec-1", "recovered chat", true)]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(container.querySelector('[data-testid="recovered-reopen-bar"]')).not.toBeNull();
@@ -196,7 +206,10 @@ describe("Workspace recovered path", () => {
     const second = document.createElement("div");
     document.body.appendChild(second);
     const secondRoot = createRoot(second);
-    await act(async () => secondRoot.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      secondRoot.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     expect(second.querySelector('[data-testid="recovered-reopen-bar"]')).toBeNull();
@@ -210,7 +223,10 @@ describe("Workspace recovered path", () => {
   it("reopens on one click with the recovered session's own id", async () => {
     vi.mocked(sessionsList).mockResolvedValue([recoveredAgent("rec-1", "recovered chat", true)]);
     root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
     await act(async () => undefined);
 
     const button = container.querySelector<HTMLButtonElement>(

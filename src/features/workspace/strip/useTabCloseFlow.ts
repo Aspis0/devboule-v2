@@ -1,31 +1,16 @@
-// Why: everything that runs when a close is set in motion — the tab menu's
-// entries, when a close asks first (the close policy), what a confirmation
-// resolves at the moment of confirming, and where focus and selection land
-// afterwards — lives here so Workspace only wires it to the strip. Every
-// session close is an archive (session_stop) except a delete
-// (session_close), and nothing waits for a window: the owner's decision took
-// the undo away. A tool tab's close is a local removal instead — no confirm,
-// no daemon call — but it runs the same successor rule against the composed
-// strip, so focus and selection land exactly as they do for a session tab.
-
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+// Tab closes remove membership locally; pane Close and Delete apply session lifecycle policy.
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionsForSelection, sessionsForTabAction } from "./bulkCloseSessions";
 import type { CloseIntent } from "./closePolicy";
 import { closeNeedsConfirmation } from "./closePolicy";
 import {
   archiveRunningAgentConfirm,
-  bulkActionTitle,
-  bulkSelectionConfirmLabel,
-  bulkSelectionTitle,
   closeTerminalConfirm,
-  countSessions,
   deleteSessionConfirm,
-  mixedBulkCloseMessage,
 } from "./bulkCloseCopy";
 import { buildSelectionCloseEntry, buildTabCloseEntries, type TabMenuEntry } from "./tabCloseMenu";
-import { successorOf, type StripTab, type ToolTab } from "./toolTabs";
-import { planBulkClose } from "./tabClosePlan";
+import { successorOf, type StripTab } from "./toolTabs";
 import { toolTabMenuEntries } from "./toolTabMenu";
 
 /** The DOM id of a strip tab. Workspace renders it; the flow's focus
@@ -39,7 +24,7 @@ export function sessionTabElementId(tabId: string): string {
 interface TabCloseFlowArgs {
   sessions: readonly Session[];
   /** The composed strip Workspace owns — sessions first, tool tabs appended.
-   * The one list every close slices and lands on; the tool half derives below. */
+   * The one list every close slices and lands on; sessions and tools share it. */
   tabs: readonly StripTab[];
   /** The ONE active tab id both readers — chips, keyboard, successor — use. */
   activeTabId: string | null;
@@ -51,10 +36,8 @@ interface TabCloseFlowArgs {
     matched: readonly Session[],
     onFailed?: (sessionId: string) => void,
   ) => void;
-  /** A tool tab's removal, wired to the tab list by Workspace: local only,
-   * never a daemon call. Returns the restore for a mixed close to call
-   * when its session part fails. */
-  onCloseTools: (ids: readonly string[]) => () => void;
+  onCloseTools: (ids: readonly string[]) => void;
+  onCloseTabs: (ids: readonly string[]) => void;
   selectTab: (id: string | null) => void;
   clearSelection: () => void;
   addButtonRef: RefObject<HTMLButtonElement | null>;
@@ -89,12 +72,6 @@ interface CloseConfirmState {
    * (close, archive, delete), so the sole affirmative is the filled danger. */
   tone: "danger" | "accent";
   targets: readonly ConfirmTarget[];
-  /** Tool tabs the confirmed close takes with it: they never ask, never
-   * touch the daemon, and they close with the confirm, not before it — a
-   * cancel is a true no-op for both kinds. */
-  toolTargets: readonly string[];
-  /** The ask acts on the multi-selection: confirming it ends the selection. */
-  actsOnSelection?: boolean;
 }
 
 // The menu records what it would act on — the selection for a selection
@@ -123,23 +100,14 @@ function targetOf(tab: StripTab): ConfirmTarget {
   };
 }
 
-function resolveConfirm(
-  state: CloseConfirmState,
-  sessions: readonly Session[],
-  tools: readonly ToolTab[],
-): {
-  matched: Session[];
-  matchedTools: string[];
-} {
+function resolveConfirm(state: CloseConfirmState, sessions: readonly Session[]): Session[] {
   const matched: Session[] = [];
   for (const target of state.targets) {
     const row = sessions.find((session) => session.id === target.id);
     if (row === undefined || row.state.generation !== target.generation) continue;
     matched.push(row);
   }
-  const present = new Set(tools.map((tool) => tool.id));
-  const matchedTools = state.toolTargets.filter((id) => present.has(id));
-  return { matched, matchedTools };
+  return matched;
 }
 
 /** The menu's live target set, in strip order — what it would act on NOW. */
@@ -170,19 +138,12 @@ function menuIsValid(
   return sameTargets(state.targets, liveMenuTargets(state, selection, tabs));
 }
 
-function confirmIsValid(
-  state: CloseConfirmState | null,
-  sessions: readonly Session[],
-  tools: readonly ToolTab[],
-): boolean {
+function confirmIsValid(state: CloseConfirmState | null, sessions: readonly Session[]): boolean {
   if (state === null) return false;
-  const presentTools = new Set(tools.map((tool) => tool.id));
-  return (
-    state.targets.every((target) => {
-      const row = sessions.find((session) => session.id === target.id);
-      return row !== undefined && row.state.generation === target.generation;
-    }) && state.toolTargets.every((id) => presentTools.has(id))
-  );
+  return state.targets.every((target) => {
+    const row = sessions.find((session) => session.id === target.id);
+    return row !== undefined && row.state.generation === target.generation;
+  });
 }
 
 export function useTabCloseFlow({
@@ -192,6 +153,7 @@ export function useTabCloseFlow({
   selection,
   onClose,
   onCloseTools,
+  onCloseTabs,
   selectTab,
   clearSelection,
   addButtonRef,
@@ -203,6 +165,7 @@ export function useTabCloseFlow({
   openMenu: (tabId: string) => void;
   closeMenu: () => void;
   closeSingle: (tabId: string) => void;
+  closeTab: (tabId: string) => void;
   activateEntry: (key: TabMenuEntry["key"]) => void;
   activatePaneEntry: (anchorId: string, key: TabMenuEntry["key"]) => void;
   confirmClose: () => void;
@@ -212,19 +175,16 @@ export function useTabCloseFlow({
   const [confirmState, setConfirmState] = useState<CloseConfirmState | null>(null);
   const [focusRestore, setFocusRestore] = useState<FocusRestore | null>(null);
   const anchorRef = useRef<HTMLElement | null>(null);
+  const activeRef = useRef(activeTabId);
+  useLayoutEffect(() => {
+    activeRef.current = activeTabId;
+  }, [activeTabId]);
 
   // The rename half, destructured so the callbacks below keep stable deps:
   // the wrapper the caller passes is a fresh object per render, the functions
   // inside it are not.
-  const renameEntriesFor = renameMenu?.entriesFor;
-  const openRename = renameMenu?.open;
-
-  // The tool half of the composed strip above. A pure session strip derives
-  // an empty one, so every path below reads identically with no tool tabs.
-  const tools = useMemo(
-    () => tabs.flatMap((tab) => (tab.type === "tool" ? [tab.tool] : [])),
-    [tabs],
-  );
+  const renameEntriesFor = renameMenu.entriesFor;
+  const openRename = renameMenu.open;
 
   const openMenuState = menuIsValid(menuState, selection, tabs) ? menuState : null;
   const anchorTab =
@@ -240,14 +200,14 @@ export function useTabCloseFlow({
           entries: openMenuState.viaSelection
             ? [buildSelectionCloseEntry(openMenuState.targets.length)]
             : (toolTabMenuEntries(tabs, openMenuState.anchorId) ?? [
-                ...(renameEntriesFor?.(openMenuState.anchorId) ?? []),
+                ...renameEntriesFor(openMenuState.anchorId),
                 ...buildTabCloseEntries(
                   tabs.findIndex((tab) => tab.id === openMenuState.anchorId),
                   tabs.length,
                 ),
               ]),
         };
-  const confirm = confirmIsValid(confirmState, sessions, tools) ? confirmState : null;
+  const confirm = confirmIsValid(confirmState, sessions) ? confirmState : null;
 
   // A menu or an ask dismissed by a MEANINGFUL roster change is dead, not
   // dormant: the invalid state is cleared in the same render that hides it
@@ -260,7 +220,7 @@ export function useTabCloseFlow({
     setDismissedMenu(menuState);
     setMenuState(null);
   }
-  if (confirmState !== null && !confirmIsValid(confirmState, sessions, tools)) {
+  if (confirmState !== null && !confirmIsValid(confirmState, sessions)) {
     setDismissedConfirm(confirmState);
     setConfirmState(null);
   }
@@ -273,48 +233,35 @@ export function useTabCloseFlow({
         activeTabId ?? "",
       );
       if (activeTabId === null || next === activeTabId) return;
+      activeRef.current = next;
       selectTab(next);
     },
     [selectTab, activeTabId, tabs],
   );
 
-  // Selection and focus move to the successor as the close fires; when the
-  // act is REFUSED, its row comes back — and if it was the active one, the
-  // selection and focus come back with it, or the strip would show an empty
-  // state beside a restored tab.
+  // A refusal restores the active tab only while the user still occupies its successor.
   const restoreOnFailure = useCallback(
-    (activeAtClose: string | null) => (failedId: string) => {
-      if (failedId !== activeAtClose) return;
-      selectTab(failedId);
-      setFocusRestore({ kind: "active" });
+    (activeAtClose: string | null) => {
+      const successor = successorOf(
+        tabs.map((tab) => tab.id),
+        [activeAtClose ?? ""],
+        activeAtClose ?? "",
+      );
+      return (failedId: string) => {
+        if (failedId !== activeAtClose || activeRef.current !== successor) return;
+        selectTab(failedId);
+        setFocusRestore({ kind: "active" });
+      };
     },
-    [selectTab],
+    [selectTab, tabs],
   );
 
   const openConfirm = useCallback((state: CloseConfirmState) => setConfirmState(state), []);
 
   const requestFocus = useCallback(() => setFocusRestore({ kind: "active" }), []);
-  // A tools-only close is local and cannot fail: remove, land, refocus.
-  const closeTools = useCallback(
-    (ids: readonly string[]) => {
-      if (ids.length === 0) return;
-      onCloseTools(ids);
-      finishClose(ids);
-      requestFocus();
-    },
-    [finishClose, onCloseTools, requestFocus],
-  );
-
   const closeSingle = useCallback(
     (tabId: string) => {
       anchorRef.current = document.getElementById(sessionTabElementId(tabId));
-      const tool = tools.find((candidate) => candidate.id === tabId);
-      if (tool !== undefined) {
-        // Nothing to lose: a tool tab's close is a local removal — no ask,
-        // no daemon call — and still lands on the shared successor.
-        closeTools([tool.id]);
-        return;
-      }
       const row = sessions.find((session) => session.id === tabId);
       if (row === undefined) return;
       if (!closeNeedsConfirmation(row, "archive")) {
@@ -329,7 +276,6 @@ export function useTabCloseFlow({
         openConfirm({
           kind: "archive",
           targets: [targetOf({ type: "session", id: row.id, session: row })],
-          toolTargets: [],
           ...archiveRunningAgentConfirm(),
           tone: "danger",
         });
@@ -338,12 +284,29 @@ export function useTabCloseFlow({
       openConfirm({
         kind: "archive",
         targets: [targetOf({ type: "session", id: row.id, session: row })],
-        toolTargets: [],
         ...closeTerminalConfirm(row),
         tone: "danger",
       });
     },
-    [closeTools, finishClose, onClose, openConfirm, restoreOnFailure, sessions, tools],
+    [finishClose, onClose, openConfirm, restoreOnFailure, sessions],
+  );
+
+  const removeTabs = useCallback(
+    (victims: readonly StripTab[]) => {
+      onCloseTabs(victims.filter((tab) => tab.type === "session").map((tab) => tab.id));
+      onCloseTools(victims.filter((tab) => tab.type === "tool").map((tab) => tab.id));
+      finishClose(victims.map((tab) => tab.id));
+      clearSelection();
+      requestFocus();
+    },
+    [onCloseTabs, onCloseTools, finishClose, clearSelection, requestFocus],
+  );
+
+  const closeTab = useCallback(
+    (tabId: string) => {
+      removeTabs(tabs.filter((tab) => tab.id === tabId));
+    },
+    [removeTabs, tabs],
   );
 
   const openMenu = useCallback(
@@ -372,8 +335,12 @@ export function useTabCloseFlow({
   // anchor from its own open state, the pane header names its session.
   const fireAnchorEntry = useCallback(
     (anchorId: string, key: TabMenuEntry["key"]) => {
-      if (key === "close") {
-        closeSingle(anchorId);
+      if (key === "close" || key === "left" || key === "right" || key === "others") {
+        removeTabs(
+          key === "close"
+            ? tabs.filter((tab) => tab.id === anchorId)
+            : sessionsForTabAction(key, tabs, anchorId),
+        );
         return;
       }
       if (key === "delete") {
@@ -385,37 +352,13 @@ export function useTabCloseFlow({
         openConfirm({
           kind: "delete",
           targets: [targetOf({ type: "session", id: row.id, session: row })],
-          toolTargets: [],
           ...deleteSessionConfirm(row),
           tone: "danger",
         });
         return;
       }
-      if (key === "close-selection") return;
-      // Rename is not a close: both entry points open the dialog before this
-      // core runs, so a rename key here is a caller that skipped its own
-      // guard — refused, never fed to the close policy.
-      if (key === "rename") return;
-      const plan = planBulkClose(sessionsForTabAction(key, tabs, anchorId));
-      if (plan.kind === "nothing") return;
-      if (plan.kind === "tools-only") {
-        // Nothing to ask about, so they close at once, locally.
-        closeTools(plan.toolVictims);
-        return;
-      }
-      openConfirm({
-        kind: "archive",
-        targets: plan.sessionVictims.map((session) =>
-          targetOf({ type: "session", id: session.id, session }),
-        ),
-        toolTargets: plan.toolVictims,
-        tone: "danger",
-        title: bulkActionTitle(key),
-        message: mixedBulkCloseMessage(countSessions(plan.sessionVictims), plan.toolVictims.length),
-        confirmLabel: "Close",
-      });
     },
-    [closeSingle, closeTools, openConfirm, tabs, sessions],
+    [openConfirm, tabs, sessions, removeTabs],
   );
 
   const activateEntry = useCallback(
@@ -430,48 +373,19 @@ export function useTabCloseFlow({
         // Focus the tab before the dialog takes it: the dialog returns focus
         // to whatever held it when it opened.
         anchorRef.current?.focus({ preventScroll: true });
-        openRename?.(open.anchorId);
+        openRename(open.anchorId);
         return;
       }
       if (key === "close-selection") {
-        // The selection menu ALWAYS asks, even when the roster has shrunk it
-        // to one: the ask lists the live set, so the user confirms what is
-        // really there, not what the count said when the selection was made.
-        // The selection itself ends only when the ask is CONFIRMED — a
-        // cancel leaves it exactly as it was. A tools-only selection never
-        // asks: there is no session policy to keep.
-        const plan = planBulkClose(sessionsForSelection(selection, tabs));
-        if (plan.kind === "nothing") return;
-        if (plan.kind === "tools-only") {
-          closeTools(plan.toolVictims);
-          return;
-        }
-        const total = plan.sessionVictims.length + plan.toolVictims.length;
-        openConfirm({
-          kind: "archive",
-          targets: plan.sessionVictims.map((session) =>
-            targetOf({ type: "session", id: session.id, session }),
-          ),
-          toolTargets: plan.toolVictims,
-          tone: "danger",
-          title: bulkSelectionTitle(total),
-          message: mixedBulkCloseMessage(
-            countSessions(plan.sessionVictims),
-            plan.toolVictims.length,
-          ),
-          confirmLabel: bulkSelectionConfirmLabel(total),
-          actsOnSelection: true,
-        });
+        removeTabs(sessionsForSelection(selection, tabs));
         return;
       }
       fireAnchorEntry(open.anchorId, key);
     },
-    [fireAnchorEntry, menuState, openConfirm, openRename, selection, tabs, closeTools],
+    [fireAnchorEntry, menuState, openRename, selection, tabs, removeTabs],
   );
 
-  // The pane header's kebab fires through the same policy and confirmation
-  // as the tab menu, anchored at its own session instead of the tab menu's.
-  // Keys the header never offers (selection, delete) are refused here.
+  // Pane Close stops the session; its other close entries remove tabs locally.
   const activatePaneEntry = useCallback(
     (anchorId: string, key: TabMenuEntry["key"]) => {
       if (key === "close-selection" || key === "delete") return;
@@ -479,9 +393,13 @@ export function useTabCloseFlow({
         openRename?.(anchorId);
         return;
       }
+      if (key === "close") {
+        closeSingle(anchorId);
+        return;
+      }
       fireAnchorEntry(anchorId, key);
     },
-    [fireAnchorEntry, openRename],
+    [fireAnchorEntry, openRename, closeSingle],
   );
 
   const confirmClose = useCallback(() => {
@@ -490,34 +408,11 @@ export function useTabCloseFlow({
     if (current === null) return;
     // Resolve at the moment of confirming, by id AND generation: only the
     // instances the user confirmed act.
-    const { matched, matchedTools } = resolveConfirm(current, sessions, tools);
-    const sessionIds = matched.map((session) => session.id);
-    if (current.actsOnSelection === true) clearSelection();
-    // The tools go at once, with the successor and the focus, in the same
-    // tick as the click — nothing waits for the daemon. A refused session
-    // act brings its row back and puts the tools back at their indices,
-    // without moving selection or focus.
-    let restoreMixed: (() => void) | null = null;
-    const onFailed = (failedId: string) => {
-      restoreMixed?.();
-      restoreMixed = null;
-      restoreOnFailure(activeTabId)(failedId);
-    };
-    onClose(current.kind, matched, onFailed);
-    restoreMixed = onCloseTools(matchedTools);
-    finishClose([...sessionIds, ...matchedTools]);
+    const matched = resolveConfirm(current, sessions);
+    onClose(current.kind, matched, restoreOnFailure(activeTabId));
+    finishClose(matched.map((session) => session.id));
     setFocusRestore({ kind: "active" });
-  }, [
-    clearSelection,
-    confirm,
-    finishClose,
-    onClose,
-    onCloseTools,
-    restoreOnFailure,
-    activeTabId,
-    sessions,
-    tools,
-  ]);
+  }, [confirm, finishClose, onClose, restoreOnFailure, activeTabId, sessions]);
 
   const cancelClose = useCallback(() => {
     setConfirmState(null);
@@ -571,6 +466,7 @@ export function useTabCloseFlow({
     openMenu,
     closeMenu,
     closeSingle,
+    closeTab,
     activateEntry,
     activatePaneEntry,
     confirmClose,

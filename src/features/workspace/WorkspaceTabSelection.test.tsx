@@ -5,14 +5,12 @@
 // live set. The menu's entries, the chip and the outcomes have their own
 // files.
 import { act } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   afterEachHarness,
   beforeEachHarness,
-  clickDialogButton,
   clickMenuEntry,
   DIALOG_SELECTOR,
-  dialog,
   liveRegion,
   liveSnapshot,
   menuLabels,
@@ -22,9 +20,9 @@ import {
   pushSnapshots,
   renderWorkspace,
   rightClick,
-  settleCloseActs,
   tabElement,
 } from "./bulkCloseHarness";
+import { sharedSessionController } from "./workspaceSessions";
 import { sessionStop } from "../../lib/tauri";
 
 beforeEach(() => {
@@ -114,41 +112,31 @@ describe("multi-select", () => {
       liveSnapshot("session-3", "shell three"),
     ]);
 
+    expect(document.getElementById("workspace-session-tab-session-3")).toBeNull();
+    // Explicit membership setup isolates selection pruning from the opener UI.
+    await act(async () => {
+      const controller = sharedSessionController();
+      const row = controller.getState().sessions.find((session) => session.id === "session-3");
+      if (row === undefined) throw new Error("session-3 not in roster");
+      controller.open(row);
+    });
     expect(tabElement("session-3").className).not.toContain("workspace-session-tab-multiselected");
     expect(tabElement("session-2").className).toContain("workspace-session-tab-multiselected");
     expect(liveRegion()?.textContent).toBe("1 tab selected");
   });
 
-  it("cancelling the selection's ask leaves the selection exactly as it was", async () => {
+  it("closing selected tabs removes them locally and clears the selection", async () => {
     await renderWorkspace();
     await modifiedClick("agent-one", "ctrlKey");
     await modifiedClick("session-2", "ctrlKey");
-
     await rightClick("session-2");
     await clickMenuEntry("Close 2 tabs");
-    await clickDialogButton("Cancel");
-
-    // The selection ends only when the ask is CONFIRMED — a cancel leaves it
-    // exactly as it was.
     expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
-    expect(liveRegion()?.textContent).toBe("2 tabs selected");
-    expect(tabElement("agent-one").className).toContain("workspace-session-tab-multiselected");
-    expect(tabElement("session-2").className).toContain("workspace-session-tab-multiselected");
-    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
-
-    // Escape, the ask's other way out: the same leave-it-standing.
-    await rightClick("session-2");
-    await clickMenuEntry("Close 2 tabs");
-    const primary = dialog().querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
-    if (primary === null) throw new Error("confirm primary action missing");
-    await act(async () => {
-      primary.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
-    });
-    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
-    expect(liveRegion()?.textContent).toBe("2 tabs selected");
-    expect(tabElement("agent-one").className).toContain("workspace-session-tab-multiselected");
-    expect(tabElement("session-2").className).toContain("workspace-session-tab-multiselected");
-    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
+    expect(document.getElementById("workspace-session-tab-agent-one")).toBeNull();
+    expect(document.getElementById("workspace-session-tab-session-2")).toBeNull();
+    expect(tabElement("session-3").getAttribute("aria-selected")).toBe("true");
+    expect(sessionStop).not.toHaveBeenCalled();
+    expect(liveRegion()?.textContent).toBe("Selection cleared");
   });
 
   it("the selection menu closes when one of its targets is removed", async () => {
@@ -170,57 +158,22 @@ describe("multi-select", () => {
     expect(document.querySelector("[role='menu']")).toBeNull();
   });
 
-  it("right-click on a selected tab offers the selection's own close, with the counts", async () => {
+  it("the selection menu counts open tabs and offers no Delete", async () => {
     await renderWorkspace();
     await modifiedClick("agent-one", "ctrlKey");
     await modifiedClick("session-2", "ctrlKey");
-
     await rightClick("session-2");
-
-    // The selection menu has no Delete: it cannot offer destruction by
-    // count.
     expect(menuLabels()).toEqual(["Close 2 tabs"]);
-    await clickMenuEntry("Close 2 tabs");
-
-    const confirm = dialog();
-    expect(confirm.textContent).toContain("Close 2 tabs?");
-    expect(confirm.textContent).toContain(
-      "This will archive 1 agent(s) and archive 1 terminal(s).",
-    );
-    // The counted ask's label matches its title, and the destructive sole
-    // affirmative is the filled danger.
-    const confirmButton = confirm.querySelector<HTMLButtonElement>(".confirm-dialog-confirm");
-    expect(confirmButton?.textContent).toBe("Close 2 tabs");
-    expect(confirmButton?.classList.contains("confirm-dialog-confirm-danger")).toBe(true);
-
-    await clickDialogButton("Close 2 tabs");
-    await settleCloseActs();
-
-    expect(vi.mocked(sessionStop)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-one");
-    expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("session-2");
   });
 
-  it("a selection of one still asks before closing, naming the live set", async () => {
+  it("a selection of one closes without stopping the session", async () => {
     await renderWorkspace();
     await modifiedClick("session-2", "ctrlKey");
-
     await rightClick("session-2");
     expect(menuLabels()).toEqual(["Close"]);
-
     await clickMenuEntry("Close");
-
-    // Even shrunken to one, the selection menu goes through the ask — never
-    // straight at the daemon.
-    const confirm = dialog();
-    expect(confirm.textContent).toContain("Close 1 tab?");
-    expect(confirm.querySelector<HTMLButtonElement>(".confirm-dialog-confirm")?.textContent).toBe(
-      "Close 1 tab",
-    );
-    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
-
-    await clickDialogButton("Close 1 tab");
-    await settleCloseActs();
-    expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("session-2");
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
+    expect(document.getElementById("workspace-session-tab-session-2")).toBeNull();
+    expect(sessionStop).not.toHaveBeenCalled();
   });
 });

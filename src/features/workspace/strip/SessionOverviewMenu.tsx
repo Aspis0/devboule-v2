@@ -19,6 +19,7 @@ import { useMenuOpen } from "../../../lib/menuOpen";
 import { AnchoredPopover } from "../popoverPlace";
 import { sessionKindWord, sessionTitle } from "../workspaceSessions";
 import { chipDisplay } from "./stripDisplay";
+import { sessionAttentionLabel } from "../sessionAttention";
 import { orderOverviewSessions, sessionLastActiveMs, sessionStartedLabel } from "./sessionOverview";
 import { StripKindMark } from "./StripKindMark";
 import { DOT_CLASS } from "./StripChip";
@@ -210,6 +211,7 @@ export function SessionOverviewMenu({
           {ordered.map((session) => {
             const display = chipDisplay(session);
             const title = sessionTitle(session);
+            const attentionLabel = sessionAttentionLabel(session);
             const isOpen = openIds.has(session.id);
             const lastActive = sessionLastActiveMs(session, now);
             return (
@@ -217,7 +219,7 @@ export function SessionOverviewMenu({
                 key={session.id}
                 role="option"
                 tabIndex={session.id === currentId ? 0 : -1}
-                aria-label={`${title}, ${display.stateLine}${isOpen ? ", open tab" : ""}`}
+                aria-label={`${title}, ${display.stateLine}${attentionLabel === null ? "" : `, ${attentionLabel}`}${isOpen ? ", open tab" : ""}`}
                 data-overview-option={session.id}
                 className="workspace-overview-option"
                 onClick={() => onOpen(session.id)}
@@ -233,6 +235,9 @@ export function SessionOverviewMenu({
                 />
                 <StripKindMark kind={session.kind} />
                 <span className="workspace-overview-title">{title}</span>
+                {attentionLabel !== null ? (
+                  <span className="workspace-overview-attention">{attentionLabel}</span>
+                ) : null}
                 {isOpen ? <span className="workspace-overview-open">Open</span> : null}
                 {lastActive === null ? null : (
                   <span className="workspace-overview-time">{relativeTime(lastActive, now)}</span>

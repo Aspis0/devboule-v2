@@ -290,6 +290,7 @@ describe("walking every menu the source finds — the band's open is the outside
       openMenu: vi.fn(),
       closeMenu: vi.fn(),
       closeSingle: vi.fn(),
+      closeTab: vi.fn(),
       activateEntry: vi.fn(),
       activatePaneEntry: vi.fn(),
       confirmClose: vi.fn(),

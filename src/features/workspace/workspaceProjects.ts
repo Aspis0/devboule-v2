@@ -3,6 +3,7 @@ import type { ChangeEvent } from "react";
 import { projectsList, workspaceCreate, workspacesList } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { Project, Session, Workspace } from "../../types/ipc";
+import { sessionNeedsApproval } from "./sessionAttention";
 
 export interface WorkspaceProject extends Project {
   workspaces: WorkspaceView[];
@@ -76,9 +77,10 @@ function workspaceViewFromIndex(
   // recovered transcript is the anomaly worth a word. Live counts and the
   // isolation word are the norm and stay off the row.
   const meta = recovered.length > 0 ? `${recovered.length} recovered` : null;
-  // The trailing dot speaks the tab chips' vocabulary; the avatar never does.
-  const attention = sessionsOfWorkspace.some((session) => session.attention !== undefined);
-  const unattended = sessionsOfWorkspace.some((session) => session.unattended === "yes");
+  const attention = sessionsOfWorkspace.some(sessionNeedsApproval);
+  const unattended = sessionsOfWorkspace.some(
+    (session) => session.state.type !== "ended" && session.unattended === "yes",
+  );
   const running = sessionsOfWorkspace.some((session) => session.state.type === "live");
   return {
     ...workspace,

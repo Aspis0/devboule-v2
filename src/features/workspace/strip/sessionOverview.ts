@@ -1,16 +1,18 @@
 import type { Session } from "../../../types/ipc";
+import { sessionNeedsApproval } from "../sessionAttention";
 import { dayKey, formatDayClock } from "../../../lib/dayClock";
 
-/** Open tabs first in strip order, then every other roster row by most
- * recent activity. Recency is the roster's own fact — milliseconds since
- * the last observed output, so smaller is more recent — and a row that
- * carries none sorts last, never first. */
+// Approval requests must stay discoverable ahead of ordinary open tabs.
+// Within each tier: open strip order, then unopened recency (smaller elapsedMs first,
+// missing activity last), then id ascending so equal activity cannot jitter the list.
 export function orderOverviewSessions(
   sessions: readonly Session[],
   stripOrder: readonly string[],
 ): Session[] {
   const rank = new Map(stripOrder.map((id, index) => [id, index]));
   return [...sessions].sort((first, second) => {
+    const attention = Number(sessionNeedsApproval(second)) - Number(sessionNeedsApproval(first));
+    if (attention !== 0) return attention;
     const firstOpen = rank.get(first.id);
     const secondOpen = rank.get(second.id);
     if (firstOpen !== undefined || secondOpen !== undefined) {
@@ -18,14 +20,17 @@ export function orderOverviewSessions(
       if (secondOpen === undefined) return -1;
       return firstOpen - secondOpen;
     }
-    const recency = recencyRank(first) - recencyRank(second);
-    if (recency !== 0) return recency;
+    const firstRecency = recencyRank(first);
+    const secondRecency = recencyRank(second);
+    if (firstRecency !== secondRecency) return firstRecency - secondRecency;
     return first.id < second.id ? -1 : first.id > second.id ? 1 : 0;
   });
 }
 
 function recencyRank(session: Session): number {
-  return typeof session.elapsedMs === "number" ? session.elapsedMs : Number.POSITIVE_INFINITY;
+  return typeof session.elapsedMs === "number" && Number.isFinite(session.elapsedMs)
+    ? session.elapsedMs
+    : Number.POSITIVE_INFINITY;
 }
 
 /** The instant of last observed output for a roster row, or null when the

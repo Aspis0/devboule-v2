@@ -152,6 +152,10 @@ interface AgentChatSurfaceProps {
   cwd?: string;
   id?: string;
   auxiliary?: ReactNode;
+  onOpenSubagent?: (sessionId: string) => void;
+  subagentSessionIds?: ReadonlySet<string>;
+  subagentAttention?: ReadonlyMap<string, string>;
+  onRefreshSubagents?: () => Promise<void>;
   /** The kebab's close-group wiring, from the tab-close flow. Absent until the workspace passes it. */
   headerMenuSeam?: HeaderMenuSeam;
   /**
@@ -817,6 +821,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   cwd,
   id,
   auxiliary,
+  onOpenSubagent,
+  subagentSessionIds,
+  subagentAttention,
+  onRefreshSubagents,
   headerMenuSeam,
   fileLinks = null,
   activity,
@@ -1173,7 +1181,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         menu={headerMenu(cwd, headerMenuSeam)}
         subagentSlot={
           state.subagents.length > 0 ? (
-            <SubagentMenu subagents={state.subagents} statusCounts={state.subagentStatusCounts} />
+            <SubagentMenu
+              subagents={state.subagents}
+              statusCounts={state.subagentStatusCounts}
+              onOpenSession={onOpenSubagent}
+              sessionIds={subagentSessionIds}
+              attentionById={subagentAttention}
+              onRefreshSessions={onRefreshSubagents}
+            />
           ) : null
         }
       />

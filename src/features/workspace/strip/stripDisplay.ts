@@ -1,4 +1,5 @@
 import type { Session } from "../../../types/ipc";
+import { activeSessionAttention, sessionAttentionLabel } from "../sessionAttention";
 import { sessionDelegationBadges, UNATTENDED_BADGE_LABEL } from "../workspaceSessions";
 import { rosterStateDisplay, type ChipDot, type RosterStateDisplay } from "../sessionStateDisplay";
 
@@ -22,15 +23,13 @@ function stateLine(session: Session): RosterStateDisplay {
   return rosterStateDisplay(session.state, session.elapsedMs, session.activity);
 }
 
-/** The chip's dot and tooltip for one roster row. Attention outranks
- * unattended on the dot; the tooltip keeps every true line, starting with
- * the state — a recovered session with an ask stays recovered in the
- * state line. */
+// Attention outranks unattended on the dot; the tooltip keeps every true line, starting with
+// the state — a recovered session with an ask stays recovered in the state line.
 export function chipDisplay(session: Session): ChipDisplay {
   const detailLines: string[] = [];
   // A null on the wire is absence, not attention: serde's default for an
   // `Option` without `skip_serializing_if`, met on version skew or a peer.
-  const attention = session.attention ?? undefined;
+  const attention = activeSessionAttention(session);
   const base = stateLine(session);
   let dot: ChipDot = base.dot;
   let pulse = base.pulse;
@@ -38,15 +37,8 @@ export function chipDisplay(session: Session): ChipDisplay {
   if (attention !== undefined) {
     dot = "attention";
     pulse = false;
-    if (attention.reason === "permission") {
-      detailLines.push("Needs your approval");
-    } else if (attention.reason === "finished") {
-      detailLines.push("Done");
-    } else if (attention.reason === "error") {
-      detailLines.push("Failed");
-    } else {
-      detailLines.push("Needs attention");
-    }
+    const label = sessionAttentionLabel(session);
+    if (label !== null) detailLines.push(label);
   }
 
   const badges = sessionDelegationBadges(session);
