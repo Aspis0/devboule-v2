@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatItem } from "./agentSession";
-import { groupToolCalls, summarizeToolCallGroup, type ToolCallGroup } from "./toolCallGroups";
+import { groupToolCalls, type ToolCallGroup } from "./toolCallGroups";
+import { summarizeToolCallGroup } from "./toolCallGroupSummary";
 
 type ToolItem = Extract<AgentChatItem, { role: "tool" }>;
 

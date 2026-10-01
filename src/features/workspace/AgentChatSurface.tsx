@@ -33,53 +33,26 @@ import type {
   SessionModel,
   SessionState,
 } from "../../types/ipc";
-import {
-  AgentSession,
-  lastAssistantMessage,
-  normalizeGoal,
-  RECOVERED_SESSION_UNAVAILABLE,
-} from "../../lib/agentSession";
-import type { AgentChatItem, AgentSessionState, AgentStatus } from "../../lib/agentSession";
-import {
-  groupToolCalls,
-  isToolCallGroup,
-  type ToolCallGroup,
-  type ToolChatItem,
-} from "../../lib/toolCallGroups";
-import { toolRowDisplay } from "./toolRowDisplay";
-import { ToolIcon } from "./ToolIcon";
-import { CommandChip, ExitMarker } from "./CommandRow";
-import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
+import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/agentSession";
+import type { AgentSessionState, AgentStatus } from "../../lib/agentSession";
 import { useConversationScrollStick } from "./useConversationScrollStick";
 import { PaneHeader } from "./paneHeader/PaneHeader";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
-import {
-  INTERRUPTED_TOOL_CLASS,
-  INTERRUPTED_TOOL_COPY,
-  isInterruptedToolStatus,
-  isToolRunningStatus,
-} from "./interruptedTool";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
-import { boundByGraphemes } from "../../lib/graphemeBound";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { SubagentMenu } from "./SubagentMenu";
 import { SessionContextMeter } from "./ContextMeter";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
-import { DaemonNoticeCard } from "./DaemonNoticeCard";
-import { MarkdownText } from "../../components/MarkdownText";
 import type { ChatFileLinks } from "../../lib/chatFilePaths";
-import { MessageCopyButton } from "./timeline/MessageCopyButton";
 import { TurnRail } from "./timeline/TurnRail";
 import "./timeline/timeline.css";
-import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
-import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
+import type { A2aNameSource } from "./A2aMessageCard";
 import { AgentTaskPill } from "./AgentTaskPill";
 import { GoalLine } from "./paneHeader/GoalLine";
 import type { WorkspaceCommand } from "./WorkspaceCommandMenu";
 import { setHeldAssistantText } from "./attentionNotice";
-import { ThoughtRow } from "./ThoughtRow";
 import { QueueTrack } from "./QueueTrack";
 import type { MessageQueue } from "./messageQueue";
 import { useMessageQueue } from "./useMessageQueue";
@@ -88,6 +61,8 @@ import {
   resolveActiveSendBehavior,
   subscribeSendBehavior,
 } from "../../lib/sendBehavior";
+
+import { TranscriptRows } from "./transcript/TranscriptRows";
 
 // One classifier owns both whether input is disabled and the sentence explaining it.
 export function composerDisabledReason(
@@ -289,94 +264,6 @@ function observedType(state: SessionState | null | undefined): SessionState["typ
   return state?.type ?? null;
 }
 
-const MAX_VISIBLE_SUBAGENT_DEPTH = 4;
-const SUBAGENT_INDENT_PX = 16;
-
-/**
- * The bound on a daemon-supplied field inside the permission-request header
- * sentence. It exists for layout only: an unbroken multi-kilobyte
- * `displayName` would push the chat pane sideways, since the sentence —
- * unlike the quoted excerpt — has no wrapping contract of its own. The FULL
- * values stay on the sentence element's `title`; the excerpt below is never
- * bounded, because never-re-truncate is the excerpt's rule and no one else's.
- */
-const PERMISSION_HEADER_FIELD_LIMIT = 200;
-
-// Bounded by grapheme clusters, not code units: a unit-based pre-check
-// appends an ellipsis to a 200-unit astral name whose 100 scalars were
-// already inside the bound — a truncation that did not happen — and a
-// unit-based cut splits a scalar in half (re-audit F12).
-function boundPermissionHeaderField(value: string): string {
-  return boundByGraphemes(value, PERMISSION_HEADER_FIELD_LIMIT);
-}
-
-/**
- * The excerpt's rendering decision, one row per value of the parser's closed
- * `excerptState` vocabulary — the walked-table rule this slice applied to
- * `delegation.state` and the setting's `source`, applied to the vocabulary
- * this slice itself introduced (re-audit F7: two `===` tests made the
- * fallthrough the benign `"closed"` render, and a new member without a
- * rendering decision was neither a compile error nor a failing test). A value
- * outside the vocabulary at runtime — a mixed bundle, a refactor that missed a
- * row — takes the visible unknown-state arm: the words that did arrive still
- * show, with a note that their state could not be established, never the
- * silent render that claims the fence closed.
- */
-type KnownExcerptState = Extract<AgentChatItem, { role: "permission_request" }>["excerptState"];
-const EXCERPT_STATE_RENDER: Record<KnownExcerptState, { block: boolean; note: string | null }> = {
-  closed: { block: true, note: null },
-  unterminated: {
-    block: true,
-    note: "the closing fence never arrived — this block runs to the end of the frame",
-  },
-  // Re-audit F3: `"absent"` rendered `null` — no block, no note, no sentence
-  // — while the frame's header fields still parsed, so a frame whose opener
-  // was not byte-exact lost the child's words with no marker at all. The
-  // absence of quoted words is its own visible fact: the frame arrived, the
-  // words did not.
-  absent: {
-    block: false,
-    note: "this frame carried no quoted block — no `child-said:` opener arrived, so none of the child's words are shown",
-  },
-};
-const UNKNOWN_EXCERPT_STATE_RENDER: { block: boolean; note: string | null } = {
-  block: true,
-  note: "the quoted block's state was not recognised — these are the words the frame carried, unbounded",
-};
-
-/** Exported for the out-of-union test: the walk is the render decision, and
- * the test casts a value TypeScript cannot predict through it. */
-export function excerptRenderFor(state: KnownExcerptState): {
-  block: boolean;
-  note: string | null;
-} {
-  return Object.hasOwn(EXCERPT_STATE_RENDER, state)
-    ? EXCERPT_STATE_RENDER[state]
-    : UNKNOWN_EXCERPT_STATE_RENDER;
-}
-
-function hasParentToolUseId(item: AgentChatItem): boolean {
-  return (
-    "parentToolUseId" in item &&
-    typeof item.parentToolUseId === "string" &&
-    item.parentToolUseId.length > 0
-  );
-}
-
-function hasMeasuredSpawnDepth(item: AgentChatItem): boolean {
-  return "spawnDepth" in item && typeof item.spawnDepth === "number";
-}
-
-function subagentDepthCopy(item: AgentChatItem): string {
-  return hasParentToolUseId(item) && !hasMeasuredSpawnDepth(item) ? " · depth unavailable" : "";
-}
-
-function thoughtLabel(item: AgentChatItem): string {
-  const subagentLabel = hasParentToolUseId(item);
-  const depthCopy = subagentDepthCopy(item);
-  return subagentLabel ? `Subagent thought${depthCopy}` : "Thought";
-}
-
 /** Description line for a model option: catalog copy plus the context size. */
 function modelOptionDescription(model: SessionModel): string | undefined {
   const parts = [
@@ -472,347 +359,6 @@ function pendingEffortSentence(manifest: SessionManifest | null, effortId: strin
   const model = manifestModel(manifest);
   const effort = model?.efforts?.find((entry) => entry.id === effortId);
   return effort === undefined ? null : `switching to ${effort.label}…`;
-}
-
-function isToolFailedStatus(status: string): boolean {
-  return status.toLowerCase() === "failed";
-}
-
-/** The frame (entry base class, subagent class, indent) the surface gives a
- * tool item. Groups compute it from their first item exactly like
- * `renderItem` does, so the wrapper aligns with its rows. */
-function entryFrame(item: ToolChatItem): {
-  className: string;
-  style: { marginInlineStart: string } | undefined;
-} {
-  const isSubagent = hasParentToolUseId(item);
-  const measuredDepth =
-    "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
-  const visibleDepth =
-    measuredDepth === null
-      ? null
-      : Math.min(MAX_VISIBLE_SUBAGENT_DEPTH, Math.max(0, measuredDepth));
-  const className = `workspace-chat-entry workspace-chat-tool${
-    isSubagent ? " workspace-chat-subagent" : ""
-  }${isSubagent && measuredDepth === null ? " workspace-chat-subagent-depth-unknown" : ""}`;
-  const style =
-    isSubagent && visibleDepth !== null
-      ? { marginInlineStart: `${visibleDepth * SUBAGENT_INDENT_PX}px` }
-      : undefined;
-  return { className, style };
-}
-
-function renderToolItem(
-  item: ToolChatItem,
-  className: string,
-  style: { marginInlineStart: string } | undefined,
-  transcriptEnded: boolean,
-) {
-  const model = toolRowDisplay(item);
-  const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
-  const running = isToolRunningStatus(item.status) && !interrupted;
-  const failed = item.kind !== "plan" && isToolFailedStatus(item.status);
-  const status = item.status.toLowerCase();
-  const cancelled = status === "cancelled" || status === "canceled";
-  const planDecision =
-    item.kind === "plan"
-      ? ["Approved", "Rejected", "Withdrawn"].includes(item.title)
-        ? item.title
-        : undefined
-      : undefined;
-  // The wire line only decides WHICH rows are command rows; the chip shows
-  // the row's display title, which for some providers is the line itself.
-  const commandRow = item.command !== undefined;
-  // The strip on the label is paid by the yielding text beside it: only a
-  // block that actually carries one claims it.
-  const hasSummary = model.summary !== undefined || planDecision !== undefined;
-  const toolClassName = `${className}${item.kind === "plan" ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
-  return (
-    <details className={toolClassName} key={item.id} style={style}>
-      <summary className="workspace-chat-tool-summary">
-        {/* A command row is chip + exit marker (SPEC-regions line 77): no icon, no label. */}
-        {commandRow ? null : <ToolIcon name={model.icon} />}
-        <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
-          {commandRow ? null : (
-            <span className="workspace-chat-tool-label" title={model.displayName}>
-              {model.displayName}
-            </span>
-          )}
-          {commandRow && model.summary !== undefined ? (
-            <CommandChip command={model.summary} />
-          ) : null}
-          {!commandRow && model.summary !== undefined ? (
-            <span className="workspace-chat-tool-summary-text">{model.summary}</span>
-          ) : null}
-          {planDecision !== undefined ? (
-            <span className="workspace-chat-tool-summary-text">{planDecision}</span>
-          ) : null}
-        </span>
-        {item.exitCode !== undefined ? <ExitMarker exitCode={item.exitCode} /> : null}
-        {interrupted ? (
-          <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
-        ) : null}
-        {/* A zero code carries no failure of its own: the status mark stays. */}
-        {failed && (item.exitCode === undefined || item.exitCode === 0) ? (
-          <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
-            ×
-          </span>
-        ) : null}
-        {running ? (
-          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
-        ) : null}
-      </summary>
-      <div className="workspace-chat-tool-body">
-        {item.locations !== undefined && item.locations.length > 0 ? (
-          <div className="workspace-chat-tool-locations">
-            {item.locations.map((location, index) => (
-              <span className="workspace-chat-tool-location" key={index}>
-                {location.line !== undefined ? `${location.path}:${location.line}` : location.path}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {item.output ? (
-          <div className="workspace-chat-copy">
-            {item.kind === "plan" ? <MarkdownText text={item.output} /> : item.output}
-          </div>
-        ) : null}
-      </div>
-    </details>
-  );
-}
-
-interface ToolCallGroupEntryProps {
-  group: ToolCallGroup;
-  a2aNames: A2aNameSource;
-  transcriptEnded: boolean;
-}
-
-/** One collapsed row for a run of consecutive tool calls (see `toolCallGroups`).
- * The wrapper carries the first item's frame, plus `is-running` when any
- * item is still running and `is-failed` with the failed mark when any item
- * failed. A run replayed into a transcript with no process left carries
- * `is-interrupted` instead of `is-running`: nothing will ever complete it. */
-function ToolCallGroupEntry({ group, a2aNames, transcriptEnded }: ToolCallGroupEntryProps) {
-  const [open, setOpen] = useState(false);
-  const first = group.items[0];
-  if (first === undefined) return null;
-  const frame = entryFrame(first);
-  const anyRunning = group.items.some((item) => isToolRunningStatus(item.status));
-  const interrupted = transcriptEnded && anyRunning;
-  const running = anyRunning && !transcriptEnded;
-  const failed = group.items.some((item) => isToolFailedStatus(item.status));
-  const callCount = `${group.items.length} tool calls`;
-  const className = `${frame.className} workspace-chat-tool-group${running ? " is-running" : ""}${failed ? " is-failed" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
-  return (
-    <details
-      className={className}
-      open={open}
-      style={frame.style}
-      onToggle={(event) => {
-        setOpen(event.currentTarget.open);
-      }}
-    >
-      <summary className="workspace-chat-tool-group-summary" aria-expanded={open}>
-        <ToolIcon name="wrench" />
-        <span className="workspace-chat-tool-group-count">{callCount}</span>
-        <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
-        {interrupted ? (
-          <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
-        ) : null}
-        {failed ? (
-          <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
-            ×
-          </span>
-        ) : null}
-        {running ? (
-          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
-        ) : null}
-      </summary>
-      <div className="workspace-chat-tool-group-body">
-        {group.items.map((item) => renderItem(item, a2aNames, transcriptEnded, null))}
-      </div>
-    </details>
-  );
-}
-
-function renderEntry(
-  entry: AgentChatItem | ToolCallGroup,
-  a2aNames: A2aNameSource,
-  transcriptEnded: boolean,
-  fileLinks: ChatFileLinks | null,
-) {
-  if (isToolCallGroup(entry)) {
-    return (
-      <ToolCallGroupEntry
-        key={entry.id}
-        group={entry}
-        a2aNames={a2aNames}
-        transcriptEnded={transcriptEnded}
-      />
-    );
-  }
-  return renderItem(entry, a2aNames, transcriptEnded, fileLinks);
-}
-
-function renderItem(
-  item: AgentChatItem,
-  a2aNames: A2aNameSource,
-  transcriptEnded: boolean,
-  fileLinks: ChatFileLinks | null,
-) {
-  const isSubagent = hasParentToolUseId(item);
-  const measuredDepth =
-    "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
-  const visibleDepth =
-    measuredDepth === null
-      ? null
-      : Math.min(MAX_VISIBLE_SUBAGENT_DEPTH, Math.max(0, measuredDepth));
-  const className = `workspace-chat-entry workspace-chat-${item.role}${
-    isSubagent ? " workspace-chat-subagent" : ""
-  }${isSubagent && measuredDepth === null ? " workspace-chat-subagent-depth-unknown" : ""}`;
-  const style =
-    isSubagent && visibleDepth !== null
-      ? { marginInlineStart: `${visibleDepth * SUBAGENT_INDENT_PX}px` }
-      : undefined;
-  if (item.role === "tool") {
-    const frame = entryFrame(item);
-    return renderToolItem(item, frame.className, frame.style, transcriptEnded);
-  }
-
-  if (item.role === "thought") {
-    return (
-      <ThoughtRow
-        key={item.id}
-        label={thoughtLabel(item)}
-        className={className}
-        style={style}
-        text={item.text}
-        isStreaming={item.isStreamingThought ?? false}
-      />
-    );
-  }
-
-  if (item.role === "system") {
-    return (
-      <div className={className} key={item.id} data-severity={item.severity} style={style}>
-        <div className="workspace-chat-copy">{item.text}</div>
-      </div>
-    );
-  }
-
-  if (item.role === "permission_request") {
-    const childName = boundPermissionHeaderField(item.childName);
-    const toolTitle = boundPermissionHeaderField(item.toolTitle);
-    const cardId = boundPermissionHeaderField(item.cardId);
-    return (
-      <div
-        className="workspace-chat-entry workspace-chat-permission-request"
-        key={item.id}
-        data-testid="agent-permission-request"
-      >
-        {/* NOT labelled "System": this item is parsed out of session text —
-            the daemon's send path in the honest case, but a pasted block is
-            byte-identical to this app, and the app cannot verify who authored
-            it. A chip claiming the daemon spoke would be styling making a
-            verification the code never did. */}
-        <div
-          className="workspace-chat-label workspace-chat-label-unverified"
-          title="This arrived as session text. The app cannot verify the daemon sent it."
-        >
-          Relayed · unverified
-        </div>
-        <div
-          className="workspace-chat-copy"
-          title={`${item.childName} · ${item.toolTitle} · ${item.cardId}`}
-        >
-          Its child {childName} asks to run {toolTitle} and is waiting on a permission card. Card{" "}
-          {cardId} — it answers through its own tool; the card itself is on the child&apos;s
-          session.
-        </div>
-        {(() => {
-          const excerptRender = excerptRenderFor(item.excerptState);
-          if (!excerptRender.block) {
-            // No quoted block: the note stands alone — a blockquote here
-            // would style absence as if words were quoted inside it.
-            return excerptRender.note === null ? null : (
-              <p className="workspace-chat-child-said-note" role="note">
-                {excerptRender.note}
-              </p>
-            );
-          }
-          // The child's own words — a quoted block with its own styling and
-          // its own label, never the sentence styling above: the styling is
-          // the claim "the daemon said this", and nothing here was
-          // verified. This quoting is a mitigation, not a fix: a hostile
-          // child can still write instructions into the excerpt; the block
-          // only keeps the reader able to tell whose words they are. The
-          // text renders verbatim — never re-truncated, never un-escaped —
-          // through React's default escaping, which keeps every byte inert.
-          return (
-            <figure className="workspace-chat-child-said">
-              <figcaption>the child&apos;s own words</figcaption>
-              <blockquote>{item.excerpt}</blockquote>
-              {excerptRender.note === null ? null : (
-                <p className="workspace-chat-child-said-note" role="note">
-                  {excerptRender.note}
-                </p>
-              )}
-            </figure>
-          );
-        })()}
-      </div>
-    );
-  }
-
-  if (item.role === "daemon_notice") {
-    return <DaemonNoticeCard key={item.id} item={item} />;
-  }
-
-  if (item.role === "a2a_message") {
-    return <A2aMessageCard key={item.id} item={item} names={a2aNames} />;
-  }
-
-  if (item.role === "a2a_outgoing_message") {
-    return <A2aOutgoingMessageCard key={item.id} item={item} />;
-  }
-
-  if (item.role === "error") {
-    return (
-      <div className={className} key={item.id} role="alert" style={style}>
-        <div className="workspace-chat-error-line">
-          <ErrorTriangleIcon />
-          <span className="workspace-chat-copy">{item.text}</span>
-        </div>
-        {item.detail ? <div className="workspace-chat-error-detail">{item.detail}</div> : null}
-      </div>
-    );
-  }
-
-  if (item.role === "user") {
-    return (
-      <div className={className} key={item.id} data-turn-anchor={item.id} style={style}>
-        <div className="workspace-chat-bubble">
-          <div className="workspace-chat-copy">{item.text}</div>
-          <MessageCopyButton text={item.text} />
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={className}
-      key={item.id}
-      style={style}
-      title={isSubagent && measuredDepth === null ? "Subagent depth unavailable" : undefined}
-    >
-      <div className="workspace-chat-copy">
-        <MarkdownText text={item.text} fileLinks={fileLinks} />
-      </div>
-      <MessageCopyButton text={item.text} />
-    </div>
-  );
 }
 
 export const AgentChatSurface = memo(function AgentChatSurface({
@@ -1100,39 +646,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // transcript's history, and both are gone after Reopen's fresh attach; the
   // composer stays disabled either way until then.
   const recoveredAttach = observedType(observedState) === "recovered";
-  // `AgentSession` replaces the items array on every update (copy-on-write),
-  // so this memo recomputes whenever the transcript changes and can never
-  // go stale; it only skips work on re-renders with identical items.
   const lastItem = state.items[state.items.length - 1];
   const streamingThoughtId =
     state.streaming && !osGone && lastItem?.role === "thought" ? lastItem.id : null;
-  const entries = useMemo(() => {
-    const items = state.items.map((item) =>
-      item.role === "thought"
-        ? { ...item, isStreamingThought: item.id === streamingThoughtId }
-        : item,
-    );
-    const grouped = groupToolCalls(
-      recoveredAttach
-        ? items.filter(
-            (item) => item.role !== "error" || item.text !== RECOVERED_SESSION_UNAVAILABLE,
-          )
-        : items,
-    );
-    if (pendingPlanToolCallId === null) return grouped;
-    // The plan row whose approval card is the one on screen is dropped here
-    // only — the item stays in `state.items`, so the row returns to this
-    // exact position when the permission resolves. Plans never join tool
-    // groups, so the filter cannot disturb one.
-    return grouped.filter((entry) => {
-      if (isToolCallGroup(entry)) return true;
-      return !(
-        entry.role === "tool" &&
-        entry.kind === "plan" &&
-        entry.toolCallId === pendingPlanToolCallId
-      );
-    });
-  }, [state.items, recoveredAttach, streamingThoughtId, pendingPlanToolCallId]);
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const composerDisabled = disabledReason !== null;
   // Memoised so an `agent_tasks` frame re-renders the pill alone: the
@@ -1205,7 +721,15 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           {state.items.length === 0 && state.status === "idle" && !osGone ? (
             <div className="workspace-chat-empty">Start a conversation with the agent.</div>
           ) : null}
-          {entries.map((entry) => renderEntry(entry, a2aNames, osGone, fileLinks))}
+          <TranscriptRows
+            items={state.items}
+            recoveredAttach={recoveredAttach}
+            pendingPlanToolCallId={pendingPlanToolCallId}
+            a2aNames={a2aNames}
+            fileLinks={fileLinks}
+            transcriptEnded={osGone}
+            streamingThoughtId={streamingThoughtId}
+          />
           {state.streaming && !osGone ? (
             <div className="workspace-chat-typing" role="status">
               Agent is working

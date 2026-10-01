@@ -103,7 +103,8 @@ import {
   sessionSetFeature,
 } from "../../lib/tauri";
 import { setPreferredEffort } from "../../lib/modelPrefs";
-import { AgentChatSurface, composerDisabledReason, excerptRenderFor } from "./AgentChatSurface";
+import { AgentChatSurface, composerDisabledReason } from "./AgentChatSurface";
+import { excerptRenderFor } from "./transcript/PermissionRequestRow";
 
 const LIVE_OBSERVED: SessionState = { type: "live", generation: 1 };
 
