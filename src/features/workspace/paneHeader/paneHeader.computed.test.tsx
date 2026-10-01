@@ -41,6 +41,7 @@ const RUNNING: HeaderDisplay = {
   tone: "green",
   pulse: true,
   tooltip: "Running",
+  srDetail: null,
 };
 const QUIET: HeaderDisplay = {
   word: "Quiet",
@@ -48,6 +49,7 @@ const QUIET: HeaderDisplay = {
   tone: "border",
   pulse: false,
   tooltip: "Quiet — no output, may still be working.",
+  srDetail: "no output, may still be working.",
 };
 
 function sheets(): string[] {

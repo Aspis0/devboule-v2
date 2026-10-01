@@ -13,6 +13,10 @@ export interface HeaderDisplay {
    * or stopped states, and never for an attached but idle session. */
   pulse: boolean;
   tooltip: string;
+  /** What assistive tech hears after the visible word: the tooltip minus a
+   * state word the word already says. Null omits the suffix, so the status
+   * never ends in a dangling separator. */
+  srDetail: string | null;
 }
 
 const DOT_TONE: Record<ChipDot, HeaderDotTone> = {
@@ -32,6 +36,17 @@ function attentionWord(reason: Attention["reason"]): string {
   return "Attention";
 }
 
+/** The tooltip for the screen-reader suffix: the same words without a state
+ * word the visible label already said — the roster line leads with it, the
+ * attention tooltip trails it — or null when nothing supplemental is left. */
+function srDetailFrom(word: string, tooltip: string): string | null {
+  if (tooltip === word) return null;
+  if (tooltip.startsWith(`${word} — `)) return tooltip.slice(word.length + 3);
+  if (tooltip.startsWith(`${word}; `)) return tooltip.slice(word.length + 2);
+  if (tooltip.endsWith(`\n${word}`)) return tooltip.slice(0, -(word.length + 1));
+  return tooltip;
+}
+
 export function headerDisplay(
   observed: SessionState | null | undefined,
   elapsedMs: number | null | undefined,
@@ -39,6 +54,17 @@ export function headerDisplay(
   activity?: AgentActivityState,
   attention?: Attention,
 ): HeaderDisplay {
+  const display = composeHeader(observed, elapsedMs, agentStatus, activity, attention);
+  return { ...display, srDetail: srDetailFrom(display.word, display.tooltip) };
+}
+
+function composeHeader(
+  observed: SessionState | null | undefined,
+  elapsedMs: number | null | undefined,
+  agentStatus: AgentStatus | null,
+  activity?: AgentActivityState,
+  attention?: Attention,
+): Omit<HeaderDisplay, "srDetail"> {
   const base = rosterStateDisplay(observed, elapsedMs, activity);
   // The roster's ask outranks everything the controller knows: a quiet wire
   // or a failed turn must never read as calmer than the pending approval.

@@ -31,17 +31,14 @@ export function PaneHeader({
       />
       <span className={agent ? "workspace-agent-title" : "workspace-terminal-title"}>{title}</span>
       {agent ? subagentSlot : null}
-      {agent ? (
-        <span className="workspace-agent-status" role="status" title={display.tooltip}>
-          {text}
-          <span className="sr-only"> — {display.tooltip}</span>
-        </span>
-      ) : (
-        <span className="workspace-terminal-status" role="status" title={display.tooltip}>
-          {text}
-          <span className="sr-only"> — {display.tooltip}</span>
-        </span>
-      )}
+      <span
+        className={agent ? "workspace-agent-status" : "workspace-terminal-status"}
+        role="status"
+        title={display.tooltip}
+      >
+        {text}
+        {display.srDetail === null ? null : <span className="sr-only"> — {display.srDetail}</span>}
+      </span>
       {agent ? null : trailingSlot}
       {menu === null ? null : <PaneHeaderKebab menu={menu} />}
     </div>

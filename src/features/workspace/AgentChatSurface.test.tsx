@@ -2559,8 +2559,8 @@ describe("AgentChatSurface", () => {
       "Quiet — no output for 12 seconds, may still be working.",
     );
     expect(container.querySelector('[role="status"]')?.getAttribute("aria-label")).toBeNull();
-    expect(container.querySelector("[role='status'] .sr-only")?.textContent).toContain(
-      "Quiet — no output for 12 seconds, may still be working.",
+    expect(container.querySelector("[role='status'] .sr-only")?.textContent).toBe(
+      " — no output for 12 seconds, may still be working.",
     );
   });
 

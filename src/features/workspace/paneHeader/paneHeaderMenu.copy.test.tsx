@@ -43,7 +43,14 @@ async function open(
         kind={kind}
         title="Human title"
         menu={menu}
-        display={{ word: "Running", detail: null, tone: "green", pulse: true, tooltip: "Running" }}
+        display={{
+          word: "Running",
+          detail: null,
+          tone: "green",
+          pulse: true,
+          tooltip: "Running",
+          srDetail: null,
+        }}
       />,
     ),
   );

@@ -24,6 +24,7 @@ const DISPLAY = {
   tone: "green",
   pulse: true,
   tooltip: "Running",
+  srDetail: null,
 } as const;
 
 function renderHeader() {

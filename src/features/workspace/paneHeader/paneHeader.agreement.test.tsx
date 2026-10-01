@@ -70,7 +70,9 @@ describe("the rendered header agrees with the chip", () => {
     expect(visible.length).toBeGreaterThan(0);
     expect(visible).toBe("Recovered");
     expect(status?.getAttribute("title")).toBe(chip.tooltip);
-    expect(status?.querySelector(".sr-only")?.textContent).toContain(chip.tooltip);
+    expect(status?.querySelector(".sr-only")?.textContent).toBe(
+      " — restored after the restart; some messages could not be checked.",
+    );
   });
 
   it("shows the ended word with a painted dot for an ended row", async () => {

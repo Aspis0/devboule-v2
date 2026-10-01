@@ -39,6 +39,7 @@ describe("headerDisplay", () => {
       tone: "green",
       pulse: true,
       tooltip: "Running",
+      srDetail: null,
     });
   });
 
@@ -49,6 +50,7 @@ describe("headerDisplay", () => {
       tone: "border",
       pulse: false,
       tooltip: "Quiet — no output for 4 minutes, may still be working.",
+      srDetail: "no output for 4 minutes, may still be working.",
     });
     expect(headerDisplay(SILENT, null, "idle", "working", undefined)).toEqual({
       word: "Quiet",
@@ -56,6 +58,7 @@ describe("headerDisplay", () => {
       tone: "border",
       pulse: false,
       tooltip: "Quiet — no output, may still be working.",
+      srDetail: "no output, may still be working.",
     });
   });
 
@@ -66,6 +69,9 @@ describe("headerDisplay", () => {
     expect(recovered.tone).toBe("recovered");
     expect(recovered.pulse).toBe(false);
     expect(recovered.tooltip).toContain("Recovered");
+    expect(recovered.srDetail).toBe(
+      "restored after the restart; some messages could not be checked.",
+    );
     expect(ended.word).toBe("Stopped");
     expect(ended.tone).toBe("terracotta");
     expect(ended.word).not.toBe(recovered.word);
@@ -79,6 +85,7 @@ describe("headerDisplay", () => {
       tone: "attention",
       pulse: false,
       tooltip: "Running\nNeeds your approval",
+      srDetail: "Running",
     });
     expect(headerDisplay(SILENT, 60_000, "idle", "blocked", permission()).tone).toBe("attention");
   });
@@ -99,6 +106,7 @@ describe("headerDisplay", () => {
       tone: "terracotta",
       pulse: false,
       tooltip: "Failed",
+      srDetail: null,
     });
     expect(headerDisplay(LIVE, 0, "error", undefined, undefined).word).toBe("Failed");
   });
@@ -114,6 +122,7 @@ describe("headerDisplay", () => {
       tone: "border",
       pulse: false,
       tooltip: "Connecting",
+      srDetail: null,
     });
     expect(headerDisplay(null, null, "initializing", undefined, undefined).word).toBe("Connecting");
   });
@@ -134,6 +143,7 @@ describe("the pulse means a turn runs, not that the process is up", () => {
       tone: "green",
       pulse: false,
       tooltip: "Running",
+      srDetail: null,
     });
   });
 
