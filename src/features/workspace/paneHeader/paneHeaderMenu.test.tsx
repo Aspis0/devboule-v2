@@ -92,6 +92,10 @@ describe("pane header menu entries", () => {
     expect(headerMenu("", seam())?.copyPath).toBeNull();
   });
 
+  it("preserves a bare verbatim prefix instead of producing an empty copy", () => {
+    expect(headerMenu("\\\\?\\", undefined)?.copyPath).toBe("\\\\?\\");
+  });
+
   it("dispatches every close entry with its tab-menu key", async () => {
     const wired = seam();
     const menu = headerMenu("C:\\x", wired);

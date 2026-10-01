@@ -1,4 +1,5 @@
 import type { TabMenuEntry } from "../strip/tabCloseMenu";
+import { displayPath } from "../../../lib/displayPath";
 
 /** Do not add a file named PaneHeaderMenu.* beside this one: on a
  * case-insensitive filesystem it collides with this module (TS1149). */
@@ -12,6 +13,7 @@ export interface HeaderMenuSeam {
 }
 
 export interface PaneHeaderMenu {
+  copySessionId: string | null;
   copyPath: string | null;
   closeEntries: TabMenuEntry[];
   onCloseEntry: ((key: TabMenuEntry["key"]) => void) | null;
@@ -45,18 +47,24 @@ export function middleTruncate(value: string, maxLength = PATH_NOTE_LIMIT): stri
   return `${clusters.slice(0, head).join("")}…${clusters.slice(clusters.length - tail).join("")}`;
 }
 
-/** The header menu with no path row when the row carries no cwd, and no
- * close rows until the workspace wires the seam: entry enablement needs the
- * tab's roster position and firing needs the tab-close flow, both above the
- * surfaces. Null means no kebab — a menu with nothing actionable is dead;
- * a Rename entry alone is actionable. */
+/** Null hides the kebab when the surface has no available action;
+ * a copy or Rename row alone is actionable. */
 export function headerMenu(
   cwd: string | undefined,
   seam: HeaderMenuSeam | undefined,
+  sessionId?: string,
 ): PaneHeaderMenu | null {
-  const copyPath = !cwd ? null : cwd;
+  const copySessionId = sessionId || null;
+  const copyPath = displayPath(cwd ?? "") || null;
   const closeEntries = seam?.closeEntries ?? [];
   const onRename = seam?.onRename ?? null;
-  if (copyPath === null && closeEntries.length === 0 && onRename === null) return null;
-  return { copyPath, closeEntries, onCloseEntry: seam?.onCloseEntry ?? null, onRename };
+  if (copySessionId === null && copyPath === null && closeEntries.length === 0 && onRename === null)
+    return null;
+  return {
+    copySessionId,
+    copyPath,
+    closeEntries,
+    onCloseEntry: seam?.onCloseEntry ?? null,
+    onRename,
+  };
 }

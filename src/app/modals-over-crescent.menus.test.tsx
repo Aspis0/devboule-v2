@@ -113,6 +113,7 @@ describe("walking every menu the source finds — the band's open is the outside
       <ShellWith>
         <PaneHeaderKebab
           menu={{
+            copySessionId: null,
             copyPath: null,
             closeEntries: [{ key: "close", label: "Close", disabled: false, destructive: true }],
             onCloseEntry: () => undefined,
@@ -292,6 +293,7 @@ describe("walking every menu the source finds — the band's open is the outside
       closeSingle: vi.fn(),
       closeTab: vi.fn(),
       activateEntry: vi.fn(),
+      copyEntryValue: vi.fn(() => null),
       activatePaneEntry: vi.fn(),
       confirmClose: vi.fn(),
       cancelClose: vi.fn(),

@@ -12,6 +12,12 @@ import {
 import { buildSelectionCloseEntry, buildTabCloseEntries, type TabMenuEntry } from "./tabCloseMenu";
 import { successorOf, type StripTab } from "./toolTabs";
 import { toolTabMenuEntries } from "./toolTabMenu";
+import {
+  buildTabCopyEntries,
+  isTabCopyAction,
+  tabCopyValue,
+  type TabCopyAction,
+} from "./tabCopyActions";
 
 /** The DOM id of a strip tab. Workspace renders it; the flow's focus
  * restore looks it up after the closed tabs have left the strip. Sessions
@@ -167,6 +173,7 @@ export function useTabCloseFlow({
   closeSingle: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   activateEntry: (key: TabMenuEntry["key"]) => void;
+  copyEntryValue: (key: TabCopyAction) => string | null;
   activatePaneEntry: (anchorId: string, key: TabMenuEntry["key"]) => void;
   confirmClose: () => void;
   cancelClose: () => void;
@@ -189,9 +196,7 @@ export function useTabCloseFlow({
   const openMenuState = menuIsValid(menuState, selection, tabs) ? menuState : null;
   const anchorTab =
     openMenuState === null ? undefined : tabs.find((tab) => tab.id === openMenuState.anchorId);
-  // Rename sits ahead of the close group on an agent tab;
-  // a selection menu and a tool tab's menu are close-only. The capability
-  // gate lives in the rename hook's entry builder, not here.
+  // Selection menus act on the whole selection; copies name a single anchor.
   const menu =
     openMenuState === null || anchorTab === undefined
       ? null
@@ -200,6 +205,7 @@ export function useTabCloseFlow({
           entries: openMenuState.viaSelection
             ? [buildSelectionCloseEntry(openMenuState.targets.length)]
             : (toolTabMenuEntries(tabs, openMenuState.anchorId) ?? [
+                ...buildTabCopyEntries(anchorTab),
                 ...renameEntriesFor(openMenuState.anchorId),
                 ...buildTabCloseEntries(
                   tabs.findIndex((tab) => tab.id === openMenuState.anchorId),
@@ -331,6 +337,12 @@ export function useTabCloseFlow({
 
   const closeMenu = useCallback(() => setMenuState(null), []);
 
+  const copyEntryValue = (key: TabCopyAction): string | null => {
+    if (openMenuState === null || openMenuState.viaSelection || anchorTab === undefined)
+      return null;
+    return tabCopyValue(anchorTab, key);
+  };
+
   // The per-anchor core both entry points share: the tab menu resolves its
   // anchor from its own open state, the pane header names its session.
   const fireAnchorEntry = useCallback(
@@ -363,6 +375,7 @@ export function useTabCloseFlow({
 
   const activateEntry = useCallback(
     (key: TabMenuEntry["key"]) => {
+      if (isTabCopyAction(key)) return;
       // Only the menu's own buttons get here, so menuState stands for the
       // open menu; reading the state (not the derived object) keeps this
       // callback stable across renders.
@@ -388,7 +401,7 @@ export function useTabCloseFlow({
   // Pane Close stops the session; its other close entries remove tabs locally.
   const activatePaneEntry = useCallback(
     (anchorId: string, key: TabMenuEntry["key"]) => {
-      if (key === "close-selection" || key === "delete") return;
+      if (isTabCopyAction(key) || key === "close-selection" || key === "delete") return;
       if (key === "rename") {
         openRename?.(anchorId);
         return;
@@ -468,6 +481,7 @@ export function useTabCloseFlow({
     closeSingle,
     closeTab,
     activateEntry,
+    copyEntryValue,
     activatePaneEntry,
     confirmClose,
     cancelClose,

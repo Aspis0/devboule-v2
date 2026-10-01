@@ -403,10 +403,12 @@ export function SessionStrip({
         {tabSelection.announcement}
       </div>
       <SessionTabMenu
+        key={tabClose.menu?.anchorId ?? "closed"}
         open={tabClose.menu !== null}
         anchorRef={tabClose.anchorRef}
         entries={tabClose.menu?.entries ?? []}
         onEntry={tabClose.activateEntry}
+        copyEntryValue={tabClose.copyEntryValue}
         onClose={tabClose.closeMenu}
       />
       <ConfirmDialog

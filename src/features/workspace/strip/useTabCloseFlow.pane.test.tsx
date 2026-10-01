@@ -144,7 +144,7 @@ describe("activatePaneEntry", () => {
     await act(async () => root.unmount());
   });
 
-  it("refuses the keys the header never offers", async () => {
+  it("ignores delete, selection and copy keys in the pane close dispatcher", async () => {
     const onClose = vi.fn();
     const { host, root, flow } = await mount(SESSIONS, onClose);
     await act(async () => {
@@ -152,9 +152,12 @@ describe("activatePaneEntry", () => {
     });
     await act(async () => {
       flow().activatePaneEntry("agent-two", "close-selection");
+      flow().activatePaneEntry("agent-two", "copy-session-id");
+      flow().activatePaneEntry("agent-two", "copy-path");
     });
     expect(host.querySelector("[data-testid='close-confirm']")).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
+    expect(flow().confirm).toBeNull();
     await act(async () => root.unmount());
   });
 
@@ -169,6 +172,22 @@ describe("activatePaneEntry", () => {
     });
     expect(host.querySelector("[data-testid='close-confirm-title']")).toBeNull();
     expect(onCloseTabs).toHaveBeenCalledWith(["agent-one"]);
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("keeps copy keys out of the close dispatcher", async () => {
+    const onClose = vi.fn();
+    const { root, flow, onCloseTabs } = await mount(SESSIONS, onClose);
+    await act(async () => flow().openMenu("agent-one"));
+    await act(async () => {
+      flow().activateEntry("copy-session-id");
+      flow().activateEntry("copy-path");
+    });
+    expect(flow().copyEntryValue("copy-session-id")).toBe("agent-one");
+    expect(flow().menu).not.toBeNull();
+    expect(flow().confirm).toBeNull();
+    expect(onCloseTabs).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });

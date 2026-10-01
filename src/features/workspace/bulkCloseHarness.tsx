@@ -132,7 +132,7 @@ vi.mock("../terminal/TerminalSurface", async () => {
       headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
     }) => {
       headerMenuSeams.bySession.set(sessionId, headerMenuSeam);
-      const menu = headerMenu(undefined, headerMenuSeam);
+      const menu = headerMenu(undefined, headerMenuSeam, sessionId);
       return (
         <>
           <div data-testid="terminal-surface">{sessionId}</div>
@@ -201,7 +201,7 @@ vi.mock("./AgentChatSurface", async () => {
     }) => {
       headerMenuSeams.bySession.set(sessionId, headerMenuSeam);
       headerMenuSeams.permissionBySession.set(sessionId, onPermissionRequest);
-      const menu = headerMenu(undefined, headerMenuSeam);
+      const menu = headerMenu(undefined, headerMenuSeam, sessionId);
       const children = sessionRoster.filter((row) => row.createdBy === sessionId);
       const subagents: AgentSubagent[] = children.map((row) => ({
         id: row.id,

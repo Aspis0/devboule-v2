@@ -1,5 +1,3 @@
-// A tool anchor's menu: close-only entries, and null for anything else.
-
 import { describe, expect, it } from "vitest";
 import { composeStripTabs } from "./toolTabs";
 import { makeToolTab } from "./toolTabs";
@@ -18,10 +16,11 @@ function session(id: string): Session {
 }
 
 describe("toolTabMenuEntries", () => {
-  it("offers the close entries for a tool anchor", () => {
+  it("offers copy and close entries for a tool anchor", () => {
     const tabs = composeStripTabs([session("s1")], [makeToolTab("diff", "ws", "a.ts")]);
     const entries = toolTabMenuEntries(tabs, "tool:diff:ws:a.ts");
     expect(entries?.map((entry) => entry.label)).toEqual([
+      "Copy relative path",
       "Close to the left",
       "Close to the right",
       "Close other tabs",

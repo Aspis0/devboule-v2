@@ -12,6 +12,7 @@ import {
   flush,
   liveSnapshot,
   menuLabels,
+  menu,
   middleClick,
   chipClick,
   clickMenuEntry,
@@ -71,10 +72,39 @@ async function openActiveDiffTab(): Promise<string> {
 }
 
 describe("tool chips", () => {
+  it.each([true, false])(
+    "reports the diff path copy result (success: %s) and keeps the tab open",
+    async (success) => {
+      const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+      const writeText = vi.fn(async () => {
+        if (!success) throw new Error("denied");
+      });
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      try {
+        const id = await openActiveDiffTab();
+        await rightClick(id);
+        expect(menuLabels()).not.toContain("Copy session ID");
+        expect(menuLabels()).toContain("Copy relative path");
+        await clickMenuEntry("Copy relative path");
+        expect(writeText).toHaveBeenCalledExactlyOnceWith("src/writer.ts");
+        expect(menuLabels()).toContain(success ? "Copied" : "Copy failed");
+        expect(menu().parentElement?.querySelector('[role="status"]')?.textContent).toBe(
+          success ? "Relative path copied" : "Relative path copy failed",
+        );
+        expect(tabElement(id)).not.toBeNull();
+        expect(sessionStop).not.toHaveBeenCalled();
+      } finally {
+        if (original !== undefined) Object.defineProperty(navigator, "clipboard", original);
+        else Reflect.deleteProperty(navigator, "clipboard");
+      }
+    },
+  );
+
   it("a plain tool-anchor menu survives a session roster push", async () => {
     const id = await openActiveDiffTab();
     await rightClick(id);
     expect(menuLabels()).toEqual([
+      "Copy relative path",
       "Close to the left",
       "Close to the right",
       "Close other tabs",
@@ -88,6 +118,7 @@ describe("tool chips", () => {
     ]);
 
     expect(menuLabels()).toEqual([
+      "Copy relative path",
       "Close to the left",
       "Close to the right",
       "Close other tabs",

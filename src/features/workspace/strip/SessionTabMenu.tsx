@@ -1,7 +1,5 @@
-// Why: the strip's tab context menu — whatever close entries the caller
-// builds for the row — rendered on the shared portal, anchored to the
-// right-clicked row, with the "+" menu's keyboard model
-// (menuNav.ts) so the menus cannot drift apart.
+// Shares the + menu's keyboard model so tab actions navigate consistently.
+// The shared model keeps the menus from drifting apart.
 
 import {
   Fragment,
@@ -15,6 +13,8 @@ import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "./menuNav";
 import { useMenuOpen } from "../../../lib/menuOpen";
 import type { TabMenuEntry } from "./tabCloseMenu";
+import { isTabCopyAction, type TabCopyAction } from "./tabCopyActions";
+import { useMenuCopyFeedback } from "../../../lib/useMenuCopyFeedback";
 
 interface SessionTabMenuProps {
   /** The menu is up; the owner owns the open state and says so. */
@@ -22,6 +22,7 @@ interface SessionTabMenuProps {
   anchorRef: RefObject<HTMLElement | null>;
   entries: TabMenuEntry[];
   onEntry: (key: TabMenuEntry["key"]) => void;
+  copyEntryValue: (key: TabCopyAction) => string | null;
   onClose: () => void;
 }
 
@@ -30,14 +31,14 @@ export function SessionTabMenu({
   anchorRef,
   entries,
   onEntry,
+  copyEntryValue,
   onClose,
 }: SessionTabMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const feedback = useMenuCopyFeedback();
   useMenuOpen(open, onClose);
 
-  // Focus the first entry that can act: a disabled item takes no focus, and
-  // the first entry IS disabled on the first tab — so the scan skips it and
-  // the menu always opens with an enabled entry focused.
+  // Disabled rows cannot take focus, so opening skips to an enabled action.
   useEffect(() => {
     if (!open) return;
     const first = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
@@ -99,32 +100,47 @@ export function SessionTabMenu({
       anchorRef={anchorRef}
       onDismiss={onClose}
       className="workspace-surface-menu"
-      role="menu"
-      aria-label="Tab actions"
       onKeyDown={onKeyDown}
     >
-      {entries.map((entry) => (
-        <Fragment key={entry.key}>
-          {entry.destructive ? (
-            // The separator before Delete is part of what the entry means:
-            // the three entries above rearrange tabs, this one destroys one.
-            <div className="workspace-menu-separator" role="separator" />
-          ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            className={`workspace-surface-option${entry.destructive ? " workspace-menu-option-destructive" : ""}`}
-            disabled={entry.disabled}
-            onClick={() => onEntry(entry.key)}
-          >
-            {entry.label}
-          </button>
-          {entry.separatorAfter ? (
-            // Rename acts on this tab; the entries after it close tabs.
-            <div className="workspace-menu-separator" role="separator" />
-          ) : null}
-        </Fragment>
-      ))}
+      <div role="menu" aria-label="Tab actions">
+        {entries.map((entry) => (
+          <Fragment key={entry.key}>
+            {entry.destructive ? (
+              // Close only removes tabs; Delete destroys the session and stands apart.
+              <div className="workspace-menu-separator" role="separator" />
+            ) : null}
+            <button
+              type="button"
+              role="menuitem"
+              className={`workspace-surface-option${entry.destructive ? " workspace-menu-option-destructive" : ""}`}
+              disabled={entry.disabled}
+              onClick={() => {
+                if (isTabCopyAction(entry.key)) {
+                  const value = copyEntryValue(entry.key);
+                  const subject =
+                    entry.key === "copy-session-id"
+                      ? "Session ID"
+                      : entry.label === "Copy relative path"
+                        ? "Relative path"
+                        : "Path";
+                  if (value !== null) void feedback.copy(entry.key, value, subject);
+                  return;
+                }
+                onEntry(entry.key);
+              }}
+            >
+              {feedback.labelFor(entry.key, entry.label)}
+            </button>
+            {entry.separatorAfter ? (
+              // Copy and rename groups stand apart from actions that close tabs.
+              <div className="workspace-menu-separator" role="separator" />
+            ) : null}
+          </Fragment>
+        ))}
+      </div>
+      <span className="sr-only" role="status">
+        {feedback.announcement}
+      </span>
     </AnchoredPopover>
   );
 }

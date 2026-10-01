@@ -385,7 +385,13 @@ describe("mixed bulk close", () => {
     await rightClick(id);
     expect(
       [...document.querySelectorAll("[role='menuitem']")].map((item) => item.textContent),
-    ).toEqual(["Close to the left", "Close to the right", "Close other tabs", "Close"]);
+    ).toEqual([
+      "Copy relative path",
+      "Close to the left",
+      "Close to the right",
+      "Close other tabs",
+      "Close",
+    ]);
     await clickMenuEntry("Close other tabs");
     expect(tabTitles()).toHaveLength(1);
     expect(toolTabButton(id).getAttribute("aria-selected")).toBe("true");

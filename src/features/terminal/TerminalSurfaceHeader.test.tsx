@@ -73,7 +73,7 @@ class ResizeObserverStub {
   disconnect(): void {}
 }
 
-describe("terminal pane header title", () => {
+describe("terminal pane header", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null = null;
 
@@ -121,6 +121,28 @@ describe("terminal pane header title", () => {
     });
     await act(async () => undefined);
     expect(container.querySelector(".workspace-terminal-title")?.textContent).toBe("Terminal");
+  });
+
+  it("renders the surface's session ID copy row without cwd or close actions", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          title="Human title"
+          observedState={{ type: "live", generation: 1 }}
+        />,
+      );
+    });
+    const kebab = container.querySelector<HTMLButtonElement>(".pane-header-kebab");
+    expect(kebab).not.toBeNull();
+    await act(async () => kebab!.click());
+    expect(
+      [...document.querySelectorAll('.pane-header-menu [role="menuitem"]')].map(
+        (row) => row.textContent,
+      ),
+    ).toEqual(["Copy session ID"]);
   });
 
   it("reads Failed when the terminal's own start fails over a live row", async () => {

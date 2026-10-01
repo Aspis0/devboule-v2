@@ -319,7 +319,7 @@ export const TerminalSurface = memo(function TerminalSurface({
           activity,
           attention,
         )}
-        menu={headerMenu(cwd, headerMenuSeam)}
+        menu={headerMenu(cwd, headerMenuSeam, sessionId)}
         trailingSlot={
           <>
             {ended ? null : (

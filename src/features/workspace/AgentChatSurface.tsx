@@ -1178,7 +1178,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         kind="agent"
         title={title || "Agent"}
         display={header}
-        menu={headerMenu(cwd, headerMenuSeam)}
+        menu={headerMenu(cwd, headerMenuSeam, sessionId)}
         subagentSlot={
           state.subagents.length > 0 ? (
             <SubagentMenu

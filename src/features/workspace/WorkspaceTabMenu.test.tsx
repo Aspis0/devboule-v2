@@ -55,6 +55,7 @@ describe("the tab context menu", () => {
     await rightClick("agent-one");
 
     expect(menuLabels()).toEqual([
+      "Copy session ID",
       "Close to the left",
       "Close to the right",
       "Close other tabs",
@@ -65,7 +66,17 @@ describe("the tab context menu", () => {
       (item) => item.textContent === "Delete",
     );
     expect(deleteEntry?.className).toContain("workspace-menu-option-destructive");
-    expect(menu().querySelector("[role='separator']")).not.toBeNull();
+    expect([...menu().children].map((row) => row.getAttribute("role"))).toEqual([
+      "menuitem",
+      "separator",
+      "menuitem",
+      "menuitem",
+      "menuitem",
+      "menuitem",
+      "separator",
+      "menuitem",
+    ]);
+    expect(deleteEntry?.previousElementSibling?.getAttribute("role")).toBe("separator");
     const left = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
       (item) => item.textContent === "Close to the left",
     );
@@ -77,8 +88,8 @@ describe("the tab context menu", () => {
 
     await shiftF10("session-2");
 
-    expect(menuLabels()).toHaveLength(5);
-    expect(document.activeElement?.textContent).toBe("Close to the left");
+    expect(menuLabels()).toHaveLength(6);
+    expect(document.activeElement?.textContent).toBe("Copy session ID");
     expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
   });
 
@@ -87,7 +98,7 @@ describe("the tab context menu", () => {
 
     await contextMenuKey("session-2");
 
-    expect(menuLabels()).toHaveLength(5);
+    expect(menuLabels()).toHaveLength(6);
     expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
   });
 
@@ -104,7 +115,7 @@ describe("the tab context menu", () => {
       chip.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     });
 
-    expect(menuLabels()).toHaveLength(5);
+    expect(menuLabels()).toHaveLength(6);
   });
 
   it("Close removes an agent tab without stopping its session", async () => {
@@ -169,19 +180,19 @@ describe("the tab context menu", () => {
   it("the menu survives a harmless republication of the same rows", async () => {
     await renderWorkspace();
     await rightClick("agent-one");
-    expect(menuLabels()).toHaveLength(5);
+    expect(menuLabels()).toHaveLength(6);
 
     // An elapsed-time tick: new array, new row objects, same ids and
     // generations — nothing the menu's entries would act on differently.
     await pushSnapshots(defaultSessions().map((s) => liveSnapshot(s.id, s.title)));
 
-    expect(menuLabels()).toHaveLength(5);
+    expect(menuLabels()).toHaveLength(6);
   });
 
   it("the menu closes when its anchor's generation changes, and focus returns to the anchor", async () => {
     await renderWorkspace();
     await rightClick("session-2");
-    expect(menuLabels()).toHaveLength(5);
+    expect(menuLabels()).toHaveLength(6);
 
     await pushSnapshots([
       liveSnapshot("agent-one", "Agent one", "acp"),
@@ -251,17 +262,34 @@ describe("the tab menu rename", () => {
     });
   }
 
-  it("offers Rename first on an agent tab when the daemon advertises the capability", async () => {
+  it("offers Rename before close actions on an agent tab with the capability", async () => {
     await renderWorkspace();
 
     await rightClick("agent-one");
 
     expect(menuLabels()).toEqual([
+      "Copy session ID",
       "Rename",
       "Close to the left",
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Delete",
+    ]);
+    expect(
+      [...menu().children].map((row) =>
+        row.getAttribute("role") === "separator" ? "separator" : row.textContent,
+      ),
+    ).toEqual([
+      "Copy session ID",
+      "separator",
+      "Rename",
+      "separator",
+      "Close to the left",
+      "Close to the right",
+      "Close other tabs",
+      "Close",
+      "separator",
       "Delete",
     ]);
   });

@@ -95,13 +95,14 @@ afterEach(() => {
 });
 
 describe("the tab menu's rename entry", () => {
-  it("offers Rename first, ahead of the close group, on an agent with the capability", async () => {
+  it("offers Rename ahead of close actions on an agent with the capability", async () => {
     const flow = renderFlow([agentSession("agent-one", "Agent one")], true);
     await flow.mount();
     flow.flow().openMenu("agent-one");
     await act(async () => {});
     const entries = flow.flow().menu?.entries ?? [];
     expect(entries.map((entry) => entry.label)).toEqual([
+      "Copy session ID",
       "Rename",
       "Close to the left",
       "Close to the right",
@@ -109,9 +110,9 @@ describe("the tab menu's rename entry", () => {
       "Close",
       "Delete",
     ]);
-    expect(entries[0]?.key).toBe("rename");
-    expect(entries[0]?.separatorAfter).toBe(true);
-    expect(entries[0]?.disabled).toBe(false);
+    const rename = entries.find((entry) => entry.key === "rename");
+    expect(rename?.separatorAfter).toBe(true);
+    expect(rename?.disabled).toBe(false);
     await flow.unmount();
   });
 

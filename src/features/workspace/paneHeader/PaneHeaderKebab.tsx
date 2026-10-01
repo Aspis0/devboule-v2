@@ -4,24 +4,15 @@ import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "../strip/menuNav";
 import type { TabMenuEntry } from "../strip/tabCloseMenu";
 import { middleTruncate, type PaneHeaderMenu } from "./paneHeaderMenu";
+import { useMenuCopyFeedback } from "../../../lib/useMenuCopyFeedback";
 
 export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
   const [open, setOpen] = useState(false);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const feedback = useMenuCopyFeedback();
   useMenuOpen(open, closeToKebab);
   const kebabRef = useRef<HTMLButtonElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (copyTimer.current !== null) clearTimeout(copyTimer.current);
-    };
-  }, []);
 
   // Focus the first entry that can act, as the strip's tab menu does: a
   // disabled row takes no focus.
@@ -86,29 +77,6 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
     moveMenuFocus(listRef.current, event);
   }
 
-  async function copyPath() {
-    if (menu.copyPath === null) return;
-    // `navigator.clipboard` is typed as always present but is not: a
-    // non-secure context leaves it undefined, and awaiting undefined would
-    // succeed and claim a copy that never happened.
-    const clipboard: Clipboard | undefined = navigator.clipboard;
-    let copied = false;
-    if (clipboard !== undefined) {
-      try {
-        await clipboard.writeText(menu.copyPath);
-        copied = true;
-      } catch {
-        copied = false;
-      }
-    }
-    if (!mountedRef.current) return;
-    setCopyState(copied ? "copied" : "failed");
-    if (copyTimer.current !== null) clearTimeout(copyTimer.current);
-    copyTimer.current = setTimeout(() => {
-      if (mountedRef.current) setCopyState("idle");
-    }, 1500);
-  }
-
   function activateClose(key: TabMenuEntry["key"]) {
     menu.onCloseEntry?.(key);
     closeToKebab();
@@ -150,18 +118,30 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
             </div>
           ) : null}
           <div ref={listRef} role="menu" aria-label="Session actions" onKeyDown={onKeyDown}>
+            {menu.copySessionId !== null ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="pane-header-menu-item"
+                onClick={() => {
+                  if (menu.copySessionId !== null)
+                    void feedback.copy("copy-session-id", menu.copySessionId, "Session ID");
+                }}
+              >
+                {feedback.labelFor("copy-session-id", "Copy session ID")}
+              </button>
+            ) : null}
             {menu.copyPath !== null ? (
               <button
                 type="button"
                 role="menuitem"
                 className="pane-header-menu-item"
-                onClick={() => void copyPath()}
+                onClick={() => {
+                  if (menu.copyPath !== null)
+                    void feedback.copy("copy-path", menu.copyPath, "Path");
+                }}
               >
-                {copyState === "copied"
-                  ? "Copied"
-                  : copyState === "failed"
-                    ? "Copy failed"
-                    : "Copy path"}
+                {feedback.labelFor("copy-path", "Copy path")}
               </button>
             ) : null}
             {onRename !== null ? (
@@ -179,7 +159,8 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
                 Rename
               </button>
             ) : null}
-            {menu.copyPath !== null || onRename !== null ? (
+            {closes.length > 0 &&
+            (menu.copySessionId !== null || menu.copyPath !== null || onRename !== null) ? (
               <div className="workspace-menu-separator" role="separator" />
             ) : null}
             {closes.map((entry) => (
@@ -198,7 +179,7 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
             ))}
           </div>
           <span className="sr-only" role="status">
-            {copyState === "copied" ? "Path copied" : copyState === "failed" ? "Copy failed" : ""}
+            {feedback.announcement}
           </span>
         </AnchoredPopover>
       ) : null}
