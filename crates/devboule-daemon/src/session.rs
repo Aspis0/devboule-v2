@@ -63,12 +63,12 @@
 //! wrong (it stalls ConPTY's render pipeline), so back-pressure is expressed
 //! as state: the slow viewer is resynchronised, the process is never stalled.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -184,6 +184,7 @@ mod session_workspaces;
 mod shell_command;
 #[cfg(test)]
 use session_workspaces::refuse_worktree_unless_live_git_allows;
+pub(crate) use session_workspaces::SESSION_STARTING_MESSAGE;
 use session_workspaces::{map_workspace_spawn_wire_error, workspace_spawn_error};
 #[path = "session_envelopes.rs"]
 mod session_envelopes;
@@ -631,6 +632,17 @@ mod session_terminal_transcript_tests;
 #[cfg(test)]
 #[path = "session_transcript_turn_time_tests.rs"]
 mod session_transcript_turn_time_tests;
+/// The roads that hold the creation gate: how long a real create counts its
+/// workspace, and the resume road's refusal into a workspace being archived.
+#[cfg(test)]
+#[path = "session_workspace_gate_road_tests.rs"]
+mod session_workspace_gate_road_tests;
+/// The creation gate's tests: a parked create must not block a delete of
+/// another workspace or a create into a third, and a delete or archive of
+/// the parked create's own workspace must refuse instead of waiting.
+#[cfg(test)]
+#[path = "session_workspace_gate_tests.rs"]
+mod session_workspace_gate_tests;
 /// The workspace road's tests carved out of `session_tests`: the spawn error's
 /// workspace id and display path, the local workspace's cwd and the cache in front
 /// of it, the resume road's created-at and record-own kind, the ACP override
@@ -738,6 +750,8 @@ pub struct SessionRegistry {
     idle_close_before_act_hook: Arc<Mutex<Option<IdleCloseBeforeActHook>>>,
     #[cfg(test)]
     kill_after_gate_hook: Arc<Mutex<Option<KillAfterGateHook>>>,
+    #[cfg(test)]
+    create_gate_checkpoint_hook: Arc<Mutex<Option<session_workspaces::CreateGateCheckpointHook>>>,
     /// The agent-profile store, attached by `ServerState` once both exist
     /// (`create-from-profile`).
     ///
@@ -759,9 +773,11 @@ pub struct SessionRegistry {
     /// add` and the journal row, so a loser always sees the winner's
     /// finished state when it decides what to clean.
     worktree_creation: Arc<Mutex<()>>,
-    /// Archive marking drains in-flight creation before refusing later spawns.
-    workspace_creation_gate: Arc<RwLock<()>>,
-    archiving_workspaces: Arc<Mutex<HashSet<String>>>,
+    /// Per-workspace create/delete bookkeeping (`session_workspaces.rs`):
+    /// a create is counted, a delete or archive is marked, and the two
+    /// meet in one short critical section — a create is never waited out,
+    /// and a delete arriving mid-create refuses instead of blocking.
+    workspace_creation_gate: Arc<Mutex<session_workspaces::WorkspaceCreationGate>>,
     /// The checkout path the serial holder is currently adding, if any.
     /// A killed `git worktree add` leaves debris git still lists, which no
     /// listing can tell from a winner — so the kill arm repairs exactly
@@ -850,11 +866,14 @@ impl SessionRegistry {
             idle_close_before_act_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             kill_after_gate_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            create_gate_checkpoint_hook: Arc::new(Mutex::new(None)),
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
             worktree_creation: Arc::new(Mutex::new(())),
-            workspace_creation_gate: Arc::new(RwLock::new(())),
-            archiving_workspaces: Arc::new(Mutex::new(HashSet::new())),
+            workspace_creation_gate: Arc::new(Mutex::new(
+                session_workspaces::WorkspaceCreationGate::default(),
+            )),
             worktree_add_in_flight: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             worktree_probe: Arc::new(session_workspaces::WorktreeCreationProbe::default()),
@@ -1987,6 +2006,8 @@ impl SessionRegistry {
         if let Some(journal) = &self.journal {
             journal.create_session(record).map_err(WireError::from)?;
             self.invalidate_journal_roster();
+            #[cfg(test)]
+            self.fire_create_gate_checkpoint_hook();
         }
         let mut command = resolved.command;
         crate::agent_env::inject_session_env(
@@ -2058,6 +2079,8 @@ impl SessionRegistry {
                 ));
             }
         }
+        #[cfg(test)]
+        self.fire_create_gate_checkpoint_hook();
         Ok(metadata)
     }
 

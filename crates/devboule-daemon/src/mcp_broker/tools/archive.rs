@@ -102,6 +102,11 @@ fn archive_audit_outcome(error: &WorkspaceError) -> &'static str {
         WorkspaceError::Refused(message) if message == "permission card could not be delivered" => {
             "delivery_failed"
         }
+        // A session starting in the workspace is a retryable refusal, not
+        // anybody saying no.
+        WorkspaceError::Refused(message) if message == crate::session::SESSION_STARTING_MESSAGE => {
+            "session_starting"
+        }
         WorkspaceError::Refused(_) => "denied",
     }
 }

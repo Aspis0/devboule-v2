@@ -183,11 +183,10 @@ fn create_terminal(
         }
     }
     // An archive in progress refuses here, before the cap slot and before
-    // the card: the create re-checks the same mark under the archiving
-    // guard's own lock, but a refusal the daemon already knows about must
-    // never spend the person's consent. The read side is dropped on this
-    // line — holding it across the card would block an archive for as long
-    // as the person takes to answer.
+    // the card: a refusal the daemon already knows about must never spend
+    // the person's consent. The guard is dropped on the next line: held
+    // across the card it would count as a starting session, and a delete or
+    // archive of this workspace would refuse until the person answers.
     let archiving = state
         .sessions
         .workspace_creation_guard(Some(&workspace))

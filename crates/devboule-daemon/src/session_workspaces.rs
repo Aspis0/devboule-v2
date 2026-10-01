@@ -1,15 +1,48 @@
 //! Workspace and project lifecycle: the journal reads behind `projects_list`
 //! and `workspaces_list`, the local-versus-worktree split of `workspace_create`,
-//! and the working directory a session command is started in.
-//!
-//! Split out of `session.rs` without a rewrite: every line below this header is
-//! byte-identical to its `4c3acca` text, apart from five `pub(super)` markers the
-//! parent module needs to keep calling in.
+//! the workspace creation gate, and the working directory a session command is
+//! started in.
 
 use super::*;
 
+/// Per-workspace create/delete bookkeeping under one short mutex: which
+/// workspaces have a create or resume in flight, and which carry the
+/// archiving mark. A create parks by being counted, never by holding the
+/// lock, so no delete or archive ever waits out a spawn. A marked
+/// workspace never has a count: a create is counted only unmarked, and a
+/// mark is taken only at count zero, in the same critical section. A
+/// count lives as long as its create's scope, so a create that never
+/// returns keeps that workspace's delete and archive refusing.
+#[derive(Default)]
+pub(crate) struct WorkspaceCreationGate {
+    creating: std::collections::HashMap<String, usize>,
+    archiving: std::collections::HashSet<String>,
+}
+
 pub(crate) struct WorkspaceCreationGuard<'a> {
-    _gate: std::sync::RwLockReadGuard<'a, ()>,
+    registry: &'a super::SessionRegistry,
+    workspace_id: String,
+}
+
+impl Drop for WorkspaceCreationGuard<'_> {
+    fn drop(&mut self) {
+        let mut gate = self
+            .registry
+            .workspace_creation_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let creating = gate.creating.get_mut(&self.workspace_id);
+        debug_assert!(
+            creating.is_some(),
+            "the count for a live guard cannot be absent"
+        );
+        if let Some(creating) = creating {
+            *creating -= 1;
+            if *creating == 0 {
+                gate.creating.remove(&self.workspace_id);
+            }
+        }
+    }
 }
 
 pub(crate) struct WorkspaceArchivingGuard<'a> {
@@ -31,33 +64,41 @@ impl Drop for WorkspaceDeleteReservation<'_> {
         if !self.owned {
             return;
         }
-        let _gate = self
-            .registry
-            .workspace_creation_gate
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
         self.registry
-            .archiving_workspaces
+            .workspace_creation_gate
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .archiving
             .remove(&self.workspace_id);
     }
 }
 
 impl Drop for WorkspaceArchivingGuard<'_> {
     fn drop(&mut self) {
-        let _gate = self
-            .registry
-            .workspace_creation_gate
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
         self.registry
-            .archiving_workspaces
+            .workspace_creation_gate
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .archiving
             .remove(&self.workspace_id);
     }
 }
+
+/// The refusal both the delete and the archive road give when a session is
+/// starting into the workspace they target. The archive audit keys on this
+/// sentence to keep a retryable refusal out of the denial outcomes.
+pub(crate) const SESSION_STARTING_MESSAGE: &str =
+    "A session is starting in this workspace; try again.";
+
+fn a_session_is_starting() -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        SESSION_STARTING_MESSAGE.to_string(),
+    )
+}
+
+#[cfg(test)]
+pub(super) type CreateGateCheckpointHook = Arc<dyn Fn(&super::SessionRegistry) + Send + Sync>;
 
 /// The stored path in the spelling a child process receives: see
 /// `plain_path` for what stays verbatim.
@@ -123,37 +164,35 @@ impl super::SessionRegistry {
         let Some(workspace_id) = workspace_id else {
             return Ok(None);
         };
-        let gate = self
+        let mut gate = self
             .workspace_creation_gate
-            .read()
-            .unwrap_or_else(|error| error.into_inner());
-        if self
-            .archiving_workspaces
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .contains(workspace_id)
-        {
+            .unwrap_or_else(|error| error.into_inner());
+        if gate.archiving.contains(workspace_id) {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "Workspace is being archived.",
             ));
         }
-        Ok(Some(WorkspaceCreationGuard { _gate: gate }))
+        *gate.creating.entry(workspace_id.to_string()).or_insert(0) += 1;
+        Ok(Some(WorkspaceCreationGuard {
+            registry: self,
+            workspace_id: workspace_id.to_string(),
+        }))
     }
 
     pub(crate) fn mark_workspace_archiving(
         &self,
         workspace_id: &str,
     ) -> Result<WorkspaceArchivingGuard<'_>, WireError> {
-        let _gate = self
+        let mut gate = self
             .workspace_creation_gate
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        let mut archiving = self
-            .archiving_workspaces
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if !archiving.insert(workspace_id.to_string()) {
+        if gate.creating.get(workspace_id).copied().unwrap_or(0) > 0 {
+            return Err(a_session_is_starting());
+        }
+        if !gate.archiving.insert(workspace_id.to_string()) {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "Workspace is already being archived.",
@@ -166,34 +205,37 @@ impl super::SessionRegistry {
     }
 
     /// The queued delete's reservation: the mark blocks new session creation
-    /// into this workspace (`workspace_creation_guard` refuses it), so a
-    /// session cannot start between the live-session check and the removal.
-    /// Insert-if-absent, never failing: when the archive flow already holds
+    /// into this workspace (`workspace_creation_guard` refuses it), and a
+    /// create already starting here refuses the delete instead of being
+    /// waited out. Insert-if-absent: when the archive flow already holds
     /// the mark, its guard stays the owner and this one removes nothing.
-    fn reserve_workspace_for_delete(&self, workspace_id: &str) -> WorkspaceDeleteReservation<'_> {
-        let _gate = self
+    fn reserve_workspace_for_delete(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceDeleteReservation<'_>, WireError> {
+        let mut gate = self
             .workspace_creation_gate
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        let owned = self
-            .archiving_workspaces
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(workspace_id.to_string());
-        WorkspaceDeleteReservation {
+            .unwrap_or_else(|error| error.into_inner());
+        if gate.creating.get(workspace_id).copied().unwrap_or(0) > 0 {
+            return Err(a_session_is_starting());
+        }
+        let owned = gate.archiving.insert(workspace_id.to_string());
+        Ok(WorkspaceDeleteReservation {
             registry: self,
             workspace_id: workspace_id.to_string(),
             owned,
-        }
+        })
     }
 
     /// Test-only face of the archiving mark, so the mark-ownership tests
     /// observe release and non-removal directly.
     #[cfg(test)]
     pub(crate) fn workspace_is_marked_archiving(&self, workspace_id: &str) -> bool {
-        self.archiving_workspaces
+        self.workspace_creation_gate
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .archiving
             .contains(workspace_id)
     }
 
@@ -206,8 +248,32 @@ impl super::SessionRegistry {
         workspace_id: &str,
         probe: impl FnOnce(),
     ) {
-        let _reservation = self.reserve_workspace_for_delete(workspace_id);
+        let _reservation = self
+            .reserve_workspace_for_delete(workspace_id)
+            .expect("the delete reservation must hold when no create is starting");
         probe();
+    }
+
+    /// Arm a callback the create road runs at its birth row and again once
+    /// the session is registered: the two ends its workspace count must span.
+    #[cfg(test)]
+    pub(super) fn set_create_gate_checkpoint_hook(&self, hook: CreateGateCheckpointHook) {
+        *self
+            .create_gate_checkpoint_hook
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(super) fn fire_create_gate_checkpoint_hook(&self) {
+        let hook = self
+            .create_gate_checkpoint_hook
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(self);
+        }
     }
 
     /// Arm the presence seam for this registry (test-only).
@@ -542,8 +608,8 @@ impl super::SessionRegistry {
         // delay this job arbitrarily, so the sessions live NOW are the ones
         // that decide. The reservation taken first closes the gap the check
         // leaves — no session can be created into this workspace between the
-        // check and the removal.
-        let _reservation = self.reserve_workspace_for_delete(workspace_id);
+        // check and the removal — and refuses at once when one is starting.
+        let _reservation = self.reserve_workspace_for_delete(workspace_id)?;
         let live = self.live_sessions_in_workspace(workspace_id)?;
         if !live.is_empty() {
             return Err(WireError::new(
