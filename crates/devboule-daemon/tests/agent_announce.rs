@@ -195,27 +195,42 @@ fn pty_stub_announces_over_the_named_pipe() {
         saw_env && saw_report
     });
 
+    // The broadcast precedes the async commit, so wait for the row before the kill;
+    // read-only because `Journal::open` runs recovery and would mark this live session interrupted.
+    let journal_path = harness.paths.journal_file();
+    let reader = rusqlite::Connection::open_with_flags(
+        &journal_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap_or_else(|error| panic!("live journal read open failed: {error}"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let reports = reader
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND kind = 'agent_report'",
+                [&session.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or_else(|error| panic!("live journal read failed: {error}"));
+        if reports >= 1 {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("live journal never committed the announcement: {reports} rows");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(reader);
+
     drop(client);
     harness.kill_daemon();
 
-    let journal_path = harness.paths.journal_file();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let replay = loop {
-        match Journal::open(&journal_path).and_then(|journal| journal.replay(&session.id)) {
-            Ok(replay)
-                if replay.events.iter().any(|event| {
-                    matches!(event, SessionEvent::AgentReported { agent, .. } if agent == "stub")
-                }) =>
-            {
-                break replay;
-            }
-            Ok(_) | Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Ok(replay) => panic!("journal replay missing announcement: {:?}", replay.events),
-            Err(error) => panic!("journal replay failed: {error}"),
-        }
-    };
+    // A transaction committed before the kill survives it, so one cold
+    // replay is deterministic and needs no retry loop.
+    let replay = Journal::open(&journal_path)
+        .unwrap_or_else(|error| panic!("cold journal open failed: {error}"))
+        .replay(&session.id)
+        .unwrap_or_else(|error| panic!("cold journal replay failed: {error}"));
     assert!(
         replay.events.iter().any(|event| matches!(
             event,
