@@ -166,7 +166,7 @@ pub(crate) struct SessionRuntime {
     /// diagnostics instead of leaving a silent freeze.
     pub(crate) task_seed_failures: AtomicU64,
     /// Plan-mark pre-scan reads, success or failure. A failed read notices
-    /// once (see `codex_plan_turns`) instead of failing open silently.
+    /// once (see `journal_lookback`) instead of failing open silently.
     pub(crate) plan_mark_scans: AtomicU64,
     /// Runs at the start of every plan-mark scan, so a test can observe the
     /// locks held around the read.
@@ -1163,10 +1163,11 @@ impl SessionRuntime {
     /// only meaningful immediately ahead of the envelope it owns: two
     /// separate calls admit a `close_output` between them, which journals
     /// a marker with no envelope to own — and replay then spends it
-    /// suppressing the next turn's genuine finish. The two appends are still
-    /// separate queue sends: a full queue can refuse either one. A refused
-    /// first row skips the second; a refused second row can still strand the
-    /// marker, in a session this already marks degraded.
+    /// suppressing the next turn's genuine finish. The pair travels as one
+    /// queue command and one journal transaction (`Journal::
+    /// try_append_pair`): a full queue refuses both rows, and a second row
+    /// the writer cannot insert rolls the first back, so no marker is ever
+    /// stranded ahead of a hole.
     pub(crate) fn journal_agent_envelope_pair(
         &self,
         first: &serde_json::Value,
@@ -1183,20 +1184,23 @@ impl SessionRuntime {
         stream.next_seq = stream.next_seq.saturating_add(2);
         drop(stream);
         if let Some(journal) = &self.journal {
-            for (seq, envelope) in [(first_seq, first), (first_seq + 1, second)] {
-                if let Some(record) = crate::journal::acp_envelope_record(
+            if let (Some(first), Some(second)) = (
+                crate::journal::acp_envelope_record(
                     self.session_id.clone(),
                     generation,
-                    seq,
-                    envelope,
-                ) {
-                    let accepted = journal.try_append(record);
-                    if !accepted || journal.is_session_degraded(&self.session_id) {
-                        self.mark_journal_degraded();
-                    }
-                    if !accepted {
-                        break;
-                    }
+                    first_seq,
+                    first,
+                ),
+                crate::journal::acp_envelope_record(
+                    self.session_id.clone(),
+                    generation,
+                    first_seq + 1,
+                    second,
+                ),
+            ) {
+                let accepted = journal.try_append_pair(first, second);
+                if !accepted || journal.is_session_degraded(&self.session_id) {
+                    self.mark_journal_degraded();
                 }
             }
         }
@@ -3728,3 +3732,7 @@ fn move_agent_pending_to_backlog(stream: &mut StreamState, mut attachment: Attac
 #[cfg(test)]
 #[path = "session_runtime_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_runtime_marker_pair_tests.rs"]
+mod marker_pair_tests;

@@ -67,8 +67,8 @@ pub const JOURNAL_SCHEMA_VERSION: i32 = 16;
 /// clock belongs to this loop; an idle daemon writes no audit rows anyway.
 const AUDIT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// Bounded journal queue. Each slot is one coalesced frame (typically
-/// ≤ 8 KiB). A full queue never blocks the PTY path.
+/// Bounded journal queue of commands — one row each, except a pair, which
+/// carries two. A full queue never blocks the PTY path.
 pub const JOURNAL_QUEUE_CAP: usize = 1024;
 
 /// Take a snapshot after this many payload bytes since the last one.
@@ -729,6 +729,12 @@ enum JournalCmd {
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
     Append(EventRecord),
+    /// Two adjacent rows that must land together or not at all — the
+    /// withheld-marker pair — inserted by one writer transaction.
+    AppendPair {
+        first: EventRecord,
+        second: EventRecord,
+    },
     Permission {
         record: PermissionRecord,
         reply: mpsc::Sender<Result<(), JournalError>>,
@@ -1040,8 +1046,7 @@ impl Journal {
         let payload_len = record.payload.len() as u64;
         let session_id = record.session_id.clone();
         if !self.reserve_output_slot() {
-            self.note_dropped_frame(&record.session_id, payload_len);
-            self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+            self.note_refused(&session_id, payload_len);
             return false;
         }
         match self.tx.try_send(JournalCmd::Append(record)) {
@@ -1054,11 +1059,54 @@ impl Journal {
             }
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 self.release_slot();
-                self.note_dropped_frame(&session_id, payload_len);
-                self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+                self.note_refused(&session_id, payload_len);
                 false
             }
         }
+    }
+
+    /// Append two adjacent rows as one queue command, so a full queue or a
+    /// dead writer refuses both or neither, and the writer inserts them in
+    /// one transaction (`append_events`): a marker row must never land
+    /// without the envelope it owns — replay would spend it suppressing
+    /// the next turn's genuine finish.
+    pub fn try_append_pair(&self, first: EventRecord, second: EventRecord) -> bool {
+        let rows = [
+            (first.session_id.clone(), first.payload.len() as u64),
+            (second.session_id.clone(), second.payload.len() as u64),
+        ];
+        if !self.reserve_output_slot() {
+            for (session_id, payload_len) in &rows {
+                self.note_refused(session_id, *payload_len);
+            }
+            return false;
+        }
+        match self.tx.try_send(JournalCmd::AppendPair { first, second }) {
+            Ok(()) => {
+                for (_, payload_len) in &rows {
+                    self.stats.accepted_frames.fetch_add(1, Ordering::Relaxed);
+                    self.stats
+                        .accepted_bytes
+                        .fetch_add(*payload_len, Ordering::Relaxed);
+                }
+                true
+            }
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                self.release_slot();
+                for (session_id, payload_len) in &rows {
+                    self.note_refused(session_id, *payload_len);
+                }
+                false
+            }
+        }
+    }
+
+    /// One row the queue refused: the per-session drop ledger and the
+    /// process-wide failed-frame counter, whether it was refused alone or
+    /// with its pair.
+    fn note_refused(&self, session_id: &str, payload_len: u64) {
+        self.note_dropped_frame(session_id, payload_len);
+        self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a permission decision and wait until SQLite has accepted it.
@@ -1925,27 +1973,44 @@ fn journal_loop(
                         }
                     }
                     Err(error) => {
-                        if is_output {
-                            stats.failed_frames.fetch_add(1, Ordering::Relaxed);
-                            note_degraded(
-                                &degraded_sessions,
-                                &record.session_id,
-                                DropCounters {
-                                    frames: 1,
-                                    bytes: payload_len,
-                                },
-                            );
-                        } else {
-                            note_degraded(
-                                &degraded_sessions,
-                                &record.session_id,
-                                DropCounters::default(),
-                            );
-                        }
+                        note_failed_append(&degraded_sessions, &stats, &record);
                         on_write_error(&error);
                         let (degraded, dropped) =
                             degradation_state(&degraded_sessions, &record.session_id);
                         let _ = mark_degraded(&conn, &record.session_id, degraded, dropped);
+                    }
+                }
+            }
+            JournalCmd::AppendPair { first, second } => {
+                let session_id = first.session_id.clone();
+                match append_events(
+                    &conn,
+                    &[&first, &second],
+                    &pins,
+                    limits,
+                    &mut retention_state,
+                ) {
+                    Ok(roster_changed) => {
+                        if roster_changed {
+                            session_set_revision.fetch_add(1, Ordering::AcqRel);
+                        }
+                        for record in [&first, &second] {
+                            if matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope) {
+                                stats.committed_frames.fetch_add(1, Ordering::Relaxed);
+                                stats
+                                    .committed_bytes
+                                    .fetch_add(record.payload.len() as u64, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        for record in [&first, &second] {
+                            note_failed_append(&degraded_sessions, &stats, record);
+                        }
+                        on_write_error(&error);
+                        let (degraded, dropped) =
+                            degradation_state(&degraded_sessions, &session_id);
+                        let _ = mark_degraded(&conn, &session_id, degraded, dropped);
                     }
                 }
             }
@@ -2764,6 +2829,36 @@ fn on_write_error(error: &JournalError) {
     eprintln!("journal write failed: {error}");
 }
 
+/// Account one appended row the writer could not commit, whatever carried
+/// it: the failed-frame counter and the session's drop ledger for an output
+/// row, the ledger alone for control traffic. Both append arms call this,
+/// so a row is counted the same way whether it travelled alone or as a
+/// pair.
+fn note_failed_append(
+    degraded_sessions: &Mutex<HashMap<String, DropCounters>>,
+    stats: &JournalStats,
+    record: &EventRecord,
+) {
+    let payload_len = record.payload.len() as u64;
+    if matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope) {
+        stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+        note_degraded(
+            degraded_sessions,
+            &record.session_id,
+            DropCounters {
+                frames: 1,
+                bytes: payload_len,
+            },
+        );
+    } else {
+        note_degraded(
+            degraded_sessions,
+            &record.session_id,
+            DropCounters::default(),
+        );
+    }
+}
+
 /// The session row's insert — 34 columns, 33 bindings plus the literal `0`
 /// for `unsnapshotted_bytes` — shared by the birth insert and the
 /// update-or-insert upsert, so neither can grow a column the other does not
@@ -2999,63 +3094,78 @@ fn append_event(
     limits: JournalLimits,
     retention_state: &mut RetentionState,
 ) -> Result<bool, JournalError> {
-    let checksum = crc32(&record.payload) as i64;
+    append_events(conn, &[record], pins, limits, retention_state)
+}
+
+/// The same append for an adjacent batch: one transaction, so the journal
+/// either holds every row or none. Snapshot and retention run once, over
+/// the batch's combined bytes. The only batched caller is the
+/// withheld-marker pair, and its rows share the session and generation.
+fn append_events(
+    conn: &Connection,
+    records: &[&EventRecord],
+    pins: &HashSet<String>,
+    limits: JournalLimits,
+    retention_state: &mut RetentionState,
+) -> Result<bool, JournalError> {
+    let Some(first) = records.first().copied() else {
+        return Ok(false);
+    };
     let tx = conn.unchecked_transaction()?;
     let limits = effective_limits(&tx, limits)?;
-    tx.execute(
-        "INSERT INTO events (session_id, generation, seq, kind, ts_ms, payload, checksum)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            record.session_id,
-            record.generation as i64,
-            record.seq as i64,
-            record.kind.as_str(),
-            record.ts_ms as i64,
-            record.payload,
-            checksum,
-        ],
-    )?;
-    let add = match record.kind {
-        EventKind::Output | EventKind::AcpEnvelope | EventKind::AgentReport => {
-            record.payload.len() as i64
+    let mut add_total = 0i64;
+    for record in records {
+        let checksum = crc32(&record.payload) as i64;
+        tx.execute(
+            "INSERT INTO events (session_id, generation, seq, kind, ts_ms, payload, checksum)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                record.session_id,
+                record.generation as i64,
+                record.seq as i64,
+                record.kind.as_str(),
+                record.ts_ms as i64,
+                record.payload,
+                checksum,
+            ],
+        )?;
+        let add = match record.kind {
+            EventKind::Output | EventKind::AcpEnvelope | EventKind::AgentReport => {
+                record.payload.len() as i64
+            }
+            EventKind::Exit => 0,
+        };
+        let unsnapshotted_add = if matches!(record.kind, EventKind::Output) {
+            add
+        } else {
+            0
+        };
+        let updated = tx.execute(
+            "UPDATE sessions SET
+                last_seq = MAX(last_seq, ?1),
+                updated_at_ms = ?2,
+                payload_bytes = payload_bytes + ?3,
+                unsnapshotted_bytes = unsnapshotted_bytes + ?4
+             WHERE id = ?5",
+            params![
+                record.seq as i64,
+                record.ts_ms as i64,
+                add,
+                unsnapshotted_add,
+                record.session_id
+            ],
+        )?;
+        if updated == 0 {
+            return Err(JournalError::SessionNotFound);
         }
-        EventKind::Exit => 0,
-    };
-    let unsnapshotted_add = if matches!(record.kind, EventKind::Output) {
-        add
-    } else {
-        0
-    };
-    let updated = tx.execute(
-        "UPDATE sessions SET
-            last_seq = MAX(last_seq, ?1),
-            updated_at_ms = ?2,
-            payload_bytes = payload_bytes + ?3,
-            unsnapshotted_bytes = unsnapshotted_bytes + ?4
-         WHERE id = ?5",
-        params![
-            record.seq as i64,
-            record.ts_ms as i64,
-            add,
-            unsnapshotted_add,
-            record.session_id
-        ],
-    )?;
-    if updated == 0 {
-        return Err(JournalError::SessionNotFound);
+        add_total += add;
     }
-    maybe_snapshot(&tx, &record.session_id, record.generation, limits)?;
-    let global_sweep = retention_state.global_sweep_due(add as u64);
-    let roster_changed = retain(
-        &tx,
-        pins,
-        now_ms(),
-        limits,
-        &record.session_id,
-        global_sweep,
-    )?;
+    let last = records.last().copied().unwrap_or(first);
+    maybe_snapshot(&tx, &first.session_id, last.generation, limits)?;
+    let global_sweep = retention_state.global_sweep_due(add_total as u64);
+    let roster_changed = retain(&tx, pins, now_ms(), limits, &first.session_id, global_sweep)?;
     tx.commit()?;
-    retention_state.append_committed(add as u64, global_sweep);
+    retention_state.append_committed(add_total as u64, global_sweep);
     Ok(roster_changed)
 }
 
