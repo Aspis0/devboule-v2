@@ -36,10 +36,13 @@ pub(crate) fn classify_line(value: &serde_json::Value) -> Option<AcpLineKind> {
     }
 }
 
-/// Derive the UI views from an inbound envelope. Empty means we do not model
-/// this message yet; the envelope is still the source of truth and must be
-/// kept. Most envelopes model to one event; a prompt response models the
-/// finish **and** the context reading it proves.
+/// Derive the UI views from an inbound envelope, with paths left exactly as
+/// received: the tests' stand-in for a session with no cwd. Production
+/// callers hand the session's cwd to [`view_from_envelope_in`]. Empty means
+/// we do not model this message yet; the envelope is still the source of
+/// truth and must be kept. Most envelopes model to one event; a prompt
+/// response models the finish **and** the context reading it proves.
+#[cfg(test)]
 pub(crate) fn view_from_envelope(
     value: &serde_json::Value,
     expected_session_id: &str,

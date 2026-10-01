@@ -5,14 +5,14 @@ use super::*;
 
 use serde_json::json;
 
-use super::test_support::{attach_tracked, drain};
+use super::test_support::{attach_live_agent_replay, attach_tracked, drain};
 
 /// Serialises the tests below: the latest-live-plan-usage cache is
 /// daemon-global, so tests that seed it must not overlap.
 static PLAN_USAGE_CACHE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// `live_agent_replay_fixture` with the session's kind and more than one
-/// journalled row, so a rate-limit envelope can sit beside a neighbour.
+/// A live agent of `kind` over more than one journalled row, so a rate-limit
+/// envelope can sit beside a neighbour.
 fn live_agent_replay_fixture_with(
     session_id: &str,
     kind: SessionKind,
@@ -24,46 +24,8 @@ fn live_agent_replay_fixture_with(
     Arc<ConnHandle>,
 ) {
     let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-replay-plan-usage");
-    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
-    journal
-        .upsert_blocking(new_session_record(
-            session_id,
-            "S-1-5-21-1",
-            None,
-            kind.clone(),
-            "Agent",
-        ))
-        .unwrap();
-    let mut next_seq = 1;
-    for record in &records {
-        next_seq = next_seq.max(record.seq + 1);
-    }
-    for record in records {
-        journal.append_blocking(record).unwrap();
-    }
-    let runtime = Arc::new(SessionRuntime::with_journal(
-        session_id.to_string(),
-        Some(Arc::clone(&journal)),
-    ));
-    runtime.set_agent_kind(kind);
-    {
-        let mut stream = runtime.stream.lock().unwrap();
-        stream.screen = None;
-        stream.transcript = false;
-        stream.next_seq = next_seq;
-    }
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach live agent");
-    conn.track_with_agent_replay(
-        session_id,
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let session = new_session_record(session_id, "S-1-5-21-1", None, kind.clone(), "Agent");
+    let (journal, runtime, conn) = attach_live_agent_replay(&dir, session, Some(kind), records);
     (dir, journal, runtime, conn)
 }
 

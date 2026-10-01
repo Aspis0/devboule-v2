@@ -29,7 +29,20 @@ pub(crate) struct AgentReplayPage {
     /// generation up to the one the attachment attached to.
     pub(crate) generation: u64,
     pub(crate) last_seq: u64,
+    /// The row's birth cwd as a view's plain path, read with the freshness
+    /// probe so a replay view relativises without a second journal round trip.
+    /// `None` is a row born without one: the views keep paths as received.
+    pub(crate) cwd: Option<std::path::PathBuf>,
     pub(crate) records: Vec<EventRecord>,
+}
+
+/// A session row's cwd as the plain path the replay views relativise tool
+/// locations against — the construction the live reader made with the spawn
+/// cwd, so a replayed location reads like the live one.
+fn view_cwd(row_cwd: Option<&str>) -> Option<std::path::PathBuf> {
+    row_cwd
+        .map(crate::verbatim_path::plain_path)
+        .map(std::path::PathBuf::from)
 }
 
 /// Read one bounded page of structured agent records. The live attach path
@@ -54,15 +67,16 @@ pub(super) fn replay_agent_page(
     through_seq: u64,
     limit: usize,
 ) -> Result<AgentReplayPage, JournalError> {
-    let (generation, last_seq, closed): (u64, u64, bool) = conn
+    let (generation, last_seq, closed, cwd): (u64, u64, bool, Option<std::path::PathBuf>) = conn
         .query_row(
-            "SELECT generation, last_seq, closed FROM sessions WHERE id = ?1",
+            "SELECT generation, last_seq, closed, cwd FROM sessions WHERE id = ?1",
             [session_id],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)? as u64,
                     row.get::<_, i64>(1)? as u64,
                     row.get::<_, i64>(2)? != 0,
+                    view_cwd(row.get::<_, Option<String>>(3)?.as_deref()),
                 ))
             },
         )
@@ -75,6 +89,7 @@ pub(super) fn replay_agent_page(
         return Ok(AgentReplayPage {
             generation,
             last_seq,
+            cwd,
             records: Vec::new(),
         });
     }
@@ -139,6 +154,7 @@ pub(super) fn replay_agent_page(
     Ok(AgentReplayPage {
         generation,
         last_seq,
+        cwd,
         records,
     })
 }
@@ -376,6 +392,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         HashSet::new()
     };
     let thread_id = record.peer_session_id.clone();
+    let replay_cwd = view_cwd(record.cwd.as_deref());
     // The checklist is session state: each generation's fresh views start
     // from the previous generation's list, the way a resumed CLI keeps its
     // own. Partial-stream state stays per generation — only the tasks carry.
@@ -389,11 +406,11 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
         let mut gen_seqs: Vec<u64> = Vec::new();
         let mut gen_ts_ms: Vec<Option<u64>> = Vec::new();
         let mut covered = 0;
-        let mut claude_view = crate::claude_view::ClaudeView::new(None);
+        let mut claude_view = crate::claude_view::ClaudeView::new(replay_cwd.clone());
         if let Some(tasks) = carried_tasks.take() {
             claude_view.restore_task_state(tasks);
         }
-        let mut codex_view = crate::codex_view::CodexView::new(None);
+        let mut codex_view = crate::codex_view::CodexView::new(replay_cwd.clone());
         // pi's withheld-finish marker state, used to suppress the paired
         // `turn_end` (`pi_view::drive_replay`).
         let mut pi_withheld_finish = false;

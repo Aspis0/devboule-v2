@@ -5,7 +5,7 @@ use super::*;
 
 use serde_json::json;
 
-use super::test_support::drain;
+use super::test_support::{attach_live_agent_replay, drain};
 
 /// A live Codex runtime on a journal holding `rows`, attached and tracked
 /// on a fresh connection.
@@ -14,39 +14,11 @@ fn attach_codex_replay(
     dir: &std::path::Path,
     rows: Vec<crate::journal::EventRecord>,
 ) -> (Arc<SessionRuntime>, Arc<Journal>, Arc<ConnHandle>) {
-    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let mut record =
         new_session_record(session_id, "S-1-5-21-1", None, SessionKind::Codex, "Codex");
     record.peer_session_id = Some("t-1".to_string());
-    journal.upsert_blocking(record).unwrap();
-    let next_seq = rows.len() as u64 + 1;
-    for row in rows {
-        journal.append_blocking(row).unwrap();
-    }
-    let runtime = Arc::new(SessionRuntime::with_journal(
-        session_id.to_string(),
-        Some(Arc::clone(&journal)),
-    ));
-    runtime.set_agent_kind(SessionKind::Codex);
-    runtime.restore_peer_session_id("t-1".to_string());
-    {
-        let mut stream = runtime.stream.lock().unwrap();
-        stream.screen = None;
-        stream.transcript = false;
-        stream.next_seq = next_seq;
-    }
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach live agent");
-    conn.track_with_agent_replay(
-        session_id,
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let (journal, runtime, conn) =
+        attach_live_agent_replay(dir, record, Some(SessionKind::Codex), rows);
     (runtime, journal, conn)
 }
 

@@ -40,7 +40,21 @@ impl ClaudeView {
         let turn_cost = self.turn_cost(total_cost_from_result(envelope));
         let (mut usage, context_used) = match envelope.get("usage").and_then(usage_from_claude) {
             Some(parsed) => (Some(parsed.turn), parsed.context_used),
-            None => (None, None),
+            // A cost with no counters is still the turn's billing: the
+            // finish carries it alone rather than dropping it with the
+            // absent usage object.
+            None => (
+                turn_cost.map(|cost_usd| TurnUsage {
+                    input_tokens: None,
+                    output_tokens: None,
+                    total_tokens: None,
+                    thought_tokens: None,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                    cost_usd: Some(cost_usd),
+                }),
+                None,
+            ),
         };
         if let Some(usage) = usage.as_mut() {
             usage.cost_usd = turn_cost;
@@ -209,3 +223,7 @@ fn usage_from_claude(usage: &Value) -> Option<ClaudeUsage> {
 #[cfg(test)]
 #[path = "claude_view_result_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "claude_view_result_cost_only_tests.rs"]
+mod cost_only_tests;

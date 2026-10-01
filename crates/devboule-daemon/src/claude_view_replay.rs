@@ -26,7 +26,10 @@ pub(crate) fn withheld_finish_marker() -> serde_json::Value {
 /// rebind `reset()` and the turn-boundary clearing inside `ingest`.
 pub(crate) fn drive_replay(view: &mut ClaudeView, value: &mut Value) -> Vec<SessionEvent> {
     crate::plan_text::bound_claude_envelope(value);
-    let views = crate::acp_view::view_from_envelope(value, "");
+    // The ACP view relativises tool locations against the view's cwd, the
+    // same cwd the live views were constructed with — a replayed row must
+    // not turn a relative location absolute.
+    let views = crate::acp_view::view_from_envelope_in(value, "", view.cwd.as_deref());
     let views = if views.is_empty() {
         view.ingest(value)
     } else {

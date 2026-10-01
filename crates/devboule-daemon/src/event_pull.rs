@@ -870,6 +870,7 @@ fn pull_live_agent_replay_events(
             return;
         }
 
+        let view_cwd = page.cwd;
         let mut page_generation = replay.cursor_generation;
         for record in page.records {
             if record.generation != page_generation {
@@ -881,7 +882,7 @@ fn pull_live_agent_replay_events(
                     .claude_view
                     .as_ref()
                     .map(|view| view.snapshot_task_state());
-                let mut fresh = crate::claude_view::ClaudeView::new(None);
+                let mut fresh = crate::claude_view::ClaudeView::new(view_cwd.clone());
                 if let Some(tasks) = carried {
                     fresh.restore_task_state(tasks);
                 }
@@ -934,9 +935,9 @@ fn pull_live_agent_replay_events(
                     match serde_json::from_slice::<serde_json::Value>(&record.payload) {
                         Ok(mut value) => {
                             if replay.is_codex {
-                                let view = replay
-                                    .codex_view
-                                    .get_or_insert_with(|| crate::codex_view::CodexView::new(None));
+                                let view = replay.codex_view.get_or_insert_with(|| {
+                                    crate::codex_view::CodexView::new(view_cwd.clone())
+                                });
                                 // The capture follows the owned thread; the
                                 // mode follows the pre-scanned plan marks.
                                 crate::codex_view::drive_replay(
@@ -952,7 +953,8 @@ fn pull_live_agent_replay_events(
                                 crate::pi_view::drive_replay(&mut replay.pi_withheld_finish, &value)
                             } else {
                                 if replay.claude_view.is_none() {
-                                    let mut fresh = crate::claude_view::ClaudeView::new(None);
+                                    let mut fresh =
+                                        crate::claude_view::ClaudeView::new(view_cwd.clone());
                                     if let Some(baseline) = replay.cost_baseline {
                                         fresh.restore_cost_baseline(baseline);
                                     }
@@ -1328,6 +1330,11 @@ mod attach_exit_tests;
 #[cfg(test)]
 #[path = "event_pull_codex_attach_tests.rs"]
 mod codex_attach_tests;
+
+/// The replay-cwd contract across the roads.
+#[cfg(test)]
+#[path = "replay_cwd_tests.rs"]
+mod replay_cwd_tests;
 
 /// The live plan-usage cache a fresh attach is served.
 #[cfg(test)]
