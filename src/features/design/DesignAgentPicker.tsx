@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DesignAgentSession } from "./designHost";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { ProviderInfo } from "../../types/ipc";
+import { menuPlacement } from "../../components/PickerChip";
 import { useMenuOpen } from "../../lib/menuOpen";
+import { scrollRowIntoView } from "../../lib/scrollRowIntoView";
 import { isImeComposition } from "../../lib/imeComposition";
 import { useProviderConsent } from "../workspace/useProviderConsent";
 import { requiresConsent } from "../workspace/workspaceSessions";
@@ -37,6 +39,7 @@ export function DesignAgentPicker({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const providerButtonRef = useRef<HTMLButtonElement>(null);
   const providerPickerWrapRef = useRef<HTMLDivElement>(null);
+  const providerMenuRef = useRef<HTMLDivElement>(null);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
   const consentRestoreProviderIdRef = useRef<string | null>(null);
@@ -148,6 +151,34 @@ export function DesignAgentPicker({
   // opens, like every other menu: the band is the outside press.
   useMenuOpen(providerPickerOpen && !providerButtonDisabled, dismissProviderPicker);
 
+  // Measured against the card that clips the shell, not the window. The keys
+  // are what can move the trigger itself: open, the busy close, and the
+  // label states that can re-wrap the control strip — the shell is absolute,
+  // so nothing inside it moves it. A decline clears the cap to the fallback.
+  useLayoutEffect(() => {
+    if (!providerPickerOpen || providerButtonDisabled) return;
+    const trigger = providerButtonRef.current;
+    const menu = providerMenuRef.current;
+    if (trigger === null || menu === null) return;
+    const apply = () => {
+      const placed = menuPlacement(trigger, menu, trigger.closest(".surface-card"));
+      if (!placed.below && placed.maxHeight > 0) {
+        menu.style.maxHeight = `${placed.maxHeight}px`;
+      } else if (menu.style.maxHeight !== "") {
+        menu.style.maxHeight = "";
+      }
+    };
+    apply();
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, [
+    providerButtonDisabled,
+    providerPickerOpen,
+    providers.length,
+    providersLoading,
+    unavailableProviderId,
+  ]);
+
   useEffect(() => {
     if (consentProvider !== null) {
       consentConfirmRef.current?.focus();
@@ -164,7 +195,9 @@ export function DesignAgentPicker({
             ) ?? []),
           ].find((option) => option.dataset.providerId === providerId);
     if (restoredOption !== undefined && restoredOption !== null) {
-      restoredOption.focus();
+      // preventScroll keeps focus()'s own ancestor walk out of it; the
+      // option's focus handler scrolls the list.
+      restoredOption.focus({ preventScroll: true });
     } else if (trigger?.isConnected) {
       trigger.focus();
     } else if (trigger !== null || providerId !== null) {
@@ -234,6 +267,7 @@ export function DesignAgentPicker({
         {providerPickerOpen && !providerButtonDisabled ? (
           <div
             id="design-provider-picker"
+            ref={providerMenuRef}
             className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
             role={consentProvider === null ? "listbox" : "group"}
             aria-label={consentProvider === null ? "Choose provider" : "Confirm provider"}
@@ -304,6 +338,12 @@ export function DesignAgentPicker({
                         }
                         onProviderSelect(providerOption);
                         setProviderPickerOpen(false);
+                      }}
+                      onFocus={(event) => {
+                        // The options list is the scrollport: reveal the
+                        // focused row in it; the page keeps its own scroll.
+                        const list = event.currentTarget.parentElement;
+                        if (list !== null) scrollRowIntoView(list, event.currentTarget);
                       }}
                     >
                       {providerOption.id}

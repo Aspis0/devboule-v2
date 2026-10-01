@@ -48,17 +48,20 @@ interface PickerOption {
 /** The menu's side and cap, reusing the anchored popovers' arithmetic on an
  * inline measurement — not the portal, so outside-click and z-index stay as
  * they are. The probe reads the content with the cap lifted: through the
- * sheet's fallback cap it reports the capped box, never the content. */
+ * sheet's fallback cap it reports the capped box, never the content. `clip`
+ * scopes the room to the box that actually clips the menu; left off, the
+ * workspace panel (or the window) sets it, exactly as before. */
 export function menuPlacement(
   trigger: HTMLElement,
   menu: HTMLElement,
+  clip?: Element | null,
 ): { maxHeight: number; below: boolean } {
   const anchorBox = trigger.getBoundingClientRect();
   const inlineCap = menu.style.maxHeight;
   menu.style.maxHeight = "none";
   const probe = { width: menu.scrollWidth, height: menu.scrollHeight };
   menu.style.maxHeight = inlineCap;
-  const panel = trigger.closest(".workspace-center-panel");
+  const panel = clip ?? trigger.closest(".workspace-center-panel");
   let anchor: { left: number; right: number; top: number; bottom: number } = anchorBox;
   let viewport = { width: window.innerWidth, height: window.innerHeight };
   if (panel !== null) {

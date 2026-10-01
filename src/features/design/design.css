@@ -128,7 +128,7 @@
 }
 
 .design-folder-record {
-  /* The grid child that carries the nowrap path: its automatic min-width
+  /* The flex child that carries the nowrap path: its automatic min-width
      would hold the column open past the popover's edge. */
   min-width: 0;
   margin-top: 7px;
@@ -2083,9 +2083,15 @@
   bottom: calc(100% + 8px);
   /* Above the crescent band, which sits at z-index 40. */
   z-index: 50;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   min-width: 230px;
   max-width: 320px;
+  /* Fallback only: this budget bounds the shell before the inline
+     measurement lands and when a re-measure declines; while open the
+     measured room above the trigger governs, and a room past 420px lets
+     the shell run to its natural height instead. */
+  max-height: min(420px, calc(100vh - var(--crescent-band, 0px) - 24px));
   gap: 8px;
   padding: 10px;
   color: var(--ink-soft);
@@ -2285,6 +2291,29 @@
 .design-agent-picker-options {
   display: grid;
   gap: 3px;
+}
+
+/* The shell's own list is its scrollport; a list nested in a folder record
+   keeps the plain rule above. overflow-y: auto is what lets the cap shrink
+   this list — a scroll container's automatic minimum is zero — so the
+   heading stays put; 6px padding holds a focused option's 5px ring inside
+   the clip (the negative margins leave every edge where it sat), and
+   position: relative measures the row against the box that scrolls. */
+.design-agent-picker > .design-agent-picker-options {
+  position: relative;
+  padding: 6px;
+  margin: -6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+/* The folder's own option rows keep their full height: as a scroll container
+   their automatic minimum is zero, so only flex: none stops the shell's cap
+   squeezing them — the shell scrolls instead. */
+.design-folder-picker > .design-agent-picker-options {
+  flex: none;
 }
 
 .design-agent-picker-option {

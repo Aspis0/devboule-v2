@@ -5,6 +5,8 @@
 // overflow-wrap anywhere is declared once on the base agent picker and once on
 // the history popover, and the scrolling history and skill shells declare
 // overflow-y auto (the base agent picker takes its y from axis pairing).
+// The base agent picker caps its height at a viewport budget and hands the
+// y scroll to its options list, which is the only part allowed to shrink.
 // Fixed labels inherit that wrap, and the skill-mode badge alone opts out
 // with overflow-wrap normal. The craft picker and the history list are the
 // real controls (the list inside a shell of the class the Design surface
@@ -197,6 +199,41 @@ describe("the agent picker shell", () => {
     // happy-dom pairs no axes: "visible" would read green here while a browser computes it back to auto.
     expect(["hidden", "clip"]).toContain(style.overflowX);
     expect(style.overflowWrap).toBe("anywhere");
+  });
+
+  it("caps its height at a viewport budget and stacks its children as a column", () => {
+    proof.inject([".design-agent-picker"]);
+    const rules = proof.rulesFor(".design-agent-picker");
+    const cap = rules.match(/max-height:\s*([^;]+)/)?.[1] ?? "";
+    // The number is the pin: 420px in a min() with the viewport terms. A
+    // budget of 24px would cut the heading and every row off the menu; the
+    // band token needs its fallback or the whole declaration goes invalid.
+    expect(cap).toContain("420px");
+    expect(cap).toContain("100vh");
+    expect(cap).toContain("var(--crescent-band, 0px)");
+    // The column is what lets a capped shell shrink the options list below
+    // its content instead of scrolling the heading away with the list.
+    expect(rules).toMatch(/display:\s*flex/);
+    expect(rules).toMatch(/flex-direction:\s*column/);
+  });
+
+  it("makes its options list the scrollport: it shrinks and scrolls, the shell does not", () => {
+    const shell = mountAgentPicker();
+    const options = document.createElement("div");
+    options.className = "design-agent-picker-options";
+    shell.appendChild(options);
+    const listRule = ".design-agent-picker > .design-agent-picker-options";
+    proof.inject([".design-agent-picker", listRule]);
+    // overflow-y: auto makes the list a scroll container, and a scroll
+    // container's automatic minimum is zero — that is what lets the shell's
+    // cap shrink the list and keep the heading pinned.
+    expect(proof.rulesFor(listRule)).toMatch(/overflow-y:\s*auto/);
+    expect(getComputedStyle(options).overflowY).toBe("auto");
+    // The ring gutter, as a pair: 6px of padding holds the focused option's
+    // 5px ring inside the clip, and the matching negative margin keeps every
+    // edge where it was — padding alone would move all four.
+    expect(getComputedStyle(options).paddingTop).toBe("6px");
+    expect(getComputedStyle(options).marginTop).toBe("-6px");
   });
 
   it("keeps Cancel and Confirm on the shell's wrapping, never nowrap", () => {

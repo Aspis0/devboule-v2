@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
 // The folder popover's contract with a directory path too wide for it: the
-// path line ellipsizes on one line with the full path in its title, the grid
-// child that carries the line may shrink below the path's width, every other
+// path line ellipsizes on one line with the full path in its title, the
+// shell child that carries the line may shrink below the path's width, its
+// own option list keeps its full height under the shell's cap, every other
 // line inherits overflow-wrap anywhere from the shell, and the popover body
 // declares overflow-x hidden beside its overflow-y auto scroll. Every style
 // is read as computed from the injected real sheets, so a declaration nobody
@@ -96,13 +97,27 @@ describe("the Design folder popover over a path wider than it", () => {
     expect(path.getAttribute("title")).toBe(FOLDER_PATH);
   });
 
-  it("keeps the folder record shrinkable as the popover grid's child", async () => {
+  it("keeps the folder record shrinkable as the popover's flex child", async () => {
     const picker = await openPopover();
     const record = picker.querySelector<HTMLElement>(".design-folder-record");
     if (record === null) throw new Error("folder record did not render");
     proof.inject([".design-agent-picker", ".design-folder-record"]);
-    expect(getComputedStyle(picker).display).toBe("grid");
+    expect(getComputedStyle(picker).display).toBe("flex");
     expect(["0", "0px"]).toContain(getComputedStyle(record).minWidth);
+  });
+
+  it("keeps its own option list at full height: the list never shrinks", async () => {
+    const picker = await openPopover();
+    const list = [...picker.children].find((child) =>
+      child.classList.contains("design-agent-picker-options"),
+    );
+    if (list === undefined) throw new Error("the folder's own option list did not render");
+    proof.inject([".design-folder-picker > .design-agent-picker-options"]);
+    // The list is a scroll container, so its automatic minimum is zero;
+    // flex: none is the pairing that keeps the shell's cap from squeezing
+    // the "Don't attach a folder" row to its padding. Computed, the shorthand
+    // serializes as its resolved form: 0 0 auto.
+    expect(getComputedStyle(list).flex).toBe("0 0 auto");
   });
 
   it("declares the popover body clipped in x, scrollable in y, broken anywhere", async () => {
