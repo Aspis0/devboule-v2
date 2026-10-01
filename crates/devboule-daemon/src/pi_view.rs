@@ -453,10 +453,7 @@ pub(crate) fn stats_reply_from_response(response: &Value) -> StatsReply {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        drive_replay, events_from_line, stats_reply_from_response, suppress_withheld_finish,
-        StatsReply,
-    };
+    use super::{drive_replay, events_from_line, stats_reply_from_response, StatsReply};
     use devboule_protocol::SessionEvent;
 
     #[test]
@@ -686,6 +683,8 @@ mod tests {
         }
     }
 
+    // Replay pins the marker here; live dispatch is pinned in the turn-watch ends test:
+    // `a_withheld_turn_end_drops_its_finish_and_keeps_its_durable_context`.
     #[test]
     fn replay_honours_the_withheld_finish_marker_before_the_turn_end_it_owns() {
         // The marker is the shared producer's row type (`claude_view`,
@@ -700,7 +699,6 @@ mod tests {
         assert!(withheld, "the marker arms the suppression");
         let events = drive_replay(&mut withheld, &turn_end);
         assert!(!withheld, "the owned turn_end consumes the marker");
-        // Only the finish is withheld; the turn_end's other events derive.
         assert_eq!(
             events,
             vec![SessionEvent::ContextUsage {
@@ -708,7 +706,8 @@ mod tests {
                 used_tokens: 42,
                 max_tokens: None,
                 live: false,
-            }]
+            }],
+            "only the finish is withheld; the durable context reading survives: {events:?}"
         );
     }
 
@@ -750,38 +749,6 @@ mod tests {
                 ]
             ),
             "a non-`turn_end` frame expires the stranded marker before this later finish; a stranded marker meeting a `turn_end` directly would still be suppressed, losing that finish and its usage: {events:?}"
-        );
-    }
-
-    #[test]
-    fn a_suppressed_turn_end_drops_only_the_finish_its_usage_included() {
-        // The withheld finish takes its cache counters and cost with it; the
-        // turn_end's ContextUsage still derives. Live publishing and replay
-        // suppress through the one `suppress_withheld_finish` filter; this
-        // pins that filter and the marker road — not the live client end to
-        // end.
-        let marker = crate::claude_view::withheld_finish_marker();
-        let turn_end = parse(
-            r#"{"type":"turn_end","message":{"role":"assistant","content":[],"model":"pi-test","usage":{"totalTokens":42,"cacheRead":7,"cacheWrite":2,"cost":{"total":0.5}},"stopReason":"end_turn"},"toolResults":[]}"#,
-        );
-        let mut withheld = false;
-        assert!(drive_replay(&mut withheld, &marker).is_empty());
-        let replayed = drive_replay(&mut withheld, &turn_end);
-        assert!(!withheld, "the owned turn_end consumes the marker");
-        assert_eq!(
-            replayed,
-            suppress_withheld_finish(events_from_line(&turn_end)),
-            "the marker road suppresses through the shared filter"
-        );
-        assert!(
-            matches!(
-                replayed.as_slice(),
-                [SessionEvent::ContextUsage {
-                    used_tokens: 42,
-                    ..
-                }]
-            ),
-            "only the finish is withheld; the context reading survives: {replayed:?}"
         );
     }
 

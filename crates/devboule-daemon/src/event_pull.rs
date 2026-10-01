@@ -4,8 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use devboule_protocol::{
-    CursorShape, ErrorCode, ScreenCursor, SessionEvent, SessionEventEnvelope, UserMessageKind,
-    WireError,
+    CursorShape, ErrorCode, ScreenCursor, SessionEvent, SessionEventEnvelope, WireError,
 };
 
 use crate::agent_report::PeerIdentity;
@@ -50,9 +49,9 @@ fn mark_replay_parse_failure(
 
 /// Fill a composer turn's time from the journal row's own `ts_ms` when the
 /// event carries none — the composer rows written between `message_kind` and
-/// `at_ms`. A kind-less native row is timed where it decodes
-/// (`time_a_kindless_report`); notices, creations and a2a relays have no
-/// turn time to show.
+/// `at_ms`. A kind-less native row is timed by the journal helper at its
+/// native decode (`journal::time_a_kindless_report`); notices, creations
+/// and a2a relays have no turn time to show.
 pub(crate) fn stamp_turn_time(event: &mut SessionEvent, ts_ms: u64) {
     if let SessionEvent::AgentUserMessage {
         at_ms,
@@ -61,24 +60,6 @@ pub(crate) fn stamp_turn_time(event: &mut SessionEvent, ts_ms: u64) {
     } = event
     {
         if at_ms.is_none() && message_kind.is_user_turn() {
-            *at_ms = Some(ts_ms);
-        }
-    }
-}
-
-/// A kind-less native row predates `message_kind`: the daemon itself wrote
-/// it, so its row time is the turn's time. A provider envelope keeps the
-/// `Unknown` its payload decodes with — no turn time; the live ACP client
-/// drops that echo before journaling or publishing it, so there is no live
-/// time to agree with.
-pub(crate) fn time_a_kindless_report(event: &mut SessionEvent, ts_ms: u64) {
-    if let SessionEvent::AgentUserMessage {
-        at_ms,
-        message_kind,
-        ..
-    } = event
-    {
-        if at_ms.is_none() && *message_kind == UserMessageKind::Unknown {
             *at_ms = Some(ts_ms);
         }
     }
@@ -934,7 +915,7 @@ fn pull_live_agent_replay_events(
                     match serde_json::from_slice::<SessionEvent>(&record.payload) {
                         Ok(mut event) => {
                             crate::plan_text::bound_permission_request(&mut event);
-                            time_a_kindless_report(&mut event, record.ts_ms);
+                            crate::journal::time_a_kindless_report(&mut event, record.ts_ms);
                             vec![event]
                         }
                         Err(error) => {

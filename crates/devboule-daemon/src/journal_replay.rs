@@ -6,7 +6,8 @@
 //! wrote it — recovery intentionally improves with the binary. `at_ms` is
 //! not re-derived for ordinary events. A kind-less `AgentUserMessage`
 //! decoded from a native `agent_report` row takes that row's `ts_ms`
-//! (`session::event_pull::time_a_kindless_report`); provider-envelope-derived
+//! (`journal::time_a_kindless_report`; `session::event_pull` applies the
+//! same rule at the paged walk's native decode); provider-envelope-derived
 //! `Unknown` messages do not.
 
 use std::collections::HashSet;
@@ -16,8 +17,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use devboule_protocol::{SessionEvent, SessionKind};
 
 use super::{
-    crc32, decode_chunks, origin_from_columns, parse_kind, EventKind, EventRecord, JournalError,
-    PersistStatus, Replay, SessionRecord,
+    crc32, decode_chunks, origin_from_columns, parse_kind, time_a_kindless_report, EventKind,
+    EventRecord, JournalError, PersistStatus, Replay, SessionRecord,
 };
 
 #[derive(Debug)]
@@ -473,7 +474,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 if kind == "agent_report" {
                     if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
                         crate::plan_text::bound_permission_request(&mut event);
-                        crate::session::event_pull::time_a_kindless_report(&mut event, ts_ms);
+                        time_a_kindless_report(&mut event, ts_ms);
                         covered_reports.push((seq, event, Some(ts_ms)));
                     }
                 } else if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload)
@@ -553,7 +554,7 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                 Some(EventKind::AgentReport) => {
                     if let Ok(mut event) = serde_json::from_slice::<SessionEvent>(&payload) {
                         crate::plan_text::bound_permission_request(&mut event);
-                        crate::session::event_pull::time_a_kindless_report(&mut event, ts_ms);
+                        time_a_kindless_report(&mut event, ts_ms);
                         gen_events.push(event);
                         gen_seqs.push(seq);
                         gen_ts_ms.push(Some(ts_ms));

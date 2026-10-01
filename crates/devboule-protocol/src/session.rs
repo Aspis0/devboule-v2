@@ -1720,11 +1720,16 @@ pub enum UserMessageKind {
 }
 
 impl UserMessageKind {
-    /// Whether this kind is a Composer user turn whose live publication
-    /// carries its own turn time. Historical provider-envelope rows do not
-    /// establish a live publication. Replay times a kind-less native row
-    /// from its journal row (`event_pull::time_a_kindless_report`), and the
-    /// app keeps its display authority over what an `Unknown` row shows.
+    /// Whether this kind is a Composer user turn: live publication
+    /// carries its own turn time, and replay fills an absent Composer
+    /// turn time from the journal row.
+    /// `Unknown` covers kind-less native rows (rows that predate
+    /// `message_kind`) as much as historical provider-envelope echoes;
+    /// the kind alone cannot tell them apart, so this predicate admits
+    /// neither. The journal row kind identifies native `agent_report`
+    /// rows before decode, and the journal times their kind-less events
+    /// from that row's `ts_ms`
+    /// (`journal::time_a_kindless_report`).
     pub fn is_user_turn(self) -> bool {
         matches!(self, Self::Composer)
     }

@@ -152,7 +152,7 @@ mod codex_input_requests;
 #[path = "codex_questions.rs"]
 mod codex_questions;
 #[path = "event_pull.rs"]
-pub(crate) mod event_pull;
+mod event_pull;
 #[path = "pi_client.rs"]
 mod pi_client;
 /// The class-level provider seam: the `Provider` trait, one implementation

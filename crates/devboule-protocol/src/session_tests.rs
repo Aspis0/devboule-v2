@@ -575,11 +575,9 @@ fn old_tool_rows_without_command_and_exit_code_still_parse() {
 }
 
 #[test]
-fn composer_sends_are_the_kinds_that_carry_their_own_time() {
+fn is_user_turn_selects_composer_sends_for_live_time_and_replay_fill() {
     assert!(UserMessageKind::Composer.is_user_turn());
-    // `Unknown` covers historical provider-envelope rows as much as
-    // kind-less native rows; the kind cannot separate them, so the kind
-    // alone is no turn — the journal stamp decides by row source.
+    // `Unknown` is excluded on purpose; the reason is on `is_user_turn`.
     assert!(!UserMessageKind::Unknown.is_user_turn());
     assert!(!UserMessageKind::OutgoingA2a.is_user_turn());
     assert!(!UserMessageKind::IncomingA2a.is_user_turn());

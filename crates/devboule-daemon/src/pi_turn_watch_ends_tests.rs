@@ -7,7 +7,7 @@ use super::super::local_command_test_support::recorded_turn_end;
 use super::test_support::turn_end_with;
 use super::test_support::{
     attached, deliver, drain, feed_line, finish, harness, is_any_finish, is_eof_error,
-    is_error_finish, is_watchdog_error, touch, try_next_echo,
+    is_error_finish, is_watchdog_error, tool_execution_end, toolcall_start, touch, try_next_echo,
 };
 use crate::journal::{new_session_record, Journal};
 use crate::session::permission_broker::PermissionBroker;
@@ -60,6 +60,82 @@ fn a_late_turn_end_after_the_expiry_finishes_nothing() {
     assert!(
         !late.iter().any(is_watchdog_error),
         "the late turn_end publishes no second silence error: {late:?}"
+    );
+    finish(&mut harness, &runtime);
+}
+
+/// The tool call and result are published before expiry; the late `turn_end`
+/// publishes no finish, while its durable context reading reaches the connection.
+/// Replay withholds the twin finish through the marker row the
+/// suppression journals (`replay_shows_one_finish_when_the_watchdog_ended_the_run`).
+#[test]
+fn a_withheld_turn_end_drops_its_finish_and_keeps_its_durable_context() {
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let broker = broker();
+    let mut harness = harness(&broker);
+    let (runtime, conn) = attached(&broker);
+    runtime.begin_turn();
+    deliver(&mut harness, "build it");
+    prime(&mut harness, &runtime);
+    // The tool call opens and closes inside the turn; both events land.
+    feed_line(&mut harness, &runtime, toolcall_start("tool-1"));
+    feed_line(&mut harness, &runtime, tool_execution_end("tool-1"));
+    let tool_events = drain(&conn);
+    assert!(
+        tool_events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentToolCall { tool_call_id, status, .. }
+                if tool_call_id == "tool-1" && status == "pending"
+        )),
+        "the tool call is published: {tool_events:?}"
+    );
+    assert!(
+        tool_events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentToolUpdate { tool_call_id, status: Some(status), .. }
+                if tool_call_id == "tool-1" && status == "completed"
+        )),
+        "the tool result is published: {tool_events:?}"
+    );
+    // The watchdog ends the silent turn...
+    harness
+        .watch
+        .backdate_activity_for_test(Duration::from_secs(60));
+    harness.watch.tick_for_test();
+    let expiry = drain(&conn);
+    assert!(
+        expiry.iter().any(is_watchdog_error) && expiry.iter().any(is_error_finish),
+        "the expiry ran: {expiry:?}"
+    );
+    // ...and pi's late end for the abandoned turn arrives — the aborted
+    // answer to the expiry's own abort, carrying the run's usage and cost.
+    // The filter drops the finish whole; the same row's durable context
+    // reading survives.
+    feed_line(
+        &mut harness,
+        &runtime,
+        serde_json::from_str::<serde_json::Value>(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[],"model":"pi-test","usage":{"input":11,"output":4,"cacheRead":7,"cacheWrite":2,"reasoning":0,"totalTokens":42,"cost":{"input":0.01,"output":0.02,"cacheRead":0,"cacheWrite":0,"total":0.5}},"stopReason":"aborted"},"toolResults":[]}"#,
+        )
+        .expect("costed turn_end frame"),
+    );
+    let late = drain(&conn);
+    assert!(
+        !late.iter().any(is_any_finish),
+        "the withheld end finishes nothing — its cost-bearing usage with it: {late:?}"
+    );
+    assert_eq!(
+        late,
+        vec![SessionEvent::ContextUsage {
+            model_id: Some("pi-test".to_string()),
+            used_tokens: 42,
+            max_tokens: None,
+            live: false,
+        }],
+        "the durable context reading from the withheld row still lands"
     );
     finish(&mut harness, &runtime);
 }

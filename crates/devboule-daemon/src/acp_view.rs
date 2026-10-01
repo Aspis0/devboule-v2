@@ -135,9 +135,10 @@ fn view_from_session_update(
                 // A provider chunk carries no transcript role. Historical
                 // `user_message_chunk` envelopes still decode here for
                 // backward compatibility; the live ACP client drops this
-                // echo before journaling or publishing it
-                // (`acp_client.rs:3377`), so only envelopes journaled
-                // before that guard reach this converter.
+                // echo before journaling or publishing it (the
+                // `is_user_message_chunk` guard in `acp_client`), so only
+                // envelopes journaled before that guard reach this
+                // converter.
                 author: UserMessageAuthor::Human,
                 message_kind: UserMessageKind::Unknown,
                 at_ms: None,

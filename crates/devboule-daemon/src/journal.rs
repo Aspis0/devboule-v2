@@ -40,6 +40,8 @@ mod journal_replay;
 mod journal_retention;
 #[path = "journal_schema.rs"]
 mod journal_schema;
+#[path = "journal_transcript_time.rs"]
+mod journal_transcript_time;
 
 // Test-only door to the history reader; production reaches it through the
 // private import below, so release builds carry no test name.
@@ -54,6 +56,7 @@ use journal_retention::{
     set_journal_retention, RetentionState,
 };
 use journal_schema::{open_connection, sweep_audit};
+pub(crate) use journal_transcript_time::time_a_kindless_report;
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
@@ -631,10 +634,10 @@ pub struct Replay {
     ///
     /// The row timestamp is replay metadata; it does not replace an event's
     /// own `at_ms`. When an event payload time is present (as on an
-    /// `agent_report` row), replay preserves it. The transcript consumer
-    /// fills absent user-turn times from these row timestamps: a kind-less
-    /// native row is timed where `journal_replay` decodes it, the hydrate
-    /// and the paged walk stamp composer rows as they read them.
+    /// `agent_report` row), replay preserves it. The hydrate fills absent
+    /// user-turn times from these row timestamps — a kind-less native row
+    /// is already timed where it decoded. The paged walk stamps from each
+    /// page record's own `ts_ms` and never reads this vector.
     pub event_ts_ms: Vec<Option<u64>>,
     pub last_seq: u64,
     pub integrity: TranscriptIntegrity,
