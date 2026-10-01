@@ -306,6 +306,7 @@ impl SessionRegistry {
             &conn.conn_peer,
             env_provider.as_deref(),
             &meta,
+            None,
         ) {
             Ok(session) => session,
             // The slot goes back with the failure, the way the wire create road

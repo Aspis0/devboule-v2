@@ -164,7 +164,9 @@ pub(crate) trait Provider: Send + Sync {
     /// workspace mapping it had before the seam — the four client roads
     /// mapped the whole client call, the terminal road only its child-spawn
     /// step — which is why the mapping lives inside the impls, not at the
-    /// shared call site.
+    /// shared call site. `initial_size` is the create frame's optional
+    /// geometry, already judged at the wire boundary; the family with a grid
+    /// opens the PTY at it, the families without one ignore it.
     fn spawn(
         &self,
         state: &Arc<ServerState>,
@@ -172,6 +174,7 @@ pub(crate) trait Provider: Send + Sync {
         mcp: Option<McpLaunchConfig>,
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
+        initial_size: Option<(u16, u16)>,
     ) -> Result<SpawnedSession, WireError>;
 
     /// The provider id stamped on the session record. `named` is the resolved
@@ -402,6 +405,7 @@ impl Provider for AcpProvider {
         mcp: Option<McpLaunchConfig>,
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
+        _initial_size: Option<(u16, u16)>,
     ) -> Result<SpawnedSession, WireError> {
         let workspace_path = command.cwd.clone();
         super::acp_client::spawn_process(state, command, mcp, delivery).map_err(|error| {
@@ -570,6 +574,7 @@ impl Provider for ClaudeProvider {
         mcp: Option<McpLaunchConfig>,
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
+        _initial_size: Option<(u16, u16)>,
     ) -> Result<SpawnedSession, WireError> {
         let workspace_path = command.cwd.clone();
         super::claude_client::spawn_process(state, command, mcp, delivery).map_err(|error| {
@@ -726,6 +731,7 @@ impl Provider for PiProvider {
         mcp: Option<McpLaunchConfig>,
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
+        _initial_size: Option<(u16, u16)>,
     ) -> Result<SpawnedSession, WireError> {
         let workspace_path = command.cwd.clone();
         super::pi_client::spawn_process(state, command, mcp, delivery).map_err(|error| {
@@ -877,6 +883,7 @@ impl Provider for CodexProvider {
         mcp: Option<McpLaunchConfig>,
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
+        _initial_size: Option<(u16, u16)>,
     ) -> Result<SpawnedSession, WireError> {
         let workspace_path = command.cwd.clone();
         super::codex_client::spawn_process(state, command, mcp, delivery).map_err(|error| {
@@ -1020,11 +1027,12 @@ impl Provider for TerminalProvider {
         _mcp: Option<McpLaunchConfig>,
         _delivery: ProfileDelivery,
         workspace_id: Option<&str>,
+        initial_size: Option<(u16, u16)>,
     ) -> Result<SpawnedSession, WireError> {
         // The PTY road, moved verbatim out of `spawn_session`'s fallthrough
         // (a move, not a rewrite): the same openpty, the same Windows job
         // containment, the same writer/reader wiring, the same teardowns.
-        open_pty_session(command, workspace_id)
+        open_pty_session(command, workspace_id, initial_size)
     }
 
     fn stamp_session_provider(
@@ -1139,7 +1147,14 @@ impl Provider for TerminalProvider {
 fn open_pty_session(
     command: super::PtyCommand,
     workspace_id: Option<&str>,
+    initial_size: Option<(u16, u16)>,
 ) -> Result<SpawnedSession, WireError> {
+    // The one place the terminal road's first grid is decided: the create
+    // frame's judged size when the client measured one, the historical
+    // default otherwise. The value is stamped on the SpawnedSession below so
+    // the emulator is born at the same geometry the PTY was opened at; the
+    // judge refuses columns below the screen's floor, so the screen keeps it.
+    let (cols, rows) = initial_size.unwrap_or((super::INITIAL_COLS, super::INITIAL_ROWS));
     // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
     // DSR query (`ESC[6n`) at startup and stalls its render pipeline until it
     // is answered. The DAEMON is the single responder: publish_output routes
@@ -1148,8 +1163,8 @@ fn open_pty_session(
     let pty_system = portable_pty::native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
-            rows: super::INITIAL_ROWS,
-            cols: super::INITIAL_COLS,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -1277,6 +1292,7 @@ fn open_pty_session(
         pending_delivery: None,
         pending_codex_verify: None,
         out_of_band: None,
+        pty_size: Some((cols, rows)),
     })
 }
 

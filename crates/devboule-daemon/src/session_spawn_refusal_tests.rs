@@ -38,6 +38,7 @@ fn a_refused_spawn_ends_its_journal_row_before_the_refusal_is_returned() {
             &None,
             None,
             &meta,
+            None,
         )
         .expect_err("a nonexistent program refuses the spawn");
 
@@ -97,6 +98,7 @@ fn a_refused_spawn_ends_its_row_async_without_blocking_the_caller() {
             &None,
             None,
             &meta,
+            None,
         )
         .expect_err("a nonexistent program refuses the spawn");
     let journal = state.sessions.journal.as_ref().expect("journal");

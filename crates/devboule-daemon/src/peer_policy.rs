@@ -638,6 +638,8 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
                 mode: None,
                 display_name: None,
                 idempotency_key: None,
+                cols: None,
+                rows: None,
             },
             // The mandatory initial prompt: the same send `devboule_send_message`
             // declares (placeholders: no arm reads a field, only the variant).
@@ -815,6 +817,8 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             mode: None,
             display_name: None,
             idempotency_key: None,
+            cols: None,
+            rows: None,
         }]))
     } else if tool == MCP_SEND_TERMINAL_KEYS_TOOL {
         // Typing into a pty has no wire frame — `SessionSend` reaches an
@@ -1094,6 +1098,8 @@ pub(crate) mod tests {
             mode: None,
             display_name: None,
             idempotency_key: None,
+            cols: None,
+            rows: None,
         };
         let attach = || ClientMessage::SessionAttach {
             id: 1,
@@ -2601,6 +2607,8 @@ pub(crate) mod tests {
                 mode: None,
                 display_name: None,
                 idempotency_key: None,
+                cols: None,
+                rows: None,
             },
             ClientMessage::SessionAttach {
                 id: 1,

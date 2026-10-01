@@ -11,6 +11,7 @@ import type {
   UnverifiableTranscriptIntegrity,
 } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
+import { recordFittedGrid } from "./lastFittedGrid";
 import type { TerminalSessionRegistry } from "./terminalRegistry";
 
 export type TerminalEvent = SessionEvent;
@@ -754,6 +755,7 @@ export class TerminalSession {
     const cols = view.cols();
     const rows = view.rows();
     if (!fitted || cols <= 0 || rows <= 0) return;
+    recordFittedGrid({ cols, rows });
 
     void this.deps
       .invoke<void>("session_resize", {

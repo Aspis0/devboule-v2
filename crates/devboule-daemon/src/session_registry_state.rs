@@ -822,6 +822,8 @@ impl AgentCreator {
                     mode: None,
                     display_name: None,
                     idempotency_key: None,
+                    cols: None,
+                    rows: None,
                 };
                 matches!(
                     crate::peer_policy::peer_allows(role, &caps, &request),

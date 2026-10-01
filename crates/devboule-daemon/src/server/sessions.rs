@@ -21,6 +21,8 @@ pub(super) fn dispatch_session(
             mode,
             display_name,
             idempotency_key,
+            cols,
+            rows,
         } => session_create(
             state,
             owner,
@@ -32,6 +34,7 @@ pub(super) fn dispatch_session(
             mode,
             display_name,
             idempotency_key,
+            create_size(cols, rows),
         ),
         ClientMessage::SessionAttach {
             id,
@@ -541,6 +544,37 @@ pub(super) fn unexpected_session_frame(request: &ClientMessage) -> DaemonMessage
     })
 }
 
+/// The create frame's initial terminal geometry bounds. A grid beyond these
+/// is not shrunk but discarded: a create that names an absurd size is better
+/// served by the honest default (and the first real resize) than by a clamp
+/// the client never asked for. The area cap is what keeps 1000×1000 — inside
+/// the per-axis bounds, far outside any real viewport — out of the emulator.
+const MAX_CREATE_COLS: u16 = 1_000;
+const MAX_CREATE_ROWS: u16 = 1_000;
+const MAX_CREATE_CELLS: usize = 250_000;
+
+/// Judge the create frame's optional geometry once, at the wire boundary:
+/// `Some` only for a complete pair inside the bounds, `None` for an absent,
+/// too narrow, partial, or oversized ask (the daemon then spawns at its
+/// default). Both floors are the screen's own: a smaller PTY would be born
+/// beside an emulator the screen widens to that floor.
+/// Families without a grid are handed the answer too and ignore it, the same
+/// way they ignore the rest of the frame's terminal-only intent.
+pub(super) fn create_size(cols: Option<u16>, rows: Option<u16>) -> Option<(u16, u16)> {
+    match (cols, rows) {
+        (Some(cols), Some(rows))
+            if usize::from(cols) >= crate::screen::MIN_COLUMNS
+                && cols <= MAX_CREATE_COLS
+                && usize::from(rows) >= crate::screen::MIN_SCREEN_LINES
+                && rows <= MAX_CREATE_ROWS
+                && usize::from(cols) * usize::from(rows) <= MAX_CREATE_CELLS =>
+        {
+            Some((cols, rows))
+        }
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn session_create(
     state: &Arc<ServerState>,
@@ -553,6 +587,7 @@ fn session_create(
     mode: Option<String>,
     display_name: Option<String>,
     idempotency_key: Option<String>,
+    initial_size: Option<(u16, u16)>,
 ) -> DaemonMessage {
     // The name is checked, and trimmed, before anything is touched: the value
     // the daemon stores is the value it judged, and a name it refused is
@@ -603,6 +638,7 @@ fn session_create(
         mode,
         display_name,
         conn_peer,
+        initial_size,
     ) {
         Ok(session) => {
             let reply = DaemonMessage::Session { id, session };

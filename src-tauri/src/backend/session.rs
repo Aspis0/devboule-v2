@@ -34,6 +34,12 @@ pub use devboule_protocol::{
 /// daemon's `session_create` — which runs the provider's whole handshake
 /// inline, up to `SESSION_CREATE_RPC_TIMEOUT` — would freeze the window for
 /// as long as the daemon takes. `off_main_thread` is where the wait goes.
+///
+/// `cols`/`rows` are the grid a laid-out terminal view last fitted, present
+/// only when one has; both travel or neither does, and the daemon judges the
+/// pair (falling back to its default for an absent or absurd ask). Absent,
+/// not zero, before any fit: the daemon reads a missing field as "no size
+/// asked".
 #[tauri::command]
 pub async fn session_create(
     bridge: State<'_, DaemonBridge>,
@@ -41,11 +47,15 @@ pub async fn session_create(
     kind: SessionKind,
     provider: Option<String>,
     mode: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> Result<Session, CommandError> {
     require_terminal_kind(&kind)?;
     let client = require_client(&bridge)?;
-    off_main_thread(move || client.session_create_with(workspace_id, kind, provider, mode, None))
-        .await
+    off_main_thread(move || {
+        client.session_create_with(workspace_id, kind, provider, mode, cols, rows, None)
+    })
+    .await
 }
 
 /// The window must not wait on this call: the daemon answers only after the
@@ -674,6 +684,30 @@ mod tests {
         require_terminal_kind(&SessionKind::Claude).expect("claude");
         require_terminal_kind(&SessionKind::Pi).expect("pi");
         require_terminal_kind(&SessionKind::Codex).expect("codex");
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{
+    /// workspaceId, kind, provider, mode, cols?, rows? }` in, the session out.
+    /// The size pair is optional in both spellings — absent keys from a
+    /// caller that measured nothing, and Tauri derives the JS-side key names
+    /// from these parameters, so a rename here silently changes the command's
+    /// argument shape.
+    #[allow(clippy::type_complexity)]
+    #[test]
+    fn session_create_forwarder_has_the_frozen_tauri_signature() {
+        fn frozen<Fut: std::future::Future<Output = Result<Session, CommandError>>>(
+            _: fn(
+                State<'static, DaemonBridge>,
+                Option<String>,
+                SessionKind,
+                Option<String>,
+                Option<String>,
+                Option<u16>,
+                Option<u16>,
+            ) -> Fut,
+        ) {
+        }
+        frozen(session_create);
     }
 
     #[test]

@@ -83,6 +83,7 @@ pub(super) fn spawn_failure_is_provider_health(error: &WireError) -> bool {
     error.code != ErrorCode::InvalidRequest
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_session(
     state: &Arc<ServerState>,
     registry: &SessionRegistry,
@@ -91,12 +92,14 @@ pub fn spawn_session(
     command: PtyCommand,
     mut mcp_session: Option<McpSessionGuard>,
     delivery: crate::profile_delivery::ProfileDelivery,
+    initial_size: Option<(u16, u16)>,
 ) -> Result<(), WireError> {
     // The delivery travels as the one typed value: each family's `spawn`
     // validates what it can refuse and applies what it owns. The dispatch is
     // the registry's — no arm matches on the kind or names a family — and
     // each family's workspace error mapping happens inside its own `spawn`,
-    // which is why none is applied here.
+    // which is why none is applied here. The initial size rides the same way:
+    // the family with a grid opens the PTY at it, the others ignore it.
     let workspace_id = metadata.workspace_id.clone();
     let spawned = provider::catalog_registry()
         .provider_for_kind(&metadata.kind)
@@ -106,6 +109,7 @@ pub fn spawn_session(
             state.mcp.launch_config(&metadata.id),
             delivery.clone(),
             workspace_id.as_deref(),
+            initial_size,
         )?;
     start_spawned_session(
         state,
@@ -188,6 +192,7 @@ pub(super) fn start_spawned_session(
         agent_version,
         pending_delivery,
         pending_codex_verify,
+        pty_size,
     } = spawned;
     if let (Some(provider_id), Some(version)) = (&metadata.provider, agent_version.as_deref()) {
         state.record_provider_version(provider_id, version);
@@ -199,10 +204,18 @@ pub(super) fn start_spawned_session(
             permission_broker.expect("agent sessions have a permission broker"),
         )
     } else {
-        Arc::new(SessionRuntime::with_journal(
-            metadata.id.clone(),
-            registry.journal.clone(),
-        ))
+        // The screen is born at the geometry the PTY was opened at — one
+        // value, stamped by the road that called openpty, so the emulator and
+        // the child can never disagree about the first grid.
+        Arc::new({
+            let (cols, rows) = pty_size.unwrap_or((INITIAL_COLS, INITIAL_ROWS));
+            SessionRuntime::with_journal_at_size(
+                metadata.id.clone(),
+                registry.journal.clone(),
+                cols,
+                rows,
+            )
+        })
     };
     if metadata.kind.is_agent() {
         runtime.set_agent_kind(metadata.kind.clone());

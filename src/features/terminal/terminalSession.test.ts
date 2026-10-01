@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionRequest, SessionSnapshot } from "../../types/ipc";
 import { createTerminalView, type TerminalViewHandle } from "./createTerminalView";
+import { lastFittedGrid } from "./lastFittedGrid";
 import {
   TerminalSession,
   type TerminalBanner,
@@ -984,6 +985,23 @@ describe("TerminalSession resize and Ctrl+C", () => {
     sizeHarness.view.geometry.rows = 0;
     await sizeHarness.session.start();
     expect(sizeHarness.invoke).not.toHaveBeenCalledWith("session_resize", expect.anything());
+  });
+
+  it("remembers the grid it sent for the next create, and nothing from a failed fit", async () => {
+    const fitted = makeHarness();
+    fitted.view.geometry.cols = 93;
+    fitted.view.geometry.rows = 28;
+    await fitted.session.start();
+    vi.advanceTimersByTime(150);
+    expect(lastFittedGrid()).toEqual({ cols: 93, rows: 28 });
+
+    const hidden = makeHarness();
+    hidden.view.fitOk.value = false;
+    hidden.view.geometry.cols = 40;
+    hidden.view.geometry.rows = 10;
+    await hidden.session.start();
+    vi.advanceTimersByTime(150);
+    expect(lastFittedGrid()).toEqual({ cols: 93, rows: 28 });
   });
 
   it("arms Ctrl+C first and sends ETX only on confirmation", async () => {

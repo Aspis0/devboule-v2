@@ -329,6 +329,9 @@ mod session_create;
 #[path = "session_create_phase_tests.rs"]
 mod session_create_phase_tests;
 #[cfg(test)]
+#[path = "session_create_size_tests.rs"]
+mod session_create_size_tests;
+#[cfg(test)]
 #[path = "session_create_tests.rs"]
 mod session_create_tests;
 use session_child_profile::{manifest_arrived, model_ask_needed};
@@ -1886,6 +1889,7 @@ impl SessionRegistry {
         mode: Option<String>,
         display_name: Option<String>,
         conn_peer: &Option<ConnPeer>,
+        initial_size: Option<(u16, u16)>,
     ) -> Result<Session, WireError> {
         let env_provider = std::env::var("DEVBOULE_AGENT_PROVIDER").ok();
         let meta = SessionCreateMeta {
@@ -1903,6 +1907,7 @@ impl SessionRegistry {
             conn_peer,
             env_provider.as_deref(),
             &meta,
+            initial_size,
         )
     }
 
@@ -1921,6 +1926,7 @@ impl SessionRegistry {
         conn_peer: &Option<ConnPeer>,
         env_provider: Option<&str>,
         meta: &SessionCreateMeta,
+        initial_size: Option<(u16, u16)>,
     ) -> Result<Session, WireError> {
         let _workspace_creation = self.workspace_creation_guard(workspace_id.as_deref())?;
         // The create road is the boundary that answers "which providers
@@ -2027,6 +2033,7 @@ impl SessionRegistry {
             command,
             mcp_session,
             delivery,
+            initial_size,
         ) {
             Ok(()) => {
                 // Whose spawn success measures provider health is the impls'
@@ -4063,6 +4070,15 @@ pub(crate) fn insert_test_live_agent(
     owner: OwnerId,
 ) -> Arc<SessionRuntime> {
     tests::insert_live_agent(registry, id, owner)
+}
+
+/// Test-only: a live terminal's PTY grid and screen grid, each `(cols, rows)`.
+#[cfg(test)]
+pub(crate) fn test_terminal_geometry(
+    registry: &SessionRegistry,
+    id: &str,
+) -> ((u16, u16), (u16, u16)) {
+    session_create_size_tests::opened_geometry(registry, id)
 }
 
 /// Test-only live agent whose row names a workspace: the row the project-graph

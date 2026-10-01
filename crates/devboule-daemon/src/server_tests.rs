@@ -2652,6 +2652,8 @@ fn queued_session_frames_flow_while_creation_waits_off_dispatch() {
             mode: None,
             display_name: Some("Valid display name".to_string()),
             idempotency_key: None,
+            cols: None,
+            rows: None,
         })
         .expect("send create");
     entered_rx
@@ -2717,6 +2719,8 @@ fn a_panicked_create_lock_does_not_block_later_creates() {
                 mode: None,
                 display_name: Some("Valid display name".to_string()),
                 idempotency_key: None,
+                cols: None,
+                rows: None,
             },
             &conn,
             true,
@@ -4397,6 +4401,8 @@ fn a_peer_create_in_a_prompt_skipping_mode_is_refused_and_labelled() {
             mode: Some("bypassPermissions".to_string()),
             display_name: None,
             idempotency_key: None,
+            cols: None,
+            rows: None,
         },
         &creator,
         true,
@@ -4527,6 +4533,8 @@ fn the_prompt_skipping_decision_reads_the_frame_and_refuses_unknown_sessions() {
         display_name: None,
         mode: Some(mode.to_string()),
         idempotency_key: None,
+        cols: None,
+        rows: None,
     };
 
     // The label is part of the answer: the trail and the peer's error name
@@ -4899,6 +4907,8 @@ fn a_peer_may_not_name_an_acp_mode_while_the_local_pipe_may() {
             mode: Some("auto_accept".to_string()),
             display_name: None,
             idempotency_key: None,
+            cols: None,
+            rows: None,
         },
         &creator,
         true,

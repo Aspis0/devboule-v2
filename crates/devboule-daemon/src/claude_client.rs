@@ -995,6 +995,7 @@ fn spawn_claude_child(
         pending_delivery: None,
         pending_codex_verify: None,
         out_of_band: None,
+        pty_size: None,
     })
 }
 

@@ -15,8 +15,8 @@ use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 
-const MIN_COLUMNS: usize = 2;
-const MIN_SCREEN_LINES: usize = 1;
+pub(crate) const MIN_COLUMNS: usize = 2;
+pub(crate) const MIN_SCREEN_LINES: usize = 1;
 
 /// Maximum title length retained in screen state and emitted by the presenter.
 pub const MAX_TITLE_CHARS: usize = 256;

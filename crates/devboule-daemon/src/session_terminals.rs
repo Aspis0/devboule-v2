@@ -278,6 +278,7 @@ impl super::SessionRegistry {
             conn_peer,
             None,
             &meta,
+            None,
         )
     }
 }

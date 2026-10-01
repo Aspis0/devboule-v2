@@ -1320,6 +1320,8 @@ fn create_send_permission_carry_idempotency_key() {
         mode: None,
         display_name: None,
         idempotency_key: Some("k1".to_string()),
+        cols: None,
+        rows: None,
     };
     let send = ClientMessage::SessionSend {
         id: 2,
@@ -1552,6 +1554,8 @@ fn session_create_round_trips_an_optional_mode() {
         mode: Some("plan".to_string()),
         display_name: None,
         idempotency_key: None,
+        cols: None,
+        rows: None,
     };
     let value = serde_json::to_value(&message).expect("json");
     assert_eq!(value["mode"], "plan");
@@ -1559,6 +1563,68 @@ fn session_create_round_trips_an_optional_mode() {
         serde_json::from_value::<ClientMessage>(value).expect("round trip"),
         message
     );
+}
+
+#[test]
+fn session_create_round_trips_an_optional_initial_size() {
+    let sized = ClientMessage::SessionCreate {
+        id: 11,
+        workspace_id: None,
+        kind: SessionKind::Terminal,
+        provider: None,
+        mode: None,
+        display_name: None,
+        idempotency_key: None,
+        cols: Some(93),
+        rows: Some(28),
+    };
+    let value = serde_json::to_value(&sized).expect("json");
+    assert_eq!(value["cols"], 93);
+    assert_eq!(value["rows"], 28);
+    assert_eq!(
+        serde_json::from_value::<ClientMessage>(value).expect("round trip"),
+        sized
+    );
+
+    let unmeasured = ClientMessage::SessionCreate {
+        id: 12,
+        workspace_id: None,
+        kind: SessionKind::Terminal,
+        provider: None,
+        mode: None,
+        display_name: None,
+        idempotency_key: None,
+        cols: None,
+        rows: None,
+    };
+    let value = serde_json::to_value(&unmeasured).expect("json");
+    assert!(
+        value.get("cols").is_none() && value.get("rows").is_none(),
+        "an unmeasured create serializes no size keys: {value}"
+    );
+}
+
+/// An older client's create — no size keys at all — still parses, and the
+/// pair decodes as absent. This is the compatibility fact that lets the
+/// dialect stay at its current version: the fields are additive and
+/// optional, so an old frame and a new frame are the same message.
+#[test]
+fn session_create_parses_an_older_frame_without_a_size() {
+    let older = serde_json::json!({
+        "type": "session_create",
+        "id": 13,
+        "workspaceId": null,
+        "kind": "terminal",
+    });
+    let decoded = serde_json::from_value::<ClientMessage>(older).expect("older frame");
+    assert!(matches!(
+        decoded,
+        ClientMessage::SessionCreate {
+            cols: None,
+            rows: None,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -2928,6 +2994,8 @@ fn session_create_display_name_is_camel_case_and_optional() {
         mode: None,
         display_name: Some("worker".to_string()),
         idempotency_key: None,
+        cols: None,
+        rows: None,
     };
     let value = serde_json::to_value(&named).expect("json");
     assert_eq!(value["displayName"], "worker");

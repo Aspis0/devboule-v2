@@ -704,6 +704,7 @@ fn spawn_codex(
         pending_delivery: None,
         pending_codex_verify,
         out_of_band,
+        pty_size: None,
     })
 }
 

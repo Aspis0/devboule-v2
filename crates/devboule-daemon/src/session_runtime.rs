@@ -472,6 +472,18 @@ impl SessionRuntime {
     }
 
     pub(crate) fn with_journal(session_id: String, journal: Option<Arc<Journal>>) -> Self {
+        Self::with_journal_at_size(session_id, journal, INITIAL_COLS, INITIAL_ROWS)
+    }
+
+    /// The same constructor at an explicit first grid. The create road hands
+    /// the geometry the terminal road opened its PTY at, so the emulator is
+    /// born on the grid the child sees; every other road keeps the default.
+    pub(crate) fn with_journal_at_size(
+        session_id: String,
+        journal: Option<Arc<Journal>>,
+        cols: u16,
+        rows: u16,
+    ) -> Self {
         Self {
             session_id,
             journal,
@@ -481,7 +493,7 @@ impl SessionRuntime {
                 next_seq: 1,
                 last_applied_seq: 0,
                 generation: 1,
-                screen: Some(Screen::new(INITIAL_COLS, INITIAL_ROWS)),
+                screen: Some(Screen::new(cols, rows)),
                 transcript: false,
                 resize_owner: None,
                 observers: HashMap::new(),

@@ -345,6 +345,7 @@ fn a_birth_write_carries_overlay_and_depth_even_when_spawn_fails() {
         &None,
         None,
         &meta,
+        None,
     );
     std::env::remove_var("DEVBOULE_ACP_COMMAND");
     assert!(result.is_err(), "the spawn must fail on the fake binary");

@@ -1811,6 +1811,7 @@ fn spawn_pi(
         agent_version: None,
         pending_delivery,
         pending_codex_verify: None,
+        pty_size: None,
     })
 }
 

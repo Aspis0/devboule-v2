@@ -154,11 +154,14 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// (`cacheReadTokens`/`cacheWriteTokens`/`costUsd` on `agent_finished`) are
 /// likewise output-only and skipped when absent, so a v16 peer parses every
 /// v18 event; the version bump marks the dialect, and the floor below stays
-/// put.
+/// put. `SessionCreate`'s optional `cols`/`rows` is an input pair added
+/// without a bump: an older daemon drops the unknown keys and spawns at its
+/// default size, which the first resize corrects.
 pub const PROTOCOL_VERSION: u32 = 18;
 /// Oldest dialect this crate still accepts. Protocols 17 and 18 added only
-/// optional output-only fields, so a v16 peer still interoperates — it just
-/// shows no command chip, turn time, cache or cost until rebuilt. The floor
+/// optional fields, so a v16 peer still interoperates — it just shows no
+/// command chip, turn time, cache or cost until rebuilt, and opens a created
+/// terminal at its default size until the first resize. The floor
 /// moves only for a required-field or type change (`created_at_ms`,
 /// `Workspace.path`), which forces it up to [`PROTOCOL_VERSION`]: agreeing
 /// on an older version would still emit the new struct, and the peer would

@@ -2225,6 +2225,7 @@ fn env_provided_npx_wrapper_is_denied_on_session_create() {
             &None,
             Some("codex-acp"),
             &SessionCreateMeta::default(),
+            None,
         )
         .expect_err("env npx create must fail");
     assert_eq!(error.code, ErrorCode::InvalidRequest);

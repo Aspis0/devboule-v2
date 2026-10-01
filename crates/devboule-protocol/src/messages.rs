@@ -286,6 +286,19 @@ pub enum ClientMessage {
         /// some other session would otherwise be one string away.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
+        /// The terminal geometry the client already measured, when it owns a
+        /// laid-out view at create time, so the child is born on the grid it
+        /// will be seen on instead of reflowing after the first resize. The
+        /// pair travels or not at all: an absent, zero, or oversized half
+        /// asks for no size, and the daemon spawns at its own default — a
+        /// later [`ClientMessage::SessionResize`] stays the owner of every
+        /// change. Both fields are ignored by families without a grid, and an
+        /// older daemon drops them as unknown keys, so the create still
+        /// answers at the default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cols: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rows: Option<u16>,
     },
     SessionAttach {
         id: u64,

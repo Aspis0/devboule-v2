@@ -922,7 +922,8 @@ fn a_create_wait_is_the_create_roads_and_the_ping_keeps_the_default() {
         move |client| {
             super::SESSION_CREATE_DEADLINE.with(|slot| slot.set(Some(short)));
             let started = std::time::Instant::now();
-            let create = client.session_create_with(None, SessionKind::Acp, None, None, None);
+            let create =
+                client.session_create_with(None, SessionKind::Acp, None, None, None, None, None);
             let elapsed = started.elapsed();
             super::SESSION_CREATE_DEADLINE.with(|slot| slot.set(None));
             let error = create.expect_err("a create the daemon never answers must time out");
@@ -938,6 +939,87 @@ fn a_create_wait_is_the_create_roads_and_the_ping_keeps_the_default() {
                 client.ping().expect("the control plane keeps the default"),
                 12
             );
+        },
+    );
+}
+
+/// The size the app measured rides the create frame, and an unmeasured create
+/// frames `None` for both halves — the value the daemon's default decision
+/// reads. The fake daemon refuses both creates (an `Error` frame is the
+/// shortest honest answer), each carrying the request's own id: the client
+/// routes replies by that id, so an id-less refusal would strand the caller
+/// until its deadline instead of ending the round trip. The assertions are
+/// about what travelled, not what came back.
+///
+/// Mutant: `session_create_with` dropping the pair before the frame (the
+/// daemon would spawn every terminal at the default and the first resize
+/// would reflow) — the `Some` assertions fail.
+#[cfg(windows)]
+#[test]
+fn a_create_frames_the_measured_size_and_an_unmeasured_one_frames_none() {
+    with_a_fake_daemon(
+        "create-size",
+        move |framed| {
+            let first = framed
+                .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+                .expect("the sized create");
+            let ClientMessage::SessionCreate { id, cols, rows, .. } = first else {
+                panic!("expected the create, got {first:?}");
+            };
+            assert_eq!(cols, Some(93), "the measured grid rides the create");
+            assert_eq!(rows, Some(28));
+            framed
+                .send(&DaemonMessage::Error(
+                    devboule_protocol::WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "refused by the fake daemon",
+                    )
+                    .with_id(id),
+                ))
+                .expect("the refusal");
+
+            let second = framed
+                .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+                .expect("the unmeasured create");
+            let ClientMessage::SessionCreate { id, cols, rows, .. } = second else {
+                panic!("expected the create, got {second:?}");
+            };
+            assert_eq!(cols, None, "an unmeasured create names no size");
+            assert_eq!(rows, None);
+            // Answer the second request too, so the caller's round trip ends
+            // on a routed reply and not on the connection's teardown.
+            framed
+                .send(&DaemonMessage::Error(
+                    devboule_protocol::WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "refused by the fake daemon",
+                    )
+                    .with_id(id),
+                ))
+                .expect("the second refusal");
+        },
+        move |client| {
+            let sized = client.session_create_with(
+                None,
+                SessionKind::Terminal,
+                None,
+                None,
+                Some(93),
+                Some(28),
+                None,
+            );
+            // The routed refusal, not a deadline: a wait that ended in a
+            // connection error would also be `Err`, and would say the fake's
+            // answer never reached its caller.
+            let Err(DaemonError::Handshake(error)) = &sized else {
+                panic!("the sized create is refused on the wire, got {sized:?}");
+            };
+            assert_eq!(error.code, ErrorCode::InvalidRequest);
+            let unmeasured = client.session_create(None, SessionKind::Terminal, None);
+            let Err(DaemonError::Handshake(error)) = &unmeasured else {
+                panic!("the unmeasured create is refused on the wire, got {unmeasured:?}");
+            };
+            assert_eq!(error.code, ErrorCode::InvalidRequest);
         },
     );
 }

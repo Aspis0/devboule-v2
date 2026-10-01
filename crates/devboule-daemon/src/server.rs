@@ -126,3 +126,7 @@ mod tests;
 #[cfg(test)]
 #[path = "server/lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "server/create_size_tests.rs"]
+mod create_size_tests;

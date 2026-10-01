@@ -825,6 +825,7 @@ fn spawn_process_with_load(
         pending_delivery: None,
         pending_codex_verify: None,
         out_of_band: None,
+        pty_size: None,
     })
 }
 

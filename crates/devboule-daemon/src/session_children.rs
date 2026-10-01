@@ -442,6 +442,7 @@ impl super::SessionRegistry {
             &None,
             None,
             &meta,
+            None,
         ) {
             Ok(child) => child,
             Err(error) => {

@@ -6763,6 +6763,8 @@ fn the_unattended_marker_survives_a_daemon_restart_and_a_resume() {
             None,
             Some("auto_accept".to_string()),
             None,
+            None,
+            None,
         )
         .expect("create an unattended ACP session");
     assert_eq!(

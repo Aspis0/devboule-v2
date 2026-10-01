@@ -45,10 +45,12 @@ mounts one surface at a time from a registry (`src/types/surface.ts:22`, `src/ap
 The protocol crate is the only place the wire types are declared, and the dependency is deliberate:
 `src-tauri/Cargo.toml:28` ("Shared wire types. The daemon and this crate must not declare their own
 copies"). Protocol version 18 (`crates/devboule-protocol/src/lib.rs`, `PROTOCOL_VERSION`), with
-`PROTOCOL_MIN_VERSION` at 16 — 18 added only optional output-only fields, so a v16 peer still
-connects and merely shows no command chip or turn time, nor the finished-turn usage line's cache
-counters and turn cost, until rebuilt; the floor moves only for a
-required-field or type change.
+`PROTOCOL_MIN_VERSION` at 16 — 18 added only optional fields, so a v16 peer still connects. The
+output-only ones mean it merely shows no command chip or turn time, nor the finished-turn usage
+line's cache counters and turn cost, until rebuilt. The one input pair, `SessionCreate`'s
+`cols`/`rows`, needs no bump either: an older daemon ignores the unknown keys and spawns at its
+default size, which the first resize corrects. The floor moves only for a required-field or type
+change.
 
 ### The daemon is a separate process
 

@@ -12,7 +12,7 @@ use crate::server::ServerState;
 
 use super::{PtyCommand, SessionCreateMeta, WireError};
 
-fn road_state(instance: &str, user: &str) -> (Arc<ServerState>, OwnerId) {
+pub(super) fn road_state(instance: &str, user: &str) -> (Arc<ServerState>, OwnerId) {
     (
         ServerState::new(instance.to_string()),
         OwnerId::new(user, "create-road-client").expect("owner"),
@@ -28,7 +28,7 @@ fn refused_spawn_command() -> PtyCommand {
     )
 }
 
-fn echo_command() -> PtyCommand {
+pub(super) fn echo_command() -> PtyCommand {
     PtyCommand::new(
         "cmd.exe",
         vec!["/c".to_string(), "echo create-road".to_string()],
@@ -68,6 +68,7 @@ fn create(
         conn_peer,
         None,
         meta,
+        None,
     )
 }
 
@@ -406,6 +407,7 @@ fn a_profile_refusal_measures_no_provider_health() {
             &None,
             None,
             &SessionCreateMeta::default(),
+            None,
         )
         .expect_err("the unknown mode refuses the create");
     assert_eq!(error.code, ErrorCode::InvalidRequest);

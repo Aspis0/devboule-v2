@@ -2584,6 +2584,7 @@ mod lifecycle_tests {
             pending_delivery,
             pending_codex_verify: None,
             out_of_band: None,
+            pty_size: None,
         }
     }
 

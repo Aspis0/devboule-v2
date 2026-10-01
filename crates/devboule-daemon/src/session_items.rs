@@ -374,6 +374,11 @@ pub(crate) struct SpawnedSession {
     /// or a steer is considered. `Some` only where such commands exist (pi
     /// and Codex); every other family passes `None`.
     pub(super) out_of_band: Option<Arc<dyn OutOfBandCommands>>,
+    /// The geometry the terminal road opened its PTY at, stamped by the road
+    /// that called `openpty` so the emulator is born at the same grid
+    /// (`start_spawned_session` reads it). `None` for the families without a
+    /// PTY grid.
+    pub(super) pty_size: Option<(u16, u16)>,
 }
 
 pub(super) struct PtyKiller {

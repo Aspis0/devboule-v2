@@ -19,6 +19,7 @@ import type {
 import { isAgentKind } from "../../types/ipc";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
+import { lastFittedGrid } from "../terminal/lastFittedGrid";
 import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 
@@ -72,10 +73,15 @@ export interface WorkspaceSessionController {
 
 const DEFAULT_SOURCE: WorkspaceSessionSource = {
   list: sessionsList,
-  create: (workspaceId, kind = "acp", provider = null) =>
-    provider == null
+  create: (workspaceId, kind = "acp", provider = null) => {
+    if (provider != null) return sessionCreate(workspaceId, kind, provider);
+    // Agents keep the daemon's default grid; only a shell opens in a pane
+    // whose size another terminal has already measured.
+    const grid = kind === "terminal" ? lastFittedGrid() : null;
+    return grid === null
       ? sessionCreate(workspaceId, kind)
-      : sessionCreate(workspaceId, kind, provider),
+      : sessionCreate(workspaceId, kind, null, undefined, grid);
+  },
   watch: async (listener) => {
     const channel = createSessionStateChannel(listener);
     await sessionsWatch(channel);

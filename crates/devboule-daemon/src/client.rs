@@ -295,15 +295,18 @@ impl DaemonClient {
         kind: SessionKind,
         idempotency_key: Option<String>,
     ) -> Result<Session, DaemonError> {
-        self.session_create_with(workspace_id, kind, None, None, idempotency_key)
+        self.session_create_with(workspace_id, kind, None, None, None, None, idempotency_key)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn session_create_with(
         &self,
         workspace_id: Option<String>,
         kind: SessionKind,
         provider: Option<String>,
         mode: Option<String>,
+        cols: Option<u16>,
+        rows: Option<u16>,
         idempotency_key: Option<String>,
     ) -> Result<Session, DaemonError> {
         let id = self.alloc_id();
@@ -319,6 +322,11 @@ impl DaemonClient {
                 // here would put a second naming path beside the protocol field.
                 display_name: None,
                 idempotency_key,
+                // Absent, not zero, when the caller measured nothing: the
+                // daemon reads an absent field as "no size asked" and spawns
+                // at its default.
+                cols,
+                rows,
             },
             session_create_deadline(),
         )? {

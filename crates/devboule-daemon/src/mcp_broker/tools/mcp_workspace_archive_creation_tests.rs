@@ -36,6 +36,7 @@ fn creation_during_the_close_loop_is_refused_and_archive_clears_the_mark() {
                     None,
                     None,
                     &None,
+                    None,
                 );
                 let result = match result {
                     Ok(session) => {

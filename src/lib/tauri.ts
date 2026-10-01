@@ -133,6 +133,13 @@ export type CommandArgs = {
     kind: SessionKind;
     provider?: string | null;
     mode?: string | null;
+    /**
+     * The grid a laid-out terminal last fitted; both keys travel or neither
+     * does. An absent pair asks for the daemon's default, and the first attach
+     * resize stays authoritative afterwards.
+     */
+    cols?: number;
+    rows?: number;
   };
   session_resume: { sessionId: Id };
   session_attach: { id: Id; fromCursor: number | null; ch: SessionChannel };
@@ -436,7 +443,7 @@ export const COMMAND_ARG_KEYS = {
   workspace_file_rename: ["workspaceId", "path", "name"],
   workspace_file_duplicate: ["workspaceId", "path"],
   workspace_file_delete: ["workspaceId", "path"],
-  session_create: ["workspaceId", "kind", "provider", "mode"],
+  session_create: ["workspaceId", "kind", "provider", "mode", "cols", "rows"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
   session_send: [
@@ -758,6 +765,7 @@ export const sessionCreate = (
   kind: SessionKind = "terminal",
   provider?: string | null,
   mode?: string | null,
+  size?: { cols: number; rows: number },
 ) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key must be `workspaceId`, not `workspace_id`. The snake_case spelling
@@ -767,6 +775,7 @@ export const sessionCreate = (
     kind,
     provider: provider ?? null,
     ...(mode === undefined ? {} : { mode }),
+    ...(size === undefined ? {} : { cols: size.cols, rows: size.rows }),
   });
 export const sessionResume = (sessionId: Id) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side.

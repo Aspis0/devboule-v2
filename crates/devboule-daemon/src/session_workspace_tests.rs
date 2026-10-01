@@ -338,6 +338,7 @@ fn the_acp_command_override_cannot_journal_a_native_provider_id() {
         &None,
         None,
         &SessionCreateMeta::default(),
+        None,
     );
     std::env::remove_var("DEVBOULE_ACP_COMMAND");
     std::env::remove_var("DEVBOULE_ACP_PROVIDER_ID");
