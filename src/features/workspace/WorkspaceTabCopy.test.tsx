@@ -61,7 +61,8 @@ describe("tab menu copy actions", () => {
     await rightClick("agent-one");
     expect(menuLabels().slice(0, 2)).toEqual(["Copy session ID", "Copy path"]);
     const rows = [...menu().querySelectorAll('[role="menuitem"]')];
-    expect(rows[1].nextElementSibling?.getAttribute("role")).toBe("separator");
+    expect(rows[2].textContent).toBe("Copy branch name");
+    expect(rows[2].nextElementSibling?.getAttribute("role")).toBe("separator");
     await clickMenuEntry("Copy path");
     expect(writeText).toHaveBeenCalledExactlyOnceWith(expected);
     expect(menuLabels()).toContain("Copy session ID");
@@ -73,7 +74,7 @@ describe("tab menu copy actions", () => {
     await renderWorkspace();
     await rightClick("session-2");
     expect(menuLabels()).not.toContain("Copy path");
-    expect(menuLabels()).not.toContain("Copy branch name");
+    expect(menuLabels()).toContain("Copy branch name");
   });
 
   it.each([shiftF10, contextMenuKey])("opens copy actions from the keyboard", async (open) => {
@@ -87,7 +88,7 @@ describe("tab menu copy actions", () => {
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
       ),
     );
-    expect(document.activeElement?.textContent).toBe("Close to the left");
+    expect(document.activeElement?.textContent).toBe("Copy branch name");
     await act(async () =>
       document.activeElement?.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),

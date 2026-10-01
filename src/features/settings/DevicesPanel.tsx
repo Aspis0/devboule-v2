@@ -1,3 +1,4 @@
+import { useCopyFeedback } from "../../lib/useCopyFeedback";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -95,9 +96,6 @@ const CAP_LABELS: Record<Cap, string> = {
   // the device may still drive sessions but may not change this machine.
   admin: "administer this device (settings, projects, shutdown)",
 };
-
-/** What the Copy button says: the copy either happened or it did not. */
-type CopyState = "idle" | "copied" | "failed";
 
 /** Groups a hex string in fours, which is how a person reads one aloud. */
 export function groupFingerprint(value: string): string {
@@ -426,8 +424,8 @@ export function DevicesPanel() {
     null,
   );
 
-  const [copyState, setCopyState] = useState<CopyState>("idle");
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const feedback = useCopyFeedback({ resetAfterMs: 1500, clearTimerAfterWrite: true });
+  const copyState = feedback.stateFor("fingerprint");
 
   // Where focus goes when the card the user just acted on is removed: a heading
   // with `tabIndex={-1}` is reachable by script and is a deliberate landing
@@ -534,13 +532,6 @@ export function DevicesPanel() {
     return () => clearInterval(id);
   }, [needsClock]);
 
-  useEffect(
-    () => () => {
-      if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
-    },
-    [],
-  );
-
   useEffect(() => {
     // Set on every mount, not only the first: StrictMode's throwaway mount runs
     // this cleanup and would otherwise leave the flag false for the real one.
@@ -591,28 +582,8 @@ export function DevicesPanel() {
     focusTargetRef.current = target;
   }
 
-  async function copyFingerprint(fingerprint: string) {
-    const text = groupFingerprint(fingerprint);
-    // `navigator.clipboard` is typed as always present but is not: a non-secure
-    // context leaves it undefined. The widened annotation is the honest type of
-    // the runtime value, and without this check `await undefined` would succeed
-    // and the button would claim a copy that never happened.
-    const clipboard: Clipboard | undefined = navigator.clipboard;
-    let copiedText = false;
-    if (clipboard !== undefined) {
-      try {
-        await clipboard.writeText(text);
-        copiedText = true;
-      } catch {
-        copiedText = false;
-      }
-    }
-    if (!mountedRef.current) return;
-    setCopyState(copiedText ? "copied" : "failed");
-    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
-    copyTimerRef.current = setTimeout(() => {
-      if (mountedRef.current) setCopyState("idle");
-    }, 1_500);
+  function copyFingerprint(fingerprint: string) {
+    return feedback.copy("fingerprint", groupFingerprint(fingerprint));
   }
 
   async function showCode() {

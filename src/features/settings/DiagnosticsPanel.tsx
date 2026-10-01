@@ -1,3 +1,4 @@
+import { useCopyFeedback } from "../../lib/useCopyFeedback";
 import { Component, type ReactNode, useEffect, useRef, useState } from "react";
 import { daemonDiagnostics } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
@@ -277,19 +278,15 @@ export function DiagnosticsPanel() {
 function DiagnosticsPanelContent() {
   const [report, setReport] = useState<DaemonDiagnostics | null>(null);
   const [error, setError] = useState<ErrorSentence | null>(null);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const feedback = useCopyFeedback({
+    resetAfterMs: (outcome) => (outcome === "copied" ? 2000 : null),
+  });
+  const copyState = feedback.stateFor("diagnostics");
   const activeLoadRef = useRef<(() => void) | null>(null);
-  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function stopActiveLoad(): void {
     activeLoadRef.current?.();
     activeLoadRef.current = null;
-  }
-
-  function clearCopyResetTimer(): void {
-    if (copyResetTimerRef.current === null) return;
-    clearTimeout(copyResetTimerRef.current);
-    copyResetTimerRef.current = null;
   }
 
   function startLoad(): void {
@@ -310,7 +307,6 @@ function DiagnosticsPanelContent() {
     startLoad();
     return () => {
       stopActiveLoad();
-      clearCopyResetTimer();
     };
   }, []);
 
@@ -322,20 +318,7 @@ function DiagnosticsPanelContent() {
   }
 
   async function copyReport(): Promise<void> {
-    if (report === null) return;
-    clearCopyResetTimer();
-    try {
-      await navigator.clipboard.writeText(formatDiagnostics(report));
-      setCopyState("copied");
-      copyResetTimerRef.current = setTimeout(() => {
-        copyResetTimerRef.current = null;
-        setCopyState("idle");
-      }, 2_000);
-    } catch {
-      // The text block below stays visible, so a blocked clipboard still has
-      // a manual path.
-      setCopyState("failed");
-    }
+    if (report !== null) await feedback.copy("diagnostics", formatDiagnostics(report));
   }
 
   if (error !== null) {
@@ -387,6 +370,7 @@ function DiagnosticsPanelContent() {
           Copy diagnostics
         </button>
         {copyState === "copied" ? <span className="diagnostics-copy-note">Copied.</span> : null}
+        {/* The report below stays available for manual copying when clipboard access fails. */}
         {copyState === "failed" ? (
           <span className="diagnostics-copy-note diagnostics-copy-failed">
             Copying failed — select the text below and copy it manually.

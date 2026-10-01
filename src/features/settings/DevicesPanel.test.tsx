@@ -1381,6 +1381,38 @@ describe("devices panel", () => {
     }
   });
 
+  it("keeps the existing feedback timer while a later clipboard write is pending", async () => {
+    vi.useFakeTimers();
+    const realClipboard = navigator.clipboard;
+    let finishPending!: () => void;
+    let writes = 0;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: () => {
+          writes += 1;
+          return writes === 1
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => {
+                finishPending = resolve;
+              });
+        },
+      },
+    });
+    try {
+      await renderPanel();
+      await act(async () => buttonByText("Copy").click());
+      expect(buttonByText("Copied.")).toBeDefined();
+      await act(async () => buttonByText("Copied.").click());
+      expect(writes).toBe(2);
+      await act(async () => vi.advanceTimersByTimeAsync(1500));
+      expect(buttonByText("Copy")).toBeDefined();
+      await act(async () => finishPending());
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: realClipboard });
+    }
+  });
+
   it("copies the grouped fingerprint and says so", async () => {
     const realClipboard = navigator.clipboard;
     const writes: string[] = [];

@@ -1,14 +1,17 @@
+import { useMenuBranch } from "../useMenuBranch";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useMenuOpen } from "../../../lib/menuOpen";
 import { AnchoredPopover } from "../popoverPlace";
 import { moveMenuFocus } from "../strip/menuNav";
 import type { TabMenuEntry } from "../strip/tabCloseMenu";
 import { middleTruncate, type PaneHeaderMenu } from "./paneHeaderMenu";
-import { useMenuCopyFeedback } from "../../../lib/useMenuCopyFeedback";
+import { useCopyFeedback } from "../../../lib/useCopyFeedback";
 
-export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
+export function PaneHeaderKebab({ menu: baseMenu }: { menu: PaneHeaderMenu }) {
   const [open, setOpen] = useState(false);
-  const feedback = useMenuCopyFeedback();
+  const branch = useMenuBranch(baseMenu.workspaceId ?? null, open);
+  const menu: PaneHeaderMenu = { ...baseMenu, copyBranchName: branch };
+  const feedback = useCopyFeedback({ resetAfterMs: 1500, clearOnCopy: true });
   useMenuOpen(open, closeToKebab);
   const kebabRef = useRef<HTMLButtonElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -144,6 +147,19 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
                 {feedback.labelFor("copy-path", "Copy path")}
               </button>
             ) : null}
+            {menu.copyBranchName ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="pane-header-menu-item"
+                onClick={() => {
+                  if (menu.copyBranchName)
+                    void feedback.copy("copy-branch-name", menu.copyBranchName, "Branch name");
+                }}
+              >
+                {feedback.labelFor("copy-branch-name", "Copy branch name")}
+              </button>
+            ) : null}
             {onRename !== null ? (
               <button
                 type="button"
@@ -160,7 +176,10 @@ export function PaneHeaderKebab({ menu }: { menu: PaneHeaderMenu }) {
               </button>
             ) : null}
             {closes.length > 0 &&
-            (menu.copySessionId !== null || menu.copyPath !== null || onRename !== null) ? (
+            (menu.copySessionId !== null ||
+              menu.copyPath !== null ||
+              menu.copyBranchName != null ||
+              onRename !== null) ? (
               <div className="workspace-menu-separator" role="separator" />
             ) : null}
             {closes.map((entry) => (

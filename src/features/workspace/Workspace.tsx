@@ -1620,6 +1620,7 @@ export function Workspace({
                 subagentAttention={subagentAttention}
                 onRefreshSubagents={refreshSessions}
                 headerMenuSeam={{
+                  workspaceId: paneSession.workspaceId,
                   closeEntries: buildTabCloseEntries(
                     composedTabs.findIndex((tab) => tab.id === paneSession.id),
                     composedTabs.length,
@@ -1683,6 +1684,7 @@ export function Workspace({
                 onExited={handleSessionClosed}
                 onCloseTab={() => tabClose.closeSingle(paneSession.id)}
                 headerMenuSeam={{
+                  workspaceId: paneSession.workspaceId,
                   closeEntries: buildTabCloseEntries(
                     composedTabs.findIndex((tab) => tab.id === paneSession.id),
                     composedTabs.length,

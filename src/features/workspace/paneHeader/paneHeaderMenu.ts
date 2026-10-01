@@ -4,6 +4,7 @@ import { displayPath } from "../../../lib/displayPath";
 /** Do not add a file named PaneHeaderMenu.* beside this one: on a
  * case-insensitive filesystem it collides with this module (TS1149). */
 export interface HeaderMenuSeam {
+  workspaceId?: string | null;
   closeEntries: TabMenuEntry[];
   onCloseEntry: (key: TabMenuEntry["key"]) => void;
   /** Opens the rename dialog for this header's session. Absent when the
@@ -13,6 +14,8 @@ export interface HeaderMenuSeam {
 }
 
 export interface PaneHeaderMenu {
+  workspaceId?: string | null;
+  copyBranchName?: string | null;
   copySessionId: string | null;
   copyPath: string | null;
   closeEntries: TabMenuEntry[];
@@ -61,6 +64,8 @@ export function headerMenu(
   if (copySessionId === null && copyPath === null && closeEntries.length === 0 && onRename === null)
     return null;
   return {
+    workspaceId: seam?.workspaceId ?? null,
+    copyBranchName: null,
     copySessionId,
     copyPath,
     closeEntries,

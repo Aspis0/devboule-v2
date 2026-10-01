@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCopyFeedback } from "../../../lib/useCopyFeedback";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMenuOpen } from "../../../lib/menuOpen";
 
 /**
@@ -25,14 +26,22 @@ export function ProviderKebab({
   onRefresh: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [copyNote, setCopyNote] = useState<string | null>(null);
+  const feedback = useCopyFeedback({ resetAfterMs: null });
+  const { reset } = feedback;
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const close = useCallback(
+    (returnFocus: boolean) => {
+      reset();
+      setOpen(false);
+      if (returnFocus) buttonRef.current?.focus();
+    },
+    [reset],
+  );
   useMenuOpen(open, () => close(false));
 
   useEffect(() => {
     if (open) {
-      setCopyNote(null);
       menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
     }
   }, [open]);
@@ -42,7 +51,7 @@ export function ProviderKebab({
     // One menu at a time: every kebab closes itself when another opens.
     // The opener dispatches BEFORE setting its own state, so its own
     // listener fires while still closed (a no-op) and only the others shut.
-    const closeOthers = () => setOpen(false);
+    const closeOthers = () => close(false);
     window.addEventListener("prov-kebab-open", closeOthers);
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
@@ -51,7 +60,7 @@ export function ProviderKebab({
         !menuRef.current?.contains(target) &&
         !buttonRef.current?.contains(target)
       ) {
-        setOpen(false);
+        close(false);
       }
     };
     document.addEventListener("pointerdown", onPointerDown);
@@ -59,18 +68,14 @@ export function ProviderKebab({
       document.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("prov-kebab-open", closeOthers);
     };
-  }, [open]);
-
-  function close(returnFocus: boolean) {
-    setOpen(false);
-    if (returnFocus) buttonRef.current?.focus();
-  }
+  }, [close, open]);
 
   function toggle() {
     if (open) {
       close(false);
       return;
     }
+    reset();
     window.dispatchEvent(new Event("prov-kebab-open"));
     setOpen(true);
   }
@@ -105,21 +110,6 @@ export function ProviderKebab({
   function onMenuBlur(event: React.FocusEvent) {
     if (!menuRef.current?.contains(event.relatedTarget as Node | null)) {
       close(false);
-    }
-  }
-
-  async function copyPath() {
-    try {
-      const clipboard = (
-        navigator as Navigator & {
-          clipboard?: { writeText: (text: string) => Promise<void> };
-        }
-      ).clipboard;
-      if (!clipboard) throw new Error("no clipboard in this host");
-      await clipboard.writeText(path);
-      setCopyNote("Copied");
-    } catch {
-      setCopyNote("Copy failed");
     }
   }
 
@@ -186,9 +176,9 @@ export function ProviderKebab({
             type="button"
             role="menuitem"
             className="prov-menu-item"
-            onClick={() => void copyPath()}
+            onClick={() => void feedback.copy("path", path)}
           >
-            {copyNote === null ? "Copy path" : copyNote}
+            {feedback.labelFor("path", "Copy path")}
           </button>
         </div>
       ) : null}

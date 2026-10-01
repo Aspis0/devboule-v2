@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCopyFeedback } from "../../../lib/useCopyFeedback";
 
 /** One exact line the person can copy to paste elsewhere. */
 export interface CopyableLine {
@@ -13,25 +13,7 @@ export interface CopyableLine {
  * or card that hosts it (same rule as the kebab's copy item).
  */
 export function CopyableLines({ lines }: { lines: ReadonlyArray<CopyableLine> }) {
-  const [copied, setCopied] = useState<number | null>(null);
-  const [failed, setFailed] = useState<number | null>(null);
-
-  async function copy(index: number, text: string) {
-    try {
-      const clipboard = (
-        navigator as Navigator & {
-          clipboard?: { writeText: (text: string) => Promise<void> };
-        }
-      ).clipboard;
-      if (!clipboard) throw new Error("no clipboard in this host");
-      await clipboard.writeText(text);
-      setCopied(index);
-      setFailed(null);
-    } catch {
-      setFailed(index);
-      setCopied(null);
-    }
-  }
+  const feedback = useCopyFeedback({ resetAfterMs: null });
 
   return (
     <div className="provider-copy-lines">
@@ -42,9 +24,9 @@ export function CopyableLines({ lines }: { lines: ReadonlyArray<CopyableLine> })
           <button
             type="button"
             className="provider-refresh provider-copy-button"
-            onClick={() => void copy(index, line.text)}
+            onClick={() => void feedback.copy(String(index), line.text)}
           >
-            {failed === index ? "Copy failed" : copied === index ? "Copied" : "Copy"}
+            {feedback.labelFor(String(index), "Copy")}
           </button>
         </div>
       ))}

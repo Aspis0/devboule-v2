@@ -14,7 +14,7 @@ import { moveMenuFocus } from "./menuNav";
 import { useMenuOpen } from "../../../lib/menuOpen";
 import type { TabMenuEntry } from "./tabCloseMenu";
 import { isTabCopyAction, type TabCopyAction } from "./tabCopyActions";
-import { useMenuCopyFeedback } from "../../../lib/useMenuCopyFeedback";
+import { useCopyFeedback } from "../../../lib/useCopyFeedback";
 
 interface SessionTabMenuProps {
   /** The menu is up; the owner owns the open state and says so. */
@@ -35,7 +35,7 @@ export function SessionTabMenu({
   onClose,
 }: SessionTabMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const feedback = useMenuCopyFeedback();
+  const feedback = useCopyFeedback({ resetAfterMs: 1500, clearOnCopy: true });
   useMenuOpen(open, onClose);
 
   // Disabled rows cannot take focus, so opening skips to an enabled action.
@@ -120,9 +120,11 @@ export function SessionTabMenu({
                   const subject =
                     entry.key === "copy-session-id"
                       ? "Session ID"
-                      : entry.label === "Copy relative path"
-                        ? "Relative path"
-                        : "Path";
+                      : entry.key === "copy-branch-name"
+                        ? "Branch name"
+                        : entry.label === "Copy relative path"
+                          ? "Relative path"
+                          : "Path";
                   if (value !== null) void feedback.copy(entry.key, value, subject);
                   return;
                 }

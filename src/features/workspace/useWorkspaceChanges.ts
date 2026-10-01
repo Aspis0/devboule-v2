@@ -1,3 +1,4 @@
+import { rememberChangesStatus } from "./changesStatusCache";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
@@ -80,9 +81,11 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
     try {
       const reply = await workspaceGitStatus(workspaceId);
       if (generation !== statusGeneration.current) return;
+      rememberChangesStatus(workspaceId, reply);
       setStatusCell({ workspaceId, reply, failure: null });
     } catch (cause: unknown) {
       if (generation !== statusGeneration.current) return;
+      rememberChangesStatus(workspaceId, null);
       const message = errorSentence(cause);
       // A refusal is not a reading, so the badge is deliberately NOT touched
       // here: it keeps the last value actually read, and the panel shows this
@@ -165,7 +168,10 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
     };
     tick();
     const timer = window.setInterval(tick, CHANGES_POLL_MS);
-    return () => window.clearInterval(timer);
+    return () => {
+      statusGeneration.current += 1;
+      window.clearInterval(timer);
+    };
   }, [readStatus, workspaceId]);
 
   const selectionPath =

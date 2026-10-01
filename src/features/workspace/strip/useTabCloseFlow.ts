@@ -1,4 +1,5 @@
 // Tab closes remove membership locally; pane Close and Delete apply session lifecycle policy.
+import { useMenuBranch } from "../useMenuBranch";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionsForSelection, sessionsForTabAction } from "./bulkCloseSessions";
@@ -196,6 +197,12 @@ export function useTabCloseFlow({
   const openMenuState = menuIsValid(menuState, selection, tabs) ? menuState : null;
   const anchorTab =
     openMenuState === null ? undefined : tabs.find((tab) => tab.id === openMenuState.anchorId);
+  const branch = useMenuBranch(
+    anchorTab?.type === "session" && !openMenuState?.viaSelection
+      ? anchorTab.session.workspaceId
+      : null,
+    openMenuState !== null && !openMenuState.viaSelection,
+  );
   // Selection menus act on the whole selection; copies name a single anchor.
   const menu =
     openMenuState === null || anchorTab === undefined
@@ -205,7 +212,7 @@ export function useTabCloseFlow({
           entries: openMenuState.viaSelection
             ? [buildSelectionCloseEntry(openMenuState.targets.length)]
             : (toolTabMenuEntries(tabs, openMenuState.anchorId) ?? [
-                ...buildTabCopyEntries(anchorTab),
+                ...buildTabCopyEntries(anchorTab, branch),
                 ...renameEntriesFor(openMenuState.anchorId),
                 ...buildTabCloseEntries(
                   tabs.findIndex((tab) => tab.id === openMenuState.anchorId),
@@ -340,7 +347,7 @@ export function useTabCloseFlow({
   const copyEntryValue = (key: TabCopyAction): string | null => {
     if (openMenuState === null || openMenuState.viaSelection || anchorTab === undefined)
       return null;
-    return tabCopyValue(anchorTab, key);
+    return tabCopyValue(anchorTab, key, branch);
   };
 
   // The per-anchor core both entry points share: the tab menu resolves its

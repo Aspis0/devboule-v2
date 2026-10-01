@@ -98,11 +98,11 @@ describe("the tab menu's rename entry", () => {
   it("offers Rename ahead of close actions on an agent with the capability", async () => {
     const flow = renderFlow([agentSession("agent-one", "Agent one")], true);
     await flow.mount();
-    flow.flow().openMenu("agent-one");
-    await act(async () => {});
+    await act(async () => flow.flow().openMenu("agent-one"));
     const entries = flow.flow().menu?.entries ?? [];
     expect(entries.map((entry) => entry.label)).toEqual([
       "Copy session ID",
+      "Copy branch name",
       "Rename",
       "Close to the left",
       "Close to the right",

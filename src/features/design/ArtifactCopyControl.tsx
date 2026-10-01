@@ -12,51 +12,24 @@
  * without this file reaching into `DesignSurface.tsx`.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCopyFeedback } from "../../lib/useCopyFeedback";
 import { buildStandaloneArtifactHtml } from "./artifactExport";
 
-type CopyState = "idle" | "copied" | "failed";
-
 /**
- * How long "Copied." stays up. Short because it is one word, not a path: this
+ * How long "Copied." stays up. Short because it is one word, not a path: it
  * lives in the canvas pill, where a wider label would push the controls around.
  */
 const COPIED_LABEL_MS = 2_000;
 
 export function ArtifactCopyControl({ html, title }: { html: string; title: string | undefined }) {
-  const [copyState, setCopyState] = useState<CopyState>("idle");
-  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const feedback = useCopyFeedback({
+    resetAfterMs: (outcome) => (outcome === "copied" ? COPIED_LABEL_MS : null),
+  });
+  const copyState = feedback.stateFor("html");
 
-  useEffect(() => {
-    return () => {
-      if (copyResetTimerRef.current !== null) {
-        clearTimeout(copyResetTimerRef.current);
-        copyResetTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  function clearResetTimer(): void {
-    if (copyResetTimerRef.current !== null) {
-      clearTimeout(copyResetTimerRef.current);
-      copyResetTimerRef.current = null;
-    }
-  }
-
-  async function copyHtml(): Promise<void> {
-    clearResetTimer();
-    try {
-      // The clipboard receives the exported document, not the canvas fragment:
-      // pasting into an editor has to give the same bytes the save control writes.
-      await navigator.clipboard.writeText(buildStandaloneArtifactHtml(html, title));
-      setCopyState("copied");
-      copyResetTimerRef.current = setTimeout(() => {
-        copyResetTimerRef.current = null;
-        setCopyState("idle");
-      }, COPIED_LABEL_MS);
-    } catch {
-      setCopyState("failed");
-    }
+  function copyHtml() {
+    // Copy the exported document so pasting matches the saved file bytes.
+    return feedback.copy("html", buildStandaloneArtifactHtml(html, title));
   }
 
   return (

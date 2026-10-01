@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Session } from "../../../types/ipc";
-import { buildTabCopyEntries, tabCopyValue } from "./tabCopyActions";
+import { buildTabCopyEntries, isTabCopyAction, tabCopyValue } from "./tabCopyActions";
 import { composeStripTabs, makeToolTab } from "./toolTabs";
 
 describe("single-tab copy actions", () => {
@@ -29,6 +29,19 @@ describe("single-tab copy actions", () => {
     ]);
     expect(tabCopyValue(tab, "copy-path")).toBe("src/my file.ts");
     expect(tabCopyValue(tab, "copy-session-id")).toBeNull();
+  });
+
+  it("adds Copy branch name only to session tabs with an eligible branch", () => {
+    const [tab] = composeStripTabs([makeSession("acp")], []);
+    expect(buildTabCopyEntries(tab, "feature/work").map((entry) => entry.key)).toEqual([
+      "copy-session-id",
+      "copy-branch-name",
+    ]);
+    expect(buildTabCopyEntries(tab, "feature/work").at(-1)?.separatorAfter).toBe(true);
+    expect(tabCopyValue(tab, "copy-branch-name", "feature/work")).toBe("feature/work");
+    expect(tabCopyValue(tab, "copy-branch-name", "(detached)")).toBeNull();
+    expect(isTabCopyAction("copy-branch-name")).toBe(true);
+    expect(isTabCopyAction("close")).toBe(false);
   });
 
   it("preserves a bare verbatim prefix instead of producing an empty copy", () => {

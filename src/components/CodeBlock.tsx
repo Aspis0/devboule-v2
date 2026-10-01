@@ -1,14 +1,11 @@
-import { memo, useCallback, useState } from "react";
-import { copyToClipboard } from "../lib/clipboard";
+import { memo } from "react";
+import { useCopyFeedback } from "../lib/useCopyFeedback";
 import { stripTrailingBlankLines } from "../lib/fence";
 import "./codeBlocks.css";
 
 function BlockCopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = useCallback(async () => {
-    if (await copyToClipboard(text)) setCopied(true);
-  }, [text]);
+  const feedback = useCopyFeedback({ resetAfterMs: null, preserveOnFailure: true });
+  const copied = feedback.stateFor("code") === "copied";
 
   return (
     <>
@@ -16,7 +13,7 @@ function BlockCopyButton({ text }: { text: string }) {
         type="button"
         className={copied ? "copy-btn is-copied" : "copy-btn"}
         aria-label={copied ? "Copied" : "Copy code"}
-        onClick={() => void copy()}
+        onClick={() => void feedback.copy("code", text)}
       >
         {copied ? "✓ Copied" : "Copy"}
       </button>
