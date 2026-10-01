@@ -197,7 +197,7 @@
 
 .workspace-diff-hunk {
   color: var(--ink-soft);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .workspace-diff-note {

@@ -74,7 +74,9 @@
   overflow: hidden;
   color: var(--muted);
   font-size: var(--type-meta);
-  font-weight: var(--weight-body);
+  /* The head is a 500 label; the step and the counter are metadata, so both
+     pin 400 instead of inheriting it. */
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -85,7 +87,7 @@
   flex: none;
   color: var(--muted);
   font-size: var(--type-meta);
-  font-weight: var(--weight-body);
+  font-weight: 400;
   white-space: nowrap;
 }
 

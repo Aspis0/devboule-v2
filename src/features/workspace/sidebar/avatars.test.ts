@@ -127,7 +127,9 @@ describe("avatar letter contrast (computed from tokens.css)", () => {
             colourMatch![1]!,
             `avatarStyle must use this avatar's own tone (got ${colourMatch![1]!}, wanted ${avatarTone(id)})`,
           ).toBe(avatarTone(id));
-          const letterMix = Number(blockVars(":root").get("avatar-letter-mix")!.replace("%", ""));
+          // The letter mix is per theme: dark re-declares it for its ink,
+          // light inherits the shared value — read this theme's own block.
+          const letterMix = Number(vars.get("avatar-letter-mix")!.replace("%", ""));
           expect(letterMix).toBeGreaterThanOrEqual(30);
           const letter = toneRgb.map(
             (channel, i) => channel * (letterMix / 100) + ink[i] * (1 - letterMix / 100),

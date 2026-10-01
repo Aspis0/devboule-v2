@@ -165,7 +165,7 @@
   padding: 2px 12px 2px 14px;
   color: var(--diff-text-hunk);
   background: var(--diff-row-hunk);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 /* Split: old on the left, new on the right; each side keeps its own marker

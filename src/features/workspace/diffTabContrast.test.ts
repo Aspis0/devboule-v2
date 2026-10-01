@@ -132,9 +132,9 @@ const EXPECTED_RATIOS: Record<string, Record<string, string>> = {
     "--diff-text-hunk": "5.29",
   },
   dark: {
-    "--diff-text-add": "6.49",
-    "--diff-text-del": "6.65",
-    "--diff-text-hunk": "8.84",
+    "--diff-text-add": "5.96",
+    "--diff-text-del": "6.09",
+    "--diff-text-hunk": "7.96",
   },
 };
 
@@ -148,10 +148,10 @@ const EXPECTED_NUMBER_RATIOS: Record<string, Record<string, string>> = {
     "--diff-row-hunk": "5.81",
   },
   dark: {
-    "--ground-center": "7.24",
-    "--diff-row-add": "4.73",
-    "--diff-row-del": "5.43",
-    "--diff-row-hunk": "6.11",
+    "--ground-center": "7.26",
+    "--diff-row-add": "4.75",
+    "--diff-row-del": "5.44",
+    "--diff-row-hunk": "6.12",
   },
 };
 

@@ -164,12 +164,12 @@ describe("ToolPolicyBanner styles (real stylesheets, no app launch)", () => {
     expect(style.flexDirection).toBe("column");
   });
 
-  it("sets the title at interface 14 semibold in the failed-closed colour", () => {
+  it("sets the title at interface 14 medium in the failed-closed colour", () => {
     proof.inject([".prov-policy-banner-title"]);
     const title = styledBox("prov-policy-banner-title");
     const style = getComputedStyle(title);
     expect(style.fontSize).toBe("14px");
-    expect(style.fontWeight).toBe("600");
+    expect(style.fontWeight).toBe("500");
     expect(style.color).toBe(proof.token("--danger"));
   });
 

@@ -61,6 +61,12 @@ textarea {
   color: inherit;
 }
 
+/* Select values are primary text: --ink, not the secondary parent's colour. */
+select {
+  font: inherit;
+  color: var(--ink);
+}
+
 /* Radios and checkboxes in the app accent, never the browser blue —
    inherited, so one line covers both themes. */
 input[type="checkbox"],

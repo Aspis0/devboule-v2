@@ -2342,7 +2342,7 @@
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 6px;
-  /* The global reset covers button, input and textarea, not select. */
+  /* Its own size wins over the reset's inherit. */
   font-size: var(--type-small);
 }
 

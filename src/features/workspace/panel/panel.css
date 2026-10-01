@@ -124,7 +124,7 @@
   margin: 0;
   color: var(--ink);
   font-size: var(--type-small);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .workspace-panel-empty-intro {

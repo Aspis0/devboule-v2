@@ -99,7 +99,7 @@
 
   /* Avatar letters mix their tone into ink at this percentage: the raw tone
      misses 4.5:1 against its own tinted background (worst on the selected
-     row); 35% clears it in both themes. */
+     row); 35% clears it in light, and dark re-declares its own below. */
   --avatar-letter-mix: 35%;
 
   /* the terminal's one surface: the host, its frame and the xterm background
@@ -141,7 +141,6 @@
   --type-mono-sm: 12px;
   --type-mono-cmd: 12.5px;
   --type-mono-md: 13px;
-  --weight-body: 400;
   --weight-label: 500;
   --weight-heading: 600;
 
@@ -207,7 +206,7 @@
   --diff-add: #7cba92;
   --diff-del: #e0837a;
 
-  --ink: #ece5da;
+  --ink: #d9d1c4;
   --ink-soft: #c8bfb0;
   --muted: #978b7b;
 
@@ -239,9 +238,15 @@
   --diff-text-add: color-mix(in srgb, var(--tone-add) 60%, var(--ink));
   --diff-text-del: color-mix(in srgb, var(--tone-del) 60%, var(--ink));
   --diff-text-hunk: color-mix(in srgb, var(--tone-warn) 50%, var(--ink));
-  --tone-idle-text: color-mix(in srgb, var(--tone-idle) 50%, var(--ink));
+  /* 40% like light: the darker ink needs more of itself in the mix to hold
+     4.5:1 on the added-row tint. */
+  --tone-idle-text: color-mix(in srgb, var(--tone-idle) 40%, var(--ink));
   --alert-border: color-mix(in srgb, var(--tone-unattended) 45%, var(--line));
   --alert-bg: color-mix(in srgb, var(--tone-unattended) 8%, transparent);
+
+  /* Dark idle letters need less tone (a lighter letter) to hold 4.5:1 on
+     the selected row under the darker ink. */
+  --avatar-letter-mix: 32%;
 
   /* dark tones already clear 4.5:1 as text on the dark grounds */
   --tone-attention-text: #d1a35a;
@@ -251,6 +256,7 @@
 
   --scrim: rgba(8, 6, 4, 0.82);
   --modal-dim: rgba(0, 0, 0, 0.5);
+  /* The lightbox keeps its own ink: it paints on the scrim, never the app grounds. */
   --lb-text: #ece5da;
   --lb-hover: rgba(236, 229, 218, 0.12);
 

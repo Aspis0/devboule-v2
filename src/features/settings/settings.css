@@ -334,7 +334,22 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+/* Both controls of a field read the interface size — one rule so the pair
+   cannot drift apart. */
+.device-field input,
+.device-field select {
   font-size: var(--type-interface);
+}
+
+/* A busy save disables both controls of a field: the settings disabled
+   treatment, so the value dims instead of keeping its enabled ink. */
+.device-field input:disabled,
+.device-field select:disabled {
+  color: var(--silence);
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .device-field-hint {

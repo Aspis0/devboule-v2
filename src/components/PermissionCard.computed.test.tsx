@@ -61,7 +61,7 @@ describe("PermissionCard computed styles", () => {
     expect(getComputedStyle(title).color).toBe(cardCss.token("--muted"));
     const actionStyle = getComputedStyle(action);
     expect(actionStyle.fontSize).toBe("14px");
-    expect(actionStyle.fontWeight).toBe("600");
+    expect(actionStyle.fontWeight).toBe("500");
     expect(actionStyle.color).toBe(cardCss.token("--ink"));
     head.remove();
     title.remove();

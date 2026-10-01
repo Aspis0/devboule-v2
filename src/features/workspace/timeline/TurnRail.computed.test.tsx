@@ -359,7 +359,7 @@ describe("turn rail computed styles", () => {
     // Same binding, dark theme: the assembled declaration carries the
     // resolved mix, which is what the contrast suite measures.
     expect(railCssDark.rulesFor(".turn-rail-glyph")).toContain(
-      `color-mix(in srgb, ${railCssDark.token("--tone-idle")!} 50%, ${railCssDark.token("--ink")!})`,
+      `color-mix(in srgb, ${railCssDark.token("--tone-idle")!} 40%, ${railCssDark.token("--ink")!})`,
     );
 
     const dot = document.createElement("button");

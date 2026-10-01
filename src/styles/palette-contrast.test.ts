@@ -96,6 +96,21 @@ const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }
 ];
 
 /**
+ * The dark primary ink sits on these grounds as body text; the slice
+ * promises ≥7:1 on every one of them, in the dark theme only.
+ */
+const DARK_INK_FLOOR_7: ReadonlyArray<{ ground: string; why: string }> = [
+  { ground: "--ground-app", why: "the app canvas" },
+  { ground: "--ground-center", why: "the transcript" },
+  { ground: "--panel-side", why: "the sidebar and right panel" },
+  { ground: "--panel-card", why: "cards, the composer and user bubbles (one ground)" },
+  { ground: "--panel-menu", why: "menus and popovers" },
+  { ground: "--fill-selected", why: "the selected fill" },
+  { ground: "--fill-selected-soft", why: "multi-selected chips" },
+  { ground: "--fill-tool", why: "tool rows" },
+  { ground: "--code-bg", why: "code blocks and the terminal ground (one value)" },
+];
+/**
  * The legacy `*-deep` names stay in service as text tones through the alias
  * block; each must hold ≥4.5:1 on the grounds its consumers paint, in both
  * themes. One alias hop is resolved (`--ochre-deep` →
@@ -109,6 +124,19 @@ function resolveToken(name: string, vars: Map<string, string>): string {
   if (value === undefined) throw new Error(`${name} is not defined`);
   const ref = /^var\((--[a-z-]+)\)$/.exec(value);
   return ref === null ? value : resolveToken(ref[1]!, vars);
+}
+
+/** `color-mix(in srgb, …)` mixes encoded channels — plain channel lerp. */
+function mixOver(fg: string, bg: string, percent: number): string {
+  const p = percent / 100;
+  const channels = [1, 3, 5].map((at) => {
+    const f = parseInt(fg.slice(at, at + 2), 16);
+    const b = parseInt(bg.slice(at, at + 2), 16);
+    return Math.round(f * p + b * (1 - p))
+      .toString(16)
+      .padStart(2, "0");
+  });
+  return `#${channels.join("")}`;
 }
 
 describe("palette contrast (both themes, from tokens.css)", () => {
@@ -152,4 +180,30 @@ describe("palette contrast (both themes, from tokens.css)", () => {
       }
     }
   }
+
+  for (const entry of DARK_INK_FLOOR_7) {
+    it(`dark: --ink on ${entry.ground} ≥ 7 (${entry.why})`, () => {
+      const text = darkVars.get("--ink");
+      const ground = darkVars.get(entry.ground);
+      expect(text, "--ink missing from the dark block").toMatch(/^#[0-9a-fA-F]{6}$/);
+      expect(ground, `${entry.ground} missing from the dark block`).toMatch(/^#[0-9a-fA-F]{6}$/);
+      const ratio = contrastRatio(text!, ground!);
+      expect(ratio, `--ink ${text} on ${entry.ground} ${ground}`).toBeGreaterThanOrEqual(7);
+    });
+  }
+
+  it("dark: --ink on the inline-code fill over the transcript ≥ 7 (derived ground)", () => {
+    const text = darkVars.get("--ink");
+    const centre = darkVars.get("--ground-center");
+    const fill = darkVars.get("--fill-code-inline");
+    expect(text, "--ink missing from the dark block").toMatch(/^#[0-9a-fA-F]{6}$/);
+    expect(centre, "--ground-center missing from the dark block").toMatch(/^#[0-9a-fA-F]{6}$/);
+    // The fill paints with `background:`, replacing the element's own paint:
+    // it composites over the parent's transcript ground, never over itself.
+    const percent = Number(/var\(--ink\)\s*([\d.]+)%/.exec(fill!)?.[1]);
+    expect(percent, `--fill-code-inline is not an ink mix: ${fill}`).toBeGreaterThan(0);
+    const ground = mixOver(text!, centre!, percent);
+    const ratio = contrastRatio(text!, ground);
+    expect(ratio, `--ink ${text} on inline-code fill ${ground}`).toBeGreaterThanOrEqual(7);
+  });
 });

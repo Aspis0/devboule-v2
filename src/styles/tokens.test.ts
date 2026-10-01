@@ -74,7 +74,6 @@ const SHARED_TOKENS = [
   "type-mono-sm",
   "type-mono-cmd",
   "type-mono-md",
-  "weight-body",
   "weight-label",
   "weight-heading",
   "space-2",
@@ -287,5 +286,23 @@ describe("the type ramp as the base", () => {
     const body = /body\s*\{([^}]*)\}/.exec(css)?.[1];
     expect(body, "a body rule must exist in global.css").toBeTruthy();
     expect(body).toMatch(/font-size:\s*var\(--type-interface\)/);
+  });
+
+  it("leaves body weight to the browser normal, so no theme lightens it", () => {
+    const css = readFileSync(GLOBAL_CSS_PATH, "utf8");
+    const body = /body\s*\{([^}]*)\}/.exec(css)?.[1];
+    expect(body, "a body rule must exist in global.css").toBeTruthy();
+    expect(body).not.toMatch(/font-weight/);
+  });
+});
+
+describe("label and heading weights stay shared", () => {
+  it("keeps them at 500 and 600 in :root, out of the dark block", () => {
+    for (const name of ["--weight-label", "--weight-heading"] as const) {
+      expect(sheet.light.has(name), `${name} missing from :root`).toBe(true);
+      expect(sheet.dark.has(name), `${name} must stay theme-independent`).toBe(false);
+    }
+    expect(sheet.light.get("--weight-label")).toBe("500");
+    expect(sheet.light.get("--weight-heading")).toBe("600");
   });
 });

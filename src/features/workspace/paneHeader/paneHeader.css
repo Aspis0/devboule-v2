@@ -21,7 +21,7 @@
   color: var(--ink);
   font-family: var(--font-ui);
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .workspace-terminal-toolbar .workspace-terminal-status {
@@ -117,7 +117,7 @@
   color: var(--ink);
   font-family: var(--font-ui);
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

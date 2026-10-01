@@ -119,7 +119,7 @@
 }
 
 .workspace-mode-option[aria-selected="true"] .workspace-mode-name {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .workspace-mode-name {

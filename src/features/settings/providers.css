@@ -402,7 +402,7 @@
 
 .prov-policy-banner-title {
   font-size: var(--type-interface);
-  font-weight: 600;
+  font-weight: 500;
   color: var(--danger);
 }
 
