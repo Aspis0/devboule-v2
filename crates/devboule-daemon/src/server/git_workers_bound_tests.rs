@@ -225,7 +225,10 @@ fn a_read_flood_supersedes_the_oldest_waiting_read_at_the_cap() {
         }
     }
     release_tx.send(()).expect("release the first diff");
-    store.wait_len_within(20, Duration::from_secs(30));
+    // The gate sample: 10 admitted children drained within 30 s (≈3 s each)
+    // with 7 still outstanding; 17 × 3 s ≈ 51 s, doubled for a worse run.
+    // The bound only has to catch a lost reply, not pace the drain.
+    store.wait_len_within(20, Duration::from_secs(6) * (20 - 3));
     stop.store(true, Ordering::SeqCst);
     let _ = collector.join();
     let mut ids = store.ids();

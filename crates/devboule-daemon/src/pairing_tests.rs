@@ -223,6 +223,21 @@ fn a_pairing_completes_and_the_responder_records(
                 .expect("A has an identity")
                 .device_id
                 .clone();
+            // The initiator's `complete` returns before the responder thread
+            // has parked the pairing, and a confirm that beats the park is
+            // answered UnknownPending — the same wait the happy-path test
+            // makes before its own confirm.
+            let deadline = Instant::now() + bound::THREAD;
+            loop {
+                if !service_b.pending_snapshot().is_empty() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the responder never parked the pairing"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
             let row = match service_b
                 .confirm(&server_b, &initiator_id, true)
                 .expect("confirm")

@@ -406,9 +406,14 @@ fn a_real_shutdown_drains_the_queued_write() {
     let waiter_state = Arc::clone(&state);
     let waiter_flag = Arc::clone(&drained);
     let waiter = std::thread::spawn(move || {
+        // The house budget, not production's 10 s — ~3× the overrun the
+        // recallA2 gate measured: what this asserts is that the drain
+        // finishes once the queued write has run, not how fast. This wait
+        // is a model of the shutdown drain, not the shipped path, which
+        // also cancels on failure and closes the journal.
         let finished_clean = waiter_state
             .git_jobs
-            .wait_for_write_jobs(GIT_WRITE_DRAIN_BOUND);
+            .wait_for_write_jobs(Duration::from_secs(30));
         *waiter_flag
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = finished_clean;
@@ -541,7 +546,9 @@ fn a_shutdown_delete_lands_its_row_and_removes_its_checkout() {
     // not raced. After it, the production shutdown sequence (drain, then
     // the terminal close) runs to its end on this thread.
     release_tx.send(()).expect("release the held read");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The bound only catches a lost or failed delete: the row lands behind a
+    // real `git worktree remove`, and the bound is not a speed assertion.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match state.sessions.workspaces_list(&project.id) {
             Ok(workspaces) if workspaces.is_empty() => break,

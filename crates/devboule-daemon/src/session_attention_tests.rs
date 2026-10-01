@@ -286,8 +286,7 @@ fn answering_permission_acknowledges_attention() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Pushed roster rows, one entry per transition the sink saw. Installed
-/// after the setup so only the withdrawal's own pushes are counted.
+/// Pushed roster rows, one entry per transition the sink saw.
 fn install_sink(registry: &SessionRegistry) -> Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>> {
     let log: Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>> = Arc::new(Mutex::new(Vec::new()));
     let fired = Arc::clone(&log);
@@ -300,19 +299,31 @@ fn install_sink(registry: &SessionRegistry) -> Arc<Mutex<Vec<Vec<SessionStateSna
     log
 }
 
-/// Every pushed row for this session: a stale first push fails here even
-/// when the last row is already clean.
-fn pushed_rows_for(
+/// Every pushed row for this session from push `from` on, oldest first. A
+/// push that carried no row for the session contributes nothing, so a
+/// missing row cannot pass as a cleared one.
+fn pushed_rows_from(
     sink: &Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
     session_id: &str,
+    from: usize,
 ) -> Vec<SessionStateSnapshot> {
     sink.lock()
         .expect("sink log")
         .iter()
+        .skip(from)
         .flatten()
         .filter(|snapshot| snapshot.id == session_id)
         .cloned()
         .collect()
+}
+
+/// Every pushed row for this session, oldest first. A stale first push fails
+/// here even when the last row is already clean.
+fn pushed_rows_for(
+    sink: &Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
+    session_id: &str,
+) -> Vec<SessionStateSnapshot> {
+    pushed_rows_from(sink, session_id, 0)
 }
 /// The last pushed row for this session. A push that never carried the row
 /// fails here, so a missing row cannot pass as a cleared attention.
@@ -323,6 +334,34 @@ fn last_pushed_row(
     pushed_rows_for(sink, session_id)
         .pop()
         .expect("a push carried the session row")
+}
+
+/// One line per push from `from` on — the session row's attention and
+/// activity — so a failing count says what the extra or missing push
+/// actually carried instead of only how many there were.
+fn push_log(
+    sink: &Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
+    session_id: &str,
+    from: usize,
+) -> String {
+    sink.lock()
+        .expect("sink log")
+        .iter()
+        .skip(from)
+        .map(|rows| {
+            rows.iter()
+                .find(|row| row.id == session_id)
+                .map(|row| {
+                    format!(
+                        "(attention {:?}, activity {:?})",
+                        row.attention.map(|attention| attention.reason),
+                        row.activity
+                    )
+                })
+                .unwrap_or_else(|| "(no row for the session)".to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[test]
@@ -498,6 +537,11 @@ fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
     let (token_tx, token_rx) = std::sync::mpsc::channel();
     let host_broker = Arc::clone(&broker);
     let host_runtime = Arc::clone(&runtime);
+    // The sink is installed before the card parks: the park's raise pushes
+    // on the host thread, and a sink installed afterwards can never know
+    // whether that push has drained — under load it lands between the
+    // withdrawal's own pushes and the count races.
+    let sink = install_sink(&registry);
     let waiter = std::thread::spawn(move || {
         let _scope = crate::mcp_broker::McpCallScope::enter_for_test(session_id, &request_id);
         let token = crate::mcp_broker::current_mcp_call()
@@ -510,8 +554,18 @@ fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
         )
     });
     let token = token_rx.recv().expect("call token");
+    // The raise is the only push of this pairing that carries the standing
+    // attention, and every park push precedes it on the park's thread, so
+    // once it is in the log the park has pushed all it will and the baseline
+    // below is after the park. The spin bound only catches a park that
+    // never raised.
     let mut spins = 0;
-    while runtime.attention().is_none() && spins < 10_000 {
+    while !pushed_rows_for(&sink, session_id).iter().any(|row| {
+        row.attention.is_some_and(|attention| {
+            attention.reason == devboule_protocol::AttentionReason::Permission
+        })
+    }) && spins < 10_000
+    {
         std::thread::sleep(Duration::from_millis(1));
         spins += 1;
     }
@@ -521,7 +575,7 @@ fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
         devboule_protocol::AttentionReason::Permission
     );
 
-    let sink = install_sink(&registry);
+    let baseline = sink.lock().expect("sink log").len();
     assert!(broker.cancel_mcp_call(&runtime.session_id, &cancel_id, &token));
 
     assert_eq!(
@@ -532,15 +586,18 @@ fn mcp_cancel_withdraws_the_card_and_clears_permission_attention() {
         runtime.attention().is_none(),
         "mcp cancel clears permission attention"
     );
-    let rows = pushed_rows_for(&sink, session_id);
     assert_eq!(
-        sink.lock().expect("sink log").len(),
+        sink.lock().expect("sink log").len() - baseline,
         2,
-        "the withdrawal pushes twice: the clear, then the resolved card"
+        "the withdrawal pushes twice: the clear, then the resolved card; pushes: {}",
+        push_log(&sink, session_id, baseline)
     );
     assert!(
-        rows.iter().all(|row| row.attention.is_none()),
-        "no pushed row carries the stale attention"
+        pushed_rows_from(&sink, session_id, baseline)
+            .iter()
+            .all(|row| row.attention.is_none()),
+        "no pushed row carries the stale attention; pushes: {}",
+        push_log(&sink, session_id, baseline)
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);

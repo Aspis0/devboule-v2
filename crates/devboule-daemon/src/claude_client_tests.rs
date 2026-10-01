@@ -777,8 +777,9 @@ fn a_refused_steer_leaves_the_gate_s_failing_batch_untouched() {
 /// write really are one critical section — which is what the function claims.
 ///
 /// The frame is bigger than any pipe buffer and the fake child never reads it,
-/// so the write is *inside* the gate while this test looks. A guard released
-/// before the write leaves the gate free for the whole window.
+/// so once the write starts it cannot drain, and the guard stays held for the
+/// whole window. A guard released anywhere in that window leaves the gate free
+/// for the sampler to see.
 #[test]
 fn the_steer_write_holds_the_gate_while_it_writes() {
     use std::process::Stdio;
@@ -810,9 +811,19 @@ fn the_steer_write_holds_the_gate_while_it_writes() {
     let steer = std::thread::spawn(move || {
         crate::test_support::steer_through_the_turn(&mut steerer, &text)
     });
-    // Let the write reach the pipe, then look at the gate for a bounded
-    // window: it must never be free while the bytes are going out.
-    std::thread::sleep(Duration::from_millis(150));
+    // The gate is private to this test: only its own steer thread ever locks
+    // it, so the first failed try_lock is that thread inside the critical
+    // section. The bound only covers reaching the write.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !matches!(gate.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+        assert!(
+            Instant::now() < deadline,
+            "the steer write never reached the gate"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The guard is held and the write is next or already blocked in the pipe:
+    // the gate must never be free while the bytes are going out.
     let mut available = 0;
     for _ in 0..200 {
         if gate.try_lock().is_ok() {

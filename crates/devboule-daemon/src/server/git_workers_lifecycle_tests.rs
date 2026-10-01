@@ -256,16 +256,11 @@ fn a_worker_replying_after_the_connection_closed_does_not_panic() {
         true,
     )
     .is_none());
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut answered = false;
-    while Instant::now() < deadline {
-        if !conn.outbound.pull_replies().is_empty() {
-            answered = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
+    let mut backlog = std::collections::VecDeque::new();
+    match wait_for_worker_reply(&conn, &mut backlog) {
+        DaemonMessage::WorkspaceGit { id, .. } => assert_eq!(id, 11),
+        other => panic!("wrong reply shape: {other:?}"),
     }
-    assert!(answered, "the job must still run and answer, closed or not");
     drop(state);
     let _ = std::fs::remove_dir_all(path);
 }
