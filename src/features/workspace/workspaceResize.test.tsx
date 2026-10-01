@@ -2,7 +2,7 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   INITIAL_LEFT_WIDTH,
   INITIAL_RIGHT_WIDTH,
@@ -11,12 +11,14 @@ import {
   MIN_LEFT_WIDTH,
   MIN_RIGHT_WIDTH,
   clampPanelWidth,
-  readStoredPanelWidths,
+  readStoredPanelFrame,
   useWorkspacePanelResize,
-  writeStoredPanelWidths,
+  writeStoredPanelFrame,
   type StorageLike,
-  type StoredPanelWidths,
+  type StoredPanelFrame,
 } from "./workspaceResize";
+
+const RECORD = "devboule.workspacePanelWidths";
 
 function fakeStorage(initial: Record<string, string> = {}): StorageLike {
   const map = new Map(Object.entries(initial));
@@ -98,48 +100,68 @@ describe("clampPanelWidth", () => {
 describe("persisted panel widths", () => {
   it("round-trips both sides", () => {
     const storage = fakeStorage();
-    const widths: StoredPanelWidths = { left: 312, right: 344 };
-    writeStoredPanelWidths(storage, widths);
-    expect(readStoredPanelWidths(storage)).toEqual(widths);
+    const frame: StoredPanelFrame = {
+      left: 312,
+      right: 344,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    };
+    writeStoredPanelFrame(storage, frame);
+    expect(readStoredPanelFrame(storage)).toEqual(frame);
   });
 
   it("reads nothing stored as the defaults", () => {
-    expect(readStoredPanelWidths(fakeStorage())).toEqual({
+    expect(readStoredPanelFrame(fakeStorage())).toEqual({
       left: INITIAL_LEFT_WIDTH,
       right: INITIAL_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
     });
-    expect(readStoredPanelWidths(null)).toEqual({
+    expect(readStoredPanelFrame(null)).toEqual({
       left: INITIAL_LEFT_WIDTH,
       right: INITIAL_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
     });
   });
 
   it("clamps a stored width that sits outside its side's bounds", () => {
     const storage = fakeStorage({
-      "devboule.workspacePanelWidths": JSON.stringify({ left: 180, right: 459 }),
+      [RECORD]: JSON.stringify({ left: 180, right: 459 }),
     });
-    expect(readStoredPanelWidths(storage)).toEqual({ left: 200, right: MAX_RIGHT_WIDTH });
+    expect(readStoredPanelFrame(storage)).toEqual({
+      left: 200,
+      right: MAX_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
   });
 
   it("reads garbage, partial rows, or wrong types as the defaults, never as widths", () => {
-    const garbage = fakeStorage({ "devboule.workspacePanelWidths": "{oops" });
-    expect(readStoredPanelWidths(garbage)).toEqual({
+    const garbage = fakeStorage({ [RECORD]: "{oops" });
+    expect(readStoredPanelFrame(garbage)).toEqual({
       left: INITIAL_LEFT_WIDTH,
       right: INITIAL_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
     });
     const partial = fakeStorage({
-      "devboule.workspacePanelWidths": JSON.stringify({ left: 260 }),
+      [RECORD]: JSON.stringify({ left: 260 }),
     });
-    expect(readStoredPanelWidths(partial)).toEqual({
+    expect(readStoredPanelFrame(partial)).toEqual({
       left: 260,
       right: INITIAL_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
     });
     const wrongTypes = fakeStorage({
-      "devboule.workspacePanelWidths": JSON.stringify({ left: "wide", right: null }),
+      [RECORD]: JSON.stringify({ left: "wide", right: null }),
     });
-    expect(readStoredPanelWidths(wrongTypes)).toEqual({
+    expect(readStoredPanelFrame(wrongTypes)).toEqual({
       left: INITIAL_LEFT_WIDTH,
       right: INITIAL_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
     });
   });
 
@@ -152,11 +174,150 @@ describe("persisted panel widths", () => {
         throw new Error("full");
       },
     } as unknown as StorageLike;
-    expect(readStoredPanelWidths(throwing)).toEqual({
+    expect(readStoredPanelFrame(throwing)).toEqual({
       left: INITIAL_LEFT_WIDTH,
       right: INITIAL_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
     });
-    expect(() => writeStoredPanelWidths(throwing, { left: 248, right: 300 })).not.toThrow();
-    expect(() => writeStoredPanelWidths(null, { left: 248, right: 300 })).not.toThrow();
+    const frame: StoredPanelFrame = {
+      left: 248,
+      right: 300,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    };
+    expect(() => writeStoredPanelFrame(throwing, frame)).not.toThrow();
+    expect(() => writeStoredPanelFrame(null, frame)).not.toThrow();
+  });
+});
+
+/** The hook's four fields on screen; the buttons are the routes the shell
+ * wires — menu collapse, strip expand, sidebar collapse. */
+function Probe() {
+  const {
+    leftWidth,
+    rightWidth,
+    leftCollapsed,
+    rightCollapsed,
+    setLeftCollapsed,
+    setRightCollapsed,
+  } = useWorkspacePanelResize();
+  return (
+    <div>
+      <p data-testid="frame">{`${leftWidth}/${rightWidth}/${leftCollapsed}/${rightCollapsed}`}</p>
+      <button type="button" data-testid="collapse-right" onClick={() => setRightCollapsed(true)}>
+        collapse
+      </button>
+      <button type="button" data-testid="expand-right" onClick={() => setRightCollapsed(false)}>
+        expand
+      </button>
+      <button type="button" data-testid="collapse-left" onClick={() => setLeftCollapsed(true)}>
+        sidebar
+      </button>
+    </div>
+  );
+}
+
+describe("the persisted collapsed flags", () => {
+  let holder: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    holder = document.createElement("div");
+    document.body.appendChild(holder);
+    root = createRoot(holder);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    holder.remove();
+  });
+
+  async function mount(): Promise<void> {
+    await act(async () => {
+      root.render(<Probe />);
+    });
+  }
+
+  async function remount(): Promise<void> {
+    await act(async () => root.unmount());
+    root = createRoot(holder);
+    await mount();
+  }
+
+  function frame(): string | undefined {
+    return holder.querySelector("[data-testid=frame]")?.textContent ?? undefined;
+  }
+
+  function click(testid: string): Promise<void> {
+    const button = holder.querySelector<HTMLButtonElement>(`[data-testid=${testid}]`);
+    if (button === null) throw new Error(`${testid} did not render`);
+    return act(async () => {
+      button.click();
+    });
+  }
+
+  it("keeps the panel collapsed across a remount, and reopens it on demand", async () => {
+    await mount();
+    expect(frame()).toBe("248/300/false/false");
+
+    await click("collapse-right");
+    expect(frame()).toBe("248/300/false/true");
+    expect(JSON.parse(localStorage.getItem(RECORD) ?? "null")).toEqual({
+      left: INITIAL_LEFT_WIDTH,
+      right: INITIAL_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: true,
+    });
+    await remount();
+    expect(frame()).toBe("248/300/false/true");
+
+    await click("expand-right");
+    expect(frame()).toBe("248/300/false/false");
+    await remount();
+    expect(frame()).toBe("248/300/false/false");
+  });
+
+  it("remembers the sidebar's collapse in the same record: one hook, one key", async () => {
+    await mount();
+    await click("collapse-left");
+    expect(frame()).toBe("248/300/true/false");
+    await remount();
+    expect(frame()).toBe("248/300/true/false");
+    const stored = JSON.parse(localStorage.getItem(RECORD) ?? "null");
+    expect(stored.leftCollapsed).toBe(true);
+    expect(stored.rightCollapsed).toBe(false);
+  });
+
+  it("reads a legacy record without the flags as open, with its widths intact", () => {
+    const storage = fakeStorage({ [RECORD]: JSON.stringify({ left: 312, right: 344 }) });
+    expect(readStoredPanelFrame(storage)).toEqual({
+      left: 312,
+      right: 344,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
+  });
+
+  it("reads a non-boolean flag as open, with its widths intact", () => {
+    const storage = fakeStorage({
+      [RECORD]: JSON.stringify({ left: 312, right: 344, rightCollapsed: "yes" }),
+    });
+    expect(readStoredPanelFrame(storage)).toEqual({
+      left: 312,
+      right: 344,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
+  });
+
+  it("reads a malformed record as open, with the default widths", () => {
+    expect(readStoredPanelFrame(fakeStorage({ [RECORD]: "not json" }))).toEqual({
+      left: INITIAL_LEFT_WIDTH,
+      right: INITIAL_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
   });
 });

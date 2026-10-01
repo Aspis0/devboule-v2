@@ -130,9 +130,9 @@ const FileNode = memo(function FileNode({
   const selected = selection === path;
   return (
     // The row is a wrapper, not a button: the select control keeps its
-    // own button (and its exact text, marks and status word), and its
-    // actions are siblings beside it — a button may not nest. The menu
-    // overlays the rows below it, the way the Files tree's does.
+    // own button (and its exact text and marks); status, counts and
+    // actions are siblings beside it — a button may not nest, and the
+    // row's wrap must see the two fixed halves at their full width.
     <li className="workspace-file-change-row">
       <button
         type="button"
@@ -143,19 +143,27 @@ const FileNode = memo(function FileNode({
         // so this is current-item marking, never a toggle contract.
         aria-current={selected ? "true" : undefined}
         title={path}
-        style={indent(depth)}
+        // Status and counts live beside the button; the name carries them
+        // for AT as one string, not duplicated into the visible row.
+        aria-label={`${name} ${row.status} ${countsLabel(row.additions, row.deletions, row.capped)}`}
+        // The floor the row's line-break measures (pad 12 + icon 12 +
+        // gap 6 + a 16px name, with the depth pad): the line yields
+        // around it instead of the button ever spilling its content.
+        style={{ ...indent(depth), minWidth: `${46 + depth * 14}px` }}
         onClick={() => onSelect(path)}
       >
         {FileIcon}
         <span className="workspace-file-change-name">{name}</span>
-        <span className="workspace-file-change-status">{row.status}</span>
-        <span
-          className={isNewRow(row) ? "workspace-file-change-stats-is-add" : undefined}
-          title={row.capped ? "counts are not exact" : undefined}
-        >
-          {countsLabel(row.additions, row.deletions, row.capped)}
-        </span>
       </button>
+      <span className="workspace-file-change-status">{row.status}</span>
+      <span
+        className={`workspace-file-change-stats${
+          isNewRow(row) ? " workspace-file-change-stats-is-add" : ""
+        }${row.status === "deleted" ? " workspace-file-change-stats-is-del" : ""}`}
+        title={row.capped ? "counts are not exact" : undefined}
+      >
+        {countsLabel(row.additions, row.deletions, row.capped)}
+      </span>
       <span className="workspace-file-change-actions">
         <button
           type="button"

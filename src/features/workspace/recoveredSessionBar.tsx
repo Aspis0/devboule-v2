@@ -54,14 +54,21 @@ export function RecoveredSessionBar({
     })();
   };
 
+  // The recovered state is a state, not a failure: the quiet note while
+  // nothing is wrong, the danger block only after a failed reopen.
+  const barClass =
+    error === null
+      ? "workspace-session-notice workspace-session-recovered"
+      : "workspace-session-notice workspace-session-error";
+
   if (!resumable) {
     return (
       <div
-        className="workspace-session-error workspace-session-notice"
+        className="workspace-session-notice workspace-session-recovered"
         role="status"
         data-testid="recovered-unresumable"
       >
-        <span className="workspace-session-error-text">
+        <span className="workspace-session-notice-text">
           This transcript is read-only. Resume is not available for this session.
         </span>
       </div>
@@ -69,14 +76,8 @@ export function RecoveredSessionBar({
   }
 
   return (
-    <div
-      className="workspace-session-error workspace-session-notice"
-      role="status"
-      data-testid="recovered-reopen-bar"
-    >
-      <span className="workspace-session-error-text">
-        This session has no running process. The transcript is from the journal and is read-only.
-      </span>
+    <div className={barClass} role="status" data-testid="recovered-reopen-bar">
+      <span className="workspace-session-notice-text">Read-only transcript from the journal.</span>
       <button
         type="button"
         className="workspace-secondary-action"

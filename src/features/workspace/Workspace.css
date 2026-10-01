@@ -935,7 +935,28 @@
   line-height: 1.55;
 }
 
-.workspace-session-error-text {
+/* The recovered bar's note: the pane header below it already says
+   "Recovered", so no box and no danger — one line of meta text beside
+   the Reopen control. Only a failed reopen puts the error block back on. */
+.workspace-session-recovered {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 12px 0;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  line-height: 1.55;
+}
+
+/* The quiet note's control answers hover and focus in ink; the shared
+   secondary action's danger hover belongs to the error block above. */
+.workspace-session-recovered .workspace-secondary-action:hover,
+.workspace-session-recovered .workspace-secondary-action:focus-visible {
+  color: var(--ink);
+}
+
+.workspace-session-error-text,
+.workspace-session-notice-text {
   flex: 1;
   overflow-wrap: anywhere;
 }

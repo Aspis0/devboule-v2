@@ -267,13 +267,14 @@ describe("ChangesSurface", () => {
     expect(container.textContent).toContain("untracked");
     expect(container.textContent).toContain("deleted");
     // `capped` says the counts are not exact: a mark, never an invented number.
-    // The whole row's text, marks included — dropping `≈` changes this string.
+    // The row's own text, marks included — dropping `≈` changes this string.
     // The row shows the basename; the full path rides its `title`.
     const cappedRow = Array.from(container.querySelectorAll(".workspace-file-change")).find(
       (element) => element.getAttribute("title") === "notes/todo.md",
     );
     if (cappedRow === undefined) throw new Error("capped row did not render");
-    expect(cappedRow.textContent).toBe("todo.mduntracked≈+7 −0");
+    expect(cappedRow.textContent).toBe("todo.md");
+    expect(cappedRow.parentElement?.textContent).toContain("todo.mduntracked≈+7 −0");
     expect(
       container.querySelector('.workspace-file-change[title="src/writer.ts"]')?.className,
     ).toContain("workspace-file-change-muted");

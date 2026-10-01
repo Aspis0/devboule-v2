@@ -1,8 +1,11 @@
 // Human-path proofs for the recovered reopen bar: the daemon's verdict,
-// never a re-derivation, and never an auto-resume on mount.
+// never a re-derivation, and never an auto-resume on mount. The quiet
+// note's own tokens are proved through the real sheet.
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../types/ipc";
 
@@ -12,8 +15,16 @@ vi.mock("../../lib/tauri", () => ({
 
 import { sessionResume } from "../../lib/tauri";
 import { RecoveredSessionBar } from "./recoveredSessionBar";
+import { assembleCssProof, removeCssProof, specificity } from "./cssProof";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const rootDir = resolve(import.meta.dirname, "../../..");
+const sheets = [
+  readFileSync(resolve(rootDir, "src/styles/tokens.css"), "utf8"),
+  readFileSync(resolve(rootDir, "src/styles/global.css"), "utf8"),
+  readFileSync(resolve(rootDir, "src/features/workspace/Workspace.css"), "utf8"),
+];
 
 let container: HTMLDivElement;
 let root: Root;
@@ -55,6 +66,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root?.unmount());
   container.remove();
+  removeCssProof();
   vi.clearAllMocks();
 });
 
@@ -186,5 +198,86 @@ describe("RecoveredSessionBar", () => {
 
     expect(container.textContent).toBe("");
     expect(sessionResume).not.toHaveBeenCalled();
+  });
+});
+
+describe("the recovered bar's quiet state", () => {
+  it("is a neutral status note with a reachable Reopen, not the error block", async () => {
+    await renderBar(recoveredSession({ resumable: true }));
+
+    const bar = container.querySelector('[data-testid="recovered-reopen-bar"]');
+    if (bar === null) throw new Error("reopen bar did not render");
+    expect(bar.getAttribute("role")).toBe("status");
+    expect(bar.classList.contains("workspace-session-recovered")).toBe(true);
+    expect(bar.classList.contains("workspace-session-error")).toBe(false);
+    expect(bar.textContent).toContain("Read-only transcript from the journal.");
+    const button = bar.querySelector<HTMLButtonElement>("button");
+    if (button === null) throw new Error("Reopen did not render");
+    expect(button.disabled).toBe(false);
+    button.focus();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("arms the danger block and the alert only for a failed reopen", async () => {
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    await renderBar(recoveredSession({ resumable: true }));
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen did not render");
+    await act(async () => button.click());
+
+    const bar = container.querySelector('[data-testid="recovered-reopen-bar"]');
+    if (bar === null) throw new Error("reopen bar disappeared");
+    expect(bar.classList.contains("workspace-session-error")).toBe(true);
+    expect(bar.classList.contains("workspace-session-recovered")).toBe(false);
+    expect(bar.querySelector('[role="alert"]')?.textContent).toContain("gone");
+  });
+
+  it("paints the quiet note in the neutral tokens: muted text, no border, no fill", async () => {
+    await renderBar(recoveredSession({ resumable: true }));
+
+    const css = assembleCssProof(sheets);
+    const targets = css.rules
+      .flatMap((rule) => rule.selector.split(","))
+      .map((part) => part.trim())
+      .filter(
+        (part) =>
+          part.includes("workspace-session-recovered") ||
+          part.includes("workspace-session-notice-text"),
+      );
+    css.inject(targets);
+    const bar = container.querySelector('[data-testid="recovered-reopen-bar"]');
+    if (bar === null) throw new Error("reopen bar did not render");
+    const style = getComputedStyle(bar);
+    expect(style.color).toBe(css.token("--muted"));
+    expect(style.fontSize).toBe(css.token("--type-meta"));
+    // The rule carries no danger, no border and no fill of its own; the danger
+    // colours live on .workspace-session-error, which this bar does not wear.
+    const own = css.rulesFor(".workspace-session-recovered");
+    expect(own).not.toContain("danger");
+    expect(own).not.toContain("background");
+    expect(own).not.toContain("border");
+  });
+
+  it("keeps the Reopen control's hover and focus answers neutral inside the quiet note", () => {
+    const css = assembleCssProof(sheets);
+    const ink = css.token("--ink");
+    const danger = css.token("--danger");
+    expect(ink).toBeDefined();
+    expect(danger).toBeDefined();
+    for (const pseudo of [":hover", ":focus-visible"]) {
+      const own = css.rulesFor(`.workspace-session-recovered .workspace-secondary-action${pseudo}`);
+      expect(own).toContain(ink!);
+      expect(own).not.toContain(danger!);
+    }
+    // The shared secondary-action answer is the one that flashes danger;
+    // specificity, not sheet order, must decide which one wins.
+    expect(css.rulesFor(".workspace-secondary-action:hover")).toContain(danger!);
+    expect(specificity(".workspace-session-recovered .workspace-secondary-action:hover")).toEqual([
+      0, 3, 0,
+    ]);
+    expect(specificity(".workspace-secondary-action:hover")).toEqual([0, 2, 0]);
   });
 });

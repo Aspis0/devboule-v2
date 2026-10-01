@@ -40,11 +40,23 @@
   line-height: 1.55;
 }
 
+/* The file row: [select | status | counts | acts]. The acts — and
+   whatever else the panel cannot hold — wrap to a second line,
+   right-aligned; the button's inline min-width is the floor the
+   line-break measures, so the name yields first. */
 .workspace-file-change-row {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 2px;
+}
+
+/* The row's Discard menu opens below the row, whatever height it has —
+   one line or wrapped. */
+.workspace-file-change-row .workspace-tree-menu {
+  top: 100%;
 }
 
 /* The row's own actions beside the select control: Stage and Unstage on
@@ -115,30 +127,8 @@
   white-space: nowrap;
 }
 
-.workspace-file-change > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.workspace-file-change > span:last-child {
-  flex: none;
-  margin-left: auto;
-  color: var(--silence);
-}
-
-.workspace-file-change-status {
-  flex: none;
-  color: var(--silence);
-  font-size: var(--type-meta);
-}
-
 .workspace-file-change-muted {
   color: var(--silence);
-}
-
-.workspace-file-change-muted > span:last-child {
-  color: var(--danger-deep);
 }
 
 .workspace-diff-card {
@@ -429,14 +419,24 @@ ul.workspace-changes-tree {
   background: var(--fill-hover);
 }
 
+.workspace-file-change-status {
+  flex: none;
+  color: var(--silence);
+  font-size: var(--type-meta);
+}
+
+/* Status and counts live on the row, fixed beside the select button:
+   the wrap measures them at full width, so the acts yield first. */
+.workspace-file-change-stats {
+  flex: none;
+  white-space: nowrap;
+  color: var(--silence);
+}
+
 .workspace-file-change-selected,
 .workspace-file-change-selected:hover {
   color: var(--ink);
   background: var(--fill-tool);
-}
-
-.workspace-file-change-selected > span:last-child {
-  color: var(--muted);
 }
 
 .workspace-file-change-name {
@@ -447,6 +447,87 @@ ul.workspace-changes-tree {
 
 .workspace-file-change-stats-is-add {
   color: var(--tone-add);
+}
+
+.workspace-file-change-stats-is-del {
+  color: var(--danger-deep);
+}
+
+/* Fine pointers keep one line: the acts leave the flex line and hang over
+   the row's trailing edge — hidden AND unclickable (the session chip's
+   reveal) until hover, focus-within or an open menu — and status and
+   counts step aside while they show. Coarse pointers never enter this
+   block, so touch keeps the wrapped layout above. */
+@media (hover: hover) and (pointer: fine) {
+  /* The flex breaker wraps before the yield rule below can shrink
+     anything, so the line is pinned here; coarse keeps the base wrap. */
+  .workspace-file-change-row {
+    flex-wrap: nowrap;
+  }
+
+  .workspace-file-change-row .workspace-file-change-actions {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: max-content;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  /* The pencil keeps its own trailing slot; the acts stop beside it. */
+  .workspace-file-change-row:has(.workspace-changes-pencil) .workspace-file-change-actions {
+    right: 26px;
+  }
+
+  .workspace-file-change-row:hover .workspace-file-change-actions,
+  .workspace-file-change-row:focus-within .workspace-file-change-actions,
+  .workspace-file-change-row:has(.workspace-tree-menu) .workspace-file-change-actions {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  /* The revealed strip masks the name's tail with the row's own opaque
+     background per state — ground, hover tint, selected fill — fading in
+     over 16px at the left edge (--fill-hover is translucent; ink on ground). */
+  .workspace-file-change-row:focus-within .workspace-file-change-actions,
+  .workspace-file-change-row:has(.workspace-tree-menu) .workspace-file-change-actions {
+    background-image: linear-gradient(to right, transparent, var(--panel-side) 16px);
+  }
+
+  .workspace-file-change-row:hover .workspace-file-change-actions {
+    background-image: linear-gradient(
+      to right,
+      transparent,
+      color-mix(in srgb, var(--ink) 7%, var(--panel-side)) 16px
+    );
+  }
+
+  .workspace-file-change-row:has(.workspace-file-change-selected) .workspace-file-change-actions {
+    background-image: linear-gradient(to right, transparent, var(--fill-tool) 16px);
+  }
+
+  .workspace-file-change-row:hover .workspace-file-change-status,
+  .workspace-file-change-row:focus-within .workspace-file-change-status,
+  .workspace-file-change-row:has(.workspace-tree-menu) .workspace-file-change-status,
+  .workspace-file-change-row:hover .workspace-file-change-stats,
+  .workspace-file-change-row:focus-within .workspace-file-change-stats,
+  .workspace-file-change-row:has(.workspace-tree-menu) .workspace-file-change-stats {
+    visibility: hidden;
+  }
+
+  /* The line is pinned above, so once the name is at its floor these two
+     are what yield: clipped and ellipsized, never spilling the row. */
+  .workspace-file-change-row .workspace-file-change-status,
+  .workspace-file-change-row .workspace-file-change-stats {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 /* The inline diff card's header bar is UI text (path + counts), not code:
