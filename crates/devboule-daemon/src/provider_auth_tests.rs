@@ -103,10 +103,33 @@ fn run_check_timeout_returns_static_unknown_reason() {
         // running well inside the five-second budget — no cold-start race.
         // ping then holds the tree as a real grandchild of the direct
         // child, which is the shape the job has to reap.
+        //
+        // A bare name is resolved from the current directory and PATH, so a
+        // PATH without System32 would end the fixture at once instead of
+        // timing it out; the full path removes that dependency. The path
+        // rides alone in its own argument, trailing space included, because
+        // only that shape leaves cmd.exe's /C quote-stripping with the
+        // quotes std::process::Command wraps around it: cmd drops those
+        // quotes when the line begins with one — its first rule never spares
+        // them, since the unexpanded `%SystemRoot%` token is no executable
+        // name — which costs nothing until the expanded root contains a
+        // space. The leading `@` means the line never begins with a quote, so
+        // the fixture holds on a spaced root too. A literal quote in an
+        // argument reaches cmd as \" and is read as part of the filename.
         let executable = std::env::var_os("COMSPEC")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"));
-        let agent = fake_agent_at(executable, vec!["/C".into(), "ping -n 31 127.0.0.1".into()]);
+        let agent = fake_agent_at(
+            executable,
+            vec![
+                "/C".into(),
+                "@".into(),
+                "%SystemRoot%\\System32\\PING.EXE ".into(),
+                "-n".into(),
+                "31".into(),
+                "127.0.0.1".into(),
+            ],
+        );
         let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
         assert_eq!(result, ("unknown", "The provider status check timed out."));
         // The kill is checked against the PIDs the job actually held, never
@@ -117,7 +140,7 @@ fn run_check_timeout_returns_static_unknown_reason() {
             "the runner recorded the job's member PIDs"
         );
         for pid in job_pids {
-            assert!(!tasklist_has_pid(pid), "the killed process {pid} is gone");
+            crate::test_support::wait_until_pid_gone(pid, "the killed process");
         }
     }
 }
@@ -133,10 +156,7 @@ fn run_check_reaps_the_whole_tree_after_a_successful_child_exits() {
         let executable = std::env::var_os("COMSPEC")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"));
-        let agent = fake_agent_at(
-            executable,
-            vec!["/C".into(), "start /b ping -n 31 127.0.0.1 & exit".into()],
-        );
+        let agent = fake_agent_at(executable, start_grandchild_fixture());
         let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
         assert_eq!(result.0, "logged_in");
         let job_pids = last_job_pids();
@@ -145,10 +165,7 @@ fn run_check_reaps_the_whole_tree_after_a_successful_child_exits() {
             "the runner recorded the job's member PIDs"
         );
         for pid in job_pids {
-            assert!(
-                !tasklist_has_pid(pid),
-                "the grandchild {pid} died with the job"
-            );
+            crate::test_support::wait_until_pid_gone(pid, "the grandchild");
         }
     }
 }
@@ -165,10 +182,7 @@ fn run_check_does_not_wait_for_the_pipe_when_the_exit_code_decides() {
         let executable = std::env::var_os("COMSPEC")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"));
-        let agent = fake_agent_at(
-            executable,
-            vec!["/C".into(), "start /b ping -n 31 127.0.0.1 & exit".into()],
-        );
+        let agent = fake_agent_at(executable, start_grandchild_fixture());
         let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
         assert_eq!(result, ("logged_in", "CLI confirmed an active login."));
     }
@@ -251,32 +265,25 @@ fn assert_cmd_safe_path(path: &std::path::Path) {
     }
 }
 
-/// Whether tasklist still reports a process with exactly this PID: the PID
-/// column of a data row, never a substring of the whole listing.
+/// The `start /b` fixture both post-exit tests run: cmd.exe exits at once
+/// and ping stays behind as a grandchild holding the pipe. The empty
+/// argument is `start`'s window title (or `start` reads the next token as
+/// one and swallows the quoted path); the trailing-space wrap is the
+/// timeout fixture's, above.
 #[cfg(windows)]
-fn tasklist_has_pid(pid: u32) -> bool {
-    let listing = std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}")])
-        .output()
-        .expect("tasklist is available on Windows");
-    let stdout = String::from_utf8_lossy(&listing.stdout).into_owned();
-    tasklist_data_rows(&stdout).into_iter().any(|row| {
-        row.get(1)
-            .is_some_and(|column| column.parse::<u32>() == Ok(pid))
-    })
-}
-
-/// The data rows of a tasklist listing: the header and the separator line
-/// carry no PID column to misparse.
-#[cfg(windows)]
-fn tasklist_data_rows(listing: &str) -> Vec<Vec<&str>> {
-    listing
-        .lines()
-        .filter(|line| {
-            !line.starts_with("Image Name") && !line.starts_with("===") && !line.trim().is_empty()
-        })
-        .map(|line| line.split_whitespace().collect())
-        .collect()
+fn start_grandchild_fixture() -> Vec<String> {
+    vec![
+        "/C".into(),
+        "start".into(),
+        "/b".into(),
+        "".into(),
+        "%SystemRoot%\\System32\\PING.EXE ".into(),
+        "-n".into(),
+        "31".into(),
+        "127.0.0.1".into(),
+        "&".into(),
+        "exit".into(),
+    ]
 }
 
 #[cfg(windows)]

@@ -4286,6 +4286,10 @@ fn grok_acp_argv() -> Option<Vec<String>> {
     None
 }
 
+// Twin of test_support::wait_until_pid_gone: integration tests cannot import
+// lib cfg(test) items. Deliberately not identical: 5 s here against 2 s
+// there, and here any open failure reads as gone — there only a PID that no
+// longer exists may, every other open failure panics.
 fn wait_until_gone(pid: u32) {
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if handle.is_null() {

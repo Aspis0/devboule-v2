@@ -695,7 +695,7 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "@echo off\r\npowershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\"\r\n",
+                "@echo off\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\"\r\n",
                 powershell.display()
             ),
         )
@@ -705,7 +705,7 @@ mod tests {
 
         let status = detect_git_repository_with_program(
             &root,
-            Path::new(r"C:\Windows\System32\cmd.exe").as_os_str(),
+            probe_cmd().as_os_str(),
             &[
                 OsString::from("/d"),
                 OsString::from("/c"),
@@ -727,7 +727,7 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "@echo off\r\npowershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\"\r\n",
+                "@echo off\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\"\r\n",
                 powershell.display()
             ),
         )
@@ -735,7 +735,7 @@ mod tests {
         std::fs::write(
             &powershell,
             format!(
-                "$p = Start-Process -FilePath ping.exe -ArgumentList '-n','30','127.0.0.1' -PassThru -WindowStyle Hidden\r\nSet-Content -LiteralPath '{}' -Value @($PID, $p.Id)\r\n[Console]::Out.Write(('x' * 20000))\r\nWait-Process -Id $p.Id\r\n",
+                "$p = Start-Process -FilePath \"$env:SystemRoot\\System32\\PING.EXE\" -ArgumentList '-n','30','127.0.0.1' -PassThru -WindowStyle Hidden\r\nSet-Content -LiteralPath '{}' -Value @($PID, $p.Id)\r\n[Console]::Out.Write(('x' * 20000))\r\nWait-Process -Id $p.Id\r\n",
                 marker.display()
             ),
         )
@@ -743,7 +743,7 @@ mod tests {
 
         let status = detect_git_repository_with_program(
             &root,
-            Path::new(r"C:\Windows\System32\cmd.exe").as_os_str(),
+            probe_cmd().as_os_str(),
             &[
                 OsString::from("/d"),
                 OsString::from("/c"),
@@ -757,25 +757,26 @@ mod tests {
             .map(|line| line.trim().parse().expect("process pid"))
             .collect();
         assert_eq!(child_pids.len(), 2, "tracked process ids: {child_pids:?}");
-        let alive_count = child_pids
+        let alive_after_timeout = child_pids
             .iter()
-            .filter(|child_pid| {
-                let tasklist = std::process::Command::new("tasklist")
-                    .args(["/FI", &format!("PID eq {child_pid}"), "/FO", "CSV", "/NH"])
-                    .output()
-                    .expect("tasklist");
-                let listing = String::from_utf8_lossy(&tasklist.stdout);
-                listing
-                    .lines()
-                    .any(|line| line.contains(&child_pid.to_string()))
-            })
+            .filter(|pid| crate::test_support::pid_is_alive(**pid))
             .count();
         eprintln!(
-            "git probe tracked process count={}, alive_after_timeout={alive_count}",
-            child_pids.len()
+            "git probe tracked process ids: {child_pids:?} alive_after_timeout={alive_after_timeout}"
         );
-        assert_eq!(alive_count, 0, "Job Object left a tracked descendant alive");
+        for pid in &child_pids {
+            crate::test_support::wait_until_pid_gone(*pid, "the tracked descendant");
+        }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// cmd.exe for this module's probe fixtures, resolved the way the fixtures
+    /// resolve their other executables: from `%SystemRoot%`, never from PATH.
+    #[cfg(windows)]
+    fn probe_cmd() -> std::path::PathBuf {
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("%SystemRoot% is set"))
+            .join("System32")
+            .join("cmd.exe")
     }
 
     #[cfg(windows)]

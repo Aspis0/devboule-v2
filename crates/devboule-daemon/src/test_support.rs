@@ -5,6 +5,15 @@
 //! instead of failing (A2-13): a machine without `node` is not a broken build,
 //! and a suite that reports red for it teaches readers to ignore red.
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+};
+
 /// Why a test that needs `program` must skip here, or `None` when it can run.
 ///
 /// One implementation for every module's test block: the reason it returns is
@@ -20,6 +29,86 @@ pub(crate) fn external_program_skip_reason(program: &str) -> Option<String> {
             "skipping: `{program}` is not runnable here ({error}; kind={:?})",
             error.kind()
         )),
+    }
+}
+
+/// Wait until the process `pid` has exited, or fail at the bound.
+///
+/// The callers' job cleanup does not guarantee a member is gone when it
+/// returns: `run_check_with_timeout` fires `terminate()` with no wait on the
+/// success path and bounds `terminate_and_wait(250 ms)` with the result
+/// dropped on the timeout path, `terminate_git_process` drops the result of
+/// `terminate_and_wait(GIT_REAP_TIMEOUT)` — so a member may still be dying
+/// when the test looks, and one immediate check flakes on a kill that
+/// worked. The wait is on the process object itself: no process-list text
+/// to parse or localise, and it returns
+/// the moment the process exits, bounded by the timeout. Scoped to PIDs this
+/// test started: those it may open, so an open failure short of `ERROR_INVALID_PARAMETER` —
+/// `ERROR_ACCESS_DENIED` would be somebody else's process — panics instead of
+/// reading as gone. Opening the PID after the death can catch a reused PID of
+/// an unrelated process: that can invent a failure, never hide a live
+/// original. Twin of `wait_until_gone` in `tests/acp_sessions.rs`, which
+/// cannot import lib `cfg(test)` items; the copies diverge on purpose — 5 s
+/// and any-open-failure-reads-as-gone there, a 2 s bound and a panic on every
+/// other open failure here.
+#[cfg(windows)]
+pub(crate) fn wait_until_pid_gone(pid: u32, role: &str) {
+    const BOUND_MS: u32 = 2_000;
+    let handle = match open_process_to_wait_for(pid) {
+        Ok(handle) => handle,
+        Err(ERROR_INVALID_PARAMETER) => return,
+        Err(error) => panic!(
+            "OpenProcess({pid}) failed with GetLastError={error}; only a nonexistent PID may read as gone"
+        ),
+    };
+    let waited = unsafe { WaitForSingleObject(handle, BOUND_MS) };
+    // Read before CloseHandle: Win32 does not promise to keep the last-error
+    // slot across a successful call, so a later read may report another code.
+    let wait_error = unsafe { GetLastError() };
+    unsafe { CloseHandle(handle) };
+    match waited {
+        WAIT_OBJECT_0 => {}
+        WAIT_TIMEOUT => panic!("{role} {pid} is still alive after {BOUND_MS} ms"),
+        code => {
+            panic!(
+                "{role} {pid}: WaitForSingleObject failed with {code:#x} (GetLastError={wait_error})"
+            )
+        }
+    }
+}
+
+/// Whether `pid` names a live process right now: the census a test takes
+/// before waiting its tracked PIDs out, so the log records how many were
+/// still alive when the probe timed out, success or failure; the wait's
+/// panic is what names the PID that never exits.
+///
+/// A census reports; it does not fail the test: an open it could not make is
+/// not an observation of death, so only `ERROR_INVALID_PARAMETER` — no such
+/// process — counts as dead, and any other open failure counts as alive.
+#[cfg(windows)]
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
+    match open_process_to_wait_for(pid) {
+        Err(error) => error != ERROR_INVALID_PARAMETER,
+        Ok(handle) => {
+            // A failed wait must not claim death.
+            let alive = unsafe { WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0;
+            unsafe { CloseHandle(handle) };
+            alive
+        }
+    }
+}
+
+/// The handle to wait on for `pid`, or the `GetLastError` of the failed open.
+///
+/// The raw failure, not a verdict: which failures may read as "gone" belongs
+/// to the caller, whose own PIDs are the ones being opened.
+#[cfg(windows)]
+fn open_process_to_wait_for(pid: u32) -> Result<HANDLE, u32> {
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        Err(unsafe { GetLastError() })
+    } else {
+        Ok(handle)
     }
 }
 

@@ -132,8 +132,8 @@ mod platform {
         }
 
         /// The PIDs currently assigned to this job. Test-only: a test that
-        /// kills a tree checks these PIDs against tasklist rather than a
-        /// machine-wide image name, so a co-tenant process cannot fail it.
+        /// kills a tree waits on these PIDs' own process objects rather than
+        /// a machine-wide image name, so a co-tenant process cannot fail it.
         #[cfg(test)]
         pub fn pids(&self) -> io::Result<Vec<u32>> {
             #[repr(C)]
