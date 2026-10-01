@@ -69,6 +69,7 @@ import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
 import { MarkdownText } from "../../components/MarkdownText";
+import type { ChatFileLinks } from "../../lib/chatFilePaths";
 import { MessageCopyButton } from "./timeline/MessageCopyButton";
 import { TurnRail } from "./timeline/TurnRail";
 import "./timeline/timeline.css";
@@ -153,6 +154,12 @@ interface AgentChatSurfaceProps {
   auxiliary?: ReactNode;
   /** The kebab's close-group wiring, from the tab-close flow. Absent until the workspace passes it. */
   headerMenuSeam?: HeaderMenuSeam;
+  /**
+   * Workspace context that renders agent-written file paths as links into
+   * the tab opener, exactly the Files panel's open action. Null (or absent)
+   * turns recognition off — no workspace, or a surface that cannot open one.
+   */
+  fileLinks?: ChatFileLinks | null;
   /** The roster's turn status and pending ask, painted by the header. Absent until the workspace passes them. */
   activity?: AgentActivityState;
   attention?: Attention;
@@ -619,7 +626,7 @@ function ToolCallGroupEntry({ group, a2aNames, transcriptEnded }: ToolCallGroupE
         ) : null}
       </summary>
       <div className="workspace-chat-tool-group-body">
-        {group.items.map((item) => renderItem(item, a2aNames, transcriptEnded))}
+        {group.items.map((item) => renderItem(item, a2aNames, transcriptEnded, null))}
       </div>
     </details>
   );
@@ -629,6 +636,7 @@ function renderEntry(
   entry: AgentChatItem | ToolCallGroup,
   a2aNames: A2aNameSource,
   transcriptEnded: boolean,
+  fileLinks: ChatFileLinks | null,
 ) {
   if (isToolCallGroup(entry)) {
     return (
@@ -640,10 +648,15 @@ function renderEntry(
       />
     );
   }
-  return renderItem(entry, a2aNames, transcriptEnded);
+  return renderItem(entry, a2aNames, transcriptEnded, fileLinks);
 }
 
-function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnded: boolean) {
+function renderItem(
+  item: AgentChatItem,
+  a2aNames: A2aNameSource,
+  transcriptEnded: boolean,
+  fileLinks: ChatFileLinks | null,
+) {
   const isSubagent = hasParentToolUseId(item);
   const measuredDepth =
     "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
@@ -791,7 +804,7 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
       title={isSubagent && measuredDepth === null ? "Subagent depth unavailable" : undefined}
     >
       <div className="workspace-chat-copy">
-        <MarkdownText text={item.text} />
+        <MarkdownText text={item.text} fileLinks={fileLinks} />
       </div>
       <MessageCopyButton text={item.text} />
     </div>
@@ -805,6 +818,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   id,
   auxiliary,
   headerMenuSeam,
+  fileLinks = null,
   activity,
   attention,
   observedState = null,
@@ -1176,7 +1190,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           {state.items.length === 0 && state.status === "idle" && !osGone ? (
             <div className="workspace-chat-empty">Start a conversation with the agent.</div>
           ) : null}
-          {entries.map((entry) => renderEntry(entry, a2aNames, osGone))}
+          {entries.map((entry) => renderEntry(entry, a2aNames, osGone, fileLinks))}
           {state.streaming && !osGone ? (
             <div className="workspace-chat-typing" role="status">
               Agent is working

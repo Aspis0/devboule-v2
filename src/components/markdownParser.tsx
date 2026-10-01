@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { CodeBlock } from "./CodeBlock";
 import { inline } from "./markdownInline";
+import type { ChatFileLinks } from "../lib/chatFilePaths";
 import {
   alignmentOf,
   isTableStart,
@@ -11,7 +12,9 @@ import {
 import { isCopyableFence } from "../lib/fence";
 import "./markdown.css";
 
-export function parseMarkdownText(text: string): ReactNode[] {
+/** Table cells call `inline()` on their own and take no file-link context:
+ * recognition covers paragraphs, lists and headings. */
+export function parseMarkdownText(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   const lines = text.split(/\r?\n/);
   const blocks: ReactNode[] = [];
@@ -47,7 +50,7 @@ export function parseMarkdownText(text: string): ReactNode[] {
           aria-level={heading[1].length}
           className={`plan-markdown-heading plan-markdown-heading-${heading[1].length}`}
         >
-          {inline(heading[2])}
+          {inline(heading[2], fileLinks)}
         </div>,
       );
       index += 1;
@@ -56,7 +59,9 @@ export function parseMarkdownText(text: string): ReactNode[] {
     if (/^\s*[-*+]\s+/.test(line)) {
       const items: ReactNode[] = [];
       while (index < lines.length && /^\s*[-*+]\s+/.test(lines[index])) {
-        items.push(<li key={items.length}>{inline(lines[index].replace(/^\s*[-*+]\s+/, ""))}</li>);
+        items.push(
+          <li key={items.length}>{inline(lines[index].replace(/^\s*[-*+]\s+/, ""), fileLinks)}</li>,
+        );
         index += 1;
       }
       blocks.push(<ul key={blocks.length}>{items}</ul>);
@@ -66,7 +71,9 @@ export function parseMarkdownText(text: string): ReactNode[] {
       const items: ReactNode[] = [];
       while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
         items.push(
-          <li key={items.length}>{inline(lines[index].replace(/^\s*\d+[.)]\s+/, ""))}</li>,
+          <li key={items.length}>
+            {inline(lines[index].replace(/^\s*\d+[.)]\s+/, ""), fileLinks)}
+          </li>,
         );
         index += 1;
       }
@@ -105,7 +112,10 @@ export function parseMarkdownText(text: string): ReactNode[] {
       paragraph.push(lines[index].trim());
       index += 1;
     }
-    blocks.push(<p key={blocks.length}>{inline(paragraph.join(" "))}</p>);
+    // Preserve line breaks until code-path validation; inline rendering still shows spaces.
+    blocks.push(
+      <p key={blocks.length}>{inline(paragraph.join(fileLinks ? "\n" : " "), fileLinks)}</p>,
+    );
   }
   return blocks;
 }

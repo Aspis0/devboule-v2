@@ -14,6 +14,24 @@
   font-size: 12px;
 }
 
+/* Preserve paragraph metrics and selection; the global button focus ring
+   supplies the keyboard affordance. */
+.plan-markdown-file-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  user-select: text;
+}
+
+.plan-markdown-file-link:hover {
+  text-decoration: underline;
+}
+
 .plan-markdown-table {
   border-collapse: collapse;
 }

@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
+import { parseChatCodeFilePath, scanChatFilePaths, type ChatFileLinks } from "../lib/chatFilePaths";
 
-export function inline(text: string): ReactNode[] {
+export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
+  const links = fileLinks ?? null;
   const nodes: ReactNode[] = [];
   const escaped = new Uint8Array(text.length);
   const codeSpan = new Uint8Array(text.length);
@@ -42,8 +44,34 @@ export function inline(text: string): ReactNode[] {
     }
     return positions;
   };
-  const plain = (start: number, end: number) =>
-    text.slice(start, end).replace(/\\([!-/:-@[-`{-~])/g, "$1");
+  const plain = (start: number, end: number) => {
+    const content = text.slice(start, end).replace(/\\([!-/:-@[-`{-~])/g, "$1");
+    return links === null ? content : content.replace(/\n/g, " ");
+  };
+  const pushPlain = (start: number, end: number) => {
+    const found = links === null ? null : scanChatFilePaths(text.slice(start, end), links.root);
+    if (found === null || found.length === 0) {
+      nodes.push(plain(start, end));
+      return;
+    }
+    let cursor = 0;
+    for (const token of found) {
+      if (token.start > cursor) nodes.push(plain(start + cursor, start + token.start));
+      nodes.push(
+        <button
+          type="button"
+          key={start + token.start}
+          className="plan-markdown-file-link"
+          title={token.link.relativePath}
+          onClick={() => links?.open(token.link.relativePath)}
+        >
+          {plain(start + token.start, start + token.end)}
+        </button>,
+      );
+      cursor = token.end;
+    }
+    if (cursor < end - start) nodes.push(plain(start + cursor, end));
+  };
   const stars = next("*");
   const brackets = next("]");
   // Every `(`'s matching `)` in one stack pass: a target's own parens stay
@@ -144,14 +172,32 @@ export function inline(text: string): ReactNode[] {
       offset += 1;
       continue;
     }
-    if (index > renderedUntil) nodes.push(plain(renderedUntil, index));
+    if (index > renderedUntil) pushPlain(renderedUntil, index);
     const key = index;
     const content = text.slice(contentStart, contentEnd);
-    if (kind === "code") nodes.push(<code key={key}>{content}</code>);
+    if (kind === "code") {
+      const link = links === null ? null : parseChatCodeFilePath(content, links.root);
+      nodes.push(
+        link === null ? (
+          <code key={key}>{links === null ? content : content.replace(/\n/g, " ")}</code>
+        ) : (
+          <code key={key}>
+            <button
+              type="button"
+              className="plan-markdown-file-link"
+              title={link.relativePath}
+              onClick={() => links?.open(link.relativePath)}
+            >
+              {content}
+            </button>
+          </code>
+        ),
+      );
+    }
     // Emphasis content ends at its first emphasis star, so this nested scan
     // finds code and links but never another emphasis: no depth cap needed.
-    else if (kind === "strong") nodes.push(<strong key={key}>{inline(content)}</strong>);
-    else if (kind === "em") nodes.push(<em key={key}>{inline(content)}</em>);
+    else if (kind === "strong") nodes.push(<strong key={key}>{inline(content, links)}</strong>);
+    else if (kind === "em") nodes.push(<em key={key}>{inline(content, links)}</em>);
     else if (kind === "image")
       nodes.push(
         <span key={key} className="plan-markdown-image">
@@ -174,8 +220,11 @@ export function inline(text: string): ReactNode[] {
     renderedUntil = end;
     offset = end;
   }
-  if (renderedUntil === 0) return [plain(0, text.length)];
-  if (renderedUntil < text.length) nodes.push(plain(renderedUntil, text.length));
+  if (renderedUntil === 0) {
+    pushPlain(0, text.length);
+    return nodes;
+  }
+  if (renderedUntil < text.length) pushPlain(renderedUntil, text.length);
   return nodes;
 }
 

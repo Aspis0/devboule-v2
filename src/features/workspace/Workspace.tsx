@@ -655,6 +655,17 @@ export function Workspace({
   // destroy a message the user queued (review F1, F2, F13).
   const sessionQueue =
     paneSession === null ? null : sharedSessionQueueOwner().queueFor(paneSession.id);
+  // Primitive dependencies keep fileLinks stable across roster pushes so
+  // unchanged messages retain their Markdown memo.
+  const paneWorkspaceId = paneSession?.workspaceId ?? null;
+  const paneCwd = paneSession?.cwd;
+  const chatFileLinks = useMemo(() => {
+    if (paneWorkspaceId === null || paneCwd === undefined) return null;
+    return {
+      root: paneCwd,
+      open: (relativePath: string) => openToolTab(paneWorkspaceId, relativePath, "file"),
+    };
+  }, [paneWorkspaceId, paneCwd, openToolTab]);
   // The recovery decision is a small external store: it holds the episode, the
   // roster answer, and the attempt-failed note, which only change from pushed
   // updates. Both pushes happen in effects below — no ref is read during render.
@@ -1541,6 +1552,7 @@ export function Workspace({
                 sessionId={paneSession.id}
                 title={sessionTitle(paneSession)}
                 cwd={paneSession.cwd}
+                fileLinks={chatFileLinks}
                 observedState={paneSession.state}
                 initialGoal={paneSession.goal}
                 elapsedMs={paneSession.elapsedMs}

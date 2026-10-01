@@ -201,6 +201,10 @@ source, and that line is the authority for the entry:
 - `src/features/workspace/commandMatch.ts` —
   `packages/protocol/src/search/text-match.ts` and
   `packages/app/src/utils/agent-command-autocomplete.ts`
+- `src/lib/chatFilePaths.ts` —
+  `packages/app/src/assistant-file-links/parse.ts`
+  (`resolveRelativePathUnderRoot`; Apache-2.0, Copyright (c) 2025-present
+  Mohamed Boudra)
 - `src/lib/toolCallGroups.ts` — `packages/app/src/i18n/resources/en.ts:1853-1879`
   (the `toolCallGroup.*` strings)
 

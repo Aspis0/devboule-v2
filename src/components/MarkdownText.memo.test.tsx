@@ -3,9 +3,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ChatFileLinks } from "../lib/chatFilePaths";
 
 const parser = vi.hoisted(() => ({
-  parseMarkdownText: vi.fn((text: string) => text),
+  parseMarkdownText: vi.fn((text: string, _fileLinks?: ChatFileLinks | null) => text),
 }));
 
 vi.mock("./markdownParser", () => parser);
@@ -49,5 +50,23 @@ describe("memoized assistant Markdown", () => {
       "first chunk",
       "second chunk",
     ]);
+  });
+
+  it("does not re-parse unchanged text with stable fileLinks on re-render", async () => {
+    const fileLinks: ChatFileLinks = { root: "/home/u/repo", open: vi.fn() };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => root.render(<MarkdownText text="src/a.ts" fileLinks={fileLinks} />));
+    expect(parser.parseMarkdownText).toHaveBeenCalledTimes(1);
+    expect(parser.parseMarkdownText).toHaveBeenCalledWith("src/a.ts", fileLinks);
+
+    await act(async () => root.render(<MarkdownText text="src/a.ts" fileLinks={fileLinks} />));
+    expect(parser.parseMarkdownText).toHaveBeenCalledTimes(1);
+
+    await act(async () => root.render(<MarkdownText text="src/b.ts" fileLinks={fileLinks} />));
+    expect(parser.parseMarkdownText).toHaveBeenCalledTimes(2);
+    expect(parser.parseMarkdownText).toHaveBeenLastCalledWith("src/b.ts", fileLinks);
   });
 });
