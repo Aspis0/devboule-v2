@@ -222,17 +222,6 @@ impl TurnArbiter {
         }
     }
 
-    /// The process tree is being killed: the poll window stops here, by
-    /// the kill's own word. The expiry skips a killed session
-    /// (`cancelled`), and stdout EOF — the other road — has not happened
-    /// yet; without this the window would outlive its run on the nilled
-    /// stdin's failures alone.
-    pub(super) fn note_killed(&self) {
-        if let Some(usage) = &self.usage {
-            usage.stop_window();
-        }
-    }
-
     /// A pi `agent_start`: its run opens, the watch arms — a turn pi
     /// starts with no prompt from us is begun and watched like any other —
     /// and the context poll's window opens with the run.

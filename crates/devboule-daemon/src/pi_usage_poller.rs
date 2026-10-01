@@ -46,7 +46,9 @@ pub(super) struct PiUsagePoller {
     /// The thread's exit and the session's end: set by `close`, checked
     /// before any work.
     stop: AtomicBool,
-    /// The window, under its one lock.
+    /// The window, under its one lock. The lock is taken short — never
+    /// across the catalog read or a round trip — so a tick stalled on the
+    /// catalog cannot pin the stop roads behind it.
     window: Mutex<WindowState>,
     /// When the next poll may fire; `None` while no window is scheduled.
     next_poll: Mutex<Option<Instant>>,
@@ -117,6 +119,7 @@ impl PiUsagePoller {
         if self.stop.load(Ordering::Acquire) {
             return;
         }
+        let model = self.current_model_id().flatten();
         let Ok(mut window) = self.window.lock() else {
             return;
         };
@@ -125,7 +128,7 @@ impl PiUsagePoller {
         }
         window.epoch += 1;
         window.open = true;
-        window.model = self.current_model_id().flatten();
+        window.model = model;
         if let Ok(mut next) = self.next_poll.lock() {
             *next = Some(Instant::now() + POLL_PERIOD);
         }
@@ -257,24 +260,31 @@ impl PiUsagePoller {
         };
         // The window may have closed — or closed and reopened — while the
         // read was in flight: a stale reply is turn N's count arriving
-        // into turn N+1, and it publishes nowhere.
+        // into turn N+1, and it publishes nowhere. A switch committing
+        // during the round trip touches neither `open` nor `epoch`, so the
+        // model is compared too — re-read before the lock, never under it.
+        let Some(current) = self.current_model_id() else {
+            return;
+        };
         match self.window.lock() {
-            Ok(window) if window.open && window.epoch == epoch => {}
+            Ok(window) if window.open && window.epoch == epoch && current == model => {}
             _ => return,
         }
         self.publish(&runtime, model.as_deref(), reading);
     }
 
-    /// The pre-read window decision, under the window's lock: open, model
-    /// current, due — answering with the epoch and model the read binds
-    /// to. A switch closes the window right here; a gone catalog lock
-    /// holds the tick rather than firing it.
+    /// The pre-read window decision: open, model current, due — answering
+    /// with the epoch and model the read binds to. The model is read
+    /// before the window's lock (see the field's note). A switch observed
+    /// here closes the window; one committing during the round trip is
+    /// the post-read model check in `tick` to discard. A gone catalog
+    /// lock holds the tick rather than firing it.
     fn window_due(&self, now: Instant) -> Option<(u64, Option<String>)> {
+        let model = self.current_model_id()?;
         let mut window = self.window.lock().ok()?;
         if !window.open {
             return None;
         }
-        let model = self.current_model_id()?;
         if window.model != model {
             window.open = false;
             window.epoch += 1;
@@ -368,3 +378,7 @@ mod test_support;
 #[cfg(test)]
 #[path = "pi_usage_poller_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "pi_usage_poller_lock_tests.rs"]
+mod lock_tests;

@@ -147,13 +147,13 @@ pub(super) fn pi_turn_watch(
     TurnWatch::new(
         silence,
         Arc::new(move |runtime, _prompt, silence_bound| {
-            write_abort_frame(&stdin, &next_id);
-            // Past a kill the abort above is a no-op and so is the rest:
-            // settling and publishing on a gone child would write an expiry
-            // for a turn the kill already ended.
+            // Past a kill the run is already ended — the kill wrote its
+            // own abort — and settling on the gone child would publish an
+            // expiry for a turn the kill owns.
             if cancelled.load(Ordering::Acquire) {
                 return;
             }
+            write_abort_frame(&stdin, &next_id);
             // The expiry is the abort road: the poll window belongs to the
             // run just ended, and a silent pi will not close it itself.
             if let Some(usage) = &usage_poller {

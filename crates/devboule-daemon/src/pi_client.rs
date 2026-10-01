@@ -2408,16 +2408,18 @@ fn pi_delivery(catalog: &PiCatalog, model_id: Option<&str>) -> super::ImageDeliv
     }
 }
 
-/// Splits one request's attachments into inline image entries and path-line
-/// fallbacks. Every attachment is materialized first — exactly the call the
-/// shared `with_attachment_paths` makes — so a request that fails on its
-/// third attachment leaves nothing half-built.
-///
-/// `None` means the route did not run at all: no attachments, or a model whose
-/// `input` does not declare `image` (declared-without-image and not-declared
-/// are both no). When it does run it answers with the text as well, even if no
-/// raster became an entry, so the caller never walks the attachments a second
-/// time; with no entry the frame is the text-only `prompt`, byte for byte.
+/// Unknown is never yes: only a model that declared `image` frames bytes.
+fn static_route_runs(catalog: &PiCatalog, model_id: Option<&str>) -> bool {
+    pi_delivery(catalog, model_id) == super::ImageDelivery::StaticImageBlock
+}
+
+/// The routing decision against a catalog in hand — the tests' seam:
+/// production reads the verdict under the live catalog's lock and
+/// releases it before materialising (`PiStaticPrompt::plan_prompt`).
+/// `None` means the route did not run at all: no attachments, or a model
+/// whose `input` does not declare `image` (declared-without-image and
+/// not-declared are both no).
+#[cfg(test)]
 fn plan_pi_prompt(
     store: &crate::attachment_store::AttachmentStore,
     session_id: &str,
@@ -2429,8 +2431,28 @@ fn plan_pi_prompt(
     if attachments.is_empty() {
         return Ok(None);
     }
-    // Unknown is never yes: only a model that declared `image` frames bytes.
-    if pi_delivery(catalog, model_id) != super::ImageDelivery::StaticImageBlock {
+    if !static_route_runs(catalog, model_id) {
+        return Ok(None);
+    }
+    materialise_pi_prompt(store, session_id, text, attachments)
+}
+
+/// Splits one request's attachments into inline image entries and
+/// path-line fallbacks, answering with the text as well even when no
+/// raster became an entry, so the caller never walks the attachments a
+/// second time; with no entry the frame is the text-only `prompt`, byte
+/// for byte. Every attachment is materialized first — exactly the call
+/// the shared `with_attachment_paths` makes — so a request that fails on
+/// its third attachment leaves nothing half-built. It takes no catalog:
+/// the delivery verdict is the caller's, read under a lock this function
+/// must not hold across the file reads and base64 encodings below.
+fn materialise_pi_prompt(
+    store: &crate::attachment_store::AttachmentStore,
+    session_id: &str,
+    text: &str,
+    attachments: &[devboule_protocol::PromptAttachment],
+) -> Result<Option<PiPromptPlan>, devboule_protocol::WireError> {
+    if attachments.is_empty() {
         return Ok(None);
     }
     let session = store.session(session_id).ok_or_else(|| {
@@ -2516,22 +2538,21 @@ impl super::StaticImageSink for PiStaticPrompt {
         attachments: &[devboule_protocol::PromptAttachment],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
         // The catalog is read here, at prompt time: a model switched since
-        // spawn must not be answered for with the inputs of the model that was
-        // current then.
-        let catalog = self
-            .catalog
-            .lock()
-            .map_err(|_| WireError::new(ErrorCode::Io, "Pi model catalog is unavailable."))?;
-        let model_id = catalog.current_model_id.clone();
-        let Some(plan) = plan_pi_prompt(
-            store,
-            session_id,
-            text,
-            attachments,
-            &catalog,
-            model_id.as_deref(),
-        )?
-        else {
+        // spawn must not be answered for with the inputs of the model that
+        // was current then. The verdict is taken and the lock released
+        // before the materialise: it reads the stored files and base64
+        // encodes them, and the lock would pin the poller's ticks meanwhile.
+        let static_images = {
+            let catalog = self
+                .catalog
+                .lock()
+                .map_err(|_| WireError::new(ErrorCode::Io, "Pi model catalog is unavailable."))?;
+            static_route_runs(&catalog, catalog.current_model_id.as_deref())
+        };
+        if !static_images {
+            return Ok(None);
+        }
+        let Some(plan) = materialise_pi_prompt(store, session_id, text, attachments)? else {
             return Ok(None);
         };
         Ok(Some(Box::new(PiPlannedPrompt {
@@ -2677,10 +2698,14 @@ impl SessionKiller for PiKiller {
 
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
-            self.arbiter.note_killed();
             self.abort();
             self.permission_broker.close();
         }
+        // Parity with the ACP kill: the window stops by the kill's own
+        // word and the watch's tick thread and the poller wind down here,
+        // not only at the reader's EOF — the road a dead child's stdout
+        // need never take.
+        self.arbiter.shutdown();
         if let Ok(mut process) = self.process.lock() {
             let _ = process.kill();
         }

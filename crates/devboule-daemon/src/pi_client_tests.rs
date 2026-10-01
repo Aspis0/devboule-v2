@@ -1103,8 +1103,9 @@ fn absent_or_malformed_input_is_not_a_refusal() {
 }
 
 // --- image delivery (the static route) --------------------------------
-// The routing decision lives in `plan_pi_prompt`, tested here against
-// the attachment store directly, without spawning a child — the same
+// The routing decision lives in `PiStaticPrompt::plan_prompt`; these
+// tests drive it through the `plan_pi_prompt` seam against the
+// attachment store directly, without spawning a child — the same
 // arrangement the ACP sibling seam's tests use. The wire shape of one
 // entry is pinned against the measured `convertPromptInput` output
 // (`{"type":"image","data":...,"mimeType":"image/png"}`), and the
