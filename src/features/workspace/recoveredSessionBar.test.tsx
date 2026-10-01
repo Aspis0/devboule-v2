@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Session } from "../../types/ipc";
+import type { ResumeResult, Session } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   sessionResume: vi.fn(),
@@ -25,6 +25,11 @@ const sheets = [
   readFileSync(resolve(rootDir, "src/styles/global.css"), "utf8"),
   readFileSync(resolve(rootDir, "src/features/workspace/Workspace.css"), "utf8"),
 ];
+
+// Any ancestor wearing one of these would read the note or the button aloud;
+// the checks walk the whole chain, bar-external ancestors included.
+const LIVE_ANCESTOR =
+  '[role="status"],[role="alert"],[role="log"],[role="marquee"],[role="timer"],[aria-live]';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -49,9 +54,39 @@ function recoveredSession(overrides: Partial<Session> = {}): Session {
 async function renderBar(session: Session | null, onReopened = vi.fn()) {
   root = createRoot(container);
   await act(async () => {
-    root.render(<RecoveredSessionBar session={session} onReopened={onReopened} />);
+    root.render(
+      <RecoveredSessionBar
+        key={session === null ? "no-session" : session.id}
+        session={session}
+        onReopened={onReopened}
+      />,
+    );
   });
   return onReopened;
+}
+
+async function mountBar(session: Session, onResumeFailed?: () => void): Promise<void> {
+  root = createRoot(container);
+  await rerenderBar(session, onResumeFailed);
+}
+
+async function rerenderBar(session: Session | null, onResumeFailed?: () => void): Promise<void> {
+  await act(async () => {
+    root.render(
+      <RecoveredSessionBar
+        key={session === null ? "no-session" : session.id}
+        session={session}
+        onReopened={vi.fn()}
+        onResumeFailed={onResumeFailed}
+      />,
+    );
+  });
+}
+
+function verdictStatus(): Element {
+  const status = container.querySelector('[data-testid="recovered-verdict-status"]');
+  if (status === null) throw new Error("verdict status did not render");
+  return status;
 }
 
 beforeEach(() => {
@@ -67,7 +102,7 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   container.remove();
   removeCssProof();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 describe("RecoveredSessionBar", () => {
@@ -202,12 +237,459 @@ describe("RecoveredSessionBar", () => {
 });
 
 describe("the recovered bar's quiet state", () => {
-  it("is a neutral status note with a reachable Reopen, not the error block", async () => {
+  it("keeps the static note and the Reopen control outside every live region, in both branches", async () => {
+    const onReopened = await renderBar(recoveredSession({ resumable: true }));
+
+    const open = container.querySelector('[data-testid="recovered-reopen-bar"]');
+    if (open === null) throw new Error("reopen bar did not render");
+    expect(open.getAttribute("role")).toBeNull();
+    expect(open.getAttribute("aria-live")).toBeNull();
+    expect(open.textContent).toContain("Read-only transcript from the journal.");
+    expect(open.classList.contains("workspace-session-notice")).toBe(true);
+    const note = open.querySelector(".workspace-session-notice-text");
+    if (note === null) throw new Error("note did not render");
+    expect(note.closest(LIVE_ANCESTOR)).toBeNull();
+    const button = open.querySelector<HTMLButtonElement>("button");
+    if (button === null) throw new Error("Reopen did not render");
+    expect(button.closest(LIVE_ANCESTOR)).toBeNull();
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    const status = container.querySelector('[data-testid="recovered-verdict-status"]');
+    if (status === null) throw new Error("verdict status did not render");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.classList.contains("sr-only")).toBe(true);
+    expect(status.textContent).toBe("");
+
+    const unresumable = recoveredSession({ resumable: false });
+    await act(async () => {
+      root.render(
+        <RecoveredSessionBar key={unresumable.id} session={unresumable} onReopened={onReopened} />,
+      );
+    });
+
+    const closed = container.querySelector('[data-testid="recovered-unresumable"]');
+    if (closed === null) throw new Error("unresumable note did not render");
+    expect(closed.getAttribute("role")).toBeNull();
+    expect(closed.getAttribute("aria-live")).toBeNull();
+    expect(closed.textContent).toContain("Resume is not available for this session");
+    expect(closed.classList.contains("workspace-session-notice")).toBe(true);
+    const closedNote = closed.querySelector(".workspace-session-notice-text");
+    if (closedNote === null) throw new Error("unresumable note text did not render");
+    expect(closedNote.closest(LIVE_ANCESTOR)).toBeNull();
+    expect(container.querySelector('[data-testid="recovered-verdict-status"]')).toBe(status);
+    expect(status.textContent).toBe("");
+  });
+
+  it("speaks the not-resumable verdict once, after the click that asked for it", async () => {
+    const sentence = "This transcript is read-only. Resume is not available for this session.";
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    const onResumeFailed = vi.fn();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <RecoveredSessionBar
+          session={recoveredSession()}
+          onReopened={vi.fn()}
+          onResumeFailed={onResumeFailed}
+        />,
+      );
+    });
+    const status = container.querySelector('[data-testid="recovered-verdict-status"]');
+    if (status === null) throw new Error("verdict status did not render");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.textContent).toBe("");
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(onResumeFailed).toHaveBeenCalledTimes(1);
+    expect(status.textContent).toBe(sentence);
+
+    // The roster refresh lands with the retracted verdict.
+    await act(async () => {
+      root.render(
+        <RecoveredSessionBar
+          session={recoveredSession({ resumable: false })}
+          onReopened={vi.fn()}
+          onResumeFailed={onResumeFailed}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="recovered-verdict-status"]')).toBe(status);
+    // The visible note carries the sentence now, so the region steps aside.
+    expect(status.textContent).toBe("");
+  });
+
+  it("announces once: the region text asserted after each step of a failing click", async () => {
+    const sentence = "This transcript is read-only. Resume is not available for this session.";
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    const onResumeFailed = vi.fn();
+
+    await mountBar(recoveredSession(), onResumeFailed);
+    const status = verdictStatus();
+    expect(status.textContent).toBe("");
+    expect(container.querySelectorAll('[data-testid="recovered-verdict-status"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(verdictStatus()).toBe(status);
+    expect(status.textContent).toBe(sentence);
+
+    // The refreshed verdict lands: the visible note carries the sentence from
+    // here, so the region steps aside — one copy in the tree, no re-speech.
+    await rerenderBar(recoveredSession({ resumable: false }), onResumeFailed);
+    expect(status.textContent).toBe("");
+
+    // Another roster read with the same verdict: still empty.
+    await rerenderBar(recoveredSession({ resumable: false }), onResumeFailed);
+    expect(status.textContent).toBe("");
+  });
+
+  it("leaves a never-clicked non-resumable session's region empty when switching straight to it", async () => {
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    const onResumeFailed = vi.fn();
+    await mountBar(recoveredSession({ id: "rec-1" }), onResumeFailed);
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(onResumeFailed).toHaveBeenCalledTimes(1);
+
+    // Straight from the failed click to a session the daemon already calls
+    // not-resumable and this pane never clicked: its region must be empty.
+    await rerenderBar(recoveredSession({ id: "rec-2", resumable: false }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+    expect(container.querySelector('[data-testid="recovered-unresumable"]')).not.toBeNull();
+  });
+
+  it("says nothing after a successful resume when the verdict later flips", async () => {
+    vi.mocked(sessionResume).mockResolvedValueOnce({
+      type: "resumed",
+      session: recoveredSession({ id: "rec-1" }),
+    });
+    const onReopened = vi.fn();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <RecoveredSessionBar session={recoveredSession({ id: "rec-1" })} onReopened={onReopened} />,
+      );
+    });
+    expect(verdictStatus().textContent).toBe("");
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(onReopened).toHaveBeenCalledTimes(1);
+    expect(verdictStatus().textContent).toBe("");
+
+    // The daemon later re-recovers this session as not-resumable; with no
+    // failed click behind it, the region must stay empty.
+    await act(async () => {
+      root.render(
+        <RecoveredSessionBar
+          session={recoveredSession({ id: "rec-1", resumable: false })}
+          onReopened={onReopened}
+        />,
+      );
+    });
+    expect(verdictStatus().textContent).toBe("");
+  });
+
+  it("does not carry the error or the Reopening… state into another session", async () => {
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    await mountBar(recoveredSession({ id: "rec-1" }));
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(
+      container.querySelector('[data-testid="recovered-reopen-bar"] [role="alert"]')?.textContent,
+    ).toContain("gone");
+
+    await rerenderBar(recoveredSession({ id: "rec-2" }));
+    const onOther = container.querySelector('[data-testid="recovered-reopen-bar"]');
+    if (onOther === null) throw new Error("reopen bar did not render for the other session");
+    expect(onOther.classList.contains("workspace-session-error")).toBe(false);
+    expect(onOther.querySelector('[role="alert"]')).toBeNull();
+    const otherButton = onOther.querySelector<HTMLButtonElement>("button");
+    if (otherButton === null) throw new Error("Reopen button did not render");
+    expect(otherButton.textContent).toBe("Reopen");
+    expect(otherButton.disabled).toBe(false);
+
+    // A resume attempt still in flight must not follow the pane either.
+    vi.mocked(sessionResume).mockReturnValue(new Promise<ResumeResult>(() => {}));
+    await rerenderBar(recoveredSession({ id: "rec-1" }));
+    const pendingButton = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (pendingButton === null) throw new Error("Reopen button did not render");
+    await act(async () => pendingButton.click());
+    expect(pendingButton.textContent).toBe("Reopening…");
+    expect(pendingButton.disabled).toBe(true);
+
+    await rerenderBar(recoveredSession({ id: "rec-2" }));
+    const settledButton = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (settledButton === null) throw new Error("Reopen button did not render");
+    expect(settledButton.textContent).toBe("Reopen");
+    expect(settledButton.disabled).toBe(false);
+  });
+
+  it("empties the region between two identical failures so the second is a new announcement", async () => {
+    const sentence = "This transcript is read-only. Resume is not available for this session.";
+    let failFirst!: (result: ResumeResult) => void;
+    let failSecond!: (result: ResumeResult) => void;
+    vi.mocked(sessionResume)
+      .mockReturnValueOnce(
+        new Promise<ResumeResult>((resolve) => {
+          failFirst = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<ResumeResult>((resolve) => {
+          failSecond = resolve;
+        }),
+      );
+    const onResumeFailed = vi.fn();
+    await mountBar(recoveredSession(), onResumeFailed);
+
+    const clickReopen = async (): Promise<void> => {
+      const button = container.querySelector<HTMLButtonElement>(
+        '[data-testid="recovered-reopen-bar"] button',
+      );
+      if (button === null) throw new Error("Reopen button did not render");
+      await act(async () => button.click());
+    };
+
+    await clickReopen();
+    await act(async () => {
+      failFirst({ type: "failed", message: "gone" });
+    });
+    expect(verdictStatus().textContent).toBe(sentence);
+
+    // The retry begins: the region empties so the next failure transitions.
+    await clickReopen();
+    expect(verdictStatus().textContent).toBe("");
+    await act(async () => {
+      failSecond({ type: "failed", message: "gone" });
+    });
+    expect(verdictStatus().textContent).toBe(sentence);
+  });
+
+  it("states the read-only sentence exactly once after the roster flips the verdict", async () => {
+    const sentence = "This transcript is read-only. Resume is not available for this session.";
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    const onResumeFailed = vi.fn();
+    await mountBar(recoveredSession(), onResumeFailed);
+    const beforeFlip = verdictStatus();
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(beforeFlip.textContent).toBe(sentence);
+
+    await rerenderBar(recoveredSession({ resumable: false }), onResumeFailed);
+    const occurrences = (container.textContent ?? "").split(sentence).length - 1;
+    expect(occurrences).toBe(1);
+    expect(verdictStatus()).toBe(beforeFlip);
+    expect(beforeFlip.textContent).toBe("");
+  });
+
+  it("keeps a resume that settles after a session switch from acting on the new pane", async () => {
+    const onReopened = vi.fn();
+    const onResumeFailed = vi.fn();
+    let succeed!: (result: ResumeResult) => void;
+    let fail!: (result: ResumeResult) => void;
+    vi.mocked(sessionResume).mockReturnValueOnce(
+      new Promise<ResumeResult>((resolve) => {
+        succeed = resolve;
+      }),
+    );
+
+    const showSession = async (id: string): Promise<void> => {
+      await act(async () => {
+        root.render(
+          <RecoveredSessionBar
+            key={id}
+            session={recoveredSession({ id })}
+            onReopened={onReopened}
+            onResumeFailed={onResumeFailed}
+          />,
+        );
+      });
+    };
+    const clickReopen = async (): Promise<void> => {
+      const button = container.querySelector<HTMLButtonElement>(
+        '[data-testid="recovered-reopen-bar"] button',
+      );
+      if (button === null) throw new Error("Reopen button did not render");
+      await act(async () => button.click());
+    };
+
+    root = createRoot(container);
+    await showSession("rec-1");
+    await clickReopen();
+
+    // The pane moves while the resume is in flight.
+    await showSession("rec-2");
+    await act(async () => {
+      succeed({ type: "resumed", session: recoveredSession({ id: "rec-1" }) });
+    });
+    expect(onReopened).not.toHaveBeenCalled();
+
+    // The same for a failure: the roster refresh still runs, nothing else does.
+    vi.mocked(sessionResume).mockReturnValueOnce(
+      new Promise<ResumeResult>((resolve) => {
+        fail = resolve;
+      }),
+    );
+    await clickReopen();
+    await showSession("rec-3");
+    await act(async () => {
+      fail({ type: "failed", message: "gone" });
+    });
+    expect(onResumeFailed).toHaveBeenCalledTimes(1);
+    expect(onReopened).not.toHaveBeenCalled();
+    const bar = container.querySelector('[data-testid="recovered-reopen-bar"]');
+    expect(bar?.querySelector('[role="alert"]')).toBeNull();
+    expect(verdictStatus().textContent).toBe("");
+  });
+
+  it("does not re-speak a stale verdict after switching away and back", async () => {
+    const sentence = "This transcript is read-only. Resume is not available for this session.";
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    const onResumeFailed = vi.fn();
+    await mountBar(recoveredSession({ id: "rec-1" }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(onResumeFailed).toHaveBeenCalledTimes(1);
+    expect(verdictStatus().textContent).toBe(sentence);
+
+    await rerenderBar(recoveredSession({ id: "rec-2" }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+
+    await rerenderBar(recoveredSession({ id: "rec-1", resumable: false }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+  });
+
+  it("adds no announcement when the verdict changes without a click: re-flip and second session", async () => {
+    const sentence = "This transcript is read-only. Resume is not available for this session.";
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    const onResumeFailed = vi.fn();
+    await mountBar(recoveredSession(), onResumeFailed);
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(verdictStatus().textContent).toBe(sentence);
+
+    // The refresh retracts the verdict; the visible note carries the sentence
+    // from here on, and the region stays empty through a repair and a re-flip
+    // — nothing speaks without a click.
+    await rerenderBar(recoveredSession({ resumable: false }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+    await rerenderBar(recoveredSession({ resumable: true }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+    await rerenderBar(recoveredSession({ resumable: false }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+
+    // A second session, never clicked, whose verdict flips on its own: silent.
+    await rerenderBar(recoveredSession({ id: "rec-2" }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+    await rerenderBar(recoveredSession({ id: "rec-2", resumable: false }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+  });
+
+  it.each([true, false])(
+    "drops the error and the announcement at every verdict flip, starting resumable=%s",
+    async (start) => {
+      const sentence = "This transcript is read-only. Resume is not available for this session.";
+      vi.mocked(sessionResume).mockResolvedValue({ type: "failed", message: "gone" });
+      const alerts = (): number => container.querySelectorAll('[role="alert"]').length;
+      const failReopen = async (): Promise<void> => {
+        const button = container.querySelector<HTMLButtonElement>(
+          '[data-testid="recovered-reopen-bar"] button',
+        );
+        if (button === null) throw new Error("Reopen button did not render");
+        await act(async () => button.click());
+        expect(alerts()).toBe(1);
+        expect(verdictStatus().textContent).toBe(sentence);
+      };
+      const expectOnlyTheVerdict = (resumable: boolean): void => {
+        expect(alerts()).toBe(0);
+        expect(verdictStatus().textContent).toBe("");
+        if (resumable) {
+          const bar = container.querySelector('[data-testid="recovered-reopen-bar"]');
+          expect(bar?.className).toBe("workspace-session-notice workspace-session-recovered");
+          expect(bar?.textContent).toBe("Read-only transcript from the journal.Reopen");
+        } else {
+          const note = container.querySelector('[data-testid="recovered-unresumable"]');
+          expect(note?.textContent).toBe(sentence);
+          expect((container.textContent ?? "").split(sentence)).toHaveLength(2);
+        }
+      };
+
+      await mountBar(recoveredSession({ resumable: start }), vi.fn());
+      expectOnlyTheVerdict(start);
+      let resumable = start;
+      for (let flip = 0; flip < 3; flip++) {
+        if (resumable) await failReopen();
+        resumable = !resumable;
+        await rerenderBar(recoveredSession({ resumable }), vi.fn());
+        expectOnlyTheVerdict(resumable);
+      }
+    },
+  );
+
+  it("drops the armed outcome while the bar shows no session, and stays silent on return", async () => {
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
+    const onResumeFailed = vi.fn();
+    await mountBar(recoveredSession({ id: "rec-1" }), onResumeFailed);
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(onResumeFailed).toHaveBeenCalledTimes(1);
+
+    await rerenderBar(null, onResumeFailed);
+    expect(container.querySelector('[data-testid="recovered-verdict-status"]')).toBeNull();
+
+    await rerenderBar(recoveredSession({ id: "rec-1", resumable: false }), onResumeFailed);
+    expect(verdictStatus().textContent).toBe("");
+  });
+
+  it("is a neutral note with a reachable Reopen, not the error block", async () => {
     await renderBar(recoveredSession({ resumable: true }));
 
     const bar = container.querySelector('[data-testid="recovered-reopen-bar"]');
     if (bar === null) throw new Error("reopen bar did not render");
-    expect(bar.getAttribute("role")).toBe("status");
+    expect(bar.getAttribute("role")).toBeNull();
+    expect(bar.getAttribute("aria-live")).toBeNull();
     expect(bar.classList.contains("workspace-session-recovered")).toBe(true);
     expect(bar.classList.contains("workspace-session-error")).toBe(false);
     expect(bar.textContent).toContain("Read-only transcript from the journal.");

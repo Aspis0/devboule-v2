@@ -153,7 +153,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root?.unmount());
   container.remove();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 describe("Workspace recovered path", () => {
@@ -237,5 +237,53 @@ describe("Workspace recovered path", () => {
 
     expect(sessionResume).toHaveBeenCalledTimes(1);
     expect(sessionResume).toHaveBeenCalledWith("rec-1");
+  });
+
+  it("keeps a failed reopen's error and announcement behind when the pane moves to another session", async () => {
+    const sentence = "This transcript is read-only. Resume is not available for this session.";
+    vi.mocked(sessionsList).mockResolvedValue([
+      recoveredAgent("rec-1", "first chat", true),
+      recoveredAgent("rec-2", "second chat", true),
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const reopen = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (reopen === null) throw new Error("Reopen button did not render for the first session");
+    vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "session vanished" });
+    await act(async () => reopen.click());
+
+    // The first session carries the failure: alert in the bar, verdict spoken.
+    expect(
+      container.querySelector('[data-testid="recovered-reopen-bar"] [role="alert"]')?.textContent,
+    ).toContain("session vanished");
+    expect(container.querySelector('[data-testid="recovered-verdict-status"]')?.textContent).toBe(
+      sentence,
+    );
+
+    // One root, one pane switch: the second session's bar must be pristine,
+    // and the switch must leave exactly one bar behind for the new pane.
+    const secondTab = container.querySelector<HTMLButtonElement>("#workspace-session-tab-rec-2");
+    if (secondTab === null) throw new Error("second session tab did not render");
+    await act(async () => secondTab.click());
+
+    const bars = container.querySelectorAll('[data-testid="recovered-reopen-bar"]');
+    expect(bars).toHaveLength(1);
+    const bar = bars[0];
+    expect(bar.querySelector('[role="alert"]')).toBeNull();
+    expect(bar.classList.contains("workspace-session-error")).toBe(false);
+    expect(container.querySelector('[data-testid="recovered-verdict-status"]')?.textContent).toBe(
+      "",
+    );
+    const button = bar.querySelector<HTMLButtonElement>("button");
+    if (button === null) throw new Error("Reopen button did not render for the second session");
+    expect(button.textContent).toBe("Reopen");
+    expect(button.disabled).toBe(false);
   });
 });

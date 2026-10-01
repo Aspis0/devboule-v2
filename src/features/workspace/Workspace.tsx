@@ -1596,6 +1596,7 @@ export function Workspace({
         ) : paneSession !== null ? (
           <>
             <RecoveredSessionBar
+              key={`recovered-bar-${paneSession.id}`}
               session={paneSession}
               onReopened={handleReopenSession}
               onResumeFailed={handleResumeFailed}
