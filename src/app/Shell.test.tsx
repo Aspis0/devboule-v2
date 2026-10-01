@@ -85,6 +85,56 @@ describe("Shell crescent", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows the hint curve while closed and hides it while open", async () => {
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const hint = container.querySelector(".crescent-hint");
+    if (sliver === null || hint === null) throw new Error("crescent did not render");
+    expect(hint.classList.contains("crescent-hint-hidden")).toBe(false);
+
+    await act(async () => sliver.focus());
+    expect(sliver.getAttribute("aria-expanded")).toBe("true");
+    expect(hint.classList.contains("crescent-hint-hidden")).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+  it("covers the hint curve's full width with the trigger hit box", async () => {
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLElement>(".crescent-sliver");
+    const path = container.querySelector(".crescent-hint path");
+    if (sliver === null || path === null) throw new Error("crescent did not render");
+    const boxLeft = Number.parseFloat(sliver.style.left);
+    const boxWidth = Number.parseFloat(sliver.style.width);
+    const curveX = path
+      .getAttribute("d")
+      ?.match(/-?\d+(?:\.\d+)?/g)
+      ?.map(Number);
+    if (!Number.isFinite(boxLeft) || !Number.isFinite(boxWidth)) {
+      throw new Error("trigger hit box is unreadable");
+    }
+    if (curveX === undefined || curveX.length < 4) {
+      throw new Error("hint path has no endpoints");
+    }
+    // First and last x: the move-to and the arc's end. The arc is the minor one
+    // (large-arc flag 0, chord far below the diameter), so its x-extremes are these endpoints.
+    const curveMin = Math.min(curveX[0], curveX[curveX.length - 2]);
+    const curveMax = Math.max(curveX[0], curveX[curveX.length - 2]);
+    expect(boxLeft).toBeLessThanOrEqual(curveMin);
+    expect(boxLeft + boxWidth).toBeGreaterThanOrEqual(curveMax);
+    await act(async () => root.unmount());
+  });
+
+  it("carries no inner element that could paint a second mark", async () => {
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector(".crescent-sliver");
+    if (sliver === null) throw new Error("crescent did not render");
+    expect(sliver.children.length).toBe(0);
+    await act(async () => root.unmount());
+  });
+
   it("uses the crescent plus to choose a Polis folder without selecting the surface", async () => {
     const selectSurface = vi.fn();
     useAppStore.setState({
@@ -226,7 +276,7 @@ describe("Shell crescent", () => {
     });
   });
 
-  it("a click on the line opens the nav when no hover preceded it", async () => {
+  it("a click on the sliver opens the nav when no hover preceded it", async () => {
     const { container, root } = await renderShell();
 
     const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");

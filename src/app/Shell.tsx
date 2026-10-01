@@ -7,7 +7,13 @@ import { isImeComposition } from "../lib/imeComposition";
 import { useAppStore } from "../store/appStore";
 import { ErrorText } from "../components/ErrorText";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
-import { CRESCENT_LABEL_MAX_WIDTH, CRESCENT_VISIBLE_COUNT, layoutCrescent } from "./crescentLayout";
+import {
+  CRESCENT_HINT_END_X,
+  CRESCENT_HINT_START_X,
+  CRESCENT_LABEL_MAX_WIDTH,
+  CRESCENT_VISIBLE_COUNT,
+  layoutCrescent,
+} from "./crescentLayout";
 
 interface ShellProps {
   activeSurface: SurfaceKey;
@@ -238,8 +244,14 @@ export function Shell({ activeSurface, children }: ShellProps) {
           aria-disabled={modalOpen || undefined}
           aria-expanded={navOpen}
           aria-controls="devboule-crescent-navigation"
+          // The hit box is the hint curve's x-range from the same constants that
+          // draw it below: every visible pixel of the cue opens the nav.
+          style={{
+            left: CRESCENT_HINT_START_X,
+            width: CRESCENT_HINT_END_X - CRESCENT_HINT_START_X,
+          }}
           onPointerEnter={openNav}
-          // A click on the line opens the nav or keeps whatever the hover just
+          // A click on the sliver opens the nav or keeps whatever the hover just
           // opened open — it never toggles shut (the owner's measured defect).
           onClick={openNav}
           onFocus={() => {
@@ -250,7 +262,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
             openNav();
           }}
           onKeyDown={(event) => {
-            // A modal holds the attention: the line hands the key to the
+            // A modal holds the attention: the sliver hands the key to the
             // focused control instead of swallowing it.
             if (modalOpen) return;
             if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown") {
@@ -393,7 +405,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
           viewBox="0 0 880 40"
           aria-hidden="true"
         >
-          <path d="M 340 14 A 410 410 0 0 0 600 14" />
+          <path d={`M ${CRESCENT_HINT_START_X} 14 A 410 410 0 0 0 ${CRESCENT_HINT_END_X} 14`} />
         </svg>
       </div>
     </main>

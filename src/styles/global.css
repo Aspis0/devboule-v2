@@ -313,12 +313,14 @@ button:focus-visible {
   pointer-events: none;
 }
 
+/* The trigger is a transparent hit target: the hint curve below is the only
+   closed-state mark, and keyboard focus keeps the global focus-visible ring. */
 .crescent-sliver {
   position: absolute;
   top: 0;
-  left: 310px;
-  width: 260px;
-  /* The band's own token, so the line's hit area and the space reserved for it
+  /* No left/width here: the inline style shares the hint endpoints with the
+     curve, so the whole cue stays hit. */
+  /* The band's own token, so the trigger's hit area and the space reserved for it
      cannot drift apart. */
   height: var(--crescent-band);
   padding: 0;
@@ -327,24 +329,10 @@ button:focus-visible {
   background: transparent;
 }
 
-/* A modal is up: the line looks unavailable rather than broken. */
+/* A modal is up: the trigger looks unavailable rather than broken. */
 .crescent-sliver-blocked {
   cursor: default;
   opacity: 0.45;
-}
-
-.crescent-sliver::after {
-  position: absolute;
-  top: 5px;
-  right: 0;
-  left: 0;
-  height: 3px;
-  content: "";
-  /* The line is the crescent's whole closed-state affordance: --muted reads
-     on the sand and on the near-black, where --line-strong vanished. */
-  background: var(--muted);
-  border-radius: 999px;
-  opacity: 0.8;
 }
 
 .crescent-nav {

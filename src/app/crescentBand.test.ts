@@ -7,8 +7,9 @@ import { describe, expect, it } from "vitest";
  * and the overlap would pass unmeasured.
  *
  * What it keeps apart is the defect's own pair — the sliver's hit box and the
- * line it draws against the page layer every surface is laid out in. Every
- * surface root is a flex child that clips to its own box (`overflow: hidden`
+ * hint curve it overlaps against the page layer every surface is laid out in.
+ * The sliver draws no ink of its own; the hint curve is the only closed-state
+ * mark. Every surface root is a flex child that clips to its own box (`overflow: hidden`
  * on `.surface-card` and `.workspace-screen`), so the page layer's top edge is
  * the highest pixel the tab strip, or anything else inside a surface, can
  * paint: it is measured here, and Workspace.css is not read — another branch
@@ -60,7 +61,8 @@ interface Band {
   bottom: number;
   sliverTop: number;
   sliverBottom: number;
-  inkBottom: number;
+  /** The hint curve's box bottom: the cue's region must reach through the band. */
+  hintBottom: number;
   surfaceTop: number;
 }
 
@@ -73,9 +75,9 @@ interface Band {
 function band(sheet: string, tokens: string): Band {
   const shellTop = pixels(rule(sheet, ".crescent-shell"), "top", tokens);
   const sliverDeclarations = rule(sheet, ".crescent-sliver");
-  const inkDeclarations = rule(sheet, ".crescent-sliver::after");
+  const hintDeclarations = rule(sheet, ".crescent-hint");
   const sliverTop = shellTop + pixels(sliverDeclarations, "top", tokens);
-  const inkTop = sliverTop + pixels(inkDeclarations, "top", tokens);
+  const hintTop = shellTop + pixels(hintDeclarations, "top", tokens);
 
   const pageLayer = rule(sheet, ".page-layer");
   const bottom = length(rule(sheet, ".app-shell"), "padding-top", tokens) ?? 0;
@@ -91,21 +93,24 @@ function band(sheet: string, tokens: string): Band {
     bottom,
     sliverTop,
     sliverBottom: sliverTop + pixels(sliverDeclarations, "height", tokens),
-    inkBottom: inkTop + pixels(inkDeclarations, "height", tokens),
+    hintBottom: hintTop + pixels(hintDeclarations, "height", tokens),
     surfaceTop,
   };
 }
 
 function violations(edges: Band): string[] {
   const problems: string[] = [];
+  if (edges.bottom <= 0) {
+    problems.push(`the band is ${edges.bottom}px, leaving no room for the trigger`);
+  }
   if (edges.sliverTop < 0) {
     problems.push(`the sliver starts at ${edges.sliverTop}px, above the window's edge`);
   }
   if (edges.sliverBottom > edges.bottom) {
     problems.push(`the sliver ends at ${edges.sliverBottom}px, past the band's ${edges.bottom}px`);
   }
-  if (edges.inkBottom > edges.bottom) {
-    problems.push(`the line ends at ${edges.inkBottom}px, past the band's ${edges.bottom}px`);
+  if (edges.hintBottom < edges.bottom) {
+    problems.push(`the hint ends at ${edges.hintBottom}px, short of the band's ${edges.bottom}px`);
   }
   if (edges.surfaceTop < edges.bottom) {
     problems.push(
@@ -152,10 +157,10 @@ const MUTATIONS: Mutation[] = [
     to: ".page-layer {\n  margin-top: -13px;\n  position: relative;",
   },
   {
-    name: "the line is drawn below the band",
+    name: "the hint is lifted clear of the band",
     sheet: "shell",
-    from: "\n  top: 5px;\n",
-    to: "\n  top: 12px;\n",
+    from: "\n  top: -26px;\n",
+    to: "\n  top: -40px;\n",
   },
 ];
 
@@ -169,9 +174,69 @@ function apply(mutation: Mutation, sheet: string, tokens: string): [string, stri
   return mutation.sheet === "shell" ? [replaced, tokens] : [sheet, replaced];
 }
 
+/** Paint declarations: anything here on the trigger would be a second closed-state mark. Outline is absent on purpose — the keyboard focus ring. */
+const SLIVER_PAINT = new Set([
+  "background",
+  "background-color",
+  "border",
+  "border-color",
+  "border-top-color",
+  "border-right-color",
+  "border-bottom-color",
+  "border-left-color",
+  "box-shadow",
+  "stroke",
+  "fill",
+]);
+
+/**
+ * Paint on the trigger, as `selector → property: value` lines: the bare button, its blocked
+ * state, and every pseudo-element it could grow. Bare `transparent`/`none`/`0` values paint
+ * nothing and stay silent. Single-colon interaction states are out of scope: the claim is the
+ * closed band at rest.
+ */
+function sliverInk(sheet: string): string[] {
+  const found: string[] = [];
+  const source = sheet.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const match of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = match[1].split(",").map((part) => part.trim());
+    const trigger = selectors.some(
+      (selector) =>
+        selector === ".crescent-sliver" ||
+        selector === ".crescent-sliver-blocked" ||
+        selector.startsWith(".crescent-sliver::"),
+    );
+    if (!trigger) continue;
+    for (const declarationText of match[2].split(";")) {
+      const colon = declarationText.indexOf(":");
+      if (colon === -1) continue;
+      const property = declarationText.slice(0, colon).trim();
+      const value = declarationText.slice(colon + 1).trim();
+      if (!SLIVER_PAINT.has(property)) continue;
+      if (value === "transparent" || value === "none" || value === "0") continue;
+      found.push(`${selectors.join(", ")} → ${property}: ${value}`);
+    }
+  }
+  return found;
+}
+
 describe("the band that holds the crescent's sliver", () => {
-  it("keeps the sliver and its line inside it, with every surface below", () => {
+  it("keeps the sliver inside it, the hint reaching through it, every surface below", () => {
     expect(violations(band(SHEET, TOKENS))).toEqual([]);
+  });
+
+  it("draws exactly one closed-state mark: the hint curve, never the sliver", () => {
+    expect(sliverInk(SHEET)).toEqual([]);
+    const before = `${SHEET}.crescent-sliver::before{content:"";background:red;}`;
+    const after = `${SHEET}.crescent-sliver::after{content:"";background:red;}`;
+    const silent = `${SHEET}.crescent-sliver::after{content:"";}`;
+    expect(sliverInk(before)).not.toEqual([]);
+    expect(sliverInk(after)).not.toEqual([]);
+    expect(sliverInk(silent)).toEqual([]);
+    const hint = rule(SHEET, ".crescent-hint");
+    expect(declaration(hint, "opacity")).not.toBe("0");
+    expect(rule(SHEET, ".crescent-hint path")).toContain("stroke: var(--muted)");
+    expect(declaration(rule(SHEET, ".crescent-hint-hidden"), "opacity")).toBe("0");
   });
 
   for (const mutation of MUTATIONS) {

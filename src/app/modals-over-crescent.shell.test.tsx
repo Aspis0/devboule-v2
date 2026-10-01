@@ -51,7 +51,7 @@ describe("the shell with a modal open (real modal, real shell)", () => {
     await act(async () => root.unmount());
   });
 
-  it("a click on the line does not open the nav while a modal is open", async () => {
+  it("a click on the sliver does not open the nav while a modal is open", async () => {
     const { container, root } = await mount(<ShellWithProjectDialog />);
 
     const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
@@ -119,14 +119,14 @@ describe("the shell with a modal open (real modal, real shell)", () => {
     await act(async () => root.unmount());
   });
 
-  it("the line says it is unavailable while a modal is up", async () => {
+  it("the sliver says it is unavailable while a modal is up", async () => {
     const { container, root } = await mount(<ShellWithProjectDialog />);
     const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
     if (sliver === null) throw new Error("crescent sliver did not render");
     // Focusable (so the state stays perceivable) but named as unavailable.
     expect(sliver.getAttribute("aria-disabled")).toBe("true");
 
-    // The modal's own Escape clears it, and the line is available again.
+    // The modal's own Escape clears it, and the sliver is available again.
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
     });

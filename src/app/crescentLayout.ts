@@ -21,6 +21,10 @@ export const CRESCENT_ARC_START_X = 240.8;
 export const CRESCENT_ARC_END_X = 699.2;
 export const CRESCENT_ARC_Y = 21.9;
 export const CRESCENT_ARC_RADIUS = 410;
+// The closed-state hint curve's x-range in shell coordinates: the hint path and
+// the trigger's hit box share this pair, so the whole cue opens the nav.
+export const CRESCENT_HINT_START_X = 340;
+export const CRESCENT_HINT_END_X = 600;
 export const CRESCENT_VISIBLE_COUNT = 6;
 
 const ARC_CENTER_X = (CRESCENT_ARC_START_X + CRESCENT_ARC_END_X) / 2;
