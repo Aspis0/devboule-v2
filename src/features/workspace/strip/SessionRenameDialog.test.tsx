@@ -348,6 +348,28 @@ describe("SessionRenameDialog", () => {
     await probe.unmount();
   });
 
+  it("shows the mapped sentence for a daemon refusal, with its words in the detail only", async () => {
+    invokeMock.mockRejectedValue({
+      code: "journal",
+      message: "journal is unavailable: the store is locked",
+    });
+    const probe = renderProbe();
+    await probe.mount();
+    probe.store.setRename({ sessionId: "s.4242.7", title: "worker one" });
+    await act(async () => {});
+    typeIn(input(), "worker two");
+    await act(async () => {
+      pressKey(input(), "Enter");
+    });
+    const alert = dialog().querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Saved history could not be read or written.");
+    expect(alert?.querySelector(".error-detail-sr-only")?.textContent).toBe(
+      "journal is unavailable: the store is locked",
+    );
+    expect(input().value).toBe("worker two");
+    await probe.unmount();
+  });
+
   it("returns focus to the trigger after a save", async () => {
     const probe = renderProbe();
     await probe.mount();

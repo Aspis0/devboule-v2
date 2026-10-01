@@ -19,6 +19,10 @@ import { headerMenu, type HeaderMenuSeam } from "../workspace/paneHeader/paneHea
 // itself — the same beat MessageCopyButton's copy chip uses.
 const COPY_FAILED_LABEL_MS = 1500;
 
+/** The node the banner's Details control owns; constant so `aria-controls`
+ * resolves before the disclosure is opened. */
+const BANNER_DETAIL_ID = "terminal-banner-detail";
+
 interface TerminalSurfaceProps {
   workspaceId: string | null;
   sessionId: string;
@@ -151,6 +155,10 @@ export const TerminalSurface = memo(function TerminalSurface({
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
   const [banner, setBanner] = useState<TerminalBanner>(null);
+  // The disclosure is open for exactly the banner object it was opened on:
+  // a new error is a new banner, so it arrives collapsed with no effect to
+  // reset it.
+  const [openDetailFor, setOpenDetailFor] = useState<TerminalBanner>(null);
   const [ctrlCArmed, setCtrlCArmed] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const copyFailedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -300,10 +308,13 @@ export const TerminalSurface = memo(function TerminalSurface({
   // close-tab action below) lives in the pane's bottom banner only, never
   // repeated in the header — which now carries the shared word beside the dot.
   const ended = banner?.kind === "ended";
+  // The daemon's own words, for the disclosure beside the sentence — never
+  // in the status region, a title or a described-by.
   const bannerDetail =
     banner !== null && (banner.kind === "error" || banner.kind === "ended")
-      ? banner.detail
-      : undefined;
+      ? (banner.detail ?? null)
+      : null;
+  const detailsOpen = banner !== null && openDetailFor === banner;
 
   return (
     <div id={id} className="workspace-terminal-shell" role="tabpanel" aria-label="Terminal output">
@@ -355,13 +366,12 @@ export const TerminalSurface = memo(function TerminalSurface({
         <div ref={hostRef} className="workspace-terminal-host" aria-label="Interactive terminal" />
       </div>
       {message !== null ? (
-        <div
-          className="workspace-terminal-banner"
-          role="status"
-          title={bannerDetail}
-          aria-describedby={bannerDetail ? "terminal-banner-detail" : undefined}
-        >
-          {message}
+        <div className="workspace-terminal-banner">
+          {/* The live region says the sentence and nothing else; the raw
+              words sit outside it, behind the control below. */}
+          <span className="workspace-terminal-banner-status" role="status">
+            {message}
+          </span>
           {ended ? (
             <button
               type="button"
@@ -371,10 +381,21 @@ export const TerminalSurface = memo(function TerminalSurface({
               Close tab
             </button>
           ) : null}
-          {bannerDetail ? (
-            <span id="terminal-banner-detail" className="error-detail-sr-only">
-              {bannerDetail}
-            </span>
+          {bannerDetail !== null ? (
+            <>
+              <button
+                type="button"
+                className="workspace-secondary-action workspace-terminal-banner-details"
+                aria-expanded={detailsOpen}
+                aria-controls={BANNER_DETAIL_ID}
+                onClick={() => setOpenDetailFor((current) => (current === banner ? null : banner))}
+              >
+                Details
+              </button>
+              <span id={BANNER_DETAIL_ID} className="workspace-terminal-banner-detail">
+                {detailsOpen ? bannerDetail : null}
+              </span>
+            </>
           ) : null}
         </div>
       ) : null}

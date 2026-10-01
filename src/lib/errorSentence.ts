@@ -55,14 +55,27 @@ const NAMED_PROVIDER_LOST =
   /(was not found on PATH|has no command to spawn|is not an ACP agent|resolved to an empty command)/;
 
 /**
- * Only the texts about THIS view's attachment: the subscription refusals,
- * the bridge's bookkeeping loss, and the pre-flight that demands a fresh
- * attach. "The calling session is not registered on this daemon"
- * (session.rs:2456 and the child permission/profile paths) is a validity
- * refusal about a DIFFERENT session and must not match — it takes the
- * invalid_request row.
+ * THIS view's attachment bookkeeping lost — the bridge's own two texts,
+ * `src-tauri/src/client/mod.rs`: "session attachment is not registered"
+ * (:705, :1051, :1072, :1126, :1194, :1261) and "session attachment is no
+ * longer registered" (:552). Reopening the tab rebuilds that attachment.
+ *
+ * Deliberately NOT a bare "not attached": the daemon's own texts describe
+ * subscription state, not this view's bookkeeping, so the reopen advice
+ * would be true of a different failure.
+ * - "Session is not attached; attach before sending session commands."
+ *   (crates/devboule-daemon/src/client.rs:1824, Protocol → internal);
+ * - "Session is not attached to this subscription."
+ *   (crates/devboule-daemon/src/session_runtime.rs:3295, :3386, :3407,
+ *   invalid_request);
+ * - "session is not attached" (crates/devboule-daemon/src/client.rs:415).
+ * Each takes its code row with the raw text in `detail`. And "the calling
+ * session is not registered on this daemon"
+ * (crates/devboule-daemon/src/session.rs:2909 and the child command,
+ * permission and profile paths) is a validity refusal about a DIFFERENT
+ * session — also its own row, never this one.
  */
-const LOST_VIEW = /not attached|attachment is (not|no longer) registered/;
+const LOST_VIEW = /session attachment is (?:not|no longer) registered/;
 
 /**
  * A workspace birth that failed AFTER the checkout existed — both branches
@@ -89,6 +102,15 @@ const WORKSPACE_BIRTH_FAILED = /leftover checkout at |^Could not add git worktre
  * own row, which claims only that the daemon went wrong inside.
  */
 const PROCESS_START_FAILED = /^Could not contain |process job|^Could not start the terminal shell/;
+
+/**
+ * The background service cannot be reached: the supervisor's silence report
+ * (`client/mod.rs`, `unresponsive_status`) and the two short tokens the app
+ * itself raises when the status poll fails or times out
+ * (`settingsDaemon.ts`). One situation, one sentence.
+ */
+const DAEMON_UNREACHABLE =
+  /has not answered status checks|\bdaemon unreachable\b|daemon_status timed out/;
 
 function providerName(message: string): string | null {
   const quoted = /'([^']+)'/.exec(message);
@@ -128,21 +150,35 @@ function shapeSentence(message: string): string | null {
     const target = message.includes("terminal") ? "terminal" : "agent";
     return `The system could not start the ${target}.`;
   }
+  if (DAEMON_UNREACHABLE.test(message)) {
+    return "Devboule is having trouble reaching its background service. Try reconnecting or restart Devboule.";
+  }
+  return null;
+}
+
+/** The message text on a cause, whatever shape the cause arrived in. */
+function rawMessage(error: unknown): string | null {
+  if (isCommandError(error)) return error.message;
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
   return null;
 }
 
 /**
  * The sentence and demoted detail for anything a command rejected. Daemon
- * rejections (the `{ code, message }` shape Tauri hands back) always map:
- * their raw text lands in `detail` only. Causes the app authored itself — a
- * thrown `Error`, a string — already carry human words, so those stand as the
- * sentence.
+ * rejections (the `{ code, message }` shape Tauri hands back) always map, and
+ * so does any raw cause whose text one of the shape arms claims: the bridge
+ * and the supervisor also reject with a plain `Error` or a string, and their
+ * words are demoted to `detail` exactly like a wire message. Causes the app
+ * authored itself — a thrown `Error`, a string no arm claims — already carry
+ * human words, so those stand as the sentence with nothing to hide.
  */
 export function errorSentence(error: unknown): ErrorSentence {
   // Tauri rejects with plain { code, message } WireErrors as well as Errors;
   // String(error) would hide the daemon's message behind [object Object].
+  const raw = rawMessage(error);
+  const shaped = raw === null ? null : shapeSentence(raw);
   if (isCommandError(error)) {
-    const shaped = shapeSentence(error.message);
     // A newer daemon can send a code this build's union lacks; `Object.hasOwn`
     // keeps that on the visible fallback instead of indexing the table into a
     // blank sentence.
@@ -153,6 +189,9 @@ export function errorSentence(error: unknown): ErrorSentence {
       sentence: shaped ?? fromTable,
       detail: error.message.trim() ? error.message : null,
     };
+  }
+  if (shaped !== null && raw !== null) {
+    return { sentence: shaped, detail: raw };
   }
   if (error instanceof Error && error.message.trim()) {
     return { sentence: error.message, detail: null };

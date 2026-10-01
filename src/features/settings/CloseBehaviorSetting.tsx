@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { errorSentence } from "../../lib/errorSentence";
 import { surfaceSettingsGet, surfaceSettingsSet } from "../../lib/tauri";
 import type { SurfaceSettingsRead } from "../../lib/tauri";
 import {
@@ -44,9 +45,9 @@ export function CloseBehaviorSetting() {
       },
       (cause: unknown) => {
         // A rejected invoke (runtime failure, not a file answer) must still
-        // say so and leave the row usable.
+        // say so and leave the row usable; the mapper owns its words.
         if (!alive) return;
-        setError(cause instanceof Error ? cause.message : "The stored choice could not be read.");
+        setError(errorSentence(cause).sentence);
       },
     );
     return () => {
@@ -62,11 +63,7 @@ export function CloseBehaviorSetting() {
         () => setPersisted(next),
         (cause: unknown) => {
           setChoice(persisted);
-          setError(
-            typeof cause === "object" && cause !== null && "message" in cause
-              ? String((cause as { message: unknown }).message)
-              : "The choice could not be saved.",
-          );
+          setError(errorSentence(cause).sentence);
         },
       );
     },

@@ -351,6 +351,36 @@ describe("the viewport paint (static CSS contract)", () => {
   });
 });
 
+describe("the viewport scrollbar (static CSS contract)", () => {
+  const css = readFileSync(resolve(import.meta.dirname, "../workspace/Workspace.css"), "utf8");
+
+  function block(selector: string): string {
+    return new RegExp(`${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+  }
+
+  const SCOPED = "\\.workspace-terminal-host \\.xterm \\.xterm-viewport";
+
+  it("declares auto overflow, token scrollbar colours and a 10px WebKit thumb on the scoped rule", () => {
+    const viewport = block(SCOPED);
+    expect(viewport, "a scoped .xterm-viewport rule is missing").not.toBe("");
+    // The declaration that lets xterm.css's forced `scroll` lose the cascade:
+    // a bar becomes possible only when content overflows.
+    expect(viewport).toContain("overflow-y: auto");
+    expect(viewport).toContain("scrollbar-color: var(--border-strong) var(--terminal-ground)");
+
+    const thumb = block(`${SCOPED}::-webkit-scrollbar-thumb`);
+    expect(thumb, "a scoped thumb rule is missing").not.toBe("");
+    expect(thumb).toContain("background: var(--border-strong)");
+    const width = /width:\s*(\d+(?:\.\d+)?)px/.exec(block(`${SCOPED}::-webkit-scrollbar`));
+    expect(width, "a scoped scrollbar width is missing").not.toBeNull();
+    expect(Number(width?.[1])).toBeGreaterThanOrEqual(10);
+
+    const track = block(`${SCOPED}::-webkit-scrollbar-track`);
+    expect(track, "a scoped track rule is missing").not.toBe("");
+    expect(track).toContain("background: var(--terminal-ground)");
+  });
+});
+
 describe("fitting", () => {
   beforeEach(() => {
     mocks.state.fitCount = 0;

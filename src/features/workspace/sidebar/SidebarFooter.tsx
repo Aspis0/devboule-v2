@@ -1,4 +1,5 @@
 import type { DaemonStatus } from "../../../types/ipc";
+import { errorSentence } from "../../../lib/errorSentence";
 
 /** Green while the daemon answers, hollow while connecting, red otherwise. */
 export function daemonDotTone(state: DaemonStatus["state"]): string {
@@ -7,20 +8,20 @@ export function daemonDotTone(state: DaemonStatus["state"]): string {
   return "terracotta";
 }
 
-/** The foot's tooltip: the whole daemon sentence, not the quiet label. */
+/** The foot's tooltip: the whole daemon sentence, not the quiet label.
+ * The reported message goes through the mapper, so a known daemon failure
+ * reads as advice instead of the supervisor's own diagnosis. */
 export function daemonLabel(status: DaemonStatus): string {
+  const reason = status.message === null ? null : errorSentence(status.message).sentence;
   if (status.state === "connected") {
     const pid = status.pid !== null ? `pid ${status.pid}` : "connected";
-    return status.message ? `daemon · ${pid} · ${status.message}` : `daemon · ${pid}`;
+    return reason === null ? `daemon · ${pid}` : `daemon · ${pid} · ${reason}`;
   }
   if (status.state === "connecting") return "daemon · connecting";
   if (status.state === "unresponsive") {
-    // The supervisor's sentence, verbatim — the tooltip is what keeps the
-    // state readable after the user declines the restart dialog.
-    return status.message ? `daemon · ${status.message}` : "daemon · not answering";
+    return reason === null ? "daemon · not answering" : `daemon · ${reason}`;
   }
-  if (status.message) return `daemon · ${status.message}`;
-  return "daemon · disconnected";
+  return reason === null ? "daemon · disconnected" : `daemon · ${reason}`;
 }
 
 export interface SidebarFooterProps {

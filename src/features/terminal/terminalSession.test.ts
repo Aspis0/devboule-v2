@@ -517,6 +517,7 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(banner.message).toBe(
       "This terminal ended with the previous daemon and cannot be reopened — close the tab or open a new one.",
     );
+    // The daemon's own words stay available on demand, off the sentence.
     expect(banner.detail).toContain("session attachment is not registered");
   });
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { errorSentence } from "../../lib/errorSentence";
 import type { MessageQueue, QueuedMessage } from "./messageQueue";
 
 export interface MessageQueueUiHandlers {
@@ -26,12 +27,6 @@ export interface MessageQueueUi {
 }
 
 const ROW_GONE = "That queued message is gone.";
-
-function reasonFrom(cause: unknown): string {
-  if (cause instanceof Error && cause.message) return cause.message;
-  if (typeof cause === "string" && cause.trim()) return cause;
-  return "The session did not answer.";
-}
 
 /**
  * The chat surface's side of a `MessageQueue`: snapshots in, user actions out,
@@ -71,7 +66,7 @@ export function useMessageQueue(
       } catch (cause: unknown) {
         // The queue never took the text, so this is its only copy: hand it
         // back the way a refused steer does, with the reason beside it.
-        setError(reasonFrom(cause));
+        setError(errorSentence(cause).sentence);
         handlersRef.current.onQueueRefused(text);
       }
     },
@@ -132,7 +127,7 @@ export function useMessageQueue(
       if (queue === null) return;
       setError(null);
       queue.steer(text, []).catch((cause: unknown) => {
-        setError(reasonFrom(cause));
+        setError(errorSentence(cause).sentence);
         handlersRef.current.onSteerRefused(text);
       });
     },

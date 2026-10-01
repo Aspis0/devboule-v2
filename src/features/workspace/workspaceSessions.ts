@@ -13,6 +13,7 @@ import type {
   ProviderInfo,
   Session,
   SessionKind,
+  SessionState,
   SessionStateSnapshot,
   UnattendedState,
 } from "../../types/ipc";
@@ -22,6 +23,7 @@ import { errorSentence } from "../../lib/errorSentence";
 import { lastFittedGrid } from "../terminal/lastFittedGrid";
 import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
 import { sharedSessionQueueOwner } from "./sessionQueueOwner";
+import { integrityClause, rosterStateDisplay } from "./sessionStateDisplay";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
 
 export interface WorkspaceSessionSource {
@@ -108,42 +110,25 @@ export function workspaceSessions(sessions: readonly Session[]): Session[] {
   return [...sessions];
 }
 
-function formatElapsed(elapsedMs: number): string {
-  const minutes = Math.floor(elapsedMs / 60_000);
-  if (minutes > 0) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-  const seconds = Math.floor(elapsedMs / 1_000);
-  return `${seconds} second${seconds === 1 ? "" : "s"}`;
-}
-
+/**
+ * One state in the pane header's words: the roster display the header and the
+ * chip already read, with its integrity clause beside the word. A label built
+ * from the wire's own values says `recovered · unverifiable` to a person.
+ */
 export function sessionStateLabel(state: unknown, elapsedMs?: number | null): string {
-  if (typeof state !== "object" || state === null || !("type" in state)) return "unknown";
-  const type = state.type;
-  if (type === "silent") {
-    return typeof elapsedMs === "number"
-      ? `silent · ${formatElapsed(elapsedMs)}`
-      : "silent · duration unknown";
-  }
-  if (type === "live") return "live";
-  if (type === "ended" || type === "recovered") {
-    if ("integrity" in state && typeof state.integrity === "object" && state.integrity !== null) {
-      const integrity = state.integrity;
-      if (
-        "kind" in integrity &&
-        (integrity.kind === "truncated" || integrity.kind === "unverifiable")
-      ) {
-        return `${type} · ${integrity.kind}`;
-      }
-    }
-    return type;
-  }
-  return "unknown";
+  const display = rosterStateDisplay(state as SessionState, elapsedMs);
+  const parts = [display.word, display.detail, integrityClause(state as { integrity?: unknown })];
+  return parts.filter((part) => part !== null).join(" · ");
 }
 
 export function sessionDotTone(state: unknown): "green" | "terracotta" | "border" {
   const label = sessionStateLabel(state);
-  if (label === "live") return "green";
-  if (label.startsWith("silent")) return "border";
-  if (label.startsWith("recovered") || label.startsWith("ended ·")) return "border";
+  if (label === "Running") return "green";
+  // The integrity clause is what separates the two stop tones: a stop that
+  // carries one is neutral, a stop that does not keeps the alert.
+  if (label.startsWith("Quiet") || label.startsWith("Recovered") || label.startsWith("Stopped ·")) {
+    return "border";
+  }
   return "terracotta";
 }
 

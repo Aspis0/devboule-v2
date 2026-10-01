@@ -87,14 +87,45 @@ describe("CloseBehaviorSetting", () => {
     expect(setMock).toHaveBeenCalledWith("close-behavior", { choice: "tray" });
   });
 
+  it("shows the mapped sentence for a read the daemon refuses, never its raw words", async () => {
+    getMock.mockRejectedValue({
+      code: "io",
+      message: "Could not read the settings file: Access is denied. (os error 5)",
+    });
+    setMock.mockResolvedValue(undefined);
+    root = createRoot(container);
+    await act(async () => root.render(<CloseBehaviorSetting />));
+    const alert = container.querySelector("[role=alert]")?.textContent ?? "";
+    expect(alert).toBe("A system or file operation failed on this machine.");
+    expect(alert).not.toContain("os error");
+    expect(container.querySelector("input[name=close-behavior]")).not.toBeNull();
+  });
+
   it("restores the stored choice when the save fails", async () => {
     getMock.mockResolvedValue({ status: "value", value: { choice: "ask" } });
-    setMock.mockRejectedValue({ message: "the disk said no" });
+    setMock.mockRejectedValue({ code: "io", message: "the disk said no" });
     root = createRoot(container);
     await act(async () => root.render(<CloseBehaviorSetting />));
     await choose(container, "quit");
     await act(async () => undefined); // let the failure settle
     expect(radioFor(container, "ask").checked).toBe(true);
-    expect(container.querySelector("[role=alert]")?.textContent).toContain("the disk said no");
+    expect(container.querySelector("[role=alert]")?.textContent).toBe(
+      "A system or file operation failed on this machine.",
+    );
+  });
+
+  it("shows the mapped sentence for a save the daemon refuses, never its raw words", async () => {
+    getMock.mockResolvedValue({ status: "absent" });
+    setMock.mockRejectedValue({
+      code: "io",
+      message: "Could not write the settings file: Access is denied. (os error 5)",
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<CloseBehaviorSetting />));
+    await choose(container, "quit");
+    await act(async () => undefined);
+    const alert = container.querySelector("[role=alert]")?.textContent ?? "";
+    expect(alert).toBe("A system or file operation failed on this machine.");
+    expect(alert).not.toContain("os error");
   });
 });

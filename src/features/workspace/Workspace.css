@@ -379,12 +379,34 @@
   height: 100%;
 }
 
-/* xterm.css paints .xterm-viewport #000 and this xterm never inlines the theme
-   background onto it, so the pixel the fitted screen leaves over showed as a
-   line at the box's bottom edge. The viewport paints from the same token as
-   the frame. Three classes on purpose: xterm.css's `.xterm .xterm-viewport`
-   has two and loads after this sheet, so an equal selector loses (measured). */
+/* xterm.css paints .xterm-viewport #000 and forces `overflow-y: scroll`, and
+   this xterm never inlines the theme background onto it: the pixel the fitted
+   screen leaves over showed as a line at the box's bottom edge, and the forced
+   scroll drew a slider on a session with nothing to scroll. The viewport
+   paints from the same token as the frame, and takes `auto` so a bar exists
+   only while there is scrollback to move. Three classes on purpose:
+   xterm.css's `.xterm .xterm-viewport` has two and loads after this sheet, so
+   an equal selector loses (measured) — the same win carries overflow-y and
+   the scrollbar colours, which read their tokens per theme so the thumb stays
+   grabbable on either ground. */
 .workspace-terminal-host .xterm .xterm-viewport {
+  background: var(--terminal-ground);
+  overflow-y: auto;
+  scrollbar-color: var(--border-strong) var(--terminal-ground);
+}
+
+.workspace-terminal-host .xterm .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+
+.workspace-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: content-box;
+}
+
+.workspace-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-track {
   background: var(--terminal-ground);
 }
 
@@ -395,6 +417,17 @@
   background: transparent;
   font-family: "JetBrains Mono", monospace;
   font-size: var(--type-mono-sm);
+}
+
+/* The daemon's own words behind the banner's Details control: demoted so
+   only the sentence reads at a glance; its text renders only while open. */
+.workspace-terminal-banner-detail {
+  display: block;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 /* The agent chat's pinned journal-loss notice (same voice as the terminal's). */

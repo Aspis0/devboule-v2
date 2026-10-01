@@ -37,12 +37,19 @@ function quietLong(elapsedMs: number): string {
   return `${seconds} second${seconds === 1 ? "" : "s"}`;
 }
 
-function integrityTail(state: { integrity?: unknown }, stopped: string): string {
-  if (typeof state.integrity !== "object" || state.integrity === null) return stopped;
+/** The pane header's own words for what failed a transcript check, or null
+ * when nothing did (or the check itself is unknown). */
+export function integrityClause(state: { integrity?: unknown }): string | null {
+  if (typeof state.integrity !== "object" || state.integrity === null) return null;
   const kind = (state.integrity as { kind?: unknown }).kind;
-  if (kind === "truncated") return `${stopped}; the end is missing.`;
-  if (kind === "unverifiable") return `${stopped}; some messages could not be checked.`;
-  return stopped;
+  if (kind === "truncated") return "the end is missing";
+  if (kind === "unverifiable") return "some messages could not be checked";
+  return null;
+}
+
+function integrityTail(state: { integrity?: unknown }, stopped: string): string {
+  const clause = integrityClause(state);
+  return clause === null ? stopped : `${stopped}; ${clause}.`;
 }
 
 function endedLine(state: { integrity?: unknown }): string {

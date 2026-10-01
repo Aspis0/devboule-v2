@@ -1,8 +1,9 @@
 // Why: the rename dialog — the current
 // name pre-filled and selected, Enter saves through the exact
-// `sessionSetName` call, Escape cancels, a daemon refusal shown verbatim
-// next to the field with the draft kept, and focus back to whatever opened
-// it. The new name itself is never written locally: the daemon pushes the
+// `sessionSetName` call, Escape cancels, a daemon refusal mapped next to the
+// field (its own words kept as the detail) with the draft kept, and focus
+// back to whatever opened it. The new name itself is never written locally:
+// the daemon pushes the
 // roster after a landed rename and every title reads that. Registers with
 // the shell so the crescent stays shut while the dialog is up.
 
@@ -14,8 +15,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { ErrorText } from "../../../components/ErrorText";
-import { isCommandError } from "../../../lib/commandError";
-import { errorSentence } from "../../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { getFocusableElements } from "../../../lib/focusableElements";
 import { isImeComposition } from "../../../lib/imeComposition";
 import { useModalOpen } from "../../../lib/modalOpen";
@@ -31,7 +31,7 @@ interface SessionRenameDialogProps {
 
 export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProps) {
   const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   // The trigger the dialog took focus from — the kebab or the tab. Given
@@ -119,7 +119,7 @@ export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProp
     // refused here with the daemon's sentence, before any call.
     const refused = validateSessionRename(draft);
     if (refused !== null) {
-      setError(refused);
+      setError({ sentence: refused, detail: null });
       return;
     }
     submittingRef.current = true;
@@ -131,9 +131,9 @@ export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProp
       await sessionSetName(rename.sessionId, draft.trim());
       onClose();
     } catch (cause: unknown) {
-      // The daemon's own words for a refusal the mirror could not predict;
-      // the draft stays under it to be fixed.
-      setError(isCommandError(cause) ? cause.message : errorSentence(cause).sentence);
+      // The mapper's sentence for a refusal the mirror could not predict,
+      // with the daemon's own words kept as its detail; the draft stays put.
+      setError(errorSentence(cause));
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -147,7 +147,8 @@ export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProp
   // be a name the rename door refuses; a grey button and no message is the
   // one outcome this dialog must never produce.
   const refusal = validateSessionRename(draft);
-  const shownError = error ?? refusal;
+  const shownError = error !== null ? error.sentence : refusal;
+  const shownDetail = error !== null ? error.detail : null;
   const saveDisabled = submitting || draft === rename.title || refusal !== null;
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -238,7 +239,11 @@ export function SessionRenameDialog({ rename, onClose }: SessionRenameDialogProp
           />
           {shownError !== null ? (
             <div id="workspace-rename-error" className="workspace-rename-error" role="alert">
-              <ErrorText sentence={shownError} detail={null} id="workspace-rename-error-text" />
+              <ErrorText
+                sentence={shownError}
+                detail={shownDetail}
+                id="workspace-rename-error-text"
+              />
             </div>
           ) : null}
           <div className="workspace-rename-actions">

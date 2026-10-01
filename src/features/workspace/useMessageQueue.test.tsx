@@ -103,6 +103,19 @@ describe("useMessageQueue", () => {
     expect(probe.snapshot().error).toBeNull();
   });
 
+  it("maps a refusal carrying the daemon's words instead of echoing them", async () => {
+    const harness = createQueueHarness();
+    const probe = renderProbe(harness);
+    vi.spyOn(harness.queue, "add").mockImplementation(() => {
+      throw new Error("session attachment is not registered");
+    });
+    await click("queue-it");
+    expect(probe.snapshot().error).toBe(
+      "This view lost its live connection to the session. Reopen the tab to reconnect.",
+    );
+    expect(probe.snapshot().error).not.toContain("attachment");
+  });
+
   it("takes the composer's text into the queue, and hands back what the queue refuses", async () => {
     const harness = createQueueHarness();
     const probe = renderProbe(harness);

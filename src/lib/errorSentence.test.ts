@@ -117,7 +117,7 @@ describe("the message-shape arms", () => {
   });
 
   it("keeps the reopen sentence for the bridge's lost bookkeeping", () => {
-    // src-tauri/src/client/mod.rs:698.
+    // src-tauri/src/client/mod.rs:705.
     const { sentence } = errorSentence(
       rejection("internal", "session attachment is not registered"),
     );
@@ -129,7 +129,7 @@ describe("the message-shape arms", () => {
   });
 
   it("keeps the reopen sentence for the bridge's 'no longer registered' loss", () => {
-    // src-tauri/src/client/mod.rs:544-546 — bind_with_cursor's own wording.
+    // src-tauri/src/client/mod.rs:552 — bind_with_cursor's own wording.
     const { sentence } = errorSentence(
       rejection("internal", "session attachment is no longer registered"),
     );
@@ -138,19 +138,38 @@ describe("the message-shape arms", () => {
     );
   });
 
-  it("keeps the reopen sentence for a view that must re-attach before sending", () => {
-    // client.rs:1668 — the bridge-side pre-flight.
-    const { sentence } = errorSentence(
-      rejection("internal", "Session is not attached; attach before sending session commands."),
-    );
-    expect(sentence).toBe(
-      "This view lost its live connection to the session. Reopen the tab to reconnect.",
-    );
+  it("leaves the daemon's own 'attach before sending' failure to its code row", () => {
+    // crates/devboule-daemon/src/client.rs:1824: no control subscription for
+    // this session (DaemonError::Protocol, which the bridge maps to `internal`
+    // — src-tauri/src/backend/error.rs:59). Reopening the tab is advice for a
+    // different failure, so the raw text stays in the detail.
+    const message = "Session is not attached; attach before sending session commands.";
+    const { sentence, detail } = errorSentence(rejection("internal", message));
+    expect(sentence).toBe(CODE_SENTENCES.internal);
+    expect(detail).toBe(message);
+    expect(sentence).not.toContain("Reopen");
+  });
+
+  it("leaves a subscription-scoped 'not attached' refusal to its code row", () => {
+    // crates/devboule-daemon/src/session_runtime.rs:3295, :3386, :3407
+    // (ErrorCode::InvalidRequest) and client.rs:415's bare test-harness form:
+    // none of them is this view's attachment bookkeeping.
+    const subscription = "Session is not attached to this subscription.";
+    expect(errorSentence(rejection("invalid_request", subscription))).toEqual({
+      sentence: CODE_SENTENCES.invalid_request,
+      detail: subscription,
+    });
+    for (const message of [subscription, "session is not attached"]) {
+      const { sentence } = errorSentence(rejection("internal", message));
+      expect(sentence, message).not.toContain("Reopen");
+      expect(sentence, message).not.toContain("reconnect");
+    }
   });
 
   it("gives the calling-session refusal its own true reading, not the reopen sentence", () => {
-    // session.rs:2456 (also session_child_permission.rs:69,
-    // session_child_profile.rs:59): the CALLING session is not a registered
+    // session.rs:2909 (also session_child_commands.rs:181 and :295,
+    // session_child_permission.rs:70, session_child_profile.rs:59): the
+    // CALLING session is not a registered
     // creator — a validity refusal, not this view's connection.
     const { sentence } = errorSentence(
       rejection("invalid_request", "the calling session is not registered on this daemon"),
@@ -305,5 +324,53 @@ describe("causes that are not daemon rejections", () => {
 
   it("never returns an empty sentence for an empty daemon message", () => {
     expect(errorSentence(rejection("internal", "   ")).sentence.trim().length).toBeGreaterThan(0);
+  });
+});
+
+describe("raw causes that carry the daemon's own words", () => {
+  it("maps a raw attach refusal instead of showing the daemon's words as the sentence", () => {
+    const raw = "session attachment is not registered";
+    const { sentence, detail } = errorSentence(new Error(raw));
+    expect(sentence).toBe(
+      "This view lost its live connection to the session. Reopen the tab to reconnect.",
+    );
+    expect(sentence).not.toContain("registered");
+    expect(detail).toBe(raw);
+  });
+
+  it("keeps protocol words it has no arm for inside the detail, never the sentence", () => {
+    const raw = "session attachment is not registered for subscription 7 (generation 3)";
+    const { sentence, detail } = errorSentence(raw);
+    expect(sentence).toBe(
+      "This view lost its live connection to the session. Reopen the tab to reconnect.",
+    );
+    expect(sentence).not.toContain("subscription");
+    expect(sentence).not.toContain("generation");
+    expect(detail).toBe(raw);
+  });
+
+  it("maps the supervisor's silence report to the reconnect advice", () => {
+    const raw =
+      "The daemon has not answered status checks for at least 4 seconds (3 consecutive failures).";
+    const { sentence, detail } = errorSentence(new Error(raw));
+    expect(sentence).toBe(
+      "Devboule is having trouble reaching its background service. Try reconnecting or restart Devboule.",
+    );
+    expect(detail).toBe(raw);
+  });
+
+  it("maps the status poll's two short failure tokens to the same advice", () => {
+    for (const raw of ["daemon unreachable", "daemon_status timed out"]) {
+      const { sentence, detail } = errorSentence(raw);
+      expect(sentence, raw).toBe(
+        "Devboule is having trouble reaching its background service. Try reconnecting or restart Devboule.",
+      );
+      expect(detail, raw).toBe(raw);
+    }
+  });
+
+  it("lets an app-authored sentence no arm claims stand as the sentence", () => {
+    const sentence = "The daemon returned an invalid session subscription.";
+    expect(errorSentence(new Error(sentence))).toEqual({ sentence, detail: null });
   });
 });

@@ -608,8 +608,16 @@ describe("a recovered terminal states its ended state once", () => {
     // No interrupt control on a terminal that has ended.
     expect(container.querySelector(".workspace-terminal-interrupt")).toBeNull();
 
-    // The sentence's action, and the raw attach text as reachable detail.
-    expect(banner?.getAttribute("title")).toBe("session attachment is not registered");
+    // The sentence's action. The live region carries the sentence alone, and
+    // the banner subtree holds no title, described-by or hidden copy of the
+    // daemon's words — those are behind the Details control, covered in the
+    // attach describe below.
+    expect(banner?.getAttribute("title")).toBeNull();
+    expect(banner?.getAttribute("aria-describedby")).toBeNull();
+    expect(banner?.querySelector(".error-detail-sr-only")).toBeNull();
+    expect(banner?.querySelectorAll("[title]")).toHaveLength(0);
+    expect(banner?.querySelectorAll("[aria-describedby]")).toHaveLength(0);
+    expect(banner?.textContent).not.toContain("session attachment is not registered");
     const closeTab = container.querySelector<HTMLButtonElement>(
       ".workspace-terminal-banner-action",
     );
@@ -617,5 +625,122 @@ describe("a recovered terminal states its ended state once", () => {
     if (closeTab === null) throw new Error("the close-tab action did not render");
     await act(async () => closeTab.click());
     expect(onCloseTab).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("an attach refusal reads as one mapped sentence", () => {
+  const RAW = "session attachment is not registered";
+  const SENTENCE =
+    "Could not attach to the terminal. This view lost its live connection to the session. Reopen the tab to reconnect.";
+
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot> | null = null;
+
+  beforeEach(() => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    ResizeObserverStub.instances = [];
+    vi.mocked(invoke).mockClear();
+  });
+
+  afterEach(async () => {
+    if (root !== null) {
+      await act(async () => root?.unmount());
+      root = null;
+    }
+    vi.mocked(invoke).mockReset();
+    document.body.replaceChildren();
+  });
+
+  async function mountFailedAttach(generation: number): Promise<void> {
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "session_attach") throw new Error(RAW);
+      return undefined;
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          observedState={{ type: "live", generation }}
+        />,
+      );
+    });
+    await act(async () => flush(100));
+  }
+
+  function bannerEl(): HTMLElement {
+    const found = container.querySelector<HTMLElement>(".workspace-terminal-banner");
+    if (found === null) throw new Error("the banner did not render");
+    return found;
+  }
+
+  it("says only the sentence inside the status region", async () => {
+    await mountFailedAttach(1);
+    const status = bannerEl().querySelector('[role="status"]');
+    expect(status?.textContent).toBe(SENTENCE);
+  });
+
+  it("carries no title, no described-by and none of the raw words while collapsed", async () => {
+    await mountFailedAttach(1);
+    const banner = bannerEl();
+    expect(banner.querySelectorAll("[title]")).toHaveLength(0);
+    expect(banner.querySelectorAll("[aria-describedby]")).toHaveLength(0);
+    expect(banner.querySelector(".error-detail-sr-only")).toBeNull();
+    expect(banner.textContent).not.toContain(RAW);
+  });
+
+  it("shows the raw words on the Details click, outside the status region", async () => {
+    await mountFailedAttach(1);
+    const banner = bannerEl();
+    const toggle = banner.querySelector<HTMLButtonElement>(".workspace-terminal-banner-details");
+    expect(toggle, "the Details control did not render").not.toBeNull();
+    if (toggle === null) throw new Error("unreachable");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe("terminal-banner-detail");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const status = banner.querySelector('[role="status"]');
+    expect(status?.textContent).not.toContain(RAW);
+    const detail = banner.querySelector("#terminal-banner-detail");
+    expect(detail?.textContent).toBe(RAW);
+    expect(status?.contains(detail)).toBe(false);
+  });
+
+  it("collapses the details again when a new error arrives", async () => {
+    await mountFailedAttach(1);
+    const first = bannerEl().querySelector<HTMLButtonElement>(".workspace-terminal-banner-details");
+    expect(first, "the Details control did not render").not.toBeNull();
+    if (first === null) throw new Error("unreachable");
+    await act(async () => {
+      first.click();
+    });
+    expect(first.getAttribute("aria-expanded")).toBe("true");
+
+    // A resume rebuilds the attachment, so the second refusal is a NEW error
+    // carrying the same words: the disclosure must not ride along open.
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          observedState={{ type: "live", generation: 2 }}
+        />,
+      );
+    });
+    await act(async () => flush(100));
+
+    const second = bannerEl().querySelector<HTMLButtonElement>(
+      ".workspace-terminal-banner-details",
+    );
+    expect(second, "the Details control did not render after the second refusal").not.toBeNull();
+    if (second === null) throw new Error("unreachable");
+    expect(second.getAttribute("aria-expanded")).toBe("false");
+    expect(bannerEl().querySelector("#terminal-banner-detail")?.textContent).toBe("");
+    expect(bannerEl().textContent).not.toContain(RAW);
   });
 });

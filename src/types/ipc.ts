@@ -1493,7 +1493,8 @@ export interface DaemonStatus {
   protocolVersion: number | null;
   clients: number | null;
   capabilities: string[];
-  /** For `unresponsive`: a human sentence from the supervisor, shown verbatim. */
+  /** The supervisor's own report — a full sentence for `unresponsive`.
+   * Surfaces map it before a person reads it (`daemonLabel`). */
   message: string | null;
   /**
    * Why the daemon denies every restrictable broker tool, when it does
