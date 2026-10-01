@@ -1,6 +1,7 @@
 //! Tests for one topic: the transcript notices the view derives from frames
 //! that are not messages — compaction boundaries and local slash-command
-//! output. The rest of the view's tests live inline in `claude_view.rs`.
+//! output. The view's other suites live beside their subjects in the
+//! `claude_view_*.rs` files.
 
 use devboule_protocol::{NoticeSeverity, SessionEvent};
 use serde_json::json;

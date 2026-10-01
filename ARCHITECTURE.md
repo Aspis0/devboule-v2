@@ -404,7 +404,7 @@ provider declares at run time: `SessionModeStateView` carries a current mode id 
 `available_modes` list (`crates/devboule-protocol/src/session.rs`, `SessionModeStateView`), populated
 from the ACP
 session state (`acp_client.rs`, `remember_mode`) or from Claude's control protocol
-(`crates/devboule-daemon/src/claude_view.rs`, `mode_state`), and a mode change is an RPC to the
+(`crates/devboule-daemon/src/claude_view_mode.rs`, `mode_state`), and a mode change is an RPC to the
 provider
 (`acp_client.rs`, `request_set_mode`, `set_mode`; `claude_client.rs`, `set_mode`). The catalog's part
 is narrower and only

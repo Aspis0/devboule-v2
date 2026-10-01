@@ -1,11 +1,11 @@
 //! Tests for one topic: a Claude `rate_limit_event` maps to the plan-usage
-//! windows the popover shows. The rest of the view's tests live inline in
-//! `claude_view.rs`.
+//! windows the popover shows. The view's other suites live beside their
+//! subjects in the `claude_view_*.rs` files.
 
 use devboule_protocol::{PlanWindow, SessionEvent};
 use serde_json::{json, Value};
 
-use super::ClaudeView;
+use crate::claude_view::ClaudeView;
 
 fn view() -> ClaudeView {
     ClaudeView::new(None)

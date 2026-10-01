@@ -71,3 +71,42 @@ fn windows_components_eq_ignore_case(
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::relativize_tool_path;
+
+    #[test]
+    fn path_outside_cwd_is_forwarded_absolute() {
+        let relativized = relativize_tool_path(
+            r"C:\Windows\Temp\secret.txt",
+            Some(Path::new(r"C:\Users\gualt\work")),
+        );
+        assert_eq!(relativized, r"C:\Windows\Temp\secret.txt");
+    }
+
+    #[test]
+    fn path_under_cwd_is_relativized() {
+        let relativized = relativize_tool_path(
+            r"C:\Users\gualt\work\src\lib.rs",
+            Some(Path::new(r"C:\Users\gualt\work")),
+        );
+        assert_eq!(
+            relativized,
+            PathBuf::from("src").join("lib.rs").to_string_lossy()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_differing_only_by_case_is_relativized() {
+        let relativized = relativize_tool_path(r"c:\work\src\Lib.rs", Some(Path::new(r"C:\Work")));
+        assert_eq!(
+            relativized,
+            PathBuf::from("src").join("Lib.rs").to_string_lossy(),
+            "Windows prefix match is case-insensitive; remainder keeps original casing"
+        );
+    }
+}
