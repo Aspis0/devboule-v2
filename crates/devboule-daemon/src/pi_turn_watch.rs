@@ -142,6 +142,7 @@ pub(super) fn pi_turn_watch(
     broker: Arc<PermissionBroker>,
     cancelled: Arc<AtomicBool>,
     owed_late_end: Arc<OwedTurnEnd>,
+    usage_poller: Option<Arc<super::pi_usage_poller::PiUsagePoller>>,
 ) -> Arc<TurnWatch> {
     TurnWatch::new(
         silence,
@@ -152,6 +153,11 @@ pub(super) fn pi_turn_watch(
             // for a turn the kill already ended.
             if cancelled.load(Ordering::Acquire) {
                 return;
+            }
+            // The expiry is the abort road: the poll window belongs to the
+            // run just ended, and a silent pi will not close it itself.
+            if let Some(usage) = &usage_poller {
+                usage.stop_window();
             }
             broker.cancel_pending();
             let _ = runtime.settle_turn_finish(|| false);

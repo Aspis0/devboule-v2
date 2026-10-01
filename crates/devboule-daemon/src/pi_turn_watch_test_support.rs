@@ -84,6 +84,7 @@ pub(super) fn harness(broker: &Arc<PermissionBroker>) -> PiWatchHarness {
         Arc::clone(broker),
         Arc::clone(&cancelled),
         Arc::clone(&owed_late_end),
+        None,
     );
     let arbiter = Arc::new(super::super::pi_turn_arbiter::TurnArbiter::new(
         Some(Arc::clone(&watch)),

@@ -862,8 +862,9 @@ pub enum SessionEvent {
     /// meter's number, never a guess. A provider that sent no number gets no
     /// event; the app shows nothing rather than a stand-in zero.
     ///
-    /// `live` names the source: Codex pushes it during the turn; Claude, pi
-    /// and ACP report at the turn's end, and the popover labels those
+    /// `live` names the source: Codex pushes it during the turn, and pi
+    /// polls its session stats during the turn; the end-of-turn readings —
+    /// Claude's, ACP's, and pi's own turn total — the popover labels
     /// "as of the last turn". `max_tokens` is absent when the view's frame
     /// carried no window — the app may then take the window from the
     /// manifest entry of the SAME `model_id`, never from another model.

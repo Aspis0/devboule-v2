@@ -94,6 +94,10 @@ pub(super) struct TurnArbiter {
     /// the close in. At most one — two refusals deferred in one run share
     /// the one finish, both errors shown.
     pending_refusal: AtomicBool,
+    /// The live-context poller, when the spawn wired one: the run's open
+    /// and close are its poll window, an interrupt stops it, the session's
+    /// end closes it. `None` on the bare arbiter the tests hold.
+    usage: Option<Arc<super::pi_usage_poller::PiUsagePoller>>,
 }
 
 impl TurnArbiter {
@@ -105,7 +109,18 @@ impl TurnArbiter {
             gate: AbortGate::default(),
             pi_turn_open: AtomicBool::new(false),
             pending_refusal: AtomicBool::new(false),
+            usage: None,
         }
+    }
+
+    /// Wire the live-context poller. Builder style, so the constructors the
+    /// watch tests use stay untouched.
+    pub(super) fn with_usage_poller(
+        mut self,
+        usage: Arc<super::pi_usage_poller::PiUsagePoller>,
+    ) -> Self {
+        self.usage = Some(usage);
+        self
     }
 
     /// The bare arbiter the bare reader (tests, seeds) holds: every road
@@ -189,15 +204,43 @@ impl TurnArbiter {
     }
 
     /// The interrupt was requested: the aborted end of the turn as of now
-    /// is the one expectation, against the delivered count as of now.
+    /// is the one expectation, against the delivered count as of now. The
+    /// poll window stops with it — an interrupted run polls no further.
     pub(super) fn note_interrupt(&self) {
+        if let Some(usage) = &self.usage {
+            usage.stop_window();
+        }
         self.gate.note_interrupt();
     }
 
-    /// A pi `agent_start`: its run opens, and the watch arms — a turn pi
-    /// starts with no prompt from us is begun and watched like any other.
+    /// A durable `turn_end` context reading just published: the live
+    /// poll's dedup key forgets what it published before it, so the key
+    /// tracks what the client last saw.
+    pub(super) fn note_durable_context(&self) {
+        if let Some(usage) = &self.usage {
+            usage.note_durable_reading();
+        }
+    }
+
+    /// The process tree is being killed: the poll window stops here, by
+    /// the kill's own word. The expiry skips a killed session
+    /// (`cancelled`), and stdout EOF — the other road — has not happened
+    /// yet; without this the window would outlive its run on the nilled
+    /// stdin's failures alone.
+    pub(super) fn note_killed(&self) {
+        if let Some(usage) = &self.usage {
+            usage.stop_window();
+        }
+    }
+
+    /// A pi `agent_start`: its run opens, the watch arms — a turn pi
+    /// starts with no prompt from us is begun and watched like any other —
+    /// and the context poll's window opens with the run.
     pub(super) fn note_agent_start(&self) {
         self.pi_turn_open.store(true, Ordering::Release);
+        if let Some(usage) = &self.usage {
+            usage.run_opened();
+        }
         if let Some(watch) = &self.watch {
             watch.start_turn();
         }
@@ -211,6 +254,9 @@ impl TurnArbiter {
     /// the win, because each of them ends the turn; the mark is spent
     /// either way.
     pub(super) fn note_agent_end(&self, runtime: &SessionRuntime) {
+        if let Some(usage) = &self.usage {
+            usage.run_closed();
+        }
         self.pi_turn_open.store(false, Ordering::Release);
         if !self.pending_refusal.swap(false, Ordering::AcqRel) {
             return;
@@ -274,6 +320,9 @@ impl TurnArbiter {
     }
 
     pub(super) fn bind_runtime(&self, runtime: &Arc<SessionRuntime>) {
+        if let Some(usage) = &self.usage {
+            usage.bind_runtime(runtime);
+        }
         if let Some(watch) = &self.watch {
             watch.bind_runtime(runtime);
         }
@@ -286,6 +335,9 @@ impl TurnArbiter {
     }
 
     pub(super) fn shutdown(&self) {
+        if let Some(usage) = &self.usage {
+            usage.close();
+        }
         if let Some(watch) = &self.watch {
             watch.shutdown();
         }

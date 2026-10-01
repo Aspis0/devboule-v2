@@ -61,6 +61,12 @@ mod pi_turn_arbiter;
 /// this client's reader.
 #[path = "pi_turn_watch.rs"]
 mod pi_turn_watch;
+/// The live-context poller: the window a pi run opens, the session stats
+/// each tick reads, and the changed reading it publishes. A child of this
+/// file — it asks through this client's control channel and reads this
+/// client's catalog.
+#[path = "pi_usage_poller.rs"]
+mod pi_usage_poller;
 
 const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
 const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
@@ -114,6 +120,17 @@ impl ControlBudget {
         self.deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .unwrap_or(self.wait)
+    }
+
+    /// A shorter wait for one test, so a held reply runs a real timeout
+    /// out deterministically.
+    #[cfg(test)]
+    fn with_wait_for_test(wait: Duration) -> Self {
+        Self {
+            wait,
+            phase: None,
+            deadline: None,
+        }
     }
 }
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
@@ -1667,6 +1684,16 @@ fn spawn_pi(
         Arc::clone(&controls),
     ));
     let control = Arc::new(PiControl::new(Arc::clone(&stdin), Arc::clone(&next_id)));
+    // The catalog the switcher keeps current, the static prompt route reads
+    // the live model from, and the poller takes the reading's model and
+    // manifest window from: one `Arc`, three readers. It is built first
+    // because the poller below shares it.
+    let catalog = Arc::new(Mutex::new(handshake.catalog));
+    // The live-context poller: one per session, its window opened and
+    // closed by the run lifecycle below, its ticks asking the control
+    // channel the reader answers.
+    let usage_poller =
+        pi_usage_poller::PiUsagePoller::spawn(Arc::clone(&control), Arc::clone(&catalog));
     // The turn watchdog shares the session's handles the way the killer
     // does: the stdin its abort frame rides, the broker whose cards hold
     // the clock, and the killer's cancelled flag, so an expiry past a kill
@@ -1680,11 +1707,12 @@ fn spawn_pi(
         Arc::clone(&permission_broker),
         Arc::clone(&cancelled),
         Arc::clone(&owed_late_end),
+        Some(Arc::clone(&usage_poller)),
     );
-    let arbiter = Arc::new(pi_turn_arbiter::TurnArbiter::new(
-        Some(turn_watch),
-        owed_late_end,
-    ));
+    let arbiter = Arc::new(
+        pi_turn_arbiter::TurnArbiter::new(Some(turn_watch), owed_late_end)
+            .with_usage_poller(Arc::clone(&usage_poller)),
+    );
     // The list request goes out immediately after the handshake: registered
     // and written, never awaited on this thread — the
     // reply was measured to take tens of seconds, and neither the session's
@@ -1737,7 +1765,6 @@ fn spawn_pi(
     // validated rpc the runtime switch uses is what puts the profile's model
     // and thinking level in force, and a refusal there tears the child down
     // before it was ever a session.
-    let catalog = Arc::new(Mutex::new(handshake.catalog));
     let mode_id_state = Arc::new(Mutex::new(mode_id.clone()));
     let switcher = PiSwitcher {
         control: Arc::clone(&control),
@@ -2315,6 +2342,18 @@ fn pi_control_frame(id: &str, command: &str, fields: serde_json::Value) -> serde
     frame
 }
 
+/// The reply to a request the poller sent: its ids are tagged `u-` at the
+/// writer ([`PiControl::poll_round_trip`]), the marker that separates the
+/// daemon's own polling from pi's output — such a reply is no evidence of
+/// pi's progress and no transcript row.
+fn is_poll_reply(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("response")
+        && value
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with("u-"))
+}
+
 /// A steer Pi will not take is `Ok(false)`, not a failure: a Pi whose build has
 /// no such command answers `success: false` with `Unknown command: steer`, and
 /// the caller's job then is the pre-existing fallback, not an error. Everything
@@ -2637,6 +2676,7 @@ impl SessionKiller for PiKiller {
 
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
+            self.arbiter.note_killed();
             self.abort();
             self.permission_broker.close();
         }
@@ -2694,6 +2734,16 @@ struct PiControl {
     pending: Mutex<HashMap<String, Sender<Result<Value, String>>>>,
 }
 
+/// How one poll round trip failed: [`PollRoundFail::Refused`] is pi
+/// answering `success: false` — the unknown-command shape an older binary
+/// leaves, and the only poll failure that ends a session's polling.
+/// [`PollRoundFail::Unreachable`] — a timeout, the channel closing, an
+/// unwritable stdin — is no answer at all.
+enum PollRoundFail {
+    Refused,
+    Unreachable,
+}
+
 impl PiControl {
     fn new(stdin: Arc<Mutex<Option<ChildStdin>>>, next_id: Arc<AtomicU64>) -> Self {
         Self {
@@ -2716,7 +2766,20 @@ impl PiControl {
         command: &str,
         fields: Value,
     ) -> Result<(String, mpsc::Receiver<Result<Value, String>>), WireError> {
-        let id = format!("c-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        self.begin_tagged("c", command, fields)
+    }
+
+    /// [`Self::begin`] with the id's tag spelled: `c-` is every control
+    /// caller; `u-` marks the poller's own requests, the one marker the
+    /// reader uses to keep a poll reply out of the journal and out of the
+    /// stall watchdog's activity.
+    fn begin_tagged(
+        &self,
+        tag: &str,
+        command: &str,
+        fields: Value,
+    ) -> Result<(String, mpsc::Receiver<Result<Value, String>>), WireError> {
+        let id = format!("{tag}-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = mpsc::channel();
         self.pending
             .lock()
@@ -2728,6 +2791,32 @@ impl PiControl {
             return Err(error);
         }
         Ok((id, rx))
+    }
+
+    /// One poll round trip, with the two failures the poller must tell
+    /// apart kept apart: pi answered and refused the command — the
+    /// unknown-command marker an older binary leaves — versus no answer
+    /// arrived at all, which is evidence about nothing.
+    fn poll_round_trip(
+        &self,
+        command: &str,
+        budget: &ControlBudget,
+    ) -> Result<Value, PollRoundFail> {
+        let (id, response) = self
+            .begin_tagged("u", command, Value::Null)
+            .map_err(|_| PollRoundFail::Unreachable)?;
+        let response = match response.recv_timeout(budget.remaining()) {
+            Ok(response) => response,
+            Err(_) => {
+                let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
+                return Err(PollRoundFail::Unreachable);
+            }
+        };
+        let response = response.map_err(|_| PollRoundFail::Unreachable)?;
+        if response.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(PollRoundFail::Refused);
+        }
+        Ok(response)
     }
 
     /// Wait for the response one command is answered with, refusing a
@@ -3260,10 +3349,18 @@ impl PiReader {
         value: Value,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<(), String> {
-        // One hook for what every frame means to the clock: activity, the
-        // tool-call bookkeeping, and the hold they give it — early-return
-        // frames included.
-        self.arbiter.note_frame(&value);
+        // A reply to a request the daemon itself made says nothing about
+        // pi's progress: counting the poll's replies as activity would
+        // keep the stall watchdog fed for as long as the session polls,
+        // and a pi that answers RPCs while producing no output would
+        // never be detected. Everything else gets the one hook for what
+        // every frame means to the clock: activity, the tool-call
+        // bookkeeping, and the hold they give it — early-return frames
+        // included.
+        let poll_reply = is_poll_reply(&value);
+        if !poll_reply {
+            self.arbiter.note_frame(&value);
+        }
         if value.get("type").and_then(Value::as_str) == Some("response") {
             let claimed = self.control.deliver(&value);
             // A response no pending entry waits for returns without effect;
@@ -3275,6 +3372,16 @@ impl PiReader {
             // row whose derivation is the published list, carrying the row's
             // sequence like every other row.
             if value.get("command").and_then(Value::as_str) == Some("get_commands") && !claimed {
+                return Ok(());
+            }
+            // The poll's replies re-derive nothing and would land in the
+            // journal at the poll's cadence; the live reading they feed is
+            // published by the poller as live state, and the durable one
+            // stays the `turn_end`'s. The exclusion is keyed on the
+            // poller's own `u-` ids, so a claimed reply of any other
+            // command — `/autocompact`'s `get_state` among them — keeps
+            // its row, as it always did.
+            if poll_reply {
                 return Ok(());
             }
             let event_seq = runtime.journal_agent_envelope(&value);
@@ -3396,6 +3503,13 @@ impl PiReader {
             events = crate::pi_view::suppress_withheld_finish(events);
         }
         for event in events {
+            // A durable `turn_end` reading is the meter's new last word:
+            // the live dedup key forgets what it published before the
+            // durable number lands, so a new turn whose first live reading
+            // equals the old one still shows.
+            if matches!(event, SessionEvent::ContextUsage { live: false, .. }) {
+                self.arbiter.note_durable_context();
+            }
             self.publish(runtime, event, event_seq);
         }
         Ok(())

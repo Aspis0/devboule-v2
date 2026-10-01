@@ -414,10 +414,82 @@ fn usage_from_pi(value: &Value) -> Option<TurnUsage> {
     .then_some(usage)
 }
 
+/// One classified `get_session_stats` reply body: what pi actually said.
+/// This is the file's job — pi wire shape in, meaning out.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StatsReply {
+    /// `contextUsage` carried a token count: the reading, with the window
+    /// pi named (absent when pi had no model or window).
+    Reading {
+        used_tokens: u64,
+        window_tokens: Option<u64>,
+    },
+    /// `contextUsage` present with null tokens — pi's own "just after
+    /// compaction" state. Nothing to publish, and nothing wrong: the next
+    /// answer carries a real count.
+    NullTokens,
+    /// No usable `contextUsage` — pi omits it whenever there is no model
+    /// or no window. No reading this tick, and no verdict about the
+    /// binary.
+    Unusable,
+}
+
+/// Read one `get_session_stats` (success) reply's `data.contextUsage`.
+pub(crate) fn stats_reply_from_response(response: &Value) -> StatsReply {
+    let context = response
+        .get("data")
+        .and_then(|data| data.get("contextUsage"));
+    let Some(context) = context.filter(|context| context.is_object()) else {
+        return StatsReply::Unusable;
+    };
+    let Some(used_tokens) = context.get("tokens").and_then(Value::as_u64) else {
+        return StatsReply::NullTokens;
+    };
+    StatsReply::Reading {
+        used_tokens,
+        window_tokens: context.get("contextWindow").and_then(Value::as_u64),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{drive_replay, events_from_line, suppress_withheld_finish};
+    use super::{
+        drive_replay, events_from_line, stats_reply_from_response, suppress_withheld_finish,
+        StatsReply,
+    };
     use devboule_protocol::SessionEvent;
+
+    #[test]
+    fn a_stats_reply_is_classified_by_its_context_usage() {
+        use serde_json::json;
+        assert_eq!(
+            stats_reply_from_response(&json!({
+                "data": {"contextUsage": {"tokens": 60000, "contextWindow": 200000, "percent": 30}},
+            })),
+            StatsReply::Reading {
+                used_tokens: 60_000,
+                window_tokens: Some(200_000),
+            }
+        );
+        // The compaction null: the field exists and says nothing yet.
+        assert_eq!(
+            stats_reply_from_response(&json!({"data": {"contextUsage": {"tokens": null}}})),
+            StatsReply::NullTokens
+        );
+        // No model or window available: pi omits `contextUsage` entirely.
+        assert_eq!(
+            stats_reply_from_response(&json!({"data": {"tokens": {"total": 105000}}})),
+            StatsReply::Unusable
+        );
+        assert_eq!(
+            stats_reply_from_response(&json!({"data": {"contextUsage": "garbage"}})),
+            StatsReply::Unusable
+        );
+        assert_eq!(
+            stats_reply_from_response(&json!({"success": true})),
+            StatsReply::Unusable
+        );
+    }
 
     fn parse(line: &str) -> serde_json::Value {
         serde_json::from_str(line).expect("synthesized JSON")
