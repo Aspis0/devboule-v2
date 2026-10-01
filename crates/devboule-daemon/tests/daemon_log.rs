@@ -242,17 +242,22 @@ fn a_losing_second_daemon_does_not_rotate_the_live_log() {
     assert!(status.success(), "a second daemon exits 0: {status}");
 }
 
-/// Rotation is a lock-holder's startup action, not a side effect of the
-/// first stderr line: a healthy daemon that never prints anything must
-/// still rotate an over-cap log. On a tree that rotates on the reader's
-/// first wake, this test fails — nothing ever wakes the reader.
+/// Rotation is a lock-holder's startup action, queued when the lock is
+/// taken — not a side effect of stderr traffic or of the cap tripping
+/// mid-run. Every daemon that takes the lock now prints its ConPTY line
+/// at startup, so the traffic-free rotation is pinned at the pipeline
+/// level (`the_lock_holders_rotation_does_not_wait_for_stderr_traffic`);
+/// this test pins the real binary end to end: the over-cap log moves
+/// aside whole. That a losing daemon never rotates is the sibling test's
+/// pin (`a_losing_second_daemon_does_not_rotate_the_live_log`).
 #[test]
-fn a_daemon_that_logs_nothing_still_rotates_once_it_owns_the_lock() {
+fn an_over_cap_log_rotates_once_the_daemon_owns_the_lock() {
     let (paths, dir) = unique_paths();
     const LINE: &[u8] = b"0123456789abcde\n";
     let previous = LINE.repeat(327_681);
     std::fs::write(dir.join("daemon.log"), &previous).expect("seed the over-cap log");
-    // No corrupt policy, no sweep: nothing is guaranteed to print.
+    // No corrupt policy, no sweep: the only guaranteed line is the ConPTY
+    // one, and it prints after the lock.
 
     let mut process = spawn(&paths);
     let rotated_path = dir.join("daemon.log.1");
@@ -263,7 +268,7 @@ fn a_daemon_that_logs_nothing_still_rotates_once_it_owns_the_lock() {
         }
         assert!(
             Instant::now() < deadline,
-            "an over-cap log must be rotated once the lock is held, without waiting for a line"
+            "an over-cap log must be rotated once the lock is held, without waiting for stderr traffic"
         );
         assert!(
             !process.died(),

@@ -105,6 +105,90 @@ fn a_reopen_rotates_only_once_the_lock_request_arrives() {
     );
 }
 
+/// Rotation is the lock-holder's queued request, not a side effect of
+/// stderr traffic: with no chunk in flight at all — no pipe, no reader —
+/// the over-cap log still moves whole. On a tree that reopens only when
+/// the reader's first chunk wakes it, this test fails at the poll, since
+/// no chunk ever comes. (The real-binary rotation is pinned in
+/// `tests/daemon_log.rs`; there, the daemon's ConPTY line wakes the
+/// reader and cannot separate the two.)
+#[test]
+fn the_lock_holders_rotation_does_not_wait_for_stderr_traffic() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-rotate-quiet");
+    let log_path = dir.join(crate::daemon_log::log_file_name());
+    let previous = vec![b'x'; (crate::daemon_log::log_cap_bytes() + 1) as usize];
+    std::fs::write(&log_path, &previous).expect("seed the over-cap log");
+    std::fs::write(dir.join(crate::daemon_log::rotated_file_name()), b"stale")
+        .expect("seed the previous rotation");
+    let file = OpenOptions::new()
+        .append(true)
+        .open(&log_path)
+        .expect("open the pre-lock log");
+    let (feed, take) = sync_channel::<Msg>(QUEUE_CAPACITY);
+    let post_lock = feed.clone();
+    let core = test_core(feed);
+    // The sink is a per-process singleton, and the only other publisher is
+    // `take_over_stderr`, which no test calls — so this publish owns the
+    // slot and never restores it. A future `take_over_stderr` test cannot
+    // share this binary unguarded: it would find the slot taken — by here,
+    // a dead sink — and its takeover would silently no-op.
+    assert!(publish(core.clone()).is_ok(), "the sink publishes");
+    let writer = spawn_writer_thread(take, Some(file)).expect("the writer thread starts");
+
+    // The rotation request alone, with nothing printed anywhere. The
+    // rotation replaces the seeded stale daemon.log.1, so the poll ends
+    // only when the rotated file holds exactly the old bytes.
+    crate::daemon_log::rotate_after_lock(&dir);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(bytes) = std::fs::read(dir.join(crate::daemon_log::rotated_file_name())) {
+            if bytes == previous {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the rotation never happened without stderr traffic"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // A line printed after the lock — in a real daemon the ConPTY startup
+    // line — queues behind the rotation and lands in the fresh log.
+    post_lock
+        .send(Msg::Bytes(b"after the lock\n".to_vec(), 0))
+        .expect("the line queues");
+    drop(post_lock);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(bytes) = std::fs::read(&log_path) {
+            let text = String::from_utf8_lossy(&bytes);
+            if text.contains("after the lock") {
+                assert!(
+                    text.contains("was moved to"),
+                    "the fresh log carries the rotation notice: {text:?}"
+                );
+                assert!(
+                    !text.contains("xxxxxxxxxx"),
+                    "the fresh log does not repeat the old bytes: {text:?}"
+                );
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the post-lock line never landed in the fresh log"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    core.feed
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take();
+    writer.join().expect("the writer finishes");
+}
+
 #[test]
 fn the_final_tally_waits_boundedly_for_a_full_queue() {
     let (feed, take) = sync_channel::<Msg>(1);

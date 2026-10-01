@@ -76,14 +76,17 @@ fn run_windows() -> Result<(), DaemonError> {
     // Only now — the single-instance lock is ours — may the log rotate: a
     // losing second daemon must never move the running daemon's log aside.
     crate::daemon_log::rotate_after_lock(&paths.dir);
-    // One startup line through the daemon's own log (stderr, which
-    // daemon_log mirrors into daemon.log): which ConPTY implementation this
-    // process pinned. The vendored loader deliberately has no logger of its
-    // own. The line prints below `rotate_after_lock` because stderr bytes
-    // queued earlier are appended to the over-cap log the rotation must move
-    // aside whole — and a losing second daemon would write them into the
-    // running daemon's log. Forcing the source still fails fast on a kernel
-    // without ConPTY: the panic precedes anything served or recorded.
+    // The vendored loader has no logger, so this line reports which ConPTY
+    // implementation the process pinned; it sits below `rotate_after_lock`
+    // so it lands in the fresh log instead of joining the over-cap one the
+    // rotation moves aside whole. The stderr takeover is itself pre-lock —
+    // a losing daemon still writes into the running daemon's log; the lock
+    // gates the rotation, not the writes — and on a kernel without ConPTY
+    // the forced source panics before anything is served or the record
+    // written, but after the reopen request whose notice lands in the
+    // fresh log — unless the writer's queue stayed full past
+    // `ROTATE_RETRY` and the rotation was skipped and recorded in
+    // `Status.logError` instead.
     eprintln!("ConPTY: using {}", portable_pty::conpty_source());
     let pid = std::process::id();
     let instance_id = format!(

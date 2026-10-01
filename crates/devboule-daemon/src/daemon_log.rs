@@ -18,8 +18,8 @@
 //! retention — nothing ever deletes them. Once the single-instance lock says
 //! this daemon is the one, a log over the 5 MiB cap is moved whole to
 //! `daemon.log.1` (replacing the previous rotation), immediately — the
-//! request goes into the writer's queue, so a daemon that never prints a
-//! line still rotates. Mid-run the writer stops at the cap with one notice.
+//! request goes into the writer's queue, so the rotation does not wait
+//! for stderr traffic. Mid-run the writer stops at the cap with one notice.
 //! The bound holds for files this code wrote; a `daemon.log` that arrived
 //! from anywhere else is moved as it is, and the live file may overshoot the
 //! cap by one read chunk plus this notice before the check trips.
@@ -238,9 +238,11 @@ mod imp {
 
     /// Rotate an over-cap log aside, now that the single-instance lock is
     /// ours. The request goes straight into the writer's queue, so the
-    /// rotation happens now — even for a daemon that never prints a line. A
-    /// stalled writer may delay it up to [`ROTATE_RETRY`]; giving up leaves
-    /// the cap-and-stop bound in place and startup unblocked.
+    /// rotation happens now — it does not wait for stderr traffic. A
+    /// stalled writer may delay it up to [`ROTATE_RETRY`]; giving up
+    /// leaves the cap-and-stop bound in place and startup unblocked, and
+    /// is recorded through `Status.logError` unless an earlier log error
+    /// already holds the first-write-wins slot.
     pub fn rotate_after_lock(runtime_dir: &Path) {
         let mut unsent = Some(runtime_dir.to_path_buf());
         let deadline = Instant::now() + ROTATE_RETRY;
@@ -250,6 +252,12 @@ mod imp {
                 Err(back) => {
                     unsent = Some(back);
                     if Instant::now() >= deadline {
+                        // A skipped rotation must surface in Status, not sit
+                        // silent while the cap quietly stops the old file.
+                        record_error(format!(
+                            "daemon.log: an over-cap {LOG_FILE_NAME} was not rotated aside; \
+                             the log queue stayed full past the retry"
+                        ));
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(10));
@@ -321,7 +329,9 @@ mod imp {
     pub(crate) fn reopen_log(runtime_dir: &Path) -> LogFile {
         let log_path = runtime_dir.join(LOG_FILE_NAME);
         if rotate_at_startup(&log_path) {
-            if let Ok(mut file) = OpenOptions::new().append(true).open(&log_path) {
+            // The rename took the name with it, so this must create the
+            // fresh log to hold the notice.
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
                 let _ = writeln!(
                     file,
                     "daemon log: an over-cap {LOG_FILE_NAME} was moved to {ROTATED_FILE_NAME}"
