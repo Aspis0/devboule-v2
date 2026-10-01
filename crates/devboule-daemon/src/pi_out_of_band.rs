@@ -99,6 +99,23 @@ impl CompactGuard {
         }
     }
 
+    /// The settle a test waits on before spending the end grace: only
+    /// `SettledOk` is the field [`Self::try_begin`] reclaims an end-less run
+    /// by. Trap: a failed settle clears the run instead of dating it: a run
+    /// released this way is never re-dated, so a wait watching that run must
+    /// fail rather than spin.
+    #[cfg(test)]
+    fn settle_state(&self) -> SettleState {
+        let Ok(state) = self.state.lock() else {
+            return SettleState::Running;
+        };
+        match state.current.as_ref() {
+            None => SettleState::Cleared,
+            Some(run) if run.settled_ok_at.is_some() => SettleState::SettledOk,
+            Some(_) => SettleState::Running,
+        }
+    }
+
     /// Claim the one compact slot. `None` is the refusal.
     fn try_begin(&self) -> Option<u64> {
         let mut state = self.state.lock().ok()?;
@@ -226,6 +243,13 @@ enum SettleOutcome {
     TimedOut,
 }
 
+#[cfg(test)]
+enum SettleState {
+    Running,
+    SettledOk,
+    Cleared,
+}
+
 /// The two commands pi runs itself, dispatched before a turn exists: the
 /// text never becomes a prompt and never begins a turn.
 pub(super) struct PiOutOfBandCommands {
@@ -252,7 +276,7 @@ impl PiOutOfBandCommands {
 
     /// The bound a test shortens: the refusal and bound tests would
     /// otherwise wait the production five minutes. It is
-    /// also the end grace, so the missing-end test shortens both with one knob.
+    /// also the end grace.
     #[cfg(test)]
     pub(super) fn with_compact_timeout(mut self, timeout: Duration) -> Self {
         self.compact_timeout = timeout;

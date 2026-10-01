@@ -54,9 +54,11 @@ impl EchoHarness {
     }
 
     /// One frame the child echoed. Blocks up to the timeout, so a dropped
-    /// write fails the test instead of hanging it.
+    /// write fails the test instead of hanging it. The bound is the test's
+    /// budget, not the answer's: a loaded runner can starve a read whose
+    /// answer was already on its way.
     pub(super) fn read_frame(&mut self) -> serde_json::Value {
-        self.poll_frame(std::time::Duration::from_secs(10))
+        self.poll_frame(std::time::Duration::from_secs(30))
             .expect("answer frame written")
     }
 

@@ -393,8 +393,7 @@ fn a_successful_compact_without_an_end_frees_the_slot_within_its_bound() {
     let (mut child, stdin, stdout) = fake_pi(FAKE_PI_COMPACT_WITHOUT_END);
     let reader_stdin = Arc::clone(&stdin);
     let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
-    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control))
-        .with_compact_timeout(Duration::from_millis(150));
+    let handler = super::PiOutOfBandCommands::new(Arc::clone(&control));
     let guard = handler.compact_guard();
     // The end grace is this test's own act, not the clock: a wide grace
     // holds the slot while the end is due whatever the machine is doing;
@@ -432,17 +431,37 @@ fn a_successful_compact_without_an_end_frees_the_slot_within_its_bound() {
     });
 
     handler.run_out_of_band("/compact one", &runtime);
-    wait_for_notice(&conn, "Compacting...");
+    let messages = wait_for_notice(&conn, "Compacting...");
+    assert!(
+        messages.is_empty(),
+        "a compaction in progress shows no assistant line yet: {messages:?}"
+    );
     handler.run_out_of_band("/compact two", &runtime);
     assert_eq!(
         drain(&conn).1,
         ["[Error] A Pi compact command is already running"],
         "the slot holds while the end is due"
     );
-    // The grace is spent causally — the test's own act — so the slot is
-    // free at any machine speed: the third compact is accepted, and its own
-    // start marker is the proof. The reclaim still owes the missing end, so
-    // the late-end protection this run exercises is untouched.
+    // The grace may only be spent once the first compact's response has
+    // settled: the reclaim reads the run's settled time, so a grace spent
+    // earlier still finds the run unsettled and refuses the third.
+    let settle_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match guard.settle_state() {
+            super::SettleState::SettledOk => break,
+            super::SettleState::Cleared => {
+                panic!("the first compact's response settled as a failure, not a success")
+            }
+            super::SettleState::Running => {}
+        }
+        assert!(
+            Instant::now() < settle_deadline,
+            "the first compact's response never settled"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The reclaim still owes the missing end, so the late-end protection
+    // this run exercises is untouched.
     guard.set_end_grace(Duration::ZERO);
     handler.run_out_of_band("/compact three", &runtime);
     let deadline = Instant::now() + Duration::from_secs(30);
