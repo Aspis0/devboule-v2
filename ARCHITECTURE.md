@@ -83,8 +83,8 @@ runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); there is no bundling s
   (`crates/devboule-daemon/src/provider.rs`, `open_pty_session`, for a PTY), each in a Windows Job
   Object (§2).
 - **The journal.** SQLite, WAL mode, `journal.db` beside the lock file
-  (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 14
-  (`crates/devboule-daemon/src/journal.rs:54`).
+  (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 16
+  (`crates/devboule-daemon/src/journal.rs:63`).
 - **The MCP broker.** A loopback HTTP listener with one bearer token per session
   (`crates/devboule-daemon/src/mcp_broker/mod.rs`, `MCP_PATH`, `McpLaunchConfig`).
 - **The peer listener.** A TCP listener on the tailnet, everything inside Noise
@@ -274,11 +274,13 @@ carries a `generation`, and that is what lets a deferred intent belong to an *in
 rather than to its id: a row that died and came back is not the row the intent was taken against.
 
 **The journal.** SQLite in WAL mode at `<runtime dir>/journal.db`, beside the lock file
-(`crates/devboule-daemon/src/paths.rs:51-55`), schema version 14
-(`crates/devboule-daemon/src/journal.rs:54`). One writer thread owns it
-(`crates/devboule-daemon/src/journal.rs`, `open_with_limits`) with a bounded queue of 1024 commands
-(`:63`) and a snapshot of the screen emulator every 64 KiB of output (`:66`). Rows are appended per
-session sequence number, so a replay is ordered by the same counter the live events carry.
+(`crates/devboule-daemon/src/paths.rs:51-55`), schema version 16
+(`crates/devboule-daemon/src/journal.rs:63`; step 15 added `sessions.cwd`, step 16
+`sessions.goal`, both nullable — `crates/devboule-daemon/src/journal_schema.rs`). One writer thread
+owns it (`crates/devboule-daemon/src/journal.rs`, `open_with_limits`) with a bounded queue of 1024
+commands (`:72`) and a snapshot of the screen emulator every 64 KiB of output (`:75`). Rows are
+appended per session sequence number, so a replay is ordered by the same counter the live events
+carry.
 
 **Replay on attach.** A session that is not live is hydrated from the journal instead of being
 spawned: `attach`/`attach_with_subscription` call `hydrate_transcript`
@@ -337,7 +339,7 @@ none, and `src/lib/agentDaemonNotice.ts` requires both. A header line counts onl
 
 
 **Retention.** Four limits, all configurable, with these defaults
-(`crates/devboule-daemon/src/journal.rs:72-83`): 512 MiB per session, 8 GiB total, 10 000 sessions,
+(`crates/devboule-daemon/src/journal.rs:81-92`): 512 MiB per session, 8 GiB total, 10 000 sessions,
 and an age limit of `0` — off. The app exposes them as `journal_usage`,
 `journal_retention_get`/`_set` and `session_delete` (`src-tauri/src/lib.rs:68-71`). Deletion is
 byte- and count-driven, not idle-driven (`crates/devboule-daemon/src/journal_retention.rs`,

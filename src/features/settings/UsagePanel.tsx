@@ -20,10 +20,10 @@ const LOADING_COPY = "Listing the configured providers…";
  * Plan usage travels for the daemon's Claude and Codex roads only: its plan
  * cache maps the Claude and Codex session kinds to a frame and Pi, Acp and
  * Terminal to none (crates/devboule-daemon/src/plan_usage_cache.rs; frames
- * are built in claude_view.rs and codex_view.rs). The catalog's `protocol`
- * names the road a provider launches chat on — one of "acp", "stream-json",
- * "pi-rpc" or "codex-app-server" — so that field is the whole fact here,
- * never a second, hand-kept list of provider ids.
+ * are built in claude_view_rate_limit.rs and codex_view.rs). The catalog's
+ * `protocol` names the road a provider launches chat on — one of "acp",
+ * "stream-json", "pi-rpc" or "codex-app-server" — so that field is the whole
+ * fact here, never a second, hand-kept list of provider ids.
  */
 function reportsPlanUsage(provider: ProviderInfo): boolean {
   return provider.protocol === "stream-json" || provider.protocol === "codex-app-server";
@@ -108,11 +108,8 @@ function ProviderPlanGroup({ provider, nowMs }: { provider: ProviderInfo; nowMs:
 }
 
 /**
- * The Settings → Usage page: each installed provider with the latest plan
- * reading the app has received for it. The reading is the plan store's
- * live-only frame, so a cold app has none, and the page fetches no usage and
- * has no refresh. The provider list itself comes from the daemon's catalog —
- * the one call that can run here, retried when it fails.
+ * The page's readings are the plan store's live-only frame, never restored
+ * from replay, so the panel stays empty until the first live reading arrives.
  */
 export function UsagePanel() {
   // The reset labels count down, so the clock must move while the page sits

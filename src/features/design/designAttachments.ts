@@ -706,12 +706,13 @@ export interface DesignAttachmentImportOptions {
  * pill is the document, and removing it takes every page. Everything else
  * answers with its own id, which is what it answered before documents existed.
  *
- * One rule, two callers, and that is the point: `DesignSurface.tsx` keys pills
- * and removals on this, and the budget below counts attachments the way the
- * composer shows them rather than the way the transport carries them. Counting
- * pages against `MAX_ATTACHMENT_COUNT` is what let four slots be spent by two
- * two-page documents — two pills — and then refused the next file with a
- * sentence about the four it could see.
+ * One rule, two callers, and that is the point: `designAttachmentDisplay.ts`
+ * groups the pills on this key and `useDesignAttachments.ts` removes by it,
+ * and the budget below counts attachments the way the composer shows them
+ * rather than the way the transport carries them. Counting pages against
+ * `MAX_ATTACHMENT_COUNT` instead would spend four slots on two two-page
+ * documents — two pills — and refuse the next file while the composer still
+ * shows two pills.
  */
 export function attachmentPillKey(attachment: DesignAttachment): string {
   return (attachment.kind === "raster" ? attachment.document?.id : undefined) ?? attachment.id;

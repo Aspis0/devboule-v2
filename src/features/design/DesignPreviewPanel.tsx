@@ -97,10 +97,11 @@ export function DesignPreviewPanel() {
       // an inline style on the element being measured, so an unbroken chain is the only
       // thing keeping the value from re-entering as a measurement.
       const pageHeight = Math.min(Math.round(height / scale), ARTIFACT_PREVIEW_MAX_PAGE_HEIGHT);
-      // An equal value is not written again — the canvas's own idiom for the same property
+      // The read is of the inline style only, so a stylesheet default can never
+      // suppress the first write.
+      // The canvas guards the same property with the same idiom
       // (`setArtifactPageHeight((current) => (current === desired ? current : desired))` in
-      // DesignSurface.tsx). The read is of the inline style only, so a stylesheet default
-      // can never suppress the first write, and a box that changed writes both properties.
+      // useDesignViewport.ts).
       const write = (property: string, value: string) => {
         if (element.style.getPropertyValue(property) !== value) {
           element.style.setProperty(property, value);

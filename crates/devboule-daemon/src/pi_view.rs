@@ -261,7 +261,7 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
     // Arguments arrive here, so the command does too: the call row was sent
     // bare (`toolcall_start` carries no arguments), and the app's reducer
     // keeps this value through the later commandless updates
-    // (`agentSession.ts:1476`).
+    // (`agentSession.ts:1491`).
     let command = shell_command_from_tool(
         name.unwrap_or(""),
         tool_call

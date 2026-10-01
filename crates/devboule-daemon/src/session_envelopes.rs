@@ -277,14 +277,15 @@ pub(super) fn child_finish_state(
 ///
 /// The words the providers actually use, measured in this tree:
 ///
-/// * `end_turn` — ACP's normal stop (`acp_client.rs`, `claude_view.rs` default)
-///   and the Claude stream's own `stop_reason`;
-/// * `completed` — codex's turn status (`codex_view.rs:849`);
-/// * `interrupted` — codex's interrupted turn (`codex_view.rs:857`, `:1144`);
+/// * `end_turn` — ACP's normal stop, carried through from the agent's prompt
+///   response (`acp_view.rs`), and the Claude stream's own `stop_reason`,
+///   defaulted when it names none (`claude_view_result.rs:32`);
+/// * `completed` — codex's turn status (`codex_view.rs:1674`);
+/// * `interrupted` — codex's interrupted turn (`codex_view.rs:1682`);
 /// * `cancelled` / `canceled` — the daemon's own cancel path and ACP's
 ///   `cancelled`;
 /// * anything else — `max_tokens`, `max_turn_requests`, `refusal`, pi's
-///   `unknown` default (`pi_view.rs:165`), a reason from a provider version
+///   `unknown` default (`pi_view.rs:369`), a reason from a provider version
 ///   this daemon has never seen — is `failed`. Failing closed is the point: a
 ///   creator that reads `completed` will believe work happened.
 pub(super) fn stop_reason_state(stop_reason: &str) -> AgentTaskState {

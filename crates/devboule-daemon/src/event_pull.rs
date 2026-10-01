@@ -1251,8 +1251,8 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
     }
 }
 
-/// The harness the event-pull test topics share: the pull drain, the tracked
-/// attach, and the two live-agent replay fixtures.
+/// The harness the event-pull test topics share rather than each topic
+/// defining its own.
 #[cfg(test)]
 #[path = "event_pull_test_support.rs"]
 mod test_support;
