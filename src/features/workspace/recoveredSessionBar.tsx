@@ -1,12 +1,13 @@
 // One-click reopen for a recovered transcript. Renders the daemon's
 // `resumable` verdict, never re-derives it, and never resumes by itself.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { sessionResume } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
 import { isAgentKind, type Session } from "../../types/ipc";
 
 const UNRESUMABLE_NOTE = "This transcript is read-only. Resume is not available for this session.";
+const REOPEN_FAILED_NOTE = "Reopen failed. You can try again.";
 
 export function RecoveredSessionBar({
   session,
@@ -34,12 +35,23 @@ export function RecoveredSessionBar({
     };
   }, []);
   const resumable = session?.resumable === true;
-  // Error and announcement belong to the verdict they were produced under: the
-  // unresumable note is the sentence's only copy, and a repaired verdict starts clean.
-  if (!resumable && (error !== null || announcement !== "")) {
+  // Error, announcement and an in-flight attempt belong to the verdict they
+  // started under; a verdict change drops all three so nothing outlives it.
+  const [verdict, setVerdict] = useState(resumable);
+  const [attempt, setAttempt] = useState(0);
+  if (verdict !== resumable) {
+    setVerdict(resumable);
+    setAttempt(attempt + 1);
+    setResuming(false);
     setError(null);
     setAnnouncement("");
   }
+  // The settle cannot read state from its own closure and may land before the
+  // passive effects run; a layout effect keeps this mirror on the commit.
+  const latest = useRef({ resumable, attempt });
+  useLayoutEffect(() => {
+    latest.current = { resumable, attempt };
+  }, [resumable, attempt]);
   if (session === null) return null;
   // A recovered terminal tells its story once, inside its own pane (the ended
   // banner with its close-tab action). This bar's resume verdict is about
@@ -51,10 +63,24 @@ export function RecoveredSessionBar({
 
   const reopen = (): void => {
     if (resuming || !resumable) return;
+    const generation = attempt;
     setResuming(true);
     setError(null);
     // Each attempt gets its own transition: empty here, refilled by failure.
     setAnnouncement("");
+    // Answered by the verdict it lands on: its own carries the error and the
+    // verdict, a retracted one the verdict, a repaired one the retry note.
+    const reportFailure = (failure: ErrorSentence): void => {
+      const landed = latest.current;
+      if (generation === landed.attempt) {
+        setError(failure);
+        setAnnouncement(UNRESUMABLE_NOTE);
+      } else if (landed.resumable) {
+        setAnnouncement(REOPEN_FAILED_NOTE);
+      } else {
+        setAnnouncement(UNRESUMABLE_NOTE);
+      }
+    };
     void (async () => {
       try {
         const result = await sessionResume(session.id);
@@ -70,19 +96,18 @@ export function RecoveredSessionBar({
             ? { sentence: result.message, detail: null }
             : { sentence: "This session does not support resume.", detail: null };
         if (mounted.current) {
-          setError(failure);
-          setAnnouncement(UNRESUMABLE_NOTE);
+          reportFailure(failure);
         }
         // The roster refresh is harmless, so it runs even from a dead fiber.
         onResumeFailed?.();
       } catch (cause) {
         if (mounted.current) {
-          setError(errorSentence(cause));
-          setAnnouncement(UNRESUMABLE_NOTE);
+          reportFailure(errorSentence(cause));
         }
         onResumeFailed?.();
       } finally {
-        if (mounted.current) {
+        // A superseded attempt must not release the state of a newer one.
+        if (mounted.current && generation === latest.current.attempt) {
           setResuming(false);
         }
       }

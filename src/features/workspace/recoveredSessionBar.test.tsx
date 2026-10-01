@@ -2,7 +2,7 @@
 // never a re-derivation, and never an auto-resume on mount. The quiet
 // note's own tokens are proved through the real sheet.
 // @vitest-environment happy-dom
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -81,6 +81,21 @@ async function rerenderBar(session: Session | null, onResumeFailed?: () => void)
       />,
     );
   });
+}
+
+// Fires the test's settle from the commit itself: the window between a commit
+// and the effects that commit schedules can only be entered from inside it.
+function CommitProbe({ resumable, onCommit }: { resumable: boolean; onCommit: () => void }) {
+  useLayoutEffect(() => {
+    onCommit();
+  });
+  return (
+    <RecoveredSessionBar
+      key="rec-1"
+      session={recoveredSession({ resumable })}
+      onReopened={vi.fn()}
+    />
+  );
 }
 
 function verdictStatus(): Element {
@@ -228,6 +243,48 @@ describe("RecoveredSessionBar", () => {
     expect(container.querySelector('[data-testid="recovered-unresumable"]')).not.toBeNull();
   });
 
+  it("leaves Reopen usable when the verdict dips and returns while the resume is in flight", async () => {
+    let fail!: (result: ResumeResult) => void;
+    vi.mocked(sessionResume).mockReturnValueOnce(
+      new Promise<ResumeResult>((resolve) => {
+        fail = resolve;
+      }),
+    );
+    await mountBar(recoveredSession());
+
+    const reopenButton = (): HTMLButtonElement | null =>
+      container.querySelector<HTMLButtonElement>('[data-testid="recovered-reopen-bar"] button');
+    const button = reopenButton();
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(button.textContent).toBe("Reopening…");
+    expect(button.disabled).toBe(true);
+
+    // The roster retracts the verdict and repairs it again before the attempt
+    // settles: whatever comes back must belong to no attempt at all.
+    await rerenderBar(recoveredSession({ resumable: false }));
+    await rerenderBar(recoveredSession({ resumable: true }));
+
+    const returned = reopenButton();
+    if (returned === null) {
+      throw new Error("Reopen button did not render after the verdict returned");
+    }
+    expect(returned.textContent).toBe("Reopen");
+    expect(returned.disabled).toBe(false);
+
+    // The attempt that outlived its verdict arrives late: no danger block,
+    // and the bar says only that the click failed.
+    await act(async () => {
+      fail({ type: "failed", message: "session vanished" });
+    });
+    const settled = reopenButton();
+    if (settled === null) throw new Error("Reopen button did not render after the stale settle");
+    expect(settled.textContent).toBe("Reopen");
+    expect(settled.disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(verdictStatus().textContent).toBe("Reopen failed. You can try again.");
+  });
+
   it("renders nothing for a recovered terminal: the pane carries that failure's one sentence", async () => {
     await renderBar(recoveredSession({ kind: "terminal", resumable: false }));
 
@@ -321,6 +378,135 @@ describe("the recovered bar's quiet state", () => {
     expect(container.querySelector('[data-testid="recovered-verdict-status"]')).toBe(status);
     // The visible note carries the sentence now, so the region steps aside.
     expect(status.textContent).toBe("");
+  });
+
+  it("speaks the outcome when the verdict retracts while the resume is in flight", async () => {
+    const sentence = "This transcript is read-only. Resume is not available for this session.";
+    let fail!: (result: ResumeResult) => void;
+    vi.mocked(sessionResume).mockReturnValueOnce(
+      new Promise<ResumeResult>((resolve) => {
+        fail = resolve;
+      }),
+    );
+    const onResumeFailed = vi.fn();
+    await mountBar(recoveredSession(), onResumeFailed);
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(verdictStatus().textContent).toBe("");
+
+    // The roster retracts the verdict while the attempt is still in flight.
+    await rerenderBar(recoveredSession({ resumable: false }), onResumeFailed);
+    expect(container.querySelector('[data-testid="recovered-unresumable"]')).not.toBeNull();
+
+    await act(async () => {
+      fail({ type: "failed", message: "session vanished" });
+    });
+
+    // The settle is not erased: the region, mounted and waiting since the
+    // flip, takes the outcome while the note keeps the visible verdict.
+    expect(verdictStatus().textContent).toBe(sentence);
+    expect(container.querySelector('[data-testid="recovered-unresumable"]')?.textContent).toContain(
+      sentence,
+    );
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(onResumeFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the retry note once when a failed reopen lands on a repaired verdict", async () => {
+    const retry = "Reopen failed. You can try again.";
+    let fail!: (result: ResumeResult) => void;
+    vi.mocked(sessionResume).mockReturnValueOnce(
+      new Promise<ResumeResult>((resolve) => {
+        fail = resolve;
+      }),
+    );
+    await mountBar(recoveredSession());
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    expect(button.textContent).toBe("Reopening…");
+
+    await rerenderBar(recoveredSession({ resumable: false }));
+    await rerenderBar(recoveredSession({ resumable: true }));
+    await act(async () => {
+      fail({ type: "failed", message: "session vanished" });
+    });
+
+    // The user clicked, so the pane says it failed — politely, exactly once,
+    // with no danger block and a control that stays usable.
+    expect(verdictStatus().textContent).toBe(retry);
+    expect((container.textContent ?? "").split(retry)).toHaveLength(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    const settled = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (settled === null) throw new Error("Reopen button did not render after the settle");
+    expect(settled.textContent).toBe("Reopen");
+    expect(settled.disabled).toBe(false);
+
+    // Another roster read with the same verdict: the text does not change.
+    await rerenderBar(recoveredSession({ resumable: true }));
+    expect(verdictStatus().textContent).toBe(retry);
+  });
+
+  it("answers a failure that settles between the flip's commit and its effects", async () => {
+    let fail!: (result: ResumeResult) => void;
+    vi.mocked(sessionResume).mockReturnValueOnce(
+      new Promise<ResumeResult>((resolve) => {
+        fail = resolve;
+      }),
+    );
+    let armed = false;
+    let committed!: () => void;
+    const commitDone = new Promise<void>((resolve) => {
+      committed = resolve;
+    });
+    const onCommit = (): void => {
+      if (!armed) return;
+      armed = false;
+      fail({ type: "failed", message: "session vanished" });
+      committed();
+    };
+
+    root = createRoot(container);
+    const showProbe = async (resumable: boolean): Promise<void> => {
+      await act(async () => {
+        root.render(<CommitProbe resumable={resumable} onCommit={onCommit} />);
+      });
+    };
+    await showProbe(true);
+
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+    await showProbe(false);
+
+    // The repair goes through React's normal scheduling, and the failure is
+    // fired from its commit — before that commit's effects have run.
+    armed = true;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    root.render(<CommitProbe resumable onCommit={onCommit} />);
+    await commitDone;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    await act(async () => undefined);
+
+    expect(verdictStatus().textContent).toBe("Reopen failed. You can try again.");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    const settled = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (settled === null) throw new Error("Reopen button did not render");
+    expect(settled.textContent).toBe("Reopen");
+    expect(settled.disabled).toBe(false);
   });
 
   it("announces once: the region text asserted after each step of a failing click", async () => {
