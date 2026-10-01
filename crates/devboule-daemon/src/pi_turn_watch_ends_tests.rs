@@ -6,19 +6,15 @@
 use super::super::local_command_test_support::recorded_turn_end;
 use super::test_support::turn_end_with;
 use super::test_support::{
-    attached, deliver, drain, feed_line, finish, harness, is_any_finish, is_eof_error,
-    is_error_finish, is_watchdog_error, tool_execution_end, toolcall_start, touch, try_next_echo,
+    attached, broker, deliver, drain, feed_line, finish, harness, is_eof_error, tool_execution_end,
+    toolcall_start, touch, try_next_echo,
 };
 use crate::journal::{new_session_record, Journal};
-use crate::session::permission_broker::PermissionBroker;
 use crate::session::SessionRuntime;
+use crate::test_support::{is_any_finish, is_error_finish, is_watchdog_error};
 use devboule_protocol::{SessionEvent, SessionKind};
 use std::sync::Arc;
 use std::time::Duration;
-
-fn broker() -> Arc<PermissionBroker> {
-    PermissionBroker::for_test(Arc::new(|_, _| Ok(())))
-}
 
 /// One inbound frame before the clock is faked: the priming feed every live
 /// reader gets, which binds the runtime the expiry publishes through.

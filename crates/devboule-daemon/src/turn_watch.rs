@@ -27,6 +27,14 @@ pub(crate) fn silence_from_env(var: &str, default: Duration) -> Duration {
         .unwrap_or(default)
 }
 
+/// One constructor for both families, so a reword lands in both notices at once.
+pub(crate) fn watchdog_message(provider: &str, silence: Duration) -> String {
+    format!(
+        "{provider} produced no output for {} s during the turn; the run was ended.",
+        silence.as_secs().max(1)
+    )
+}
+
 /// How long one open tool call holds the watchdog clock: thirty minutes.
 /// The effective ceiling for one silent tool is grace plus silence, 2400 s:
 /// past that a quiet tool is ended even if its result never arrives. The

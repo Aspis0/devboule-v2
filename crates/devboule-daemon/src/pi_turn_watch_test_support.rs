@@ -21,16 +21,13 @@ use crate::session::permission_broker::PermissionBroker;
 use crate::session::turn_watch::TurnWatch;
 use crate::session::{ReaderDispatch, SessionRuntime};
 
-const ECHO_PI: &str = r#"
-let buffered = "";
-process.stdin.on("data", (chunk) => {
-  buffered += chunk;
-  let index;
-  while ((index = buffered.indexOf("\n")) >= 0) {
-    process.stdout.write(buffered.slice(0, index + 1));
-    buffered = buffered.slice(index + 1);
-  }
-});
+/// The echo fake's share of the stdin protocol: every framed line back on
+/// stdout. The framing loop is the shared preamble; this only handles
+/// whole lines, newline kept.
+const ECHO_PI_FRAMED: &str = r#"
+function onFramedLine(line) {
+  process.stdout.write(line);
+}
 "#;
 
 pub(super) struct PiWatchHarness {
@@ -58,8 +55,14 @@ impl Drop for PiWatchHarness {
 /// the id counter, the broker whose cards hold the clock — and reaches the
 /// reader only through the same builder spawn calls.
 pub(super) fn harness(broker: &Arc<PermissionBroker>) -> PiWatchHarness {
+    let script = format!(
+        "{}{}",
+        crate::test_support::NODE_FRAMED_STDIN,
+        ECHO_PI_FRAMED
+    );
     let child = Command::new("node")
-        .args(["-e", ECHO_PI])
+        .arg("-e")
+        .arg(script)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -142,18 +145,7 @@ pub(super) fn harness(broker: &Arc<PermissionBroker>) -> PiWatchHarness {
 pub(super) fn attached(broker: &Arc<PermissionBroker>) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
     let runtime = SessionRuntime::for_acp("s.pi.watch".to_string(), None, Arc::clone(broker));
     runtime.set_agent_kind(SessionKind::Pi);
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        "s.pi.watch",
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let conn = crate::test_support::attach_and_track(&runtime, "s.pi.watch");
     (runtime, conn)
 }
 
@@ -223,7 +215,7 @@ pub(super) fn tool_execution_end(id: &str) -> Value {
 
 /// The `PermissionBroker::for_test` every harness test pairs with its
 /// runtime.
-pub(super) fn broker() -> Arc<PermissionBroker> {
+pub(in crate::session::pi_client) fn broker() -> Arc<PermissionBroker> {
     PermissionBroker::for_test(Arc::new(|_, _| Ok(())))
 }
 
@@ -269,18 +261,7 @@ pub(super) fn attached_journal(
         Some(Arc::clone(journal)),
     ));
     runtime.set_agent_kind(SessionKind::Pi);
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        session_id,
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let conn = crate::test_support::attach_and_track(&runtime, session_id);
     (runtime, conn)
 }
 
@@ -303,30 +284,11 @@ pub(super) fn drain(conn: &ConnHandle) -> Vec<SessionEvent> {
     }
 }
 
-pub(super) fn is_watchdog_error(event: &SessionEvent) -> bool {
-    matches!(
-        event,
-        SessionEvent::AgentError { message }
-            if message.contains("produced no output") && message.contains("the run was ended")
-    )
-}
-
 pub(super) fn is_eof_error(event: &SessionEvent) -> bool {
     matches!(
         event,
         SessionEvent::AgentError { message } if message.contains("output ended while a turn")
     )
-}
-
-pub(super) fn is_error_finish(event: &SessionEvent) -> bool {
-    matches!(
-        event,
-        SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "error"
-    )
-}
-
-pub(super) fn is_any_finish(event: &SessionEvent) -> bool {
-    matches!(event, SessionEvent::AgentFinished { .. })
 }
 
 /// Close the harness down the way the reader loop does: `finish` once for

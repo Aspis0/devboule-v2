@@ -6,14 +6,16 @@
 //! replay restores. The clock is the poller's own tick; the fake pi
 //! answers from files the tests restage between ticks.
 
+use super::super::pi_turn_watch::test_support::broker;
 use super::test_support::{
-    broker, context_usages, drain, feed_line, harness, harness_catalog, harness_journaled,
-    harness_with_catalog, harness_with_silence, is_watchdog_error, node_skip, prime, release_hold,
-    stage_hold, stage_stats, stats_requests, turn_end, unstage_stats, wait_for, wait_for_window,
+    context_usages, drain, feed_line, harness, harness_catalog, harness_journaled,
+    harness_with_catalog, harness_with_silence, node_skip, prime, release_hold, stage_hold,
+    stage_stats, stats_requests, turn_end, unstage_stats, wait_dead, wait_for, wait_for_window,
     wait_held,
 };
 use crate::journal::{new_session_record, Journal};
 use crate::session::SessionKiller;
+use crate::test_support::is_watchdog_error;
 use devboule_protocol::SessionKind;
 use serde_json::json;
 use std::sync::Arc;
@@ -281,6 +283,9 @@ fn a_kill_stops_the_window_and_the_requests() {
     // The kill road, by its own word: the window stops with the process
     // tree, not with the stdout EOF that follows it.
     harness.killer.kill();
+    // The kill terminates the process itself: wait for the death before
+    // anything counts what the log holds.
+    wait_dead(&harness);
     assert!(
         !harness.poller.window_open_for_test(),
         "the kill stops the window"

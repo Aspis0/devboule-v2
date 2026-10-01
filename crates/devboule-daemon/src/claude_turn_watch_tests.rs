@@ -5,11 +5,12 @@
 //! killer tests live in `claude_turn_watch_suppression_tests.rs`.
 
 use super::turn_watch_test_support::{
-    attached, deliver, drain, feed_line, finish, harness, is_any_finish, is_error_finish,
-    is_watchdog_error, tool_frame, touch,
+    attached, deliver, drain, feed_line, finish, harness, tool_frame, touch,
 };
 use super::*;
-use devboule_protocol::AgentActivityState;
+use crate::session::turn_watch::watchdog_message;
+use crate::test_support::{is_any_finish, is_error_finish, is_watchdog_error};
+use devboule_protocol::{AgentActivityState, SessionEvent};
 use std::time::Duration;
 
 #[test]
@@ -30,6 +31,18 @@ fn a_silent_turn_is_ended_by_the_watchdog() {
         events.iter().any(is_watchdog_error),
         "the silence is announced as an error notice: {:?}",
         events.iter().map(|event| event.kind()).collect::<Vec<_>>()
+    );
+    let message = events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentError { message } if is_watchdog_error(event) => Some(message),
+            _ => None,
+        })
+        .expect("the watchdog notice the predicate matched");
+    assert_eq!(
+        message,
+        &watchdog_message("Claude", Duration::from_millis(300)),
+        "the notice is the shared production sentence"
     );
     assert!(
         events.iter().any(is_error_finish),

@@ -235,7 +235,7 @@ impl ConnHandle {
     }
 
     #[cfg(test)]
-    pub(super) fn track_with_agent_replay(
+    pub(crate) fn track_with_agent_replay(
         &self,
         _session_id: &str,
         runtime: Arc<SessionRuntime>,

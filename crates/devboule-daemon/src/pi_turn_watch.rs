@@ -11,7 +11,7 @@ use devboule_protocol::SessionEvent;
 use serde_json::Value;
 
 use crate::session::permission_broker::PermissionBroker;
-use crate::session::turn_watch::{silence_from_env, TurnWatch};
+use crate::session::turn_watch::{silence_from_env, watchdog_message, TurnWatch};
 
 /// The turn watchdog's silence bound: quiet stretches with nothing carded
 /// and nothing running past the tool grace. Twice the house silence mark —
@@ -161,10 +161,7 @@ pub(super) fn pi_turn_watch(
             }
             broker.cancel_pending();
             let _ = runtime.settle_turn_finish(|| false);
-            let _ = runtime.publish_agent_error(format!(
-                "Pi produced no output for {} s during the turn; the run was ended.",
-                silence_bound.as_secs().max(1)
-            ));
+            let _ = runtime.publish_agent_error(watchdog_message("Pi", silence_bound));
             let published = runtime.publish_daemon_event(SessionEvent::AgentFinished {
                 stop_reason: "error".to_string(),
                 model_id: None,
@@ -183,7 +180,7 @@ pub(super) fn pi_turn_watch(
 
 #[cfg(test)]
 #[path = "pi_turn_watch_test_support.rs"]
-mod test_support;
+pub(in crate::session::pi_client) mod test_support;
 
 #[cfg(test)]
 #[path = "pi_turn_watch_tests.rs"]

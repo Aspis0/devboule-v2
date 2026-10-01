@@ -38,18 +38,7 @@ pub(super) fn drain(conn: &ConnHandle) -> Vec<SessionEvent> {
 
 pub(super) fn attached(broker: &Arc<PermissionBroker>) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
     let runtime = SessionRuntime::for_acp("s.claude.watch".to_string(), None, Arc::clone(broker));
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        "s.claude.watch",
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let conn = crate::test_support::attach_and_track(&runtime, "s.claude.watch");
     (runtime, conn)
 }
 
@@ -129,15 +118,7 @@ pub(super) fn harness(broker: &Arc<PermissionBroker>, cancelled: bool) -> WatchH
 /// delivers prompts the abort gate counts. Callers skip cleanly without
 /// node before calling this.
 pub(super) fn harness_echo(broker: &Arc<PermissionBroker>) -> WatchHarness {
-    let mut child = std::process::Command::new("node")
-        .args([
-            "-e",
-            "process.stdin.on('data', data => process.stdout.write(data))",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("node is required for the delivered-prompt tests");
+    let mut child = crate::test_support::spawn_node_echo();
     let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
     let stdout = BufReader::new(child.stdout.take().expect("stdout"));
     let next_id = Arc::new(AtomicU64::new(1));
@@ -151,13 +132,6 @@ pub(super) fn harness_echo(broker: &Arc<PermissionBroker>) -> WatchHarness {
         next_id,
         false,
     )
-}
-
-fn read_line(stdout: &mut BufReader<ChildStdout>) -> Value {
-    let mut buf = Vec::new();
-    use std::io::BufRead;
-    stdout.read_until(b'\n', &mut buf).expect("echoed line");
-    serde_json::from_str::<Value>(String::from_utf8_lossy(&buf).trim_end()).expect("echoed json")
 }
 
 pub(super) fn feed_line(reader: &mut ClaudeReader, runtime: &Arc<SessionRuntime>, value: Value) {
@@ -192,18 +166,11 @@ pub(super) fn touch(harness: &mut WatchHarness, runtime: &Arc<SessionRuntime>) {
 /// must have reached the child.
 pub(super) fn release_gate(harness: &mut WatchHarness, runtime: &Arc<SessionRuntime>) {
     let stdout = harness.stdout.as_mut().expect("echo harness");
-    let request = read_line(stdout);
+    let request = crate::test_support::read_echoed_json(stdout);
     feed_line(
         &mut harness.reader,
         runtime,
-        serde_json::json!({
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": request["request_id"],
-                "response": {"mode": "default"},
-            },
-        }),
+        crate::test_support::mode_control_response(&request),
     );
 }
 
@@ -211,7 +178,7 @@ pub(super) fn deliver(harness: &mut WatchHarness, text: &str) {
     harness.writer.write_all(text.as_bytes()).expect("buffer");
     harness.writer.flush().expect("queue the prompt");
     if let Some(stdout) = harness.stdout.as_mut() {
-        let _ = read_line(stdout);
+        let _ = crate::test_support::read_echoed_json(stdout);
     }
 }
 
@@ -237,23 +204,4 @@ pub(super) fn tool_frame(parent: Option<&str>, id: &str) -> Value {
         frame["parent_tool_use_id"] = serde_json::Value::String(parent.to_string());
     }
     frame
-}
-
-pub(super) fn is_watchdog_error(event: &SessionEvent) -> bool {
-    matches!(
-        event,
-        SessionEvent::AgentError { message }
-            if message.contains("produced no output") && message.contains("the run was ended")
-    )
-}
-
-pub(super) fn is_error_finish(event: &SessionEvent) -> bool {
-    matches!(
-        event,
-        SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "error"
-    )
-}
-
-pub(super) fn is_any_finish(event: &SessionEvent) -> bool {
-    matches!(event, SessionEvent::AgentFinished { .. })
 }

@@ -14,29 +14,27 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const FAKE_PI_LOCAL: &str = r#"
+/// The local fake's share of the stdin protocol: every framed line is
+/// recorded without its terminator, and `get_state` is answered with the
+/// configured state. The framing loop is the shared preamble; only the
+/// strip-then-handle differs from the fakes that keep the newline.
+const FAKE_PI_LOCAL_FRAMED: &str = r#"
 const state = JSON.parse(process.env.PI_FAKE_STATE);
-let buffered = "";
-process.stdin.on("data", (chunk) => {
-  buffered += chunk;
-  let index;
-  while ((index = buffered.indexOf("\n")) >= 0) {
-    const line = buffered.slice(0, index);
-    buffered = buffered.slice(index + 1);
-    process.stdout.write(JSON.stringify({ received: line }) + "\n");
-    let frame;
-    try { frame = JSON.parse(line); } catch { continue; }
-    if (frame.type === "get_state") {
-      process.stdout.write(JSON.stringify({
-        id: frame.id,
-        type: "response",
-        command: "get_state",
-        success: true,
-        data: state,
-      }) + "\n");
-    }
+function onFramedLine(line) {
+  const raw = line.endsWith("\n") ? line.slice(0, -1) : line;
+  process.stdout.write(JSON.stringify({ received: raw }) + "\n");
+  let frame;
+  try { frame = JSON.parse(raw); } catch { return; }
+  if (frame.type === "get_state") {
+    process.stdout.write(JSON.stringify({
+      id: frame.id,
+      type: "response",
+      command: "get_state",
+      success: true,
+      data: state,
+    }) + "\n");
   }
-});
+}
 "#;
 
 pub(super) struct LocalPi {
@@ -51,8 +49,14 @@ pub(super) struct LocalPi {
 
 impl LocalPi {
     pub(super) fn spawn(state: &str) -> Self {
+        let script = format!(
+            "{}{}",
+            crate::test_support::NODE_FRAMED_STDIN,
+            FAKE_PI_LOCAL_FRAMED
+        );
         let mut child = std::process::Command::new("node")
-            .args(["-e", FAKE_PI_LOCAL])
+            .arg("-e")
+            .arg(script)
             .env("PI_FAKE_STATE", state)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

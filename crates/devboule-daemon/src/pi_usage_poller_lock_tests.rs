@@ -2,9 +2,10 @@
 //! must not pin the window's stop roads, a switch committing during the
 //! round trip must not publish, and a kill leaves nothing that polls again.
 
+use super::super::pi_turn_watch::test_support::broker;
 use super::test_support::{
-    broker, context_usages, drain, harness, node_skip, prime, release_hold, stage_hold,
-    stage_stats, stats_requests, wait_held,
+    context_usages, drain, harness, node_skip, prime, release_hold, stage_hold, stage_stats,
+    stats_requests, wait_held,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -61,7 +62,7 @@ fn a_tick_stalled_on_the_catalog_does_not_block_the_window_stop() {
         "the stop closed the window"
     );
     // Exactly one request: the stalled tick sent none, and the counter can
-    // count — a missing request log reads as 0 and fails here.
+    // count — a missing request log panics instead of reading as zero.
     harness.poller.run_opened();
     harness.poller.arm_next_poll_now_for_test();
     harness.poller.tick_for_test();

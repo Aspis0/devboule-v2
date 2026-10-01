@@ -25,7 +25,7 @@ use serde_json::Value;
 use super::claude_steer_latch::{ClaudeSteerLatch, STEER_SUPERSEDED_MESSAGE};
 use super::claude_task_seed::{envelope_may_carry_tasks, seed_claude_task_state};
 use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
-use super::turn_watch::{silence_from_env, TurnWatch};
+use super::turn_watch::{silence_from_env, watchdog_message, TurnWatch};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
@@ -137,10 +137,7 @@ fn claude_turn_watch(
                 return;
             }
             let _ = runtime.settle_turn_finish(|| false);
-            let _ = runtime.publish_agent_error(format!(
-                "Claude produced no output for {} s during the turn; the run was ended.",
-                silence.as_secs().max(1)
-            ));
+            let _ = runtime.publish_agent_error(watchdog_message("Claude", silence));
             let _ = runtime.publish_daemon_event(SessionEvent::AgentFinished {
                 stop_reason: "error".to_string(),
                 model_id: None,

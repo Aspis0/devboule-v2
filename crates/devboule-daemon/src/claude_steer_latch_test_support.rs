@@ -142,18 +142,7 @@ fn attach(
         Some(journal),
         Arc::clone(broker),
     );
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        "s.claude.latch",
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let conn = crate::test_support::attach_and_track(&runtime, "s.claude.latch");
     (runtime, conn)
 }
 
@@ -252,15 +241,7 @@ pub(super) fn latch_harness() -> LatchHarness {
 /// The same construction against a live echo child, so a released gate
 /// delivers a steer frame to a real stdin.
 pub(super) fn latch_harness_echo() -> LatchHarness {
-    let mut child = std::process::Command::new("node")
-        .args([
-            "-e",
-            "process.stdin.on('data', data => process.stdout.write(data))",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("node is required for the delivered-steer test");
+    let mut child = crate::test_support::spawn_node_echo();
     let (journal, dir) = test_journal();
     let CapturedParts {
         controls,
@@ -354,13 +335,8 @@ pub(super) fn feed(reader: &mut ClaudeReader, runtime: &Arc<SessionRuntime>, val
 }
 
 pub(super) fn read_echoed_line(child: &mut std::process::Child) -> Value {
-    use std::io::BufRead;
     let stdout = child.stdout.as_mut().expect("echoed stdout");
-    let mut buf = Vec::new();
-    std::io::BufReader::new(stdout)
-        .read_until(b'\n', &mut buf)
-        .expect("echoed line");
-    serde_json::from_str::<Value>(String::from_utf8_lossy(&buf).trim_end()).expect("echoed json")
+    crate::test_support::read_echoed_json(&mut std::io::BufReader::new(stdout))
 }
 
 /// Answer the echo harness's initial mode request the way the CLI does, so
@@ -370,14 +346,7 @@ pub(super) fn release_gate(harness: &mut LatchHarness) {
     feed(
         &mut harness.reader,
         &harness.runtime,
-        serde_json::json!({
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": request["request_id"],
-                "response": {"mode": "default"},
-            },
-        }),
+        crate::test_support::mode_control_response(&request),
     );
 }
 

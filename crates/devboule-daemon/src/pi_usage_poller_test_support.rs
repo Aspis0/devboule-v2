@@ -10,13 +10,13 @@
 //!
 //! The watch harness (`pi_turn_watch_test_support.rs`) keeps its own fake:
 //! a pure echo driven by manual feeds, where this one must answer RPCs and
-//! run the reader concurrently. `broker()`/`drain()` follow the repo-wide
-//! per-file convention (eight+ existing copies).
+//! run the reader concurrently. `drain()` follows the repo-wide per-file
+//! convention; the broker comes from the pi watch support.
 
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,21 +31,28 @@ use crate::session::permission_broker::PermissionBroker;
 use crate::session::turn_watch::TurnWatch;
 use crate::session::{ReaderDispatch, SessionRuntime};
 
-/// The fake pi: `get_session_stats` is answered from the JSON file the env
-/// names — re-read per request, so a test restages the body between ticks;
-/// an unreadable file answers `success:false`, the refusal shape. When the
-/// hold file exists, the answer waits (writing its `<hold>.held` marker)
-/// until the test deletes the hold. Every frame received is appended to
-/// the log file, and every non-stats frame is echoed verbatim, which is
-/// how a test feeds inbound frames (`agent_start`, a `turn_end`) through
-/// the production reader.
-const STATS_PI: &str = r#"
+/// The stats fake's half of the stdin protocol: `get_session_stats` is
+/// answered from the JSON file the env names — re-read per request, so a
+/// test restages the body between ticks; an unreadable file answers
+/// `success:false`, the refusal shape. When the hold file exists, the
+/// answer waits (writing its `<hold>.held` marker) until the test deletes
+/// the hold. Every frame received is appended to the request log — or the
+/// fake exits 42 on the first failed append — and every non-stats
+/// frame is echoed verbatim, which is how a test feeds inbound frames
+/// (`agent_start`, a `turn_end`) through the production reader. The
+/// framing loop is the shared preamble; this only handles whole lines,
+/// newline kept.
+const STATS_PI_FRAMED: &str = r#"
 const fs = require("fs");
-let buffered = "";
 function logFrame(frame) {
   try {
     fs.appendFileSync(process.env.DEVBOULE_FAKE_LOG_FILE, JSON.stringify({ type: frame.type }) + "\n");
-  } catch (error) {}
+  } catch (error) {
+    const message = "fake pi cannot append to its request log: " + error.message + "\n";
+    // writeSync, because process.exit drops an async stderr write.
+    try { fs.writeSync(2, message); } catch (ignored) {}
+    process.exit(42);
+  }
 }
 function waitForRelease(file, go) {
   if (!fs.existsSync(file)) return go();
@@ -62,33 +69,27 @@ function reply(id, file) {
   if (success) frame.data = data;
   process.stdout.write(JSON.stringify(frame) + "\n");
 }
-process.stdin.on("data", (chunk) => {
-  buffered += chunk;
-  let index;
-  while ((index = buffered.indexOf("\n")) >= 0) {
-    const line = buffered.slice(0, index + 1);
-    buffered = buffered.slice(index + 1);
-    let frame;
-    try {
-      frame = JSON.parse(line);
-    } catch (error) {
-      continue;
-    }
-    logFrame(frame);
-    if (frame.type === "get_session_stats" && process.env.DEVBOULE_FAKE_STATS_FILE) {
-      const hold = process.env.DEVBOULE_FAKE_HOLD_FILE;
-      const go = () => reply(frame.id, process.env.DEVBOULE_FAKE_STATS_FILE);
-      if (hold && fs.existsSync(hold)) {
-        fs.writeFileSync(hold + ".held", "held");
-        waitForRelease(hold, go);
-      } else {
-        go();
-      }
-    } else {
-      process.stdout.write(line);
-    }
+function onFramedLine(line) {
+  let frame;
+  try {
+    frame = JSON.parse(line);
+  } catch (error) {
+    return;
   }
-});
+  logFrame(frame);
+  if (frame.type === "get_session_stats" && process.env.DEVBOULE_FAKE_STATS_FILE) {
+    const hold = process.env.DEVBOULE_FAKE_HOLD_FILE;
+    const go = () => reply(frame.id, process.env.DEVBOULE_FAKE_STATS_FILE);
+    if (hold && fs.existsSync(hold)) {
+      fs.writeFileSync(hold + ".held", "held");
+      waitForRelease(hold, go);
+    } else {
+      go();
+    }
+  } else {
+    process.stdout.write(line);
+  }
+}
 "#;
 
 pub(super) struct PiUsageHarness {
@@ -156,8 +157,14 @@ fn harness_on(
     let stats_path = dir.join("stats.json");
     let hold_path = dir.join("hold");
     let log_path = dir.join("requests.log");
+    let script = format!(
+        "{}{}",
+        crate::test_support::NODE_FRAMED_STDIN,
+        STATS_PI_FRAMED
+    );
     let child = Command::new("node")
-        .args(["-e", STATS_PI])
+        .arg("-e")
+        .arg(script)
         .env("DEVBOULE_FAKE_STATS_FILE", &stats_path)
         .env("DEVBOULE_FAKE_HOLD_FILE", &hold_path)
         .env("DEVBOULE_FAKE_LOG_FILE", &log_path)
@@ -268,18 +275,7 @@ fn attach_harness(
 ) -> PiUsageHarness {
     let runtime = SessionRuntime::for_acp("s.pi.usage".to_string(), None, Arc::clone(broker));
     runtime.set_agent_kind(SessionKind::Pi);
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        "s.pi.usage",
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let conn = crate::test_support::attach_and_track(&runtime, "s.pi.usage");
     harness_on(broker, catalog, runtime, conn, silence)
 }
 
@@ -295,18 +291,7 @@ pub(super) fn harness_journaled(
         Some(Arc::clone(journal)),
     ));
     runtime.set_agent_kind(SessionKind::Pi);
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        session_id,
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let conn = crate::test_support::attach_and_track(&runtime, session_id);
     harness_on(
         broker,
         harness_catalog(Some(4000)),
@@ -384,18 +369,69 @@ fn wait_for_existence(path: &Path, label: &str) {
     }
 }
 
-/// How many `get_session_stats` requests the fake has received — the "no
-/// RPC was sent" assertion a publication-only assertion cannot make.
-pub(super) fn stats_requests(harness: &PiUsageHarness) -> usize {
-    std::fs::read_to_string(&harness.log_path)
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| line.contains(r#""type":"get_session_stats""#))
-        .count()
+/// The fake's append-failure exit code — the `process.exit` in
+/// `STATS_PI_FRAMED`. Node documents 3 as an internal-failure code (an
+/// internal JavaScript parse error), so the fake exits 42 instead.
+const FAKE_LOG_EXIT: i32 = 42;
+
+/// One sample of the fake's exit status: `None` while it still runs.
+fn fake_exit(harness: &PiUsageHarness) -> Option<ExitStatus> {
+    harness
+        .child
+        .lock()
+        .expect("child")
+        .try_wait()
+        .expect("the fake's exit status")
 }
 
-pub(super) fn broker() -> Arc<PermissionBroker> {
-    PermissionBroker::for_test(Arc::new(|_, _| Ok(())))
+/// Fail when the fake has died blocked on its request log: that exit code
+/// is the one sign a writer which cannot append leaves behind. A fake
+/// still running, killed or exited clean passes.
+fn assert_fake_not_blocked(harness: &PiUsageHarness) {
+    if let Some(status) = fake_exit(harness) {
+        assert!(
+            status.code() != Some(FAKE_LOG_EXIT),
+            "the fake pi exited ({status}) because it could not append to the request log {}",
+            harness.log_path.display()
+        );
+    }
+}
+
+/// Bounded wait for the fake to be gone: the kill road terminates the
+/// process itself, so what follows samples a death instead of a fake not
+/// yet scheduled to die.
+pub(super) fn wait_dead(harness: &PiUsageHarness) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while fake_exit(harness).is_none() {
+        if Instant::now() > deadline {
+            panic!("timed out waiting for the fake pi to exit");
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// How many `get_session_stats` requests the fake has received — the "no
+/// RPC was sent" assertion a publication-only assertion cannot make.
+/// Both halves are point samples: the exit is taken on either side of
+/// the read, so a fake dead by a blocked log panics here instead of
+/// counting short (a later death lands on the next call), and a log the
+/// process cannot open panics on the read. The count's happens-before is
+/// the caller's: wait for the round trip — the fake appends a frame
+/// before it echoes or answers it.
+pub(super) fn stats_requests(harness: &PiUsageHarness) -> usize {
+    assert_fake_not_blocked(harness);
+    let log = std::fs::read_to_string(&harness.log_path).unwrap_or_else(|error| {
+        panic!(
+            "read the fake request log {}: {error}",
+            harness.log_path.display()
+        )
+    });
+    // Sampled again for the one window the first sample cannot see: a
+    // fake that dies blocked while the read runs.
+    assert_fake_not_blocked(harness);
+    log.lines()
+        .filter(|line| line.contains(r#""type":"get_session_stats""#))
+        .count()
 }
 
 /// Drain everything the connection currently holds.
@@ -461,6 +497,9 @@ pub(super) fn context_usages(
 pub(super) fn wait_for_window(harness: &PiUsageHarness, open: bool, label: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while harness.poller.window_open_for_test() != open {
+        // The move arrives on what the fake echoed, so a fake blocked on
+        // its log can never make it: name that instead of timing out.
+        assert_fake_not_blocked(harness);
         if Instant::now() > deadline {
             panic!("timed out waiting for the window to be {open}: {label}");
         }
@@ -475,8 +514,15 @@ pub(super) fn prime(harness: &PiUsageHarness) {
     feed_line(harness, serde_json::json!({"type": "message_update"}));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !harness.poller.runtime_bound_for_test() {
+        // The fake echoes only what it appended, so a log it cannot write
+        // never binds: name the exit instead of timing out below.
+        assert_fake_not_blocked(harness);
         if Instant::now() > deadline {
-            panic!("timed out waiting for the reader to bind the runtime");
+            let dead = match fake_exit(harness) {
+                Some(status) => format!("; the fake pi is dead ({status})"),
+                None => String::new(),
+            };
+            panic!("timed out waiting for the reader to bind the runtime{dead}");
         }
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -497,15 +543,6 @@ pub(super) fn turn_end(usage_total: u64, stop_reason: &str) -> Value {
         },
         "toolResults": [],
     })
-}
-
-/// The watchdog's silence error, the same shape the watch tests assert.
-pub(super) fn is_watchdog_error(event: &SessionEvent) -> bool {
-    matches!(
-        event,
-        SessionEvent::AgentError { message }
-            if message.contains("produced no output") && message.contains("the run was ended")
-    )
 }
 
 /// Skip the test when `node` is absent, the suite-wide rule.

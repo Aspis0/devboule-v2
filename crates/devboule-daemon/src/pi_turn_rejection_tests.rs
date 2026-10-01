@@ -5,18 +5,13 @@
 
 use super::super::local_command_test_support::{agent_start, recorded_turn_end};
 use super::test_support::{
-    abort_frame, attached, deliver, drain, feed_line, finish, finishes_of, harness,
-    is_error_finish, is_watchdog_error, rejects, touch, turn_end_with,
+    abort_frame, attached, broker, deliver, drain, feed_line, finish, finishes_of, harness,
+    rejects, touch, turn_end_with,
 };
-use crate::session::permission_broker::PermissionBroker;
 use crate::session::SessionKiller;
+use crate::test_support::{is_error_finish, is_watchdog_error};
 use devboule_protocol::{AgentActivityState, SessionEvent};
-use std::sync::Arc;
 use std::time::Duration;
-
-fn broker() -> Arc<PermissionBroker> {
-    PermissionBroker::for_test(Arc::new(|_, _| Ok(())))
-}
 
 /// The review's `/help`-mid-turn shape: the steer road refuses a slash
 /// input, the interrupt goes out, and the same text is delivered as a plain

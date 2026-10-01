@@ -4,6 +4,9 @@
 //! tests use as fake providers — must *skip* when that program is not on PATH
 //! instead of failing (A2-13): a machine without `node` is not a broken build,
 //! and a suite that reports red for it teaches readers to ignore red.
+//!
+//! Predicate home: a predicate only one family's suites read stays in that
+//! family's own test support; the shared ones live here.
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
@@ -222,6 +225,109 @@ pub(crate) fn mcp_broker_sources() -> Vec<String> {
                 .unwrap_or_else(|error| panic!("read the broker source {path:?}: {error}"))
         })
         .collect()
+}
+
+/// Whether an event is the turn watchdog's expiry notice: the shared
+/// constructor's sentence, for either family, matched by fragment so a
+/// reword fails the suites' assertions instead of greening them.
+pub(crate) fn is_watchdog_error(event: &devboule_protocol::SessionEvent) -> bool {
+    matches!(
+        event,
+        devboule_protocol::SessionEvent::AgentError { message }
+            if message.contains("produced no output") && message.contains("the run was ended")
+    )
+}
+
+/// Whether a pull carries the watchdog's error finish.
+pub(crate) fn is_error_finish(event: &devboule_protocol::SessionEvent) -> bool {
+    matches!(
+        event,
+        devboule_protocol::SessionEvent::AgentFinished { stop_reason, .. }
+            if stop_reason == "error"
+    )
+}
+
+/// Whether a pull carries any run finish.
+pub(crate) fn is_any_finish(event: &devboule_protocol::SessionEvent) -> bool {
+    matches!(event, devboule_protocol::SessionEvent::AgentFinished { .. })
+}
+
+/// The node echo child the Claude delivered-prompt and delivered-steer
+/// tests read back through: every byte written comes back, so a released
+/// gate delivers and the test reads what the daemon wrote.
+pub(crate) fn spawn_node_echo() -> std::process::Child {
+    std::process::Command::new("node")
+        .args([
+            "-e",
+            "process.stdin.on('data', data => process.stdout.write(data))",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("node is required for the echo-child tests")
+}
+
+/// One JSON line off an echo child. Both Claude harnesses read exactly one
+/// line per gate release; a missing or malformed line fails the test.
+pub(crate) fn read_echoed_json(reader: &mut impl std::io::BufRead) -> serde_json::Value {
+    let mut buf = Vec::new();
+    reader.read_until(b'\n', &mut buf).expect("echoed line");
+    serde_json::from_str::<serde_json::Value>(String::from_utf8_lossy(&buf).trim_end())
+        .expect("echoed json")
+}
+
+/// The CLI's answer to a mode request: success for the echoed request,
+/// releasing the gate with the default mode — the one shape both
+/// harnesses use.
+pub(crate) fn mode_control_response(request: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request["request_id"],
+            "response": {"mode": "default"},
+        },
+    })
+}
+
+/// The stdin line-framer every node fake shares: chunks accumulate, and
+/// each `\n`-terminated line (newline kept) goes to the fake's own
+/// `onFramedLine`. Fakes differ only there: the echo and stats fakes
+/// handle the line whole, the local-command fake strips the newline first.
+pub(crate) const NODE_FRAMED_STDIN: &str = r#"
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index + 1);
+    buffered = buffered.slice(index + 1);
+    onFramedLine(line);
+  }
+});
+"#;
+
+/// Attach a fresh connection to a test runtime: no cursor, typed
+/// permissions, tracked with the runtime's own generation. The runtime's
+/// construction (live or journaled, its session id, its agent kind) stays
+/// at the call site — only this tail is shared.
+pub(crate) fn attach_and_track(
+    runtime: &std::sync::Arc<crate::session::SessionRuntime>,
+    session_id: &str,
+) -> std::sync::Arc<crate::session::ConnHandle> {
+    let conn = crate::session::ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        session_id,
+        std::sync::Arc::clone(runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    conn
 }
 
 #[cfg(test)]

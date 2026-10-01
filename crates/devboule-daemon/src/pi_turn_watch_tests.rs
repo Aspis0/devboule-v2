@@ -6,18 +6,14 @@
 //! `ends_tests`.
 
 use super::test_support::{
-    abort_frame, attached, confirm_card, deliver, drain, feed_line, finish, harness, is_any_finish,
-    is_error_finish, is_watchdog_error, tool_execution_end, toolcall_start, touch,
+    abort_frame, attached, broker, confirm_card, deliver, drain, feed_line, finish, harness,
+    tool_execution_end, toolcall_start, touch,
 };
-use crate::session::permission_broker::PermissionBroker;
+use crate::session::turn_watch::watchdog_message;
+use crate::test_support::{is_any_finish, is_error_finish, is_watchdog_error};
 use devboule_protocol::{AgentActivityState, SessionEvent};
 use serde_json::Value;
-use std::sync::Arc;
 use std::time::Duration;
-
-fn broker() -> Arc<PermissionBroker> {
-    PermissionBroker::for_test(Arc::new(|_, _| Ok(())))
-}
 
 #[test]
 fn a_silent_turn_is_ended_by_the_watchdog_and_aborted_on_the_wire() {
@@ -41,6 +37,18 @@ fn a_silent_turn_is_ended_by_the_watchdog_and_aborted_on_the_wire() {
         events.iter().any(is_watchdog_error),
         "the silence is announced as an error notice: {:?}",
         events.iter().map(|event| event.kind()).collect::<Vec<_>>()
+    );
+    let message = events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentError { message } if is_watchdog_error(event) => Some(message),
+            _ => None,
+        })
+        .expect("the watchdog notice the predicate matched");
+    assert_eq!(
+        message,
+        &watchdog_message("Pi", Duration::from_secs(30)),
+        "the notice is the shared production sentence"
     );
     assert!(
         events.iter().any(is_error_finish),

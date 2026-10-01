@@ -4,12 +4,11 @@
 //! the watch's deterministic hooks, never slept out.
 
 use super::turn_watch_test_support::{
-    attached, deliver, drain, feed_line, finish, harness, harness_echo, is_any_finish,
-    is_error_finish, is_watchdog_error, release_gate, touch,
+    attached, deliver, drain, feed_line, finish, harness, harness_echo, release_gate, touch,
 };
 use super::*;
 use crate::journal::Journal;
-use crate::session::ConnHandle;
+use crate::test_support::{is_any_finish, is_error_finish, is_watchdog_error};
 use devboule_protocol::SessionKind;
 use std::time::Duration;
 
@@ -250,18 +249,7 @@ fn an_expiry_and_its_late_answer_replay_to_one_finish() {
         "s.watchdog.replay".to_string(),
         Some(Arc::clone(&journal)),
     ));
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        "s.watchdog.replay",
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let conn = crate::test_support::attach_and_track(&runtime, "s.watchdog.replay");
     let mut harness = harness(&broker, false);
     runtime.begin_turn();
     deliver(&mut harness, "first");

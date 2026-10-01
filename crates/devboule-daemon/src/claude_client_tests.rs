@@ -36,18 +36,7 @@ fn drain(conn: &ConnHandle) -> Vec<SessionEvent> {
 
 fn attached(broker: &Arc<PermissionBroker>) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
     let runtime = SessionRuntime::for_acp("s.claude.test".to_string(), None, Arc::clone(broker));
-    let conn = ConnHandle::new(1);
-    let outcome = runtime
-        .try_attach_with_replay(None, &conn, true)
-        .expect("attach");
-    conn.track_with_agent_replay(
-        "s.claude.test",
-        Arc::clone(&runtime),
-        false,
-        None,
-        outcome.generation,
-        outcome.live_agent_replay,
-    );
+    let conn = crate::test_support::attach_and_track(&runtime, "s.claude.test");
     (runtime, conn)
 }
 
