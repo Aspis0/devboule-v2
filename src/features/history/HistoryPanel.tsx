@@ -1,35 +1,53 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { journalUsage, sessionDelete, sessionResume, sessionsList } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
-import type { JournalSessionUsage, JournalUsage, Session } from "../../types/ipc";
+import type { JournalUsage, Session } from "../../types/ipc";
+import { isAgentKind } from "../../types/ipc";
+import type { WorkspaceProject } from "../workspace/workspaceProjects";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
-import { sessionTitle } from "../workspace/workspaceSessions";
-import { relativeTime } from "../../lib/relativeTime";
+import { isRunningSessionState } from "../workspace/strip/closePolicy";
 import { groupByDay, historyRowMatches } from "./historyGrouping";
+import { useHistoryBranches } from "./useHistoryBranches";
+import { getHistoryShowAll, setHistoryShowAll } from "./historyPrefs";
+import {
+  HistoryRowView,
+  isOpenRosterState,
+  isResumableSession,
+  isSameHistoryRow,
+  isTopLevelAgent,
+  type HistoryRow,
+} from "./HistoryRow";
 import "./history.css";
 
 export interface HistoryPanelProps {
   search: string;
   now?: number;
   onReopen?: (session: Session) => void;
+  onReopenAgent?: (session: Session) => void;
+  projects?: readonly WorkspaceProject[];
+  connected?: boolean;
+  selectedSessionId?: string | null;
 }
 
-interface HistoryRow extends JournalSessionUsage {
-  workspace: string;
-  project: string;
-  branch: string;
-  host: string;
-  session: Session | null;
-}
-
-const CLOSE_FIRST_REASON = "Archive the session before deleting it from history.";
 const EMPTY_SESSIONS: Session[] = [];
+const EMPTY_PROJECTS: readonly WorkspaceProject[] = [];
 
-export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPanelProps) {
-  // The rejection is passed through untouched: useTrackedRequest owns the
-  // mapping, and re-wrapping it here would strip the raw text from detail.
+/** A hung daemon reply must not blank the panel forever. */
+const ROSTER_WAIT_MS = 5000;
+
+type FocusTarget = { deletedId: string; id: string } | { deletedId: string; heading: true } | null;
+
+export function HistoryPanel({
+  search,
+  now: injectedNow,
+  onReopen,
+  onReopenAgent,
+  projects = EMPTY_PROJECTS,
+  connected = true,
+  selectedSessionId = null,
+}: HistoryPanelProps) {
   const loadUsage = useCallback((): Promise<JournalUsage> => journalUsage(), []);
   const loadSessions = useCallback((): Promise<Session[]> => sessionsList(), []);
   const usageRequest = useTrackedRequest<JournalUsage>(loadUsage, { status: "loading" }, true);
@@ -37,9 +55,14 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState<boolean>(getHistoryShowAll);
+  const [rosterTimedOut, setRosterTimedOut] = useState(false);
+  const focusTargetRef = useRef<FocusTarget>(null);
   const [actionError, setActionError] = useState<ErrorSentence | null>(null);
   const mountedRef = useRef(false);
   const resumeInFlightRef = useRef<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -48,54 +71,187 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
     };
   }, []);
 
+  // The wait starts exactly once, on mount: every refresh in this panel
+  // keeps the previous roster (run(false)), so "loading" never recurs and
+  // no reset is owed. A remount — the next History open — starts it over.
+  useEffect(() => {
+    if (sessionsRequest.state.status !== "loading") return;
+    const timerId = window.setTimeout(() => setRosterTimedOut(true), ROSTER_WAIT_MS);
+    return () => window.clearTimeout(timerId);
+  }, [sessionsRequest.state.status]);
+
   const usage = usageRequest.state.status === "ready" ? usageRequest.state.value : null;
   const sessionsValue =
     sessionsRequest.state.status === "ready" ? sessionsRequest.state.value : null;
-  const joinedSessions = Array.isArray(sessionsValue) ? sessionsValue : EMPTY_SESSIONS;
+  const roster = Array.isArray(sessionsValue) ? sessionsValue : EMPTY_SESSIONS;
+  // Top-level status comes from the roster join, so no saved row is listed
+  // until the roster has settled or the bounded wait gives up: otherwise
+  // every subagent flashes through, or a hung read blanks the panel. The
+  // bypass lasts only while the roster is still missing — a late arrival
+  // replaces the fallback rows and clears the note on its own.
+  const rosterBypassed =
+    sessionsRequest.state.status === "error" ||
+    (sessionsRequest.state.status === "loading" && rosterTimedOut);
+  const rosterSettled = sessionsRequest.state.status === "ready" || rosterBypassed;
   const [renderNow, setRenderNow] = useState(() => Date.now());
   useEffect(() => {
     if (typeof injectedNow === "number") return;
-    const intervalId = window.setInterval(() => {
-      setRenderNow(Date.now());
-    }, 30_000);
+    const intervalId = window.setInterval(() => setRenderNow(Date.now()), 30_000);
     return () => window.clearInterval(intervalId);
   }, [injectedNow]);
   const now = typeof injectedNow === "number" ? injectedNow : renderNow;
-  const rows = useMemo(() => {
-    if (!usage) return [];
-    const sessionsById = new Map(joinedSessions.map((session) => [session.id, session]));
-    return usage.perSession.map((savedSession): HistoryRow => {
-      const session = sessionsById.get(savedSession.id) ?? null;
-      return {
-        ...savedSession,
-        workspace: session?.workspaceId || "—",
-        project: "—",
-        branch: "—",
-        host: "this machine",
+  const workspaceNames = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const project of projects) {
+      for (const workspace of project.workspaces) {
+        names.set(workspace.id, workspace.title);
+      }
+    }
+    return names;
+  }, [projects]);
+  const sessionsById = useMemo(
+    () => new Map(roster.map((session) => [session.id, session])),
+    [roster],
+  );
+  const rowsBase = useMemo(() => {
+    const projectsByWorkspace = new Map<string, string>();
+    for (const project of projects) {
+      for (const workspace of project.workspaces)
+        projectsByWorkspace.set(workspace.id, project.name);
+    }
+    const byId = new Map<string, HistoryRow>();
+    for (const saved of usage?.perSession ?? []) {
+      if (!showAll && !isAgentKind(saved.kind)) continue;
+      const session = sessionsById.get(saved.id) ?? null;
+      if (!showAll && session && !isTopLevelAgent(session)) continue;
+      const workspaceId = session?.workspaceId ?? null;
+      byId.set(saved.id, {
+        ...saved,
+        workspace: workspaceId ? (workspaceNames.get(workspaceId) ?? null) : null,
+        project: workspaceId ? (projectsByWorkspace.get(workspaceId) ?? null) : null,
+        branch: null,
         session,
-      };
+        updatedAtMs: saved.updatedAtMs,
+        workspaceId,
+      });
+    }
+    for (const session of roster) {
+      if (byId.has(session.id)) continue;
+      if (!showAll && !isTopLevelAgent(session)) continue;
+      if (!isOpenRosterState(session.state)) continue;
+      const workspaceId = session.workspaceId;
+      byId.set(session.id, {
+        id: session.id,
+        title: session.title,
+        displayName: session.displayName,
+        kind: session.kind,
+        bytes: 0,
+        updatedAtMs: session.createdAtMs ?? null,
+        workspace: workspaceId ? (workspaceNames.get(workspaceId) ?? null) : null,
+        project: workspaceId ? (projectsByWorkspace.get(workspaceId) ?? null) : null,
+        branch: null,
+        session,
+        workspaceId,
+        groupWithToday: true,
+      });
+    }
+    return [...byId.values()];
+  }, [projects, roster, sessionsById, showAll, usage, workspaceNames]);
+  const rowWorkspaceIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of rowsBase) {
+      if (row.workspaceId) ids.add(row.workspaceId);
+    }
+    return [...ids];
+  }, [rowsBase]);
+  const branches = useHistoryBranches(rowWorkspaceIds, connected);
+  const freshRows = useMemo(
+    () =>
+      rowsBase.map((row) => ({
+        ...row,
+        branch: row.workspaceId ? (branches.get(row.workspaceId) ?? null) : null,
+      })),
+    [branches, rowsBase],
+  );
+  // Unchanged rows keep their identity across roster and branch reads so
+  // the row memo holds. Render-phase update (the React-sanctioned shape for
+  // derived state): the output is discarded and recomputed when stale.
+  const [mergedState, setMergedState] = useState<{
+    source: HistoryRow[];
+    rows: HistoryRow[];
+  } | null>(null);
+  let rows: HistoryRow[];
+  if (mergedState && mergedState.source === freshRows) {
+    rows = mergedState.rows;
+  } else {
+    const prevById = new Map((mergedState?.rows ?? []).map((row) => [row.id, row]));
+    const merged = freshRows.map((row) => {
+      const old = prevById.get(row.id);
+      return old && isSameHistoryRow(old, row) ? old : row;
     });
-  }, [joinedSessions, usage]);
+    setMergedState({ source: freshRows, rows: merged });
+    rows = merged;
+  }
   const filteredRows = useMemo(
     () => rows.filter((row) => historyRowMatches(row, search)),
     [rows, search],
   );
   const groups = useMemo(() => groupByDay(filteredRows, now), [filteredRows, now]);
-  const isSearchActive = typeof search === "string" && search.trim().length > 0;
   const refreshUsage = usageRequest.run;
   const refreshSessions = sessionsRequest.run;
 
+  // After a successful delete the removed row takes nothing with it: land on
+  // the next row, the previous one, or the heading when the list is empty.
+  // A ref, not state: the move is a side effect of the rows changing, and
+  // claiming it in state would re-render just to clear the claim. The move
+  // waits until the deleted row is actually gone, so an unrelated rows
+  // change (a branch read landing mid-delete) never fires it early.
+  useEffect(() => {
+    const target = focusTargetRef.current;
+    if (!target) return;
+    if ("id" in target && rows.some((row) => row.id === target.deletedId)) return;
+    focusTargetRef.current = null;
+    if ("heading" in target) headingRef.current?.focus({ preventScroll: true });
+    else {
+      const next = panelRef.current?.querySelector<HTMLElement>(
+        `[data-agent-id="${CSS.escape(target.id)}"]`,
+      );
+      if (next) next.focus({ preventScroll: true });
+      else headingRef.current?.focus({ preventScroll: true });
+    }
+  }, [rows]);
+
+  // The flat id list and the confirm/delete arms are read through refs so
+  // this callback never changes identity: a new one would re-render every
+  // row on every tick, push, search keystroke and confirm click.
+  const groupsRef = useRef(groups);
+  useEffect(() => {
+    groupsRef.current = groups;
+  });
+  const confirmingRef = useRef(confirmingId);
+  useEffect(() => {
+    confirmingRef.current = confirmingId;
+  }, [confirmingId]);
+  const deletingRef = useRef(deletingId);
+  useEffect(() => {
+    deletingRef.current = deletingId;
+  }, [deletingId]);
   const deleteRow = useCallback(
     (row: HistoryRow) => {
-      if (row.session?.state.type === "live" || deletingId !== null) return;
-      if (confirmingId !== row.id) {
+      if ((row.session && isRunningSessionState(row.session.state)) || deletingRef.current !== null)
+        return;
+      if (confirmingRef.current !== row.id) {
         setActionError(null);
         setConfirmingId(row.id);
         return;
       }
-
       setDeletingId(row.id);
       setActionError(null);
+      const flatIds = groupsRef.current.flatMap((group) => group.entries.map((entry) => entry.id));
+      const index = flatIds.indexOf(row.id);
+      const nextId = index === -1 ? null : (flatIds[index + 1] ?? flatIds[index - 1] ?? null);
+      focusTargetRef.current =
+        nextId === null ? { deletedId: row.id, heading: true } : { deletedId: row.id, id: nextId };
       void (async () => {
         try {
           await sessionDelete(row.id);
@@ -106,13 +262,14 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
           refreshSessions(false);
         } catch (cause) {
           if (!mountedRef.current) return;
+          focusTargetRef.current = null;
           setDeletingId(null);
           setConfirmingId(null);
           setActionError(errorSentence(cause));
         }
       })();
     },
-    [confirmingId, deletingId, refreshSessions, refreshUsage],
+    [refreshSessions, refreshUsage],
   );
 
   const reopenRow = useCallback(
@@ -125,17 +282,13 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
         try {
           const result = await sessionResume(row.id);
           if (!mountedRef.current) return;
-          if (result.type === "resumed") {
-            onReopen?.(result.session);
-          } else {
+          if (result.type === "resumed") onReopen?.(result.session);
+          else {
             setActionError(
               result.type === "failed"
                 ? { sentence: result.message, detail: null }
                 : { sentence: "This session does not support resume.", detail: null },
             );
-            // The verdict this row's button rendered may have just been
-            // retracted on the daemon side; re-read the roster so the offer
-            // cannot outlive it.
             refreshSessions(false);
           }
         } catch (cause) {
@@ -152,6 +305,18 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
     [onReopen, refreshSessions],
   );
 
+  const activateRow = useCallback(
+    (row: HistoryRow) => {
+      const session = row.session;
+      if (!session) return;
+      if (isOpenRosterState(session.state)) {
+        if (onReopenAgent) onReopenAgent(session);
+        else onReopen?.(session);
+      } else if (isResumableSession(session)) reopenRow(row);
+    },
+    [onReopen, onReopenAgent, reopenRow],
+  );
+
   const usageError: ErrorSentence | null =
     usageRequest.state.status === "error"
       ? { sentence: usageRequest.state.message, detail: usageRequest.state.detail }
@@ -160,59 +325,96 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
     sessionsRequest.state.status === "error"
       ? { sentence: sessionsRequest.state.message, detail: sessionsRequest.state.detail }
       : null;
+  const rosterFailed = sessionsRequest.state.status === "error";
+  const searchActive = search.trim().length > 0;
+  const usageSettled = usage !== null || usageError !== null;
+  const readyToList = usageSettled && rosterSettled;
 
   return (
-    <div className="history-panel" id="workspace-history-panel" aria-label="History">
+    <div className="history-panel" id="workspace-history-panel" aria-label="History" ref={panelRef}>
       <div className="history-heading">
-        <h2 className="history-heading-title">History</h2>
+        <h2 className="history-heading-title" tabIndex={-1} ref={headingRef}>
+          History
+        </h2>
       </div>
-      {usageError ? (
-        <div className="history-alert" role="alert">
-          <ErrorText
-            sentence={usageError.sentence}
-            detail={usageError.detail}
-            id="history-usage-error"
-          />
-        </div>
-      ) : null}
+      {usageError ? <Alert sentence={usageError} id="history-usage-error" /> : null}
       {usage && sessionsError ? (
-        <div className="history-alert" role="alert">
-          <ErrorText
-            sentence={sessionsError.sentence}
-            detail={sessionsError.detail}
-            id="history-sessions-error"
-          />
-        </div>
+        <Alert sentence={sessionsError} id="history-sessions-error" />
       ) : null}
-      {actionError ? (
-        <div className="history-alert" role="alert">
-          <ErrorText
-            sentence={actionError.sentence}
-            detail={actionError.detail}
-            id="history-action-error"
-          />
-        </div>
+      {usage && rosterBypassed ? (
+        // Each half names a checked fact: without the roster join, saved
+        // rows carry no workspace label, and the top-level filter cannot run
+        // — so the list is unfiltered unless the toggle asked for that. A
+        // timeout still waits; only an error is final.
+        <p className="history-notice">
+          {rosterFailed
+            ? showAll
+              ? "Session details are unavailable, so rows show no workspace."
+              : "Session details are unavailable, so this list is unfiltered and rows show no workspace."
+            : showAll
+              ? "Waiting for session details — rows show no workspace."
+              : "Waiting for session details — this list is unfiltered and rows show no workspace."}
+        </p>
       ) : null}
+      {actionError ? <Alert sentence={actionError} id="history-action-error" /> : null}
       {usage ? (
         <>
-          <div className="history-usage" aria-label="Saved history usage">
-            <span>Total saved bytes: {formatCount(usage.totalBytes)}</span>
-            <span>Saved sessions: {formatCount(usage.sessionCount)}</span>
+          <div className="history-usage" aria-label="Saved journal totals">
+            {formatCount(usage.sessionCount)} saved sessions · {formatSavedSize(usage.totalBytes)}
           </div>
+          <label className="history-show-all">
+            <input
+              type="checkbox"
+              checked={showAll}
+              aria-controls="workspace-history-panel"
+              onChange={(event) => {
+                setShowAll(event.target.checked);
+                setHistoryShowAll(event.target.checked);
+              }}
+            />
+            Include terminals and subagents
+          </label>
           {usage.deletedByRetention > 0 ? (
             <p className="history-notice">
               The history limit removed {formatCount(usage.deletedByRetention)} sessions.
             </p>
           ) : null}
           <RetentionNotice usage={usage} />
-          {groups.length === 0 ? (
-            <p className="history-empty">
-              {usage.perSession.length === 0 ? "No saved history." : "No matching history."}
-            </p>
-          ) : isSearchActive ? (
-            <div className="history-rows">
-              {groups.flatMap((group) =>
-                group.entries.map((row) => (
+        </>
+      ) : usageRequest.state.status === "loading" ? (
+        <p className="history-empty">Loading history…</p>
+      ) : null}
+      {usage && !rosterSettled ? <p className="history-empty">Loading history…</p> : null}
+      {readyToList ? (
+        groups.length === 0 ? (
+          <p className="history-empty">
+            {searchActive ? "No matching agents." : "No agents in History."}
+          </p>
+        ) : searchActive ? (
+          <div className="history-rows">
+            {groups.flatMap((group) =>
+              group.entries.map((row) => (
+                <HistoryRowView
+                  key={row.id}
+                  now={now}
+                  row={row}
+                  confirming={confirmingId === row.id}
+                  deleting={deletingId === row.id}
+                  resuming={resumingId === row.id}
+                  selected={selectedSessionId === row.id}
+                  onActivate={activateRow}
+                  onDelete={deleteRow}
+                  onReopen={reopenRow}
+                />
+              )),
+            )}
+          </div>
+        ) : (
+          groups.map((group) => (
+            <section className="history-day-group" key={group.key}>
+              <h3 className="workspace-project-heading history-day-heading">{group.label}</h3>
+              <div className="history-rows">
+                {group.entries.map((row) => (
                   <HistoryRowView
                     key={row.id}
                     now={now}
@@ -220,39 +422,38 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
                     confirming={confirmingId === row.id}
                     deleting={deletingId === row.id}
                     resuming={resumingId === row.id}
+                    selected={selectedSessionId === row.id}
+                    onActivate={activateRow}
                     onDelete={deleteRow}
                     onReopen={reopenRow}
                   />
-                )),
-              )}
-            </div>
-          ) : (
-            groups.map((group) => (
-              <section className="history-day-group" key={group.key}>
-                <h3 className="workspace-project-heading history-day-heading">{group.label}</h3>
-                <div className="history-rows">
-                  {group.entries.map((row) => (
-                    <HistoryRowView
-                      key={row.id}
-                      now={now}
-                      row={row}
-                      confirming={confirmingId === row.id}
-                      deleting={deletingId === row.id}
-                      resuming={resumingId === row.id}
-                      onDelete={deleteRow}
-                      onReopen={reopenRow}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))
-          )}
-        </>
-      ) : usageRequest.state.status === "loading" ? (
-        <p className="history-empty">Loading history…</p>
+                ))}
+              </div>
+            </section>
+          ))
+        )
       ) : null}
     </div>
   );
+}
+
+function Alert({ sentence, id }: { sentence: ErrorSentence; id: string }) {
+  return (
+    <div className="history-alert" role="alert">
+      <ErrorText sentence={sentence.sentence} detail={sentence.detail} id={id} />
+    </div>
+  );
+}
+
+function formatSavedSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = Math.max(0, bytes);
+  let unit = 0;
+  while (size >= 1000 && unit < units.length - 1) {
+    size /= 1000;
+    unit += 1;
+  }
+  return unit === 0 ? `${formatCount(size)} ${units[unit]}` : `${size.toFixed(1)} ${units[unit]}`;
 }
 
 function RetentionNotice({ usage }: { usage: JournalUsage }) {
@@ -276,79 +477,5 @@ function RetentionNotice({ usage }: { usage: JournalUsage }) {
         </p>
       ) : null}
     </>
-  );
-}
-
-function isResumableSession(session: Session | null): session is Session {
-  // The daemon's verdict, rendered, never re-derived: kind, liveness, and
-  // persisted columns are the daemon's to judge (`Provider::resumable()`),
-  // and an older daemon that omits the field offers no button.
-  return session?.resumable === true;
-}
-
-const HistoryRowView = memo(function HistoryRowView({
-  now,
-  row,
-  confirming,
-  deleting,
-  resuming,
-  onDelete,
-  onReopen,
-}: {
-  now: number;
-  row: HistoryRow;
-  confirming: boolean;
-  deleting: boolean;
-  resuming: boolean;
-  onDelete: (row: HistoryRow) => void;
-  onReopen: (row: HistoryRow) => void;
-}) {
-  const live = row.session?.state.type === "live";
-  const trimmed = transcriptWasTrimmed(row.session);
-  const deleteLabel = live ? CLOSE_FIRST_REASON : confirming ? "Delete from history" : "Delete";
-
-  return (
-    <div className="history-row">
-      <div className="history-row-copy">
-        <div className="workspace-row-title">{sessionTitle(row)}</div>
-        <div className="workspace-row-meta history-row-meta">
-          {row.workspace} · {row.branch} · {row.host} · {relativeTime(row.updatedAtMs, now)} ·{" "}
-          {formatCount(row.bytes)} bytes
-        </div>
-        {trimmed ? (
-          <div className="history-row-note">Oldest part removed by the history limit.</div>
-        ) : null}
-      </div>
-      {isResumableSession(row.session) ? (
-        <button
-          type="button"
-          className="history-reopen-action"
-          title="Reopen this session"
-          disabled={resuming}
-          onClick={() => onReopen(row)}
-        >
-          {resuming ? "Reopening…" : "Reopen"}
-        </button>
-      ) : null}
-      <button
-        type="button"
-        className="history-delete-action"
-        aria-label={live ? CLOSE_FIRST_REASON : undefined}
-        title={live ? CLOSE_FIRST_REASON : "Delete this session from history"}
-        disabled={live || deleting}
-        onClick={() => onDelete(row)}
-      >
-        {deleteLabel}
-      </button>
-    </div>
-  );
-});
-
-function transcriptWasTrimmed(session: Session | null): boolean {
-  const state = session?.state;
-  if (!state || (state.type !== "ended" && state.type !== "recovered")) return false;
-  return (
-    (state.integrity.kind === "truncated" || state.integrity.kind === "unverifiable") &&
-    state.integrity.trimmedBytes > 0
   );
 }

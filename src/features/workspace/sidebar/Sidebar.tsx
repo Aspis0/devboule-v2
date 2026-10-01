@@ -1,6 +1,7 @@
 import type { ChangeEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
 import { HistoryPanel } from "../../history/HistoryPanel";
 import type { DaemonStatus, Session } from "../../../types/ipc";
+import type { WorkspaceProject } from "../workspaceProjects";
 import { SidebarFooter } from "./SidebarFooter";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
 import "./sidebar.css";
@@ -17,8 +18,12 @@ export interface SidebarProps {
   onToggleHistory: () => void;
   history: {
     searchValue: string;
+    projects: readonly WorkspaceProject[];
+    connected: boolean;
+    selectedSessionId: string | null;
     onSearchChange: (event: ChangeEvent<HTMLInputElement>) => void;
     onReopen: (session: Session) => void;
+    onReopenAgent: (session: Session) => void;
   };
   searchValue: string;
   onSearchChange: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -138,8 +143,15 @@ export function Sidebar({
                   />
                 </div>
                 {historyOpen ? (
-                  <div id="workspace-history-panel" className="workspace-history-panel">
-                    <HistoryPanel search={history.searchValue} onReopen={history.onReopen} />
+                  <div className="workspace-history-panel">
+                    <HistoryPanel
+                      search={history.searchValue}
+                      projects={history.projects}
+                      connected={history.connected}
+                      selectedSessionId={history.selectedSessionId}
+                      onReopen={history.onReopen}
+                      onReopenAgent={history.onReopenAgent}
+                    />
                   </div>
                 ) : (
                   <WorkspaceTree {...tree} />

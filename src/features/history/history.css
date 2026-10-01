@@ -14,14 +14,28 @@
   font-weight: 600;
 }
 
+.history-heading-title:focus {
+  outline: none;
+}
+
 .history-usage {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  overflow: hidden;
   padding: 0 6px 10px;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: var(--type-mono-sm);
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: var(--type-interface);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-show-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 6px 10px;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  line-height: 1.45;
 }
 
 .history-alert,
@@ -53,71 +67,161 @@
 }
 
 .history-row {
+  position: relative;
   display: flex;
-  /* The actions are `flex: none` and one of their labels is a sentence (the
-     disabled delete button says why it cannot act). Without wrapping, the copy
-     is the row's only shrinkable child and absorbs the whole deficit: measured
-     on a live row, it was left 0 px wide and the meta came out one character per
-     line, 785 px tall, with the action overflowing the row horizontally. */
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  height: 42px;
   min-width: 0;
-  padding: 7px 6px;
-  border-radius: 10px;
+  border-radius: var(--radius-8);
 }
 
-.history-row:hover {
-  background: var(--surface);
+.history-row-main {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-8);
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-row-main:hover,
+.history-row-main:focus-visible,
+.history-row:hover .history-row-main,
+.history-row:focus-within .history-row-main {
+  background: var(--fill-hover);
+}
+
+.history-row-main[aria-current="true"],
+.history-row-main[aria-current="true"]:hover,
+.history-row-main[aria-current="true"]:focus-visible {
+  background: var(--fill-selected);
+}
+
+.history-row-main[aria-disabled="true"] {
+  cursor: default;
+}
+
+.history-row-main[aria-disabled="true"]:hover,
+.history-row-main[aria-disabled="true"]:focus-visible,
+.history-row:hover .history-row-main[aria-disabled="true"],
+.history-row:focus-within .history-row-main[aria-disabled="true"] {
+  background: transparent;
+}
+
+.history-row-main[aria-disabled="true"][aria-current="true"],
+.history-row-main[aria-disabled="true"][aria-current="true"]:hover,
+.history-row-main[aria-disabled="true"][aria-current="true"]:focus-visible {
+  background: var(--fill-selected);
 }
 
 .history-row-copy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 100%;
+  height: 42px;
+  box-sizing: border-box;
+  flex-direction: column;
+  padding: 4px var(--space-8);
   min-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.history-row-title-line {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 18px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.history-row-title-line .workspace-row-title {
+  display: block;
   flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .history-row-meta {
+  flex: none;
+  height: 16px;
+  line-height: 16px;
   min-width: 0;
-  overflow: visible;
-  overflow-wrap: anywhere;
-  line-height: 1.45;
-  white-space: normal;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.history-row-note {
-  margin-top: 4px;
-  color: var(--ochre);
-  font-size: var(--type-meta);
-  line-height: 1.4;
+.history-row-main:hover .history-row-meta,
+.history-row-main:focus-visible .history-row-meta,
+.history-row:focus-within .history-row-meta {
+  color: var(--ink-soft);
+}
+
+.history-row-main[aria-current="true"] .history-row-meta {
+  color: var(--ink-soft);
+}
+
+.history-row-actions {
+  display: none;
+  align-items: center;
+  flex: none;
+  gap: 2px;
+  height: 18px;
+  box-sizing: border-box;
+  margin-left: auto;
+  padding: 0 2px;
+  border-radius: var(--radius-8);
+  background: transparent;
+  pointer-events: auto;
+}
+
+.history-row:hover .history-row-actions,
+.history-row:focus-within .history-row-actions {
+  display: flex;
 }
 
 .history-delete-action {
   flex: none;
-  /* `nowrap` made the archive-first explanation a 248 px unshrinkable box in a
-     210 px row: the sentence was clipped mid-word and the row scrolled
-     sideways. It wraps now, capped to the row's own width. */
-  max-width: 100%;
-  min-height: 24px;
-  padding: 3px 5px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0 4px;
   color: var(--silence);
   background: transparent;
   border: 0;
   border-radius: 7px;
   cursor: pointer;
   font-size: var(--type-interface);
-  white-space: normal;
+  line-height: 18px;
+  white-space: nowrap;
 }
 
 .history-reopen-action {
   flex: none;
-  min-height: 24px;
-  padding: 3px 5px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0 4px;
   color: var(--ink);
   background: transparent;
   border: 0;
   border-radius: 7px;
   cursor: pointer;
   font-size: var(--type-interface);
+  line-height: 18px;
   white-space: nowrap;
 }
 
@@ -138,7 +242,8 @@
   background: var(--selection);
 }
 
-.history-delete-action:disabled {
+.history-delete-action:disabled,
+.history-delete-action[aria-disabled="true"] {
   color: var(--silence);
   cursor: not-allowed;
   opacity: 1;
@@ -160,4 +265,39 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+.history-context-menu {
+  position: absolute;
+  z-index: 3;
+  top: 100%;
+  right: 4px;
+  display: flex;
+  min-width: 140px;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-8);
+  background: var(--panel-side);
+}
+
+.history-context-menu button {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-context-menu button:hover,
+.history-context-menu button:focus-visible {
+  background: var(--fill-hover);
+}
+
+.history-context-menu button:disabled {
+  color: var(--silence);
+  cursor: not-allowed;
 }

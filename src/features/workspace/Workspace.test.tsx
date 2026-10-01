@@ -488,7 +488,7 @@ const historyUsage: JournalUsage = {
     maxAgeMs: 0,
   },
   perSession: [
-    { id: "session-1", title: "Saved build history", kind: "terminal", bytes: 32, updatedAtMs: 0 },
+    { id: "session-1", title: "Saved build history", kind: "acp", bytes: 32, updatedAtMs: 0 },
   ],
 };
 
@@ -843,14 +843,14 @@ describe("Workspace sessions", () => {
     expect(container.textContent).toContain("No tabs yet");
   });
 
-  it("reopening a History session navigates to its workspace", async () => {
+  it("reopening a saved History session navigates to its workspace", async () => {
     vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
     // A recovered session lives in workspace-1; workspace-2 stays empty.
     vi.mocked(sessionsList).mockResolvedValue([
       {
         id: "session-1",
         workspaceId: "workspace-1",
-        kind: "terminal",
+        kind: "acp",
         title: "Saved build history",
         state: {
           type: "recovered",
@@ -863,7 +863,7 @@ describe("Workspace sessions", () => {
     ]);
     vi.mocked(sessionResume).mockResolvedValue({
       type: "resumed",
-      session: terminal("session-1", "Saved build history", "workspace-1"),
+      session: { ...terminal("session-1", "Saved build history", "workspace-1"), kind: "acp" },
     });
     vi.mocked(journalUsage).mockResolvedValue(historyUsage);
     root = createRoot(container);
@@ -893,6 +893,59 @@ describe("Workspace sessions", () => {
     // The reopen navigated to the session's workspace and its tab is up.
     expect(container.querySelector("#workspace-session-tab-session-1")).not.toBeNull();
     expect(container.textContent).not.toContain("No tabs yet");
+  });
+
+  it("opening a History agent switches workspace, opens its tab and clears History search", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    const agent: Session = {
+      id: "agent-w2",
+      workspaceId: "workspace-2",
+      kind: "acp",
+      title: "Feature agent",
+      createdAtMs: Date.now(),
+      state: { type: "live", generation: 1 },
+      elapsedMs: 0,
+    };
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one", "workspace-1"),
+      agent,
+    ]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click(),
+    );
+    const search = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+    if (!search) throw new Error("History search did not render");
+    await act(async () => setSearchValue(search, "Feature"));
+    const row = container.querySelector<HTMLButtonElement>('[data-agent-id="agent-w2"]');
+    if (!row) throw new Error("History agent row did not render");
+    const latestAgent = { ...agent, title: "Fresh roster title", elapsedMs: 500 };
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one", "workspace-1"),
+      latestAgent,
+    ]);
+    await act(async () => sharedSessionController().refresh());
+    await act(async () => row.click());
+    expect(
+      sharedSessionController()
+        .getState()
+        .sessions.find((session) => session.id === agent.id)?.title,
+    ).toBe("Fresh roster title");
+    expect(container.querySelector('.workspace-row[aria-pressed="true"]')?.textContent).toContain(
+      "other-main",
+    );
+    expect(
+      container.querySelector("#workspace-session-tab-agent-w2")?.getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(container.querySelector("#workspace-history-panel")).toBeNull();
+    expect(search.value).toBe("");
+    expect(sessionResume).not.toHaveBeenCalled();
   });
 
   // The right panel’s tab tests live in sidePanelTabs.test.tsx.
@@ -1736,8 +1789,8 @@ describe("Workspace sessions", () => {
     await act(async () => history.click());
     await act(async () => undefined);
     expect(container.querySelector("#workspace-history-panel")).not.toBeNull();
-    expect(container.textContent).toContain("Saved build history");
-    expect(container.textContent).toContain("workspace-rust");
+    expect(container.textContent).not.toContain("Saved build history");
+    expect(container.textContent).toContain("No agents in History.");
     expect(sessionDelete).not.toHaveBeenCalled();
   });
 
@@ -1785,6 +1838,38 @@ describe("Workspace sessions", () => {
 
     expect(search.value).toBe("missing");
     expect(sidebar.textContent).not.toContain("main");
+  });
+
+  it("pass 7: tree sweeps skip workspaces hidden by the tree search", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    vi.mocked(workspaceGitStatus).mockResolvedValue(cleanChanges);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    const initialIds = vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id);
+    expect(initialIds).toContain("workspace-1");
+    expect(initialIds).toContain("workspace-2");
+    vi.mocked(workspaceGitStatus).mockClear();
+    const input = container.querySelector<HTMLInputElement>(".workspace-search input");
+    if (input === null) throw new Error("search input did not render");
+    await act(async () => setSearchValue(input, "other-main"));
+    await act(async () => undefined);
+    const sidebar = container.querySelector('aside[aria-label="Workspaces"]');
+    if (sidebar === null) throw new Error("Workspaces sidebar did not render");
+    const treeRows = [...sidebar.querySelectorAll<HTMLButtonElement>(".workspace-row")];
+    expect(treeRows).toHaveLength(1);
+    expect(treeRows[0].textContent).toContain("other-main");
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await act(async () => undefined);
+    const refreshedIds = vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id);
+    expect(refreshedIds).not.toContain("workspace-1");
+    expect(refreshedIds).toContain("workspace-2");
   });
 
   it("does not render a permission card before typed_permissions is negotiated", async () => {

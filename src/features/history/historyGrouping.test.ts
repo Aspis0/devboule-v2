@@ -4,7 +4,7 @@ import { groupByDay, historyRowMatches } from "./historyGrouping";
 
 const now = new Date(2026, 8, 4, 12, 0, 0, 0).getTime();
 
-function entry(id: string, updatedAtMs: number) {
+function entry(id: string, updatedAtMs: number | null) {
   return {
     id,
     title: id,
@@ -30,6 +30,22 @@ describe("history grouping helpers", () => {
     expect(groups[1].entries).toHaveLength(1);
   });
 
+  it("orders timestamp-less live rows by insertion under Today", () => {
+    // Two push-only rows compare by rank first and fall back to insertion
+    // order — never by NaN coercion — so live agents keep the order the
+    // roster delivered them in.
+    const groups = groupByDay(
+      [
+        { ...entry("live-b", null), groupWithToday: true },
+        { ...entry("live-a", null), groupWithToday: true },
+        entry("today-early", new Date(2026, 8, 4, 8).getTime()),
+      ],
+      now,
+    );
+    expect(groups[0].label).toBe("Today");
+    expect(groups[0].entries.map((row) => row.id)).toEqual(["live-b", "live-a", "today-early"]);
+  });
+
   it("labels the current and previous local calendar days", () => {
     expect(groupByDay([entry("today", now)], now)[0].label).toBe("Today");
     expect(groupByDay([entry("yesterday", new Date(2026, 8, 3, 12).getTime())], now)[0].label).toBe(
@@ -49,8 +65,7 @@ describe("history grouping helpers", () => {
     expect(historyRowMatches({ title: "Fix the Build", workspace: "rust-core" }, "unrelated")).toBe(
       false,
     );
-    const nonSearchableMetadata = { title: "", kind: "acp" as const, host: "this machine" };
-    expect(historyRowMatches(nonSearchableMetadata, "acp")).toBe(false);
+    expect(historyRowMatches({ title: "", kind: "acp" as const }, "acp")).toBe(true);
   });
 
   it("matches the display name a row shows, and still matches the title it hides", () => {
@@ -80,8 +95,8 @@ describe("history grouping helpers", () => {
     expect(historyRowMatches(unnamed, "nothing here")).toBe(false);
   });
 
-  it("matches a row via the host column", () => {
-    expect(historyRowMatches({ title: "Build", host: "this machine" }, "machine")).toBe(true);
+  it("does not match the retired host column", () => {
+    expect(historyRowMatches({ title: "Build" }, "machine")).toBe(false);
   });
 
   it("accepts empty and undefined inputs", () => {

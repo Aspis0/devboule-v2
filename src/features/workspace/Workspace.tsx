@@ -269,6 +269,8 @@ export function Workspace({
   // shared: each pane seeds from it and writes its landed reads back.
   const [toolContentCache] = useState(createToolContentCache);
 
+  // The stats sweep covers the visible tree only; History reads branches
+  // for its own listed rows while open (useHistoryBranches).
   const sidebarWorkspaceIds = useMemo(
     () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
     [visibleProjects],
@@ -778,13 +780,20 @@ export function Workspace({
       // Reopening names the session to show: the tool tab stands down.
       standDownToolTab();
       openSession(session);
-      // Selection is navigation: reopening a History session moves the view
-      // to the workspace that session lives in.
       if (session.workspaceId !== null) setSelectedWorkspace(session.workspaceId);
       setHistoryOpen(false);
       setHistorySearch("");
     },
     [openSession, setSelectedWorkspace, standDownToolTab],
+  );
+  const handleReopenAgent = useCallback(
+    (session: Session) => {
+      const latest = sharedSessionController()
+        .getState()
+        .sessions.find((row) => row.id === session.id);
+      handleReopenSession(latest ?? session);
+    },
+    [handleReopenSession],
   );
   const handleOpenOverviewSession = useCallback(
     (sessionId: string) => {
@@ -1417,8 +1426,12 @@ export function Workspace({
         onToggleHistory={handleToggleHistory}
         history={{
           searchValue: historySearch,
+          projects,
+          connected: daemon.state === "connected",
+          selectedSessionId: activeToolId === null ? selectedSessionId : null,
           onSearchChange: handleHistorySearchChange,
           onReopen: handleReopenSession,
+          onReopenAgent: handleReopenAgent,
         }}
         searchValue={search}
         onSearchChange={handleSearchChange}

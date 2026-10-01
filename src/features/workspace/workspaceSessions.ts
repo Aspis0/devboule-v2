@@ -716,6 +716,8 @@ export function createWorkspaceSessionController(
         // The creator is identity, like origin: a push that carries it lands
         // it, and a push that omits it lets the row's known value stand.
         createdBy: snapshot.createdBy ?? previous?.createdBy,
+        // Context is the legacy ancestry signal when the push omits createdBy.
+        contextId: snapshot.contextId ?? previous?.contextId,
         // The name is identity, like the creator: a rename arrives as a
         // roster push carrying the new name, and a push that omits it lets
         // the row's known value stand. No push ever clears a name — the

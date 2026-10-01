@@ -962,6 +962,39 @@ describe("session title", () => {
 });
 
 describe("session creator carry", () => {
+  it("carries a legacy descendant context from a roster push for a new row", async () => {
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => []),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+
+    watched.listener?.([
+      {
+        id: "s.4242.10",
+        workspaceId: null,
+        kind: "acp",
+        title: "legacy child",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 5,
+        contextId: "s.4242.1",
+      },
+    ]);
+
+    expect(controller.getState().sessions[0]?.contextId).toBe("s.4242.1");
+    release();
+  });
+
   it("keeps a created session's display name and creator across a roster push", async () => {
     // The push carries neither field, so the controller's carried-over row is
     // the only thing standing between a live child and its own name and badge.

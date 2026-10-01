@@ -1,4 +1,5 @@
 import type { SessionKind } from "../../types/ipc";
+import { relativeTime } from "../../lib/relativeTime";
 import { sessionTitle } from "../workspace/workspaceSessions";
 
 export interface HistoryDayGroup<T> {
@@ -16,11 +17,12 @@ export interface HistorySearchFields {
   workspace?: string | null;
   branch?: string | null;
   project?: string | null;
-  host?: string | null;
 }
 
 interface TimestampedEntry {
   updatedAtMs?: number | null;
+  /** An open session with no timestamp yet: grouped with today, sorted first. */
+  groupWithToday?: boolean;
 }
 
 export function groupByDay<T extends TimestampedEntry>(
@@ -31,13 +33,21 @@ export function groupByDay<T extends TimestampedEntry>(
   const yesterday = new Date(now);
   if (todayKey !== null && Number.isFinite(now)) yesterday.setDate(yesterday.getDate() - 1);
   const yesterdayKey = todayKey === null ? null : localDayKey(yesterday.getTime());
+  // Timestamp-less live rows rank first explicitly; the fallback avoids the
+  // NaN that an Infinity-minus-Infinity comparator would produce, so their
+  // relative order stays the insertion order (stable sort) by construction.
   const sortedEntries = [...(entries ?? [])].sort(
-    (first, second) => timestampForSort(second) - timestampForSort(first),
+    (first, second) =>
+      rankForSort(first) - rankForSort(second) ||
+      timestampForSort(second) - timestampForSort(first) ||
+      0,
   );
   const groups = new Map<string, HistoryDayGroup<T>>();
 
   for (const entry of sortedEntries) {
-    const key = localDayKey(entry.updatedAtMs) ?? "unknown";
+    const key =
+      localDayKey(entry.updatedAtMs) ??
+      (entry.groupWithToday && todayKey !== null ? todayKey : "unknown");
     let group = groups.get(key);
     if (!group) {
       group = {
@@ -66,11 +76,12 @@ export function historyRowMatches(
   if (!normalizedQuery) return true;
   if (!row) return false;
 
-  // The name the row shows, from the one function that decides it — the search
-  // may not be narrower than what the user has just read. The title stays in
-  // the haystack beside it: a row whose display name covers the title is still
-  // the same session, and dropping the title would take away a word that used
-  // to find it.
+  // The name the row shows, from the one function that decides it, plus the
+  // stored fields the list can hold while open: id and title for a renamed
+  // row, kind so the show-all list answers "terminal", workspace, branch
+  // and project for the meta line. None of these is painted, so a query can
+  // match where the eye sees nothing — that is the price of searching rows
+  // whose fields may still be loading.
   const shownName = sessionTitle({
     id: row.id ?? "",
     title: row.title ?? "",
@@ -78,15 +89,43 @@ export function historyRowMatches(
     displayName: row.displayName ?? undefined,
   });
 
-  return [shownName, row.title, row.workspace, row.branch, row.project, row.host].some(
+  return [shownName, row.id, row.title, row.kind, row.workspace, row.branch, row.project].some(
     (value) => typeof value === "string" && value.toLowerCase().includes(normalizedQuery),
   );
 }
 
+export function historyRelativeTime(
+  timestamp: number | null | undefined,
+  now: number,
+): string | null {
+  if (
+    typeof timestamp !== "number" ||
+    !Number.isFinite(timestamp) ||
+    !Number.isFinite(now) ||
+    Number.isNaN(new Date(timestamp).getTime()) ||
+    Number.isNaN(new Date(now).getTime())
+  ) {
+    return null;
+  }
+
+  const days = calendarDayNumber(now) - calendarDayNumber(timestamp);
+  if (days <= 0) return relativeTime(timestamp, now);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
+}
+
+function rankForSort(entry: TimestampedEntry): number {
+  return entry.groupWithToday && typeof entry.updatedAtMs !== "number" ? 0 : 1;
+}
+
 function timestampForSort(entry: TimestampedEntry): number {
-  return typeof entry.updatedAtMs === "number" && Number.isFinite(entry.updatedAtMs)
-    ? entry.updatedAtMs
-    : Number.NEGATIVE_INFINITY;
+  if (typeof entry.updatedAtMs === "number" && Number.isFinite(entry.updatedAtMs))
+    return entry.updatedAtMs;
+  return Number.NEGATIVE_INFINITY;
 }
 
 function localDayKey(timestamp: number | null | undefined): string | null {
@@ -97,6 +136,14 @@ function localDayKey(timestamp: number | null | undefined): string | null {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function calendarDayNumber(timestamp: number): number {
+  const date = new Date(timestamp);
+  const utcDay = new Date(0);
+  utcDay.setUTCFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+  utcDay.setUTCHours(0, 0, 0, 0);
+  return utcDay.getTime() / 86_400_000;
 }
 
 function dateLabel(timestamp: number | null | undefined): string {

@@ -12,13 +12,18 @@ import { isAgentKind, type Session } from "../../../types/ipc";
 
 export type CloseIntent = "archive" | "delete";
 
+/** A session with a process behind it: `live` or `silent`. */
+export function isRunningSessionState(state: Session["state"]): boolean {
+  return state.type === "live" || state.type === "silent";
+}
+
 export function closeNeedsConfirmation(
   session: Pick<Session, "kind" | "state">,
   kind: CloseIntent,
 ): boolean {
   if (kind === "delete") return true;
   if (isAgentKind(session.kind)) {
-    return session.state.type === "live" || session.state.type === "silent";
+    return isRunningSessionState(session.state);
   }
   return true;
 }

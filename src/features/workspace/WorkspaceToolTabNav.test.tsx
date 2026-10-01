@@ -159,9 +159,13 @@ describe("roster pushes", () => {
 });
 
 describe("opening History over an active tool tab", () => {
-  it("a reopened session mounts its surface and takes the selection", async () => {
+  it("a reopened agent takes the selection from the active tool tab", async () => {
     const toolId = await openActiveDiffTab();
-    const saved = { ...terminalSession("saved-1", "saved one"), resumable: true };
+    const saved = {
+      ...terminalSession("saved-1", "saved one"),
+      kind: "acp" as const,
+      resumable: true,
+    };
     vi.mocked(sessionsList).mockResolvedValue([
       terminalSession("session-2", "shell two"),
       terminalSession("session-3", "shell three"),
@@ -180,9 +184,7 @@ describe("opening History over an active tool tab", () => {
         maxSessions: 10,
         maxAgeMs: 0,
       },
-      perSession: [
-        { id: "saved-1", title: "saved one", kind: "terminal", bytes: 32, updatedAtMs: 0 },
-      ],
+      perSession: [{ id: "saved-1", title: "saved one", kind: "acp", bytes: 32, updatedAtMs: 0 }],
     });
     vi.mocked(sessionResume).mockResolvedValue({ type: "resumed", session: saved });
 
@@ -201,7 +203,6 @@ describe("opening History over an active tool tab", () => {
 
     expect(tabElement(toolId).getAttribute("aria-selected")).toBe("false");
     expect(tabElement("saved-1").getAttribute("aria-selected")).toBe("true");
-    expect(terminalSurfaces()).toContain("saved-1");
   });
 });
 
