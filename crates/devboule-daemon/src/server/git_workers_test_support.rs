@@ -1,7 +1,7 @@
 //! Shared fixtures for the git-off-loop tests: a state with a registered
 //! workspace, a real repository, the command-gate arm, the reply log that
-//! records production order on both roads, and the worker-reply wait. Split
-//! by topic across `order`, `bound` and `lifecycle` tests.
+//! records production order on both roads, and the worker-reply wait. The
+//! tests are split by topic across the `git_workers_*_tests` files.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -215,7 +215,7 @@ pub(super) fn spawn_dispatch(
 /// back everything queued, and a reply behind the one this call needs must
 /// never be dropped. The deadline only catches a lost reply: each reply is
 /// real `git` work, and the gate runs this filter's repos in parallel.
-pub(super) fn wait_for_worker_reply(
+pub(in crate::server) fn wait_for_worker_reply(
     conn: &ConnHandle,
     backlog: &mut VecDeque<DaemonMessage>,
 ) -> DaemonMessage {

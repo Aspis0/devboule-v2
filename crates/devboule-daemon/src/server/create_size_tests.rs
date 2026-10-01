@@ -1,11 +1,12 @@
 //! The create frame's optional geometry at the wire boundary: which pairs
 //! count as an ask, and that a framed ask reaches the PTY it names.
 
-use std::time::{Duration, Instant};
+use std::collections::VecDeque;
 
 use devboule_protocol::{ClientMessage, DaemonMessage, OwnerId, SessionKind};
 
 use super::dispatch;
+use super::git_workers::test_support::wait_for_worker_reply;
 use super::sessions::create_size;
 use super::ServerState;
 use crate::session::{test_terminal_geometry, ConnHandle};
@@ -63,17 +64,8 @@ fn a_framed_create_size_reaches_the_pty() {
         true,
     );
     assert!(inline.is_none(), "a create answers from its worker");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let reply = loop {
-        if let Some(reply) = conn.outbound.pull_replies().pop_front() {
-            break reply;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the create worker never answered"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let mut reply_backlog = VecDeque::new();
+    let reply = wait_for_worker_reply(&conn, &mut reply_backlog);
     let session = match reply {
         DaemonMessage::Session { session, .. } => session,
         other => panic!("the create must answer a session: {other:?}"),

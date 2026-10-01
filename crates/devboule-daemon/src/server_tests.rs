@@ -1,3 +1,4 @@
+use super::git_workers::test_support::wait_for_worker_reply;
 use super::*;
 use devboule_protocol::{ClientMessage, OwnerId, PermissionOutcome, RetentionPatch};
 
@@ -2575,20 +2576,6 @@ fn update_test_agent(
     }
 }
 
-fn wait_for_worker_reply(conn: &ConnHandle) -> DaemonMessage {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        if let Some(reply) = conn.outbound.pull_replies().pop_front() {
-            return reply;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "background request did not reply"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
 #[cfg(windows)]
 #[test]
 fn queued_session_frames_flow_while_creation_waits_off_dispatch() {
@@ -2700,6 +2687,7 @@ fn queued_session_frames_flow_while_creation_waits_off_dispatch() {
 fn a_panicked_create_lock_does_not_block_later_creates() {
     let (path, state) = temp_state("create-lock-poison");
     let conn = ConnHandle::new(92);
+    let mut reply_backlog = VecDeque::new();
     let lock_conn = Arc::clone(&conn);
     let _ = std::thread::spawn(move || {
         let _guard = lock_conn.session_create_lock.lock().expect("fresh lock");
@@ -2729,10 +2717,15 @@ fn a_panicked_create_lock_does_not_block_later_creates() {
             true,
         )
         .is_none());
-        assert!(
-            matches!(wait_for_worker_reply(&conn), DaemonMessage::Error(_)),
-            "create {id} should complete with its provider refusal"
-        );
+        let reply = wait_for_worker_reply(&conn, &mut reply_backlog);
+        match reply {
+            DaemonMessage::Error(error) => assert_eq!(
+                error.id,
+                Some(id),
+                "create {id} must be answered for its own request"
+            ),
+            other => panic!("create {id} should complete with its provider refusal: {other:?}"),
+        }
     }
     drop(state);
     let _ = std::fs::remove_dir_all(path);
@@ -2809,6 +2802,7 @@ fn provider_update_drops_fingerprint_but_preserves_latest_version_cache() {
 
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let conn = ConnHandle::new(42);
+    let mut reply_backlog = VecDeque::new();
     assert!(dispatch(
         &state,
         &owner,
@@ -2824,7 +2818,7 @@ fn provider_update_drops_fingerprint_but_preserves_latest_version_cache() {
     )
     .is_none());
     assert_eq!(
-        wait_for_worker_reply(&conn),
+        wait_for_worker_reply(&conn, &mut reply_backlog),
         DaemonMessage::ProviderUpdated {
             id: 43,
             ok: true,
@@ -2903,6 +2897,7 @@ fn provider_update_failure_preserves_both_version_caches() {
 
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let conn = ConnHandle::new(50);
+    let mut reply_backlog = VecDeque::new();
     assert!(dispatch(
         &state,
         &owner,
@@ -2918,7 +2913,7 @@ fn provider_update_failure_preserves_both_version_caches() {
     )
     .is_none());
     assert_eq!(
-        wait_for_worker_reply(&conn),
+        wait_for_worker_reply(&conn, &mut reply_backlog),
         DaemonMessage::ProviderUpdated {
             id: 51,
             ok: false,
@@ -2955,6 +2950,7 @@ fn provider_update_refuses_native_even_when_a_package_is_known() {
     });
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let conn = ConnHandle::new(44);
+    let mut reply_backlog = VecDeque::new();
     assert!(dispatch(
         &state,
         &owner,
@@ -2969,7 +2965,7 @@ fn provider_update_refuses_native_even_when_a_package_is_known() {
         false,
     )
     .is_none());
-    let DaemonMessage::Error(error) = wait_for_worker_reply(&conn) else {
+    let DaemonMessage::Error(error) = wait_for_worker_reply(&conn, &mut reply_backlog) else {
         panic!("native provider update must return an InvalidRequest");
     };
     assert_eq!(error.code, ErrorCode::InvalidRequest);
@@ -2991,6 +2987,7 @@ fn provider_update_refuses_the_native_debug_stub_before_package_lookup() {
     });
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let conn = ConnHandle::new(46);
+    let mut reply_backlog = VecDeque::new();
     assert!(dispatch(
         &state,
         &owner,
@@ -3005,7 +3002,7 @@ fn provider_update_refuses_the_native_debug_stub_before_package_lookup() {
         false,
     )
     .is_none());
-    let DaemonMessage::Error(error) = wait_for_worker_reply(&conn) else {
+    let DaemonMessage::Error(error) = wait_for_worker_reply(&conn, &mut reply_backlog) else {
         panic!("native debug stub update must return an InvalidRequest");
     };
     assert_eq!(error.code, ErrorCode::InvalidRequest);
@@ -3042,6 +3039,7 @@ fn provider_update_reports_missing_npm_without_invoking_the_runner() {
     state.set_provider_update_npm_missing();
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let conn = ConnHandle::new(48);
+    let mut reply_backlog = VecDeque::new();
     assert!(dispatch(
         &state,
         &owner,
@@ -3057,7 +3055,7 @@ fn provider_update_reports_missing_npm_without_invoking_the_runner() {
     )
     .is_none());
     assert_eq!(
-        wait_for_worker_reply(&conn),
+        wait_for_worker_reply(&conn, &mut reply_backlog),
         DaemonMessage::ProviderUpdated {
             id: 49,
             ok: false,

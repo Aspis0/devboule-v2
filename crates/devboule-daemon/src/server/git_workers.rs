@@ -292,9 +292,10 @@ pub(super) fn offload(
     None
 }
 
+/// Open to `crate::server` so `crate::server::tests` can name the wait inside by full path.
 #[cfg(test)]
 #[path = "git_workers_test_support.rs"]
-mod test_support;
+pub(super) mod test_support;
 
 #[cfg(test)]
 #[path = "git_workers_order_tests.rs"]
@@ -311,6 +312,18 @@ mod join_tests;
 #[cfg(test)]
 #[path = "git_workers_delete_tests.rs"]
 mod delete_tests;
+
+#[cfg(test)]
+#[path = "git_workers_archive_mark_tests.rs"]
+mod archive_mark_tests;
+
+#[cfg(test)]
+#[path = "git_workers_shutdown_tests.rs"]
+mod shutdown_tests;
+
+#[cfg(test)]
+#[path = "git_workers_drain_bound_tests.rs"]
+mod drain_bound_tests;
 
 #[cfg(test)]
 #[path = "git_workers_lifecycle_tests.rs"]
