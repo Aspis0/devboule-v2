@@ -116,6 +116,8 @@ export type CommandArgs = {
   workspace_file_delete: { workspaceId: Id; path: string };
   workspace_file_open: { workspaceId: Id; path: string; line?: number; targetId: string };
   editor_targets_list: undefined;
+  /** One http(s) URL for the system browser, never the webview. */
+  open_external_url: { url: string };
   session_create: {
     workspaceId: Id | null;
     kind: SessionKind;
@@ -284,6 +286,8 @@ type CommandResults = {
   workspace_file_open: void;
   /** The ways this machine can open a file, best target first. */
   editor_targets_list: EditorTarget[];
+  /** The launch done — void by design: the URL never comes back to this side. */
+  open_external_url: void;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
@@ -442,6 +446,7 @@ export const COMMAND_ARG_KEYS = {
   workspace_file_delete: ["workspaceId", "path"],
   workspace_file_open: ["workspaceId", "path", "line", "targetId"],
   editor_targets_list: [],
+  open_external_url: ["url"],
   session_create: ["workspaceId", "kind", "provider", "mode", "cols", "rows"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -651,6 +656,11 @@ export const workspaceFileOpen = (
   line: number | undefined,
   targetId: string,
 ) => invokeTyped("workspace_file_open", { workspaceId, path, line, targetId });
+/**
+ * Hand one http(s) URL to the system browser. The command parses it again and
+ * launches the OS handler, so the webview never navigates to it.
+ */
+export const externalUrlOpen = (url: string) => invokeTyped("open_external_url", { url });
 /**
  * Stage paths in the workspace's index — the Changes panel's Stage. The
  * paths are the panel's own rows (relative, from a status reply): the

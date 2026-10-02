@@ -119,19 +119,37 @@ function thinkDisplayName(subagentType?: string): string {
 }
 
 /**
- * A fetch title is a URL when the provider sent one: it collapses to its host
- * and keeps an `href`. Any other title stays as sent, and a title that only
- * looks like a URL gets no `href` rather than a guessed one.
+ * A fetch title is a link only when it is one exact http(s) URL: no whitespace
+ * anywhere, the web scheme, and a parse. A URL carrying a username or password
+ * keeps its host as the summary and gets no `href`, so credentials never reach
+ * the DOM; any other title is shown as sent.
  */
 function fetchDisplay(title: string): { summary?: string; linkUrl?: string } {
   if (title.length === 0) return {};
   if (!/^https?:\/\//i.test(title)) return { summary: title };
-  try {
-    const url = new URL(title);
-    return { summary: url.hostname, linkUrl: url.href };
-  } catch {
-    return { summary: title };
+  const url = parsedUrl(title);
+  if (authority(title).includes("@")) {
+    return url !== null && url.host.length > 0 ? { summary: url.host } : {};
   }
+  // The parser trims or percent-encodes whitespace and accepts a URL plus
+  // commentary, so only a title with none of it may state a navigation target.
+  if (url === null || /\s/.test(title)) return { summary: title };
+  return { summary: url.host, linkUrl: url.href };
+}
+
+/** The URL a title states, or null when no parser accepts it. */
+function parsedUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+/** What follows `://` up to the first path, query or fragment: an `@` there
+ * is userinfo, never part of the host. */
+function authority(value: string): string {
+  return value.slice(value.indexOf("://") + 3).split(/[/?#]/, 1)[0] ?? "";
 }
 
 export function toolRowDisplay(item: ToolItem): ToolRowModel {

@@ -2,9 +2,13 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { ToolRow } from "./ToolRow";
+
+vi.mock("../../../lib/openInBrowser", () => ({ openInBrowser: vi.fn() }));
+
+import { openInBrowser } from "../../../lib/openInBrowser";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -27,6 +31,7 @@ afterEach(async () => {
   if (root !== null) await act(async () => root?.unmount());
   root = null;
   host.remove();
+  vi.mocked(openInBrowser).mockClear();
 });
 
 async function renderRow(item: ToolChatItem): Promise<HTMLElement> {
@@ -50,6 +55,40 @@ describe("ToolRow", () => {
     expect(link?.getAttribute("target")).toBe("_blank");
     expect(link?.getAttribute("rel")).toBe("noreferrer");
     expect(link?.textContent).toBe("https://docs.example.com/guide?q=1");
+  });
+
+  it("hands a fetched URL to the system browser without navigating", async () => {
+    const container = await renderRow(
+      tool({ kind: "fetch", title: "https://docs.example.com/guide?q=1" }),
+    );
+    const link = container.querySelector<HTMLAnchorElement>(".workspace-chat-tool-link a");
+    if (link === null) throw new Error("fetch row did not render a link");
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => link.dispatchEvent(click));
+    expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("https://docs.example.com/guide?q=1");
+    expect(click.defaultPrevented).toBe(true);
+  });
+
+  it("keeps a credentialed URL's userinfo out of the document and links nothing", async () => {
+    const container = await renderRow(
+      tool({ kind: "fetch", title: "https://user:pass@example.com/path" }),
+    );
+    expect(container.querySelector(".workspace-chat-tool-summary-text")?.textContent).toBe(
+      "example.com",
+    );
+    expect(container.querySelector(".workspace-chat-tool-link")).toBeNull();
+    expect(container.innerHTML).not.toContain("user:pass");
+    expect(container.innerHTML).not.toContain("user%3Apass");
+  });
+
+  it("keeps a URL plus extra text raw and unlinked", async () => {
+    const container = await renderRow(
+      tool({ kind: "fetch", title: "https://example.com/path explanation" }),
+    );
+    expect(container.querySelector(".workspace-chat-tool-summary-text")?.textContent).toBe(
+      "https://example.com/path explanation",
+    );
+    expect(container.querySelectorAll("a[href]")).toHaveLength(0);
   });
 
   it("shows a fetched page title and links nothing when the title is not a URL", async () => {

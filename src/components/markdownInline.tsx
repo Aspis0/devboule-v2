@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { parseChatCodeFilePath, scanChatFilePaths, type ChatFileLinks } from "../lib/chatFilePaths";
+import { openInBrowser } from "../lib/openInBrowser";
 
 export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
   const links = fileLinks ?? null;
@@ -209,7 +210,16 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
       const label = text.slice(contentStart, contentEnd);
       nodes.push(
         /^(https?:|mailto:)/i.test(href) ? (
-          <a key={key} href={href} target="_blank" rel="noreferrer">
+          <a
+            key={key}
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(event) => {
+              event.preventDefault();
+              openInBrowser(href);
+            }}
+          >
             {label}
           </a>
         ) : (

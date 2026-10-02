@@ -144,6 +144,7 @@ pub fn run() {
             backend::workspace::workspace_file_duplicate,
             backend::workspace::workspace_file_delete,
             backend::open_in_editor::workspace_file_open,
+            backend::open_external::open_external_url,
             backend::editor_targets::editor_targets_list,
             backend::workspace::workspace_files_list,
             backend::devices::devices_list,

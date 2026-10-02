@@ -81,6 +81,54 @@ describe("toolRowDisplay", () => {
     });
   });
 
+  it("keeps the port in a fetch's summary", () => {
+    expect(toolRowDisplay(tool({ kind: "fetch", title: "https://example.com:8443/a" }))).toEqual({
+      displayName: "Fetch",
+      summary: "example.com:8443",
+      icon: "search",
+      linkUrl: "https://example.com:8443/a",
+    });
+  });
+
+  it("keeps a non-ASCII host in its punycode form on purpose", () => {
+    // The ASCII form is the lookalike-resistant one: two hosts that a reader
+    // would see as the same domain stay distinguishable here.
+    expect(toolRowDisplay(tool({ kind: "fetch", title: "https://münich.example/a" }))).toEqual({
+      displayName: "Fetch",
+      summary: "xn--mnich-kva.example",
+      icon: "search",
+      linkUrl: "https://xn--mnich-kva.example/a",
+    });
+  });
+
+  it("shows a title that is not exactly a URL as sent and unlinked", () => {
+    for (const title of [
+      "https://example.com/path explanation",
+      "https://example.com/path   ",
+      "   https://example.com/path",
+    ]) {
+      expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
+        displayName: "Fetch",
+        summary: title,
+        icon: "search",
+      });
+    }
+  });
+
+  it("never links a URL that carries credentials and keeps only its host", () => {
+    for (const title of [
+      "https://user:pass@example.com/path",
+      "https://user@example.com/path",
+      "https://user:pass@example.com/path   ",
+    ]) {
+      expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
+        displayName: "Fetch",
+        summary: "example.com",
+        icon: "search",
+      });
+    }
+  });
+
   it("shows a fetch's unparsable URL-like title as sent with no link", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "https://" }))).toEqual({
       displayName: "Fetch",

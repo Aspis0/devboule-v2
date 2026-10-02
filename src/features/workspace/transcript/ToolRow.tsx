@@ -1,5 +1,6 @@
 import { memo } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
+import { openInBrowser } from "../../../lib/openInBrowser";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { toolRowDisplay } from "../toolRowDisplay";
 import { ToolIcon } from "../ToolIcon";
@@ -21,6 +22,7 @@ export const ToolRow = memo(function ToolRow({
 }) {
   const { className, style } = entryFrame(item);
   const model = toolRowDisplay(item);
+  const linkUrl = model.linkUrl;
   const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
   const running = isToolRunningStatus(item.status) && !interrupted;
   const failed = item.kind !== "plan" && item.status.toLowerCase() === "failed";
@@ -74,10 +76,18 @@ export const ToolRow = memo(function ToolRow({
         ) : null}
       </summary>
       <div className="workspace-chat-tool-body">
-        {model.linkUrl !== undefined ? (
+        {linkUrl !== undefined ? (
           <div className="workspace-chat-tool-link">
-            <a href={model.linkUrl} rel="noreferrer" target="_blank">
-              {model.linkUrl}
+            <a
+              href={linkUrl}
+              onClick={(event) => {
+                event.preventDefault();
+                openInBrowser(linkUrl);
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {linkUrl}
             </a>
           </div>
         ) : null}
