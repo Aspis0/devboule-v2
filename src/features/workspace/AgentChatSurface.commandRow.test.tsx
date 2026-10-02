@@ -371,6 +371,42 @@ describe("command tool row", () => {
     expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("total 0");
   });
 
+  it("leaves a read row without a chip or an exit mark when a kindless patch carries shell fields", async () => {
+    await mount();
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "read-1",
+        title: "src/lib.rs",
+        status: "in_progress",
+        kind: "read",
+        locations: [{ path: "src/lib.rs", line: 12 }],
+      });
+      // No `kind`: ACP patches may omit it, and the row's own kind decides.
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "read-1",
+        status: "completed",
+        text: "fn main() {}\n",
+        command: "cat src/lib.rs",
+        exitCode: 7,
+      });
+    });
+
+    const row = onlyRow();
+    expect(row.querySelector(".workspace-command-chip")).toBeNull();
+    expect(row.querySelector(".workspace-command-dot")).toBeNull();
+    expect(row.querySelector(".workspace-command-exit")).toBeNull();
+    // The row keeps its own chrome: the Read label and the path summary.
+    const textBlock = row.querySelector("summary > .workspace-chat-tool-text");
+    if (textBlock === null) throw new Error("the row's text block did not render");
+    expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Read");
+    expect(textBlock.querySelector(".workspace-chat-tool-summary-text")?.textContent).toBe(
+      "src/lib.rs",
+    );
+    expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("fn main() {}");
+  });
+
   it("leaves a label-only row without the summary floor's class", async () => {
     await mount();
     await act(async () => {

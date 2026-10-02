@@ -1422,6 +1422,7 @@ export class AgentSession {
       command,
       exitCode,
     } = fields;
+    const shellRow = kind === "execute";
     const currentKey = `tool:${this.turn}:${toolCallId}`;
     const key = this.toolRows.get(toolCallId) ?? currentKey;
     // A tool-call item is a transcript boundary in its own turn. Tool updates
@@ -1446,8 +1447,8 @@ export class AgentSession {
             ...(locations === undefined ? {} : { locations }),
             ...itemParentage(parentToolUseId, spawnDepth),
             ...(subagentType === undefined ? {} : { subagentType }),
-            ...(command === undefined ? {} : { command }),
-            ...(exitCode === undefined ? {} : { exitCode }),
+            ...(shellRow && command !== undefined ? { command } : {}),
+            ...(shellRow && exitCode !== undefined ? { exitCode } : {}),
           },
         ],
       });
@@ -1478,9 +1479,10 @@ export class AgentSession {
     const key = this.toolRows.get(toolCallId) ?? `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
     const nextTitle = typeof title === "string" && title.length > 0 ? title : undefined;
-    const nextCommand = typeof command === "string" && command.length > 0 ? command : undefined;
+    const nextCommand =
+      kind === "execute" && typeof command === "string" && command.length > 0 ? command : undefined;
     if (index === undefined) {
-      // A bare command update borrows the raw command line as its title —
+      // A bare execute patch borrows the raw command line as its title —
       // never the output — until the call's own title replaces it above.
       this.appendTool(
         toolCallId,
@@ -1501,6 +1503,9 @@ export class AgentSession {
 
     const item = this.state.items[index];
     if (item.role !== "tool") return;
+    // The daemon's per-envelope view cannot know the kind a patch inherits,
+    // so the merged kind decides here which shell fields the row may carry.
+    const shellRow = (kind ?? item.kind) === "execute";
     const items = [...this.state.items];
     items[index] = {
       ...item,
@@ -1511,8 +1516,9 @@ export class AgentSession {
       ...(nextTitle === undefined ? {} : { title: nextTitle }),
       ...(kind === undefined ? {} : { kind }),
       ...(locations === undefined ? {} : { locations }),
-      ...(command === undefined ? {} : { command }),
-      ...(exitCode === undefined ? {} : { exitCode }),
+      ...(shellRow ? {} : { command: undefined, exitCode: undefined }),
+      ...(shellRow && command !== undefined ? { command } : {}),
+      ...(shellRow && exitCode !== undefined ? { exitCode } : {}),
     };
     this.update({ items });
   }

@@ -170,35 +170,39 @@ fn view_from_session_update(
             let commands = commands_from_update(update)?;
             Some(SessionEvent::AvailableCommands { commands })
         }
-        Some("tool_call") => Some(SessionEvent::AgentToolCall {
-            tool_call_id: update
-                .get("toolCallId")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            title: update
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            status: update
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("in_progress")
-                .to_string(),
-            kind: update
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
-            locations: locations_from_value(update.get("locations"), cwd, false),
-            subagent_type: None,
-            parent_tool_use_id: None,
-            spawn_depth: None,
-            command: None,
-            exit_code: None,
-        }),
+        Some("tool_call") => {
+            let (command, exit_code) = command_row_from_update(update, Frame::First);
+            Some(SessionEvent::AgentToolCall {
+                tool_call_id: update
+                    .get("toolCallId")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                title: update
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                status: update
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("in_progress")
+                    .to_string(),
+                kind: update
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                locations: locations_from_value(update.get("locations"), cwd, false),
+                subagent_type: None,
+                parent_tool_use_id: None,
+                spawn_depth: None,
+                command,
+                exit_code,
+            })
+        }
         Some("tool_call_update") => {
             let text = text_from_content(update.get("content")).map(str::to_string);
+            let (command, exit_code) = command_row_from_update(update, Frame::Update);
             Some(SessionEvent::AgentToolUpdate {
                 tool_call_id: update
                     .get("toolCallId")
@@ -222,8 +226,8 @@ fn view_from_session_update(
                 locations: locations_from_value(update.get("locations"), cwd, true),
                 parent_tool_use_id: None,
                 spawn_depth: None,
-                command: None,
-                exit_code: None,
+                command,
+                exit_code,
             })
         }
         Some("plan") => {
@@ -231,6 +235,63 @@ fn view_from_session_update(
             Some(SessionEvent::AgentTasks { items })
         }
         _ => None,
+    }
+}
+
+/// Which frame of a tool row an envelope is — the shell-field gate asks,
+/// because the two frames differ in what an absent `kind` can mean.
+enum Frame {
+    /// The first announcement: merged with no earlier frame, so its own
+    /// `kind` is all there is — absent kind, no shell fields.
+    First,
+    /// A patch: an absent `kind` means "unchanged", which this stateless view
+    /// cannot read, so the row merge (src/lib/agentSession.ts) gates on the merged kind.
+    Update,
+}
+
+/// The `command`/`exit_code` pair a tool row carries: only a shell row's
+/// own fields — `rawInput.command` with its string `args` joined after it,
+/// and an explicitly numeric `rawOutput.exitCode`. Absent stays `None`:
+/// never a `status`, never output text, no terminal content (this adapter
+/// tracks no terminal), and `title` is display text, never a command line.
+// Command join and exit-code read translated from Paseo's ACP shell detail (acp-agent.ts buildShellToolDetail, buildShellCommand).
+fn command_row_from_update(
+    update: &serde_json::Value,
+    frame: Frame,
+) -> (Option<String>, Option<i32>) {
+    let kind = update.get("kind").and_then(serde_json::Value::as_str);
+    match (kind, frame) {
+        (Some("execute"), _) => {}
+        (Some(_), _) => return (None, None),
+        (None, Frame::First) => return (None, None),
+        (None, Frame::Update) => {}
+    }
+    let command = update.get("rawInput").and_then(command_line_from_raw_input);
+    let exit_code = update
+        .get("rawOutput")
+        .and_then(|raw_output| raw_output.get("exitCode"))
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok());
+    (command, exit_code)
+}
+
+/// A display line, not a reconstructed argv: the join adds no quoting, so one
+/// argument with spaces reads like two.
+fn command_line_from_raw_input(raw_input: &serde_json::Value) -> Option<String> {
+    let command = raw_input
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .filter(|command| !command.trim().is_empty())?
+        .to_string();
+    let args: Vec<&str> = raw_input
+        .get("args")
+        .and_then(serde_json::Value::as_array)
+        .map(|args| args.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    if args.is_empty() {
+        Some(command)
+    } else {
+        Some(format!("{command} {}", args.join(" ")))
     }
 }
 
@@ -1606,6 +1667,12 @@ pub(crate) fn current_mode_id_from_update(
 #[cfg(test)]
 #[path = "acp_view_declared_features_tests.rs"]
 mod declared_features_tests;
+
+/// The `command`/`exit_code` read, in its own file: it is one rule with two
+/// field names, not more view code to scroll past.
+#[cfg(test)]
+#[path = "acp_view_command_row_tests.rs"]
+mod command_row_tests;
 
 #[cfg(test)]
 mod tests {
