@@ -590,7 +590,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         if (row.state === undefined || target.generation === null) continue;
         // The daemon's close carries no generation: this read is the whole guard.
         if (isRunningSessionState(row.state) || row.state.generation !== target.generation) {
-          sentences.set(target.id, "It is running again, so it was left open.");
+          sentences.set(target.id, "It changed since you asked, so it was left open.");
           continue;
         }
         try {
