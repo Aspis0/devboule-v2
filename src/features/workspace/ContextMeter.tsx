@@ -45,10 +45,11 @@ export function SessionContextMeter({ session, manifest, running }: SessionConte
 
 /**
  * The composer's context ring. It shows a percentage only when both sides of
- * the ratio are known for the session's current model; with just one side it
- * shows that number without a percent; while a turn runs without any reading
- * it shows the track alone; and with nothing to say and nothing running it
- * renders nothing at all. Click opens {@link ContextPopover} above it.
+ * the ratio are known for the session's current model and agree (the reading
+ * not above its own window); with one usable side it shows that number
+ * without a percent; while a turn runs without any reading it shows the
+ * track alone; and with nothing to say and nothing running it renders
+ * nothing at all. Click opens {@link ContextPopover} above it.
  */
 export function ContextMeter({ usage, manifest, running }: ContextMeterProps) {
   const [open, setOpen] = useState(false);

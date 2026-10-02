@@ -44,6 +44,26 @@ describe("contextMeterNumbers", () => {
     expect(numbers).toEqual({ used: 100_000, max: 200_000, percent: 50 });
   });
 
+  it("shows used only for a legacy Claude reading against the manifest the replay delivers", () => {
+    // The pair the daemon's replay seam hands the app for a legacy row:
+    // this reading (no `maxTokens`) and Claude's windowless manifest entry.
+    const replayed: ContextUsage = {
+      type: "context_usage",
+      modelId: "claude-opus-5[1m]",
+      usedTokens: 22_826,
+      live: false,
+    };
+    expect(
+      contextMeterNumbers(
+        replayed,
+        manifest({
+          currentModelId: "claude-opus-5[1m]",
+          models: [{ modelId: "claude-opus-5[1m]", name: "claude-opus-5[1m]" }],
+        }),
+      ),
+    ).toEqual({ used: 22_826, max: null, percent: null });
+  });
+
   it("never borrows a window from another model", () => {
     // The reading names model A; the session now runs model B, whose window
     // is right there in the manifest. B's window is exactly the wrong number.
@@ -78,10 +98,18 @@ describe("contextMeterNumbers", () => {
     expect(numbers).toEqual({ used: 5_000, max: null, percent: null });
   });
 
-  it("shows no percent against a zero window", () => {
+  it("treats a zero window as no window: the count stays, the ratio does not", () => {
     expect(contextMeterNumbers(usage({ usedTokens: 5, maxTokens: 0 }), null)).toEqual({
       used: 5,
-      max: 0,
+      max: null,
+      percent: null,
+    });
+  });
+
+  it("shows used only when the frame carries no window and the manifest none", () => {
+    expect(contextMeterNumbers(usage({ usedTokens: 5_000 }), null)).toEqual({
+      used: 5_000,
+      max: null,
       percent: null,
     });
   });
@@ -101,13 +129,23 @@ describe("contextMeterNumbers", () => {
     );
   });
 
-  it("clamps an overcount to the ring's 100", () => {
-    // The arc is clamped; the label beside it must not claim 300%.
+  it("refuses the ratio when the reading exceeds the window it names", () => {
     expect(contextMeterNumbers(usage({ usedTokens: 300_000, maxTokens: 100_000 }), null)).toEqual({
       used: 300_000,
-      max: 100_000,
-      percent: 100,
+      max: null,
+      percent: null,
     });
+  });
+
+  it("refuses the ratio when the manifest window is smaller than the reading", () => {
+    const numbers = contextMeterNumbers(
+      usage({ modelId: "model-a", usedTokens: 150_000 }),
+      manifest({
+        currentModelId: "model-a",
+        models: [{ modelId: "model-a", name: "A", contextTokens: 100_000 }],
+      }),
+    );
+    expect(numbers).toEqual({ used: 150_000, max: null, percent: null });
   });
 });
 

@@ -116,6 +116,13 @@ describe("the composer's context meter", () => {
     expect(host.querySelectorAll("svg circle")).toHaveLength(1);
   });
 
+  it("shows the count alone when the reading exceeds its window", async () => {
+    // The used-only verdict has to reach the ring, not just the numbers.
+    const host = await render(meter({ usage: usage({ usedTokens: 300_000, maxTokens: 100_000 }) }));
+    expect(host.textContent).toBe("300k");
+    expect(host.querySelectorAll("svg circle")).toHaveLength(1);
+  });
+
   it("never pairs a reading with another model's window", async () => {
     const host = await render(
       meter({
@@ -143,6 +150,16 @@ describe("the context popover", () => {
       "76k / 200k tokens",
     );
     expect(popover.textContent).toContain("as of the last turn");
+  });
+
+  it("shows the count alone in the popover when the reading exceeds its window", async () => {
+    const host = await render(meter({ usage: usage({ usedTokens: 300_000, maxTokens: 100_000 }) }));
+    const popover = await openPopover(host);
+    expect(popover.querySelector(".workspace-context-tokens")?.textContent).toBe(
+      "300k tokens used",
+    );
+    expect(popover.querySelector(".workspace-context-percent")).toBeNull();
+    expect(popover.querySelector(".workspace-context-ring")).toBeNull();
   });
 
   it("drops the last-turn note when the reading is live", async () => {

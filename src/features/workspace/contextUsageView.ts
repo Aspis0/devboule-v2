@@ -14,12 +14,14 @@ import type {
  * The rule everything here obeys: never show a number the provider did not
  * send. A missing side of the ratio stays `null` all the way to the pixel —
  * it never becomes 0, and a window is never borrowed from another model.
+ * A reading above its own window (real: it happens just before a
+ * compaction) and a window of 0 are not usable ratios: count alone, no ratio.
  */
 export interface ContextMeterNumbers {
   used: number | null;
   max: number | null;
-  /** Rounded percent clamped to the ring's 0-100; present only when both
-      sides are known and max > 0. */
+  /** Rounded percent clamped to the ring's 0-100; present only when the
+      pair is a real ratio: both sides known, max > 0, used not above max. */
   percent: number | null;
 }
 
@@ -28,11 +30,11 @@ const NOTHING: ContextMeterNumbers = { used: null, max: null, percent: null };
 /**
  * The window for a reading, or null when none may be claimed.
  *
- * The frame's own window wins (`maxTokens`, which Codex sends). Otherwise
- * the manifest entry for the SAME `model_id` the reading names — never the
- * current model's entry, never another model's: dividing model A's tokens by
- * model B's window is the one mistake this function exists to make
- * impossible.
+ * The frame's own window wins (`maxTokens`, the number the frame itself
+ * carried). Otherwise the manifest entry for the SAME `model_id` the
+ * reading names — never the current model's entry, never another model's:
+ * dividing model A's tokens by model B's window is the one mistake this
+ * function exists to make impossible.
  */
 function windowForUsage(usage: ContextUsage, manifest: SessionManifest | null): number | null {
   if (usage.maxTokens !== undefined) return usage.maxTokens;
@@ -61,12 +63,17 @@ export function contextMeterNumbers(
   ) {
     return NOTHING;
   }
-  const max = windowForUsage(usage, manifest);
-  // Clamped where the arc is clamped: an overcount must not print 300% next
-  // to a ring pinned at 100.
-  const percent =
-    max !== null && max > 0 ? Math.round(Math.min(1, usage.usedTokens / max) * 100) : null;
-  return { used: usage.usedTokens, max, percent };
+  const window = windowForUsage(usage, manifest);
+  // A window the reading already exceeds — or a zero — is no denominator:
+  // the pair would claim a full ring the provider never reported.
+  if (window === null || window <= 0 || usage.usedTokens > window) {
+    return { used: usage.usedTokens, max: null, percent: null };
+  }
+  return {
+    used: usage.usedTokens,
+    max: window,
+    percent: Math.round((usage.usedTokens / window) * 100),
+  };
 }
 
 /** Compact token count in the spec's spelling: 76k, 200k, 1m, 508. */

@@ -114,6 +114,118 @@ fn live_claude_replay_derives_journaled_views() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The app's attach road on a legacy Claude session: the rows re-derive the
+/// reading, and the seam delivers the stored manifest instead of the journal's.
+#[test]
+fn a_legacy_claude_replay_delivers_the_reading_and_the_windowless_manifest() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-legacy-claude-window");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.live.claude.legacywindow";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Claude,
+            "Claude",
+        ))
+        .unwrap();
+    // The legacy row: the measured result without its per-model usage.
+    let mut result: serde_json::Value = include_str!("../fixtures/wire/claude-e1-results.jsonl")
+        .lines()
+        .next()
+        .expect("first measured result")
+        .parse()
+        .expect("fixture line");
+    result
+        .as_object_mut()
+        .expect("envelope object")
+        .remove("modelUsage");
+    let init = json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": "claude-peer",
+        "model": "claude-opus-5[1m]"
+    });
+    journal
+        .append_blocking(crate::journal::acp_envelope_record(session_id, 1, 1, &init).unwrap())
+        .unwrap();
+    journal
+        .append_blocking(crate::journal::acp_envelope_record(session_id, 1, 2, &result).unwrap())
+        .unwrap();
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    // As the live road stores it: the view's own init manifest.
+    for event in crate::claude_view::ClaudeView::new(None).ingest(&init) {
+        if matches!(event, SessionEvent::SessionManifest { .. }) {
+            runtime.store_session_manifest(event);
+        }
+    }
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.next_seq = 3;
+    }
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach legacy Claude session");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+
+    let contexts: Vec<&SessionEvent> = events
+        .iter()
+        .filter(|event| matches!(event, SessionEvent::ContextUsage { .. }))
+        .collect();
+    let [context] = contexts.as_slice() else {
+        panic!("one reading from the legacy result, got {}", contexts.len());
+    };
+    assert_eq!(
+        **context,
+        SessionEvent::ContextUsage {
+            model_id: Some("claude-opus-5[1m]".to_string()),
+            used_tokens: 22_826,
+            max_tokens: None,
+            live: false,
+        },
+        "a legacy row carries no window"
+    );
+    let manifests: Vec<&SessionEvent> = events
+        .iter()
+        .filter(|event| matches!(event, SessionEvent::SessionManifest { .. }))
+        .collect();
+    let [manifest] = manifests.as_slice() else {
+        panic!(
+            "the stored manifest arrives exactly once, got {}",
+            manifests.len()
+        );
+    };
+    let SessionEvent::SessionManifest { models, .. } = manifest else {
+        unreachable!();
+    };
+    assert_eq!(models.len(), 1, "one model in the stored manifest");
+    assert_eq!(models[0].model_id, "claude-opus-5[1m]");
+    assert_eq!(
+        models[0].context_tokens, None,
+        "the stored Claude manifest names no window"
+    );
+
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn recovered_acp_views_must_not_vanish_behind_a_high_output_cursor() {
     let integrity = recovered_integrity();

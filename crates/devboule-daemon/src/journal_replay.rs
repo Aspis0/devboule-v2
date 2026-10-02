@@ -1115,6 +1115,66 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_claude_result_replays_with_no_window_for_the_app_to_resolve() {
+        // Characterization: a row written before the frame carried
+        // per-model usage replays with no `max_tokens` on the reading.
+        let mut envelope: Value = include_str!("../fixtures/wire/claude-e1-results.jsonl")
+            .lines()
+            .next()
+            .expect("first measured result")
+            .parse()
+            .expect("fixture line");
+        envelope
+            .as_object_mut()
+            .expect("envelope object")
+            .remove("modelUsage");
+        // The init frame is what names the model: the result envelope
+        // carries no `model` of its own.
+        let init = json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "model": "claude-opus-5[1m]"
+        });
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.replay.legacywindow";
+        journal
+            .create_session(new_session_record(
+                id,
+                "owner",
+                None,
+                SessionKind::Claude,
+                "Usage",
+            ))
+            .expect("birth");
+        append_envelopes(&journal, id, 1, &[init, envelope]);
+        journal.flush().expect("flush");
+
+        let replay = journal.replay(id).expect("replay");
+        let contexts: Vec<&SessionEvent> = replay
+            .events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::ContextUsage { .. }))
+            .collect();
+        let [context] = contexts.as_slice() else {
+            panic!("one ContextUsage per legacy result, got {}", contexts.len());
+        };
+        assert_eq!(
+            **context,
+            SessionEvent::ContextUsage {
+                model_id: Some("claude-opus-5[1m]".to_string()),
+                used_tokens: 22_826,
+                max_tokens: None,
+                live: false,
+            },
+            "no modelUsage on the row: replay claims no window"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_journalled_pi_turn_end_replays_with_cache_and_cost() {
         // Pi end to end: the raw `turn_end` line is what the journal keeps,
         // and replay re-runs the same view derivation — so the finish a

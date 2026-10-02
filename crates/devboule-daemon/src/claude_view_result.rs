@@ -71,13 +71,11 @@ impl ClaudeView {
             }]
         };
         if let Some(used_tokens) = context_used {
-            // The window lives in the daemon's model catalog, not on this
-            // envelope, so the app takes it from the manifest entry of this
-            // same `model_id`.
+            let max_tokens = context_window_from_model_usage(envelope, model_id.as_deref());
             events.push(SessionEvent::ContextUsage {
                 model_id,
                 used_tokens,
-                max_tokens: None,
+                max_tokens,
                 live: false,
             });
         }
@@ -180,6 +178,18 @@ fn context_used_from_claude(usage: &Value) -> Option<u64> {
             .and_then(Value::as_u64)
             .unwrap_or(0);
     (total > 0).then_some(total)
+}
+
+/// Another model's entry is never this reading's denominator: no key match
+/// means no window, never a borrowed one.
+fn context_window_from_model_usage(envelope: &Value, model_id: Option<&str>) -> Option<u64> {
+    let model_id = model_id?;
+    envelope
+        .get("modelUsage")?
+        .get(model_id)?
+        .get("contextWindow")
+        .and_then(Value::as_u64)
+        .filter(|window| *window > 0)
 }
 
 fn usage_from_claude(usage: &Value) -> Option<ClaudeUsage> {

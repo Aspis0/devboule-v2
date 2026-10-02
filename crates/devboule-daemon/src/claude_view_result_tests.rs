@@ -264,11 +264,41 @@ fn result_context_usage_sums_the_last_iteration_of_each_measured_turn() {
                 assert_eq!(model_id.as_deref(), Some("claude-opus-5[1m]"));
                 assert_eq!(context_model.as_deref(), model_id.as_deref());
                 assert_eq!(*used_tokens, expected);
-                assert_eq!(*max_tokens, None);
+                assert_eq!(*max_tokens, Some(1_000_000));
                 assert!(!live);
             }
             other => panic!("expected AgentFinished then ContextUsage, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn a_result_naming_a_model_the_frame_never_reported_claims_no_window() {
+    // `modelUsage` also holds the haiku entry (200 000): a reading whose
+    // own id is not a key there takes no window from another model's entry.
+    let frames: Vec<Value> = include_str!("../fixtures/wire/claude-e1-results.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("measured result envelope"))
+        .collect();
+    let mut mapper = view();
+    let _ = mapper.ingest(&json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+        "model": "claude-sonnet-4-6"
+    }));
+    match mapper.ingest(&frames[0]).as_slice() {
+        [SessionEvent::AgentFinished { .. }, SessionEvent::ContextUsage {
+            model_id,
+            used_tokens,
+            max_tokens,
+            ..
+        }] => {
+            assert_eq!(model_id.as_deref(), Some("claude-sonnet-4-6"));
+            assert!(*used_tokens > 0);
+            assert_eq!(*max_tokens, None, "no entry for this id: no window");
+        }
+        other => panic!("expected AgentFinished then ContextUsage, got {other:?}"),
     }
 }
 
