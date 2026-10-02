@@ -137,6 +137,18 @@ describe("the rows one parent's pill lists", () => {
     ]);
   });
 
+  it("never lists the parent as its own child", () => {
+    const rows = deriveSubagentRows(
+      "parent",
+      [
+        child("parent", idleLive, "idle", { createdBy: "parent" }),
+        child("child-a", idleLive, "idle"),
+      ],
+      [],
+    );
+    expect(rows.map((row) => row.id)).toEqual(["child-a"]);
+  });
+
   it("keeps a task whose id equals a child's id as its own row", () => {
     const rows = deriveSubagentRows("parent", [child("same", idleLive, "idle")], [task("same")]);
     expect(rows.map((row) => row.kind)).toEqual(["child", "task"]);

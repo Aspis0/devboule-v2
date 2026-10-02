@@ -343,23 +343,20 @@ describe("SubagentMenu list", () => {
             sessionId="list-escape"
             title="Agent"
             onOpenSubagent={() => undefined}
-            subagentSessionIds={new Set(["task-child"])}
+            sessionRoster={[
+              {
+                id: "task-child",
+                kind: "acp",
+                title: "Child task",
+                createdBy: "list-escape",
+                state: { type: "live", generation: 1 },
+              },
+            ]}
           />
         </StrictMode>,
       );
     });
     await act(async () => undefined);
-
-    await act(async () => {
-      channelHarness.active?.({
-        type: "agent_task_started",
-        taskId: "task-child",
-        title: "Child task",
-        subagentType: "worker",
-        toolUseId: "toolu-child",
-        spawnDepth: 1,
-      });
-    });
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");

@@ -10,6 +10,7 @@ import {
   addSubagent,
   answerAsk,
   archiveAction,
+  ended,
   idle,
   live,
   openMenu,
@@ -91,6 +92,24 @@ describe("a child the parent created, with no task event", () => {
     expect(pill()).toBeNull();
   });
 
+  it("never offers to archive the parent, even when its own row names it as creator", async () => {
+    const refresh = vi.fn(async () => undefined);
+    const selfParented = { ...ended("parent", 1, "Parent row"), createdBy: "parent" };
+    await act(async () =>
+      root.render(surface([selfParented, idle("child-a", 1, "Created child")], refresh)),
+    );
+    await openMenu();
+
+    expect(rowTitles()).toEqual(["Created child"]);
+    expect(archiveAction()?.textContent).toBe("Archive 1 finished subagent");
+    await pressArchiveAction();
+    await answerAsk("Archive");
+
+    expect(vi.mocked(sessionClose)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sessionClose)).toHaveBeenCalledWith("child-a");
+    expect(vi.mocked(sessionClose)).not.toHaveBeenCalledWith("parent");
+  });
+
   it("opens the child's session from its row", async () => {
     const refresh = vi.fn(async () => undefined);
     const opened = vi.fn();
@@ -156,7 +175,7 @@ describe("the list that mixes created children and provider tasks", () => {
     await settleSubagent("same-id", "completed");
     await openMenu();
 
-    expect(rowTitles()).toEqual(["Busy child", "Provider task"]);
+    expect(rowTitles()).toEqual(["Busy child", "Provider taskUnavailable"]);
     expect(archiveAction()).toBeNull();
   });
 });

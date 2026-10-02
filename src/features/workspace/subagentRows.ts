@@ -65,13 +65,16 @@ export function isArchivable(row: Pick<SubagentRow, "kind" | "status">): boolean
   return row.kind === "child" && ARCHIVABLE_STATUSES.has(row.status);
 }
 
-/** The parent's children in roster order, then its provider tasks in theirs. */
+/** The parent's children in roster order, then its provider tasks in theirs. A row
+ * naming itself as creator is not its own child: Confirm would close the parent. */
 export function deriveSubagentRows(
   parentId: string,
   roster: ReadonlyArray<RosterChild> | undefined,
   tasks: readonly AgentSubagent[],
 ): SubagentRow[] {
-  const children = (roster ?? []).filter((session) => session.createdBy === parentId);
+  const children = (roster ?? []).filter(
+    (session) => session.createdBy === parentId && session.id !== parentId,
+  );
   return [
     ...children.map(childRow),
     ...tasks.map((task): SubagentRow => ({

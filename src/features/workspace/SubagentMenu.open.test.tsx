@@ -25,10 +25,16 @@ afterEach(async () => {
   channelHarness.activeSubscriptionId = null;
 });
 
-describe("opening a child through the chat header", () => {
-  it("refreshes missing daemon sessions once on open and disables an unresolved provider task", async () => {
+describe("a provider task row in the subagent menu", () => {
+  it("stays unavailable when a roster session has its id, and takes no approval label from it", async () => {
     const open = vi.fn();
-    const refresh = vi.fn(async () => undefined);
+    const sameId = {
+      id: "provider-internal",
+      kind: "acp" as const,
+      title: "Unrelated session",
+      createdBy: "someone-else",
+      state: { type: "live" as const, generation: 1 },
+    };
     await act(async () =>
       root.render(
         <AgentChatSurface
@@ -36,8 +42,8 @@ describe("opening a child through the chat header", () => {
           sessionId="parent"
           title="Parent"
           onOpenSubagent={open}
-          subagentSessionIds={new Set()}
-          onRefreshSubagents={refresh}
+          sessionRoster={[sameId]}
+          subagentAttention={new Map([["provider-internal", "Needs your approval"]])}
         />,
       ),
     );
@@ -48,41 +54,27 @@ describe("opening a child through the chat header", () => {
         title: "Internal task",
       }),
     );
-    await act(async () =>
-      container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]')?.click(),
-    );
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    expect(pill?.getAttribute("aria-label")).toBe("Subagents: 1 working");
+    await act(async () => pill?.click());
+
     const row = document.querySelector<HTMLButtonElement>("button.workspace-subagent-row");
-    expect(refresh).toHaveBeenCalledTimes(1);
     expect(row?.disabled).toBe(true);
-    expect(row?.getAttribute("aria-label")).toContain("running, Session unavailable");
+    expect(row?.getAttribute("aria-label")).toBe("Internal task, running, Session unavailable");
     expect(row?.textContent).toContain("Unavailable");
     await act(async () => row?.click());
     expect(open).not.toHaveBeenCalled();
-    expect(refresh).toHaveBeenCalledTimes(1);
-    await act(async () =>
-      root.render(
-        <AgentChatSurface
-          daemonState="connected"
-          sessionId="parent"
-          title="Parent"
-          onOpenSubagent={open}
-          subagentSessionIds={new Set(["provider-internal"])}
-          subagentAttention={new Map([["provider-internal", "Needs your approval"]])}
-          onRefreshSubagents={refresh}
-        />,
-      ),
-    );
-    expect(row?.disabled).toBe(false);
-    expect(row?.getAttribute("aria-label")).toContain("Needs your approval, Open in tab");
-    expect(container.querySelector('[data-testid="subagent-pill"]')?.textContent).toContain(
-      "1 needs your approval",
-    );
-    await act(async () => row?.click());
-    expect(open).toHaveBeenCalledWith("provider-internal");
   });
 
-  it("routes a child button click to its session ID", async () => {
+  it("opens a created child's session from its row and closes the menu", async () => {
     const open = vi.fn();
+    const child = {
+      id: "child",
+      kind: "acp" as const,
+      title: "Child",
+      createdBy: "parent",
+      state: { type: "live" as const, generation: 1 },
+    };
     await act(async () =>
       root.render(
         <AgentChatSurface
@@ -90,19 +82,10 @@ describe("opening a child through the chat header", () => {
           sessionId="parent"
           title="Parent"
           onOpenSubagent={open}
-          subagentSessionIds={new Set(["child"])}
+          sessionRoster={[child]}
         />,
       ),
     );
-    await act(async () => {
-      channelHarness.active?.({
-        type: "agent_task_started",
-        taskId: "child",
-        title: "Child",
-        spawnDepth: 1,
-      });
-    });
-    expect(open).not.toHaveBeenCalled();
     await act(async () =>
       container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]')?.click(),
     );

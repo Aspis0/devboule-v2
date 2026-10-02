@@ -66,7 +66,6 @@ export function surface(
       observedState={observedState ?? null}
       onOpenSubagent={onOpenSubagent}
       sessionRoster={roster}
-      subagentSessionIds={new Set(roster.map((row) => row.id))}
       onRefreshSubagents={refresh}
     />
   );

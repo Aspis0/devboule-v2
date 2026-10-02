@@ -168,7 +168,6 @@ export interface AgentSessionState {
   streaming: boolean;
   availableCommands: Array<{ name: string; description: string; hint?: string }>;
   subagents: AgentSubagent[];
-  subagentStatusCounts: AgentSubagentStatusCounts;
   lastFinished: AgentFinished | null;
   /**
    * The latest context reading this session's stream delivered. Kept across
@@ -250,7 +249,6 @@ const INITIAL_STATE: AgentSessionState = {
   streaming: false,
   availableCommands: [],
   subagents: [],
-  subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
   lastFinished: null,
   contextUsage: null,
   manifest: null,
@@ -1602,15 +1600,7 @@ export class AgentSession {
   }
 
   private updateSubagents(subagents: AgentSubagent[]): void {
-    const counts: AgentSubagentStatusCounts = {
-      running: 0,
-      finished: 0,
-      failed: 0,
-      stopped: 0,
-      unknown: 0,
-    };
-    for (const subagent of subagents) counts[subagent.status] += 1;
-    this.update({ subagents, subagentStatusCounts: counts });
+    this.update({ subagents });
   }
 
   private blockKey(role: MessageRole, messageId: string | null, parentToolUseId?: string): string {

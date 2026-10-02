@@ -172,7 +172,6 @@ vi.mock("./AgentChatSurface", async () => {
       headerMenuSeam,
       sessionRoster = [],
       onOpenSubagent,
-      subagentSessionIds,
       subagentAttention,
       onRefreshSubagents,
       auxiliary,
@@ -182,7 +181,6 @@ vi.mock("./AgentChatSurface", async () => {
       headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
       sessionRoster?: Session[];
       onOpenSubagent?: (sessionId: string) => void;
-      subagentSessionIds?: ReadonlySet<string>;
       subagentAttention?: ReadonlyMap<string, string>;
       onRefreshSubagents?: () => Promise<void>;
       auxiliary?: import("react").ReactNode;
@@ -206,9 +204,7 @@ vi.mock("./AgentChatSurface", async () => {
           <SubagentMenu
             rows={rows}
             onOpenSession={onOpenSubagent}
-            sessionIds={subagentSessionIds}
             attentionById={subagentAttention}
-            onRefreshSessions={onRefreshSubagents}
             onArchiveFinished={async (targets) => {
               for (const target of targets) await sessionClose(target.id);
               await onRefreshSubagents?.();

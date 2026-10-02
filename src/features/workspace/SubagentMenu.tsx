@@ -39,9 +39,7 @@ export interface SubagentArchiveTarget {
 export interface SubagentMenuProps {
   rows: readonly SubagentRow[];
   onOpenSession?: (sessionId: string) => void;
-  sessionIds?: ReadonlySet<string>;
   attentionById?: ReadonlyMap<string, string>;
-  onRefreshSessions?: () => Promise<void>;
   /** Closes the named children, reads the roster back, and answers with one
    * plain sentence for each child that did not close — never raw daemon text. */
   onArchiveFinished?: (
@@ -52,9 +50,7 @@ export interface SubagentMenuProps {
 export function SubagentMenu({
   rows,
   onOpenSession,
-  sessionIds,
   attentionById,
-  onRefreshSessions,
   onArchiveFinished,
 }: SubagentMenuProps) {
   const pillRef = useRef<HTMLButtonElement>(null);
@@ -134,10 +130,12 @@ export function SubagentMenu({
 
   const archivable = rows.filter(isArchivable);
 
-  // A created child is a roster session and always opens; a provider task
-  // opens only if it happens to name one.
-  const openable = (row: SubagentRow): boolean =>
-    row.kind === "child" || sessionIds?.has(row.id) === true;
+  // Only a created child is a session. A task id that matches a roster id
+  // names nothing of the task's, so it neither opens nor borrows that
+  // session's approval ask.
+  const openable = (row: SubagentRow): boolean => row.kind === "child";
+  const attentionOf = (row: SubagentRow): string | undefined =>
+    openable(row) ? attentionById?.get(row.id) : undefined;
 
   // The generation each child had as the ask took it — the row's identity at
   // the moment the user saw the count.
@@ -160,7 +158,7 @@ export function SubagentMenu({
   };
 
   const { failed, running: working } = countSubagentStatuses(rows);
-  const attentionCount = rows.filter((row) => attentionById?.has(row.id)).length;
+  const attentionCount = rows.filter((row) => attentionOf(row) !== undefined).length;
   const counts = [
     ...(attentionCount > 0
       ? [`${attentionCount} ${attentionCount === 1 ? "needs" : "need"} your approval`]
@@ -180,10 +178,7 @@ export function SubagentMenu({
         aria-label={pillLabel}
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
-        onClick={() => {
-          if (!open && rows.some((row) => !openable(row))) void onRefreshSessions?.();
-          setOpen((value) => !value);
-        }}
+        onClick={() => setOpen((value) => !value)}
       >
         {attentionCount > 0 ? (
           <span className="workspace-subagent-pill-group workspace-subagent-attention">
@@ -252,7 +247,7 @@ export function SubagentMenu({
           <div role="list">
             {rows.map((row) => {
               const sentence = row.kind === "child" ? sentences.get(row.id) : undefined;
-              const attention = attentionById?.get(row.id);
+              const attention = attentionOf(row);
               const title = subagentTitle(row.title, row.id);
               return (
                 <div key={`${row.kind}:${row.id}`} role="listitem">

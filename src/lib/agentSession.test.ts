@@ -830,13 +830,6 @@ describe("ACP agent session", () => {
         isBackground: null,
       },
     ]);
-    expect(harness.session.getState().subagentStatusCounts).toEqual({
-      running: 1,
-      finished: 1,
-      failed: 1,
-      stopped: 1,
-      unknown: 0,
-    });
     expect(harness.session.getState().items).toContainEqual({
       id: "assistant-2",
       role: "assistant",
@@ -898,13 +891,6 @@ describe("ACP agent session", () => {
       { id: "task-1", isBackground: false },
       { id: "task-2", isBackground: false },
     ]);
-    expect(harness.session.getState().subagentStatusCounts).toEqual({
-      running: 1,
-      finished: 0,
-      failed: 0,
-      stopped: 0,
-      unknown: 1,
-    });
   });
 
   it("keeps sibling blocks separate when their message ids are reused", async () => {
@@ -987,13 +973,6 @@ describe("ACP agent session", () => {
         isBackground: true,
       },
     ]);
-    expect(harness.session.getState().subagentStatusCounts).toEqual({
-      running: 0,
-      finished: 0,
-      failed: 0,
-      stopped: 2,
-      unknown: 0,
-    });
   });
 
   it("makes an agent error visible to the user", async () => {

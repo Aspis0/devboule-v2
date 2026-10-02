@@ -699,7 +699,7 @@ export function Workspace({
   // The queue the pane's session drains into belongs to the app, not to this
   // surface: the owner holds one per session for the whole run, so opening
   // Settings, switching tabs or a refresh that rebuilds the strip cannot
-  // destroy a message the user queued (review F1, F2, F13).
+  // destroy a message the user queued.
   const sessionQueue =
     paneSession === null ? null : sharedSessionQueueOwner().queueFor(paneSession.id);
   // Primitive dependencies keep fileLinks stable across roster pushes so
@@ -1250,7 +1250,7 @@ export function Workspace({
   // never advertised `permission_delegation` is never asked.
   //
   // The read is keyed on the daemon's IDENTITY, not just this component's
-  // mount (audit 3, F2): a daemon restart — even one the 2 s poll never saw
+  // mount: a daemon restart — even one the 2 s poll never saw
   // as a gap — changes `instanceId`, and every reconnect transitions
   // `state`. Either way the store's answer is re-asked, because a connection
   // that dropped and returned means every cached answer is a guess, and the
@@ -1262,7 +1262,7 @@ export function Workspace({
     if (!delegationSupported || daemon.state !== "connected") return;
     void delegation.load();
   }, [delegation, delegationSupported, daemon.state, daemon.instanceId]);
-  // The honest gate for the control that stops delegation (audit 3, F2): it
+  // The honest gate for the control that stops delegation: it
   // is hidden only when the store POSITIVELY holds `false` — a value it can
   // hold only from a daemon answer or an accepted write, never from silence —
   // and it stays visible in the unknown state (`null`), where hiding it would
@@ -1276,7 +1276,7 @@ export function Workspace({
   }, [delegation]);
   // The panel's slot is for the card that needs the human: the first
   // UNRESOLVED card of the session. A resolved card at the head must not
-  // hide a waiting one behind it (re-audit F6) — a resolved card offers only
+  // hide a waiting one behind it — a resolved card offers only
   // Clear, so find-on-head made the waiting card's Allow/Deny unreachable
   // and said nothing about a second card existing. When nothing waits, the
   // resolved card stays on screen: it never vanishes on the strength of the
@@ -1300,7 +1300,6 @@ export function Workspace({
   // behind another card keeps its row — a hidden plan with no card on screen
   // is worse than a duplicate.
   const pendingPlanToolCallId = pendingPlanId(selectedPermission);
-  const subagentSessionIds = useMemo(() => new Set(sessions.map((row) => row.id)), [sessions]);
   const subagentAttention = useMemo(
     () =>
       new Map(
@@ -1591,7 +1590,7 @@ export function Workspace({
         {delegationState.error !== null ? (
           // The refusal (or failed read) reported where the delegation control
           // lives — the roster row's take-back included — never only on the
-          // Settings tab (audit 3, F4: a refused consent control may not be
+          // Settings tab (a refused consent control may not be
           // silent on the surface it was clicked on). No dismiss button: the
           // sentence is the store's standing answer, and the next successful
           // read or write clears it.
@@ -1657,7 +1656,6 @@ export function Workspace({
                 daemonState={daemon.state}
                 sessionRoster={sessions}
                 onOpenSubagent={handleOpenSubagent}
-                subagentSessionIds={subagentSessionIds}
                 subagentAttention={subagentAttention}
                 onRefreshSubagents={refreshSessions}
                 headerMenuSeam={{
@@ -1682,7 +1680,7 @@ export function Workspace({
                 pendingPlanToolCallId={pendingPlanToolCallId}
                 // The app-level owner's queue for this session (see
                 // `sessionQueue`): the surface binds its controller to it, and
-                // Enter mid-turn queues instead of interrupting (review P1-1).
+                // Enter mid-turn queues instead of interrupting.
                 queue={sessionQueue}
                 auxiliary={
                   selectedPermission !== null ? (

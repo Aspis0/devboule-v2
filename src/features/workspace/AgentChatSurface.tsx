@@ -135,7 +135,6 @@ interface AgentChatSurfaceProps {
   id?: string;
   auxiliary?: ReactNode;
   onOpenSubagent?: (sessionId: string) => void;
-  subagentSessionIds?: ReadonlySet<string>;
   subagentAttention?: ReadonlyMap<string, string>;
   onRefreshSubagents?: () => Promise<void>;
   /** The kebab's close-group wiring, from the tab-close flow. Absent until the workspace passes it. */
@@ -362,7 +361,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   id,
   auxiliary,
   onOpenSubagent,
-  subagentSessionIds,
   subagentAttention,
   onRefreshSubagents,
   headerMenuSeam,
@@ -391,7 +389,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     streaming: false,
     availableCommands: [],
     subagents: [],
-    subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
     lastFinished: null,
     contextUsage: null,
     manifest: null,
@@ -639,8 +636,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // queue back to the sender it runs on with no view, so a row is never left
   // with nowhere to go. What this effect does *not* do is decide when to send: a
   // visible session's queue is armed by the same roster edge as a hidden one, and
-  // a second path that guesses from the transcript is what the reviews kept
-  // breaking (review F1, F3, F13; fix-4's rule).
+  // a second path that guesses from the transcript would disagree with it.
   useEffect(() => {
     if (queue === null) return;
     return queue.attach({
@@ -783,9 +779,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             <SubagentMenu
               rows={subagentRows}
               onOpenSession={onOpenSubagent}
-              sessionIds={subagentSessionIds}
               attentionById={subagentAttention}
-              onRefreshSessions={onRefreshSubagents}
               onArchiveFinished={archiveFinishedSubagents}
             />
           ) : null
@@ -878,7 +872,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           // A running turn with a queue in hand goes through the queue's steer,
           // which interrupts and then waits for the daemon's turn-over. An idle
           // session takes the plain send it always took — and a refusal puts
-          // the text back in the composer instead of losing it (review F9).
+          // the text back in the composer instead of losing it.
           if ((turnActive || hasPendingPermission) && queue !== null) {
             composerQueue.steerComposer(text);
             return true;
