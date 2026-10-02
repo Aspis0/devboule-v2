@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PeerRow } from "../../../types/ipc";
 import type { PairedDevices } from "../workspaceDaemon";
-import { sidebarHosts } from "./sidebarHosts";
+import { orderRemoteHosts, sidebarHosts } from "./sidebarHosts";
 
 function peer(overrides: Partial<PeerRow> = {}): PeerRow {
   return {
@@ -135,5 +135,59 @@ describe("the sidebar's host list", () => {
       word: "offline",
       dot: "border",
     });
+  });
+});
+
+describe("the order the sidebar remembers", () => {
+  // Name order, as the device list hands them over: alpha, Mika, Zeta.
+  const remotes = sidebarHosts(
+    "connected",
+    devices([
+      peer({ deviceId: "device-z", displayName: "Zeta" }),
+      peer({ deviceId: "device-m", displayName: "Mika" }),
+      peer({ deviceId: "device-a", displayName: "alpha" }),
+    ]),
+  ).remotes;
+
+  it("is the device list's own order when nothing is remembered", () => {
+    expect(orderRemoteHosts(remotes, []).map((host) => host.id)).toEqual([
+      "device-a",
+      "device-m",
+      "device-z",
+    ]);
+  });
+
+  it("puts the hosts it knows first and appends a new one last", () => {
+    // "Zeta" is the host we remember; "alpha" is new and sorts first by name.
+    const ordered = orderRemoteHosts(remotes, ["device-z"]);
+
+    expect(ordered.map((host) => host.id)).toEqual(["device-z", "device-a", "device-m"]);
+  });
+
+  it("brings a host back to its place after a poll without it", () => {
+    const whileAway = remotes.filter((host) => host.id !== "device-m");
+
+    expect(orderRemoteHosts(whileAway, ["device-z", "device-m", "device-a"])).toHaveLength(2);
+    expect(
+      orderRemoteHosts(whileAway, ["device-z", "device-m", "device-a"]).map((host) => host.id),
+    ).toEqual(["device-z", "device-a"]);
+    expect(
+      orderRemoteHosts(remotes, ["device-z", "device-m", "device-a"]).map((host) => host.id),
+    ).toEqual(["device-z", "device-m", "device-a"]);
+  });
+
+  it("orders two hosts first seen in one poll by name, then by device id", () => {
+    const sameName = sidebarHosts(
+      "connected",
+      devices([
+        peer({ deviceId: "device-z", displayName: "Studio" }),
+        peer({ deviceId: "device-a", displayName: "Studio" }),
+      ]),
+    ).remotes;
+
+    expect(orderRemoteHosts(sameName, ["device-b"]).map((host) => host.id)).toEqual([
+      "device-a",
+      "device-z",
+    ]);
   });
 });
