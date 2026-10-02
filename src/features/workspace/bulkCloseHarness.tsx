@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { vi } from "vitest";
+import { sessionClose } from "../../lib/tauri";
 import type {
   Attention,
   Project,
@@ -229,6 +230,8 @@ vi.mock("./AgentChatSurface", async () => {
           {sessionId}
           {auxiliary}
           {menu === null ? null : <PaneHeaderKebab menu={menu} />}
+          {/* The act's ordering only — close each child, then read the roster
+              back; which children may close is pinned in its own tests. */}
           <SubagentMenu
             subagents={subagents}
             statusCounts={statusCounts}
@@ -236,6 +239,12 @@ vi.mock("./AgentChatSurface", async () => {
             sessionIds={subagentSessionIds}
             attentionById={subagentAttention}
             onRefreshSessions={onRefreshSubagents}
+            sessionRoster={sessionRoster}
+            onArchiveFinished={async (targets) => {
+              for (const target of targets) await sessionClose(target.id);
+              await onRefreshSubagents?.();
+              return new Map<string, string>();
+            }}
           />
         </div>
       );

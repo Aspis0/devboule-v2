@@ -11,6 +11,7 @@ import {
 import {
   createSessionChannel,
   sessionAttach,
+  sessionClose,
   sessionDeposit,
   sessionDetach,
   sessionInterrupt,
@@ -37,6 +38,7 @@ import type {
 } from "../../types/ipc";
 import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/agentSession";
 import type { AgentSessionState, AgentStatus } from "../../lib/agentSession";
+import { errorSentence } from "../../lib/errorSentence";
 import { useConversationScrollStick } from "./useConversationScrollStick";
 import { PaneHeader } from "./paneHeader/PaneHeader";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
@@ -44,7 +46,8 @@ import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { sendChatImagesByReference } from "./chatImageTransport";
-import { SubagentMenu } from "./SubagentMenu";
+import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
+import { isRunningSessionState } from "./strip/closePolicy";
 import { SessionContextMeter } from "./ContextMeter";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
@@ -156,11 +159,14 @@ interface AgentChatSurfaceProps {
   /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
   daemonState: DaemonConnectionState;
   /**
-   * The roster rows the agent-to-agent card resolves a relay's sender
-   * against. Handed none, the card can only show the session id the frame
-   * named — the truth it has, minus the name.
+   * The roster rows the agent-to-agent card resolves a relay's sender against
+   * and the archive act reads before each close: a row without `state` cannot
+   * be rechecked, so no close fires for it. Handed none, the card can only
+   * show the session id the frame named — the truth it has, minus the name.
    */
-  sessionRoster?: ReadonlyArray<Pick<Session, "displayName" | "id" | "kind" | "title">>;
+  sessionRoster?: ReadonlyArray<
+    Pick<Session, "displayName" | "id" | "kind" | "title"> & { state?: SessionState }
+  >;
   /**
    * Device id to display name, the same `DevicesList` map the permission
    * card's origin line resolves against; the a2a card resolves a relay's
@@ -559,6 +565,57 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     };
   }, [onPermissionRequest, onPermissionResolved, queue, sessionId, observedState?.generation]);
 
+  // The freshest roster handed down: the archive act reads this per close, so
+  // a push that landed while the ask was open counts at the moment it matters.
+  const rosterRef = useRef(sessionRoster);
+  useEffect(() => {
+    rosterRef.current = sessionRoster;
+  }, [sessionRoster]);
+
+  // The archive act: each target closes only if the roster still holds the row
+  // the ask captured; the closed children's rows drop after the read-back.
+  const archiveFinishedSubagents = useCallback(
+    async (targets: readonly SubagentArchiveTarget[]): Promise<ReadonlyMap<string, string>> => {
+      const sentences = new Map<string, string>();
+      const closed: string[] = [];
+      for (const target of targets) {
+        const row = rosterRef.current?.find((session) => session.id === target.id);
+        if (row?.state === undefined || target.generation === null) continue;
+        // The daemon's close carries no generation: this read is the whole guard.
+        if (isRunningSessionState(row.state) || row.state.generation !== target.generation) {
+          sentences.set(target.id, "It restarted, so it was left open.");
+          continue;
+        }
+        try {
+          await sessionClose(target.id);
+          closed.push(target.id);
+        } catch (cause) {
+          sentences.set(target.id, errorSentence(cause).sentence);
+        }
+      }
+      try {
+        await onRefreshSubagents?.();
+      } catch {
+        // The roster read draws its own error line in the workspace.
+      }
+      if (closed.length > 0) {
+        sessionRef.current?.forgetSubagents(closed);
+        // The last child unmounts the pill and the menu with it: focus must
+        // move before that commit, and a disabled composer cannot take it.
+        if (sessionRef.current?.getState().subagents.length === 0) {
+          focusComposer();
+          const composer = composerTextareaRef.current;
+          if (composer === null || composer.disabled || document.activeElement !== composer) {
+            conversationRef.current?.focus({ preventScroll: true });
+          }
+        }
+      }
+      return sentences;
+    },
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- conversationRef comes from the scroll hook: its element is read when the act runs, never at render.
+    [focusComposer, onRefreshSubagents],
+  );
+
   // While this surface is on screen, the queue's sends and interrupts ride the
   // controller it owns, read at call time so a recreated controller (resume,
   // reconnect) answers for the same queue the owner holds. Detaching hands the
@@ -713,6 +770,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
               sessionIds={subagentSessionIds}
               attentionById={subagentAttention}
               onRefreshSessions={onRefreshSubagents}
+              onArchiveFinished={archiveFinishedSubagents}
+              sessionRoster={sessionRoster}
             />
           ) : null
         }
@@ -724,6 +783,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         ref={conversationRef}
         className="workspace-conversation workspace-scroll"
         onScroll={onScroll}
+        tabIndex={-1}
       >
         <div ref={contentRef} className="workspace-conversation-content">
           <TurnRail scrollRef={conversationRef} contentRef={contentRef} items={state.items} />
