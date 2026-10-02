@@ -26,16 +26,21 @@ pub(super) fn turn_silence() -> Duration {
     silence_from_env(TURN_SILENCE_ENV, TURN_SILENCE)
 }
 
-/// The abort frame the killer and the watchdog's expiry both write.
-pub(super) fn write_abort_frame(stdin: &Arc<Mutex<Option<ChildStdin>>>, next_id: &Arc<AtomicU64>) {
+/// The abort frame the killer and the watchdog's expiry both write;
+/// `false` when it never reached pi.
+pub(super) fn write_abort_frame(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    next_id: &Arc<AtomicU64>,
+) -> bool {
     let frame = serde_json::json!({
         "id": format!("a-{}", next_id.fetch_add(1, Ordering::Relaxed)),
         "type": "abort",
     });
-    if let Ok(mut bytes) = serde_json::to_vec(&frame) {
-        bytes.push(b'\n');
-        let _ = super::write_child_stdin(stdin, &bytes, "Pi");
-    }
+    let Ok(mut bytes) = serde_json::to_vec(&frame) else {
+        return false;
+    };
+    bytes.push(b'\n');
+    super::write_child_stdin(stdin, &bytes, "Pi").is_ok()
 }
 
 /// The turn end the watchdog's expiry makes owed: expiry ended a turn pi
@@ -197,3 +202,15 @@ mod rejection_tests;
 #[cfg(test)]
 #[path = "pi_turn_order_tests.rs"]
 mod order_tests;
+
+#[cfg(test)]
+#[path = "pi_turn_settled_support.rs"]
+mod settled_support;
+
+#[cfg(test)]
+#[path = "pi_turn_settled_tests.rs"]
+mod settled_tests;
+
+#[cfg(test)]
+#[path = "pi_turn_stop_tests.rs"]
+mod stop_tests;

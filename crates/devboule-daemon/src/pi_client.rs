@@ -54,6 +54,11 @@ mod out_of_band;
 /// on the runtime the reader was handed.
 #[path = "pi_history_tasks.rs"]
 mod pi_history_tasks;
+/// What a pi run's failure is and how it reads: the sentence its messages
+/// carry, and the hold that keeps an attempt's failure until the run's own
+/// ending decides. The arbiter owns the hold.
+#[path = "pi_run_failure.rs"]
+mod pi_run_failure;
 /// The finish arbitration those feed: what a rejection answers, what a
 /// turn boundary means, and when an end belongs to the watchdog or the
 /// abort gate instead of the wire. A child of this file like the watchdog
@@ -2693,8 +2698,8 @@ struct PiKiller {
 }
 
 impl PiKiller {
-    fn abort(&self) {
-        pi_turn_watch::write_abort_frame(&self.stdin, &self.next_id);
+    fn abort(&self) -> bool {
+        pi_turn_watch::write_abort_frame(&self.stdin, &self.next_id)
     }
 }
 
@@ -2703,8 +2708,11 @@ impl SessionKiller for PiKiller {
         // The snapshot rides the interrupt REQUEST, before the frame: a
         // replacement delivered after this is one the aborted turn's own
         // end must not finish.
-        self.arbiter.note_interrupt();
-        self.abort();
+        let marked = self.arbiter.note_interrupt();
+        // Undone only when this Stop marked a run and its own write failed.
+        if !self.abort() && marked {
+            self.arbiter.note_abort_unsent();
+        }
         self.permission_broker.cancel_pending();
     }
 
@@ -3366,6 +3374,15 @@ impl PiReader {
         let _ = runtime.publish_agent_event_with_seq(event, None, seq);
     }
 
+    /// The run's own ending: what it still holds is the run's outcome. The
+    /// daemon authors the row the way every other daemon-authored row is
+    /// authored, so replay reads it back from the journal.
+    fn settle_failure(&self, runtime: &SessionRuntime) {
+        if let Some(message) = self.arbiter.settle_failure() {
+            let _ = runtime.publish_agent_error(message);
+        }
+    }
+
     /// The one `get_state` that decides a slash prompt's fate, written here
     /// on the reader thread so the next dispatch recognizes the answer by
     /// id. A child that cannot take the frame answers nothing, and the run
@@ -3385,6 +3402,7 @@ impl PiReader {
     /// and the turn it ends actually ended. The command's output went out as
     /// notices when its response arrived; an end carries nothing.
     fn end_local_command(&self, runtime: &SessionRuntime) {
+        self.arbiter.note_prompt_handled();
         if self.arbiter.owns_finish() {
             runtime.publish_journaled_finish(SessionEvent::AgentFinished {
                 stop_reason: "completed".to_string(),
@@ -3501,14 +3519,14 @@ impl PiReader {
         // write would have cleared the flag, so nothing else will begin it,
         // and pi's own turn_end then ends it exactly once.
         if value.get("type").and_then(Value::as_str) == Some("agent_start") {
-            // A turn pi begins is begun here whatever started it — the send
-            // path's own begin_turn, a local-end rearm, or an extension's
-            // own turn — and the watch arms with it.
+            // A turn pi begins is begun here whatever started it, and the
+            // watch arms with it.
             self.fate.note_agent_start();
             runtime.begin_turn();
             self.arbiter.note_agent_start();
         }
         if value.get("type").and_then(Value::as_str) == Some("agent_end") {
+            self.arbiter.hold_failure(&value);
             self.arbiter.note_agent_end(runtime);
         }
         // A `turn_end`'s finish is the run's own ending — unless another
@@ -3545,6 +3563,9 @@ impl PiReader {
             return self
                 .dispatch_ui_request(&value, runtime, event_seq)
                 .map_err(|error| format!("Pi UI request failed: {error}"));
+        }
+        if value.get("type").and_then(Value::as_str) == Some("agent_settled") {
+            self.settle_failure(runtime);
         }
         // Every event derived from one row carries that row's journal seq —
         // the contract claude, acp and codex keep — so an attach's replay

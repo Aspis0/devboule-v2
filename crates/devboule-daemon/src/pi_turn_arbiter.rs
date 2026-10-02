@@ -5,7 +5,7 @@
 //! live here, so they are testable without a child process.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use devboule_protocol::SessionEvent;
 use serde_json::Value;
@@ -14,14 +14,14 @@ use crate::session::permission_broker::PermissionBroker;
 use crate::session::turn_watch::TurnWatch;
 use crate::session::SessionRuntime;
 
+use super::pi_run_failure::PendingFailure;
 use super::pi_turn_watch::{OwedTurnEnd, PiToolStarts};
 
 /// The interrupt/end race: pi's aborted end for an interrupted turn can
 /// arrive after a replacement prompt was already delivered, and publishing
 /// its finish would end the replacement's run out from under it.
 ///
-/// The counter is translated from `claude_abort.rs`'s gate (owner rule,
-/// 2026-09-30: one attribution where logic is copied). One pi difference:
+/// The counter is translated from `claude_abort.rs`'s gate. One pi difference:
 /// pi ANSWERS a refused prompt on the wire, so a refusal decrements the
 /// count — a prompt pi never took cannot be the replacement an aborted end
 /// would be stale against. Everything else is the source's own: no armed
@@ -83,6 +83,11 @@ pub(super) struct TurnArbiter {
     expiry_owed: Arc<OwedTurnEnd>,
     tools: Mutex<PiToolStarts>,
     gate: AbortGate,
+    /// The failure the current run holds, whether a run is in flight and
+    /// whether a Stop marked it, under one lock the Stop thread, the writers
+    /// and the reader take turns on: a mark set before the settle decides
+    /// that run's outcome, unless the Stop's abort never reached pi.
+    failure: Mutex<PendingFailure>,
     /// pi's own run, open between its `agent_start` and its `agent_end` —
     /// pi 0.87.1 emits both (`core/agent-session.js:711-716`, forwarded
     /// verbatim by `modes/json-event.js`); the aborted mark rides
@@ -107,6 +112,7 @@ impl TurnArbiter {
             expiry_owed,
             tools: Mutex::new(PiToolStarts::default()),
             gate: AbortGate::default(),
+            failure: Mutex::new(PendingFailure::default()),
             pi_turn_open: AtomicBool::new(false),
             pending_refusal: AtomicBool::new(false),
             usage: None,
@@ -148,6 +154,7 @@ impl TurnArbiter {
     /// A prompt reached the child: the turn it starts is watched, and the
     /// abort gate counts it as the replacement it may be.
     pub(super) fn note_prompt_delivered(&self) {
+        self.failure().prompt_sent();
         if let Some(watch) = &self.watch {
             watch.start_turn();
         }
@@ -174,6 +181,7 @@ impl TurnArbiter {
             return;
         }
         let _ = runtime.publish_agent_error(format!("Pi rejected the prompt: {reason}"));
+        self.failure().prompt_answered();
         self.gate.note_prompt_refused();
         if self.pi_turn_open.load(Ordering::Acquire) {
             // pi's own run is still open — and its close, the aborted end
@@ -206,11 +214,44 @@ impl TurnArbiter {
     /// The interrupt was requested: the aborted end of the turn as of now
     /// is the one expectation, against the delivered count as of now. The
     /// poll window stops with it — an interrupted run polls no further.
-    pub(super) fn note_interrupt(&self) {
+    /// The run in flight is marked stopped first: a settle that runs while
+    /// this Stop waits on a later lock must already see it. Answers whether
+    /// it marked a run.
+    pub(super) fn note_interrupt(&self) -> bool {
+        let marked = self.failure().stop();
         if let Some(usage) = &self.usage {
             usage.stop_window();
         }
         self.gate.note_interrupt();
+        marked
+    }
+
+    /// The Stop's abort never reached pi: the run's mark goes, and its
+    /// settle announces its failure as if no Stop happened.
+    pub(super) fn note_abort_unsent(&self) {
+        self.failure().unstop();
+    }
+
+    /// pi handled the prompt itself and opened no run for it.
+    pub(super) fn note_prompt_handled(&self) {
+        self.failure().prompt_answered();
+    }
+
+    /// One attempt's ending: what it failed with is held for the run's
+    /// settle.
+    pub(super) fn hold_failure(&self, agent_end: &Value) {
+        self.failure().hold(agent_end);
+    }
+
+    /// The run's own ending: what is still held, unless a Stop ended it.
+    pub(super) fn settle_failure(&self) -> Option<String> {
+        self.failure().settle()
+    }
+
+    fn failure(&self) -> MutexGuard<'_, PendingFailure> {
+        self.failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// A durable `turn_end` context reading just published: the live
@@ -222,10 +263,12 @@ impl TurnArbiter {
         }
     }
 
-    /// A pi `agent_start`: its run opens, the watch arms — a turn pi
-    /// starts with no prompt from us is begun and watched like any other —
-    /// and the context poll's window opens with the run.
+    /// A pi `agent_start`: its run opens holding no earlier failure, the
+    /// watch arms — a turn pi starts with no prompt from us is begun and
+    /// watched like any other — and the context poll's window opens with the
+    /// run.
     pub(super) fn note_agent_start(&self) {
+        self.failure().run_opened();
         self.pi_turn_open.store(true, Ordering::Release);
         if let Some(usage) = &self.usage {
             usage.run_opened();
@@ -423,5 +466,66 @@ mod tests {
         let runtime = SessionRuntime::new();
         runtime.begin_turn();
         assert!(!arbiter.turn_end_suppressed(&runtime, &frame("stop")));
+    }
+
+    fn failed_agent_end() -> Value {
+        serde_json::json!({
+            "type": "agent_end",
+            "messages": [{"role": "assistant", "errorMessage": "Request timed out."}],
+        })
+    }
+
+    #[test]
+    fn a_stop_then_a_refusal_leaves_the_next_run_s_failure() {
+        let arbiter = TurnArbiter::new(None, Arc::new(OwedTurnEnd::default()));
+        let runtime = SessionRuntime::new();
+        arbiter.note_prompt_delivered();
+        arbiter.note_interrupt();
+        arbiter.prompt_rejected(&runtime, true, "p-1", "busy");
+        // The next prompt's run fails before any opening of its own.
+        arbiter.note_prompt_delivered();
+        arbiter.hold_failure(&failed_agent_end());
+        assert_eq!(
+            arbiter.settle_failure().as_deref(),
+            Some("Request timed out."),
+            "a refused prompt had no run for the stop to end"
+        );
+    }
+
+    #[test]
+    fn a_stop_parked_on_the_gate_has_already_marked_the_run() {
+        let arbiter = Arc::new(TurnArbiter::new(None, Arc::new(OwedTurnEnd::default())));
+        let failed = failed_agent_end();
+        arbiter.note_prompt_delivered();
+        arbiter.hold_failure(&failed);
+        // The gate is a lock the Stop takes after the mark: held here, the
+        // Stop parks on it.
+        let gate = arbiter.gate.state.lock().expect("gate");
+        let stopping = Arc::clone(&arbiter);
+        let stop = std::thread::spawn(move || stopping.note_interrupt());
+        // Each try is a settle under the failure lock. One that still finds
+        // the failure puts the run back as it was, so only the Stop can
+        // change the answer.
+        let try_settle = || {
+            let mut failure = arbiter.failure();
+            let settled = failure.settle();
+            if settled.is_some() {
+                failure.prompt_sent();
+                failure.hold(&failed);
+            }
+            settled
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut settled = try_settle();
+        while settled.is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            settled = try_settle();
+        }
+        drop(gate);
+        stop.join().expect("the stop ends once the gate frees");
+        assert_eq!(
+            settled, None,
+            "a stop accepted before the settle leaves it nothing to announce"
+        );
     }
 }

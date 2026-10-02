@@ -79,6 +79,46 @@ fn shutdown_order(flow: OrderFlow) -> (PathBuf, String, PathBuf) {
     (flow.dir, flow.session_id, flow.path)
 }
 
+/// The aborted terminal response of an interrupted turn: pi keeps the
+/// provider's error text beside the `aborted` stop.
+fn aborted_end_with_error() -> serde_json::Value {
+    serde_json::json!({
+        "type": "turn_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "half an answer"}],
+            "provider": "openai-responses",
+            "model": "gpt-5.6-terra",
+            "responseId": "resp-aborted",
+            "errorMessage": "OpenAI Responses stream ended before a terminal response event",
+            "stopReason": "aborted",
+        },
+        "toolResults": [],
+    })
+}
+
+/// The run's ending for that interrupted turn, carrying the same terminal
+/// message and no retry.
+fn aborted_agent_end_with_error() -> serde_json::Value {
+    let turn_end = aborted_end_with_error();
+    serde_json::json!({
+        "type": "agent_end",
+        "messages": [turn_end["message"].clone()],
+        "willRetry": false,
+    })
+}
+
+/// The error rows a pull carries, in order.
+fn errors_of(events: &[SessionEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentError { message } => Some(message.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The refusal can lose the race with pi's aborted end: the aborted
 /// `turn_end` lands first, the refusal arrives while pi's run is still
 /// open, and only `agent_end` closes that run. The deferred refusal end
@@ -123,17 +163,23 @@ fn an_aborted_end_before_the_refusal_still_finishes_when_pi_s_run_closes() {
         Vec::<String>::new(),
         "the refusal defers while pi's run is open: {after_refusal:?}"
     );
-    // pi's run closes: the deferred refusal end publishes, exactly once.
+    // pi's run closes: the deferred refusal end publishes, exactly once,
+    // and the interrupted turn announces no failure of its own.
     feed_line(
         &mut flow.harness,
         &flow.runtime,
-        serde_json::json!({"type":"agent_end"}),
+        aborted_agent_end_with_error(),
     );
     let events = drain(&flow.conn);
     assert_eq!(
         super::test_support::finishes_of(&events),
         ["error"],
         "one error finish when pi's run closes: {events:?}"
+    );
+    assert_eq!(
+        errors_of(&events),
+        Vec::<String>::new(),
+        "the aborted turn adds no error row: {events:?}"
     );
     assert!(
         matches!(flow.runtime.activity(), AgentActivityState::Idle),
@@ -150,6 +196,12 @@ fn an_aborted_end_before_the_refusal_still_finishes_when_pi_s_run_closes() {
         ["error"],
         "the restart's replay shows the same one finish: {:?}",
         super::test_support::finishes_of(&replay.events)
+    );
+    assert_eq!(
+        errors_of(&replay.events),
+        errors_of(&after_refusal),
+        "the restart replays the same single error row: {:?}",
+        errors_of(&replay.events)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -172,6 +224,11 @@ fn a_refusal_then_an_aborted_end_finishes_once_whatever_closes_pi_s_run() {
         ),
     );
     let after_refusal = drain(&flow.conn);
+    assert_eq!(
+        errors_of(&after_refusal).len(),
+        1,
+        "the refusal is the only error row so far: {after_refusal:?}"
+    );
     assert!(
         after_refusal.iter().any(|event| matches!(
             event,
@@ -184,23 +241,35 @@ fn a_refusal_then_an_aborted_end_finishes_once_whatever_closes_pi_s_run() {
         Vec::<String>::new(),
         "the refusal defers while pi's run is open: {after_refusal:?}"
     );
-    feed_line(&mut flow.harness, &flow.runtime, turn_end_with("aborted"));
+    // The aborted end carries an errorMessage of its own. It must not become
+    // a second error row for a failure the refusal already reported.
+    feed_line(&mut flow.harness, &flow.runtime, aborted_end_with_error());
     let after_abort = drain(&flow.conn);
     assert_eq!(
         super::test_support::finishes_of(&after_abort),
         ["aborted"],
         "pi's own end finishes the run once: {after_abort:?}"
     );
+    assert_eq!(
+        errors_of(&after_abort),
+        Vec::<String>::new(),
+        "the aborted end adds no second error row: {after_abort:?}"
+    );
     feed_line(
         &mut flow.harness,
         &flow.runtime,
-        serde_json::json!({"type":"agent_end"}),
+        aborted_agent_end_with_error(),
     );
     let events = drain(&flow.conn);
     assert_eq!(
         super::test_support::finishes_of(&events),
         Vec::<String>::new(),
         "the run already ended once: {events:?}"
+    );
+    assert_eq!(
+        errors_of(&events),
+        Vec::<String>::new(),
+        "pi's run ending adds no error row either: {events:?}"
     );
     assert!(
         matches!(flow.runtime.activity(), AgentActivityState::Idle),
@@ -217,6 +286,12 @@ fn a_refusal_then_an_aborted_end_finishes_once_whatever_closes_pi_s_run() {
         ["aborted"],
         "the restart's replay shows the same one finish: {:?}",
         super::test_support::finishes_of(&replay.events)
+    );
+    assert_eq!(
+        errors_of(&replay.events).len(),
+        1,
+        "the restart replays the refusal's one row: {:?}",
+        errors_of(&replay.events)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -12,7 +12,9 @@ use crate::acp_view::PromptCapabilityState;
 use crate::attachment_store::AttachmentStore;
 use crate::pi_view::events_from_line;
 use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
-use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch, SessionRuntime, StaticImageSink};
+use crate::session::{
+    ModelSwitcher, PendingEvent, PtyCommand, ReaderDispatch, SessionRuntime, StaticImageSink,
+};
 // The shared admission helper: one place, so the Pi and the Codex steer
 // tests exercise the same token `with_active_turn` hands out.
 use crate::test_support::steer_through_the_turn;
@@ -870,17 +872,14 @@ fn attached_runtime(
     (runtime, conn)
 }
 
-/// One pi row derives two events — the finish and its context reading — and
-/// BOTH must carry the row's journal seq. The attach seam drops a queued copy
-/// only by seq (`remove_replayed_agent_items`), so a `None`-seq sibling
-/// survives beside the copy replay derives from the same row and the reading
-/// arrives twice.
-#[test]
-fn a_turn_end_line_delivers_each_event_exactly_once_across_a_fresh_attach() {
+/// The journaled pi rows dispatched with no observer attached, then read
+/// back through a fresh attach: the shared backlog holds the live copies,
+/// the journal holds what replay derives from the rows, and the seam must
+/// collapse each pair.
+fn rows_across_a_fresh_attach(session_id: &str, rows: &[serde_json::Value]) -> Vec<PendingEvent> {
     use crate::journal::{new_session_record, Journal};
 
-    let session_id = "s.pi.attach.once";
-    let dir = crate::test_dirs::test_temp_dir("devboule-pi-attach-once");
+    let dir = crate::test_dirs::test_temp_dir(session_id);
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
     journal
         .upsert_blocking(new_session_record(
@@ -925,21 +924,18 @@ fn a_turn_end_line_delivers_each_event_exactly_once_across_a_fresh_attach() {
         Arc::clone(&stdin),
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
     );
-    // The turn the turn_end ends: a bare reader still arbitrates the end
+    // The turn the first row ends: a bare reader still arbitrates the end
     // against a live turn.
     runtime.begin_turn();
-    // The recorded turn_end of `pi_view.rs`'s own fixture: totalTokens 25 851.
-    let turn_end = serde_json::from_str::<serde_json::Value>(
-        r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"stopReason":"stop","timestamp":1788993862485,"responseId":"gen-1788993862-4cxcarrKksRnXEICsFHO","rawStopReason":"stop"},"toolResults":[]}"#,
-    )
-    .expect("recorded turn_end frame");
-    reader
-        .dispatch_value(turn_end, &runtime)
-        .expect("dispatch the turn end");
+    for row in rows {
+        reader
+            .dispatch_value(row.clone(), &runtime)
+            .expect("dispatch the row");
+    }
     journal.flush().expect("flush");
 
-    // The fresh attach replays the journaled row (both views) and scans the
-    // backlog for copies the seam has to drop by seq.
+    // The fresh attach replays the journaled row and scans the backlog for
+    // copies the seam has to drop by seq.
     let conn = crate::session::ConnHandle::new(1);
     let outcome = runtime
         .try_attach_with_replay(None, &conn, true)
@@ -952,30 +948,131 @@ fn a_turn_end_line_delivers_each_event_exactly_once_across_a_fresh_attach() {
         outcome.generation,
         outcome.live_agent_replay,
     );
-    let (mut finishes, mut readings) = (0_u64, 0_u64);
+    let mut delivered = Vec::new();
     loop {
         let batch = conn.pull_events();
         if batch.is_empty() {
             break;
         }
-        for pending in &batch {
-            match &pending.envelope.event {
-                SessionEvent::AgentFinished { .. } => finishes += 1,
-                SessionEvent::ContextUsage { .. } => readings += 1,
-                _ => {}
-            }
+        delivered.extend(batch);
+    }
+
+    drop(runtime);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+    delivered
+}
+
+/// The events of the pi row under test — the variants a `turn_end` line
+/// derives; the attach's own frames are not the row.
+fn row_events(delivered: &[PendingEvent]) -> Vec<&PendingEvent> {
+    delivered
+        .iter()
+        .filter(|pending| {
+            matches!(
+                pending.envelope.event,
+                SessionEvent::AgentError { .. }
+                    | SessionEvent::AgentFinished { .. }
+                    | SessionEvent::ContextUsage { .. }
+            )
+        })
+        .collect()
+}
+
+/// The row's events all sit at one journal seq: the seam drops a queued copy
+/// only by seq (`remove_replayed_agent_items`), so a `None`-seq sibling
+/// survives beside the copy replay derives from the same row and the event
+/// arrives twice.
+fn one_shared_seq(row: &[&PendingEvent]) {
+    let mut seqs = row.iter().map(|pending| pending.envelope.transcript_seq);
+    let first = seqs
+        .next()
+        .flatten()
+        .expect("every derived event carries the row's seq");
+    assert!(
+        seqs.all(|seq| seq == Some(first)),
+        "the row's events share its seq {first}"
+    );
+}
+
+#[test]
+fn a_turn_end_line_delivers_each_event_exactly_once_across_a_fresh_attach() {
+    // The recorded turn_end of `pi_view.rs`'s own fixture: totalTokens 25 851.
+    let delivered = rows_across_a_fresh_attach(
+        "s.pi.attach.once",
+        &[serde_json::from_str(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"stopReason":"stop","timestamp":1788993862485,"responseId":"gen-1788993862-4cxcarrKksRnXEICsFHO","rawStopReason":"stop"},"toolResults":[]}"#,
+        )
+        .expect("recorded turn_end frame")],
+    );
+    let row = row_events(&delivered);
+    let (mut finishes, mut readings) = (0_u64, 0_u64);
+    for pending in &row {
+        match &pending.envelope.event {
+            SessionEvent::AgentFinished { .. } => finishes += 1,
+            SessionEvent::ContextUsage { .. } => readings += 1,
+            other => panic!("unexpected event from the recorded row: {other:?}"),
         }
     }
     assert_eq!(
         (finishes, readings),
         (1, 1),
-        "one turn-end row delivers one finish and one reading; a None-seq \
-         sibling would survive the seam beside its replayed twin"
+        "one turn-end row delivers one finish and one reading, once each"
     );
+    one_shared_seq(&row);
+}
 
-    drop(runtime);
-    journal.shutdown();
-    let _ = std::fs::remove_dir_all(&dir);
+#[test]
+fn a_failed_runs_ending_delivers_each_event_once_across_a_fresh_attach() {
+    // A failed run's ending is three rows: the attempt's `turn_end` carries
+    // the finish and the reading, the `agent_end` is the attempt's report
+    // and nothing more, and the `agent_settled` that ends the run authors
+    // the error row. The attach seam must collapse the live copies against
+    // the journaled views the same way — each event once, every one at its
+    // own row's seq — or a copy is the sibling that doubles.
+    let turn_end = serde_json::from_str(
+        r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"I was about to finish"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851},"stopReason":"error","timestamp":1788993862485,"responseId":"gen-1788993862","responseModel":"glm-5.3-flash","errorMessage":"Request timed out."},"toolResults":[]}"#,
+    )
+    .expect("synthesized failed turn_end frame");
+    let agent_end = serde_json::from_str(
+        r#"{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"I was about to finish"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851},"stopReason":"error","timestamp":1788993862485,"responseId":"gen-1788993862","responseModel":"glm-5.3-flash","errorMessage":"Request timed out."}],"willRetry":false}"#,
+    )
+    .expect("synthesized settled agent_end frame");
+    let agent_settled = serde_json::from_str(r#"{"type":"agent_settled"}"#)
+        .expect("synthesized agent_settled frame");
+    let delivered =
+        rows_across_a_fresh_attach("s.pi.attach.failed", &[turn_end, agent_end, agent_settled]);
+    let row = row_events(&delivered);
+    let mut errors = Vec::new();
+    let (mut finishes, mut readings) = (0_u64, 0_u64);
+    for pending in &row {
+        match &pending.envelope.event {
+            SessionEvent::AgentError { message } => errors.push(message.clone()),
+            SessionEvent::AgentFinished { stop_reason, .. } => {
+                assert_eq!(stop_reason, "error");
+                finishes += 1;
+            }
+            SessionEvent::ContextUsage { .. } => readings += 1,
+            other => panic!("unexpected event from the failed run: {other:?}"),
+        }
+    }
+    assert_eq!(
+        (errors.len(), finishes, readings),
+        (1, 1, 1),
+        "three rows, three events, each once across the seam: {row:?}"
+    );
+    assert!(errors[0].contains("Request timed out."), "{}", errors[0]);
+    let (error_row, turn_end_row): (Vec<&PendingEvent>, Vec<&PendingEvent>) = row
+        .iter()
+        .copied()
+        .partition(|pending| matches!(pending.envelope.event, SessionEvent::AgentError { .. }));
+    assert_eq!((error_row.len(), turn_end_row.len()), (1, 2));
+    one_shared_seq(&error_row);
+    one_shared_seq(&turn_end_row);
+    assert_ne!(
+        error_row[0].envelope.transcript_seq, turn_end_row[0].envelope.transcript_seq,
+        "the error row is the settle's own journaled row"
+    );
 }
 
 #[test]

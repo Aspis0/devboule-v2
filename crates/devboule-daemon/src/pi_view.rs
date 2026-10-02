@@ -359,16 +359,16 @@ fn result_exit_code(result: Option<&Value>) -> Option<i32> {
     .find_map(|value| value.as_i64().and_then(|code| i32::try_from(code).ok()))
 }
 
-/// The turn's finish, then the context reading it proves: pi's own
+/// The turn's finish and the context reading it proves: pi's own
 /// `usage.totalTokens` is the same sum Codex and grok report, so the meter
-/// shows it as-is (`live: false` — the number is the end of this turn). The
-/// window comes from the model list into the manifest, not from this
+/// shows it as-is (`live: false` — the number is the end of this turn).
+/// The window comes from the model list into the manifest, not from this
 /// message, so `max_tokens` is absent and the app reads the manifest entry
 /// of this same `model_id`.
 ///
-/// `AgentFinished` comes first because the pi client hands its journal
-/// sequence to the first event of a line and the finish is what the
-/// transcript cursor belongs to.
+/// The order below is the order both roads show: the live pass
+/// (`pi_client::PiReader::dispatch_value`) publishes these in order and
+/// `drive_replay` re-derives them, each event at the row's journal sequence.
 fn turn_end(value: &Value) -> Vec<SessionEvent> {
     let Some(message) = value.get("message") else {
         return Vec::new();
