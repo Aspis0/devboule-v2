@@ -203,6 +203,7 @@ export function Workspace({
     newProjectTriggerRef,
     retryProjects,
     renameWorkspace,
+    deleteWorkspace,
     reuseOrCreateWorkspace,
   } = useWorkspaceProjects();
   // The one seam Settings → Providers may use: the last-selected workspace,
@@ -302,11 +303,22 @@ export function Workspace({
     stats: workspaceStats,
     branches: workspaceBranches,
     refresh: refreshWorkspaceStats,
+    evict: evictWorkspaceStats,
   } = useWorkspaceStats(statsWorkspaceIds, {
     connected: daemon.state === "connected",
     selectedWorkspace,
     endedKey,
   });
+  const handleDeleteWorkspace = useCallback(
+    async (workspaceId: string): Promise<ErrorSentence | null> => {
+      const refusal = await deleteWorkspace(workspaceId);
+      // The daemon's row is gone; History can keep naming the id for its
+      // sessions, so the cache is dropped here and never waits for History.
+      if (refusal === null) evictWorkspaceStats(workspaceId);
+      return refusal;
+    },
+    [deleteWorkspace, evictWorkspaceStats],
+  );
   useEffect(() => {
     setSessionFacts(sessions);
   }, [sessions, setSessionFacts]);
@@ -1462,6 +1474,7 @@ export function Workspace({
           onSelectWorkspace: selectWorkspace,
           onNewWorkspace: handleNewWorkspace,
           onRenameWorkspace: renameWorkspace,
+          onDeleteWorkspace: handleDeleteWorkspace,
           providerMenuAnchorProjectId:
             providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
           providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,

@@ -1563,7 +1563,8 @@ export type ErrorCode =
   | "io"
   | "connection_lost";
 
-/** Matches `ErrorDetails` in the protocol crate. Field names stay snake_case. */
+/** The `ErrorDetails` variants this app reads, from the protocol crate's
+ * enum. Field names stay snake_case. */
 export type ErrorDetails =
   | {
       type: "version_mismatch";
@@ -1576,6 +1577,11 @@ export type ErrorDetails =
       type: "generation_mismatch";
       current: number;
       requested: number;
+    }
+  | {
+      type: "worktree_dirty";
+      path: string;
+      force_required: boolean;
     };
 
 /** Payload Tauri rejects with when a command returns `Err(CommandError)`. */

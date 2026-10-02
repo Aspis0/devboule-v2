@@ -94,6 +94,7 @@ export type CommandArgs = {
     branch?: string | null;
   };
   workspace_set_title: { workspaceId: Id; title: string };
+  workspace_delete: { workspaceId: Id };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
   workspace_git_log: { workspaceId: Id };
@@ -254,6 +255,7 @@ type CommandResults = {
   workspaces_list: Workspace[];
   workspace_create: Workspace;
   workspace_set_title: Workspace;
+  workspace_delete: void;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
   /** The commit history of one workspace: the branch's own commits and
@@ -416,6 +418,7 @@ export const COMMAND_ARG_KEYS = {
   workspaces_list: ["projectId"],
   workspace_create: ["projectId", "isolation", "branch"],
   workspace_set_title: ["workspaceId", "title"],
+  workspace_delete: ["workspaceId"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
   workspace_git_log: ["workspaceId"],
@@ -732,10 +735,10 @@ export const workspaceFileDuplicate = (workspaceId: Id, path: string) =>
 export const workspaceFileDelete = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_file_delete", { workspaceId, path });
 /**
- * Creates a workspace inside a project. Only `local` isolation exists today;
- * `worktree` and any `branch` are refused by the daemon with `unimplemented`
- * until git worktrees land, and the caller must show that refusal rather than
- * silently falling back to `local`.
+ * Creates a workspace inside a project: `local` is the project folder
+ * itself, `worktree` checks out `branch` beside it. A refusal comes back as
+ * the usual CommandError, and the caller must show it rather than silently
+ * falling back to `local`.
  */
 export const workspaceCreate = (
   projectId: Id,
@@ -750,6 +753,14 @@ export const workspaceCreate = (
 /** Answers with the row as the daemon stored it, not the string sent. */
 export const workspaceSetTitle = (workspaceId: Id, title: string) =>
   invokeTyped("workspace_set_title", { workspaceId, title });
+/**
+ * Deletes a workspace — the daemon removes a worktree's checkout and the
+ * workspace row, and refuses anything else (a local row, a live session, a
+ * dirty checkout) with the sentence `errorSentence` maps. No force exists on
+ * this road: a dirty checkout refuses and keeps its row.
+ */
+export const workspaceDelete = (workspaceId: Id) =>
+  invokeTyped("workspace_delete", { workspaceId });
 export const sessionCreate = (
   workspaceId: Id | null,
   kind: SessionKind = "terminal",

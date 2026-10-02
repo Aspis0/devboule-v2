@@ -20,8 +20,9 @@ What is wired and what is not:
   from it and echoes back `Session.cwd`, which is display-only and lossy and
   must never be compared, keyed on, or sent back.
 
-  `worktree` isolation is still refused by the daemon, so every workspace is
-  the project folder itself until git worktrees land.
+  `worktree` isolation is real too — the daemon checks a branch out beside
+  the project — but the flows here mint `local` rows only, so every workspace
+  this UI creates is the project folder itself.
 
 - **The Changes panel is real — it reads, and it writes its own four
   acts.** `ChangesSurface.tsx` reads

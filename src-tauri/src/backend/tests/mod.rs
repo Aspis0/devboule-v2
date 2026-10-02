@@ -4,3 +4,4 @@
 
 mod async_roads;
 mod command_scan;
+mod workspace_delete;

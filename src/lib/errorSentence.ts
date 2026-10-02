@@ -1,5 +1,5 @@
 import { isCommandError } from "./commandError";
-import type { ErrorCode } from "../types/ipc";
+import type { CommandError, ErrorCode } from "../types/ipc";
 
 /**
  * The one place a rejected command becomes words a person can read. Every
@@ -12,7 +12,8 @@ import type { ErrorCode } from "../types/ipc";
  * daemon gains breaks this table's typing. A handful of message-shape arms
  * separate situations that share one code today — provider detection and
  * process containment both ride `io`, lost attachments ride `internal` and
- * `invalid_request`. Most-specific match wins; the table is the default arm.
+ * `invalid_request` — and one wire-kind arm reads `details` before any of
+ * them. Most-specific match wins; the table is the default arm.
  */
 export interface ErrorSentence {
   /** The plain sentence a surface renders: what happened, and what to do. */
@@ -112,6 +113,13 @@ const PROCESS_START_FAILED = /^Could not contain |process job|^Could not start t
 const DAEMON_UNREACHABLE =
   /has not answered status checks|\bdaemon unreachable\b|daemon_status timed out/;
 
+/**
+ * The live-session refusal on a workspace delete (`session_workspaces.rs`):
+ * it carries no details, so the daemon's one stable message is the handle.
+ */
+const LIVE_WORKSPACE_SESSIONS =
+  "sessions or terminals are still running in this workspace; close them first";
+
 function providerName(message: string): string | null {
   const quoted = /'([^']+)'/.exec(message);
   if (quoted !== null) return quoted[1];
@@ -140,6 +148,9 @@ function shapeSentence(message: string): string | null {
   if (WORKSPACE_BIRTH_FAILED.test(message)) {
     return "This workspace could not be created.";
   }
+  if (message === LIVE_WORKSPACE_SESSIONS) {
+    return "Stop the agents and terminals in this workspace first.";
+  }
   if (PROCESS_START_FAILED.test(message)) {
     // These failures are the daemon's own verdicts on creating or keeping the
     // process: containment is measured inside the daemon's job hierarchy
@@ -165,6 +176,18 @@ function rawMessage(error: unknown): string | null {
 }
 
 /**
+ * The wire kind that speaks for itself, read before any message arm: the
+ * dirty-worktree refusal quotes the checkout path in its message, so only
+ * the kind can carry a sentence that stays stable.
+ */
+function detailsSentence(error: CommandError): string | null {
+  if (error.details?.type === "worktree_dirty") {
+    return "This worktree has uncommitted changes. Commit or discard them first.";
+  }
+  return null;
+}
+
+/**
  * The sentence and demoted detail for anything a command rejected. Daemon
  * rejections (the `{ code, message }` shape Tauri hands back) always map, and
  * so does any raw cause whose text one of the shape arms claims: the bridge
@@ -186,7 +209,7 @@ export function errorSentence(error: unknown): ErrorSentence {
       ? CODE_SENTENCES[error.code]
       : NOTHING_READABLE;
     return {
-      sentence: shaped ?? fromTable,
+      sentence: detailsSentence(error) ?? shaped ?? fromTable,
       detail: error.message.trim() ? error.message : null,
     };
   }

@@ -124,6 +124,12 @@ export function HistoryPanel({
         projectsByWorkspace.set(workspace.id, project.name);
     }
     const byId = new Map<string, HistoryRow>();
+    // A workspace the tree no longer lists is deleted only when every
+    // project's list answered; a failed list leaves its roster unknown.
+    const everyListAnswered =
+      projects.length > 0 && projects.every((project) => project.workspaceError === undefined);
+    const workspaceLabel = (workspaceId: string): string | null =>
+      workspaceNames.get(workspaceId) ?? (everyListAnswered ? "Deleted workspace" : null);
     for (const saved of usage?.perSession ?? []) {
       if (!showAll && !isAgentKind(saved.kind)) continue;
       const session = sessionsById.get(saved.id) ?? null;
@@ -131,7 +137,7 @@ export function HistoryPanel({
       const workspaceId = session?.workspaceId ?? null;
       byId.set(saved.id, {
         ...saved,
-        workspace: workspaceId ? (workspaceNames.get(workspaceId) ?? null) : null,
+        workspace: workspaceId ? workspaceLabel(workspaceId) : null,
         project: workspaceId ? (projectsByWorkspace.get(workspaceId) ?? null) : null,
         branch: null,
         session,
@@ -151,7 +157,7 @@ export function HistoryPanel({
         kind: session.kind,
         bytes: 0,
         updatedAtMs: session.createdAtMs ?? null,
-        workspace: workspaceId ? (workspaceNames.get(workspaceId) ?? null) : null,
+        workspace: workspaceId ? workspaceLabel(workspaceId) : null,
         project: workspaceId ? (projectsByWorkspace.get(workspaceId) ?? null) : null,
         branch: null,
         session,

@@ -301,6 +301,31 @@ describe("the message-shape arms", () => {
   });
 });
 
+describe("the workspace-delete refusals", () => {
+  it("maps the live-session refusal to the stop instruction, not the generic row", () => {
+    // crates/devboule-daemon/src/session_workspaces.rs — ErrorCode::InvalidRequest
+    // with no details, so the daemon's one stable message is the only handle.
+    const raw = "sessions or terminals are still running in this workspace; close them first";
+    const { sentence } = errorSentence(rejection("invalid_request", raw));
+    expect(sentence).toBe("Stop the agents and terminals in this workspace first.");
+    expect(sentence).not.toContain("close them first");
+  });
+
+  it("maps a dirty-worktree refusal by its wire kind, not the path-carrying message", () => {
+    // ErrorDetails::WorktreeDirty — the message quotes the checkout path,
+    // so it can never be a stable handle.
+    const { sentence } = errorSentence({
+      code: "invalid_request",
+      message:
+        "fatal: 'C:\\dev\\wt-x' contains modified or untracked files, use --force to delete it",
+      details: { type: "worktree_dirty", path: "C:\\dev\\wt-x", force_required: true },
+    });
+    expect(sentence).toBe("This worktree has uncommitted changes. Commit or discard them first.");
+    expect(sentence).not.toContain("wt-x");
+    expect(sentence).not.toContain("--force");
+  });
+});
+
 describe("causes that are not daemon rejections", () => {
   it("passes an app-authored Error message through as the sentence", () => {
     expect(errorSentence(new Error("The daemon returned an invalid session sub."))).toEqual({

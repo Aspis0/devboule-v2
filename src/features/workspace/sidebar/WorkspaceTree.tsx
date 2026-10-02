@@ -18,6 +18,8 @@ export interface WorkspaceTreeProps {
   onNewWorkspace: (trigger: HTMLButtonElement, projectId: string) => void;
   /** Persists a row's new title; answers with the refusal, if one came. */
   onRenameWorkspace: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
+  /** Deletes a row's workspace; answers with the refusal, if one came. */
+  onDeleteWorkspace: (workspaceId: string) => Promise<ErrorSentence | null>;
   /** The project whose new-row wrap hosts the provider choice UI. */
   providerMenuAnchorProjectId: string | null;
   /** The provider choice UI itself (popover or consent card). */
@@ -28,8 +30,8 @@ export interface WorkspaceTreeProps {
 /**
  * The project tree under the host header: project headers with avatars and a
  * hover-revealed "+", the workspace rows (each its own component: label,
- * stats, context menu and in-place title editor), and the quiet "New
- * workspace" row.
+ * stats, context menu, in-place title editor and delete ask), and the quiet
+ * "New workspace" row.
  */
 export function WorkspaceTree({
   projects,
@@ -41,6 +43,7 @@ export function WorkspaceTree({
   onSelectWorkspace,
   onNewWorkspace,
   onRenameWorkspace,
+  onDeleteWorkspace,
   providerMenuAnchorProjectId,
   providerMenu,
   stats,
@@ -120,6 +123,7 @@ export function WorkspaceTree({
                 stat={stats.get(workspace.id)}
                 onSelect={onSelectWorkspace}
                 onRename={onRenameWorkspace}
+                onDelete={onDeleteWorkspace}
               />
             ))}
             <div className="workspace-new-row-wrap">

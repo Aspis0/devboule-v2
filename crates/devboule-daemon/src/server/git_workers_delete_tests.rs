@@ -172,3 +172,42 @@ fn a_live_session_refuses_the_delete_until_it_is_closed() {
     drop(state);
     let _ = std::fs::remove_dir_all(&path);
 }
+
+/// The app turns this refusal into its own sentence by matching the daemon's
+/// exact wording (`src/lib/errorSentence.ts`); the wire has no kind for it.
+#[test]
+fn the_live_session_refusal_wording_is_the_one_the_app_maps() {
+    let repo = TestRepo::new("git-off-loop-delete-live-wording");
+    let (path, state) = temp_state("git-off-loop-delete-live-wording-state");
+    let project = state
+        .sessions
+        .project_add(repo.root.to_str().expect("repo path"))
+        .expect("project");
+    let workspace = state
+        .sessions
+        .workspace_create(
+            &project.id,
+            WorkspaceIsolation::Worktree,
+            Some("branch-one".to_string()),
+        )
+        .expect("worktree workspace");
+    crate::session::insert_test_live_session_in_workspace(
+        &state.sessions,
+        "delete-wording-agent",
+        test_owner(),
+        devboule_protocol::SessionKind::Acp,
+        &workspace.id,
+    );
+
+    let error = state
+        .sessions
+        .workspace_delete(&workspace.id, false)
+        .expect_err("a live session must refuse the delete");
+    assert_eq!(
+        error.message,
+        "sessions or terminals are still running in this workspace; close them first",
+        "the app maps this exact text in src/lib/errorSentence.ts; change both together"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(&path);
+}

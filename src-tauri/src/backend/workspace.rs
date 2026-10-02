@@ -65,6 +65,18 @@ pub async fn workspace_set_title(
     off_main_thread(move || client.workspace_set_title(&workspace_id, &title)).await
 }
 
+/// Delete one workspace — a worktree's checkout and its row, never forced:
+/// every refusal (a local row, a live session, a dirty checkout) comes back
+/// as the sentence the frontend maps.
+#[tauri::command]
+pub async fn workspace_delete(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_delete(&workspace_id, false)).await
+}
+
 /// The uncommitted working-tree state of one workspace. `workspace_id` is the
 /// whole argument: the daemon resolves the directory from it, because the
 /// `path` the frontend holds is declared display-only.

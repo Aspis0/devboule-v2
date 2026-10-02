@@ -28,6 +28,10 @@ const inFlight = new Map<string, Promise<void>>();
 // dropped when the last mounted instance unmounts — a follow-up with no
 // sidebar on screen would only leak reads into the next mount.
 const dirty = new Set<string>();
+// Deleted ids: the daemon's row is gone while History may keep naming the
+// id for its sessions, so no sweep and no late read may repopulate them. An id
+// leaves the set when the workspace list admits it again.
+const evicted = new Set<string>();
 let mountedInstances = 0;
 
 function dropUnlisted<V>(
@@ -43,6 +47,13 @@ function dropUnlisted<V>(
   return next ?? current;
 }
 
+function dropOne<V>(current: ReadonlyMap<string, V>, id: string): ReadonlyMap<string, V> {
+  if (!current.has(id)) return current;
+  const next = new Map(current);
+  next.delete(id);
+  return next;
+}
+
 /**
  * One status read feeds both maps — the sidebar's +N −M and the branch
  * History renders — so History asks the daemon for nothing itself.
@@ -54,6 +65,7 @@ export function useWorkspaceStats(
   stats: ReadonlyMap<string, WorkspaceStat>;
   branches: ReadonlyMap<string, string>;
   refresh: (ids: readonly string[]) => void;
+  evict: (id: string) => void;
 } {
   const [stats, setStats] = useState<ReadonlyMap<string, WorkspaceStat>>(() => new Map());
   const [branches, setBranches] = useState<ReadonlyMap<string, string>>(() => new Map());
@@ -75,8 +87,9 @@ export function useWorkspaceStats(
   const sweptRef = useRef<ReadonlySet<string>>(new Set());
 
   const readWorkspace = useCallback(async (id: string): Promise<void> => {
-    // A read that outlives its id's place in the list must not undo the prune.
-    const listed = () => mountedRef.current && listedRef.current.has(id);
+    // A read that outlives its id's place in the list — or its deletion —
+    // must not undo the prune.
+    const listed = () => mountedRef.current && listedRef.current.has(id) && !evicted.has(id);
     try {
       const status = await workspaceGitStatus(id);
       if (!listed()) return;
@@ -142,6 +155,7 @@ export function useWorkspaceStats(
         // Every trigger answers to the connection: disconnected, nothing is
         // sent and nothing is dropped from the cache.
         if (!connectedRef.current) return;
+        if (evicted.has(id)) return;
         if (inFlight.has(id)) {
           // A newer event arrived during the read: one follow-up refreshes
           // the row after it settles instead of leaving stale numbers.
@@ -166,6 +180,18 @@ export function useWorkspaceStats(
     [readWorkspace],
   );
 
+  /**
+   * Drop a deleted workspace's stats and branch and bar every later read of
+   * it: the daemon's row is gone, and History can keep naming the id for its
+   * sessions far longer than any cache should live.
+   */
+  const evict = useCallback((id: string): void => {
+    evicted.add(id);
+    dirty.delete(id);
+    setStats((current) => dropOne(current, id));
+    setBranches((current) => dropOne(current, id));
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     mountedInstances += 1;
@@ -185,6 +211,10 @@ export function useWorkspaceStats(
   useEffect(() => {
     // Entries for a departed id would outlive it: nothing else prunes.
     const listed = new Set(idsRef.current);
+    // An id the list names again after an absence is a new workspace.
+    for (const id of listed) {
+      if (!listedRef.current.has(id)) evicted.delete(id);
+    }
     listedRef.current = listed;
     setStats((current) => dropUnlisted(current, listed));
     setBranches((current) => dropUnlisted(current, listed));
@@ -226,5 +256,5 @@ export function useWorkspaceStats(
     return () => window.clearInterval(timer);
   }, [refresh, connected]);
 
-  return useMemo(() => ({ stats, branches, refresh }), [stats, branches, refresh]);
+  return useMemo(() => ({ stats, branches, refresh, evict }), [stats, branches, refresh, evict]);
 }

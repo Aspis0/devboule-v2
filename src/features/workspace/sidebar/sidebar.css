@@ -283,6 +283,13 @@
   font-size: var(--type-meta);
 }
 
+.workspace-row-delete-refusal {
+  display: block;
+  padding: 2px 8px 4px;
+  color: var(--danger);
+  font-size: var(--type-meta);
+}
+
 .workspace-row-menu {
   position: absolute;
   z-index: 3;

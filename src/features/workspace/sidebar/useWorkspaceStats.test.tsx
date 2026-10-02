@@ -28,8 +28,9 @@ function HookProbe(props: {
   onStats: (stats: ReadonlyMap<string, { additions: number; deletions: number }>) => void;
   onBranches: (branches: ReadonlyMap<string, string>) => void;
   onRefresh?: (refresh: (ids: readonly string[]) => void) => void;
+  onEvict?: (evict: (id: string) => void) => void;
 }) {
-  const { stats, branches, refresh } = useWorkspaceStats(props.ids, {
+  const { stats, branches, refresh, evict } = useWorkspaceStats(props.ids, {
     connected: props.connected,
     selectedWorkspace: props.selectedWorkspace,
     endedKey: props.endedKey,
@@ -37,6 +38,7 @@ function HookProbe(props: {
   props.onStats(stats);
   props.onBranches(branches);
   props.onRefresh?.(refresh);
+  props.onEvict?.(evict);
   return <button type="button" data-testid="probe-refresh" onClick={() => refresh(props.ids)} />;
 }
 
@@ -178,6 +180,98 @@ describe("useWorkspaceStats", () => {
     await reread();
     expect(latest.has("ws-1")).toBe(false);
     expect(latestBranches?.has("ws-1")).toBe(false);
+  });
+
+  it("evicts a deleted id from both maps while the list still names it", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(totals(145, 38));
+    let evict!: (id: string) => void;
+    await mount({
+      ids: ["ws-gone"],
+      connected: true,
+      selectedWorkspace: null,
+      endedKey: "",
+      onEvict: (fn) => {
+        evict = fn;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latest.get("ws-gone")).toEqual({ additions: 145, deletions: 38 });
+    expect(latestBranches?.get("ws-gone")).toBe("main");
+
+    await act(async () => evict("ws-gone"));
+    expect(latest.has("ws-gone")).toBe(false);
+    expect(latestBranches?.has("ws-gone")).toBe(false);
+
+    // History can keep the deleted id listed for its sessions: the sweep
+    // must not read it back in, whatever still names it.
+    const readsBefore = vi.mocked(workspaceGitStatus).mock.calls.length;
+    await mount2ndRefresh();
+    expect(vi.mocked(workspaceGitStatus).mock.calls.length).toBe(readsBefore);
+    expect(latest.has("ws-gone")).toBe(false);
+  });
+
+  it("reads an evicted id again once it reappears in the list", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(totals(7, 3));
+    let evict!: (id: string) => void;
+    const onEvict = (fn: (id: string) => void) => {
+      evict = fn;
+    };
+    const render = (ids: readonly string[]) =>
+      act(async () => {
+        root!.render(
+          <HookProbe
+            ids={ids}
+            connected
+            selectedWorkspace={null}
+            endedKey=""
+            onStats={onStats}
+            onBranches={onBranches}
+            onEvict={onEvict}
+          />,
+        );
+      });
+    await mount({
+      ids: ["ws-reborn"],
+      connected: true,
+      selectedWorkspace: null,
+      endedKey: "",
+      onEvict,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await act(async () => evict("ws-reborn"));
+    await render([]);
+    await render(["ws-reborn"]);
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+
+    expect(latest.get("ws-reborn")).toEqual({ additions: 7, deletions: 3 });
+  });
+
+  it("ignores an in-flight read for an evicted id when it lands", async () => {
+    let release!: (value: ReturnType<typeof totals>) => void;
+    vi.mocked(workspaceGitStatus).mockImplementation(
+      () => new Promise((resolve) => (release = resolve)),
+    );
+    let evict!: (id: string) => void;
+    await mount({
+      ids: ["ws-gone-flight"],
+      connected: true,
+      selectedWorkspace: null,
+      endedKey: "",
+      onEvict: (fn) => {
+        evict = fn;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workspaceGitStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => evict("ws-gone-flight"));
+    release(totals(10, 5));
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latest.has("ws-gone-flight")).toBe(false);
+    expect(latestBranches?.has("ws-gone-flight")).toBe(false);
   });
 
   it("returns the same maps when a read lands unchanged", async () => {

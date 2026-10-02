@@ -295,6 +295,68 @@ describe("HistoryPanel", () => {
     expect(container.querySelector(".history-row-main")).toBeNull();
   });
 
+  it("labels a session whose workspace is gone as a deleted workspace", async () => {
+    const projects: WorkspaceProject[] = [
+      {
+        id: "project-rust",
+        name: "Rust project",
+        path: "C:\\rust",
+        workspaces: [
+          {
+            id: "workspace-rust",
+            projectId: "project-rust",
+            title: "Rust workspace",
+            displayTitle: "Rust workspace",
+            isolation: "local",
+            path: "C:\\rust",
+            meta: null,
+            stateDot: null,
+          },
+        ],
+      },
+    ];
+    const usage = baseUsage();
+    usage.perSession = [{ ...usage.perSession[0], id: "session-gone", title: "Kept session" }];
+    const kept = { ...endedSession("session-gone"), workspaceId: "workspace-deleted" };
+    await renderPanel(usage, [kept], "", projects);
+
+    const anchor = container.querySelector('[data-agent-id="session-gone"]');
+    expect(anchor?.getAttribute("aria-label")).toContain("Deleted workspace");
+    expect(container.textContent).toContain("Deleted workspace");
+    expect(container.textContent).not.toContain("workspace-deleted");
+  });
+
+  it("claims no deletion before any project has answered", async () => {
+    const usage = baseUsage();
+    usage.perSession = [{ ...usage.perSession[0], id: "session-gone", title: "Kept session" }];
+    const kept = { ...endedSession("session-gone"), workspaceId: "workspace-deleted" };
+    await renderPanel(usage, [kept]);
+
+    expect(
+      container.querySelector('[data-agent-id="session-gone"]')?.getAttribute("aria-label"),
+    ).not.toContain("Deleted workspace");
+  });
+
+  it("claims no deletion while any project's workspace list has failed", async () => {
+    const projects: WorkspaceProject[] = [
+      {
+        id: "project-rust",
+        name: "Rust project",
+        path: "C:\\rust",
+        workspaces: [],
+        workspaceError: { sentence: "The agent daemon is not responding.", detail: null },
+      },
+    ];
+    const usage = baseUsage();
+    usage.perSession = [{ ...usage.perSession[0], id: "session-gone", title: "Kept session" }];
+    const kept = { ...endedSession("session-gone"), workspaceId: "workspace-unknown" };
+    await renderPanel(usage, [kept], "", projects);
+
+    expect(
+      container.querySelector('[data-agent-id="session-gone"]')?.getAttribute("aria-label"),
+    ).not.toContain("Deleted workspace");
+  });
+
   it("renders a journaled agent once when it is also present in the roster", async () => {
     const usage = baseUsage();
     usage.perSession = [{ ...usage.perSession[0], id: "session-build", title: "Journal agent" }];

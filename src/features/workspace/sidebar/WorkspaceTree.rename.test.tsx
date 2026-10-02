@@ -42,6 +42,9 @@ describe("the sidebar's workspace rows", () => {
   const onRename = vi.fn(
     async (_workspaceId: string, _title: string): Promise<ErrorSentence | null> => null,
   );
+  const onDeleteWorkspace = vi.fn(
+    async (_workspaceId: string): Promise<ErrorSentence | null> => null,
+  );
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -73,6 +76,7 @@ describe("the sidebar's workspace rows", () => {
           providerMenu={null}
           stats={new Map()}
           onRenameWorkspace={onRename}
+          onDeleteWorkspace={onDeleteWorkspace}
         />,
       );
     });

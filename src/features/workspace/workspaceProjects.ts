@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { projectsList, workspaceCreate, workspaceSetTitle, workspacesList } from "../../lib/tauri";
+import {
+  projectsList,
+  workspaceCreate,
+  workspaceDelete,
+  workspaceSetTitle,
+  workspacesList,
+} from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { workspaceDisplayTitles } from "../../lib/workspaceTitles";
 import type { Project, Session, Workspace } from "../../types/ipc";
@@ -252,6 +258,24 @@ export function useWorkspaceProjects() {
     [],
   );
 
+  /**
+   * After a success the list is re-read, never patched: the row leaves when
+   * the daemon's reply no longer carries it, and a refusal comes back as the
+   * sentence the row renders — with the list untouched, so the row stays.
+   */
+  const deleteWorkspace = useCallback(
+    async (workspaceId: string): Promise<ErrorSentence | null> => {
+      try {
+        await workspaceDelete(workspaceId);
+      } catch (cause: unknown) {
+        return errorSentence(cause);
+      }
+      await loadProjects();
+      return null;
+    },
+    [loadProjects],
+  );
+
   const openProjectDialog = useCallback(() => setProjectDialogOpen(true), []);
   const closeProjectDialog = useCallback(() => {
     setProjectDialogOpen(false);
@@ -320,6 +344,7 @@ export function useWorkspaceProjects() {
     addWorkspace,
     reuseOrCreateWorkspace,
     renameWorkspace,
+    deleteWorkspace,
     projectDialogOpen,
     openProjectDialog,
     closeProjectDialog,

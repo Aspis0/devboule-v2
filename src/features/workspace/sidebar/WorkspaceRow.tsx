@@ -7,6 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { ErrorText } from "../../../components/ErrorText";
+import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import { firstGrapheme } from "../../../lib/graphemeBound";
 import { isImeComposition } from "../../../lib/imeComposition";
@@ -24,6 +25,34 @@ const DOT_LABELS: Record<NonNullable<WorkspaceView["stateDot"]>, string> = {
   unattended: "running unattended",
 };
 
+/**
+ * Where focus goes once this row's workspace is gone: the next row, the
+ * previous one, or the project's New workspace control — never the body.
+ */
+function focusTargetAfterRemoval(row: HTMLButtonElement): HTMLElement | null {
+  const scope: ParentNode = row.closest(".workspace-project-items") ?? document;
+  const rows = [...scope.querySelectorAll<HTMLButtonElement>("button.workspace-row")];
+  const index = rows.indexOf(row);
+  return (
+    rows[index + 1] ??
+    rows[index - 1] ??
+    scope.querySelector<HTMLButtonElement>(".workspace-new-row")
+  );
+}
+
+/**
+ * A search that matched only the deleted row removes its whole project group,
+ * and the captured target with it: fall back to whatever row the tree still
+ * shows, else the search field.
+ */
+function focusSurvivor(target: HTMLElement | null, panel: Element | null): void {
+  const survivor = target?.isConnected
+    ? target
+    : (panel?.querySelector<HTMLElement>("button.workspace-row") ??
+      panel?.querySelector<HTMLElement>(".workspace-search input"));
+  survivor?.focus({ preventScroll: true });
+}
+
 export interface WorkspaceRowProps {
   workspace: WorkspaceView;
   projectName: string;
@@ -32,6 +61,8 @@ export interface WorkspaceRowProps {
   onSelect: (workspaceId: string) => void;
   /** Persists a new title and answers with the refusal, if one came back. */
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
+  /** Deletes the workspace and answers with the refusal, if one came back. */
+  onDelete: (workspaceId: string) => Promise<ErrorSentence | null>;
 }
 
 export function WorkspaceRow({
@@ -41,17 +72,37 @@ export function WorkspaceRow({
   stat,
   onSelect,
   onRename,
+  onDelete,
 }: WorkspaceRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(workspace.displayTitle);
   const [refusal, setRefusal] = useState<ErrorSentence | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [deleteRefusal, setDeleteRefusal] = useState<ErrorSentence | null>(null);
   const rowRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   /** Whether the row takes focus when the editor closes; a blur withdraws it. */
   const returnFocusRef = useRef(false);
+  /** Set when the delete ask opens: the ask's own restore aims at the menu
+   * entry its open unmounted, so the row takes focus back when it ends. */
+  const deleteAskPendingRef = useRef(false);
+  /** Set synchronously by the confirm: state would not be committed before a
+   * second confirm in the same tick reached the handler. */
+  const deletePendingRef = useRef(false);
+  /** Set by a successful delete: the re-read commits after the answer, so
+   * focus can only be placed once this row has actually unmounted. */
+  const focusAfterRemovalRef = useRef<(() => void) | null>(null);
+
+  useLayoutEffect(
+    () => () => {
+      const focus = focusAfterRemovalRef.current;
+      if (focus !== null) queueMicrotask(focus);
+    },
+    [],
+  );
 
   const closeMenu = useCallback((returnFocus: boolean) => {
     setMenuOpen(false);
@@ -97,6 +148,12 @@ export function WorkspaceRow({
     rowRef.current?.focus({ preventScroll: true });
   }, [editing]);
 
+  useEffect(() => {
+    if (confirming || !deleteAskPendingRef.current) return;
+    deleteAskPendingRef.current = false;
+    rowRef.current?.focus({ preventScroll: true });
+  }, [confirming]);
+
   const openMenu = (event: { preventDefault: () => void }) => {
     event.preventDefault();
     setMenuOpen(true);
@@ -124,6 +181,33 @@ export function WorkspaceRow({
     setRefusal(null);
     closeMenu(false);
     setEditing(true);
+  };
+
+  const startDelete = () => {
+    if (deletePendingRef.current) return;
+    focusAfterRemovalRef.current = null;
+    setDeleteRefusal(null);
+    closeMenu(false);
+    deleteAskPendingRef.current = true;
+    setConfirming(true);
+  };
+
+  const confirmDelete = async () => {
+    if (deletePendingRef.current) return;
+    deletePendingRef.current = true;
+    const row = rowRef.current;
+    const target = row === null ? null : focusTargetAfterRemoval(row);
+    const panel = row?.closest(".workspace-panel-open") ?? null;
+    setConfirming(false);
+    const error = await onDelete(workspace.id);
+    deletePendingRef.current = false;
+    if (error !== null) {
+      setDeleteRefusal(error);
+      return;
+    }
+    const focus = () => focusSurvivor(target, panel);
+    if (row?.isConnected) focusAfterRemovalRef.current = focus;
+    else focus();
   };
 
   const closeEditor = () => {
@@ -253,8 +337,30 @@ export function WorkspaceRow({
           <button type="button" role="menuitem" onClick={startRename}>
             Rename
           </button>
+          {/* A local row is the project folder and the daemon refuses its
+              delete outright (session_workspaces.rs) — never an affordance. */}
+          {workspace.isolation === "worktree" ? (
+            <button type="button" role="menuitem" onClick={startDelete}>
+              Delete workspace
+            </button>
+          ) : null}
         </div>
       ) : null}
+      {deleteRefusal !== null ? (
+        // The mapped sentence only: no raw daemon text reaches this surface.
+        <span className="workspace-row-delete-refusal" role="alert">
+          {deleteRefusal.sentence}
+        </span>
+      ) : null}
+      <ConfirmDialog
+        open={confirming}
+        title={`Delete “${workspace.displayTitle}”?`}
+        message="Deletes the worktree folder and this workspace's entry. Your project folder is kept. This cannot be undone."
+        confirmLabel="Delete"
+        tone="danger"
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setConfirming(false)}
+      />
     </div>
   );
 }
