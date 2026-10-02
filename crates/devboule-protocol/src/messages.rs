@@ -683,6 +683,17 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line_count: Option<u64>,
     },
+    /// The folder a workspace's open resolves to: the asking desktop app
+    /// joins the file itself and validates it against this root immediately
+    /// before spawning an editor, so the wire carries the root only — never a
+    /// file path, never a line. The daemon answers this frame for local
+    /// clients only: the peer gate refuses it under every capability
+    /// (`peer_policy`), because an absolute host root must never travel to a
+    /// paired device. The reply is [`DaemonMessage::WorkspaceOpenRoot`].
+    WorkspaceOpenRoot {
+        id: u64,
+        workspace_id: String,
+    },
     /// Rename one entry inside a workspace — the Files panel's inline rename.
     /// A **write**: the daemon resolves the folder from `workspace_id`,
     /// confines `path` like [`Self::WorkspaceFileRead`] does, validates `name`
@@ -1177,6 +1188,7 @@ impl ClientMessage {
             | Self::WorkspaceGitLog { id, .. }
             | Self::WorkspaceFilesList { id, .. }
             | Self::WorkspaceFileRead { id, .. }
+            | Self::WorkspaceOpenRoot { id, .. }
             | Self::WorkspaceFileRename { id, .. }
             | Self::WorkspaceFileDuplicate { id, .. }
             | Self::WorkspaceFileDelete { id, .. }
@@ -1290,6 +1302,7 @@ impl ClientMessage {
             | Self::WorkspaceGitDiff { .. }
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
+            | Self::WorkspaceOpenRoot { .. }
             | Self::WorkspaceFilePreviewStage { .. }
             | Self::WorkspaceFilePreviewUnstage { .. }
             | Self::WorkspaceCreate { .. }
@@ -1363,6 +1376,7 @@ impl ClientMessage {
             Self::WorkspaceGitLog { .. } => "WorkspaceGitLog",
             Self::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
+            Self::WorkspaceOpenRoot { .. } => "WorkspaceOpenRoot",
             Self::WorkspaceFileRename { .. } => "WorkspaceFileRename",
             Self::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
             Self::WorkspaceFileDelete { .. } => "WorkspaceFileDelete",
@@ -1418,6 +1432,7 @@ impl ClientMessage {
             | Self::WorkspaceGitLog { .. }
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
+            | Self::WorkspaceOpenRoot { .. }
             | Self::ProvidersList { .. }
             // An unforced check is a read; a forced one spawns provider
             // CLIs in the host's credential context at the requester's
@@ -1619,6 +1634,17 @@ pub enum DaemonMessage {
         id: u64,
         #[serde(flatten)]
         file: WorkspaceFileContent,
+    },
+    /// The reply to [`ClientMessage::WorkspaceOpenRoot`]: the workspace's
+    /// absolute root in the daemon's own plain spelling, for the local
+    /// desktop app to join and re-validate against immediately before it
+    /// spawns an editor. This frame is local-only at the peer gate, so this
+    /// path never travels to a paired device; it never reaches the app's
+    /// webview either — the Tauri command hands the open off without
+    /// returning it.
+    WorkspaceOpenRoot {
+        id: u64,
+        root: String,
     },
     /// The reply to [`ClientMessage::WorkspaceFilePreviewStage`]: the copy's
     /// absolute path beside the source file's stat, or the sentence the

@@ -12,7 +12,7 @@ use super::blocking::off_main_thread;
 use super::error::CommandError;
 use crate::client::DaemonBridge;
 
-fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandError> {
+pub(super) fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandError> {
     bridge
         .client()
         .map_err(|message| CommandError::new(devboule_protocol::ErrorCode::Io, message))

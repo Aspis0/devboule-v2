@@ -204,7 +204,7 @@ describe("the ground copies", () => {
     ).toBe(true);
   });
 
-  it("the capability grant is exactly the two background setters", () => {
+  it("the capability grant is exactly the declared permissions", () => {
     const capabilities = JSON.parse(
       readFileSync(resolve(appRoot, "src-tauri/capabilities/default.json"), "utf8"),
     ) as { permissions: string[] };
@@ -215,6 +215,11 @@ describe("the ground copies", () => {
         "core:webview:allow-set-webview-background-color",
         "dialog:default",
         "notification:default",
+        // Denies in a grant list: the file opener and the reveal run from the
+        // Rust commands, so the page gets an explicit refusal for both
+        // instead of any path-handling permission.
+        "opener:deny-open-path",
+        "opener:deny-reveal-item-in-dir",
       ].sort(),
     );
   });

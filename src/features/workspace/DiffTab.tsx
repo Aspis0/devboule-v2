@@ -5,9 +5,10 @@ import { useId, useMemo, useState, type ReactNode } from "react";
 import type { WorkspaceGitDiffLine, WorkspaceGitFileDiff } from "../../types/ipc";
 import { ErrorText } from "../../components/ErrorText";
 import type { ChangesReply } from "./useWorkspaceChanges";
-import { withDiffLineNumbers, type NumberedDiffLine } from "./diffLineNumbers";
+import { firstHunkNewLine, withDiffLineNumbers, type NumberedDiffLine } from "./diffLineNumbers";
 import { DIFF_LINE_MARKER, DIFF_ROW_WORD } from "./diffMarker";
 import { toSplitRows, type SplitDiffRow } from "./diffSplitRows";
+import { OpenInEditorAction } from "./OpenInEditorAction";
 import "./panel/diffTab.css";
 
 export type DiffTabMode = "unified" | "split";
@@ -139,9 +140,11 @@ function SplitRows({ rows }: { rows: readonly SplitDiffRow[] }) {
 }
 
 export function DiffTab({
+  workspaceId,
   path,
   diff,
 }: {
+  workspaceId: string;
   path: string;
   diff: ChangesReply<WorkspaceGitFileDiff>;
 }) {
@@ -175,6 +178,10 @@ export function DiffTab({
     );
   const numbered = useMemo(
     () => (reply !== null && reply.status === "ok" ? withDiffLineNumbers(reply.lines) : null),
+    [reply],
+  );
+  const openLine = useMemo(
+    () => (reply !== null && reply.status === "ok" ? firstHunkNewLine(reply.lines) : null),
     [reply],
   );
   const split = useMemo(
@@ -216,6 +223,7 @@ export function DiffTab({
             </button>
           ))}
         </div>
+        <OpenInEditorAction workspaceId={workspaceId} path={path} line={openLine ?? undefined} />
       </div>
       <div className="diff-tab-body">
         {reply === null ? (

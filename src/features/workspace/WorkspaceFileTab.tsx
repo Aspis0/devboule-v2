@@ -14,6 +14,7 @@ import { StripKindMark } from "./strip/StripKindMark";
 import { formatSize } from "./FilesPreview";
 import { FileTabSource } from "./FileTabSource";
 import { fileTabMode, setFileTabMode, type FileTabMode } from "./fileTabMode";
+import { OpenInEditorAction } from "./OpenInEditorAction";
 import { useWorkspaceFilePreview, type PreviewCell } from "./useWorkspaceFilePreview";
 import { toolContentKey } from "./toolContentCache";
 import "./fileTab.css";
@@ -235,6 +236,7 @@ export function WorkspaceFileTab({
             ))}
           </div>
         ) : null}
+        <OpenInEditorAction workspaceId={workspaceId} path={path} />
       </header>
       {body}
     </div>

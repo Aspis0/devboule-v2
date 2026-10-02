@@ -35,6 +35,16 @@ pub fn run() {
         .manage(plugins::rpc::PluginRuntime::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // The opener behind the pencil's Reveal in folder target — its Rust
+        // API only. The default builder injects a link-click script, and
+        // letting it claim every `target="_blank"` anchor would change how
+        // existing links behave, so the injected half stays off and the
+        // reveal happens in the command, never from the page.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(|app| {
             // Before any other setup: the native layers must carry a ground
             // from the first presented frame, not the config's single colour.
@@ -131,6 +141,8 @@ pub fn run() {
             backend::workspace::workspace_file_rename,
             backend::workspace::workspace_file_duplicate,
             backend::workspace::workspace_file_delete,
+            backend::open_in_editor::workspace_file_open,
+            backend::editor_targets::editor_targets_list,
             backend::workspace::workspace_files_list,
             backend::devices::devices_list,
             backend::devices::pairing_start,

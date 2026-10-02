@@ -188,6 +188,9 @@ source, and that line is the authority for the entry:
   and classification rules)
 - `crates/devboule-daemon/src/workspace_git_write.rs` —
   `packages/server/src/utils/checkout-git.ts` (`discardChanges`)
+- `src-tauri/src/backend/editor_targets.rs` —
+  `packages/desktop/src/features/editor-targets/` (the target order and the
+  per-family launch arguments)
 - `src/app/RootErrorBoundary.tsx` —
   `packages/app/src/components/root-error-boundary.tsx`
 - `src/app/SurfaceErrorBoundary.tsx` —

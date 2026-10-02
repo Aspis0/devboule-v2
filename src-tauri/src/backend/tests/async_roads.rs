@@ -75,13 +75,18 @@ fn every_daemon_bridge_command_is_an_async_command() {
     );
 }
 
-/// Two roads do blocking work without ever touching the bridge — a document
-/// write with its digest pass, a folder copy with its own digest pass — so
-/// the class pin cannot see them; their names are pinned here.
+/// Three roads do blocking work without ever touching the bridge — a
+/// document write with its digest pass, a folder copy with its own digest
+/// pass, and the editor-target scan — so the class pin cannot see them;
+/// their names are pinned here.
 #[test]
 fn the_blocking_roads_outside_the_bridge_stay_async() {
     let scan = command_scan::scan();
-    for name in ["artifact_write_file", "plugin_install"] {
+    for name in [
+        "artifact_write_file",
+        "plugin_install",
+        "editor_targets_list",
+    ] {
         let command = scan
             .commands
             .iter()
@@ -107,7 +112,7 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 64,
+        scan.helper_calls, 66,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

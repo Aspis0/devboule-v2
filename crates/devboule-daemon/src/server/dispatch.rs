@@ -324,7 +324,8 @@ pub(super) fn dispatch_immediate(
         // create and delete all go through the journal's workspace row; the
         // preview's stage resolves the row the same way, and its unstage
         // resolves none (it deletes copies the daemon wrote itself) and rides
-        // the same grant as the panel that serves.
+        // the same grant as the panel that serves; the open root resolves
+        // the row the same way and answers with the folder only.
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceGitStage { .. }
@@ -334,6 +335,7 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::WorkspaceGitLog { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
+        | ClientMessage::WorkspaceOpenRoot { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceFileDelete { .. }

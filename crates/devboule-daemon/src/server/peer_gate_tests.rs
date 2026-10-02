@@ -107,3 +107,40 @@ fn send_without_the_peer_capability_stops_at_the_gate() {
         other => panic!("expected a capability refusal, got {other:?}"),
     }
 }
+
+/// The open root is local-only: its reply would be this machine's absolute
+/// folder, and the editor launch it feeds exists only in the desktop
+/// process — so no capability, `admin` among them, opens it for a peer.
+/// The refusal is the capability refusal every gate denial is, and it
+/// carries no path: the frame never reaches dispatch, so nothing about the
+/// workspace's location can travel back.
+#[test]
+fn the_open_root_is_refused_to_a_peer_holding_every_capability() {
+    let state = ServerState::new("peer-gate-open-root".into());
+    let owner = OwnerId::new("peer_dev-peer-1", "daemon").expect("peer owner");
+    let conn = remote_conn(&devboule_protocol::PEER_CAPS);
+    let request = ClientMessage::WorkspaceOpenRoot {
+        id: 9,
+        workspace_id: "ws.1".to_string(),
+    };
+
+    let reply = match run_gate(&state, &owner, &request, &conn) {
+        Ok(_) => panic!("the open root must never reach dispatch for a peer"),
+        Err(reply) => reply,
+    };
+    match *reply {
+        DaemonMessage::Error(error) => {
+            assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
+            assert_eq!(error.id, Some(9), "the refusal answers the request");
+            assert!(
+                error.message.contains("workspace.open"),
+                "the refusal names the act no capability holds: {error:?}"
+            );
+            assert!(
+                !error.message.contains(['/', '\\']),
+                "a gate refusal must carry no path: {error:?}"
+            );
+        }
+        other => panic!("expected a capability refusal, got {other:?}"),
+    }
+}

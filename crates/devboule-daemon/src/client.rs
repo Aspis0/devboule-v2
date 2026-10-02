@@ -1108,6 +1108,25 @@ impl DaemonClient {
         }
     }
 
+    /// The folder a workspace's open resolves to — the root the local
+    /// desktop app joins the file against and re-validates immediately
+    /// before it spawns an editor. The id is the whole argument; no file
+    /// path travels this wire. Sent only under `workspace.open`: a daemon
+    /// that predates the frame cannot deserialize it, and the negotiated
+    /// name is how this client knows not to ask.
+    pub fn workspace_open_root(&self, workspace_id: &str) -> Result<String, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::WORKSPACE_OPEN)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceOpenRoot {
+            id,
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::WorkspaceOpenRoot { root, .. } => Ok(root),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Rename one workspace entry. The id, a relative `path` — of an entry
     /// the listing handed back, never the workspace's own folder — and the
     /// new name are the whole argument; the daemon confines the path,
@@ -2293,6 +2312,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::WorkspaceGitWrite { id, .. }
         | DaemonMessage::WorkspaceFiles { id, .. }
         | DaemonMessage::WorkspaceFileContent { id, .. }
+        | DaemonMessage::WorkspaceOpenRoot { id, .. }
         | DaemonMessage::WorkspaceFileRenamed { id, .. }
         | DaemonMessage::WorkspaceFileDuplicated { id, .. }
         | DaemonMessage::WorkspaceFileDeleted { id, .. }

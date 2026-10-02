@@ -299,6 +299,29 @@ describe("the message-shape arms", () => {
       expect(sentence).toBe(CODE_SENTENCES.journal);
     }
   });
+  it("reads a vanished workspace file as gone, not as a permission failure", () => {
+    const { sentence, detail } = errorSentence(
+      rejection("io", "the file no longer exists in the workspace"),
+    );
+    expect(sentence).toBe("This file no longer exists in the workspace.");
+    expect(detail).toBe("the file no longer exists in the workspace");
+  });
+
+  it("reads a denied workspace file as denied, not as gone", () => {
+    const { sentence } = errorSentence(rejection("io", "this machine denied access to this file"));
+    expect(sentence).toBe("This machine denied access to this file.");
+  });
+
+  it("states a failed editor launch as the launch, with no path in it", () => {
+    const { sentence, detail } = errorSentence(rejection("io", "the editor could not be started"));
+    expect(sentence).toBe("The editor could not be started.");
+    expect(detail).toBe("the editor could not be started");
+  });
+
+  it("states a failed reveal as the file manager, not as an editor launch", () => {
+    const { sentence } = errorSentence(rejection("io", "the file manager could not be opened"));
+    expect(sentence).toBe("The file manager could not be opened.");
+  });
 });
 
 describe("the workspace-delete refusals", () => {

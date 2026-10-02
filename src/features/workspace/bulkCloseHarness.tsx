@@ -41,6 +41,7 @@ vi.mock("../../lib/tauri", () => ({
   projectsList: vi.fn(),
   projectAdd: vi.fn(),
   workspacesList: vi.fn(),
+  editorTargetsList: vi.fn(async () => []),
   workspaceCreate: vi.fn(),
   workspaceDelete: vi.fn(async () => undefined),
   workspaceGitStatus: vi.fn(async () => ({

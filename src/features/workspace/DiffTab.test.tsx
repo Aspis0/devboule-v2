@@ -2,12 +2,21 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DiffTab, ROW_CLASS, resetDiffTabModeMemoryForTests } from "./DiffTab";
 import type { WorkspaceGitDiffLine, WorkspaceGitFileDiff } from "../../types/ipc";
 import type { ChangesReply } from "./useWorkspaceChanges";
 
+vi.mock("../../lib/tauri", () => ({
+  workspaceFileOpen: vi.fn(),
+  editorTargetsList: vi.fn(),
+}));
+
+import { editorTargetsList, workspaceFileOpen } from "../../lib/tauri";
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const WORKSPACE = "workspace-diff-tab-subject";
 
 function okReply(
   lines: WorkspaceGitDiffLine[],
@@ -58,6 +67,11 @@ describe("DiffTab", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    vi.mocked(workspaceFileOpen).mockResolvedValue(undefined);
+    vi.mocked(editorTargetsList).mockResolvedValue([
+      { id: "cursor", label: "Cursor", kind: "editor" },
+    ]);
+    localStorage.clear();
   });
 
   afterEach(async () => {
@@ -67,7 +81,7 @@ describe("DiffTab", () => {
 
   async function render(path: string, diff: ChangesReply<WorkspaceGitFileDiff>) {
     await act(async () => {
-      root.render(<DiffTab path={path} diff={diff} />);
+      root.render(<DiffTab workspaceId={WORKSPACE} path={path} diff={diff} />);
     });
   }
 
@@ -85,6 +99,39 @@ describe("DiffTab", () => {
     expect(container.querySelector(".diff-tab-dir")?.textContent).toBe("src");
     expect(container.querySelector(".diff-tab-stats-add")?.textContent).toBe("+15");
     expect(container.querySelector(".diff-tab-stats-del")?.textContent).toBe("−6");
+  });
+
+  it("offers Open in editor with the pane's workspace id and path", async () => {
+    // An empty reply has no hunk header, so the file opens without a line.
+    await render("src/checkout.ts", { reply: okReply([]), failure: null });
+    const button = container.querySelector<HTMLButtonElement>(".open-in-editor-button");
+    if (button === null) throw new Error("the pencil action did not render");
+    expect(button.getAttribute("aria-label")).toBe("Open in editor");
+    expect(button.getAttribute("title")).toBe("Open in editor");
+
+    await act(async () => {
+      button.click();
+    });
+
+    expect(workspaceFileOpen).toHaveBeenCalledWith(
+      WORKSPACE,
+      "src/checkout.ts",
+      undefined,
+      "cursor",
+    );
+  });
+
+  it("passes the first hunk's new-side line to the editor", async () => {
+    await render("src/checkout.ts", { reply: okReply(LINES), failure: null });
+    const button = container.querySelector<HTMLButtonElement>(".open-in-editor-button");
+    if (button === null) throw new Error("the pencil action did not render");
+
+    await act(async () => {
+      button.click();
+    });
+
+    // The first header is "@@ -12,3 +12,4 @@ import": the new side starts at 12.
+    expect(workspaceFileOpen).toHaveBeenCalledWith(WORKSPACE, "src/checkout.ts", 12, "cursor");
   });
 
   it("starts unified, and the toggle switches the layout", async () => {

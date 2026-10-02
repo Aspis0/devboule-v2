@@ -8,6 +8,8 @@
     "core:window:allow-set-background-color",
     "core:webview:allow-set-webview-background-color",
     "dialog:default",
-    "notification:default"
+    "notification:default",
+    "opener:deny-open-path",
+    "opener:deny-reveal-item-in-dir"
   ]
 }

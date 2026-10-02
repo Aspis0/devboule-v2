@@ -23,6 +23,7 @@ const SHEET_PATHS = [
   "src/features/workspace/timeline/timeline.css",
   "src/features/workspace/SubagentMenu.css",
   "src/features/workspace/fileTab.css",
+  "src/features/workspace/OpenInEditorAction.css",
   "src/features/workspace/panel/panel.css",
   "src/features/workspace/panel/diffTab.css",
 ];
@@ -44,7 +45,7 @@ function exempt(finding: { rule: string; px: number | null }): boolean {
 }
 
 describe("the workspace slice's 12px type floor", () => {
-  it("walks exactly the fourteen workspace sheets plus tokens, by name", () => {
+  it("walks exactly the fifteen workspace sheets plus tokens, by name", () => {
     expect(SHEET_PATHS.map((path) => basename(path))).toEqual([
       "tokens.css",
       "Workspace.css",
@@ -59,6 +60,7 @@ describe("the workspace slice's 12px type floor", () => {
       "timeline.css",
       "SubagentMenu.css",
       "fileTab.css",
+      "OpenInEditorAction.css",
       "panel.css",
       "diffTab.css",
     ]);

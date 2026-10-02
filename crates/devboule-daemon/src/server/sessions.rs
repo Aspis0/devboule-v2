@@ -501,6 +501,7 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceGitCommit { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
+        | ClientMessage::WorkspaceOpenRoot { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceFileDelete { .. }

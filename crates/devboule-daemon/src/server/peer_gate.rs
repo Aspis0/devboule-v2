@@ -315,6 +315,9 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::WorkspaceGitCommit { .. } => None,
         ClientMessage::WorkspaceFilesList { .. } => None,
         ClientMessage::WorkspaceFileRead { .. } => None,
+        // The open root is a folder lookup and reaches no agent — nothing
+        // to vet here either.
+        ClientMessage::WorkspaceOpenRoot { .. } => None,
         // The write acts act on this machine's own disk, never on an
         // agent: there is no mode here to vet (the capability table below
         // is what guards them). The preview's stage and unstage write and
@@ -564,6 +567,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceGitCommit { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
+        | ClientMessage::WorkspaceOpenRoot { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceFileDelete { .. }

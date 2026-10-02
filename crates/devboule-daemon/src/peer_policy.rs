@@ -215,6 +215,13 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::PairingConfirm { .. } => PeerDecision::Deny("pairing.confirm"),
         ClientMessage::PeerRevoke { .. } => PeerDecision::Deny("peer.revoke"),
         ClientMessage::PeerSetCaps { .. } => PeerDecision::Deny("peer.set_caps"),
+        // The folder a local open resolves to: local-only, refused under
+        // every capability the way the five acts above are. The reply is
+        // this machine's absolute root — a disclosure no paired device needs,
+        // since the editor launch it feeds exists only in the desktop
+        // process. `admin` does not open it, and the reason names an act no
+        // capability can hold.
+        ClientMessage::WorkspaceOpenRoot { .. } => PeerDecision::Deny("workspace.open"),
         // The read half of the deposit. Reads of *content* ride the
         // administrative capability while only the list reads ride `view`:
         // deposited bytes are a session's own material, and a device the owner
@@ -1488,6 +1495,10 @@ pub(crate) mod tests {
                 from_line: None,
                 line_count: None,
             },
+            ClientMessage::WorkspaceOpenRoot {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+            },
             ClientMessage::WorkspaceFileRename {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
@@ -1528,9 +1539,9 @@ pub(crate) mod tests {
         );
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for request in &denied {
-                match permission_model_denial(request) {
-                    // The three permission-model acts: the one thing the parity
-                    // decision does not open, in every set.
+                match unconditional_denial(request) {
+                    // The frames no capability set opens: the five
+                    // permission-model acts and the local-only open root.
                     Some(reason) => {
                         assert_eq!(
                             peer_allows(role, &default_caps(), request),
@@ -1585,20 +1596,22 @@ pub(crate) mod tests {
         "SessionSetFeature",
     ];
 
-    /// The five wire variants of the three permission-model acts — start or
-    /// complete a pairing, change a device's capability set, revoke a device —
-    /// with the reason each is refused under. `None` for every other request,
-    /// which under the parity rule is exactly "the administrative capability
-    /// opens it". Deliberately a second closed match and not a reading of
-    /// `matrix_row`: a row and the code disagreeing is the failure this
-    /// classifier must be able to report.
-    fn permission_model_denial(request: &ClientMessage) -> Option<&'static str> {
+    /// The six wire variants no capability set opens — the three
+    /// permission-model acts (five frames: start or complete a pairing,
+    /// change a device's capability set, revoke a device) and the local-only
+    /// open root — with the reason each is refused under. `None` for every
+    /// other request, which under the parity rule is exactly "the
+    /// administrative capability opens it". Deliberately a second closed
+    /// match and not a reading of `matrix_row`: a row and the code
+    /// disagreeing is the failure this classifier must be able to report.
+    fn unconditional_denial(request: &ClientMessage) -> Option<&'static str> {
         match request {
             ClientMessage::PairingStart { .. } => Some("pairing.start"),
             ClientMessage::PairingComplete { .. } => Some("pairing.complete"),
             ClientMessage::PairingConfirm { .. } => Some("pairing.confirm"),
             ClientMessage::PeerSetCaps { .. } => Some("peer.set_caps"),
             ClientMessage::PeerRevoke { .. } => Some("peer.revoke"),
+            ClientMessage::WorkspaceOpenRoot { .. } => Some("workspace.open"),
             _ => None,
         }
     }
@@ -2474,6 +2487,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitDiff { .. } => administrative(),
             ClientMessage::WorkspaceFilesList { .. } => administrative(),
             ClientMessage::WorkspaceFileRead { .. } => administrative(),
+            ClientMessage::WorkspaceOpenRoot { .. } => local("workspace.open"),
             ClientMessage::WorkspaceFileRename { .. } => administrative(),
             ClientMessage::WorkspaceFileDuplicate { .. } => administrative(),
             ClientMessage::WorkspaceFileDelete { .. } => administrative(),
@@ -2515,7 +2529,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 72;
+    pub(crate) const VARIANT_COUNT: usize = 73;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2567,6 +2581,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitLog { .. } => "WorkspaceGitLog",
             ClientMessage::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             ClientMessage::WorkspaceFileRead { .. } => "WorkspaceFileRead",
+            ClientMessage::WorkspaceOpenRoot { .. } => "WorkspaceOpenRoot",
             ClientMessage::WorkspaceFileRename { .. } => "WorkspaceFileRename",
             ClientMessage::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
             ClientMessage::WorkspaceFileDelete { .. } => "WorkspaceFileDelete",
@@ -2821,6 +2836,10 @@ pub(crate) mod tests {
                 path: "README.md".to_string(),
                 from_line: None,
                 line_count: None,
+            },
+            ClientMessage::WorkspaceOpenRoot {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
             },
             ClientMessage::WorkspaceFileRename {
                 id: 1,

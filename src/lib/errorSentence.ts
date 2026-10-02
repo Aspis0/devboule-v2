@@ -105,6 +105,16 @@ const WORKSPACE_BIRTH_FAILED = /leftover checkout at |^Could not add git worktre
 const PROCESS_START_FAILED = /^Could not contain |process job|^Could not start the terminal shell/;
 
 /**
+ * The open flow's static messages (`src-tauri/src/backend/open_in_editor.rs`).
+ * Each is its own situation: a file the disk no longer has and a file this
+ * machine denies are different sentences, and neither may carry a path.
+ */
+const OPEN_MISSING = /^the file no longer exists in the workspace$/;
+const OPEN_DENIED = /^this machine denied access to this file$/;
+const OPEN_LAUNCH = /^the editor could not be started$/;
+const OPEN_REVEAL = /^the file manager could not be opened$/;
+
+/**
  * The background service cannot be reached: the supervisor's silence report
  * (`client/mod.rs`, `unresponsive_status`) and the two short tokens the app
  * itself raises when the status poll fails or times out
@@ -163,6 +173,18 @@ function shapeSentence(message: string): string | null {
   }
   if (DAEMON_UNREACHABLE.test(message)) {
     return "Devboule is having trouble reaching its background service. Try reconnecting or restart Devboule.";
+  }
+  if (OPEN_MISSING.test(message)) {
+    return "This file no longer exists in the workspace.";
+  }
+  if (OPEN_DENIED.test(message)) {
+    return "This machine denied access to this file.";
+  }
+  if (OPEN_LAUNCH.test(message)) {
+    return "The editor could not be started.";
+  }
+  if (OPEN_REVEAL.test(message)) {
+    return "The file manager could not be opened.";
   }
   return null;
 }

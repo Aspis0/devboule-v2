@@ -333,11 +333,27 @@ fn vendored_portable_pty_tree_matches_its_declared_patches() {
     );
 }
 
+fn host_triple() -> String {
+    let output = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("rustc runs");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("rustc -vV names its host")
+        .to_string()
+}
+
 #[test]
 fn vendored_portable_pty_resolves_to_the_vendored_tree() {
     let root = workspace_root();
+    // Without a platform filter, metadata needs every target's crates on disk —
+    // ones this host never builds (is-docker behind Linux-only is-wsl) are not
+    // downloaded, and offline mode cannot fetch them.
     let output = std::process::Command::new("cargo")
         .args(["metadata", "--locked", "--offline", "--format-version", "1"])
+        .args(["--filter-platform", &host_triple()])
         .current_dir(&root)
         .output()
         .expect("cargo metadata runs");

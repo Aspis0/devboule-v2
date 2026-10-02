@@ -114,6 +114,8 @@ export type CommandArgs = {
   workspace_file_rename: { workspaceId: Id; path: string; name: string };
   workspace_file_duplicate: { workspaceId: Id; path: string };
   workspace_file_delete: { workspaceId: Id; path: string };
+  workspace_file_open: { workspaceId: Id; path: string; line?: number; targetId: string };
+  editor_targets_list: undefined;
   session_create: {
     workspaceId: Id | null;
     kind: SessionKind;
@@ -277,6 +279,11 @@ type CommandResults = {
   workspace_file_rename: WorkspaceFileMutation;
   workspace_file_duplicate: WorkspaceFileMutation;
   workspace_file_delete: WorkspaceFileMutation;
+  /** The editor launch done — void by design: the canonical host path goes
+   * straight from the command into the launch argv, never to this side. */
+  workspace_file_open: void;
+  /** The ways this machine can open a file, best target first. */
+  editor_targets_list: EditorTarget[];
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
@@ -433,6 +440,8 @@ export const COMMAND_ARG_KEYS = {
   workspace_file_rename: ["workspaceId", "path", "name"],
   workspace_file_duplicate: ["workspaceId", "path"],
   workspace_file_delete: ["workspaceId", "path"],
+  workspace_file_open: ["workspaceId", "path", "line", "targetId"],
+  editor_targets_list: [],
   session_create: ["workspaceId", "kind", "provider", "mode", "cols", "rows"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -614,6 +623,34 @@ export const workspaceGitDiff = (workspaceId: Id, path: string) =>
  */
 export const workspaceGitLog = (workspaceId: Id) =>
   invokeTyped("workspace_git_log", { workspaceId });
+/**
+ * One way this machine can open a file, as `editor_targets_list` reports it:
+ * a detected editor, or the platform file manager (a reveal-in-folder
+ * target, which never launches an editor).
+ */
+export type EditorTargetKind = "editor" | "file_manager";
+export interface EditorTarget {
+  id: string;
+  label: string;
+  kind: EditorTargetKind;
+}
+
+/** Every open target detected on this machine, in the registry's order. */
+export const editorTargetsList = () => invokeTyped("editor_targets_list");
+/**
+ * Open one workspace file in a chosen editor — the pencil in the File and
+ * Diff tab headers. Only the id, the relative path, an optional line and
+ * the chosen target leave here: the daemon answers with the workspace root,
+ * the command re-validates the file against it immediately before the
+ * launch, and the canonical path goes straight into argv — never to this
+ * side, so nothing here can join, show, or echo a host path.
+ */
+export const workspaceFileOpen = (
+  workspaceId: Id,
+  path: string,
+  line: number | undefined,
+  targetId: string,
+) => invokeTyped("workspace_file_open", { workspaceId, path, line, targetId });
 /**
  * Stage paths in the workspace's index — the Changes panel's Stage. The
  * paths are the panel's own rows (relative, from a status reply): the

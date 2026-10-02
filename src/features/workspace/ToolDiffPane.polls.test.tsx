@@ -7,6 +7,7 @@ import type { WorkspaceGitFileDiff } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   workspaceGitDiff: vi.fn(),
+  editorTargetsList: vi.fn(async () => []),
 }));
 
 // Render counting through the real tab: the pane must schedule no DiffTab

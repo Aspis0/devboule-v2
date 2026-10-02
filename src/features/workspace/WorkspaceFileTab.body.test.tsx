@@ -9,6 +9,7 @@ vi.mock("../../lib/tauri", () => ({
   workspaceFileRead: vi.fn(),
   workspaceFilePreviewStage: vi.fn(),
   workspaceFilePreviewUnstage: vi.fn(),
+  editorTargetsList: vi.fn(async () => []),
 }));
 
 import { workspaceFileRead } from "../../lib/tauri";

@@ -1,0 +1,97 @@
+/* The pencil action both tab headers share (File + Diff): the icon button
+   at the header's right edge, and the one line its failures speak — the
+   same ellipsis the header's own refresh failure uses, so a long sentence
+   shrinks into the 36px row instead of pushing the header open. Loaded by
+   the component itself. */
+
+.open-in-editor {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.open-in-editor-failure {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-in-editor-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 4px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.open-in-editor-button:hover {
+  color: var(--ink);
+}
+
+.open-in-editor-caret {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 4px 2px 4px 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.open-in-editor-caret:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.open-in-editor-button:disabled,
+.open-in-editor-caret:disabled {
+  color: var(--silence);
+  cursor: default;
+}
+
+/* The caret's list: the pane header menu's surface, sized for target names. */
+.open-in-editor-menu {
+  width: 200px;
+  padding: 4px;
+  background: var(--panel-menu);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-pop);
+}
+
+.open-in-editor-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 9px;
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.open-in-editor-menu-item:hover,
+.open-in-editor-menu-item:focus-visible {
+  background: var(--fill-hover);
+}
+
+.open-in-editor-menu-item[aria-checked="true"]::before {
+  content: "✓";
+  color: var(--accent-text);
+}

@@ -14,6 +14,20 @@ export interface NumberedDiffLine {
 // (`-0,0`) opens a side with no lines to consume.
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
+/**
+ * The new-side start of the first `@@` header — the line an editor should
+ * open the diff at — or null when no header parses (an untracked file's
+ * synthesized add lines carry none).
+ */
+export function firstHunkNewLine(lines: readonly WorkspaceGitDiffLine[]): number | null {
+  for (const line of lines) {
+    if (line.kind !== "header") continue;
+    const match = HUNK_HEADER.exec(line.text);
+    return match === null ? null : Number(match[3]);
+  }
+  return null;
+}
+
 // The wire carries only `{kind, text}`; numbers are walked from the `@@`
 // headers, and an unparsable header blanks its hunk instead of throwing.
 export function withDiffLineNumbers(lines: readonly WorkspaceGitDiffLine[]): NumberedDiffLine[] {

@@ -161,8 +161,9 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// default size, which the first resize corrects.
 ///
 /// A new **request** frame bumps this too: an older reader cannot deserialize
-/// an unknown variant (protocol 19 added `WorkspaceSetTitle`).
-pub const PROTOCOL_VERSION: u32 = 20;
+/// an unknown variant (protocol 19 added `WorkspaceSetTitle`, 21 added
+/// `WorkspaceOpenRoot`; 20 was output-only fields).
+pub const PROTOCOL_VERSION: u32 = 21;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
@@ -172,7 +173,8 @@ pub const PROTOCOL_VERSION: u32 = 20;
 /// on an older version would still emit the new struct, and the peer would
 /// fail to parse it.
 /// Protocol 19's one frame rides its own capability, so it does not move
-/// the floor either.
+/// the floor either; protocol 21's frame is checked on `workspace.open`
+/// the same way before it is sent.
 pub const PROTOCOL_MIN_VERSION: u32 = 16;
 
 /// Well-known capability names. These are strings on the wire so a peer that
@@ -231,6 +233,12 @@ pub mod caps {
     /// The workspace rename (`WorkspaceSetTitle`): the name the client
     /// requires before it sends the frame.
     pub const WORKSPACE_RENAME: &str = "workspace.rename";
+
+    /// The open root (`WorkspaceOpenRoot`): the name the client
+    /// requires before it sends the frame, for the same reason as
+    /// [`Self::WORKSPACE_RENAME`] — a daemon that predates the variant
+    /// would drop the connection on a request it never knew.
+    pub const WORKSPACE_OPEN: &str = "workspace.open";
 
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
@@ -694,6 +702,10 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // The rename: offered so the handshake negotiates it, and read by the
     // client before `WorkspaceSetTitle` leaves for an older daemon.
     capabilities.push(Capability::new(caps::WORKSPACE_RENAME));
+    // The open root, paired the same way: the daemon serves
+    // `WorkspaceOpenRoot`, so the name must be offered, and the client
+    // reads it before the frame leaves for a daemon that predates it.
+    capabilities.push(Capability::new(caps::WORKSPACE_OPEN));
     capabilities
 }
 
@@ -758,6 +770,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // The rename, paired the same way: offered so the intersection keeps it,
     // and read before `WorkspaceSetTitle` leaves for an older daemon.
     capabilities.push(Capability::new(caps::WORKSPACE_RENAME));
+    // The open root, paired the same way: offered so the intersection
+    // keeps it, and read before `WorkspaceOpenRoot` leaves for an
+    // older daemon.
+    capabilities.push(Capability::new(caps::WORKSPACE_OPEN));
     capabilities
 }
 

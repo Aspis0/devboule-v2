@@ -9,9 +9,11 @@ vi.mock("../../lib/tauri", () => ({
   workspaceFileRead: vi.fn(),
   workspaceFilePreviewStage: vi.fn(),
   workspaceFilePreviewUnstage: vi.fn(),
+  workspaceFileOpen: vi.fn(),
+  editorTargetsList: vi.fn(),
 }));
 
-import { workspaceFileRead } from "../../lib/tauri";
+import { editorTargetsList, workspaceFileOpen, workspaceFileRead } from "../../lib/tauri";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { resetFileTabModeForTests } from "./fileTabMode";
 
@@ -45,6 +47,11 @@ describe("WorkspaceFileTab header", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(workspaceFileRead).mockResolvedValue(content());
+    vi.mocked(workspaceFileOpen).mockResolvedValue(undefined);
+    vi.mocked(editorTargetsList).mockResolvedValue([
+      { id: "cursor", label: "Cursor", kind: "editor" },
+    ]);
+    localStorage.clear();
   });
 
   afterEach(async () => {
@@ -170,6 +177,20 @@ describe("WorkspaceFileTab header", () => {
 
     expect(container.querySelector(".workspace-file-tab-source")).not.toBeNull();
     expect(container.querySelector(".workspace-file-tab-preview")).toBeNull();
+  });
+
+  it("offers Open in editor with the tab's workspace id and path", async () => {
+    await renderTab("docs/SETUP.md");
+    const button = container.querySelector<HTMLButtonElement>(".open-in-editor-button");
+    if (button === null) throw new Error("the pencil action did not render");
+    expect(button.getAttribute("aria-label")).toBe("Open in editor");
+    expect(button.getAttribute("title")).toBe("Open in editor");
+
+    await act(async () => {
+      button.click();
+    });
+
+    expect(workspaceFileOpen).toHaveBeenCalledWith(WORKSPACE, "docs/SETUP.md", undefined, "cursor");
   });
 
   it("remembers the mode across tabs for the app run", async () => {

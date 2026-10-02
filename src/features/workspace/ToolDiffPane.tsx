@@ -101,5 +101,5 @@ export function ToolDiffPane({
   }, [workspaceId, path, refreshNonce, cache, cacheKey]);
   // A path with no diff left, or one that no longer exists, lands in the
   // tab's own empty and error states — never a blank pane, never a throw.
-  return <DiffTab path={path} diff={diff} />;
+  return <DiffTab workspaceId={workspaceId} path={path} diff={diff} />;
 }

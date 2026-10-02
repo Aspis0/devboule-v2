@@ -230,6 +230,19 @@ pub(super) fn dispatch_journal(
             from_line,
             line_count,
         ),
+        // The root an open resolves to: the registry's own folder lookup,
+        // answered for local clients only — the peer gate refuses this frame
+        // under every capability, so no paired device ever receives it.
+        ClientMessage::WorkspaceOpenRoot { id, workspace_id } => {
+            match state.sessions.workspace_cwd(&workspace_id) {
+                Ok(root) => DaemonMessage::WorkspaceOpenRoot {
+                    id,
+                    root: root.to_string_lossy().into_owned(),
+                },
+                // The registry's sentence names no path; safe on this frame.
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         // The two write acts: keyed like the other keyed writes here (a
         // retry with the same key replays the first success instead of
         // acting twice — the second rename would find nothing to rename),

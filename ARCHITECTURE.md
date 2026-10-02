@@ -44,14 +44,15 @@ mounts one surface at a time from a registry (`src/types/surface.ts:22`, `src/ap
 
 The protocol crate is the only place the wire types are declared, and the dependency is deliberate:
 `src-tauri/Cargo.toml:28` ("Shared wire types. The daemon and this crate must not declare their own
-copies"). Protocol version 20 (`crates/devboule-protocol/src/lib.rs`, `PROTOCOL_VERSION`), with
+copies"). Protocol version 21 (`crates/devboule-protocol/src/lib.rs`, `PROTOCOL_VERSION`), with
 `PROTOCOL_MIN_VERSION` at 16 — 17, 18 and 20 added only optional fields, so a v16 peer still
 connects, and 19's one new request frame (`WorkspaceSetTitle`) carries its own `workspace.rename`
-capability, which the client reads before sending a frame an older daemon cannot deserialize. The
-output-only fields mean a v16 peer merely shows no command chip or turn time, nor the finished-turn
-usage line's cache counters and turn cost, nor chat-image thumbnails (20), until rebuilt. The one
-input pair, `SessionCreate`'s `cols`/`rows`, needs no bump either: an older daemon ignores the
-unknown keys and spawns at its default size, which the first resize corrects. The floor moves only for a required-field or type
+capability, which the client reads before sending a frame an older daemon cannot deserialize; 21's
+`WorkspaceOpenRoot` is checked on `workspace.open` the same way. The
+output-only fields mean a v16 peer merely shows no command chip or turn time, nor the finished-turn usage
+line's cache counters and turn cost, nor chat-image thumbnails (20), until rebuilt. The one input pair, `SessionCreate`'s
+`cols`/`rows`, needs no bump either: an older daemon ignores the unknown keys and spawns at its
+default size, which the first resize corrects. The floor moves only for a required-field or type
 change.
 
 ### The daemon is a separate process

@@ -318,6 +318,12 @@ impl PluginSession {
                         | DaemonMessage::WorkspaceFileDuplicated { id, .. }
                         | DaemonMessage::WorkspaceFileDeleted { id, .. }
                         | DaemonMessage::WorkspaceFilePreviewStaged { id, .. }
+                        // The open root is a reply a plugin backend never
+                        // receives — the editor launch is the desktop app's
+                        // own act. Listed with its id for the same reason as
+                        // the reads above: the match stays exhaustive on
+                        // purpose.
+                        | DaemonMessage::WorkspaceOpenRoot { id, .. }
                         | DaemonMessage::DelegationState { id, .. }
                         | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)

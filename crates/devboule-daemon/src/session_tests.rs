@@ -2813,6 +2813,8 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::WorkspaceFileDelete { .. } => None,
         ClientMessage::WorkspaceFilePreviewStage { .. } => None,
         ClientMessage::WorkspaceFilePreviewUnstage { .. } => None,
+        // A folder lookup, never a session's frame: nothing to serve here.
+        ClientMessage::WorkspaceOpenRoot { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::WorkspaceSetTitle { .. } => None,
