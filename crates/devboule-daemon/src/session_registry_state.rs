@@ -976,6 +976,23 @@ pub struct SendRequest<'a> {
     /// drain and the Claude unread-steer latch); an agent-to-agent message
     /// and a daemon-authored prompt may never touch a card.
     pub steer_origin: super::SteerOrigin,
+    /// This send must start from idle, and refuses rather than joining a turn
+    /// that began while it waited.
+    ///
+    /// Judged under the same writer lock `begin_turn` runs under, which is
+    /// what makes it atomic: the idle look and the write are one step against
+    /// a regular `SessionSend`, so a turn that started in between is observed
+    /// rather than raced past. The queue's drain and send-now are the callers;
+    /// both refuse `TURN_STARTED_WHILE_WAITING` when they lose that race.
+    pub require_no_turn_running: bool,
+    /// This send belongs to a follow-up queue and refuses when that queue has
+    /// been fenced since the row was claimed.
+    ///
+    /// Judged under the writer lock with `require_no_turn_running`. A stop and a
+    /// close fence without taking that lock, so one write that had already
+    /// passed this check goes into the process being killed: the declared
+    /// remainder. Only the queue's own sends set it.
+    pub require_queue_unfenced: bool,
 }
 
 /// What one delivery needs to re-key its brake slot (S4-10): the table, the

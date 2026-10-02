@@ -384,6 +384,17 @@ the per-attachment output budgets
 `crates/devboule-daemon/src/session_items.rs`) are what keep a chatty agent from turning into
 unbounded memory or an unbounded journal.
 
+**The follow-up queue and its one remainder.** A session's follow-up queue lives in daemon memory
+(`crates/devboule-daemon/src/session_queue.rs`) and is never journaled. A stop fences and clears it
+and a resume reopens it; a close or a delete fences and forgets it. A drain's send checks that fence
+under the session writer lock, right before it writes
+(`crates/devboule-daemon/src/session_messaging.rs`). Neither a stop nor a close takes that lock:
+a stop is the escape hatch for a hung agent, and a write blocked on a wedged child pipe would
+otherwise hang the stop that is there to kill it. So one write that had already passed its fence
+check goes out once, into the process the kill follows. A settle that finds the queue fenced
+restores, republishes and touches nothing, and a stop keeps the operation ring, so a send-now
+retried after the resume replays the outcome it had.
+
 ## 4. Providers
 
 **The catalog** is a static table plus a `PATH` scan. A `KnownAgent` row carries the id, its aliases,

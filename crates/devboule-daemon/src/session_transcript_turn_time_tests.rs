@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+use super::test_epoch;
+
 use rusqlite::Connection;
 
 use super::tests::{ended_record, test_owner, tmp_delete_registry};
@@ -160,7 +162,11 @@ fn a_composer_row_under_a_snapshot_keeps_its_row_time() {
     let journal = Arc::new(
         Journal::open_with_limits(&dir.join("journal.db"), snapshot_limits()).expect("journal"),
     );
-    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
+    let registry = SessionRegistry::new(
+        RuntimePaths::from_dir(&dir),
+        Some(Arc::clone(&journal)),
+        test_epoch(),
+    );
     let owner = test_owner("S-1-5-21-turn-time-2", "process-2727");
     let id = compose_session_id(&owner.session_token(), "turntime2").expect("id");
     journal

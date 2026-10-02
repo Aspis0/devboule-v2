@@ -165,6 +165,11 @@ pub(crate) struct AttachmentKey {
 pub(super) struct Attachment {
     pub(super) outbound: Arc<ConnOut>,
     pub(super) typed_permissions: bool,
+    /// Whether this observer's connection negotiated `session.queue`, copied
+    /// off the connection at attach. An observer without it is never sent a
+    /// `queue_snapshot`: that event is a protocol-22 variant, and a client that
+    /// did not offer the capability may not be able to parse it.
+    pub(super) session_queue: bool,
     /// The replay seam's stored manifest. A matching live copy may have
     /// started publishing before the seam but reached this queue after it.
     pub(super) suppressed_manifest: Option<SessionEvent>,

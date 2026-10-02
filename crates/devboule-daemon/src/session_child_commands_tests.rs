@@ -29,7 +29,7 @@ impl SessionKiller for InterruptRecorder {
 /// live map only, and a test that needs rows has its own fixtures.
 fn registry() -> (std::path::PathBuf, SessionRegistry) {
     let dir = crate::test_dirs::test_temp_dir("devboule-c1a-cancel");
-    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), None);
+    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), None, test_epoch());
     (dir, registry)
 }
 

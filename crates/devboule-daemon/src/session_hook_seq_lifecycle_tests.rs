@@ -25,7 +25,7 @@ struct Announce {
 impl Announce {
     fn new(tag: &str) -> Self {
         let dir = crate::test_dirs::test_temp_dir("devboule-hook-lifecycle");
-        let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), None);
+        let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), None, test_epoch());
         let peer_user = crate::security::current_user_sid().expect("current user SID");
         let session = format!("s.{tag}.1");
         let runtime = insert_live_agent(&registry, &session, test_owner(&peer_user, tag));

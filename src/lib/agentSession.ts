@@ -1174,6 +1174,10 @@ export class AgentSession {
           scheduleDelegatedDesignMirror(event);
         }
         return;
+      case "queue_snapshot":
+        // The queue UI consumes this in the app lane's next slice; until then
+        // a snapshot must not fail the session.
+        return;
       default: {
         // Every `SessionEvent` arm is a case above, so this branch is
         // unreachable for the protocol as typed: the `never` assignment is a

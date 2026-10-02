@@ -179,6 +179,20 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::SessionAttach { .. } => with_capability(caps, CAP_VIEW),
         ClientMessage::SessionCreate { .. } => with_capability(caps, CAP_CREATE_SESSIONS),
         ClientMessage::SessionSend { .. } => with_capability(caps, CAP_SEND),
+        // The shared queue is a send deferred, so it takes the capability a
+        // send takes and nothing less: a device that may not write into a
+        // session may not decide what that session says next either.
+        ClientMessage::SessionQueueAdd { .. }
+        | ClientMessage::SessionQueueEdit { .. }
+        | ClientMessage::SessionQueueRemove { .. }
+        | ClientMessage::SessionQueueMove { .. } => with_capability(caps, CAP_SEND),
+        // Send-now is a send outright: it interrupts the running turn and
+        // starts a new one, which is the act an interrupting `SessionSend`
+        // performs, and that one rides `send` here. Whether a paired device may
+        // actually interrupt is the send path's answer, not this one's — it
+        // refuses an interrupt from a peer wherever one is asked for, which
+        // includes here.
+        ClientMessage::SessionQueueSendNow { .. } => with_capability(caps, CAP_SEND),
         ClientMessage::AgentMessageSend { .. } => with_capability(caps, CAP_SEND),
         // A deposit is meaningless except as the precursor to a send, so it
         // holds no opinion of its own: the same predicate, deliberately. A
@@ -1575,11 +1589,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// The fourteen frames no `Deny` arm has ever covered: the handshake pair and
-    /// the twelve act-named arms. Spelled as wire names so the walk above can prove
-    /// it covers every *other* variant — with `VARIANT_COUNT` that is a closed
-    /// statement, not a guess.
-    const ALWAYS_ALLOWED_VARIANTS: [&str; 14] = [
+    /// The eighteen frames no `Deny` arm has ever covered: the handshake pair,
+    /// the twelve act-named arms, and the five queue frames — which ride `send`
+    /// for the same reason `SessionSend` does. Spelled as wire names so the walk
+    /// above can prove it covers every *other* variant — with `VARIANT_COUNT` that
+    /// is a closed statement, not a guess.
+    const ALWAYS_ALLOWED_VARIANTS: [&str; 19] = [
         "Hello",
         "Ping",
         "SessionsList",
@@ -1594,6 +1609,11 @@ pub(crate) mod tests {
         "SessionSetMode",
         "SessionSetName",
         "SessionSetFeature",
+        "SessionQueueAdd",
+        "SessionQueueEdit",
+        "SessionQueueRemove",
+        "SessionQueueMove",
+        "SessionQueueSendNow",
     ];
 
     /// The six wire variants no capability set opens — the three
@@ -2444,7 +2464,15 @@ pub(crate) mod tests {
             ClientMessage::SessionCreate { .. } => under(CAP_CREATE_SESSIONS),
             ClientMessage::SessionSend { .. }
             | ClientMessage::SessionSetMode { .. }
-            | ClientMessage::SessionSetFeature { .. } => under(CAP_SEND),
+            | ClientMessage::SessionSetFeature { .. }
+            | ClientMessage::SessionQueueAdd { .. }
+            | ClientMessage::SessionQueueEdit { .. }
+            | ClientMessage::SessionQueueRemove { .. }
+            | ClientMessage::SessionQueueMove { .. }
+            // Send-now interrupts the running turn, which is exactly what an
+            // interrupting `SessionSend` does, so it rides the same capability
+            // and the send path decides the peer question.
+            | ClientMessage::SessionQueueSendNow { .. } => under(CAP_SEND),
             // A rename is a session write: it rewrites the row the roster
             // renders, so it needs the capability `SessionSend` needs and nothing more.
             ClientMessage::SessionSetName { .. } => under(CAP_SEND),
@@ -2529,7 +2557,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 73;
+    pub(crate) const VARIANT_COUNT: usize = 78;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2549,6 +2577,11 @@ pub(crate) mod tests {
             ClientMessage::SessionClose { .. } => "SessionClose",
             ClientMessage::SessionStop { .. } => "SessionStop",
             ClientMessage::SessionSend { .. } => "SessionSend",
+            ClientMessage::SessionQueueAdd { .. } => "SessionQueueAdd",
+            ClientMessage::SessionQueueEdit { .. } => "SessionQueueEdit",
+            ClientMessage::SessionQueueRemove { .. } => "SessionQueueRemove",
+            ClientMessage::SessionQueueMove { .. } => "SessionQueueMove",
+            ClientMessage::SessionQueueSendNow { .. } => "SessionQueueSendNow",
             ClientMessage::SessionDeposit { .. } => "SessionDeposit",
             ClientMessage::SessionAttachmentRead { .. } => "SessionAttachmentRead",
             ClientMessage::AgentMessageSend { .. } => "AgentMessageSend",
@@ -2668,6 +2701,41 @@ pub(crate) mod tests {
                 active_turn_behavior: None,
                 attachment_references: Vec::new(),
                 idempotency_key: None,
+            },
+            ClientMessage::SessionQueueAdd {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                client_operation_id: "op-1".to_string(),
+                text: "hi".to_string(),
+                attachments: Vec::new(),
+                attachment_references: Vec::new(),
+            },
+            ClientMessage::SessionQueueEdit {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                client_operation_id: "op-1".to_string(),
+                item_id: "queue-1".to_string(),
+                text: "edited".to_string(),
+            },
+            ClientMessage::SessionQueueRemove {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                client_operation_id: "op-1".to_string(),
+                item_id: "queue-1".to_string(),
+            },
+            ClientMessage::SessionQueueMove {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                client_operation_id: "op-1".to_string(),
+                item_id: "queue-1".to_string(),
+                to_index: 0,
+            },
+            ClientMessage::SessionQueueSendNow {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                client_operation_id: "op-1".to_string(),
+                subscription_id: 1,
+                item_id: "queue-1".to_string(),
             },
             ClientMessage::SessionDeposit {
                 id: 1,

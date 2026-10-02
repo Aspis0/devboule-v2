@@ -128,6 +128,7 @@ pub fn event_kind(event: &SessionEvent) -> &'static str {
         SessionEvent::Silent { .. } => "silent",
         SessionEvent::JournalDegraded { .. } => "journal_degraded",
         SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
+        SessionEvent::QueueSnapshot { .. } => "queue_snapshot",
     }
 }
 

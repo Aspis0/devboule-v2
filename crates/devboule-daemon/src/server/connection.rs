@@ -125,6 +125,15 @@ pub(crate) fn handle_client(
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::DEVICES);
+    // The shared queue rides this connection rather than a dispatch argument:
+    // both the attach that registers an observer and the queue frames that
+    // mutate one have to know it, and the observer outlives the request that
+    // created it. Recorded on the connection below, once the connection is
+    // built.
+    let queue_ok = agreed
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == caps::SESSION_QUEUE);
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity decided above.
     //
@@ -157,6 +166,7 @@ pub(crate) fn handle_client(
         peer_caps,
         quit_intent,
     );
+    conn.set_session_queue_negotiated(queue_ok);
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
@@ -562,6 +572,7 @@ fn send_pending_event(
             SessionEvent::AgentCreated { .. } => " agent_created".to_string(),
             SessionEvent::ChildFinished { .. } => " child_finished".to_string(),
             SessionEvent::Detached => " detached".to_string(),
+            SessionEvent::QueueSnapshot { .. } => " queue_snapshot".to_string(),
         };
         eprintln!(
             "discarded stale pending event for session {} generation {}{}",

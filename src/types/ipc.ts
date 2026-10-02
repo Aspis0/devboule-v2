@@ -1212,6 +1212,24 @@ export interface ScreenCursor {
   blinking: boolean;
 }
 
+/** One queued follow-up, as the daemon's whole-queue snapshot carries it. */
+export interface QueuedMessage {
+  /** Daemon-assigned; stable across edits and moves, never reused. */
+  itemId: string;
+  text: string;
+  /** Stored attachments, by digest; the bytes never ride the snapshot. */
+  attachmentReferences?: AttachmentReference[];
+  /** Why the last send of this row was refused; absent means none. */
+  error?: string;
+}
+
+/** A queued item the daemon dropped instead of putting back, and why. */
+export interface DroppedQueuedMessage {
+  itemId: string;
+  /** The write may have reached the agent, so the daemon will not resend it. */
+  reason: "delivery_unknown";
+}
+
 export interface SessionSnapshot {
   type: "snapshot";
   asOfSeq: number;
@@ -1499,6 +1517,16 @@ export type SessionEvent =
   | { type: "journal_degraded"; droppedFrames: number; droppedBytes: number }
   /** Connection-scoped roster update; not an attach-channel event. */
   | { type: "sessions_snapshot"; sessions: SessionStateSnapshot[] }
+  /** The session's whole follow-up queue; `revision` drops an older one. */
+  | {
+      type: "queue_snapshot";
+      /** The daemon process; a changed epoch restarts the revision gate. */
+      epoch: string;
+      revision: number;
+      items: QueuedMessage[];
+      /** Rows this snapshot dropped, and why. Absent on ordinary changes. */
+      dropped?: DroppedQueuedMessage[];
+    }
   | SessionSnapshot;
 
 /** The `context_usage` member, named for the state and components that carry it. */
@@ -1555,6 +1583,8 @@ export type ErrorCode =
   | "session_not_found"
   | "session_generation_mismatch"
   | "idempotency_conflict"
+  | "operation_conflict"
+  | "operation_in_flight"
   | "shutting_down"
   | "journal"
   | "workspace_unavailable"

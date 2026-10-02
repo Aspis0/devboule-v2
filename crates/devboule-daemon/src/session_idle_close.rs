@@ -113,7 +113,7 @@ impl SessionRegistry {
         enum Act {
             Blocked,
             Refused,
-            Taken(u32, Option<RegistryEntry>),
+            Taken(u32, Option<RegistryEntry>, QueueSnapshot),
         }
         let act = {
             let Ok(mut map) = self.inner.lock() else {
@@ -130,7 +130,7 @@ impl SessionRegistry {
                 Act::Blocked
             } else {
                 match self.take_session_for_close(&mut map, child, owner, &None) {
-                    Ok(removed) => Act::Taken(minutes, removed),
+                    Ok((removed, snapshot)) => Act::Taken(minutes, removed, snapshot),
                     Err(_) => Act::Refused,
                 }
             }
@@ -141,7 +141,11 @@ impl SessionRegistry {
                 self.set_idle_close_since(child, None);
                 false
             }
-            Act::Taken(minutes, removed) => {
+            Act::Taken(minutes, removed, snapshot) => {
+                self.publish_queue_snapshot(runtime, snapshot);
+                // Whether or not this section removed the child, the fence it
+                // just set created an entry no session will ever reopen.
+                self.forget_queue(child);
                 self.close_removed_child(state, child, &view, &creator, minutes, removed)
             }
         }

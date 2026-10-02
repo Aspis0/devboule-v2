@@ -527,6 +527,11 @@ export class TerminalSession {
         // attach events reach this channel. Ignore a leak rather than
         // treating a known protocol event as unknown.
         break;
+      case "queue_snapshot":
+        // The shared follow-up queue belongs to the session view, not to the
+        // terminal; the chat surface reads it off its own attach channel.
+        // Listed so a leak is ignored rather than reported as unknown.
+        break;
       case "permission_request":
         // The channel is live before session_attach confirms, so a request
         // can arrive while the subscription id is still unknown; hold it and

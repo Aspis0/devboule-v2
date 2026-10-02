@@ -242,6 +242,7 @@ impl PluginSession {
                         | DaemonMessage::Providers { id, .. }
                         | DaemonMessage::ProviderUpdated { id, .. }
                         | DaemonMessage::Ok { id }
+                        | DaemonMessage::QueueAccepted { id, .. }
                         | DaemonMessage::SessionSend { id, .. }
                         | DaemonMessage::AgentMessageReceipt { id, .. }
                         | DaemonMessage::Resume { id, .. }

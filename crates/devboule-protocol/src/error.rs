@@ -26,6 +26,13 @@ pub enum ErrorCode {
     SessionGenerationMismatch,
     /// Same idempotency key, different payload.
     IdempotencyConflict,
+    /// The same queue `clientOperationId` was reused with a different payload.
+    /// Not retryable: the id names another request.
+    OperationConflict,
+    /// A repeat of a queue operation whose first attempt is still on the wire.
+    /// Retryable: ask again with the identical id and payload until the
+    /// recorded answer arrives.
+    OperationInFlight,
     /// Daemon is exiting; the client should not retry against this instance.
     ShuttingDown,
     /// Journal is unreadable: corrupt, a future schema, or the disk refused
@@ -666,6 +673,8 @@ mod tests {
             SessionNotFound,
             SessionGenerationMismatch,
             IdempotencyConflict,
+            OperationConflict,
+            OperationInFlight,
             ShuttingDown,
             Journal,
             WorkspaceUnavailable,

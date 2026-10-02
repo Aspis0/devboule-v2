@@ -263,6 +263,32 @@ mod session_messaging;
 /// prompt plan.
 #[path = "session_prompt_planning.rs"]
 mod session_prompt_planning;
+/// The shared follow-up queue: its state, its four edits and its two sends.
+#[path = "session_queue.rs"]
+mod session_queue;
+/// The drain at the end of a turn, its claim and its settle.
+#[path = "session_queue_drain.rs"]
+mod session_queue_drain;
+/// The registry's half: the session a frame acts on, the mutation door, the
+/// attach hand-over and the lifecycle fence.
+#[path = "session_queue_lifecycle.rs"]
+mod session_queue_lifecycle;
+/// Operation identity for the mutating frames: the payload fingerprint and the
+/// bounded ring of answered client operation ids.
+#[path = "session_queue_operations.rs"]
+mod session_queue_operations;
+/// Add, edit, remove and move — one method per wire frame.
+#[path = "session_queue_ops.rs"]
+mod session_queue_ops;
+/// Send-now, the send a client asks for by name.
+#[path = "session_queue_send_now.rs"]
+mod session_queue_send_now;
+/// The cleared-queue snapshot a close hands back to its caller, which
+/// publishes it once the registry's map lock is released.
+pub(crate) use session_queue::QueueSnapshot;
+/// Reached by `server::sessions`, which answers a queue frame and has to say
+/// whether it applied it or is replaying an answer it already gave.
+pub(crate) use session_queue_lifecycle::QueueMutation;
 /// The registry's standing state carved out of `session_items`: the caches it
 /// holds, the message brake table and the agent creation table with its guards,
 /// tickets and records.
@@ -285,7 +311,7 @@ use session_items::{
 use session_items::{check_owner, elapsed_ms_since_last_life, session_nonce, session_unique};
 pub(crate) use session_items::{
     session_origin_for, ModelSwitcher, OutOfBandCommands, ReaderDispatch, SessionKiller,
-    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, SteerOrigin,
+    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, SteerOrigin, WriteAttempt,
 };
 pub use session_items::{
     COALESCE_FLUSH, COALESCE_MAX_BYTES, PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES,
@@ -505,6 +531,39 @@ mod session_permission_recovery_tests;
 #[cfg(test)]
 #[path = "session_provider_switch_tests.rs"]
 mod session_provider_switch_tests;
+#[cfg(test)]
+#[path = "session_queue_drain_tests.rs"]
+mod session_queue_drain_tests;
+/// The shared-queue tests, one file per topic: the edits and their snapshots,
+/// the drain and send-now, the close/stop fence, operation identity, the peer
+/// gate, and the journal's silence about all of it.
+#[cfg(test)]
+#[path = "session_queue_fixtures.rs"]
+mod session_queue_fixtures;
+#[cfg(test)]
+#[path = "session_queue_journal_tests.rs"]
+mod session_queue_journal_tests;
+#[cfg(test)]
+#[path = "session_queue_lifecycle_tests.rs"]
+mod session_queue_lifecycle_tests;
+#[cfg(test)]
+#[path = "session_queue_mutation_tests.rs"]
+mod session_queue_mutation_tests;
+#[cfg(test)]
+#[path = "session_queue_operation_tests.rs"]
+mod session_queue_operation_tests;
+#[cfg(test)]
+#[path = "session_queue_outcome_tests.rs"]
+mod session_queue_outcome_tests;
+#[cfg(test)]
+#[path = "session_queue_peer_tests.rs"]
+mod session_queue_peer_tests;
+#[cfg(test)]
+#[path = "session_queue_send_now_tests.rs"]
+mod session_queue_send_now_tests;
+#[cfg(test)]
+#[path = "session_queue_snapshot_tests.rs"]
+mod session_queue_snapshot_tests;
 /// The road a session that cannot be reopened is replaced by: a new session of
 /// the same family carrying the conversation read back from the journal. A
 /// sibling like the resume phases, and taken only where the resume road proves
@@ -662,6 +721,8 @@ mod session_workspace_tests;
 #[path = "session_tests.rs"]
 mod tests;
 #[cfg(test)]
+pub(crate) use tests::test_epoch;
+#[cfg(test)]
 #[path = "workspace_identity_tests.rs"]
 mod workspace_identity_tests;
 use session_resume::{provider_refused_session, resume_end_generation_detached};
@@ -707,6 +768,9 @@ pub(crate) enum HostCardDecision {
 #[derive(Clone)]
 pub struct SessionRegistry {
     inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
+    /// One follow-up queue per live session, in memory only: a restart starts
+    /// every session with an empty queue and nothing is ever journaled.
+    queues: Arc<session_queue::SessionQueues>,
     paths: RuntimePaths,
     journal: Option<Arc<Journal>>,
     /// The bytes of prompt attachments, on disk under the runtime dir. Files
@@ -849,9 +913,10 @@ impl SessionRegistry {
             .map(|journal| journal.file_len().map_err(|error| error.to_string()))
     }
 
-    pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>) -> Self {
+    pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>, epoch: String) -> Self {
         let registry = Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            queues: session_queue::SessionQueues::new(epoch),
             attachments: AttachmentStore::new(&paths.dir),
             paths,
             journal,
@@ -1808,12 +1873,37 @@ impl SessionRegistry {
             .map_err(WireError::from)?;
         self.invalidate_journal_roster();
         if transcript_in_registry {
-            if let Ok(mut map) = self.inner.lock() {
+            let (snapshot, runtime) = {
+                let mut map = self
+                    .inner
+                    .lock()
+                    .map_err(|_| internal("Session state is unavailable."))?;
+                // Fenced before the removal and under the registry's own lock,
+                // as a close fences: a drain that resolved this session before
+                // the delete cannot claim a row, or keep claiming into the
+                // runtime, in the gap the removal would leave. The delete does
+                // not wait on the session writer either, so one write already
+                // inside a transport may still land in the process being torn
+                // down.
+                let snapshot = self.fence_queue(session_id);
+                let runtime = map
+                    .get(session_id)
+                    .map(|entry| Arc::clone(&entry.runtime()));
                 map.remove(session_id);
+                (snapshot, runtime)
+            };
+            // Published after the map lock ends: reaching into a runtime under
+            // it would nest two locks nobody ordered.
+            if let Some(runtime) = runtime {
+                self.publish_queue_snapshot(&runtime, snapshot);
             }
             self.forget_display_name_epoch(session_id);
             journal.unpin(session_id);
         }
+        // The row is gone, so the queue it might still hold has nothing to
+        // belong to: a recovered transcript keeps its queue across the registry
+        // dropping the entry, and the delete is where it is finally released.
+        self.forget_queue(session_id);
         self.notify_session_transition(owner, session_id);
         Ok(())
     }
@@ -2178,6 +2268,12 @@ impl SessionRegistry {
         // attach must import that fact before returning even when the PTY is
         // otherwise quiet and no status request or later output occurs.
         runtime.refresh_journal_degradation();
+        // After the registration, never before: the subscriber that just
+        // attached reads the queue as it stands, empty included, and any
+        // mutation racing this attach reaches it as the live snapshot or inside
+        // this one — never between a read and the registration that was meant
+        // to deliver it. A terminal has no queue, so it gets no snapshot.
+        self.publish_queue_attach_snapshot(&runtime, session_id);
         Ok(())
     }
 
@@ -2487,6 +2583,7 @@ impl SessionRegistry {
                 return Err(error);
             }
         }
+        self.resume_session_queue(session_id);
         self.resume_read_registered(session_id)
     }
 
@@ -3012,7 +3109,7 @@ impl SessionRegistry {
     pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let (mut killer, job) = {
+        let (mut killer, job, runtime) = {
             let mut map = self
                 .inner
                 .lock()
@@ -3023,14 +3120,37 @@ impl SessionRegistry {
             (
                 session.killer.clone_killer(),
                 Arc::clone(&session.process_job),
+                Arc::clone(&session.runtime),
             )
         };
+        // Fenced and cleared under the queue lock alone, then the kill: a stop
+        // is the escape hatch for a hung agent, so it never waits on the session
+        // writer. One drain write that passed its fence check before this goes
+        // out once, into the process the kill follows.
+        self.fence_and_clear_queue(session_id, Some(&runtime));
         killer.kill();
         // The session is preserved, so its job stays open: the kill above
         // stops only the root. Terminate the tree too, or the agent's
         // descendants outlive the stop. Mirrors the on-OS-death handler.
         let _ = job.terminate();
         Ok(())
+    }
+
+    /// Reopen the queue a stop fenced, and let it drain, at the end of a
+    /// resume.
+    ///
+    /// A resumed session is sendable again, so a stop's fence must not follow
+    /// it: the queue reopens empty — what the user had queued before the stop
+    /// was written for a process that is gone — and its revision moves on, so
+    /// a client that gated on the old one reads this as a newer queue. The
+    /// drain then runs, because a resumed session is live and idle: the same
+    /// edge an add into an idle session takes, and nothing else would ever
+    /// reach this queue again.
+    pub(crate) fn resume_session_queue(&self, session_id: &str) {
+        if let Ok(runtime) = self.runtime(session_id) {
+            self.reopen_queue(session_id, &runtime);
+        }
+        self.resume_queue_after_frame(session_id);
     }
 
     pub fn stop_with_subscription(
@@ -3056,6 +3176,7 @@ impl SessionRegistry {
         };
         if let Some(runtime) = transcript {
             check_attached(&runtime, conn, subscription_id)?;
+            self.fence_and_clear_queue(session_id, Some(&runtime));
             return Ok(());
         }
         let (mut killer, runtime, job) = {
@@ -3072,6 +3193,13 @@ impl SessionRegistry {
             )
         };
         check_attached(&runtime, conn, subscription_id)?;
+        // A stop preserves the session — the job stays open and a resume finds
+        // it — so the queue is fenced and cleared rather than forgotten: the
+        // session can send again later, and what it says then is whatever the
+        // user queues after the stop, not what they had queued before it. Under
+        // the queue lock alone and never the session writer, as `stop` does:
+        // one drain write past its fence check goes out once, then the kill.
+        self.fence_and_clear_queue(session_id, Some(&runtime));
         {
             let mut map = self
                 .inner
@@ -3151,13 +3279,34 @@ impl SessionRegistry {
     ) -> Result<bool, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let session = {
+        // Fenced inside the registry's own critical section and before the
+        // removal: from this moment no frame, drain or send-now can reopen or
+        // send this queue, and a drain that had already resolved its target
+        // cannot claim a row in the gap the removal used to leave. The
+        // snapshot the clear publishes waits for that section to end, because
+        // reaching into a runtime under the registry's map lock would nest two
+        // locks nobody ordered. The fence applies to an empty queue and to one
+        // nothing has ever queued in — the thing being fenced is the session,
+        // not the list.
+        let (session, fenced_snapshot) = {
             let mut map = self
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            self.take_session_for_close(&mut map, session_id, owner, conn_peer)?
+            let runtime = map
+                .get(session_id)
+                .and_then(|entry| entry.as_peer_visible())
+                .map(|session| Arc::clone(&session.runtime));
+            let (session, snapshot) =
+                self.take_session_for_close(&mut map, session_id, owner, conn_peer)?;
+            (session, runtime.map(|runtime| (runtime, snapshot)))
         };
+        if let Some((runtime, snapshot)) = fenced_snapshot {
+            self.publish_queue_snapshot(&runtime, snapshot);
+        }
+        // The session has left the map, so nothing can resolve it again and the
+        // fenced state has nothing left to fence.
+        self.forget_queue(session_id);
         self.finish_close(session_id, session, owner)
     }
 
@@ -3180,7 +3329,7 @@ impl SessionRegistry {
         session_id: &str,
         owner: &OwnerId,
         conn_peer: &Option<ConnPeer>,
-    ) -> Result<Option<RegistryEntry>, WireError> {
+    ) -> Result<(Option<RegistryEntry>, QueueSnapshot), WireError> {
         if let Some(entry) = map.get(session_id) {
             check_user_owner(entry, owner, conn_peer)?;
             // Close is teardown: it reaches through the delivery window
@@ -3195,13 +3344,20 @@ impl SessionRegistry {
                     .store(false, Ordering::Release);
             }
         }
+        // Fenced here: after the owner check, so a refused close leaves every
+        // queue alone, and before the removal, so a drain that had already
+        // resolved this session cannot claim a row in the gap between the two.
+        // The snapshot comes back to the caller rather than going out from
+        // here, because publishing reaches into a runtime and the map lock is
+        // held until this returns.
+        let snapshot = self.fence_queue(session_id);
         // The closed session's message-brake entries go in the same critical
         // section that takes it out of the map: a send that found it
         // here cannot reserve a slot for it afterwards. The
         // display-name write identity leaves with it for the same reason.
         forget_message_brake_target(&self.message_brakes, session_id);
         self.forget_display_name_epoch(session_id);
-        Ok(map.remove(session_id))
+        Ok((map.remove(session_id), snapshot))
     }
 
     /// The unguarded tail of a close: everything that follows the removal —

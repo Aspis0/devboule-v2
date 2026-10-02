@@ -436,7 +436,7 @@ impl AcpPromptSink {
     pub(crate) fn send_structured_prompt(
         &self,
         plan: StructuredPromptPlan,
-    ) -> Result<(), WireError> {
+    ) -> Result<(), WriteAttempt> {
         // The capability is re-read here, at send time: only a negotiated
         // `Supported` takes this path. Anything else never reaches the sink
         // — the caller falls back to the path line instead.
@@ -444,24 +444,25 @@ impl AcpPromptSink {
             self.delivery(),
             ImageDelivery::NegotiatedImageBlock
         ));
-        self.deliver(plan)?;
-        Ok(())
+        self.deliver(plan)
     }
 
     /// The delivery call: the plan's content blocks go to the child through
     /// the shared transport. Kept separate from
     /// [`Self::send_structured_prompt`] so the capability re-read and the
     /// write stay two readable steps rather than one.
-    fn deliver(&self, plan: StructuredPromptPlan) -> Result<(), WireError> {
+    fn deliver(&self, plan: StructuredPromptPlan) -> Result<(), WriteAttempt> {
         self.transport
             .send_structured_prompt(plan.content_blocks())
+            .map(|_request_id| ())
             .map_err(|error| {
-                WireError::new(
-                    ErrorCode::Io,
-                    format!("Could not send input to the terminal: {error}"),
-                )
-            })?;
-        Ok(())
+                WriteAttempt::of(error, |error| {
+                    WireError::new(
+                        ErrorCode::Io,
+                        format!("Could not send input to the terminal: {error}"),
+                    )
+                })
+            })
     }
 }
 
@@ -520,7 +521,7 @@ pub(crate) trait PlannedStaticPrompt: Send + Sync {
     fn text(&self) -> &str;
 
     /// Frames and sends this prompt.
-    fn send(&self) -> Result<(), WireError>;
+    fn send(&self) -> Result<(), WriteAttempt>;
 }
 
 /// The text block for a structured prompt: the user's text, a blank line,

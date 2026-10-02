@@ -151,6 +151,8 @@ fn a_provider_that_refuses_the_handle_recovers_the_conversation_into_a_new_sessi
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
             steer_origin: SteerOrigin::Person,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the first prompt reaches the recovered session");
 

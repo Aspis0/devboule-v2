@@ -263,6 +263,31 @@
     ]
   },
   {
+    "dropped": [
+      {
+        "itemId": "queue-2",
+        "reason": "delivery_unknown"
+      }
+    ],
+    "epoch": "0123456789abcdef0123456789abcdef",
+    "items": [
+      {
+        "attachmentReferences": [
+          {
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sessionId": "s.1.1",
+            "storedBytes": 12
+          }
+        ],
+        "error": "the message was not sent.",
+        "itemId": "queue-1",
+        "text": ""
+      }
+    ],
+    "revision": 2,
+    "type": "queue_snapshot"
+  },
+  {
     "integrity": {
       "droppedBytes": 0,
       "droppedFrames": 0,

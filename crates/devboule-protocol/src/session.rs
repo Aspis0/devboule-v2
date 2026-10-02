@@ -24,16 +24,73 @@ pub enum SessionKind {
 
 /// What a send does when the target agent already has a turn running.
 ///
-/// `Steer` asks the daemon to write the text into that turn. Omitting the
-/// field asks nothing of it: the plain path writes the prompt to the session
-/// and interrupts nothing, and the only interrupt on that route is the
+/// `Steer` asks the daemon to write the text into that turn.
+/// `Interrupt` stops that turn and starts a new one with this text. Omitting
+/// the field asks nothing of it: the plain path writes the prompt to the
+/// session and interrupts nothing, and the only interrupt on that route is the
 /// steer-refusal fallback (`session_messaging.rs::send_with_subscription_timeout`).
 /// A caller that means to replace a running turn must send `SessionInterrupt`
 /// itself and wait for that turn's own end.
+///
+/// `Interrupt` is the queue's send-now behaviour and the daemon's own: the
+/// send path refuses it for a paired device, because taking a running turn
+/// away is the act `SessionInterrupt` decides (`session_messaging.rs`).
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActiveTurnBehavior {
     Steer,
+    Interrupt,
+}
+
+/// One message waiting in a session's queue, as
+/// [`SessionEvent::QueueSnapshot`] carries it.
+///
+/// The shape a row is rendered from and an edit is aimed at: `item_id` is the
+/// daemon's stable name for the item (kept across edits and moves, never
+/// reused while the queue lives), `text` is the whole message, and the
+/// references are attachments already deposited under this session — the bytes
+/// never ride the snapshot, for the same reason they never ride a journal row:
+/// images are stored once, by digest, and named here.
+///
+/// `error` is the failure of the send this item was last taken for, when that
+/// send failed and put it back — absent means "no failure recorded", never an
+/// empty string.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessage {
+    pub item_id: String,
+    pub text: String,
+    /// References to attachments deposited under this session (see
+    /// [`crate::messages::AttachmentReference`]). Inline bytes are deposited
+    /// at queue time and travel here as digests only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_references: Vec<crate::messages::AttachmentReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A queued item this snapshot removed, and why.
+///
+/// It carries no text and no attachments: the client still has them, and a
+/// row that was written to the provider may be sitting in the agent's own
+/// context. Naming the item is what lets a client drop its own copy without
+/// inventing a reason.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedQueuedMessage {
+    pub item_id: String,
+    pub reason: DroppedReason,
+}
+
+/// Why the daemon dropped a queued item instead of putting it back.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DroppedReason {
+    /// The write to the provider failed after it had begun, so the text may
+    /// already be with the agent. Retrying it could send the same message
+    /// twice, and this daemon will not do that on its own: the user decides,
+    /// and a fresh message costs them nothing but a keystroke.
+    DeliveryUnknown,
 }
 
 impl SessionKind {
@@ -1196,6 +1253,35 @@ pub enum SessionEvent {
     SessionsSnapshot {
         sessions: Vec<SessionStateSnapshot>,
     },
+    /// This session's whole follow-up queue, in order, as the daemon holds it.
+    ///
+    /// Published after every accepted queue mutation and once to a client that
+    /// has just attached, so every attached client renders one list. The
+    /// queue lives in daemon memory only — nothing here is journaled, so an
+    /// attach that missed an earlier state is repaired by this event, never by
+    /// a replay.
+    ///
+    /// `revision` counts this session's queue states from 1, so a client can
+    /// drop a snapshot older than one it already applied: registration, the
+    /// attach snapshot and the live snapshots can be delivered out of order
+    /// without any of them leaving a stale view behind.
+    ///
+    /// `revision` is counted in the daemon's memory, so it restarts at 1 with
+    /// every daemon. `epoch` names the daemon process the revision belongs to:
+    /// a client that sees a new epoch drops its recorded revision rather than
+    /// comparing across two counters.
+    QueueSnapshot {
+        /// This daemon process's instance id, fixed for its lifetime and
+        /// different on the next start. A changed epoch means the queue the
+        /// client was reading is gone, and the revision gate starts again.
+        epoch: String,
+        revision: u64,
+        items: Vec<QueuedMessage>,
+        /// Rows this snapshot dropped, and nothing about any other change.
+        /// Empty on every ordinary mutation.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dropped: Vec<DroppedQueuedMessage>,
+    },
     /// Current screen state, delivered on attach instead of a replay of past
     /// frames. The daemon holds a headless terminal emulator,
     /// applies every output chunk to it in sequence order, and renders the
@@ -1292,6 +1378,7 @@ impl SessionEvent {
             Self::Detached => "detached",
             Self::JournalDegraded { .. } => "journal_degraded",
             Self::SessionsSnapshot { .. } => "sessions_snapshot",
+            Self::QueueSnapshot { .. } => "queue_snapshot",
             Self::Snapshot { .. } => "snapshot",
         }
     }

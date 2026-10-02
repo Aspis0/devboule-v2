@@ -278,6 +278,8 @@ fn the_creators_slot_survives_its_childs_birth_and_death() {
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
             steer_origin: SteerOrigin::Person,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the prompt reaches the living child");
 

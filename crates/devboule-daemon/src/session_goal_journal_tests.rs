@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use super::super::tests::test_epoch;
 use devboule_protocol::{
     SessionEvent, SessionKind, SessionState, UserMessageAuthor, UserMessageKind,
 };
@@ -161,6 +162,7 @@ fn an_archived_session_keeps_its_last_goal_in_its_snapshot() {
     let registry2 = SessionRegistry::new(
         crate::paths::RuntimePaths::from_dir(&dir),
         Some(Arc::clone(&reopened)),
+        test_epoch(),
     );
     let snapshots = registry2.state_snapshots(&owner);
     let row = snapshots
@@ -187,6 +189,7 @@ fn restart_then_attach_shows_the_goal_in_the_roster() {
     let registry2 = SessionRegistry::new(
         crate::paths::RuntimePaths::from_dir(&dir),
         Some(Arc::clone(&reopened)),
+        test_epoch(),
     );
     let before = registry2.state_snapshots(&owner);
     let row = before

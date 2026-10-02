@@ -261,6 +261,18 @@ pub(super) fn dispatch_immediate(
         ClientMessage::SessionPermissionRespond { .. } if !typed_permissions_ok => {
             capability_not_supported(request.request_id(), caps::TYPED_PERMISSIONS)
         }
+        // A connection whose hello did not agree `session.queue` is not sent
+        // the queue's events, so it must not be allowed to write one either:
+        // a client that cannot read the result of a frame must not send it.
+        // The gate's own per-frame refusals (the peer's capability, the
+        // session's mode) run after this and still apply.
+        ClientMessage::SessionQueueAdd { .. }
+        | ClientMessage::SessionQueueEdit { .. }
+        | ClientMessage::SessionQueueRemove { .. }
+        | ClientMessage::SessionQueueMove { .. }
+        | ClientMessage::SessionQueueSendNow { .. } if !conn.session_queue_negotiated() => {
+            capability_not_supported(request.request_id(), caps::SESSION_QUEUE)
+        }
         ClientMessage::Ping { id } => DaemonMessage::Pong {
             id,
             ts_ms: unix_millis(),
@@ -356,6 +368,11 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::SessionClose { .. }
         | ClientMessage::SessionStop { .. }
         | ClientMessage::SessionSend { .. }
+        | ClientMessage::SessionQueueAdd { .. }
+        | ClientMessage::SessionQueueEdit { .. }
+        | ClientMessage::SessionQueueRemove { .. }
+        | ClientMessage::SessionQueueMove { .. }
+        | ClientMessage::SessionQueueSendNow { .. }
         | ClientMessage::AgentMessageSend { .. }
         | ClientMessage::SessionDeposit { .. }
         | ClientMessage::SessionAttachmentRead { .. }

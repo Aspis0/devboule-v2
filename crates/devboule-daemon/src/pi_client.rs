@@ -25,7 +25,7 @@ use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, OutOfBandCommands, ReaderDispatch, SessionKiller,
     SessionRuntime, SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
-    READER_JOIN_BUDGET,
+    WriteAttempt, READER_JOIN_BUDGET,
 };
 use crate::acp_view::PromptCapabilityState;
 use crate::atomic::atomic_write;
@@ -2616,7 +2616,7 @@ impl super::PlannedStaticPrompt for PiPlannedPrompt {
         &self.plan.fallback_text
     }
 
-    fn send(&self) -> Result<(), WireError> {
+    fn send(&self) -> Result<(), WriteAttempt> {
         let frame = self.frame();
         // The note rides the write, before the frame, as the writer's does.
         let id = frame
@@ -2626,17 +2626,19 @@ impl super::PlannedStaticPrompt for PiPlannedPrompt {
             .to_string();
         self.fate.note_prompt(&id, &self.plan.fallback_text);
         let mut bytes = serde_json::to_vec(&frame).map_err(|error| {
-            WireError::new(
+            WriteAttempt::Refused(WireError::new(
                 ErrorCode::Io,
                 format!("Could not encode the Pi prompt frame: {error}"),
-            )
+            ))
         })?;
         bytes.push(b'\n');
         write_child_stdin(&self.stdin, &bytes, "Pi").map_err(|error| {
-            WireError::new(
-                ErrorCode::Io,
-                format!("Could not send input to the terminal: {error}"),
-            )
+            WriteAttempt::of(error, |error| {
+                WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not send input to the terminal: {error}"),
+                )
+            })
         })?;
         self.arbiter.note_prompt_delivered();
         Ok(())

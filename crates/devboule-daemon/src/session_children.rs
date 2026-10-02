@@ -537,6 +537,8 @@ impl super::SessionRegistry {
             // Daemon-authored, stated for the day this delivery ever learns
             // to steer: the creation's first prompt is no person's send.
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         });
         if let Err(error) = sent {
             // The same pairing as the abandon above: the close removes an
@@ -544,7 +546,7 @@ impl super::SessionRegistry {
             if self.close(&child.id, &owner, &None).unwrap_or(false) {
                 state.session_finished();
             }
-            return Err(error);
+            return Err(WireError::from(error));
         }
         Ok(child)
     }
@@ -1311,7 +1313,10 @@ impl super::SessionRegistry {
             // A child's report may steer its creator's turn, but it is the
             // daemon speaking: it never dismisses a card the person is looking at.
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
+        .map_err(WireError::from)
         .map(|outcome| outcome.message_id)
     }
 

@@ -269,7 +269,7 @@ fn permission_already_recorded_reads_false_when_the_ledger_cannot_answer() {
 
     let bare_dir = dir.join("bare");
     std::fs::create_dir(&bare_dir).expect("tmp dir");
-    let bare = SessionRegistry::new(RuntimePaths::from_dir(&bare_dir), None);
+    let bare = SessionRegistry::new(RuntimePaths::from_dir(&bare_dir), None, test_epoch());
     assert!(
         !bare.permission_already_recorded("card-ledger"),
         "no journal: the read is false, which renders the sentence inert"

@@ -37,6 +37,10 @@ export const CODE_SENTENCES: Record<ErrorCode, string> = {
   session_not_found: "This session no longer exists.",
   session_generation_mismatch: "This view of the session is out of date. Reopen the session.",
   idempotency_conflict: "That action is already under way.",
+  operation_conflict:
+    "The queue already answered that action for a different message. Try the action again.",
+  operation_in_flight:
+    "The queue is still carrying out that action. Wait a moment; Devboule asks again by itself.",
   shutting_down: "The agent daemon is shutting down. Devboule will reconnect it.",
   journal: "Saved history could not be read or written.",
   workspace_unavailable: "The folder this workspace works in is not available right now.",

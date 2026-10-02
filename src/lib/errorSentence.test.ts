@@ -17,6 +17,8 @@ const ALL_CODES: readonly ErrorCode[] = [
   "session_not_found",
   "session_generation_mismatch",
   "idempotency_conflict",
+  "operation_conflict",
+  "operation_in_flight",
   "shutting_down",
   "journal",
   "workspace_unavailable",

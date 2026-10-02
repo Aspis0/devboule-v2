@@ -31,6 +31,7 @@ use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
     SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, SteerOrigin, TurnToken,
+    WriteAttempt,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::claude_abort::ClaudeAbortGate;
@@ -1643,16 +1644,16 @@ impl super::PlannedStaticPrompt for ClaudePlannedPrompt {
         &self.plan.fallback_text
     }
 
-    fn send(&self) -> Result<(), WireError> {
+    fn send(&self) -> Result<(), WriteAttempt> {
         let bytes = frame_user_message_with_images(&self.plan.fallback_text, &self.plan.images)
-            .map_err(send_failure)?;
+            .map_err(|error| WriteAttempt::Refused(send_failure(&error)))?;
         write_gated_frame(
             &self.stdin,
             self.mode_gate.as_ref(),
             &self.abort_gate,
             bytes,
         )
-        .map_err(send_failure)?;
+        .map_err(|error| WriteAttempt::of(error, send_failure))?;
         if let Some(watch) = &self.watch {
             watch.start_turn();
         }
@@ -1663,7 +1664,7 @@ impl super::PlannedStaticPrompt for ClaudePlannedPrompt {
 /// The refusal the plain-text write path already produces for a send that did
 /// not reach the child, so a failed structured send reads the same wherever it
 /// came from.
-fn send_failure(error: io::Error) -> WireError {
+fn send_failure(error: &io::Error) -> WireError {
     WireError::new(
         ErrorCode::Io,
         format!("Could not send input to the terminal: {error}"),
@@ -1834,7 +1835,8 @@ impl SessionSteerer for ClaudeSteerer {
             return Ok(false);
         }
         let uuid = uuid::Uuid::new_v4().to_string();
-        let bytes = frame_user_message(text, Some(&uuid), Some("next")).map_err(send_failure)?;
+        let bytes = frame_user_message(text, Some(&uuid), Some("next"))
+            .map_err(|error| send_failure(&error))?;
         // The gate is refused, not queued, while it is `AwaitingResponse`.
         // That window is between spawn and the initial mode response:
         // Claude has not been sent the mode request's answer — let alone a
@@ -1852,7 +1854,7 @@ impl SessionSteerer for ClaudeSteerer {
             &self.abort_gate,
             &bytes,
         )
-        .map_err(send_failure)?
+        .map_err(|error| send_failure(&error))?
         {
             // Only a person's own send may deny what a person is being asked:
             // an agent-to-agent steer joins the turn without touching a card,

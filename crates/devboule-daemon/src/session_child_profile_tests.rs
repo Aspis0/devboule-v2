@@ -13,7 +13,11 @@ use super::*;
 pub(super) fn registry_with_journal() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {
     let dir = crate::test_dirs::test_temp_dir("devboule-child-profile");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
-    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
+    let registry = SessionRegistry::new(
+        RuntimePaths::from_dir(&dir),
+        Some(Arc::clone(&journal)),
+        test_epoch(),
+    );
     (dir, registry, journal)
 }
 

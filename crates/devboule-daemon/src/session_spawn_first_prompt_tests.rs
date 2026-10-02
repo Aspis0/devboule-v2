@@ -112,6 +112,8 @@ fn the_spawn_prompt_travels_the_send_road_in_front_of_the_preamble() {
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the spawn-shaped creation send writes");
     assert_eq!(
@@ -154,6 +156,8 @@ fn the_spawn_prompt_travels_the_send_road_in_front_of_the_preamble() {
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the bare creation-shaped send writes");
     assert_eq!(

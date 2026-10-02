@@ -126,12 +126,14 @@ pub(super) fn peer_refusal_before_mode(
     request: &ClientMessage,
     conn_peer: &Option<ConnPeer>,
 ) -> Option<DaemonMessage> {
-    // The predicate is about the frame's payload, so it is stated once for both
-    // shapes: a send carries attachments only when it names some, a deposit by
-    // construction. The id the refusal carries is the frame's own, exactly as
-    // it was when this arm was `SessionSend`'s alone.
+    // The predicate is about the frame's payload, so it is stated once for every
+    // shape that can carry one: a send and a queue add carry attachments only
+    // when they name some, a deposit by construction. The id the refusal carries
+    // is the frame's own, exactly as it was when this arm was `SessionSend`'s
+    // alone.
     let carries_attachment = match request {
-        ClientMessage::SessionSend { attachments, .. } => !attachments.is_empty(),
+        ClientMessage::SessionSend { attachments, .. }
+        | ClientMessage::SessionQueueAdd { attachments, .. } => !attachments.is_empty(),
         ClientMessage::SessionDeposit { .. } => true,
         _ => false,
     };
@@ -148,6 +150,11 @@ pub(super) fn peer_refusal_before_mode(
     let scope = match request {
         ClientMessage::SessionAttach { session_id, .. }
         | ClientMessage::SessionSend { session_id, .. }
+        | ClientMessage::SessionQueueAdd { session_id, .. }
+        | ClientMessage::SessionQueueEdit { session_id, .. }
+        | ClientMessage::SessionQueueRemove { session_id, .. }
+        | ClientMessage::SessionQueueMove { session_id, .. }
+        | ClientMessage::SessionQueueSendNow { session_id, .. }
         | ClientMessage::SessionSetMode { session_id, .. }
         | ClientMessage::SessionSetName { session_id, .. }
         | ClientMessage::SessionSetFeature { session_id, .. } => {
@@ -243,9 +250,22 @@ pub(super) fn peer_mode_refusal_for_conn(
         // A send puts a prompt into a session, so the mode that session is in
         // *now* is what decides.
         ClientMessage::SessionSend { session_id, .. }
+        // A queued message is that session's next prompt, so the mode it sits
+        // in now is what decides — except send-now, which interrupts before it
+        // writes and therefore reaches a session whose mode would have refused
+        // the write. `SessionInterrupt` itself is not vetted here, and send-now
+        // is its twin, so it is not either.
+        | ClientMessage::SessionQueueAdd { session_id, .. }
+        | ClientMessage::SessionQueueEdit { session_id, .. }
+        | ClientMessage::SessionQueueRemove { session_id, .. }
+        | ClientMessage::SessionQueueMove { session_id, .. }
         | ClientMessage::SessionAttach { session_id, .. } => {
             prompt_into_session_refusal(state, session_id)
         }
+        // The twin of `SessionInterrupt`: it takes a running turn away and
+        // writes a new one, and interrupting is the act that gate does not
+        // vet by mode.
+        ClientMessage::SessionQueueSendNow { .. } => None,
         // An agent message is a send whose session is its *target*: the target
         // receives the prompt, so the target is the session this gate vets,
         // exactly as `SessionSend`'s own session is, spelled out rather than
@@ -519,6 +539,11 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionClose { session_id, .. }
         | ClientMessage::SessionStop { session_id, .. }
         | ClientMessage::SessionSend { session_id, .. }
+        | ClientMessage::SessionQueueAdd { session_id, .. }
+        | ClientMessage::SessionQueueEdit { session_id, .. }
+        | ClientMessage::SessionQueueRemove { session_id, .. }
+        | ClientMessage::SessionQueueMove { session_id, .. }
+        | ClientMessage::SessionQueueSendNow { session_id, .. }
         | ClientMessage::SessionDeposit { session_id, .. }
         | ClientMessage::AgentMessageSend {
             to_session: session_id,

@@ -179,6 +179,20 @@ pub struct ConnHandle {
     /// capability also closes that device's live connections, so a running
     /// connection can never keep a capability the row no longer grants.
     pub peer_caps: Vec<String>,
+    /// Whether this connection's hello negotiated `session.queue`.
+    ///
+    /// Written once by the serve loop, from the hello it just agreed
+    /// (`server/connection.rs`), before this connection reads a request. The
+    /// attach that registers an observer copies it onto the attachment, and the
+    /// queue publisher reads it there before enqueueing a `queue_snapshot`: a
+    /// client that did not offer the capability may not be able to parse that
+    /// event, so a queue it never asked for is a queue it is never sent.
+    ///
+    /// Defaults to true because a connection the daemon builds for itself —
+    /// the drain's own send, the MCP caller — never attaches and never reads
+    /// events; the only real clients all come through the serve loop, which
+    /// overwrites this with what they actually agreed.
+    session_queue: AtomicBool,
     /// Async create workers for this connection must not race on its retry key.
     pub(crate) session_create_lock: Mutex<()>,
     attached: Mutex<HashMap<u64, PullState>>,
@@ -196,6 +210,19 @@ impl ConnHandle {
     /// the one that stops the daemon.
     pub(crate) fn mark_quit_refused(&self) {
         self.quit_intent.refuse();
+    }
+
+    /// Record what this connection's hello agreed on for the shared queue.
+    /// Called once, by the serve loop, before this connection reads a request.
+    pub fn set_session_queue_negotiated(&self, negotiated: bool) {
+        self.session_queue.store(negotiated, Ordering::SeqCst);
+    }
+
+    /// Whether this connection's hello offered and the daemon agreed
+    /// `session.queue`, which is what decides whether it may read a queue
+    /// snapshot and send a queue frame.
+    pub fn session_queue_negotiated(&self) -> bool {
+        self.session_queue.load(Ordering::SeqCst)
     }
 
     pub fn with_peer(id: u64, peer: Option<PeerIdentity>) -> Arc<Self> {
@@ -227,6 +254,7 @@ impl ConnHandle {
             conn_peer,
             peer_caps,
             quit_intent,
+            session_queue: AtomicBool::new(true),
             session_create_lock: Mutex::new(()),
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),
@@ -482,6 +510,7 @@ impl ConnHandle {
                 | SessionEvent::JournalDegraded { .. }
                 | SessionEvent::SessionsSnapshot { .. }
                 | SessionEvent::Snapshot { .. }
+                | SessionEvent::QueueSnapshot { .. }
                 | SessionEvent::AgentMessage { .. }
                 | SessionEvent::AgentUserMessage { .. }
                 | SessionEvent::Steered { .. }

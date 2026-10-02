@@ -65,7 +65,7 @@ fn resume_locate_record_finds_the_row_by_id_and_keeps_its_own_refusals() {
 
     let bare_dir = fixture.dir.join("no-journal");
     std::fs::create_dir(&bare_dir).expect("tmp dir");
-    let bare = SessionRegistry::new(RuntimePaths::from_dir(&bare_dir), None);
+    let bare = SessionRegistry::new(RuntimePaths::from_dir(&bare_dir), None, test_epoch());
     let error = match bare.resume_locate_record(&second) {
         Ok(_) => panic!("without a journal nothing is readable"),
         Err(error) => error,

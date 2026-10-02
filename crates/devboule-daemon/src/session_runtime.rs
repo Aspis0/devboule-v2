@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     cursor_replay_ok, AgentActivityState, AgentTaskItem, AttachmentReference, Attention,
-    AttentionReason, Cursor, ErrorCode, NoticeSeverity, Session, SessionEvent,
+    AttentionReason, Cursor, ErrorCode, NoticeSeverity, QueuedMessage, Session, SessionEvent,
     SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin, TranscriptIntegrity,
     UserMessageAuthor, UserMessageKind, WireError,
 };
@@ -867,6 +867,10 @@ impl SessionRuntime {
                         .fetch_max(dropped_bytes, Ordering::AcqRel);
                 }
                 SessionEvent::SessionsSnapshot { .. } => {}
+                // A queue snapshot is daemon memory published to the sessions
+                // attached right now; a recovered session replays transcript
+                // events only.
+                SessionEvent::QueueSnapshot { .. } => {}
                 // Snapshots are screen state, never journal records; a
                 // recovered session replays transcript events only.
                 SessionEvent::Snapshot { .. } => {}
@@ -1482,6 +1486,49 @@ impl SessionRuntime {
             self.finish_turn();
         }
         published
+    }
+
+    /// Publish this session's whole follow-up queue to every attached
+    /// subscriber that negotiated the queue, and nowhere else.
+    ///
+    /// Not a journaled event and not a replayed one: the queue is the daemon's
+    /// memory, so a client that attaches finds it through the attach snapshot
+    /// rather than by replaying rows. Nothing goes into `agent_backlog`, which
+    /// is what a later attach would replay from — a snapshot sitting in that
+    /// backlog would be a stale view delivered to a client that should get the
+    /// current one.
+    ///
+    /// An observer exists only for a subscription that passed this session's own
+    /// scope check, so "attached" already means "authorized to see the
+    /// session"; the capability check on top is the narrower one — a client
+    /// whose hello did not offer `session.queue` cannot read this event, and a
+    /// daemon that knows that must not put it on that connection.
+    pub(crate) fn publish_queue_snapshot(
+        &self,
+        epoch: String,
+        revision: u64,
+        items: Vec<QueuedMessage>,
+        dropped: Vec<devboule_protocol::DroppedQueuedMessage>,
+    ) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        if stream.output_closed {
+            return;
+        }
+        let event = SessionEvent::QueueSnapshot {
+            epoch,
+            revision,
+            items,
+            dropped,
+        };
+        for attachment in stream.observers.values_mut() {
+            if !attachment.session_queue {
+                continue;
+            }
+            enqueue_agent_for_attachment(attachment, event.clone(), None);
+        }
+        notify_observers(&stream);
     }
 
     pub(crate) fn publish_session_notice(&self, text: String, severity: NoticeSeverity) -> bool {
@@ -3045,6 +3092,7 @@ impl SessionRuntime {
                 // Snapshots are not output chunks and are not sourced from
                 // the historical journal replay path.
                 | SessionEvent::Snapshot { .. }
+                | SessionEvent::QueueSnapshot { .. }
                 | SessionEvent::AgentMessage { .. }
                 | SessionEvent::AgentUserMessage { .. }
                 | SessionEvent::Steered { .. }
@@ -3246,6 +3294,7 @@ impl SessionRuntime {
         let mut attachment = Attachment {
             outbound: Arc::clone(&conn.outbound),
             typed_permissions,
+            session_queue: conn.session_queue_negotiated(),
             suppressed_manifest: None,
             pending: VecDeque::new(),
             pending_bytes: 0,

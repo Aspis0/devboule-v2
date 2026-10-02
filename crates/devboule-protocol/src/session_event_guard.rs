@@ -343,6 +343,27 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
         SessionsSnapshot => SessionEvent::SessionsSnapshot {
             sessions: Vec::new(),
         },
+        QueueSnapshot => SessionEvent::QueueSnapshot {
+            // Carried rather than empty: the committed snapshot is what pins
+            // the `dropped` wire names and their reason, and an ordinary
+            // snapshot would leave them unexercised by it.
+            epoch: "0123456789abcdef0123456789abcdef".to_string(),
+            revision: 2,
+            items: vec![crate::QueuedMessage {
+                item_id: "queue-1".to_string(),
+                text: String::new(),
+                attachment_references: vec![crate::AttachmentReference {
+                    session_id: "s.1.1".to_string(),
+                    digest: "a".repeat(64),
+                    stored_bytes: 12,
+                }],
+                error: Some("the message was not sent.".to_string()),
+            }],
+            dropped: vec![crate::DroppedQueuedMessage {
+                item_id: "queue-2".to_string(),
+                reason: crate::DroppedReason::DeliveryUnknown,
+            }],
+        },
         Snapshot => SessionEvent::Snapshot {
             as_of_seq: 0,
             cols: 0,

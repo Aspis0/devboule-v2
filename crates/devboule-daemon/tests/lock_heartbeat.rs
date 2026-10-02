@@ -130,8 +130,12 @@ fn the_record_is_readable_from_another_process_while_the_daemon_holds_the_lock()
     );
     assert_eq!(record.pipe_name, paths.pipe_name);
     assert!(
-        record.instance_id.starts_with(&format!("{}-", record.pid)),
-        "the instance id carries its own pid: {}",
+        record.instance_id.len() == 32
+            && record
+                .instance_id
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "the instance id is 32 lowercase hex: {}",
         record.instance_id
     );
     let _ = std::fs::remove_dir_all(&dir);

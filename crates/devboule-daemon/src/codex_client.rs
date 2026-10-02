@@ -24,7 +24,7 @@ use super::session_prompt_planning::PlannedStaticPrompt;
 use super::session_runtime::SessionRuntime;
 use super::{
     write_child_stdin, ModelSwitcher, OutOfBandCommands, PtyCommand, ReaderDispatch, SessionKiller,
-    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
+    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken, WriteAttempt,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::codex_commands::{Answer, CodexCommands};
@@ -1044,7 +1044,7 @@ impl CodexStaticPrompt {
             if let Some(feature) = self.state.plan_feature_state() {
                 let _ = runtime.publish_daemon_event(feature);
             }
-            runtime.publish_agent_error(error.message);
+            runtime.publish_agent_error(WireError::from(error).message);
             return;
         }
         // An implementation prompt shows no user-message item of its own
@@ -1174,7 +1174,7 @@ impl super::PlannedStaticPrompt for CodexPlannedPrompt {
         &self.plan.fallback_text
     }
 
-    fn send(&self) -> Result<(), WireError> {
+    fn send(&self) -> Result<(), WriteAttempt> {
         send_turn_start(&self.stdin, &self.next_id, &self.state, self.params())
     }
 }
@@ -1238,7 +1238,8 @@ impl Write for CodexWriter {
             ),
             &self.state,
         );
-        send_turn_start(&self.stdin, &self.next_id, &self.state, params).map_err(wire_to_io)
+        send_turn_start(&self.stdin, &self.next_id, &self.state, params)
+            .map_err(|attempt| attempt.into_io("Codex"))
     }
 }
 
@@ -1595,15 +1596,24 @@ fn send_turn_start(
     next_id: &AtomicU64,
     state: &CodexState,
     params: Value,
-) -> Result<(), WireError> {
+) -> Result<(), WriteAttempt> {
     let id = format!("d-{}", next_id.fetch_add(1, Ordering::Relaxed));
     let plan_mode = params
         .pointer("/collaborationMode/mode")
         .and_then(Value::as_str)
         .is_some_and(|mode| state.is_plan_collaboration_mode(mode));
     state.record_turn_start(&id, plan_mode);
-    send_frame(stdin, &request_frame(&id, "turn/start", params), "Codex").inspect_err(|_| {
+    let sent = write_frame(stdin, &request_frame(&id, "turn/start", params), "Codex");
+    if sent.is_err() {
         state.forget_turn_start(&id);
+    }
+    sent.map_err(|error| {
+        WriteAttempt::of(error, |error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not write Codex frame: {error}"),
+            )
+        })
     })
 }
 
@@ -1928,19 +1938,26 @@ pub(super) fn send_frame(
     frame: &Value,
     label: &'static str,
 ) -> Result<(), WireError> {
-    let mut bytes = serde_json::to_vec(frame).map_err(|error| {
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not encode {label} frame: {error}"),
-        )
-    })?;
-    bytes.push(b'\n');
-    write_child_stdin(stdin, &bytes, label).map_err(|error| {
+    write_frame(stdin, frame, label).map_err(|error| {
         WireError::new(
             ErrorCode::Io,
             format!("Could not write {label} frame: {error}"),
         )
     })
+}
+
+/// The write itself, still the `io::Error` it is, so a caller that has to tell a
+/// transport that was closed from a write that failed after it began can still
+/// tell. Every other caller goes through [`send_frame`] above.
+fn write_frame(
+    stdin: &Mutex<Option<ChildStdin>>,
+    frame: &Value,
+    label: &'static str,
+) -> std::io::Result<()> {
+    let mut bytes = serde_json::to_vec(frame)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    bytes.push(b'\n');
+    write_child_stdin(stdin, &bytes, label)
 }
 
 fn wire_to_io(error: WireError) -> io::Error {
@@ -2577,6 +2594,11 @@ mod command_test_support;
 #[cfg(test)]
 #[path = "codex_client_command_tests.rs"]
 mod command_tests;
+
+/// How the writer's flush reports a write that never started.
+#[cfg(test)]
+#[path = "codex_client_write_tests.rs"]
+mod write_tests;
 
 /// The events a command answer or a compaction notification turns into.
 #[cfg(test)]

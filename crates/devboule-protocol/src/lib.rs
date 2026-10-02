@@ -87,6 +87,9 @@ mod session;
 mod session_event_guard;
 mod text_safety;
 
+#[cfg(test)]
+mod queue_frames_tests;
+
 pub use attachments::{
     attachment_name_too_long_message, attachment_reference_session_mismatch_message,
     empty_attachment_message, invalid_attachment_digest_message, invalid_base64_message,
@@ -123,14 +126,14 @@ pub use session::{
     cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskItem,
     AgentTaskState, AgentTaskStatus, Attention, AttentionReason, AvailableCommandView,
     CreateAgentCaps, CreateAgentCard, Cursor, CursorShape, DelegationRunState, DelegationState,
-    FinishArtifact, FinishArtifactPart, FinishArtifactPartMetadata, NoticeSeverity,
-    PermissionEnvVar, PermissionOption, PermissionOutcome, PermissionQuestion,
-    PermissionQuestionOption, PermissionRequestKind, Persistence, PersistenceKind, PlanCredits,
-    PlanWindow, ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind,
-    SessionModeStateView, SessionModeView, SessionModel, SessionModelEffort, SessionOrigin,
-    SessionOriginKind, SessionState, SessionStateSnapshot, SubagentTaskStatus, SubscriptionId,
-    ToolLocation, TranscriptIntegrity, TurnUsage, UnattendedState, UserMessageAuthor,
-    UserMessageKind, NOTHING_OWED_CURSOR,
+    DroppedQueuedMessage, DroppedReason, FinishArtifact, FinishArtifactPart,
+    FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar, PermissionOption,
+    PermissionOutcome, PermissionQuestion, PermissionQuestionOption, PermissionRequestKind,
+    Persistence, PersistenceKind, PlanCredits, PlanWindow, QueuedMessage, ResumeResult,
+    ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView,
+    SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState,
+    SessionStateSnapshot, SubagentTaskStatus, SubscriptionId, ToolLocation, TranscriptIntegrity,
+    TurnUsage, UnattendedState, UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
 };
 pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_character};
 
@@ -162,8 +165,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 ///
 /// A new **request** frame bumps this too: an older reader cannot deserialize
 /// an unknown variant (protocol 19 added `WorkspaceSetTitle`, 21 added
-/// `WorkspaceOpenRoot`; 20 was output-only fields).
-pub const PROTOCOL_VERSION: u32 = 21;
+/// `WorkspaceOpenRoot`; 20 was output-only fields). Protocol 22 adds the five
+/// `SessionQueue*` requests, the `queue_snapshot` event and the daemon-only
+/// `interrupt` send behaviour; all three ride the `session.queue` capability,
+/// so an older peer is never sent or asked to speak them.
+pub const PROTOCOL_VERSION: u32 = 22;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
@@ -174,7 +180,8 @@ pub const PROTOCOL_VERSION: u32 = 21;
 /// fail to parse it.
 /// Protocol 19's one frame rides its own capability, so it does not move
 /// the floor either; protocol 21's frame is checked on `workspace.open`
-/// the same way before it is sent.
+/// the same way before it is sent, and protocol 22's queue frames on
+/// `session.queue`.
 pub const PROTOCOL_MIN_VERSION: u32 = 16;
 
 /// Well-known capability names. These are strings on the wire so a peer that
@@ -239,6 +246,15 @@ pub mod caps {
     /// [`Self::WORKSPACE_RENAME`] — a daemon that predates the variant
     /// would drop the connection on a request it never knew.
     pub const WORKSPACE_OPEN: &str = "workspace.open";
+
+    /// The shared follow-up queue (`SessionQueueAdd`/`Edit`/`Remove`/`Move`/
+    /// `SendNow` and the `queue_snapshot` event).
+    ///
+    /// Its own name, like the open root: a client must not send a queue frame
+    /// to a daemon that predates the variants, and must not read
+    /// `queue_snapshot` off one — the name is how a client tells a daemon that
+    /// owns a shared queue from one that leaves the list in the app.
+    pub const SESSION_QUEUE: &str = "session.queue";
 
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
@@ -706,6 +722,11 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // `WorkspaceOpenRoot`, so the name must be offered, and the client
     // reads it before the frame leaves for a daemon that predates it.
     capabilities.push(Capability::new(caps::WORKSPACE_OPEN));
+    // Same pairing again, for the shared queue: the daemon serves the five
+    // `SessionQueue*` requests and publishes `queue_snapshot`, so the name
+    // must be offered or the handshake negotiates it away and a client could
+    // not tell a shared-queue daemon from one that leaves the list in the app.
+    capabilities.push(Capability::new(caps::SESSION_QUEUE));
     capabilities
 }
 
@@ -774,6 +795,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // keeps it, and read before `WorkspaceOpenRoot` leaves for an
     // older daemon.
     capabilities.push(Capability::new(caps::WORKSPACE_OPEN));
+    // The shared queue, paired the same way: offered so the intersection
+    // keeps it, and read before a `SessionQueue*` frame leaves for an older
+    // daemon.
+    capabilities.push(Capability::new(caps::SESSION_QUEUE));
     capabilities
 }
 

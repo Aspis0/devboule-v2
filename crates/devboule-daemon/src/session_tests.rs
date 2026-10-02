@@ -1201,12 +1201,24 @@ pub(super) fn attach_tracked(runtime: &Arc<SessionRuntime>, conn: &Arc<ConnHandl
 pub(super) fn tmp_delete_registry() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {
     let dir = crate::test_dirs::test_temp_dir("devboule-delete-session");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
-    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
+    let registry = SessionRegistry::new(
+        RuntimePaths::from_dir(&dir),
+        Some(Arc::clone(&journal)),
+        test_epoch(),
+    );
     (dir, registry, journal)
 }
 
 pub(super) fn test_owner(user: &str, client: &str) -> OwnerId {
     OwnerId::new(user, client).expect("owner")
+}
+
+/// The queue-snapshot epoch a test registry stamps its snapshots with. One
+/// value for every test, so a test that reads a snapshot can name the epoch it
+/// expects without each registry inventing its own.
+#[cfg(test)]
+pub(crate) fn test_epoch() -> String {
+    "0123456789abcdef0123456789abcdef".to_string()
 }
 
 pub(super) fn permission_attention_event() -> SessionEvent {
@@ -2441,6 +2453,36 @@ fn ownership_paths(
                 )
                 .map(|_| ()),
         ),
+        // The queue's own edits: each resolves its target through the same
+        // ownership check a send does, so these rows prove it and nothing about
+        // the queue's bookkeeping. They sit after every other session row
+        // because an add into an idle session drains at once — which starts a
+        // turn, and a turn left open would turn the rows behind these into
+        // refusals for the wrong reason.
+        (
+            "queue_add",
+            registry
+                .queue_add(id, "op-1", "hi", &[], &[], owner, conn)
+                .map(|_| ()),
+        ),
+        (
+            "queue_edit",
+            registry
+                .queue_edit(id, "op-2", "queue-1", "edited", owner, conn)
+                .map(|_| ()),
+        ),
+        (
+            "queue_remove",
+            registry
+                .queue_remove(id, "op-3", "queue-1", owner, conn)
+                .map(|_| ()),
+        ),
+        (
+            "queue_move",
+            registry
+                .queue_move(id, "op-4", "queue-1", 0, owner, conn)
+                .map(|_| ()),
+        ),
         // `close` is destructive, and this vector is evaluated eagerly and in
         // order: it goes last, or every row behind it would run against the
         // session it just removed, answer `SessionNotFound`, and satisfy the
@@ -2761,6 +2803,15 @@ fn a_daemon_peer_is_scoped_by_origin_and_delivers_agent_messages() {
 fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> {
     match request {
         ClientMessage::SessionSend { .. } => Some(&["send"]),
+        // In `ownership_paths`' own order, so the two tables cannot drift.
+        ClientMessage::SessionQueueAdd { .. } => Some(&["queue_add"]),
+        ClientMessage::SessionQueueEdit { .. } => Some(&["queue_edit"]),
+        ClientMessage::SessionQueueRemove { .. } => Some(&["queue_remove"]),
+        ClientMessage::SessionQueueMove { .. } => Some(&["queue_move"]),
+        // Send-now is an ownership path too, but it needs a queue with a row in
+        // it and an attached subscription before the ownership check is
+        // reached; the queue's own test file covers it.
+        ClientMessage::SessionQueueSendNow { .. } => None,
         ClientMessage::SessionDeposit { .. } => Some(&["deposit"]),
         ClientMessage::SessionAttachmentRead { .. } => Some(&["read_attachment"]),
         ClientMessage::AgentMessageSend { .. } => Some(&["agent_message_send"]),

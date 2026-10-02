@@ -78,7 +78,7 @@ impl PlannedStaticPrompt for RecordingStaticPlan {
         &self.text
     }
 
-    fn send(&self) -> Result<(), WireError> {
+    fn send(&self) -> Result<(), WriteAttempt> {
         self.seen.lock().expect("seen").push(self.text.clone());
         self.sent.fetch_add(1, Ordering::AcqRel);
         Ok(())
@@ -298,6 +298,8 @@ fn the_first_picked_command_expands_from_the_raw_message() {
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
             steer_origin: SteerOrigin::Person,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("send");
     assert_eq!(

@@ -2334,6 +2334,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Providers { id, .. }
         | DaemonMessage::ProviderUpdated { id, .. }
         | DaemonMessage::Ok { id }
+        | DaemonMessage::QueueAccepted { id, .. }
         | DaemonMessage::SessionSend { id, .. }
         | DaemonMessage::AgentMessageReceipt { id, .. }
         | DaemonMessage::Resume { id, .. }

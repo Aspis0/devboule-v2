@@ -9,6 +9,14 @@
 use super::*;
 use crate::release_guard::ReleaseGuard;
 
+/// The one sentence a send that promised to start from idle answers with when
+/// a turn began between its look and the writer. The queue's drain recognises
+/// it to put the item back untouched instead of recording a failure the
+/// message never had: no wire code names "the queue lost a race", and this
+/// refusal never reaches a client as anything but the error it is.
+pub(crate) const TURN_STARTED_WHILE_WAITING: &str =
+    "a turn began while this message waited for the session writer";
+
 /// What one accepted send did: the transcript id it produced, if any, and
 /// whether a turn is running on the session as the reply goes out. The reply
 /// carries it so the sender waits for a finish only while one is owed.
@@ -16,6 +24,79 @@ pub(crate) struct SendOutcome {
     pub message_id: Option<String>,
     pub turn_active: bool,
 }
+
+/// Why a send came back with an error.
+///
+/// The split is the only thing a caller needs to know about the write: a
+/// [`SendError::Refused`] never reached the provider, so the text is certainly
+/// not with the agent and sending it again sends it once. An
+/// [`SendError::Uncertain`] failed *after* the write began — a partial write, a
+/// flush that failed, a recording that failed once the bytes were out — so the
+/// prompt may be with the agent already, and a repeat of it may say the same
+/// thing twice. That second case is why the type exists: a caller that owns the
+/// message (the queue does) cannot treat the two the same.
+#[derive(Debug)]
+pub(crate) enum SendError {
+    Refused(WireError),
+    Uncertain(WireError),
+}
+
+impl From<SendError> for WireError {
+    fn from(error: SendError) -> Self {
+        match error {
+            SendError::Refused(error) | SendError::Uncertain(error) => error,
+        }
+    }
+}
+
+impl From<WireError> for SendError {
+    fn from(error: WireError) -> Self {
+        SendError::Refused(error)
+    }
+}
+
+impl SendError {
+    /// The error this one carries, for the caller that reports it beside the
+    /// session rather than returns it.
+    pub(crate) fn wire(&self) -> &WireError {
+        match self {
+            SendError::Refused(error) | SendError::Uncertain(error) => error,
+        }
+    }
+}
+
+/// One failed write on the way to a child becomes the send error it is: a
+/// refusal where the transport was already closed and no byte went out, an
+/// uncertain one everywhere else, because there the write may have begun.
+fn write_failed(attempted: WriteAttempt) -> SendError {
+    match attempted {
+        WriteAttempt::Refused(error) => SendError::Refused(error),
+        WriteAttempt::Uncertain(error) => SendError::Uncertain(error),
+    }
+}
+
+/// The refusal an interrupting send from a connection that may not interrupt
+/// gets. `interrupt` is the act `SessionInterrupt` decides and no capability
+/// opens to a peer, so it must not arrive the long way round through a send's
+/// behaviour field — nor through a queue's send-now.
+pub(crate) fn interrupt_refused_for_peer() -> WireError {
+    WireError::new(
+        ErrorCode::Unauthorized,
+        "interrupting a running turn is not permitted for a paired device",
+    )
+}
+
+/// Whether this connection may interrupt a running turn: only the person at
+/// this machine may.
+pub(crate) fn may_interrupt_for(conn: &ConnHandle) -> bool {
+    session_origin_for(&conn.conn_peer).is_local()
+}
+
+/// How long a send waits for the turn its own interrupt was aimed at. The
+/// interrupt is dispatched; the provider still has to stop and report the end,
+/// and a prompt must not be written into a turn the daemon believes it
+/// replaced.
+pub(crate) const INTERRUPT_WAIT_BOUND: Duration = Duration::from_secs(10);
 
 impl super::SessionRegistry {
     /// Store one prompt attachment for a session and answer the reference the
@@ -286,6 +367,17 @@ impl super::SessionRegistry {
         .map(|_| ())
     }
 
+    /// Whether this session's follow-up queue has been fenced. A send that
+    /// belongs to the queue asks this one step before its write. An entry that
+    /// is gone altogether counts as fenced: a close that dropped the queue took
+    /// the session with it, and that may not be sent to either.
+    fn queue_is_fenced(&self, session_id: &str) -> bool {
+        self.queues
+            .lock()
+            .get(session_id)
+            .is_none_or(|state| state.fenced)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn send_with_subscription_behavior(
         &self,
@@ -298,6 +390,12 @@ impl super::SessionRegistry {
         conn: &ConnHandle,
         active_turn_behavior: Option<ActiveTurnBehavior>,
     ) -> Result<bool, WireError> {
+        // `interrupt` is the act `SessionInterrupt` decides, and no capability
+        // opens that to a peer — so it must not arrive the long way through a
+        // send's behaviour field (the same rule a steer's fallback keeps).
+        if active_turn_behavior == Some(ActiveTurnBehavior::Interrupt) && !may_interrupt_for(conn) {
+            return Err(interrupt_refused_for_peer());
+        }
         self.send_with_subscription_timeout(&SendRequest {
             session_id,
             subscription_id,
@@ -321,7 +419,12 @@ impl super::SessionRegistry {
             // The person at this machine, or a person at a paired device: a
             // person's send may dismiss what a person is being asked.
             steer_origin: SteerOrigin::Person,
+            // An interrupt waited for its turn; if another turn started after
+            // that wait, this text must not enter it either.
+            require_no_turn_running: active_turn_behavior == Some(ActiveTurnBehavior::Interrupt),
+            require_queue_unfenced: false,
         })
+        .map_err(WireError::from)
         .map(|outcome| outcome.turn_active)
     }
 
@@ -574,6 +677,10 @@ impl super::SessionRegistry {
             } else {
                 SteerOrigin::Agent
             },
+            // An agent message has no admission promise: it steers into the
+            // turn its caller was admitted to, or starts one.
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         });
         if result.is_ok() {
             if let Some(from_runtime) = from_runtime {
@@ -603,7 +710,7 @@ impl super::SessionRegistry {
         // The delivery's own id is not what this act answers with: the *sender*
         // is the caller here, and its echo (if any) is published above. The
         // receiver-side id is nobody's correlation key.
-        result.map(|_| ())
+        result.map_err(WireError::from).map(|_| ())
     }
 
     #[cfg(test)]
@@ -634,14 +741,17 @@ impl super::SessionRegistry {
             message_kind: UserMessageKind::Composer,
             // The MCP road, even in a test: an agent's message.
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
+        .map_err(WireError::from)
         .map(|_| ())
     }
 
     pub(super) fn send_with_subscription_timeout(
         &self,
         request: &SendRequest<'_>,
-    ) -> Result<SendOutcome, WireError> {
+    ) -> Result<SendOutcome, SendError> {
         let SendRequest {
             session_id,
             subscription_id,
@@ -660,6 +770,8 @@ impl super::SessionRegistry {
             author,
             message_kind,
             steer_origin,
+            require_no_turn_running,
+            require_queue_unfenced,
         } = *request;
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -667,10 +779,9 @@ impl super::SessionRegistry {
         // accepts frames from any client that can open it, so the limits are
         // enforced here too, on the payload as it arrived.
         if text.len() > MAX_WRITE_BYTES {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                "Session input is too large.",
-            ));
+            return Err(
+                WireError::new(ErrorCode::InvalidRequest, "Session input is too large.").into(),
+            );
         }
         validate_attachments(attachments)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -741,7 +852,8 @@ impl super::SessionRegistry {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
                     "Send /goal without attachments.",
-                ));
+                )
+                .into());
             }
         }
         let (is_agent, mcp_required) = live_parts
@@ -766,7 +878,8 @@ impl super::SessionRegistry {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "This session does not accept attachments.",
-            ));
+            )
+            .into());
         }
         // A steer is text only, and that is refused before a single attachment
         // byte is planned, decoded or written anywhere: the steer
@@ -785,7 +898,8 @@ impl super::SessionRegistry {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "a steer carries text only; send attachments as a new message",
-            ));
+            )
+            .into());
         }
         if live_parts.is_some() && require_attachment {
             check_attached(&runtime, conn, subscription_id)?;
@@ -796,7 +910,7 @@ impl super::SessionRegistry {
                 runtime.wait_for_mcp_ready(mcp_timeout)?;
             }
             if has_prompt && !runtime.can_publish_agent_event() {
-                return Err(internal("Agent input could not be recorded."));
+                return Err(internal("Agent input could not be recorded.").into());
             }
         }
         // The daemon-owned `/goal`: one intercept for every agent provider,
@@ -833,7 +947,7 @@ impl super::SessionRegistry {
         // intercept's own refusal.
         let Some((writer, image_sink, static_image_sink, killer, steerer, _, _)) = live_parts
         else {
-            return Err(process_gone());
+            return Err(process_gone().into());
         };
         // `steerer` was cloned as immutable above; the turn below needs it mutable.
         let mut steerer = steerer;
@@ -862,6 +976,53 @@ impl super::SessionRegistry {
                         message_id: Some(delivered_message_id),
                         turn_active: runtime.is_running_turn(),
                     });
+                }
+            }
+        }
+        if active_turn_behavior == Some(ActiveTurnBehavior::Interrupt) && is_agent {
+            // Armed FIRST, against the turn that is running now: the arm and
+            // that turn's end take the same critical section, so `None` means
+            // it was already over — nothing to interrupt, nothing to wait for,
+            // and the plain write below is the whole send ("if no turn is
+            // running, it is a plain send").
+            let expected_turn = runtime.turn_counter();
+            let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+            let armed = runtime.on_turn_end_if_active(expected_turn, move || {
+                let _ = ended_tx.send(());
+            });
+            if let Some(hook) = armed {
+                // Cloned, not moved: the steer branch below owns the original
+                // binding. Every provider's own killer cancels its pending
+                // permission cards inside `interrupt()`, as on every other
+                // interrupt path here.
+                let mut killer = killer.clone_killer();
+                // Aimed at the turn this send armed against: the turn-hold is
+                // the same lock that turn's end and `begin_turn` take, so a
+                // natural end in this window — and whatever starts after it —
+                // cannot catch a generic `interrupt()`. The hold is released
+                // before the wait below, so a provider reporting the end from
+                // its reader thread is never blocked behind us.
+                let interrupted = runtime
+                    .with_active_turn(expected_turn, |_| killer.interrupt())
+                    .is_some();
+                if ended_rx.recv_timeout(INTERRUPT_WAIT_BOUND).is_err() {
+                    runtime.off_turn_end(hook);
+                    return Err(WireError::new(
+                        ErrorCode::Internal,
+                        format!(
+                            "the running turn did not end within {} seconds of an interrupt",
+                            INTERRUPT_WAIT_BOUND.as_secs()
+                        ),
+                    )
+                    .into());
+                }
+                // Announced only when our interrupt is what ended the turn: a
+                // natural end is not this message's doing.
+                if interrupted {
+                    runtime.publish_session_notice(
+                        "The running turn was interrupted by the user's message.".to_string(),
+                        devboule_protocol::NoticeSeverity::Info,
+                    );
                 }
             }
         }
@@ -959,12 +1120,12 @@ impl super::SessionRegistry {
                         return Err(WireError::new(
                             ErrorCode::Unauthorized,
                             "this agent cannot take a steer and interrupting is not permitted for a paired device",
-                        ));
+                        ).into());
                     }
                     let mut killer = killer;
                     killer.interrupt();
                 }
-                Some(Err(error)) => return Err(error),
+                Some(Err(error)) => return Err(error.into()),
                 // The turn ended between the admission and this write: the
                 // text goes as an ordinary prompt. `boundary_reached` is already
                 // set by the fired hook, and the re-key below — which looks at
@@ -1149,10 +1310,39 @@ impl super::SessionRegistry {
                 if let Some(runtime) = agent_runtime.as_ref() {
                     runtime.publish_agent_error(error.message.clone());
                 }
-                return Err(error);
+                return Err(error.into());
             }
         };
-        if let Err(error) = match plan {
+        // The admission, re-checked where it is atomic: `begin_turn` runs
+        // under this same writer lock, so a regular send that started a turn
+        // while this one waited cannot be observed here as idle. The write
+        // below is exactly what must not enter that turn.
+        //
+        // The queue's fence is the same kind of check and belongs in the
+        // same place: a close or stop that fenced this session's queue after
+        // the row was claimed must not be written to. Neither takes this lock
+        // (a write blocked on a hung child pipe would hang a stop, the escape
+        // hatch, or a close), so one write that had already passed this check
+        // goes into a process being killed: the declared remainder.
+        if require_queue_unfenced && self.queue_is_fenced(session_id) {
+            drop(writer);
+            return Err(SendError::Refused(super::session_queue::queue_fenced()));
+        }
+        if require_no_turn_running && runtime.is_running_turn() {
+            drop(writer);
+            return Err(SendError::Refused(WireError::new(
+                ErrorCode::InvalidRequest,
+                TURN_STARTED_WHILE_WAITING,
+            )));
+        }
+        // Past this line the write is attempted, so every failure from here on
+        // is uncertain — the bytes may be with the provider even though the call
+        // returned an error — with one exception the roads answer themselves: a
+        // transport that was already closed took no byte at all, so it is a
+        // refusal and a caller that owns the message may offer it again.
+        // `SendError::Uncertain` is what tells a caller that owns the message —
+        // the queue does — that it must not send the same message again.
+        let attempted = match plan {
             // Structured route: the text block (with any SVG path lines) plus
             // the image blocks go as one `session/prompt` content array on
             // the sibling. The plain-text `writer` is not touched. The plan
@@ -1168,33 +1358,43 @@ impl super::SessionRegistry {
             None => match static_plan {
                 Some(plan) => plan.send(),
                 // Today's path, unchanged: the prompt (with path lines) is
-                // typed into the plain-text writer.
+                // typed into the plain-text writer. The ACP writer buffers
+                // and flushes, so this is also where a closed child stdin
+                // surfaces — as a failure of the flush below, carrying the same
+                // marker the other two roads carry.
                 None => writer.write_all(prompt.as_bytes()).map_err(|error| {
-                    WireError::new(
-                        ErrorCode::Io,
-                        format!("Could not send input to the terminal: {error}"),
-                    )
+                    WriteAttempt::of(error, |error| {
+                        WireError::new(
+                            ErrorCode::Io,
+                            format!("Could not send input to the terminal: {error}"),
+                        )
+                    })
                 }),
             },
-        } {
+        };
+        if let Err(attempted) = attempted {
             drop(writer);
+            let error = write_failed(attempted);
             if let Some(runtime) = agent_runtime.as_ref() {
-                runtime.publish_agent_error(error.message.clone());
+                runtime.publish_agent_error(error.wire().message.clone());
             }
             return Err(error);
         }
-        if let Err(error) = writer.flush().map_err(|error| {
-            WireError::new(
-                ErrorCode::Io,
-                // Neutral on purpose: this writer is a PTY for a terminal
-                // and a provider's stdin for an agent — "terminal" is wrong
-                // for the second, so the message names neither.
-                format!("Could not flush session input: {error}"),
-            )
+        if let Err(attempted) = writer.flush().map_err(|error| {
+            WriteAttempt::of(error, |error| {
+                WireError::new(
+                    ErrorCode::Io,
+                    // Neutral on purpose: this writer is a PTY for a terminal
+                    // and a provider's stdin for an agent — "terminal" is wrong
+                    // for the second, so the message names neither.
+                    format!("Could not flush session input: {error}"),
+                )
+            })
         }) {
             drop(writer);
+            let error = write_failed(attempted);
             if let Some(runtime) = agent_runtime.as_ref() {
-                runtime.publish_agent_error(error.message.clone());
+                runtime.publish_agent_error(error.wire().message.clone());
             }
             return Err(error);
         }
@@ -1223,7 +1423,14 @@ impl super::SessionRegistry {
                     images,
                 ) {
                     Some(message_id) => delivered_message_id = Some(message_id),
-                    None => return Err(internal("Agent input could not be recorded.")),
+                    // The bytes are already with the provider, so this is the
+                    // uncertain case: reporting it as a plain refusal would
+                    // invite the caller to send the same prompt again.
+                    None => {
+                        return Err(SendError::Uncertain(internal(
+                            "Agent input could not be recorded.",
+                        )))
+                    }
                 }
                 // Activity and attention are separate facts, so publish both
                 // changes and let clients coalesce any render work.

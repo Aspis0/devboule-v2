@@ -58,6 +58,50 @@ pub(super) fn drain_writes_and_close_journal(state: &Arc<ServerState>) -> bool {
     drained
 }
 
+#[cfg(windows)]
+/// This daemon process's instance id: 128 fresh bits, hex-encoded.
+///
+/// It is the value every queue snapshot carries as its epoch, so a client can
+/// tell two daemons' revisions apart, and the value the single-instance record
+/// publishes. A pid and a clock do not prove it: Windows reuses pids, and two
+/// starts inside one millisecond happen on a fast restart loop. Entropy does,
+/// and this daemon already asks the OS for it in three places.
+pub(super) fn instance_id() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::fill(&mut bytes).is_err() {
+        // Entropy failure is not fatal anywhere in this daemon — the session
+        // nonce degrades the same way — so a daemon that cannot draw is still
+        // a daemon, with an epoch that is only best effort.
+        eprintln!("daemon could not draw an instance id from the OS; falling back to pid and time");
+        return fallback_instance_id();
+    }
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+#[cfg(windows)]
+/// The epoch with no entropy to draw on: the pid, the wall clock in nanoseconds
+/// and a monotonic reading, mixed into the same 32-hex shape. Best effort — it
+/// makes a collision between two starts unlikely, and cannot rule one out.
+pub(super) fn fallback_instance_id() -> String {
+    use std::hash::{Hash, Hasher};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let monotonic = std::time::Instant::now();
+    let mut high = std::collections::hash_map::DefaultHasher::new();
+    (pid, nanos, monotonic).hash(&mut high);
+    let mut low = std::collections::hash_map::DefaultHasher::new();
+    (monotonic, nanos, pid, 1u8).hash(&mut low);
+    format!("{:016x}{:016x}", high.finish(), low.finish())
+}
+
 pub fn run() -> Result<(), DaemonError> {
     #[cfg(not(windows))]
     {
@@ -89,13 +133,7 @@ fn run_windows() -> Result<(), DaemonError> {
     // `Status.logError` instead.
     eprintln!("ConPTY: using {}", portable_pty::conpty_source());
     let pid = std::process::id();
-    let instance_id = format!(
-        "{pid}-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0)
-    );
+    let instance_id = instance_id();
     // The record is written before anything can be served and re-read by
     // nobody here: it exists for the processes that will read it while this
     // one holds the lock.

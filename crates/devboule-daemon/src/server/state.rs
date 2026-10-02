@@ -380,7 +380,12 @@ impl ServerState {
         // empty and `secret_store()` selects lazily, a test build pins it to the
         // file store under this runtime dir. See `initial_secret_store`.
         let secret_store = Self::initial_secret_store(&paths_for_state.dir);
-        let sessions = SessionRegistry::new(paths, journal);
+        // The queue snapshots every session publishes are stamped with this
+        // daemon's instance id, so the registry is built with it: the id is
+        // minted once per process in `server::lifecycle` and is what tells a
+        // client that the revision counter it kept belongs to a daemon that is
+        // gone.
+        let sessions = SessionRegistry::new(paths, journal, instance_id.clone());
         // The registry reads the profile store at one moment — a session's first
         // prompt — so it holds the handle, not a copy of the document
         // (`create-from-profile`). It is built here rather than inline in the

@@ -261,11 +261,87 @@ pub(super) fn write_child_stdin(
     let Some(stdin) = stdin.as_mut() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::BrokenPipe,
-            format!("{label} stdin is closed"),
+            TransportClosed(label),
         ));
     };
     stdin.write_all(bytes)?;
     stdin.flush()
+}
+
+/// A child's stdin that is already closed, so the write never started and not
+/// one byte of the prompt reached the child.
+///
+/// It rides inside the [`std::io::Error`] every write road already reports with,
+/// because that is the type a plain `Write` implementation can carry and the
+/// one the ACP writer's buffered flush hands back. Whether it is there decides
+/// whether a caller that owns the message may offer it again, so it is read as
+/// the marker it is and never as the prose around it.
+#[derive(Debug)]
+pub(super) struct TransportClosed(&'static str);
+
+impl std::fmt::Display for TransportClosed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} stdin is closed", self.0)
+    }
+}
+
+impl std::error::Error for TransportClosed {}
+
+/// Whether this write failed because the transport was already closed — a
+/// failure that happened before any byte went out.
+pub(super) fn transport_was_closed(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<TransportClosed>())
+        .is_some()
+}
+
+/// What one write to a child cost, split by what it says about delivery.
+///
+/// A closed transport took no byte, so a caller that owns the message — the
+/// queue does — may offer it again and nothing is said twice. Every other
+/// failure may have written part of the prompt, and offering it again may. The
+/// split is made where the failing write still is an [`std::io::Error`], and
+/// `describe` writes the prose the wire carries, so each road keeps the
+/// sentence its caller has always read.
+#[derive(Debug)]
+pub(crate) enum WriteAttempt {
+    Refused(WireError),
+    Uncertain(WireError),
+}
+
+impl WriteAttempt {
+    /// One transport failure, placed by whether the transport was closed.
+    pub(crate) fn of(error: std::io::Error, describe: fn(&std::io::Error) -> WireError) -> Self {
+        let wire = describe(&error);
+        if transport_was_closed(&error) {
+            Self::Refused(wire)
+        } else {
+            Self::Uncertain(wire)
+        }
+    }
+}
+
+impl WriteAttempt {
+    /// The same failure as the `io::Error` a `Write` hands back, so a flush
+    /// that wrapped a classified write keeps the classification across it: a
+    /// refused attempt carries the closed-transport marker for `label`.
+    pub(crate) fn into_io(self, label: &'static str) -> std::io::Error {
+        match self {
+            Self::Refused(_) => {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, TransportClosed(label))
+            }
+            Self::Uncertain(wire) => std::io::Error::other(wire.message),
+        }
+    }
+}
+
+impl From<WriteAttempt> for WireError {
+    fn from(attempt: WriteAttempt) -> Self {
+        match attempt {
+            WriteAttempt::Refused(error) | WriteAttempt::Uncertain(error) => error,
+        }
+    }
 }
 
 pub(crate) trait ReaderDispatch: Send {

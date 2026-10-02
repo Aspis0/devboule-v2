@@ -251,6 +251,8 @@ fn the_creation_send_titles_from_the_task_not_the_composition() {
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the creation's prompt is accepted");
 
@@ -393,6 +395,8 @@ fn an_a2a_envelope_never_becomes_the_title() {
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::IncomingA2a,
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the relay is accepted");
 
@@ -439,6 +443,8 @@ fn a_daemon_notice_never_becomes_the_title() {
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::SystemNotice,
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the notice is accepted");
 
@@ -486,6 +492,8 @@ fn a_composed_first_prompt_titles_from_the_persons_words() {
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::SystemNotice,
             steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the notice is accepted");
     assert_eq!(
@@ -516,6 +524,8 @@ fn a_composed_first_prompt_titles_from_the_persons_words() {
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
             steer_origin: SteerOrigin::Person,
+            require_no_turn_running: false,
+            require_queue_unfenced: false,
         })
         .expect("the prompt is accepted");
 

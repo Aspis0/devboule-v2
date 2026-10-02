@@ -147,3 +147,45 @@ fn the_heartbeat_is_not_a_client_and_does_not_hold_the_daemon_up() {
     );
     drop(heartbeat);
 }
+
+/// The instance id is the epoch every queue snapshot carries, and the two
+/// daemons a client must tell apart start with it. It is drawn from the OS once
+/// per process, so it is 128 bits of hex and no two starts agree on it: a pid
+/// and a clock collide (Windows reuses pids, and a restart loop is faster than
+/// the millisecond the old value named).
+///
+/// The name says queue on purpose: the filters the gate runs are `queue`,
+/// `session_`, `peer_` and `acp`, and none of them reaches this module.
+#[cfg(windows)]
+#[test]
+fn the_queue_epoch_is_entropy_and_two_starts_do_not_agree_on_one() {
+    let first = instance_id();
+    let second = instance_id();
+
+    for drawn in [&first, &second] {
+        assert_eq!(drawn.len(), 32, "128 bits hex-encoded: {drawn}");
+        assert!(
+            drawn
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+            "lowercase hex and nothing else: {drawn}"
+        );
+    }
+    assert_ne!(first, second, "two draws from the OS do not collide");
+}
+
+/// With no entropy the epoch cannot be unique, but it keeps the shape every
+/// client reads, and it is not the bare pid and millisecond the draw replaced.
+#[cfg(windows)]
+#[test]
+fn the_queue_epoch_without_entropy_keeps_its_shape() {
+    let drawn = fallback_instance_id();
+
+    assert_eq!(drawn.len(), 32, "the same 128-bit shape: {drawn}");
+    assert!(
+        drawn
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+        "lowercase hex and nothing else: {drawn}"
+    );
+}

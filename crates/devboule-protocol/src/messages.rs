@@ -353,6 +353,75 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachment_references: Vec<AttachmentReference>,
     },
+    /// Queue one message for this session's next free turn.
+    ///
+    /// The daemon holds the queue in memory for the life of the session and
+    /// publishes its whole contents as a
+    /// [`crate::SessionEvent::QueueSnapshot`] on every change, so every client
+    /// attached to the session sees one list. The payload is
+    /// [`Self::SessionSend`]'s — text plus the same two attachment lists —
+    /// because a queued message is the same message, only later: inline
+    /// attachments are deposited into the session's store at queue time and
+    /// travel from there as references.
+    ///
+    /// Item ids are the daemon's, never the caller's: an add answers with no
+    /// id of its own and the snapshot that follows names the new row. What
+    /// the caller does choose is `client_operation_id`, which is what makes a
+    /// retry after a lost reply safe: the same id with the same payload is
+    /// answered again without queueing the message twice, and the same id with
+    /// a different payload is refused.
+    SessionQueueAdd {
+        id: u64,
+        session_id: String,
+        client_operation_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<PromptAttachment>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachment_references: Vec<AttachmentReference>,
+    },
+    /// Replace one queued item's text, keeping its place in the queue. A
+    /// recorded send error is cleared: new text has not failed yet.
+    SessionQueueEdit {
+        id: u64,
+        session_id: String,
+        client_operation_id: String,
+        item_id: String,
+        text: String,
+    },
+    /// Take one item out of the queue. An item a send has already claimed is
+    /// not in the queue any more, and this answers accordingly.
+    SessionQueueRemove {
+        id: u64,
+        session_id: String,
+        client_operation_id: String,
+        item_id: String,
+    },
+    /// Move one item to another position (0 is the front — the slot the drain
+    /// sends from). The index is the position the item should occupy after it
+    /// has been taken out and reinserted, so it is judged against the queue
+    /// length before the removal.
+    SessionQueueMove {
+        id: u64,
+        session_id: String,
+        client_operation_id: String,
+        item_id: String,
+        to_index: usize,
+    },
+    /// Send one queued item **now**: it is claimed out of the queue and sent
+    /// with [`ActiveTurnBehavior::Interrupt`] — the running turn is stopped,
+    /// the text goes as a new turn — and on a definite failure it goes back at
+    /// the front carrying its error. Needs the subscription a send needs,
+    /// because this *is* a send, and the same authority a send has
+    /// (`session.send`). Interrupting from a paired device is still refused by
+    /// the send path, exactly as it is for a direct send.
+    SessionQueueSendNow {
+        id: u64,
+        session_id: String,
+        client_operation_id: String,
+        subscription_id: SubscriptionId,
+        item_id: String,
+    },
     /// Deliver text from one live agent session to another.
     AgentMessageSend {
         id: u64,
@@ -1156,6 +1225,11 @@ impl ClientMessage {
             | Self::SessionClose { id, .. }
             | Self::SessionStop { id, .. }
             | Self::SessionSend { id, .. }
+            | Self::SessionQueueAdd { id, .. }
+            | Self::SessionQueueEdit { id, .. }
+            | Self::SessionQueueRemove { id, .. }
+            | Self::SessionQueueMove { id, .. }
+            | Self::SessionQueueSendNow { id, .. }
             | Self::AgentMessageSend { id, .. }
             | Self::SessionDeposit { id, .. }
             | Self::SessionAttachmentRead { id, .. }
@@ -1278,6 +1352,11 @@ impl ClientMessage {
             | Self::SessionStop { .. }
             | Self::SessionDeposit { .. }
             | Self::SessionAttachmentRead { .. }
+            | Self::SessionQueueAdd { .. }
+            | Self::SessionQueueEdit { .. }
+            | Self::SessionQueueRemove { .. }
+            | Self::SessionQueueMove { .. }
+            | Self::SessionQueueSendNow { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
@@ -1344,6 +1423,11 @@ impl ClientMessage {
             Self::SessionClose { .. } => "SessionClose",
             Self::SessionStop { .. } => "SessionStop",
             Self::SessionSend { .. } => "SessionSend",
+            Self::SessionQueueAdd { .. } => "SessionQueueAdd",
+            Self::SessionQueueEdit { .. } => "SessionQueueEdit",
+            Self::SessionQueueRemove { .. } => "SessionQueueRemove",
+            Self::SessionQueueMove { .. } => "SessionQueueMove",
+            Self::SessionQueueSendNow { .. } => "SessionQueueSendNow",
             Self::AgentMessageSend { .. } => "AgentMessageSend",
             Self::SessionDeposit { .. } => "SessionDeposit",
             Self::SessionAttachmentRead { .. } => "SessionAttachmentRead",
@@ -1454,6 +1538,13 @@ impl ClientMessage {
             | Self::SessionClose { .. }
             | Self::SessionStop { .. }
             | Self::SessionSend { .. }
+            // The queue is state-changing on every frame: each accepted one
+            // changes what the next turn of this session will say.
+            | Self::SessionQueueAdd { .. }
+            | Self::SessionQueueEdit { .. }
+            | Self::SessionQueueRemove { .. }
+            | Self::SessionQueueMove { .. }
+            | Self::SessionQueueSendNow { .. }
             | Self::AgentMessageSend { .. }
             | Self::SessionDeposit { .. }
             | Self::SessionResize { .. }
@@ -1690,6 +1781,13 @@ pub enum DaemonMessage {
     },
     Ok {
         id: u64,
+    },
+    /// The reply to a `SessionQueue*` request: the operation was applied, or —
+    /// when `replayed` is true — the answer this daemon already gave for that
+    /// `clientOperationId`, returned again without a second effect.
+    QueueAccepted {
+        id: u64,
+        replayed: bool,
     },
     /// The reply to [`ClientMessage::SessionSend`]: whether a turn is running
     /// on the session when the daemon answers, so the surface waits for a

@@ -174,6 +174,107 @@ pub(super) fn dispatch_session(
             audit_peer_unauthorized(state, conn, "SessionSend", Some(session_id), &reply);
             reply
         }
+        ClientMessage::SessionQueueAdd {
+            id,
+            session_id,
+            client_operation_id,
+            text,
+            attachments,
+            attachment_references,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .queue_add(
+                    &session_id,
+                    &client_operation_id,
+                    &text,
+                    &attachments,
+                    &attachment_references,
+                    owner,
+                    conn,
+                )
+                .map(|mutation| queue_reply(id, mutation)),
+        ),
+        ClientMessage::SessionQueueEdit {
+            id,
+            session_id,
+            client_operation_id,
+            item_id,
+            text,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .queue_edit(
+                    &session_id,
+                    &client_operation_id,
+                    &item_id,
+                    &text,
+                    owner,
+                    conn,
+                )
+                .map(|mutation| queue_reply(id, mutation)),
+        ),
+        ClientMessage::SessionQueueRemove {
+            id,
+            session_id,
+            client_operation_id,
+            item_id,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .queue_remove(&session_id, &client_operation_id, &item_id, owner, conn)
+                .map(|mutation| queue_reply(id, mutation)),
+        ),
+        ClientMessage::SessionQueueMove {
+            id,
+            session_id,
+            client_operation_id,
+            item_id,
+            to_index,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .queue_move(
+                    &session_id,
+                    &client_operation_id,
+                    &item_id,
+                    to_index,
+                    owner,
+                    conn,
+                )
+                .map(|mutation| queue_reply(id, mutation)),
+        ),
+        // A send with the same authority a send has, so a device that was
+        // audited for asking to take a running turn away still leaves that
+        // trail: the interruption is the part a reader may want to see.
+        ClientMessage::SessionQueueSendNow {
+            id,
+            session_id,
+            client_operation_id,
+            subscription_id,
+            item_id,
+        } => {
+            let reply = reply_result(
+                id,
+                state
+                    .sessions
+                    .queue_send_now(
+                        &session_id,
+                        &client_operation_id,
+                        subscription_id,
+                        &item_id,
+                        owner,
+                        conn,
+                    )
+                    .map(|mutation| queue_reply(id, mutation)),
+            );
+            audit_peer_unauthorized(state, conn, "SessionQueueSendNow", Some(session_id), &reply);
+            reply
+        }
         ClientMessage::AgentMessageSend {
             id,
             from_session,
@@ -988,6 +1089,16 @@ fn reply_result(id: u64, result: Result<DaemonMessage, WireError>) -> DaemonMess
     match result {
         Ok(message) => message,
         Err(error) => DaemonMessage::Error(error.with_id(id)),
+    }
+}
+
+/// The answer to an applied queue frame. `replayed` says the daemon is
+/// returning the answer it already gave for this `clientOperationId` rather
+/// than having applied the frame now, which is the whole point of the id.
+fn queue_reply(id: u64, mutation: QueueMutation) -> DaemonMessage {
+    DaemonMessage::QueueAccepted {
+        id,
+        replayed: mutation.replayed,
     }
 }
 

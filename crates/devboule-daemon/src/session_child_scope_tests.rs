@@ -73,8 +73,11 @@ fn a_restricted_child_keeps_its_birth_overlay_across_a_restart() {
     // The daemon after the restart: a new registry on the same file reads
     // the row the old one wrote.
     let journal_b = Arc::new(Journal::open(&_dir.join("journal.db")).expect("reopen"));
-    let registry_b =
-        SessionRegistry::new(RuntimePaths::from_dir(&_dir), Some(Arc::clone(&journal_b)));
+    let registry_b = SessionRegistry::new(
+        RuntimePaths::from_dir(&_dir),
+        Some(Arc::clone(&journal_b)),
+        test_epoch(),
+    );
     let row = registry_b
         .journal_roster()
         .expect("roster")
