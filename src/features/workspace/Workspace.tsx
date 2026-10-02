@@ -48,7 +48,7 @@ import { SessionStrip } from "./strip/SessionStrip";
 import { SessionRenameDialog } from "./strip/SessionRenameDialog";
 import { discardPersistedPendingCloses, sharedCloseActions } from "./strip/closeActions";
 import type { CloseIntent } from "./strip/closePolicy";
-import { useWorkspaceDaemon } from "./workspaceDaemon";
+import { usePairedDevices, useWorkspaceDaemon } from "./workspaceDaemon";
 import { reportSelection } from "./presence";
 import { createDaemonRecovery } from "./daemonRecovery";
 import {
@@ -103,13 +103,7 @@ import type {
   SessionKind,
 } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
-import {
-  daemonRestart,
-  devicesList,
-  providersList,
-  sessionClose,
-  sessionStop,
-} from "../../lib/tauri";
+import { daemonRestart, providersList, sessionClose, sessionStop } from "../../lib/tauri";
 import { isCommandError } from "../../lib/commandError";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
@@ -232,15 +226,16 @@ export function Workspace({
   const dropSessionPermissions = (id: string) => {
     setPermissionQueue((queue) => queue.filter((item) => item.sessionId !== id));
   };
-  // Device id to display name, for the tab badge that names a peer session's
-  // device. One read per daemon connection: the names come from pairing and do
-  // not change while the connection lives.
-  const [peerNames, setPeerNames] = useState<ReadonlyMap<string, string>>(() => new Map());
   // What a toast may quote for a session — the pending permission card's
   // text and the last assistant message — is wired below, once the strip's
   // own rows exist: the provider's inputs are what this render puts on
   // screen, never a ref a later effect fills.
   const daemon = useWorkspaceDaemon();
+  const devices = usePairedDevices();
+  // Device id to display name, for the tab badge that names a peer session's
+  // device. The sidebar's host list reads the same payload on the same poll, so
+  // the names are derived from that read rather than from a second one.
+  const peerNames = useMemo(() => peerDeviceNames(devices.peers), [devices]);
   useEffect(() => {
     if (daemon.state !== "connected") sharedSessionQueueOwner().onDisconnect();
   }, [daemon.state]);
@@ -730,14 +725,6 @@ export function Workspace({
   // is reloaded on the same transitions — first connect and every reconnect
   // after a daemon restart. A successful load clears its own error.
   const wasConnectedRef = useRef(false);
-  const refreshPeerNames = useCallback(async () => {
-    try {
-      setPeerNames(peerDeviceNames((await devicesList()).peers));
-    } catch {
-      // Keep the names already known. A badge that falls back to the device id
-      // is better than one that disappears because a list read did not answer.
-    }
-  }, []);
   useEffect(() => {
     if (daemon.state !== "connected") {
       wasConnectedRef.current = false;
@@ -753,8 +740,7 @@ export function Workspace({
     userNavigatedRef.current = false;
     void retryProjects();
     void reconnectSessions();
-    void refreshPeerNames();
-  }, [daemon.state, reconnectSessions, refreshPeerNames, retryProjects]);
+  }, [daemon.state, reconnectSessions, retryProjects]);
   // The presence reporter itself is App's (one per app run, wherever the user is
   // standing); this surface only owns the fact of what it shows. That fact is
   // written from the STORE, not from a render: the selection is decided inside

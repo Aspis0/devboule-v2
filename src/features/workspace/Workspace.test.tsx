@@ -3406,10 +3406,10 @@ describe("Workspace sessions", () => {
     });
     await vi.waitFor(() => {
       expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
-      // Two readers ask for the device list (the peer badges here, the
-      // sidebar's host list on the daemon cadence), so wait for the read, not
-      // for a count.
-      expect(devicesList).toHaveBeenCalled();
+      // One reader asks for the device list (the poll behind the peer badges
+      // and the sidebar's host list), so the exact count is the gate: a second
+      // reader would make this assertion pass without the read it is about.
+      expect(devicesList).toHaveBeenCalledTimes(1);
     });
     // Assert after the device read has landed, so "no badge" says something
     // about a local session rather than about a map that has not arrived yet.
@@ -3483,10 +3483,10 @@ describe("Workspace sessions", () => {
     });
     await vi.waitFor(() => {
       expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
-      // Two readers ask for the device list (the peer badges here, the
-      // sidebar's host list on the daemon cadence), so wait for the read, not
-      // for a count.
-      expect(devicesList).toHaveBeenCalled();
+      // One reader asks for the device list (the poll behind the peer badges
+      // and the sidebar's host list), so the exact count is the gate: a second
+      // reader would make this assertion pass without the read it is about.
+      expect(devicesList).toHaveBeenCalledTimes(1);
     });
     await act(async () => {
       devicesRead.resolve(devicesReply);
@@ -3682,10 +3682,10 @@ describe("Workspace sessions", () => {
     });
     await vi.waitFor(() => {
       expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
-      // Two readers ask for the device list (the peer badges here, the
-      // sidebar's host list on the daemon cadence), so wait for the read, not
-      // for a count.
-      expect(devicesList).toHaveBeenCalled();
+      // One reader asks for the device list (the poll behind the peer badges
+      // and the sidebar's host list), so the exact count is the gate: a second
+      // reader would make this assertion pass without the read it is about.
+      expect(devicesList).toHaveBeenCalledTimes(1);
     });
     await act(async () => {
       devicesRead.resolve(devicesReply);

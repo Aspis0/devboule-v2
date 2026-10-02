@@ -1,19 +1,18 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { DaemonStatus } from "../../../types/ipc";
 import { usePairedDevices } from "../workspaceDaemon";
 import { HostSectionHead } from "./HostSectionHead";
 import { sidebarHosts } from "./sidebarHosts";
 
 /**
- * The whole body of a remote host's section. Nothing of that host's workspaces
- * is in the app yet, and saying so is honest in a way an empty project list is
- * not — an empty list under a live host reads as a broken host.
+ * Nothing of a remote host's workspaces is in the app yet, and saying so is
+ * honest in a way an empty project list is not: an empty list under a live host
+ * reads as a broken host.
  */
 const REMOTE_BODY = "This host's workspaces are not available in this version.";
 
 export interface HostSectionsProps {
   daemon: DaemonStatus;
-  /** The local host's body: the workspace tree, or History. */
   children: ReactNode;
 }
 
@@ -26,20 +25,20 @@ function toggleCollapsed(current: ReadonlySet<string>, hostId: string): Readonly
 }
 
 /**
- * The sidebar's host list. One host is not a list: with nothing to tell apart
- * the header keeps the name and the dot it has always had. From two hosts on,
- * each host is a section with its own header, its own status word and its own
- * fold, and the local one carries the tree.
+ * One host is not a list: with nothing to tell apart, the header keeps the name
+ * and the dot it has always had. The grouping starts at two.
  */
 export function HostSections({ daemon, children }: HostSectionsProps) {
   const devices = usePairedDevices();
-  const { local, remotes } = sidebarHosts(daemon, devices);
+  // Keyed on the state, not the daemon object: the status poll hands out a new
+  // answer every 2 s and none of the rest of it reaches a host row.
+  const hosts = useMemo(() => sidebarHosts(daemon.state, devices), [daemon.state, devices]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
 
-  if (remotes.length === 0) {
+  if (hosts.remotes.length === 0) {
     return (
       <div className="sidebar-host">
-        <HostSectionHead name={local.name} dot={local.status.dot} word={null} />
+        <HostSectionHead name={hosts.local.name} dot={hosts.local.status.dot} word={null} />
         {children}
       </div>
     );
@@ -47,7 +46,7 @@ export function HostSections({ daemon, children }: HostSectionsProps) {
 
   return (
     <>
-      {[local, ...remotes].map((host) => {
+      {[hosts.local, ...hosts.remotes].map((host) => {
         const isCollapsed = collapsed.has(host.id);
         const body = host.isLocal ? children : <p className="sidebar-host-note">{REMOTE_BODY}</p>;
         return (

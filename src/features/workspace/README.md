@@ -116,14 +116,18 @@ separate journal log view, not terminal screen restore.
 
 ## The sidebar's hosts
 
-The sidebar lists this PC plus one section per paired `daemon`-role peer, read
-from `devices_list` on the daemon-status cadence (`workspaceDaemon.ts`). A `client` peer is a device that views and steers this one and is never
-dialled as a machine, so it is not a host. With one host the header is what it
-has always been — a name and a dot; sections start at two. A remote section's
-body is one honest line: nothing of another host's workspaces is in the app
-yet. `devices_list` reports a peer's liveness and nothing else — no credential
-state, no protocol version — so a host header claims only what it was told, and
-a failed read keeps the last rows and marks them unknown.
+The sidebar lists this PC plus one section per paired `daemon`-role peer, from
+the `devices_list` snapshot `workspaceDaemon.ts` polls on the daemon-status
+cadence — the same snapshot the peer badges take their device names from, so
+there is one reader. A `client` peer is a device that views and steers this one
+and is never dialled as a machine, so it is not a host. With one host the
+header is what it has always been — a name and a dot; sections start at two. A
+remote section's body is one honest line: nothing of another host's workspaces
+is in the app yet. `devices_list` reports a peer's liveness and nothing else —
+no credential state, no protocol version — so a host header claims only what it
+was told, and a failed read keeps the last rows and marks them unknown. A peer
+with no display name falls back to its tailnet node name and then to "Unnamed
+device": a raw device id is never a label.
 
 ## The tab strip
 

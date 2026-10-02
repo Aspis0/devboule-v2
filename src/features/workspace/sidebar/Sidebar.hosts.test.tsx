@@ -171,24 +171,16 @@ describe("the sidebar's host sections", () => {
     vi.useRealTimers();
   });
 
-  it("with this PC alone, draws the header it has always drawn", async () => {
+  it("with this PC alone, draws no section and nothing that folds", async () => {
     await render();
 
-    const host = container.querySelector<HTMLElement>(".sidebar-host");
-    if (host === null) throw new Error("the host block did not render");
-    const head = host.firstElementChild;
-    if (head === null) throw new Error("the host header did not render");
-    expect(head.tagName).toBe("DIV");
-    expect(head.className).toBe("sidebar-host-head");
-    expect([...head.childNodes].map(shape)).toEqual([
-      "svg.sidebar-host-icon",
-      "text:This PC",
-      "span.sidebar-top-spacer",
-      "span.workspace-status-dot workspace-dot-green",
-    ]);
-    // No section, and nothing that folds: one host is not a list.
+    // The markup itself is pinned node for node in Sidebar.loneHost.test.tsx;
+    // what is left here is the behaviour that a markup dump cannot carry.
     expect(sections()).toHaveLength(0);
-    expect(container.querySelector(".sidebar-host-head")?.getAttribute("aria-expanded")).toBeNull();
+    const head = hostHead();
+    expect(head.tagName).toBe("DIV");
+    expect(head.getAttribute("aria-expanded")).toBeNull();
+    expect(head.textContent).toBe("This PC");
   });
 
   it("with this PC alone, an offline daemon still greys the dot and drops no word", async () => {
