@@ -8,6 +8,8 @@ export interface ToolRowModel {
   displayName: string;
   summary?: string;
   icon: ToolIconName;
+  /** Set only for a fetch whose title is an http(s) URL: where the row links. */
+  linkUrl?: string;
 }
 
 // Maps, not object literals: `kind` is provider-controlled and must not be
@@ -116,6 +118,22 @@ function thinkDisplayName(subagentType?: string): string {
   return "Task";
 }
 
+/**
+ * A fetch title is a URL when the provider sent one: it collapses to its host
+ * and keeps an `href`. Any other title stays as sent, and a title that only
+ * looks like a URL gets no `href` rather than a guessed one.
+ */
+function fetchDisplay(title: string): { summary?: string; linkUrl?: string } {
+  if (title.length === 0) return {};
+  if (!/^https?:\/\//i.test(title)) return { summary: title };
+  try {
+    const url = new URL(title);
+    return { summary: url.hostname, linkUrl: url.href };
+  } catch {
+    return { summary: title };
+  }
+}
+
 export function toolRowDisplay(item: ToolItem): ToolRowModel {
   const kind = item.kind?.trim().toLowerCase();
   const label = kind !== undefined ? DISPLAY_NAMES.get(kind) : undefined;
@@ -131,6 +149,7 @@ export function toolRowDisplay(item: ToolItem): ToolRowModel {
           humanizeToolName(item.title) || item.title
         : "Tool";
   let summary: string | undefined;
+  let linkUrl: string | undefined;
   if (!fromBareName && kind !== "plan") {
     if (kind === "read" || kind === "edit" || kind === "delete") {
       const first = item.locations?.[0]?.path;
@@ -140,6 +159,10 @@ export function toolRowDisplay(item: ToolItem): ToolRowModel {
           : item.title.length > 0
             ? item.title
             : undefined;
+    } else if (kind === "fetch") {
+      const fetch = fetchDisplay(item.title);
+      summary = fetch.summary;
+      linkUrl = fetch.linkUrl;
     } else {
       summary = item.title.length > 0 ? item.title : undefined;
     }
@@ -147,6 +170,7 @@ export function toolRowDisplay(item: ToolItem): ToolRowModel {
   return {
     displayName,
     ...(summary === undefined ? {} : { summary }),
+    ...(linkUrl === undefined ? {} : { linkUrl }),
     icon: (kind !== undefined ? ICONS.get(kind) : undefined) ?? "wrench",
   };
 }

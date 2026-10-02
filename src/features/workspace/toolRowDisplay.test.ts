@@ -62,10 +62,36 @@ describe("toolRowDisplay", () => {
     });
   });
 
-  it("labels a fetch call with its url", () => {
-    expect(toolRowDisplay(tool({ kind: "fetch", title: "https://example.com" }))).toEqual({
+  it("collapses a fetch of a URL to its domain and keeps the URL to link", () => {
+    expect(
+      toolRowDisplay(tool({ kind: "fetch", title: "https://docs.example.com/guide?q=1" })),
+    ).toEqual({
       displayName: "Fetch",
-      summary: "https://example.com",
+      summary: "docs.example.com",
+      icon: "search",
+      linkUrl: "https://docs.example.com/guide?q=1",
+    });
+  });
+
+  it("shows a fetch's page title as sent when the title is not a URL", () => {
+    expect(toolRowDisplay(tool({ kind: "fetch", title: "Rust testing guide" }))).toEqual({
+      displayName: "Fetch",
+      summary: "Rust testing guide",
+      icon: "search",
+    });
+  });
+
+  it("shows a fetch's unparsable URL-like title as sent with no link", () => {
+    expect(toolRowDisplay(tool({ kind: "fetch", title: "https://" }))).toEqual({
+      displayName: "Fetch",
+      summary: "https://",
+      icon: "search",
+    });
+  });
+
+  it("omits a fetch summary and link when the title is empty", () => {
+    expect(toolRowDisplay(tool({ kind: "fetch", title: "" }))).toEqual({
+      displayName: "Fetch",
       icon: "search",
     });
   });

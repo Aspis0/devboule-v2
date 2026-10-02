@@ -74,6 +74,13 @@ export const ToolRow = memo(function ToolRow({
         ) : null}
       </summary>
       <div className="workspace-chat-tool-body">
+        {model.linkUrl !== undefined ? (
+          <div className="workspace-chat-tool-link">
+            <a href={model.linkUrl} rel="noreferrer" target="_blank">
+              {model.linkUrl}
+            </a>
+          </div>
+        ) : null}
         {item.locations !== undefined && item.locations.length > 0 ? (
           <div className="workspace-chat-tool-locations">
             {item.locations.map((location, index) => (

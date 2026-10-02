@@ -898,6 +898,15 @@
   overflow-wrap: anywhere;
 }
 
+/* The accent the file-tab preview's anchors use, on the row's code ground. */
+.workspace-chat-tool-link {
+  overflow-wrap: anywhere;
+}
+
+.workspace-chat-tool-link a {
+  color: var(--accent-text);
+}
+
 .workspace-chat-tool-body .workspace-chat-copy {
   margin-top: 4px;
   white-space: pre-wrap;
