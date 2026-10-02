@@ -94,7 +94,8 @@
   overflow-y: auto;
 }
 
-/* One section per device; several hosts are lane B3, so today: one header. */
+/* The lone host's block: one header plus the tree. Two hosts or more become
+   sections instead (below). */
 .sidebar-host {
   margin-bottom: var(--space-4);
 }
@@ -114,6 +115,38 @@
   width: 12px;
   height: 12px;
   flex: none;
+}
+
+/* Two hosts or more: one section each, the local one first. */
+.sidebar-host-section {
+  margin-bottom: var(--space-4);
+}
+
+/* A head that folds its section is a button, so it carries the row's own look
+   back: `.sidebar-host-head` already gives it the height, padding and type. */
+button.sidebar-host-head {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-radius: var(--radius-6);
+  cursor: pointer;
+}
+
+button.sidebar-host-head:hover,
+button.sidebar-host-head:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.sidebar-host-status {
+  white-space: nowrap;
+}
+
+.sidebar-host-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-8) var(--space-4);
+  color: var(--muted);
+  font-size: var(--type-meta);
 }
 
 .workspace-project {

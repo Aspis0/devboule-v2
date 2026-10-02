@@ -114,6 +114,17 @@ What is wired and what is not:
 History lives in the left sidebar footer beside the daemon status. It is a
 separate journal log view, not terminal screen restore.
 
+## The sidebar's hosts
+
+The sidebar lists this PC plus one section per paired `daemon`-role peer, read
+from `devices_list` on the daemon-status cadence (`workspaceDaemon.ts`). A `client` peer is a device that views and steers this one and is never
+dialled as a machine, so it is not a host. With one host the header is what it
+has always been — a name and a dot; sections start at two. A remote section's
+body is one honest line: nothing of another host's workspaces is in the app
+yet. `devices_list` reports a peer's liveness and nothing else — no credential
+state, no protocol version — so a host header claims only what it was told, and
+a failed read keeps the last rows and marks them unknown.
+
 ## The tab strip
 
 The strip carries live and silent sessions and **recovered** ones as well

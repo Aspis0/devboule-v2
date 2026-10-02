@@ -3406,7 +3406,10 @@ describe("Workspace sessions", () => {
     });
     await vi.waitFor(() => {
       expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
-      expect(devicesList).toHaveBeenCalledTimes(1);
+      // Two readers ask for the device list (the peer badges here, the
+      // sidebar's host list on the daemon cadence), so wait for the read, not
+      // for a count.
+      expect(devicesList).toHaveBeenCalled();
     });
     // Assert after the device read has landed, so "no badge" says something
     // about a local session rather than about a map that has not arrived yet.
@@ -3480,7 +3483,10 @@ describe("Workspace sessions", () => {
     });
     await vi.waitFor(() => {
       expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
-      expect(devicesList).toHaveBeenCalledTimes(1);
+      // Two readers ask for the device list (the peer badges here, the
+      // sidebar's host list on the daemon cadence), so wait for the read, not
+      // for a count.
+      expect(devicesList).toHaveBeenCalled();
     });
     await act(async () => {
       devicesRead.resolve(devicesReply);
@@ -3676,7 +3682,10 @@ describe("Workspace sessions", () => {
     });
     await vi.waitFor(() => {
       expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
-      expect(devicesList).toHaveBeenCalledTimes(1);
+      // Two readers ask for the device list (the peer badges here, the
+      // sidebar's host list on the daemon cadence), so wait for the read, not
+      // for a count.
+      expect(devicesList).toHaveBeenCalled();
     });
     await act(async () => {
       devicesRead.resolve(devicesReply);

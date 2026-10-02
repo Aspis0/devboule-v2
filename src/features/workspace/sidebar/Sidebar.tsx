@@ -2,6 +2,7 @@ import type { ChangeEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
 import { HistoryPanel } from "../../history/HistoryPanel";
 import type { DaemonStatus, Session } from "../../../types/ipc";
 import type { WorkspaceProject } from "../workspaceProjects";
+import { HostSections } from "./HostSections";
 import { SidebarFooter } from "./SidebarFooter";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
 import "./sidebar.css";
@@ -119,30 +120,7 @@ export function Sidebar({
             </div>
 
             <div className="workspace-scroll sidebar-body">
-              <div className="sidebar-host">
-                <div className="sidebar-host-head">
-                  <svg
-                    className="sidebar-host-icon"
-                    viewBox="0 0 24 24"
-                    aria-hidden="true"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <rect width="20" height="14" x="2" y="3" rx="2" />
-                    <path d="M8 21h8" />
-                    <path d="M12 17v4" />
-                  </svg>
-                  This PC
-                  <span className="sidebar-top-spacer" />
-                  <span
-                    className={`workspace-status-dot workspace-dot-${
-                      daemon.state === "connected" ? "green" : "border"
-                    }`}
-                  />
-                </div>
+              <HostSections daemon={daemon}>
                 {historyOpen ? (
                   <div className="workspace-history-panel">
                     <HistoryPanel
@@ -158,7 +136,7 @@ export function Sidebar({
                 ) : (
                   <WorkspaceTree {...tree} />
                 )}
-              </div>
+              </HostSections>
             </div>
 
             <SidebarFooter
