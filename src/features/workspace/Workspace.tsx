@@ -35,6 +35,7 @@ import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
+import { activeTabFor, forgetTab, rememberActiveTab, type TabMemory } from "./workspaceTabMemory";
 import { useTabSelection } from "./strip/useTabSelection";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
 import { useSessionRename } from "./strip/useSessionRename";
@@ -147,6 +148,15 @@ export function paneSessionOf<S extends { id: string }>(
   stripSessions: readonly S[],
 ): S | null {
   return stripSessions.find((session) => session.id === selectedSessionId) ?? null;
+}
+
+/**
+ * Which strips a session's tab belongs to. A session with no workspace — the
+ * Design surface creates those — belongs to every one of them, so its tab
+ * stays reachable wherever the user navigates.
+ */
+function belongsToWorkspace(session: Session, workspaceId: string | null): boolean {
+  return session.workspaceId === workspaceId || session.workspaceId === null;
 }
 
 /**
@@ -265,6 +275,9 @@ export function Workspace({
   // re-reads over its old content instead of an empty cell. Per mount, never
   // shared: each pane seeds from it and writes its landed reads back.
   const [toolContentCache] = useState(createToolContentCache);
+  // Which tab each workspace was last left on. Per mount and never persisted:
+  // a restart restores exactly what the one persisted selection restores.
+  const [tabMemory] = useState<TabMemory>(() => new Map());
 
   const sidebarWorkspaceIds = useMemo(
     () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
@@ -408,9 +421,8 @@ export function Workspace({
     closeActions.getFailuresSnapshot,
   );
   // One workspace predicate serves both the strip and overview so navigation cannot drift.
-  // Legacy sessions have no workspace to navigate to, so they stay reachable in every strip.
   const inSelectedWorkspace = useCallback(
-    (session: Session) => session.workspaceId === selectedWorkspace || session.workspaceId === null,
+    (session: Session) => belongsToWorkspace(session, selectedWorkspace),
     [selectedWorkspace],
   );
   const visibleSessions = useMemo(() => {
@@ -422,6 +434,24 @@ export function Workspace({
   const visibleToolTabs = useMemo(
     () => toolTabs.filter((tab) => tab.workspaceId === selectedWorkspace),
     [toolTabs, selectedWorkspace],
+  );
+  // The tab ids another workspace would render: the live set a remembered
+  // tab has to still belong to, or the switch falls back. Built per call
+  // because it is only ever asked for a workspace being entered.
+  const liveTabIdsFor = useCallback(
+    (workspaceId: string): ReadonlySet<string> => {
+      const hiding = new Set(closingIds);
+      const ids = new Set<string>();
+      for (const session of openSessions) {
+        if (!hiding.has(session.id) && belongsToWorkspace(session, workspaceId))
+          ids.add(session.id);
+      }
+      for (const tab of toolTabs) {
+        if (tab.workspaceId === workspaceId) ids.add(tab.id);
+      }
+      return ids;
+    },
+    [closingIds, openSessions, toolTabs],
   );
   const openEndedIds = useMemo(
     () => new Set(openSessions.filter((row) => row.state.type === "ended").map((row) => row.id)),
@@ -543,6 +573,9 @@ export function Workspace({
       );
       if (closedWorkspaceIds.size > 0) refreshWorkspaceStats([...closedWorkspaceIds]);
       closeSessionTabs(matched.map((session) => session.id));
+      if (selectedWorkspace !== null) {
+        for (const session of matched) forgetTab(tabMemory, selectedWorkspace, session.id);
+      }
       for (const session of matched) {
         closeActions.act(
           kind,
@@ -560,7 +593,16 @@ export function Workspace({
         );
       }
     },
-    [closeActions, closeSessionTabs, openSession, selectSession, refreshWorkspaceStats, sessions],
+    [
+      closeActions,
+      closeSessionTabs,
+      openSession,
+      selectSession,
+      refreshWorkspaceStats,
+      selectedWorkspace,
+      sessions,
+      tabMemory,
+    ],
   );
   // Multi-select and the tab close flow live in the strip's folder; the
   // strip only wires their handlers. The "+" button's ref is the flow's
@@ -575,10 +617,17 @@ export function Workspace({
   }, []);
   // Opening the same (kind, workspace, path) again focuses the existing
   // tab instead of duplicating it; opening focuses either way.
-  const openToolTab = useCallback((workspaceId: string, path: string, kind: ToolTabKind) => {
-    setToolTabs((prev) => openToolTabs(prev, makeToolTab(kind, workspaceId, path)));
-    setActiveToolTabId(toolTabId(kind, workspaceId, path));
-  }, []);
+  const openToolTab = useCallback(
+    (workspaceId: string, path: string, kind: ToolTabKind) => {
+      setToolTabs((prev) => openToolTabs(prev, makeToolTab(kind, workspaceId, path)));
+      const id = toolTabId(kind, workspaceId, path);
+      // Activates without `selectTab`, because re-clicking the tab already open
+      // must not re-read it — so the memory is written on this road instead.
+      rememberActiveTab(tabMemory, workspaceId, id);
+      setActiveToolTabId(id);
+    },
+    [tabMemory],
+  );
   // Every stand-down routes through here. The landed create is the only caller
   // that may skip it (guarded below); the roster reconcile never calls it.
   const standDownToolTab = useCallback(() => writeToolTab(null), [writeToolTab]);
@@ -594,9 +643,14 @@ export function Workspace({
   });
   // The ONE selection write the strip-facing readers use: a tool id parks
   // beside the session authority, a session id clears it. A stale tool id
-  // resolves to no visible tab, so the session underneath shows instead.
+  // resolves to no visible tab, so the session underneath shows instead. It
+  // is also the one writer of the per-workspace tab memory. `key` is the
+  // workspace the id belongs to, which a switch names itself: the id it
+  // restores already belongs to the workspace being entered, not the one
+  // being left.
   const selectTab = useCallback(
-    (id: string | null) => {
+    (id: string | null, key: string | null = selectedWorkspace) => {
+      if (key !== null) rememberActiveTab(tabMemory, key, id);
       if (id !== null && isToolTabId(id)) {
         if (id === activeToolTabIdRef.current) setToolRefreshNonce((nonce) => nonce + 1);
         writeToolTab(id);
@@ -605,7 +659,7 @@ export function Workspace({
       standDownToolTab();
       selectSession(id);
     },
-    [selectSession, standDownToolTab, writeToolTab],
+    [selectSession, selectedWorkspace, standDownToolTab, tabMemory, writeToolTab],
   );
   // A landed create takes the pane only while the tool axis stood still: the
   // same tab as at start and no counted move in between. A move keeps the pane.
@@ -631,6 +685,9 @@ export function Workspace({
     (ids: readonly string[]): void => {
       if (ids.length === 0) return;
       const gone = new Set(ids);
+      if (selectedWorkspace !== null) {
+        for (const id of ids) forgetTab(tabMemory, selectedWorkspace, id);
+      }
       setToolTabs((prev) => {
         for (const tab of prev) {
           if (gone.has(tab.id)) evictToolContent(toolContentCache, tab.workspaceId, tab.path);
@@ -638,7 +695,7 @@ export function Workspace({
         return prev.filter((tab) => !gone.has(tab.id));
       });
     },
-    [toolContentCache],
+    [selectedWorkspace, tabMemory, toolContentCache],
   );
   const tabSelection = useTabSelection({
     tabs: composedTabs,
@@ -995,12 +1052,21 @@ export function Workspace({
     (workspaceId: string) => {
       userNavigatedRef.current = true;
       setSelectedWorkspace(workspaceId);
-      // The session selection moves with the navigation: the workspace's
-      // first tab, or none (its empty state). Routing through selectTab
-      // leaves the old workspace's tool tab behind with it.
-      selectTab(openSessions.find((session) => session.workspaceId === workspaceId)?.id ?? null);
+      // The selection moves with the navigation: the tab this workspace was
+      // last left on, else the fallback the switch has always used — the
+      // workspace's first tab, or none (its empty state). Routing through
+      // selectTab leaves the old workspace's tool tab behind with it.
+      selectTab(
+        activeTabFor(
+          tabMemory,
+          workspaceId,
+          liveTabIdsFor(workspaceId),
+          openSessions.find((session) => session.workspaceId === workspaceId)?.id ?? null,
+        ),
+        workspaceId,
+      );
     },
-    [selectTab, openSessions, setSelectedWorkspace],
+    [liveTabIdsFor, openSessions, selectTab, setSelectedWorkspace, tabMemory],
   );
   const handleNewSession = useCallback(
     (trigger: HTMLButtonElement | null) => {
