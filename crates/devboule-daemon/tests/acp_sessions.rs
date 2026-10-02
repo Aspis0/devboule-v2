@@ -1685,6 +1685,139 @@ fn acp_session_interrupt_cancels_the_turn_but_keeps_the_session_alive() {
     wait_until_gone(pid);
 }
 
+/// Block on the watch's own frames until one reports `session_id` ended,
+/// returning every frame received with the Ended one included.
+///
+/// One bounded receive per frame under a single deadline, and no list
+/// request anywhere: the property under test is a push, so only the
+/// watcher's frames can witness it — a poll of a shared vec would pass
+/// on a sleep instead of on a frame that actually arrived.
+fn await_pushed_end(
+    frames: &mpsc::Receiver<Vec<SessionStateSnapshot>>,
+    session_id: &str,
+    after: &str,
+) -> Vec<Vec<SessionStateSnapshot>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut received = Vec::new();
+    loop {
+        match frames.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(frame) => {
+                let ended = frame.iter().any(|snapshot| {
+                    snapshot.id == session_id
+                        && matches!(
+                            snapshot.state,
+                            devboule_protocol::SessionState::Ended { .. }
+                        )
+                });
+                received.push(frame);
+                if ended {
+                    return received;
+                }
+            }
+            Err(_) => panic!(
+                "no pushed roster frame reported session {session_id} ended after {after}; pushed frames: {received:?}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn a_stopped_session_pushes_its_ended_state_to_roster_watchers() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (frame_tx, frame_rx) = mpsc::channel::<Vec<SessionStateSnapshot>>();
+    test.client
+        .sessions_watch(Arc::new(move |snapshots| {
+            let _ = frame_tx.send(snapshots);
+        }))
+        .expect("watch sessions");
+    let (session, _events) = test.attached_session();
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_stop(&session.id)
+        .expect("stop ACP session");
+    wait_until_gone(pid);
+    await_pushed_end(&frame_rx, &session.id, "the stop");
+    test.client
+        .session_close(&session.id)
+        .expect("close stopped ACP session");
+}
+
+#[test]
+fn a_session_whose_process_exits_by_itself_pushes_its_ended_state_to_roster_watchers() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (frame_tx, frame_rx) = mpsc::channel::<Vec<SessionStateSnapshot>>();
+    test.client
+        .sessions_watch(Arc::new(move |snapshots| {
+            let _ = frame_tx.send(snapshots);
+        }))
+        .expect("watch sessions");
+    let (session, _events) = test.attached_session();
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    // Nothing stops or closes the session: the provider dies on its own and
+    // the daemon sees the end without anyone asking for it.
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        assert!(!handle.is_null(), "the stub process was found");
+        let terminated = TerminateProcess(handle, 1);
+        CloseHandle(handle);
+        assert_ne!(terminated, 0, "the stub is terminated from outside");
+    }
+    // The journal-only row is Ended with no live activity, while a live
+    // map row carries Some(activity): that difference is the boundary.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut frames = Vec::new();
+    let marker = loop {
+        match frame_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(frame) => {
+                let journal_ended = frame.iter().any(|snapshot| {
+                    snapshot.id == session.id
+                        && matches!(
+                            snapshot.state,
+                            devboule_protocol::SessionState::Ended { .. }
+                        )
+                        && snapshot.activity.is_none()
+                });
+                frames.push(frame);
+                if journal_ended {
+                    break frames.len() - 1;
+                }
+            }
+            Err(_) => panic!(
+                "no pushed frame carries session {}'s journal-ended row after its process exiting; pushed frames: {frames:?}",
+                session.id
+            ),
+        }
+    };
+    let first_ended = frames
+        .iter()
+        .position(|frame| {
+            frame.iter().any(|snapshot| {
+                snapshot.id == session.id
+                    && matches!(
+                        snapshot.state,
+                        devboule_protocol::SessionState::Ended { .. }
+                    )
+            })
+        })
+        .expect("the marker frame reports Ended");
+    for (index, frame) in frames.iter().enumerate().take(marker + 1).skip(first_ended) {
+        let row = frame
+            .iter()
+            .find(|snapshot| snapshot.id == session.id)
+            .unwrap_or_else(|| panic!("pushed frame {index} dropped the ended row: {frame:?}"));
+        assert!(
+            matches!(row.state, devboule_protocol::SessionState::Ended { .. }),
+            "pushed frame {index} left the ended session in state {:?}: {frame:?}",
+            row.state
+        );
+    }
+    test.client
+        .session_close(&session.id)
+        .expect("close the ended ACP session");
+}
+
 #[test]
 fn acp_set_model_success_publishes_manifest() {
     let _test_lock = lock_tests();

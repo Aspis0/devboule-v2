@@ -1322,10 +1322,10 @@ fn state_broadcast_reaches_unattached_client_after_external_kill() {
 
 #[test]
 #[ignore = "spawns a real Windows ConPTY and kills it from outside the daemon"]
-fn state_broadcast_fires_once_for_an_exit_transition() {
+fn state_broadcast_settles_on_ended_for_an_exit_transition() {
     let harness = Harness::spawn();
-    let pid_file = harness.dir.join("state-broadcast-once.pid");
-    let client = harness.client("state-broadcast-once");
+    let pid_file = harness.dir.join("state-broadcast-settles.pid");
+    let client = harness.client("state-broadcast-settles");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .sessions_watch(collect_state_handler(Arc::clone(&received)))
@@ -1339,31 +1339,43 @@ fn state_broadcast_fires_once_for_an_exit_transition() {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        let ended = received
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|snapshots| {
-                snapshots.iter().any(|snapshot| {
-                    snapshot.id == session.id
-                        && matches!(snapshot.state, SessionState::Ended { .. })
-                })
+        let ended_seen = received.lock().unwrap().iter().any(|snapshots| {
+            snapshots.iter().any(|snapshot| {
+                snapshot.id == session.id && matches!(snapshot.state, SessionState::Ended { .. })
             })
-            .count();
-        if ended > 0 {
+        });
+        if ended_seen {
+            // The exit can publish twice (the waiter's live row and the reader's
+            // journal row differ): what must hold is a settled roster, not a count.
             std::thread::sleep(Duration::from_millis(500));
-            let ended_after_quiet = received
-                .lock()
-                .unwrap()
+            let frames = received.lock().unwrap();
+            let final_row = frames
+                .last()
+                .expect("at least the watch's first frame")
                 .iter()
-                .filter(|snapshots| {
-                    snapshots.iter().any(|snapshot| {
-                        snapshot.id == session.id
-                            && matches!(snapshot.state, SessionState::Ended { .. })
-                    })
-                })
-                .count();
-            assert_eq!(ended_after_quiet, 1, "exit broadcast repeated");
+                .find(|snapshot| snapshot.id == session.id)
+                .unwrap_or_else(|| panic!("the final frame dropped the ended session: {frames:?}"));
+            assert!(
+                matches!(final_row.state, SessionState::Ended { .. }),
+                "the final frame does not report the session ended: {final_row:?}"
+            );
+            let mut kinds: Vec<std::mem::Discriminant<SessionState>> = Vec::new();
+            for state in frames.iter().filter_map(|snapshots| {
+                snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.id == session.id)
+                    .map(|row| &row.state)
+            }) {
+                let kind = std::mem::discriminant(state);
+                if kinds.last() == Some(&kind) {
+                    continue;
+                }
+                assert!(
+                    !kinds.contains(&kind),
+                    "state kind revisited after settling: {state:?}"
+                );
+                kinds.push(kind);
+            }
             return;
         }
         std::thread::sleep(Duration::from_millis(20));

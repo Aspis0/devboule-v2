@@ -788,6 +788,9 @@ pub(super) fn finish_reader_session(
         if !registry.defer_child_end_if_pending(id, &session, &child_runtime, &owner) {
             registry.child_ended_with(id, Some(&session), Some(&child_runtime), Some(&owner));
         }
+        // The live entry is gone: this is the push that publishes the
+        // journal's ended row and keeps the session on the roster.
+        registry.notify_session_transition(&owner, id);
     }
     true
 }
