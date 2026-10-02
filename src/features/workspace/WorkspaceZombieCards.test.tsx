@@ -432,14 +432,9 @@ describe("closing a session and its permission cards", () => {
     expect(cards().length).toBe(0);
   });
 
-  it("the daemon's process-gone refusal keeps the recovered session's cards", async () => {
-    // A recovered row has no process to stop: the real daemon refuses the
-    // archive with invalid_request, the session still exists, and only a
-    // later roster absence may take the cards.
-    vi.mocked(sessionStop).mockRejectedValueOnce({
-      code: "invalid_request",
-      message: "This terminal process is gone.",
-    });
+  it("a successful archive of a recovered row drops its cards", async () => {
+    // A recovered row has no process to stop: the archive still lands, the
+    // row hides at once, and its queued permission goes with it.
     await renderWorkspace();
     await selectTab("agent-old");
     await emitRequest("agent-old", "tool-a");
@@ -449,8 +444,18 @@ describe("closing a session and its permission cards", () => {
     await flush();
 
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
-    expect(document.body.textContent).toContain("failed");
-    expect(cards().length).toBe(1);
+    expect(document.body.textContent).not.toContain("failed");
+    expect(container.querySelector("#workspace-session-tab-agent-old")).toBeNull();
+
+    // Prove the queue, not the unmounted pane: the roster takes the row away
+    // and brings it back, and no card returns with it.
+    await pushSnapshots([snapshotOf(terminalSession("session-2", "shell two"))]);
+    await pushSnapshots([
+      snapshotOf(recoveredAgent("agent-old", "Old transcript")),
+      snapshotOf(terminalSession("session-2", "shell two")),
+    ]);
+    await selectTab("agent-old");
+    expect(cards().length).toBe(0);
   });
 
   it("a moot close drops the cards without a failure", async () => {

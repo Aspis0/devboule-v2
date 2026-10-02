@@ -595,6 +595,12 @@ mod session_spawn_refusal_tests;
 #[cfg(test)]
 #[path = "session_static_route_tests.rs"]
 mod session_static_route_tests;
+/// The stop doors: a live child is killed and preserved, a recovered
+/// transcript has no process so the stop is already satisfied, and an id
+/// nobody owns is refused.
+#[cfg(test)]
+#[path = "session_stop_tests.rs"]
+mod session_stop_tests;
 /// The terminal-input tests carved out of `session_tests`: several observers
 /// sending complete inputs concurrently through one writer without interleaving,
 /// and only the resize owner being allowed to resize the terminal.
@@ -3020,6 +3026,22 @@ impl SessionRegistry {
     ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        // A recovered transcript's process is already gone, so the stop has
+        // nothing to kill or write; the subscription gate still runs first.
+        let transcript = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            match peer_entry_mut(&mut map, session_id, owner, &conn.conn_peer)? {
+                RegistryEntry::Transcript(session) => Some(Arc::clone(&session.runtime)),
+                _ => None,
+            }
+        };
+        if let Some(runtime) = transcript {
+            check_attached(&runtime, conn, subscription_id)?;
+            return Ok(());
+        }
         let (mut killer, runtime, job) = {
             let mut map = self
                 .inner
