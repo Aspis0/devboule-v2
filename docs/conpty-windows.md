@@ -75,6 +75,6 @@ The staged tree sits **beside `devboule-daemon.exe`**: `conpty\conpty.dll`,
 `…-NOTICE.md` — the layout herdr's installer deploys and verifies
 (`herdr-src/distribution/install.ps1`). The daemon executable's directory is
 the loader's only lookup, and the daemon, not the GUI, owns the
-pseudoconsoles. Application bundling is inactive today
-(`src-tauri/tauri.conf.json`, `bundle.active: false`); when a real installer or
-archive recipe exists it must place this tree beside the daemon executable.
+pseudoconsoles. The NSIS installer (`src-tauri/tauri.installer.conf.json`) ships the
+daemon without this tree, so an installed app runs the inbox ConPTY unless the
+tree is staged beside the installed `devboule-daemon.exe` by hand.

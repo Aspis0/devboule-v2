@@ -11,8 +11,9 @@
     // build that produces only `devboule.exe` produces an app that cannot start
     // one — and says so in a footer sentence nobody can act on. The dev command
     // has always built it; the release command must too, or `target/release`
-    // holds half an application. Packaging proper (`bundle.active` is false: the
-    // repo has never produced an installer) is a separate decision.
+    // holds half an application. The installer config (tauri.installer.conf.json)
+    // carries that release binary into the install root, so this command is also
+    // what stocks the setup payload.
     "beforeBuildCommand": "cargo build --release -p devboule-daemon && pnpm build"
   },
   "app": {
@@ -111,6 +112,9 @@
       }
     }
   },
+  // Inactive here on purpose: a bare `tauri build` would otherwise package an
+  // installer without the daemon. `pnpm build:installer` turns bundling on
+  // through tauri.installer.conf.json, which also carries the NSIS settings.
   "bundle": {
     "active": false
   }

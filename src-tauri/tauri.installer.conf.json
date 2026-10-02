@@ -1,0 +1,29 @@
+{
+  // Merged over tauri.conf.json only by `pnpm build:installer`
+  // (tauri build --config). tauri-build validates
+  // bundle.resources on every cargo build and fails when a path is missing, so
+  // the daemon mapping cannot live in a config every build reads: a checkout
+  // that never built the release daemon would not compile.
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    // The GUI spawns the daemon it finds beside its own executable
+    // (crates/devboule-daemon/src/spawn.rs:20-36), and on Windows NSIS the
+    // resource root IS the install root. An empty target keeps the source file
+    // name, so this lands as <install>\devboule-daemon.exe.
+    "resources": {
+      "../target/release/devboule-daemon.exe": ""
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        // Per-user NSIS would default to $LOCALAPPDATA\Devboule, which is the
+        // daemon's data directory (crates/devboule-daemon/src/paths.rs:21-38):
+        // the program files would sit inside data the uninstaller must keep.
+        // The pinned template moves only that default.
+        "template": "nsis/installer.nsi",
+        "installerHooks": "nsis/installer-hooks.nsh"
+      }
+    }
+  }
+}

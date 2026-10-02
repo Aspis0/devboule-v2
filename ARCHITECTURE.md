@@ -77,8 +77,16 @@ The daemon binary is found by the app at start-up: an explicit `DEVBOULE_DAEMON`
 the app executable, else `target/{debug,release}/devboule-daemon.exe`
 (`src-tauri/src/client/mod.rs`, `locate_daemon_binary`; the daemon's own client has the same rule at
 `crates/devboule-daemon/src/spawn.rs:20-37`). In development the daemon is built before the frontend
-runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); there is no bundling step
-(`bundle.active: false` in `src-tauri/tauri.conf.json`).
+runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); the per-user NSIS installer bundles the
+same release binary beside the app executable. It is built with `pnpm build:installer`, which passes
+`src-tauri/tauri.installer.conf.json` (the NSIS target and the daemon resource) to `tauri build`; the
+shared config keeps `bundle.active` false, so a bare `pnpm tauri build` produces `devboule.exe` and no
+installer. The resource lives in that file and not in `tauri.conf.json` because tauri-build checks
+every `bundle.resources` path on every cargo build (`tauri-build-2.6.3/src/lib.rs:555-572`): a
+clean checkout that never built the release daemon would not compile. That resource path assumes the
+default workspace `target/release`, so packaging under a `CARGO_TARGET_DIR` or for a cross target is
+unsupported: the bundler would read whatever sits at `target/release/devboule-daemon.exe`, or fail
+when nothing does.
 
 ### What the daemon owns that the app does not
 
@@ -220,8 +228,8 @@ so "the frame was not delivered" is reachable. Whether that reattach is intended
 should prove the daemon is gone before exiting, is an open question, and is not answered by any code
 here.
 
-Two smaller facts that belong to this section. There is **no updater in the tree** (`bundle.active =
-false` in `src-tauri/tauri.conf.json`; no updater plugin in `src-tauri/Cargo.toml:21-33`), so
+Two smaller facts that belong to this section. There is **no updater in the tree** (no updater
+plugin in `src-tauri/Cargo.toml:21-33`), so
 "restart the daemon for an app update" has no implementation; a daemon speaking another protocol
 version is *refused* with a sentence telling the user to reinstall, not replaced
 (`crates/devboule-protocol/src/handshake.rs:110-131`). And attachment folders left by sessions that
@@ -1069,7 +1077,7 @@ registry fetchers and the npm runner (`transport.rs:35`, `crates/devboule-daemon
 `secret_store.rs:52`, `registry.rs:45`).
 
 **There is no updater, so there is no update path.** No updater plugin in
-`src-tauri/Cargo.toml:21-33`, `bundle.active` is `false` in `src-tauri/tauri.conf.json`. A daemon
+`src-tauri/Cargo.toml:21-33`, no updater key in `src-tauri/tauri.conf.json`. A daemon
 speaking a different protocol version is refused rather than replaced
 (`crates/devboule-protocol/src/handshake.rs:110-131`).
 

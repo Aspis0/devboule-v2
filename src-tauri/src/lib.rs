@@ -3,6 +3,8 @@ mod backend;
 mod client;
 mod close_flow;
 mod close_prompt;
+#[cfg(test)]
+mod nsis_template_pin;
 mod oracle;
 mod plugins;
 mod preview_scope;
