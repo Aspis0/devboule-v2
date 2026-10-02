@@ -5,7 +5,12 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseMarkdownText } from "./markdownParser";
 
-vi.mock("../lib/openInBrowser", () => ({ openInBrowser: vi.fn() }));
+// Only the hand-off is mocked: the real predicate decides which URL a click
+// routes, which is the behaviour these tests are about.
+vi.mock("../lib/openInBrowser", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/openInBrowser")>();
+  return { ...actual, openInBrowser: vi.fn() };
+});
 
 import { openInBrowser } from "../lib/openInBrowser";
 
@@ -38,5 +43,35 @@ describe("external links in markdown", () => {
     await act(async () => link.dispatchEvent(click));
     expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("https://e.com/a");
     expect(click.defaultPrevented).toBe(true);
+  });
+
+  it("hands a middle click to the system browser too", async () => {
+    const container = await render("see [docs](https://e.com/a)");
+    const link = container.querySelector<HTMLAnchorElement>("a[href]");
+    if (link === null) throw new Error("markdown link did not render");
+    const middle = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 });
+    await act(async () => link.dispatchEvent(middle));
+    expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("https://e.com/a");
+    expect(middle.defaultPrevented).toBe(true);
+  });
+
+  it("renders a credentialed link as the text the agent wrote", async () => {
+    const container = await render("see [docs](https://user:pass@example.com/a)");
+    expect(container.querySelector("a[href]")).toBeNull();
+    expect(container.textContent).toBe("see [docs](https://user:pass@example.com/a)");
+    await act(async () =>
+      container.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })),
+    );
+    expect(vi.mocked(openInBrowser)).not.toHaveBeenCalled();
+  });
+
+  it("leaves a mailto click to the browser", async () => {
+    const container = await render("write to [them](mailto:someone@example.com)");
+    const link = container.querySelector<HTMLAnchorElement>("a[href]");
+    if (link === null) throw new Error("mailto link did not render");
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => link.dispatchEvent(click));
+    expect(click.defaultPrevented).toBe(false);
+    expect(vi.mocked(openInBrowser)).not.toHaveBeenCalled();
   });
 });

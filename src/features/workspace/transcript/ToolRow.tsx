@@ -1,6 +1,6 @@
 import { memo } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
-import { openInBrowser } from "../../../lib/openInBrowser";
+import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { toolRowDisplay } from "../toolRowDisplay";
 import { ToolIcon } from "../ToolIcon";
@@ -78,17 +78,7 @@ export const ToolRow = memo(function ToolRow({
       <div className="workspace-chat-tool-body">
         {linkUrl !== undefined ? (
           <div className="workspace-chat-tool-link">
-            <a
-              href={linkUrl}
-              onClick={(event) => {
-                event.preventDefault();
-                openInBrowser(linkUrl);
-              }}
-              rel="noreferrer"
-              target="_blank"
-            >
-              {linkUrl}
-            </a>
+            <ExternalLink href={linkUrl}>{linkUrl}</ExternalLink>
           </div>
         ) : null}
         {item.locations !== undefined && item.locations.length > 0 ? (

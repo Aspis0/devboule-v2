@@ -249,7 +249,11 @@ function parseRustCommandArguments(): Record<string, readonly string[]> {
             .trim()
             .replace(/^mut\s+/, "");
           const type = parameter.slice(colon + 1).trim();
-          return /\bState\s*</.test(type) || /\bAppHandle\b/.test(type) ? null : snakeToCamel(name);
+          return /\bState\s*</.test(type) ||
+            /\bAppHandle\b/.test(type) ||
+            /\bWebview(Window)?\b/.test(type)
+            ? null
+            : snakeToCamel(name);
         })
         .filter((name): name is string => name !== null);
       const commandName = functionMatch[1];
@@ -690,8 +694,9 @@ describe("bridge wire-key convention", () => {
 
     expect(
       { missing, extra, mismatched },
-      "TypeScript Tauri argument keys must match the Rust command signatures. State and " +
-        "AppHandle parameters are injected by Tauri and intentionally omitted.",
+      "TypeScript Tauri argument keys must match the Rust command signatures. State, " +
+        "AppHandle and Webview/WebviewWindow parameters are injected by Tauri and " +
+        "intentionally omitted.",
     ).toEqual({ missing: [], extra: [], mismatched: [] });
   });
 });

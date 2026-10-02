@@ -1,4 +1,5 @@
 import type { AgentChatItem } from "../../lib/agentSession";
+import { carriesCredentials } from "../../lib/urlCredentials";
 
 export type ToolItem = Extract<AgentChatItem, { role: "tool" }>;
 
@@ -128,7 +129,7 @@ function fetchDisplay(title: string): { summary?: string; linkUrl?: string } {
   if (title.length === 0) return {};
   if (!/^https?:\/\//i.test(title)) return { summary: title };
   const url = parsedUrl(title);
-  if (authority(title).includes("@")) {
+  if (carriesCredentials(title)) {
     return url !== null && url.host.length > 0 ? { summary: url.host } : {};
   }
   // The parser trims or percent-encodes whitespace and accepts a URL plus
@@ -144,12 +145,6 @@ function parsedUrl(value: string): URL | null {
   } catch {
     return null;
   }
-}
-
-/** What follows `://` up to the first path, query or fragment: an `@` there
- * is userinfo, never part of the host. */
-function authority(value: string): string {
-  return value.slice(value.indexOf("://") + 3).split(/[/?#]/, 1)[0] ?? "";
 }
 
 export function toolRowDisplay(item: ToolItem): ToolRowModel {

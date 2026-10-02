@@ -31,6 +31,21 @@ describe("openInBrowser", () => {
     expect(vi.mocked(externalUrlOpen)).not.toHaveBeenCalled();
   });
 
+  it("refuses a URL that carries credentials, the way the command does", () => {
+    openInBrowser("https://user@example.com/a");
+    openInBrowser("https://user:pass@example.com/a");
+    expect(vi.mocked(externalUrlOpen)).not.toHaveBeenCalled();
+  });
+
+  it("still opens an at sign that is not userinfo", () => {
+    openInBrowser("https://example.com/a@b");
+    openInBrowser("https://example.com/?mail=user@example.com");
+    expect(vi.mocked(externalUrlOpen).mock.calls).toEqual([
+      ["https://example.com/a@b"],
+      ["https://example.com/?mail=user@example.com"],
+    ]);
+  });
+
   it("answers a refused launch without a rejection", async () => {
     vi.mocked(externalUrlOpen).mockRejectedValueOnce(new Error("no browser"));
     openInBrowser("https://example.com/a");

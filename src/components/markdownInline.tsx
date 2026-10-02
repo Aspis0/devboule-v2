@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
+import { ExternalLink } from "./ExternalLink";
 import { parseChatCodeFilePath, scanChatFilePaths, type ChatFileLinks } from "../lib/chatFilePaths";
-import { openInBrowser } from "../lib/openInBrowser";
+import { carriesCredentials } from "../lib/urlCredentials";
 
 export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
   const links = fileLinks ?? null;
@@ -208,20 +209,14 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
     else {
       const href = text.slice(contentEnd + 2, end - 1);
       const label = text.slice(contentStart, contentEnd);
+      // A credentialed http(s) destination stays the text the agent wrote: the
+      // command refuses it, and hiding the URL protects nothing that the raw
+      // message, journal and copy do not already show.
       nodes.push(
-        /^(https?:|mailto:)/i.test(href) ? (
-          <a
-            key={key}
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(event) => {
-              event.preventDefault();
-              openInBrowser(href);
-            }}
-          >
+        /^(https?:|mailto:)/i.test(href) && !carriesCredentials(href) ? (
+          <ExternalLink key={key} href={href}>
             {label}
-          </a>
+          </ExternalLink>
         ) : (
           text.slice(index, end)
         ),

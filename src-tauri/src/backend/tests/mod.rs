@@ -7,5 +7,6 @@ mod command_scan;
 mod editor_launch;
 mod editor_path_spelling;
 mod editor_targets;
+mod open_external;
 mod open_in_editor;
 mod workspace_delete;

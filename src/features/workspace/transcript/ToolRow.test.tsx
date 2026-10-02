@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { ToolRow } from "./ToolRow";
 
-vi.mock("../../../lib/openInBrowser", () => ({ openInBrowser: vi.fn() }));
+// Only the hand-off is mocked: the real predicate decides which URL a click
+// routes, which is the behaviour these tests are about.
+vi.mock("../../../lib/openInBrowser", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../lib/openInBrowser")>();
+  return { ...actual, openInBrowser: vi.fn() };
+});
 
 import { openInBrowser } from "../../../lib/openInBrowser";
 
@@ -67,6 +72,18 @@ describe("ToolRow", () => {
     await act(async () => link.dispatchEvent(click));
     expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("https://docs.example.com/guide?q=1");
     expect(click.defaultPrevented).toBe(true);
+  });
+
+  it("hands a middle click on the fetched URL to the system browser", async () => {
+    const container = await renderRow(
+      tool({ kind: "fetch", title: "https://docs.example.com/guide?q=1" }),
+    );
+    const link = container.querySelector<HTMLAnchorElement>(".workspace-chat-tool-link a");
+    if (link === null) throw new Error("fetch row did not render a link");
+    const middle = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 });
+    await act(async () => link.dispatchEvent(middle));
+    expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("https://docs.example.com/guide?q=1");
+    expect(middle.defaultPrevented).toBe(true);
   });
 
   it("keeps a credentialed URL's userinfo out of the document and links nothing", async () => {
