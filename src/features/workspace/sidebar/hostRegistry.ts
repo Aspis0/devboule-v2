@@ -12,12 +12,10 @@ export const HOST_REGISTRY_STORAGE_KEY = "devboule.sidebarHostRegistry";
 const HOST_REGISTRY_VERSION = 1;
 
 export interface HostRegistryEntry {
-  /** Position in first-discovery order, counting from this PC. */
   order: number;
   collapsed: boolean;
 }
 
-/** Keyed by host id: a remote host's device id, or the local host's. */
 export type HostRegistry = Readonly<Record<string, HostRegistryEntry>>;
 
 export interface StorageLike {
@@ -29,7 +27,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** One past the highest order in use, so an append never lands on a taken one. */
 function nextOrder(registry: HostRegistry): number {
   let next = 0;
   for (const entry of Object.values(registry)) {
@@ -38,11 +35,57 @@ function nextOrder(registry: HostRegistry): number {
   return next;
 }
 
-function entryFrom(value: unknown): HostRegistryEntry | null {
+/** A position we can trust: whole, non-negative, and inside the range where
+ *  `nextOrder` can always take a step past it. */
+function isPosition(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+interface StoredEntry {
+  /** null when the record's own position cannot be believed. */
+  order: number | null;
+  collapsed: boolean;
+}
+
+/**
+ * A lost position costs the host its place, not its fold, so the fold survives
+ * only as itself: an entry with no boolean fold to keep is nothing.
+ */
+function storedEntryFrom(value: unknown): StoredEntry | null {
   if (!isRecord(value)) return null;
-  const order = value.order;
-  if (typeof order !== "number" || !Number.isFinite(order)) return null;
-  return { order, collapsed: value.collapsed === true };
+  const collapsed = typeof value.collapsed === "boolean" ? value.collapsed : null;
+  if (isPosition(value.order)) return { order: value.order, collapsed: collapsed ?? false };
+  return collapsed === null ? null : { order: null, collapsed };
+}
+
+/** Every position we believe, then every position we do not, ids breaking a tie. */
+function byPositionThenId(
+  [idA, a]: [string, StoredEntry],
+  [idB, b]: [string, StoredEntry],
+): number {
+  if (a.order === null) return b.order === null ? idA.localeCompare(idB) : 1;
+  if (b.order === null) return -1;
+  return a.order - b.order || idA.localeCompare(idB);
+}
+
+/**
+ * Reading renumbers, so whatever arrived in storage — duplicates, negatives, a
+ * float, a number too large to step past — leaves a registry whose last
+ * position is one short of the next host's, which is what keeps a new host
+ * last.
+ */
+function normalizeEntries(stored: Record<string, unknown>): HostRegistry {
+  const rows: Array<[string, StoredEntry]> = [];
+  for (const [hostId, value] of Object.entries(stored)) {
+    const entry = storedEntryFrom(value);
+    if (entry !== null) rows.push([hostId, entry]);
+  }
+  rows.sort(byPositionThenId);
+  const registry: Record<string, HostRegistryEntry> = {};
+  rows.forEach(([hostId, entry], index) => {
+    registry[hostId] = { order: index, collapsed: entry.collapsed };
+  });
+  return registry;
 }
 
 /**
@@ -57,12 +100,7 @@ export function readHostRegistry(storage: StorageLike | null): HostRegistry {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || parsed.v !== HOST_REGISTRY_VERSION) return {};
     if (!isRecord(parsed.hosts)) return {};
-    const registry: Record<string, HostRegistryEntry> = {};
-    for (const [hostId, value] of Object.entries(parsed.hosts)) {
-      const entry = entryFrom(value);
-      if (entry !== null) registry[hostId] = entry;
-    }
-    return registry;
+    return normalizeEntries(parsed.hosts);
   } catch {
     return {};
   }
@@ -80,9 +118,8 @@ export function writeHostRegistry(storage: StorageLike | null, registry: HostReg
 }
 
 /**
- * Every host in the list, first-seen order, with the ones the registry has
- * never met appended. A host the list no longer carries keeps its entry and its
- * place, so it returns where it was rather than at the end.
+ * A host the list no longer carries keeps its entry and its place, so it returns
+ * where it was rather than at the end.
  *
  * The record comes back identical when there was nothing to add: that identity
  * is what lets a caller write on a change and write nothing otherwise.
@@ -111,7 +148,6 @@ export function withHostCollapsed(
   return { ...registry, [hostId]: { order: current?.order ?? nextOrder(registry), collapsed } };
 }
 
-/** The host ids this registry has met, earliest first. */
 export function hostOrder(registry: HostRegistry): string[] {
   return Object.entries(registry)
     .sort(([, a], [, b]) => a.order - b.order)

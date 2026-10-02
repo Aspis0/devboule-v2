@@ -10,13 +10,12 @@ import {
 } from "./hostRegistry";
 
 export interface HostRegistryView {
-  /** Every host the sidebar has drawn, earliest first. */
   order: readonly string[];
   isCollapsed: (hostId: string) => boolean;
   toggle: (hostId: string) => void;
 }
 
-/** The one guarded read of the store: a throwing getter is no store at all. */
+/** Touching `localStorage` throws outright when storage is blocked. */
 function defaultStorage(): StorageLike | null {
   try {
     return typeof localStorage === "undefined" ? null : localStorage;
@@ -32,7 +31,7 @@ function defaultStorage(): StorageLike | null {
  */
 export function useHostRegistry(hostIds: readonly string[]): HostRegistryView {
   const [registry, setRegistry] = useState<HostRegistry>(() => readHostRegistry(defaultStorage()));
-  // The record the store already holds: what came out of it is not a change.
+  // What came out of the store is not a change, so the first render writes nothing.
   const stored = useRef(registry);
 
   useEffect(() => {

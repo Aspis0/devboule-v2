@@ -80,7 +80,7 @@ describe("the host registry the sidebar remembers", () => {
 
     expect(readHostRegistry(store)).toEqual({
       "dev-a": { order: 0, collapsed: false },
-      "dev-d": { order: 2, collapsed: false },
+      "dev-d": { order: 1, collapsed: false },
     });
   });
 
@@ -121,5 +121,74 @@ describe("the host registry the sidebar remembers", () => {
 
     expect(hostOrder(folded)).toEqual(["dev-a"]);
     expect(withHostCollapsed(folded, "dev-a", false)).toEqual(open);
+  });
+});
+
+describe("a record whose positions cannot be trusted", () => {
+  function stored(hosts: unknown) {
+    return readHostRegistry(
+      memoryStore({ [HOST_REGISTRY_STORAGE_KEY]: JSON.stringify({ v: 1, hosts }) }),
+    );
+  }
+
+  function positions(registry: ReturnType<typeof stored>) {
+    return Object.values(registry).map((entry) => entry.order);
+  }
+
+  it("loads negative, fractional and huge positions into a clean run", () => {
+    const registry = stored({
+      "dev-huge": { order: 1e300, collapsed: false },
+      "dev-real": { order: 4, collapsed: false },
+      "dev-negative": { order: -3, collapsed: false },
+      "dev-fraction": { order: 1.5, collapsed: false },
+    });
+
+    // Only the position we can trust is believed; the rest follow it by id.
+    expect(hostOrder(registry)).toEqual(["dev-real", "dev-fraction", "dev-huge", "dev-negative"]);
+    expect(positions(registry)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("settles two hosts that claim the same position by their ids", () => {
+    const registry = stored({
+      "dev-b": { order: 0, collapsed: false },
+      "dev-a": { order: 0, collapsed: false },
+    });
+
+    expect(hostOrder(registry)).toEqual(["dev-a", "dev-b"]);
+    expect(positions(registry)).toEqual([0, 1]);
+  });
+
+  it("appends a new host past every position it loaded", () => {
+    const grown = withDiscoveredHosts(
+      stored({
+        "dev-b": { order: -1, collapsed: false },
+        "dev-a": { order: 9, collapsed: false },
+      }),
+      ["dev-a", "dev-b", "dev-new"],
+    );
+
+    expect(hostOrder(grown)).toEqual(["dev-a", "dev-b", "dev-new"]);
+    expect(positions(grown)).toEqual([0, 1, 2]);
+  });
+
+  it("keeps the fold of a host whose position is lost", () => {
+    const registry = stored({
+      "dev-far": { order: -1, collapsed: true },
+      "dev-near": { order: 2, collapsed: false },
+    });
+
+    expect(registry["dev-far"]).toEqual({ order: 1, collapsed: true });
+  });
+
+  it("drops an entry with nothing to keep", () => {
+    const registry = stored({
+      "dev-no-flag": { order: -1 },
+      "dev-wrong-flag": { order: -1, collapsed: "yes" },
+      "dev-not-a-record": "nonsense",
+      "dev-trustworthy": { order: 0 },
+    });
+
+    expect(Object.keys(registry)).toEqual(["dev-trustworthy"]);
+    expect(registry["dev-trustworthy"]).toEqual({ order: 0, collapsed: false });
   });
 });
