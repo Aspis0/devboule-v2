@@ -7,6 +7,7 @@ import {
   beforeEachHarness,
   chipClick,
   endedAgentSession,
+  flush,
   recoveredAgentSession,
   renderWorkspace,
   silentAgentSession,
@@ -113,6 +114,79 @@ describe("workspace overview eligibility", () => {
     await act(async () => trigger().click());
     expect(optionIds()).toEqual(baselineIds.sort());
     expect(controller.getState().sessions.some((row) => row.id === "open-ended")).toBe(true);
+  });
+
+  it("lists only the selected workspace's session and tool tabs", async () => {
+    const { workspacesList, workspaceGitStatus } = await import("../../lib/tauri");
+    vi.mocked(workspacesList).mockResolvedValue([
+      {
+        id: "workspace-1",
+        projectId: "project-1",
+        title: "main",
+        isolation: "local",
+        path: "C:\\devboule",
+      },
+      {
+        id: "workspace-2",
+        projectId: "project-1",
+        title: "side",
+        isolation: "local",
+        path: "C:\\side",
+      },
+    ]);
+    vi.mocked(sessionsList).mockResolvedValue([
+      fullRow(agentSession("agent-one", "Agent one")),
+      fullRow({ ...terminalSession("other-1", "other one"), workspaceId: "workspace-2" }),
+    ]);
+    vi.mocked(workspaceGitStatus).mockResolvedValue({
+      isGit: true,
+      dirty: true,
+      branch: "main",
+      totals: { additions: 3, deletions: 1 },
+      rows: [
+        {
+          path: "src/writer.ts",
+          renamedFrom: null,
+          additions: 3,
+          deletions: 1,
+          status: "modified" as const,
+          capped: false,
+        },
+      ],
+      error: null,
+    });
+    await renderWorkspace();
+    const openDiffTab = async () => {
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
+      });
+      await flush();
+      const pencil = document.querySelector<HTMLButtonElement>('[aria-label="Open diff in a tab"]');
+      if (pencil === null) throw new Error("diff pencil did not render");
+      await act(async () => {
+        pencil.click();
+      });
+      await flush();
+    };
+    const switchWorkspace = async (name: string) => {
+      await act(async () => {
+        const rows = [...document.querySelectorAll<HTMLButtonElement>(".workspace-row")];
+        const target = rows.find((row) => row.textContent?.includes(name));
+        if (target === undefined) throw new Error(`workspace row did not render: ${name}`);
+        target.click();
+      });
+      await flush();
+    };
+    await openDiffTab();
+    await switchWorkspace("side");
+    await openDiffTab();
+    await switchWorkspace("main");
+    await act(async () => trigger().click());
+    const ids = optionIds();
+    expect(ids).toContain("agent-one");
+    expect(ids).toContain("tool:diff:workspace-1:src%2Fwriter.ts");
+    expect(ids).not.toContain("other-1");
+    expect(ids).not.toContain("tool:diff:workspace-2:src%2Fwriter.ts");
   });
 
   it.each([false, true])(

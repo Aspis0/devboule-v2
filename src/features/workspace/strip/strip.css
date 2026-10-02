@@ -318,6 +318,14 @@ button.workspace-rate:focus-visible {
   background: var(--fill-hover);
 }
 
+/* The active tab keeps the strip's selected fill under hover and focus. */
+.workspace-overview-option[aria-selected="true"],
+.workspace-overview-option[aria-selected="true"]:hover,
+.workspace-overview-option[aria-selected="true"]:focus-visible {
+  color: var(--ink);
+  background: var(--selection);
+}
+
 .workspace-overview-option .workspace-status-dot {
   width: 6px;
   height: 6px;
@@ -349,6 +357,12 @@ button.workspace-rate:focus-visible {
   padding: 8px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.workspace-overview-group-label {
+  padding: 6px 8px 2px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .workspace-overview-preview {

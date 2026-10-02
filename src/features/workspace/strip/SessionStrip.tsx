@@ -207,12 +207,27 @@ export function SessionStrip({
     () => tabs.flatMap((tab) => (tab.type === "session" ? [tab.session.id] : [])),
     [tabs],
   );
+  // The list's own count: open tabs first, then the sessions with no tab,
+  // named as sessions so the count never mislabels either side.
+  const overviewUnopenedCount = useMemo(
+    () => overviewSessions.filter((session) => !openIds.has(session.id)).length,
+    [overviewSessions, openIds],
+  );
+  const overviewTabsWord = tabs.length === 1 ? "tab" : "tabs";
+  const overviewSessionWord = overviewUnopenedCount === 1 ? "session" : "sessions";
   const handleOverviewOpen = useCallback(
     (sessionId: string) => {
       closeOverview();
       onOpenSession(sessionId);
     },
     [closeOverview, onOpenSession],
+  );
+  const handleOverviewSelectTool = useCallback(
+    (id: string) => {
+      closeOverview();
+      selectTab(id);
+    },
+    [closeOverview, selectTab],
   );
 
   const handleChipKeyDown = useCallback(
@@ -371,7 +386,7 @@ export function SessionStrip({
         className="workspace-rate"
         aria-haspopup="listbox"
         aria-expanded={overviewOpen}
-        aria-label={`${statusText} — show all ${overviewSessions.length} sessions${attentionSummary}`}
+        aria-label={`${statusText} — show all ${tabs.length} ${overviewTabsWord}${overviewUnopenedCount === 0 ? "" : ` and ${overviewUnopenedCount} more ${overviewSessionWord}`}${attentionSummary}`}
         onClick={() => {
           if (!overviewOpen) openOverview("press");
           else if (overviewSourceRef.current === "hover") overviewSourceRef.current = "press";
@@ -392,9 +407,12 @@ export function SessionStrip({
         contentRef={overviewRootRef}
         sessions={overviewSessions}
         stripOrder={stripOrder}
+        tabs={tabs}
+        activeTabId={activeTabId}
         activeSessionId={selectedSessionId}
         workspaceName={workspaceName}
         onOpen={handleOverviewOpen}
+        onSelectTab={handleOverviewSelectTool}
         onClose={closeOverview}
         onListEnter={cancelOverviewTimers}
         onListLeave={scheduleOverviewClose}

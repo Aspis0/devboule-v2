@@ -1,9 +1,3 @@
-// The end-of-strip all-sessions popover: every roster session of the
-// selected workspace stays reachable here, with a preview of what the
-// roster already holds. No transcript fetch in this slice — a snippet of
-// the conversation would need transcript/journal hydration, which no
-// roster row carries.
-
 import {
   useEffect,
   useMemo,
@@ -20,7 +14,9 @@ import { AnchoredPopover } from "../popoverPlace";
 import { sessionKindWord, sessionTitle } from "../workspaceSessions";
 import { chipDisplay } from "./stripDisplay";
 import { sessionAttentionLabel } from "../sessionAttention";
-import { orderOverviewSessions, sessionLastActiveMs, sessionStartedLabel } from "./sessionOverview";
+import { sessionLastActiveMs, sessionStartedLabel } from "./sessionOverview";
+import { composeOverviewGroups, type OverviewRow } from "./overviewTabs";
+import { toolTabDirectory, toolTabLabel, type StripTab, type ToolTab } from "./toolTabs";
 import { StripKindMark } from "./StripKindMark";
 import { DOT_CLASS } from "./StripChip";
 
@@ -35,10 +31,17 @@ interface SessionOverviewMenuProps {
   sessions: readonly Session[];
   /** The strip's session ids in strip order: membership here marks a row open. */
   stripOrder: readonly string[];
+  /** Every tab of the selected workspace in strip order: session tabs and
+   * tool tabs. Workspace scopes this; the menu lists exactly what it gets. */
+  tabs: readonly StripTab[];
+  /** The strip's active tab id: seeds the preview when it names a row. */
+  activeTabId: string | null;
   activeSessionId: string | null;
   /** The selected workspace's title; null renders no workspace line. */
   workspaceName: string | null;
   onOpen: (sessionId: string) => void;
+  /** A tool row's click or Enter: the owner selects the tab and closes. */
+  onSelectTab: (id: string) => void;
   onClose: () => void;
   onListEnter: () => void;
   onListLeave: () => void;
@@ -50,9 +53,12 @@ export function SessionOverviewMenu({
   contentRef,
   sessions,
   stripOrder,
+  tabs,
+  activeTabId,
   activeSessionId,
   workspaceName,
   onOpen,
+  onSelectTab,
   onClose,
   onListEnter,
   onListLeave,
@@ -71,18 +77,16 @@ export function SessionOverviewMenu({
     return () => window.clearInterval(id);
   }, [open]);
 
-  const ordered = useMemo(
-    () => orderOverviewSessions(sessions, stripOrder),
-    [sessions, stripOrder],
+  const groups = useMemo(
+    () => composeOverviewGroups(tabs, sessions, stripOrder),
+    [tabs, sessions, stripOrder],
   );
-  const openIds = useMemo(() => new Set(stripOrder), [stripOrder]);
-  // One rule for the initial row, shared by the seed and the first
-  // focus: the active id only when it names a row, else the first row.
-  // It matches the roving fallback below, so tabIndex=0 and DOM focus
-  // never disagree about which row is current.
-  const seedId = ordered.some((session) => session.id === activeSessionId)
-    ? activeSessionId
-    : (ordered[0]?.id ?? null);
+  const rows = useMemo(() => groups.flatMap((group) => group.rows), [groups]);
+  const seedId = rows.some((row) => row.id === activeTabId)
+    ? activeTabId
+    : rows.some((row) => row.id === activeSessionId)
+      ? activeSessionId
+      : (rows[0]?.id ?? null);
   // Hovering or keyboarding a row previews it; otherwise the seed row —
   // the preview never sits empty. Seeded in the initializers: the owner
   // remounts per opening, and a roster push must move neither behind a
@@ -96,9 +100,8 @@ export function SessionOverviewMenu({
       ?.focus({ preventScroll: true });
   };
 
-  // Focus enters the list on opening only, and only when the trigger holds
-  // it — a hover-open never steals the pane's focus, and a roster push
-  // never refocuses. No state is set here, so this stays an effect.
+  // Once per open, and only when the trigger holds focus — a hover-open
+  // never steals the pane's focus. No state is set, so this stays an effect.
   const openedRef = useRef(false);
   useEffect(() => {
     if (!open) {
@@ -142,20 +145,18 @@ export function SessionOverviewMenu({
 
   if (!open) return null;
 
-  const currentId = ordered.some((session) => session.id === focusedId)
-    ? focusedId
-    : (ordered[0]?.id ?? null);
+  const currentId = rows.some((row) => row.id === focusedId) ? focusedId : (rows[0]?.id ?? null);
   const preview =
-    ordered.find((session) => session.id === previewId) ??
-    ordered.find((session) => session.id === activeSessionId) ??
-    ordered[0] ??
+    rows.find((row) => row.id === previewId) ??
+    rows.find((row) => row.id === activeSessionId) ??
+    rows[0] ??
     null;
 
   const step = (from: string | null, delta: 1 | -1): string | null => {
-    if (ordered.length === 0) return null;
-    const index = ordered.findIndex((session) => session.id === from);
-    if (index === -1) return ordered[delta === 1 ? 0 : ordered.length - 1]?.id ?? null;
-    return ordered[(index + delta + ordered.length) % ordered.length]?.id ?? null;
+    if (rows.length === 0) return null;
+    const index = rows.findIndex((row) => row.id === from);
+    if (index === -1) return rows[delta === 1 ? 0 : rows.length - 1]?.id ?? null;
+    return rows[(index + delta + rows.length) % rows.length]?.id ?? null;
   };
 
   const onListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -173,8 +174,8 @@ export function SessionOverviewMenu({
     let next: string | null = null;
     if (event.key === "ArrowDown") next = step(currentId, 1);
     else if (event.key === "ArrowUp") next = step(currentId, -1);
-    else if (event.key === "Home") next = ordered[0]?.id ?? null;
-    else if (event.key === "End") next = ordered[ordered.length - 1]?.id ?? null;
+    else if (event.key === "Home") next = rows[0]?.id ?? null;
+    else if (event.key === "End") next = rows[rows.length - 1]?.id ?? null;
     else return;
     if (next === null) return;
     event.preventDefault();
@@ -183,10 +184,11 @@ export function SessionOverviewMenu({
     focusOption(next);
   };
 
-  const onOptionKeyDown = (id: string, event: ReactKeyboardEvent<HTMLDivElement>) => {
+  const onOptionKeyDown = (row: OverviewRow, event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      onOpen(id);
+      if (row.kind === "tool") onSelectTab(row.id);
+      else onOpen(row.id);
     }
   };
 
@@ -199,58 +201,110 @@ export function SessionOverviewMenu({
       onMouseEnter={onListEnter}
       onMouseLeave={onListLeave}
     >
-      {ordered.length === 0 ? (
-        <div className="workspace-overview-empty">No sessions in this workspace.</div>
+      {rows.length === 0 ? (
+        <div className="workspace-overview-empty">No tabs in this workspace.</div>
       ) : (
         <div
           className="workspace-overview-list"
           role="listbox"
-          aria-label="All sessions"
+          aria-label="All tabs"
           onKeyDown={onListKeyDown}
         >
-          {ordered.map((session) => {
-            const display = chipDisplay(session);
-            const title = sessionTitle(session);
-            const attentionLabel = sessionAttentionLabel(session);
-            const isOpen = openIds.has(session.id);
-            const lastActive = sessionLastActiveMs(session, now);
-            return (
-              <div
-                key={session.id}
-                role="option"
-                tabIndex={session.id === currentId ? 0 : -1}
-                aria-label={`${title}, ${display.stateLine}${attentionLabel === null ? "" : `, ${attentionLabel}`}${isOpen ? ", open tab" : ""}`}
-                data-overview-option={session.id}
-                className="workspace-overview-option"
-                onClick={() => onOpen(session.id)}
-                onMouseEnter={() => setPreviewId(session.id)}
-                onFocus={() => {
-                  setFocusedId(session.id);
-                  setPreviewId(session.id);
-                }}
-                onKeyDown={(event) => onOptionKeyDown(session.id, event)}
-              >
-                <span
-                  className={`workspace-status-dot ${DOT_CLASS[display.dot]}${display.pulse ? " dot-pulse" : ""}`}
-                />
-                <StripKindMark kind={session.kind} />
-                <span className="workspace-overview-title">{title}</span>
-                {attentionLabel !== null ? (
-                  <span className="workspace-overview-attention">{attentionLabel}</span>
-                ) : null}
-                {isOpen ? <span className="workspace-overview-open">Open</span> : null}
-                {lastActive === null ? null : (
-                  <span className="workspace-overview-time">{relativeTime(lastActive, now)}</span>
-                )}
+          {groups.map((group) => (
+            <div key={group.key} role="group" aria-label={group.label}>
+              <div className="workspace-overview-group-label" aria-hidden="true">
+                {group.label}
               </div>
-            );
-          })}
+              {group.rows.map((row) => {
+                if (row.kind === "tool") {
+                  const label = toolTabLabel(row.tool.path);
+                  const directory = toolTabDirectory(row.tool.path);
+                  return (
+                    <div
+                      key={row.id}
+                      role="option"
+                      tabIndex={row.id === currentId ? 0 : -1}
+                      aria-selected={row.id === activeTabId}
+                      aria-label={`${label}${directory === null ? "" : `, ${directory}`}, ${row.tool.kind} tab, open tab`}
+                      data-overview-option={row.id}
+                      className="workspace-overview-option"
+                      onClick={() => onSelectTab(row.id)}
+                      onMouseEnter={() => setPreviewId(row.id)}
+                      onFocus={() => {
+                        setFocusedId(row.id);
+                        setPreviewId(row.id);
+                      }}
+                      onKeyDown={(event) => onOptionKeyDown(row, event)}
+                    >
+                      <StripKindMark kind={row.tool.kind} />
+                      <span className="workspace-overview-title">{label}</span>
+                      <span className="workspace-overview-open">Open</span>
+                    </div>
+                  );
+                }
+                const session = row.session;
+                const display = chipDisplay(session);
+                const title = sessionTitle(session);
+                const attentionLabel = sessionAttentionLabel(session);
+                const lastActive = sessionLastActiveMs(session, now);
+                return (
+                  <div
+                    key={session.id}
+                    role="option"
+                    tabIndex={session.id === currentId ? 0 : -1}
+                    aria-selected={session.id === activeTabId}
+                    aria-label={`${title}, ${display.stateLine}${attentionLabel === null ? "" : `, ${attentionLabel}`}${row.open ? ", open tab" : ""}`}
+                    data-overview-option={session.id}
+                    className="workspace-overview-option"
+                    onClick={() => onOpen(session.id)}
+                    onMouseEnter={() => setPreviewId(session.id)}
+                    onFocus={() => {
+                      setFocusedId(session.id);
+                      setPreviewId(session.id);
+                    }}
+                    onKeyDown={(event) => onOptionKeyDown(row, event)}
+                  >
+                    <span
+                      className={`workspace-status-dot ${DOT_CLASS[display.dot]}${display.pulse ? " dot-pulse" : ""}`}
+                    />
+                    <StripKindMark kind={session.kind} />
+                    <span className="workspace-overview-title">{title}</span>
+                    {attentionLabel !== null ? (
+                      <span className="workspace-overview-attention">{attentionLabel}</span>
+                    ) : null}
+                    {row.open ? <span className="workspace-overview-open">Open</span> : null}
+                    {lastActive === null ? null : (
+                      <span className="workspace-overview-time">
+                        {relativeTime(lastActive, now)}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
       {preview !== null ? (
-        <OverviewPreview session={preview} workspaceName={workspaceName} now={now} />
+        preview.kind === "tool" ? (
+          <ToolOverviewPreview tool={preview.tool} />
+        ) : (
+          <OverviewPreview session={preview.session} workspaceName={workspaceName} now={now} />
+        )
       ) : null}
     </AnchoredPopover>
+  );
+}
+
+function ToolOverviewPreview({ tool }: { tool: ToolTab }) {
+  return (
+    <div className="workspace-overview-preview">
+      <div className="workspace-overview-preview-title">{toolTabLabel(tool.path)}</div>
+      <div className="workspace-overview-preview-state">
+        {tool.kind === "diff" ? "Diff" : "File"}
+      </div>
+      <div className="workspace-overview-preview-meta">{tool.path}</div>
+    </div>
   );
 }
 

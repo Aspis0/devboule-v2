@@ -165,4 +165,11 @@ describe("strip computed styles (real stylesheets, no app launch)", () => {
     expect(style.cursor).toBe("pointer");
     expect(style.flexShrink).toBe("0");
   });
+
+  it("holds the overview's selected option on the selection tokens", () => {
+    const selected = rulesFor('.workspace-overview-option[aria-selected="true"]');
+    expect(selected).not.toBe("");
+    expect(selected).toContain(`color: ${token("--ink")}`);
+    expect(selected).toContain(`background: ${token("--fill-selected")}`);
+  });
 });

@@ -69,6 +69,11 @@ function MenuHarness({
   onOpen: (id: string) => void;
   onClose: () => void;
 }) {
+  // Mirror the strip's session tabs for these session-only cases.
+  const tabs = composeStripTabs(
+    stripOrder.flatMap((id) => sessions.filter((session) => session.id === id)),
+    [],
+  );
   const triggerRef = useRef<HTMLButtonElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   return (
@@ -82,9 +87,12 @@ function MenuHarness({
         contentRef={contentRef}
         sessions={sessions}
         stripOrder={stripOrder}
+        tabs={tabs}
+        activeTabId={activeSessionId}
         activeSessionId={activeSessionId}
         workspaceName={workspaceName}
         onOpen={onOpen}
+        onSelectTab={() => {}}
         onClose={onClose}
         onListEnter={() => {}}
         onListLeave={() => {}}
@@ -392,7 +400,9 @@ describe("SessionStrip overview trigger", () => {
     // The visible text stays the strip's count; the name starts with it
     // and counts the list after it.
     expect(trigger.textContent).toBe("1 sessions");
-    expect(trigger.getAttribute("aria-label")).toBe("1 sessions — show all 4 sessions");
+    expect(trigger.getAttribute("aria-label")).toBe(
+      "1 sessions — show all 1 tab and 3 more sessions",
+    );
   });
 
   it("pins a hover-opened list on click instead of dismissing it", () => {
@@ -522,7 +532,7 @@ describe("SessionStrip overview trigger", () => {
     // the sentence stands beside where it would be.
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     expect(document.querySelector(".workspace-overview-empty")?.textContent).toContain(
-      "No sessions in this workspace.",
+      "No tabs in this workspace.",
     );
     expect(rendered.optionOrder()).toEqual([]);
   });

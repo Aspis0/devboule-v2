@@ -47,6 +47,11 @@ export function toolTabLabel(path: string): string {
   return base === "" ? path : base;
 }
 
+export function toolTabDirectory(path: string): string | null {
+  const slash = path.lastIndexOf("/");
+  return slash > 0 && slash < path.length - 1 ? path.slice(0, slash) : null;
+}
+
 export function composeStripTabs(
   sessions: readonly Session[],
   tools: readonly ToolTab[],
