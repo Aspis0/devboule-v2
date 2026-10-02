@@ -572,18 +572,25 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     rosterRef.current = sessionRoster;
   }, [sessionRoster]);
 
-  // The archive act: each target closes only if the roster still holds the row
-  // the ask captured; the closed children's rows drop after the read-back.
+  // The archive act: each target closes only while the roster holds the row
+  // the ask captured, finished; a row the roster dropped is already closed.
+  // The closed children's rows drop after the read-back.
   const archiveFinishedSubagents = useCallback(
     async (targets: readonly SubagentArchiveTarget[]): Promise<ReadonlyMap<string, string>> => {
       const sentences = new Map<string, string>();
       const closed: string[] = [];
       for (const target of targets) {
-        const row = rosterRef.current?.find((session) => session.id === target.id);
-        if (row?.state === undefined || target.generation === null) continue;
+        const roster = rosterRef.current;
+        if (roster === undefined) continue;
+        const row = roster.find((session) => session.id === target.id);
+        if (row === undefined) {
+          closed.push(target.id);
+          continue;
+        }
+        if (row.state === undefined || target.generation === null) continue;
         // The daemon's close carries no generation: this read is the whole guard.
         if (isRunningSessionState(row.state) || row.state.generation !== target.generation) {
-          sentences.set(target.id, "It restarted, so it was left open.");
+          sentences.set(target.id, "It is running again, so it was left open.");
           continue;
         }
         try {
@@ -784,6 +791,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         className="workspace-conversation workspace-scroll"
         onScroll={onScroll}
         tabIndex={-1}
+        role="region"
+        aria-label="Conversation"
       >
         <div ref={contentRef} className="workspace-conversation-content">
           <TurnRail scrollRef={conversationRef} contentRef={contentRef} items={state.items} />

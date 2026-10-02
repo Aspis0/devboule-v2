@@ -246,7 +246,7 @@ describe("the subagent menu's archive action", () => {
     // The restarted child keeps its row and says why it was left alone.
     expect(rowTitles()).toEqual(["First child"]);
     const sentence = document.querySelector<HTMLElement>(".workspace-subagent-row-failure");
-    expect(sentence?.textContent).toBe("It restarted, so it was left open.");
+    expect(sentence?.textContent).toBe("It is running again, so it was left open.");
   });
 
   it("leaves a child alone that restarted and finished again under a new generation", async () => {
@@ -272,7 +272,25 @@ describe("the subagent menu's archive action", () => {
     expect(vi.mocked(sessionClose)).not.toHaveBeenCalledWith("child-a");
     expect(rowTitles()).toEqual(["First child"]);
     const sentence = document.querySelector<HTMLElement>(".workspace-subagent-row-failure");
-    expect(sentence?.textContent).toBe("It restarted, so it was left open.");
+    expect(sentence?.textContent).toBe("It is running again, so it was left open.");
+  });
+
+  it("says the child is running when it is running under the generation the ask took", async () => {
+    let roster: Session[] = [ended("child-a")];
+    const refresh = vi.fn(async () => undefined);
+    await act(async () => root.render(surface(roster, refresh)));
+    await addSubagent("child-a", "First child");
+    await settleSubagent("child-a", "completed");
+    await openMenu();
+
+    await pressArchiveAction();
+    roster = [live("child-a")];
+    await act(async () => root.render(surface(roster, refresh)));
+    await answerAsk("Archive");
+
+    expect(sessionClose).not.toHaveBeenCalled();
+    const sentence = document.querySelector<HTMLElement>(".workspace-subagent-row-failure");
+    expect(sentence?.textContent).toBe("It is running again, so it was left open.");
   });
 
   it("closes each child once when the confirm button is activated twice in one tick", async () => {
@@ -433,6 +451,54 @@ describe("the subagent menu's archive action", () => {
 
     const transcript = document.querySelector<HTMLElement>(".workspace-conversation");
     expect(document.activeElement).toBe(transcript);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("names the conversation, where focus falls back, as a region", async () => {
+    const refresh = vi.fn(async () => undefined);
+    await act(async () => root.render(surface([], refresh)));
+    const transcript = document.querySelector<HTMLElement>(".workspace-conversation");
+    expect(transcript?.getAttribute("role")).toBe("region");
+    expect(transcript?.getAttribute("aria-label")).toBe("Conversation");
+  });
+
+  it("puts focus on the pill when the ask is cancelled after its sole target left the roster", async () => {
+    let roster: Session[] = [ended("child-only")];
+    const refresh = vi.fn(async () => undefined);
+    await act(async () => root.render(surface(roster, refresh)));
+    await addSubagent("child-only", "Only child");
+    await settleSubagent("child-only", "completed");
+    await openMenu();
+
+    await pressArchiveAction();
+    // The roster drops the child while the ask is up: the action the ask
+    // came from unmounts with it.
+    roster = [];
+    await act(async () => root.render(surface(roster, refresh)));
+    expect(archiveAction()).toBeNull();
+
+    await answerAsk("Cancel");
+
+    expect(sessionClose).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="subagent-pill"]'));
+  });
+
+  it("counts a target the roster no longer holds as closed, without a call or a sentence", async () => {
+    let roster: Session[] = [ended("child-only")];
+    const refresh = vi.fn(async () => undefined);
+    await act(async () => root.render(surface(roster, refresh)));
+    await addSubagent("child-only", "Only child");
+    await settleSubagent("child-only", "completed");
+    await openMenu();
+
+    await pressArchiveAction();
+    roster = [];
+    await act(async () => root.render(surface(roster, refresh)));
+    await answerAsk("Archive");
+
+    expect(sessionClose).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="subagent-pill"]')).toBeNull();
+    expect(document.querySelector(".workspace-subagent-row-failure")).toBeNull();
     expect(document.activeElement).not.toBe(document.body);
   });
 });

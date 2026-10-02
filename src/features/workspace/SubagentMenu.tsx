@@ -134,6 +134,18 @@ export function SubagentMenu({
     close();
   }, [archiveNonce, close]);
 
+  // The dialog gives focus back to the action the ask came from; when the
+  // roster dropped the last target meanwhile, that action is gone and the pill
+  // is the nearest control left. The dialog's own effect has already run.
+  const askWasUpRef = useRef(false);
+  useEffect(() => {
+    const wasUp = askWasUpRef.current;
+    askWasUpRef.current = ask !== null;
+    if (!wasUp || ask !== null) return;
+    if (document.activeElement !== null && document.activeElement !== document.body) return;
+    pillRef.current?.focus({ preventScroll: true });
+  }, [ask]);
+
   if (subagents.length === 0) return null;
 
   // Archivable = finished AND listed by the roster: a task the provider runs
