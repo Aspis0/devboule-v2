@@ -116,10 +116,28 @@ body:has(.root-fallback) {
   padding: 10px;
 }
 
-.surface-fallback-note {
+.surface-fallback-body {
   margin: 0;
   color: var(--ink-soft);
   font-size: var(--type-small);
+}
+
+.surface-fallback-disclosure {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--type-small);
+}
+
+.surface-fallback-summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.surface-fallback-details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
 }
 
 .surface-fallback-actions {
@@ -130,7 +148,8 @@ body:has(.root-fallback) {
 /* The app's pill-button vocabulary (settings.css .diagnostics-copy): the
    boundary actions introduce no new button shape. */
 .boundary-reload,
-.boundary-retry {
+.boundary-retry,
+.surface-fallback-copy {
   display: grid;
   width: fit-content;
   height: var(--control-default);
@@ -147,7 +166,9 @@ body:has(.root-fallback) {
 .boundary-reload:hover,
 .boundary-reload:focus-visible,
 .boundary-retry:hover,
-.boundary-retry:focus-visible {
+.boundary-retry:focus-visible,
+.surface-fallback-copy:hover,
+.surface-fallback-copy:focus-visible {
   color: var(--accent-text);
   border-color: var(--terracotta);
 }

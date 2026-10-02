@@ -134,10 +134,13 @@ describe("App error boundaries", () => {
       timeout: 10_000,
     });
 
-    const alert = container.querySelector(".surface-fallback") as HTMLElement;
-    expect(alert.getAttribute("role")).toBe("alert");
-    expect(alert.textContent).toContain("Workspace");
-    expect(alert.textContent).toContain("workspace render failed");
+    const fallback = container.querySelector(".surface-fallback") as HTMLElement;
+    expect(fallback.querySelector('[role="alert"]')?.textContent).toBe(
+      "Workspace stopped working.",
+    );
+    // The throw is carried for bug reports, but only inside the closed
+    // disclosure — never as the sentence the live region announces.
+    expect(fallback.querySelector("details")?.textContent).toContain("workspace render failed");
     // The crescent shell around the broken surface keeps working.
     expect(container.querySelector('[role="navigation"]')).not.toBeNull();
     // The IPC stubs really intercept: the shell's inventory read went
@@ -145,7 +148,7 @@ describe("App error boundaries", () => {
     expect(mocks.pluginsList).toHaveBeenCalled();
 
     mocks.throwWorkspace = false;
-    const retry = alert.querySelector<HTMLButtonElement>(".boundary-retry");
+    const retry = fallback.querySelector<HTMLButtonElement>(".boundary-retry");
     if (retry === null) throw new Error("surface retry control did not render");
     await act(async () => retry.click());
     await vi.waitFor(() => expect(container.textContent).toContain("healthy workspace"), {
