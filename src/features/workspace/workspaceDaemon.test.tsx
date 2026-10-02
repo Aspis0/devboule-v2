@@ -150,12 +150,28 @@ describe("the daemon poll's answers", () => {
     vi.useRealTimers();
   });
 
+  /**
+   * Drives the store down, up (first device read), down and up again (the
+   * read that goes out past a pending one), so two device reads are outstanding
+   * at once — the only way to get one answer out of order.
+   */
+  async function reconnectTwice(): Promise<void> {
+    vi.mocked(daemonStatus).mockResolvedValue(UNREACHABLE);
+    await mount();
+    vi.mocked(daemonStatus).mockResolvedValue(CONNECTED);
+    await tick();
+    vi.mocked(daemonStatus).mockResolvedValue(UNREACHABLE);
+    await tick();
+    vi.mocked(daemonStatus).mockResolvedValue(CONNECTED);
+    await tick();
+  }
+
   it("keeps the newest device answer when an older one lands after it", async () => {
     const older = pending<DevicesReply>();
     const newer = pending<DevicesReply>();
     vi.mocked(devicesList).mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
-    await mount();
-    await tick();
+    await reconnectTwice();
+    expect(vi.mocked(devicesList).mock.calls.length).toBe(2);
 
     await act(async () => newer.resolve(reply([peer("Studio", true)])));
     expect(peers().map((row) => row.displayName)).toEqual(["Studio"]);
@@ -169,8 +185,7 @@ describe("the daemon poll's answers", () => {
     const older = pending<DevicesReply>();
     const newer = pending<DevicesReply>();
     vi.mocked(devicesList).mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
-    await mount();
-    await tick();
+    await reconnectTwice();
 
     await act(async () => newer.resolve(reply([peer("Studio", true)])));
     await act(async () => older.reject(new Error("daemon unreachable")));
