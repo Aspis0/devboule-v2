@@ -8,10 +8,10 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
-    cursor_replay_ok, AgentActivityState, AttachmentReference, Attention, AttentionReason, Cursor,
-    ErrorCode, NoticeSeverity, Session, SessionEvent, SessionEventEnvelope, SessionKind,
-    SessionModel, SessionOrigin, TranscriptIntegrity, UserMessageAuthor, UserMessageKind,
-    WireError,
+    cursor_replay_ok, AgentActivityState, AgentTaskItem, AttachmentReference, Attention,
+    AttentionReason, Cursor, ErrorCode, NoticeSeverity, Session, SessionEvent,
+    SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin, TranscriptIntegrity,
+    UserMessageAuthor, UserMessageKind, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -494,6 +494,7 @@ impl SessionRuntime {
                 next_seq: 1,
                 last_applied_seq: 0,
                 generation: 1,
+                agent_tasks_published: false,
                 screen: Some(Screen::new(cols, rows)),
                 transcript: false,
                 resize_owner: None,
@@ -1385,6 +1386,9 @@ impl SessionRuntime {
     pub(crate) fn set_generation(&self, generation: u64) {
         if let Ok(mut stream) = self.lock_stream() {
             stream.generation = generation;
+            // The restored checklist's gate belongs to one generation: a
+            // replacement process runs its own history pass.
+            stream.agent_tasks_published = false;
             self.generation.store(generation, Ordering::Release);
         }
     }
@@ -1530,6 +1534,27 @@ impl SessionRuntime {
     where
         F: FnOnce(u64, u64, u64) -> SessionEvent,
     {
+        self.publish_journaled_agent_event_if(|_| true, build)
+    }
+
+    /// The restored checklist's publish: the snapshot is the fallback for a
+    /// generation with no AgentTasks yet, and the refusal and the enqueue
+    /// share the stream lock every live publish takes.
+    pub(crate) fn publish_restored_agent_tasks(&self, items: Vec<AgentTaskItem>) -> bool {
+        self.publish_journaled_agent_event_if(
+            |stream| !stream.agent_tasks_published,
+            |_, _, _| SessionEvent::AgentTasks { items },
+        )
+        .is_some()
+    }
+
+    /// The same publish while `accept` holds, decided under the stream lock
+    /// that also enqueues — a live publish cannot slip between them.
+    fn publish_journaled_agent_event_if<P, F>(&self, accept: P, build: F) -> Option<SessionEvent>
+    where
+        P: FnOnce(&StreamState) -> bool,
+        F: FnOnce(u64, u64, u64) -> SessionEvent,
+    {
         // One reading of the journal's clock for the event's `at_ms` and the
         // row's `ts_ms`: replay carries the column back, so the two must be
         // the same instant, not two ticks of the same source.
@@ -1542,6 +1567,9 @@ impl SessionRuntime {
             if stream.output_closed {
                 return None;
             }
+            if !accept(&stream) {
+                return None;
+            }
             let was_silent = matches!(stream.disposition, Disposition::Silent);
             if !stream.process_exited {
                 stream.disposition = Disposition::Running;
@@ -1550,6 +1578,9 @@ impl SessionRuntime {
             let seq = stream.next_seq;
             stream.next_seq = stream.next_seq.saturating_add(1);
             let event = build(generation, seq, at_ms);
+            if matches!(&event, SessionEvent::AgentTasks { .. }) {
+                stream.agent_tasks_published = true;
+            }
             stream.last_publish = Some(Instant::now());
             self.record_activity(Some(seq), &event);
             enqueue_agent(&mut stream, event.clone(), Some(seq));
@@ -1932,6 +1963,9 @@ impl SessionRuntime {
             });
             let event_seq = event_seq.or_else(|| journal_output.as_ref().map(|(_, seq, _)| *seq));
             self.record_activity(event_seq, &event);
+            if matches!(&event, SessionEvent::AgentTasks { .. }) {
+                stream.agent_tasks_published = true;
+            }
             enqueue_agent(&mut stream, event.clone(), event_seq);
             self.published_frames.fetch_add(1, Ordering::Relaxed);
             self.published_bytes.fetch_add(

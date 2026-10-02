@@ -48,6 +48,12 @@ mod local_commands;
 /// for the same control channel; its tests drive this client's writer.
 #[path = "pi_out_of_band.rs"]
 mod out_of_band;
+/// The checklist a resumed pi restored: one `get_messages` read of the
+/// conversation pi loaded itself, through the task adapter. A child of
+/// this file — it asks through this client's control channel and publishes
+/// on the runtime the reader was handed.
+#[path = "pi_history_tasks.rs"]
+mod pi_history_tasks;
 /// The finish arbitration those feed: what a rejection answers, what a
 /// turn boundary means, and when an end belongs to the watchdog or the
 /// abort gate instead of the wire. A child of this file like the watchdog
@@ -1760,6 +1766,13 @@ fn spawn_pi(
     .with_compact_guard(compact_guard)
     .with_prompt_fate(Arc::clone(&prompt_fate))
     .with_turn_arbiter(Arc::clone(&arbiter));
+    // A resumed child restored its own conversation; a fresh one has no
+    // history to read, so only the resume road arms the task pass.
+    let reader_dispatch = if resume_session.is_some() {
+        reader_dispatch.with_restored_history()
+    } else {
+        reader_dispatch
+    };
     // The static prompt route reads the live model from the same catalog the
     // switcher keeps, so the two share one `Arc`. The switcher is built before
     // the session is assembled because the delivery runs through it: the same
@@ -3267,6 +3280,10 @@ struct PiReader {
     /// every frame the reader dispatches is reported here, and every
     /// end-of-run decision comes back from here.
     arbiter: Arc<pi_turn_arbiter::TurnArbiter>,
+    /// The resume road's read: pi loaded a conversation the journal never
+    /// saw, so the first feed — the first moment a runtime exists to
+    /// publish on — starts the history pass that restores the checklist.
+    restored_history: bool,
 }
 
 impl PiReader {
@@ -3297,6 +3314,7 @@ impl PiReader {
             fate: Arc::new(local_commands::SlashPromptFate::new()),
             extension_path: PathBuf::new(),
             arbiter: pi_turn_arbiter::TurnArbiter::bare(),
+            restored_history: false,
         }
     }
 
@@ -3334,6 +3352,13 @@ impl PiReader {
     fn with_turn_arbiter(mut self, arbiter: Arc<pi_turn_arbiter::TurnArbiter>) -> Self {
         arbiter.bind_broker(&self.permission_broker);
         self.arbiter = arbiter;
+        self
+    }
+
+    /// A resumed child: its conversation exists only in pi's own session
+    /// file, so the task pass reads the last checklist back from it.
+    fn with_restored_history(mut self) -> Self {
+        self.restored_history = true;
         self
     }
 
@@ -3397,6 +3422,12 @@ impl PiReader {
             // row whose derivation is the published list, carrying the row's
             // sequence like every other row.
             if value.get("command").and_then(Value::as_str) == Some("get_commands") && !claimed {
+                return Ok(());
+            }
+            // The restored-history read is the daemon's own tool: its reply
+            // can carry the whole conversation, replay derives nothing from
+            // it, and a late answer is no row either.
+            if value.get("command").and_then(Value::as_str) == Some("get_messages") {
                 return Ok(());
             }
             // The poll's replies re-derive nothing and would land in the
@@ -3729,6 +3760,10 @@ impl ReaderDispatch for PiReader {
             // every send path that must not wait for pi's slow reply.
             if let Some(reply) = self.commands_reply.take() {
                 commands::spawn_commands_waiter(reply, Arc::clone(runtime));
+            }
+            if self.restored_history {
+                self.restored_history = false;
+                pi_history_tasks::spawn(Arc::clone(&self.control), Arc::clone(runtime));
             }
             for value in std::mem::take(&mut self.deferred) {
                 self.dispatch_value(value, runtime)?;

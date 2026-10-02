@@ -381,6 +381,81 @@ fn live_pi_replay_honours_the_withheld_finish_across_a_page_boundary() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The pi checklist is one of the views the incremental reattach road
+/// re-derives: a `tool_execution_end` envelope goes through
+/// `pi_view::drive_replay`, which runs the task adapter, so the paged
+/// journal replay carries the same `AgentTasks` the live dispatch published.
+#[test]
+fn live_pi_replay_derives_the_journaled_checklist() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-pi-checklist-replay");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+    let session_id = "s.live.pi.checklist";
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            SessionKind::Pi,
+            "Pi",
+        ))
+        .unwrap();
+    let end = json!({
+        "type": "tool_execution_end",
+        "toolCallId": "call_23432",
+        "toolName": "set_goal_tasks",
+        "isError": false,
+        "result": {
+            "content": [{"type": "text", "text": "Task list set and confirmed. 2 tasks."}],
+            "details": {"version": 3, "goal": {"taskList": {"tasks": [
+                {"id": "task-1", "title": "Inspect workspace", "status": "pending"},
+                {"id": "task-2", "title": "Summarize findings", "status": "pending"}
+            ]}}}
+        }
+    });
+    journal
+        .append_blocking(crate::journal::acp_envelope_record(session_id, 1, 1, &end).unwrap())
+        .unwrap();
+
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    runtime.set_agent_kind(SessionKind::Pi);
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+        stream.next_seq = 2;
+    }
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach live pi session");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let events = drain(&conn);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentTasks { items }
+                if items.len() == 2
+                    && items[0].text == "Inspect workspace"
+                    && items[1].text == "Summarize findings"
+        )),
+        "the incremental attach re-derives the checklist from the envelope: {events:?}"
+    );
+
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A refused second row can strand a marker. This fixture walks the paged
 /// replay over marker, unrelated envelope, `turn_end`: the intervening
 /// envelope expires the marker, so the later finish derives and the

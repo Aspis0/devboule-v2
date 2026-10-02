@@ -223,6 +223,10 @@ pub(crate) struct StreamState {
     /// emulator. This is the snapshot boundary (`as_of_seq`).
     pub(super) last_applied_seq: u64,
     pub(super) generation: u64,
+    /// An `AgentTasks` was published in this generation; the restored
+    /// snapshot (`pi_history_tasks`) publishes only while this is false,
+    /// checked and set under this lock so a live checklist always wins.
+    pub(super) agent_tasks_published: bool,
     /// The headless emulator. `None` for a recovered transcript, which has
     /// no live process and serves cursor-based journal replays instead.
     pub(super) screen: Option<Screen>,
