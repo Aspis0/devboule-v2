@@ -1,7 +1,8 @@
 //! The one guard the system-browser command runs before it hands anything to
-//! the OS: scheme, credentials, and the bytes a URL parser would normalize
-//! away. Pure input, no runtime — the sentences are pinned by value so a
-//! rewording is a reviewable change, not a silent one.
+//! the OS: the canonical http(s) prefix, credentials, and the control and
+//! whitespace bytes a URL parser would strip. Pure input, no runtime — the
+//! sentences are pinned by value so a rewording is a reviewable change, not a
+//! silent one.
 
 use devboule_protocol::ErrorCode;
 
@@ -68,6 +69,38 @@ fn an_at_sign_outside_the_authority_is_part_of_the_url() {
     assert_eq!(path.as_str(), "https://example.com/a@b");
     assert_eq!(query.as_str(), "https://example.com/?mail=user@example.com");
     assert_eq!(fragment.as_str(), "https://example.com/#user@example.com");
+}
+
+#[test]
+fn a_double_slash_inside_the_path_does_not_start_an_authority() {
+    let url = openable_url("https://example.com/path//@x").expect("an at sign after a path //");
+
+    assert_eq!(url.as_str(), "https://example.com/path//@x");
+}
+
+#[test]
+fn only_the_canonical_http_and_https_prefix_is_a_web_url() {
+    for input in [
+        "https:/@example.com/",
+        "https:/example.com/path//@evil",
+        "http:/host",
+        "https:\\\\host",
+        "https:host",
+    ] {
+        assert_eq!(
+            refusal(input),
+            (ErrorCode::InvalidRequest, NOT_A_WEB_URL.to_string())
+        );
+    }
+}
+
+#[test]
+fn the_scheme_is_matched_without_regard_to_case() {
+    assert!(openable_url("HTTPS://example.com/a").is_ok());
+    assert_eq!(
+        refusal("HTTPS://user@example.com/a"),
+        (ErrorCode::InvalidRequest, WITH_CREDENTIALS.to_string())
+    );
 }
 
 #[test]

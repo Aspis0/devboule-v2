@@ -1,6 +1,7 @@
 import { carriesCredentials } from "./urlCredentials";
 
 const MAX_URL_BYTES = 8192;
+const CANONICAL_PREFIX = /^https?:\/\//i;
 // Rust's `char::is_whitespace` is the Unicode White_Space property.
 const WHITESPACE = /\p{White_Space}/u;
 const encoder = new TextEncoder();
@@ -14,27 +15,30 @@ function hasAsciiControl(value: string): boolean {
   return false;
 }
 
-/**
- * The parsed URL when the system-browser command opens `value`, else null: at
- * most 8192 UTF-8 bytes, no whitespace or ASCII control, a parse, the http or
- * https scheme, and no credentials. It is the frontend half of the command's
- * `openable_url`, and the one answer to whether a link is an anchor and whether
- * its click is routed there.
- */
-export function openableUrl(value: string): URL | null {
-  if (encoder.encode(value).length > MAX_URL_BYTES) return null;
+function exactUrl(value: string): URL | null {
   if (WHITESPACE.test(value) || hasAsciiControl(value)) return null;
-  let url: URL;
+  if (!CANONICAL_PREFIX.test(value) || carriesCredentials(value)) return null;
   try {
-    url = new URL(value);
+    return new URL(value);
   } catch {
     return null;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  if (url.username !== "" || url.password !== "" || carriesCredentials(value)) return null;
-  return url;
 }
 
+/**
+ * Whether the system-browser command opens `value` as sent: the frontend half
+ * of its `openable_url`, and the one answer to whether a link is an anchor and
+ * whether its click is routed there.
+ */
 export function opensExternally(value: string): boolean {
-  return openableUrl(value) !== null;
+  return encoder.encode(value).length <= MAX_URL_BYTES && exactUrl(value) !== null;
+}
+
+/**
+ * The URL a fetch title links to, or null. The anchor renders and a click sends
+ * the normalized href, not the title, so the byte limit applies to the href.
+ */
+export function linkTarget(title: string): URL | null {
+  const url = exactUrl(title);
+  return url !== null && opensExternally(url.href) ? url : null;
 }

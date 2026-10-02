@@ -1,7 +1,7 @@
 //! Handing one web link to the system browser. The command opens a
 //! caller-supplied http(s) URL from the main window only, and parses it here
-//! rather than trusting the page: no credentials, and no byte a URL parser would
-//! normalize away.
+//! rather than trusting the page: the canonical `http://` or `https://` form, no
+//! credentials, and no control or whitespace byte a URL parser would strip.
 
 use devboule_protocol::ErrorCode;
 use tauri::Url;
@@ -18,6 +18,8 @@ const TOO_LONG: &str = "a link this long is never opened";
 const NOT_EXACT: &str = "a link with whitespace or control characters is never opened";
 const BROWSER_FAILED: &str = "the system browser could not be opened";
 
+/// The limit is on the raw text the command receives, not on the URL it opens
+/// after normalizing; a caller that sends a normalized href checks that href.
 pub(crate) const MAX_URL_LENGTH: usize = 8192;
 
 pub(crate) fn openable_url(input: &str) -> Result<Url, CommandError> {
@@ -32,14 +34,16 @@ pub(crate) fn openable_url(input: &str) -> Result<Url, CommandError> {
     {
         return Err(CommandError::new(ErrorCode::InvalidRequest, NOT_EXACT));
     }
+    // `Url::parse` also accepts `https:/host` and `https:\\host`, which have no
+    // `//` for the credential check below to anchor its authority to.
+    let Some(after_prefix) = after_web_prefix(input) else {
+        return Err(CommandError::new(ErrorCode::InvalidRequest, NOT_A_WEB_URL));
+    };
     let parsed = Url::parse(input)
         .map_err(|_| CommandError::new(ErrorCode::InvalidRequest, NOT_A_WEB_URL))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(CommandError::new(ErrorCode::InvalidRequest, NOT_A_WEB_URL));
-    }
     // The parser drops an empty user and password, so `https://@host/` only
     // shows in the raw authority; the page's predicate applies the same rule.
-    if authority_has_userinfo_marker(input)
+    if authority_has_userinfo_marker(after_prefix)
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
@@ -51,13 +55,19 @@ pub(crate) fn openable_url(input: &str) -> Result<Url, CommandError> {
     Ok(parsed)
 }
 
-/// The raw text between `//` and the first `/`, `?` or `#` holds an `@`.
-fn authority_has_userinfo_marker(input: &str) -> bool {
-    let Some(start) = input.find("//") else {
-        return false;
-    };
-    input[start + 2..]
-        .split(|character| matches!(character, '/' | '?' | '#'))
+/// What follows a leading `http://` or `https://`, whatever the case of the scheme.
+fn after_web_prefix(input: &str) -> Option<&str> {
+    ["https://", "http://"].into_iter().find_map(|prefix| {
+        let head = input.get(..prefix.len())?;
+        head.eq_ignore_ascii_case(prefix)
+            .then(|| &input[prefix.len()..])
+    })
+}
+
+/// Whether the authority, the text up to the first `/`, `\`, `?` or `#`, holds an `@`.
+fn authority_has_userinfo_marker(after_prefix: &str) -> bool {
+    after_prefix
+        .split(['/', '\\', '?', '#'])
         .next()
         .is_some_and(|authority| authority.contains('@'))
 }

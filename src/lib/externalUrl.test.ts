@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { openableUrl, opensExternally } from "./externalUrl";
+import { linkTarget, opensExternally } from "./externalUrl";
 
 const PREFIX = "https://example.com/";
 const CEILING = 8192;
@@ -16,6 +16,7 @@ const OPENED = [
   "https://example.com/a@b",
   "https://example.com/?mail=user@example.com",
   "https://example.com/#user@example.com",
+  "https://example.com/path//@x",
   AT_CEILING,
 ];
 
@@ -31,6 +32,7 @@ const REFUSED = [
   ["user and password", "https://user:pass@example.com/a"],
   ["password only", "http://:pass@example.com/a"],
   ["user before an IPv6 host", "https://user@[::1]/"],
+  ["user behind an uppercase scheme", "HTTPS://user@example.com/a"],
   ["empty userinfo", "https://@example.com/"],
   ["empty user and password", "https://:@example.com/"],
   ["leading space", " https://example.com/a"],
@@ -40,9 +42,13 @@ const REFUSED = [
   ["newline", "https://example.com/a\nb"],
   ["NUL", "https://example.com/a\u0000b"],
   ["DEL", "https://example.com/a\u007fb"],
-  ["no-break space", "https://example.com/a b"],
+  ["no-break space", "https://example.com/a\u00a0b"],
   ["next line", "https://example.com/a\u0085b"],
-  ["ideographic space", "https://example.com/a　b"],
+  ["ideographic space", "https://example.com/a\u3000b"],
+  ["single-slash empty userinfo", "https:/@example.com/"],
+  ["single-slash host with an at sign in the path", "https:/example.com/path//@evil"],
+  ["single-slash host", "http:/host"],
+  ["backslash authority", "https:\\\\host"],
   ["unclosed IPv6 host", "https://[::1"],
   ["no host", "https://"],
 ] as const;
@@ -57,12 +63,19 @@ describe("opensExternally", () => {
   });
 });
 
-describe("openableUrl", () => {
-  it("answers the parsed URL for one the command opens", () => {
-    expect(openableUrl("https://münich.example/a")?.href).toBe("https://xn--mnich-kva.example/a");
+describe("linkTarget", () => {
+  it("answers the normalized URL for a title the command opens", () => {
+    expect(linkTarget("https://münich.example/a")?.href).toBe("https://xn--mnich-kva.example/a");
   });
 
-  it("answers null for one the command refuses", () => {
-    expect(openableUrl("https://user@example.com/a")).toBeNull();
+  it("answers null for a title the command refuses", () => {
+    expect(linkTarget("https://user@example.com/a")).toBeNull();
+    expect(linkTarget("https://example.com/a b")).toBeNull();
+  });
+
+  it("measures the limit on the normalized href, not on the title", () => {
+    const path = "a".repeat(CEILING - "https://example.com/".length);
+    expect(opensExternally(`https://example.com:443/${path}`)).toBe(false);
+    expect(linkTarget(`https://example.com:443/${path}`)?.href).toBe(`https://example.com/${path}`);
   });
 });

@@ -129,6 +129,19 @@ describe("toolRowDisplay", () => {
     }
   });
 
+  it("links a title over the byte ceiling whose normalized form is under it", () => {
+    // The default port is dropped on normalizing: 8193 bytes sent, 8189 opened.
+    const path = "a".repeat(8193 - "https://example.com:443/".length);
+    expect(
+      toolRowDisplay(tool({ kind: "fetch", title: `https://example.com:443/${path}` })),
+    ).toEqual({
+      displayName: "Fetch",
+      summary: "example.com",
+      icon: "search",
+      linkUrl: `https://example.com/${path}`,
+    });
+  });
+
   it("never links a URL whose normalized form exceeds the byte ceiling", () => {
     // Each é becomes six bytes once percent-encoded, so the anchor's own
     // destination would be a link the command refuses.
