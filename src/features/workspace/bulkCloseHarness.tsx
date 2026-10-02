@@ -11,11 +11,6 @@ import type {
   SessionState,
   SessionStateSnapshot,
 } from "../../types/ipc";
-import type {
-  AgentSubagent,
-  AgentSubagentStatus,
-  AgentSubagentStatusCounts,
-} from "../../lib/agentSession";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(async () => false) }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -170,12 +165,7 @@ vi.mock("./AgentChatSurface", async () => {
   const { SubagentMenu } = await import("./SubagentMenu");
   const { PaneHeaderKebab } = await import("./paneHeader/PaneHeaderKebab");
   const { headerMenu } = await import("./paneHeader/paneHeaderMenu");
-  function statusFromRoster(row: Session): AgentSubagentStatus {
-    if (row.state.type === "live" || row.state.type === "silent") return "running";
-    if (row.state.type === "recovered") return "unknown";
-    if (row.state.code === null) return "stopped";
-    return row.state.code === 0 ? "finished" : "failed";
-  }
+  const { deriveSubagentRows } = await import("./subagentRows");
   return {
     AgentChatSurface: ({
       sessionId,
@@ -205,26 +195,7 @@ vi.mock("./AgentChatSurface", async () => {
       headerMenuSeams.bySession.set(sessionId, headerMenuSeam);
       headerMenuSeams.permissionBySession.set(sessionId, onPermissionRequest);
       const menu = headerMenu(undefined, headerMenuSeam, sessionId);
-      const children = sessionRoster.filter((row) => row.createdBy === sessionId);
-      const subagents: AgentSubagent[] = children.map((row) => ({
-        id: row.id,
-        title: row.title,
-        status: statusFromRoster(row),
-        subagentType: null,
-        isBackground: false,
-        rawStatus: null,
-        summary: null,
-        parentToolUseId: null,
-        spawnDepth: null,
-      }));
-      const statusCounts: AgentSubagentStatusCounts = {
-        running: 0,
-        failed: 0,
-        stopped: 0,
-        finished: 0,
-        unknown: 0,
-      };
-      for (const row of subagents) statusCounts[row.status] += 1;
+      const rows = deriveSubagentRows(sessionId, sessionRoster, []);
       return (
         <div data-testid="agent-chat-surface">
           {sessionId}
@@ -233,13 +204,11 @@ vi.mock("./AgentChatSurface", async () => {
           {/* The act's ordering only — close each child, then read the roster
               back; which children may close is pinned in its own tests. */}
           <SubagentMenu
-            subagents={subagents}
-            statusCounts={statusCounts}
+            rows={rows}
             onOpenSession={onOpenSubagent}
             sessionIds={subagentSessionIds}
             attentionById={subagentAttention}
             onRefreshSessions={onRefreshSubagents}
-            sessionRoster={sessionRoster}
             onArchiveFinished={async (targets) => {
               for (const target of targets) await sessionClose(target.id);
               await onRefreshSubagents?.();

@@ -5,11 +5,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { channelHarness } from "./sessionChannelHarness";
 import {
+  closingDaemon,
   ended,
+  failed,
   live,
   surface,
-  addSubagent,
-  settleSubagent,
   openMenu,
   archiveAction,
   rowTitles,
@@ -17,7 +17,7 @@ import {
   answerAsk,
 } from "./subagentArchiveHarness";
 import { sessionClose } from "../../lib/tauri";
-import type { Session, SessionState } from "../../types/ipc";
+import type { SessionState } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", async () => ({
   ...(await import("./sessionChannelHarness")).tauriMock,
@@ -52,12 +52,14 @@ describe("the subagent menu's archive outcome", () => {
       if (id === "child-bad") {
         throw { code: "journal", message: "raw journal words" };
       }
+      await daemon.close(id);
     });
-    await act(async () => root.render(surface([ended("child-ok"), ended("child-bad")], refresh)));
-    await addSubagent("child-ok", "Good child");
-    await settleSubagent("child-ok", "completed");
-    await addSubagent("child-bad", "Bad child");
-    await settleSubagent("child-bad", "completed");
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [ended("child-ok", 1, "Good child"), ended("child-bad", 1, "Bad child")],
+      refresh,
+    );
+    await act(async () => root.render(daemon.node()));
     await openMenu();
 
     await pressArchiveAction();
@@ -80,12 +82,14 @@ describe("the subagent menu's archive outcome", () => {
       if (id === "child-bad") {
         throw { code: "journal", message: "raw journal words" };
       }
+      await daemon.close(id);
     });
-    await act(async () => root.render(surface([ended("child-ok"), ended("child-bad")], refresh)));
-    await addSubagent("child-ok", "Good child");
-    await settleSubagent("child-ok", "completed");
-    await addSubagent("child-bad", "Bad child");
-    await settleSubagent("child-bad", "completed");
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [ended("child-ok", 1, "Good child"), ended("child-bad", 1, "Bad child")],
+      refresh,
+    );
+    await act(async () => root.render(daemon.node()));
     await openMenu();
 
     await pressArchiveAction();
@@ -99,14 +103,17 @@ describe("the subagent menu's archive outcome", () => {
 
   it("leaves focus on the first remaining row", async () => {
     const refresh = vi.fn(async () => undefined);
-    await act(async () =>
-      root.render(surface([ended("child-a"), ended("child-b"), live("child-run")], refresh)),
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [
+        ended("child-a", 1, "First child"),
+        ended("child-b", 1, "Second child"),
+        live("child-run", 1, "Working child"),
+      ],
+      refresh,
     );
-    await addSubagent("child-a", "First child");
-    await settleSubagent("child-a", "completed");
-    await addSubagent("child-b", "Second child");
-    await settleSubagent("child-b", "completed");
-    await addSubagent("child-run", "Working child");
+    vi.mocked(sessionClose).mockImplementation(daemon.close);
+    await act(async () => root.render(daemon.node()));
     await openMenu();
 
     await pressArchiveAction();
@@ -119,12 +126,16 @@ describe("the subagent menu's archive outcome", () => {
 
   it("sends focus to the composer when the last child was archived", async () => {
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface([ended("child-only")], refresh)));
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [ended("child-only", 1, "Only child")],
+      refresh,
+    );
+    vi.mocked(sessionClose).mockImplementation(daemon.close);
+    await act(async () => root.render(daemon.node()));
     await act(async () => {
       channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
     });
-    await addSubagent("child-only", "Only child");
-    await settleSubagent("child-only", "completed");
     await openMenu();
     const composer = document.querySelector<HTMLTextAreaElement>(".workspace-composer textarea");
     if (composer === null) throw new Error("composer did not render");
@@ -141,10 +152,13 @@ describe("the subagent menu's archive outcome", () => {
 
   it("takes the archived child out of the pill's counts", async () => {
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface([ended("child-fail"), live("child-run")], refresh)));
-    await addSubagent("child-fail", "Failing child");
-    await settleSubagent("child-fail", "failed");
-    await addSubagent("child-run", "Working child");
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [failed("child-fail", 1, "Failing child"), live("child-run", 1, "Working child")],
+      refresh,
+    );
+    vi.mocked(sessionClose).mockImplementation(daemon.close);
+    await act(async () => root.render(daemon.node()));
     await openMenu();
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
@@ -166,9 +180,14 @@ describe("the subagent menu's archive outcome", () => {
       code: 0,
       integrity: { kind: "complete" },
     };
-    await act(async () => root.render(surface([ended("child-only")], refresh, observedState)));
-    await addSubagent("child-only", "Only child");
-    await settleSubagent("child-only", "completed");
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [ended("child-only", 1, "Only child")],
+      refresh,
+      observedState,
+    );
+    vi.mocked(sessionClose).mockImplementation(daemon.close);
+    await act(async () => root.render(daemon.node()));
     await openMenu();
     const composer = document.querySelector<HTMLTextAreaElement>(".workspace-composer textarea");
     if (composer === null) throw new Error("composer did not render");
@@ -191,18 +210,19 @@ describe("the subagent menu's archive outcome", () => {
   });
 
   it("puts focus on the pill when the ask is cancelled after its sole target left the roster", async () => {
-    let roster: Session[] = [ended("child-only")];
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface(roster, refresh)));
-    await addSubagent("child-only", "Only child");
-    await settleSubagent("child-only", "completed");
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [ended("child-only", 1, "Only child"), live("child-run", 1, "Working child")],
+      refresh,
+    );
+    await act(async () => root.render(daemon.node()));
     await openMenu();
 
     await pressArchiveAction();
     // The roster drops the child while the ask is up: the action the ask
     // came from unmounts with it.
-    roster = [];
-    await act(async () => root.render(surface(roster, refresh)));
+    await act(async () => daemon.push([live("child-run", 1, "Working child")]));
     expect(archiveAction()).toBeNull();
 
     await answerAsk("Cancel");

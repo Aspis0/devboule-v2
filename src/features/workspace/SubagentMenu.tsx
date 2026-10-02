@@ -9,12 +9,8 @@ import { AnchoredPopover } from "./popoverPlace";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import "./SubagentMenu.css";
-import type {
-  AgentSubagent,
-  AgentSubagentStatus,
-  AgentSubagentStatusCounts,
-} from "../../lib/agentSession";
-import type { SessionState } from "../../types/ipc";
+import type { AgentSubagentStatus } from "../../lib/agentSession";
+import { countSubagentStatuses, isArchivable, type SubagentRow } from "./subagentRows";
 
 function shortSubagentId(id: string): string {
   return id.length > 16 ? `${id.slice(0, 12)}…` : id;
@@ -27,13 +23,6 @@ function subagentTitle(title: string | null, id: string): string {
 function subagentDotClass(status: AgentSubagentStatus): string {
   return `workspace-subagent-status-${status}`;
 }
-
-// Paseo's finished set for the same action: completed | failed | canceled.
-const FINISHED_SUBAGENT_STATUSES: ReadonlySet<AgentSubagentStatus> = new Set([
-  "finished",
-  "failed",
-  "stopped",
-]);
 
 // Every clause is a checked effect of the close: rows and tabs leave with the
 // roster, the transcript stays in History, and attachments do not survive it.
@@ -48,14 +37,11 @@ export interface SubagentArchiveTarget {
 }
 
 export interface SubagentMenuProps {
-  subagents: AgentSubagent[];
-  statusCounts: AgentSubagentStatusCounts;
+  rows: readonly SubagentRow[];
   onOpenSession?: (sessionId: string) => void;
   sessionIds?: ReadonlySet<string>;
   attentionById?: ReadonlyMap<string, string>;
   onRefreshSessions?: () => Promise<void>;
-  /** The roster rows the ask reads each child's generation from. */
-  sessionRoster?: ReadonlyArray<{ id: string; state?: SessionState }>;
   /** Closes the named children, reads the roster back, and answers with one
    * plain sentence for each child that did not close — never raw daemon text. */
   onArchiveFinished?: (
@@ -64,13 +50,11 @@ export interface SubagentMenuProps {
 }
 
 export function SubagentMenu({
-  subagents,
-  statusCounts,
+  rows,
   onOpenSession,
   sessionIds,
   attentionById,
   onRefreshSessions,
-  sessionRoster,
   onArchiveFinished,
 }: SubagentMenuProps) {
   const pillRef = useRef<HTMLButtonElement>(null);
@@ -120,7 +104,7 @@ export function SubagentMenu({
   }, [open, ask, close]);
 
   // After an archive the focus lands on the first remaining row, else back on
-  // the pill; when the last child goes, the surface moves focus before we unmount.
+  // the pill; when the last row goes, the surface owns where focus lands.
   useEffect(() => {
     if (archiveNonce === 0) return;
     const firstRow = menuRef.current?.querySelector<HTMLButtonElement>(
@@ -146,19 +130,20 @@ export function SubagentMenu({
     pillRef.current?.focus({ preventScroll: true });
   }, [ask]);
 
-  if (subagents.length === 0) return null;
+  if (rows.length === 0) return null;
 
-  // Archivable = finished AND listed by the roster: a task the provider runs
-  // without a session of its own has nothing the archive could close.
-  const archivable = subagents.filter(
-    (row) => FINISHED_SUBAGENT_STATUSES.has(row.status) && sessionIds?.has(row.id) === true,
-  );
+  const archivable = rows.filter(isArchivable);
+
+  // A created child is a roster session and always opens; a provider task
+  // opens only if it happens to name one.
+  const openable = (row: SubagentRow): boolean =>
+    row.kind === "child" || sessionIds?.has(row.id) === true;
 
   // The generation each child had as the ask took it — the row's identity at
   // the moment the user saw the count.
-  const askTarget = (row: AgentSubagent): SubagentArchiveTarget => ({
+  const askTarget = (row: SubagentRow): SubagentArchiveTarget => ({
     id: row.id,
-    generation: sessionRoster?.find((session) => session.id === row.id)?.state?.generation ?? null,
+    generation: row.generation,
   });
 
   const archiveFinished = async (targets: readonly SubagentArchiveTarget[]): Promise<void> => {
@@ -174,9 +159,8 @@ export function SubagentMenu({
     }
   };
 
-  const failed = statusCounts.failed;
-  const working = statusCounts.running;
-  const attentionCount = subagents.filter((row) => attentionById?.has(row.id)).length;
+  const { failed, running: working } = countSubagentStatuses(rows);
+  const attentionCount = rows.filter((row) => attentionById?.has(row.id)).length;
   const counts = [
     ...(attentionCount > 0
       ? [`${attentionCount} ${attentionCount === 1 ? "needs" : "need"} your approval`]
@@ -197,8 +181,7 @@ export function SubagentMenu({
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         onClick={() => {
-          if (!open && subagents.some((row) => !sessionIds?.has(row.id)))
-            void onRefreshSessions?.();
+          if (!open && rows.some((row) => !openable(row))) void onRefreshSessions?.();
           setOpen((value) => !value);
         }}
       >
@@ -267,40 +250,37 @@ export function SubagentMenu({
             ) : null}
           </div>
           <div role="list">
-            {subagents.map((subagent) => {
-              const sentence = sentences.get(subagent.id);
+            {rows.map((row) => {
+              const sentence = row.kind === "child" ? sentences.get(row.id) : undefined;
+              const attention = attentionById?.get(row.id);
+              const title = subagentTitle(row.title, row.id);
               return (
-                <div key={subagent.id} role="listitem">
+                <div key={`${row.kind}:${row.id}`} role="listitem">
                   <button
                     type="button"
                     className="workspace-subagent-row"
-                    disabled={!sessionIds?.has(subagent.id) || onOpenSession === undefined}
-                    aria-label={`${subagentTitle(subagent.title, subagent.id)}, ${subagent.status}${attentionById?.has(subagent.id) ? `, ${attentionById.get(subagent.id)}` : ""}, ${sessionIds?.has(subagent.id) && onOpenSession !== undefined ? "Open in tab" : "Session unavailable"}`}
+                    disabled={!openable(row) || onOpenSession === undefined}
+                    aria-label={`${title}, ${row.status}${attention !== undefined ? `, ${attention}` : ""}, ${openable(row) && onOpenSession !== undefined ? "Open in tab" : "Session unavailable"}`}
                     aria-describedby={
-                      sentence !== undefined ? `${sentencePrefix}${subagent.id}` : undefined
+                      sentence !== undefined ? `${sentencePrefix}${row.id}` : undefined
                     }
-                    title={!sessionIds?.has(subagent.id) ? "Session unavailable" : undefined}
+                    title={!openable(row) ? "Session unavailable" : undefined}
                     onClick={() => {
                       close();
-                      onOpenSession?.(subagent.id);
+                      onOpenSession?.(row.id);
                     }}
                   >
                     <span
-                      className={`workspace-subagent-status-dot ${subagentDotClass(subagent.status)}`}
+                      className={`workspace-subagent-status-dot ${subagentDotClass(row.status)}`}
                       aria-hidden="true"
                     />
-                    <span
-                      className="workspace-subagent-row-title"
-                      title={subagentTitle(subagent.title, subagent.id)}
-                    >
-                      {subagentTitle(subagent.title, subagent.id)}
+                    <span className="workspace-subagent-row-title" title={title}>
+                      {title}
                     </span>
-                    {attentionById?.has(subagent.id) ? (
-                      <span className="workspace-subagent-attention">
-                        {attentionById.get(subagent.id)}
-                      </span>
+                    {attention !== undefined ? (
+                      <span className="workspace-subagent-attention">{attention}</span>
                     ) : null}
-                    {!sessionIds?.has(subagent.id) ? <span>Unavailable</span> : null}
+                    {!openable(row) ? <span>Unavailable</span> : null}
                     <svg
                       className="workspace-subagent-row-chevron"
                       width={12}
@@ -313,10 +293,7 @@ export function SubagentMenu({
                     </svg>
                   </button>
                   {sentence !== undefined ? (
-                    <p
-                      className="workspace-subagent-row-failure"
-                      id={`${sentencePrefix}${subagent.id}`}
-                    >
+                    <p className="workspace-subagent-row-failure" id={`${sentencePrefix}${row.id}`}>
                       {sentence}
                     </p>
                   ) : null}

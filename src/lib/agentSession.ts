@@ -1601,14 +1601,6 @@ export class AgentSession {
     }
   }
 
-  /** Drops the task rows of the given child sessions — an archive closed
-   * them; the ids arrive after each close resolved and the roster was read. */
-  forgetSubagents(ids: readonly string[]): void {
-    const gone = new Set(ids);
-    const subagents = this.state.subagents.filter((subagent) => !gone.has(subagent.id));
-    if (subagents.length !== this.state.subagents.length) this.updateSubagents(subagents);
-  }
-
   private updateSubagents(subagents: AgentSubagent[]): void {
     const counts: AgentSubagentStatusCounts = {
       running: 0,

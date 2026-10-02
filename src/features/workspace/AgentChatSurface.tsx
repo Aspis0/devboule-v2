@@ -47,7 +47,7 @@ import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { sendChatImagesByReference } from "./chatImageTransport";
 import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
-import { isRunningSessionState } from "./strip/closePolicy";
+import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
 import { SessionContextMeter } from "./ContextMeter";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
@@ -159,13 +159,16 @@ interface AgentChatSurfaceProps {
   /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
   daemonState: DaemonConnectionState;
   /**
-   * The roster rows the agent-to-agent card resolves a relay's sender against
-   * and the archive act reads before each close: a row without `state` cannot
-   * be rechecked, so no close fires for it. Handed none, the card can only
-   * show the session id the frame named — the truth it has, minus the name.
+   * The roster rows the agent-to-agent card resolves a relay's sender against,
+   * the subagent pill lists this session's created children from, and the
+   * archive act rechecks before each close. Handed none, the card can only
+   * show the session id the frame named — the truth it has, minus the name —
+   * and the pill lists provider tasks alone.
    */
   sessionRoster?: ReadonlyArray<
-    Pick<Session, "displayName" | "id" | "kind" | "title"> & { state?: SessionState }
+    Pick<Session, "displayName" | "id" | "kind" | "title" | "createdBy" | "activity"> & {
+      state?: SessionState;
+    }
   >;
   /**
    * Device id to display name, the same `DevicesList` map the permission
@@ -412,6 +415,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     return { sessionById, deviceNames: deviceNames ?? new Map<string, string>() };
   }, [sessionRoster, deviceNames]);
 
+  const subagentRows = useMemo(
+    () => deriveSubagentRows(sessionId, sessionRoster, state.subagents),
+    [sessionId, sessionRoster, state.subagents],
+  );
+
   // The composer's handed-back draft. `focus` is false for an Edit, whose
   // focus follows the row rule in the track; true for a refusal, whose text
   // the user must look at before sending it again. `images` ride along when
@@ -572,30 +580,30 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     rosterRef.current = sessionRoster;
   }, [sessionRoster]);
 
-  // The archive act: each target closes only while the roster holds the row
-  // the ask captured, finished; a row the roster dropped is already closed.
-  // The closed children's rows drop after the read-back.
+  // The archive act: each target closes only while its roster row is the one
+  // the ask captured and is still archivable; a row the roster dropped is
+  // already closed.
   const archiveFinishedSubagents = useCallback(
     async (targets: readonly SubagentArchiveTarget[]): Promise<ReadonlyMap<string, string>> => {
       const sentences = new Map<string, string>();
-      const closed: string[] = [];
+      const closed = new Set<string>();
       for (const target of targets) {
         const roster = rosterRef.current;
         if (roster === undefined) continue;
         const row = roster.find((session) => session.id === target.id);
         if (row === undefined) {
-          closed.push(target.id);
+          closed.add(target.id);
           continue;
         }
-        if (row.state === undefined || target.generation === null) continue;
         // The daemon's close carries no generation: this read is the whole guard.
-        if (isRunningSessionState(row.state) || row.state.generation !== target.generation) {
+        const current = childRow(row);
+        if (current.generation !== target.generation || !isArchivable(current)) {
           sentences.set(target.id, "It changed since you asked, so it was left open.");
           continue;
         }
         try {
           await sessionClose(target.id);
-          closed.push(target.id);
+          closed.add(target.id);
         } catch (cause) {
           sentences.set(target.id, errorSentence(cause).sentence);
         }
@@ -605,22 +613,24 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       } catch {
         // The roster read draws its own error line in the workspace.
       }
-      if (closed.length > 0) {
-        sessionRef.current?.forgetSubagents(closed);
-        // The last child unmounts the pill and the menu with it: focus must
-        // move before that commit, and a disabled composer cannot take it.
-        if (sessionRef.current?.getState().subagents.length === 0) {
-          focusComposer();
-          const composer = composerTextareaRef.current;
-          if (composer === null || composer.disabled || document.activeElement !== composer) {
-            conversationRef.current?.focus({ preventScroll: true });
-          }
+      const remaining = deriveSubagentRows(
+        sessionId,
+        rosterRef.current,
+        sessionRef.current?.getState().subagents ?? [],
+      ).filter((row) => !(row.kind === "child" && closed.has(row.id)));
+      // The last row takes the pill and the menu with it: focus has to land
+      // somewhere that stays, and a disabled composer cannot take it.
+      if (closed.size > 0 && remaining.length === 0) {
+        focusComposer();
+        const composer = composerTextareaRef.current;
+        if (composer === null || composer.disabled || document.activeElement !== composer) {
+          conversationRef.current?.focus({ preventScroll: true });
         }
       }
       return sentences;
     },
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- conversationRef comes from the scroll hook: its element is read when the act runs, never at render.
-    [focusComposer, onRefreshSubagents],
+    [focusComposer, onRefreshSubagents, sessionId],
   );
 
   // While this surface is on screen, the queue's sends and interrupts ride the
@@ -769,16 +779,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         display={header}
         menu={headerMenu(cwd, headerMenuSeam, sessionId)}
         subagentSlot={
-          state.subagents.length > 0 ? (
+          subagentRows.length > 0 ? (
             <SubagentMenu
-              subagents={state.subagents}
-              statusCounts={state.subagentStatusCounts}
+              rows={subagentRows}
               onOpenSession={onOpenSubagent}
               sessionIds={subagentSessionIds}
               attentionById={subagentAttention}
               onRefreshSessions={onRefreshSubagents}
               onArchiveFinished={archiveFinishedSubagents}
-              sessionRoster={sessionRoster}
             />
           ) : null
         }

@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { channelHarness } from "./sessionChannelHarness";
 import {
+  closingDaemon,
   ended,
   live,
   surface,
@@ -49,8 +50,7 @@ afterEach(async () => {
 describe("the subagent menu's archive ask and its guard", () => {
   it("stays hidden while no finished child can be archived", async () => {
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface([live("child-run")], refresh)));
-    await addSubagent("child-run", "Working child");
+    await act(async () => root.render(surface([live("child-run", 1, "Working child")], refresh)));
     await openMenu();
     expect(archiveAction()).toBeNull();
   });
@@ -68,13 +68,17 @@ describe("the subagent menu's archive ask and its guard", () => {
   it("asks first, names the count and what the close does, and acts only on the answer", async () => {
     const refresh = vi.fn(async () => undefined);
     await act(async () =>
-      root.render(surface([ended("child-a"), ended("child-b"), live("child-run")], refresh)),
+      root.render(
+        surface(
+          [
+            ended("child-a", 1, "First child"),
+            ended("child-b", 1, "Second child"),
+            live("child-run", 1, "Working child"),
+          ],
+          refresh,
+        ),
+      ),
     );
-    await addSubagent("child-a", "First child");
-    await settleSubagent("child-a", "completed");
-    await addSubagent("child-b", "Second child");
-    await settleSubagent("child-b", "completed");
-    await addSubagent("child-run", "Working child");
     await openMenu();
 
     await pressArchiveAction();
@@ -109,7 +113,11 @@ describe("the subagent menu's archive ask and its guard", () => {
   });
 
   it("names the count, sits first, and follows the roster the refresh publishes", async () => {
-    let roster: Session[] = [ended("child-a"), ended("child-b"), live("child-run")];
+    let roster: Session[] = [
+      ended("child-a", 1, "First child"),
+      ended("child-b", 1, "Second child"),
+      live("child-run", 1, "Working child"),
+    ];
     let rowsAtRefresh = -1;
     const refresh = vi.fn(async () => {
       rowsAtRefresh = document.querySelectorAll(".workspace-subagent-row").length;
@@ -117,11 +125,6 @@ describe("the subagent menu's archive ask and its guard", () => {
       root.render(surface(roster, refresh));
     });
     await act(async () => root.render(surface(roster, refresh)));
-    await addSubagent("child-a", "First child");
-    await settleSubagent("child-a", "completed");
-    await addSubagent("child-b", "Second child");
-    await settleSubagent("child-b", "completed");
-    await addSubagent("child-run", "Working child");
     await openMenu();
 
     const action = archiveAction();
@@ -146,20 +149,22 @@ describe("the subagent menu's archive ask and its guard", () => {
   });
 
   it("leaves a child alone that restarted while the ask was open", async () => {
-    let roster: Session[] = [ended("child-a"), ended("child-b")];
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface(roster, refresh)));
-    await addSubagent("child-a", "First child");
-    await settleSubagent("child-a", "completed");
-    await addSubagent("child-b", "Second child");
-    await settleSubagent("child-b", "completed");
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [ended("child-a", 1, "First child"), ended("child-b", 1, "Second child")],
+      refresh,
+    );
+    vi.mocked(sessionClose).mockImplementation(daemon.close);
+    await act(async () => root.render(daemon.node()));
     await openMenu();
 
     await pressArchiveAction();
     // A push lands while the ask is up: the same id is a running session
     // again, under a new generation.
-    roster = [live("child-a", 2), ended("child-b")];
-    await act(async () => root.render(surface(roster, refresh)));
+    await act(async () =>
+      daemon.push([live("child-a", 2, "First child"), ended("child-b", 1, "Second child")]),
+    );
 
     await answerAsk("Archive");
 
@@ -173,20 +178,22 @@ describe("the subagent menu's archive ask and its guard", () => {
   });
 
   it("leaves a child alone that restarted and finished again under a new generation", async () => {
-    let roster: Session[] = [ended("child-a"), ended("child-b")];
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface(roster, refresh)));
-    await addSubagent("child-a", "First child");
-    await settleSubagent("child-a", "completed");
-    await addSubagent("child-b", "Second child");
-    await settleSubagent("child-b", "completed");
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [ended("child-a", 1, "First child"), ended("child-b", 1, "Second child")],
+      refresh,
+    );
+    vi.mocked(sessionClose).mockImplementation(daemon.close);
+    await act(async () => root.render(daemon.node()));
     await openMenu();
 
     await pressArchiveAction();
     // A restart and a fresh finish both land while the ask is up: same
     // finished state, a different generation of the same id.
-    roster = [ended("child-a", 2), ended("child-b")];
-    await act(async () => root.render(surface(roster, refresh)));
+    await act(async () =>
+      daemon.push([ended("child-a", 2, "First child"), ended("child-b", 1, "Second child")]),
+    );
 
     await answerAsk("Archive");
 
@@ -198,31 +205,13 @@ describe("the subagent menu's archive ask and its guard", () => {
     expect(sentence?.textContent).toBe("It changed since you asked, so it was left open.");
   });
 
-  it("says the child is running when it is running under the generation the ask took", async () => {
-    let roster: Session[] = [ended("child-a")];
-    const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface(roster, refresh)));
-    await addSubagent("child-a", "First child");
-    await settleSubagent("child-a", "completed");
-    await openMenu();
-
-    await pressArchiveAction();
-    roster = [live("child-a")];
-    await act(async () => root.render(surface(roster, refresh)));
-    await answerAsk("Archive");
-
-    expect(sessionClose).not.toHaveBeenCalled();
-    const sentence = document.querySelector<HTMLElement>(".workspace-subagent-row-failure");
-    expect(sentence?.textContent).toBe("It changed since you asked, so it was left open.");
-  });
-
   it("closes each child once when the confirm button is activated twice in one tick", async () => {
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface([ended("child-a"), ended("child-b")], refresh)));
-    await addSubagent("child-a", "First child");
-    await settleSubagent("child-a", "completed");
-    await addSubagent("child-b", "Second child");
-    await settleSubagent("child-b", "completed");
+    await act(async () =>
+      root.render(
+        surface([ended("child-a", 1, "First child"), ended("child-b", 1, "Second child")], refresh),
+      ),
+    );
     await openMenu();
 
     await pressArchiveAction();
@@ -242,20 +231,22 @@ describe("the subagent menu's archive ask and its guard", () => {
   });
 
   it("counts a target the roster no longer holds as closed, without a call or a sentence", async () => {
-    let roster: Session[] = [ended("child-only")];
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface(roster, refresh)));
-    await addSubagent("child-only", "Only child");
-    await settleSubagent("child-only", "completed");
+    const daemon = closingDaemon(
+      (node) => root.render(node),
+      [ended("child-only", 1, "Only child"), live("child-run", 1, "Working child")],
+      refresh,
+    );
+    vi.mocked(sessionClose).mockImplementation(daemon.close);
+    await act(async () => root.render(daemon.node()));
     await openMenu();
 
     await pressArchiveAction();
-    roster = [];
-    await act(async () => root.render(surface(roster, refresh)));
+    await act(async () => daemon.push([live("child-run", 1, "Working child")]));
     await answerAsk("Archive");
 
     expect(sessionClose).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="subagent-pill"]')).toBeNull();
+    expect(rowTitles()).toEqual(["Working child"]);
     expect(document.querySelector(".workspace-subagent-row-failure")).toBeNull();
     expect(document.activeElement).not.toBe(document.body);
   });
