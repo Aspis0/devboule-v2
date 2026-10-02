@@ -4,6 +4,7 @@ import { chooseAndInstall } from "../features/plugins/install";
 import { pluginState } from "../lib/plugins";
 import { closeOpenMenus } from "../lib/menuOpen";
 import { isImeComposition } from "../lib/imeComposition";
+import { crescentPageForKey } from "../lib/keymap";
 import { useAppStore } from "../store/appStore";
 import { ErrorText } from "../components/ErrorText";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
@@ -168,10 +169,11 @@ export function Shell({ activeSurface, children }: ShellProps) {
     ) {
       return;
     }
-    if (event.key === "ArrowLeft" && crescentLayout.canPrev) {
+    const page = crescentPageForKey(event.key);
+    if (page === "previous" && crescentLayout.canPrev) {
       event.preventDefault();
       pageBy(-1);
-    } else if (event.key === "ArrowRight" && crescentLayout.canNext) {
+    } else if (page === "next" && crescentLayout.canNext) {
       event.preventDefault();
       pageBy(1);
     }

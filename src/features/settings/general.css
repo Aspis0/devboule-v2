@@ -1,4 +1,4 @@
-/* This-machine pages: Appearance, Layout, Editing, Notifications. R17-4 owns
+/* This-machine pages: Appearance, Layout, Editing, Shortcuts, Notifications. R17-4 owns
    this file; the transcript-history rules live in diagnostics.css because
    that section renders on the Diagnostics page. The shell owns the
    section label (`.settings-subheading` in settings.css): this sheet never

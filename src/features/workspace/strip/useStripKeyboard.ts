@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { isImeComposition } from "../../../lib/imeComposition";
+import { isCloseTabKey, stripChordFor, tabMoveForKey } from "../../../lib/keymap";
 import { sessionTabElementId } from "./useTabCloseFlow";
 
 interface StripKeyboardArgs {
@@ -14,9 +14,8 @@ interface StripKeyboardArgs {
 
 /** True tablist semantics: one tab stop per strip, arrows/Home/End moving
  * between chips with automatic activation, Delete closing the focused chip,
- * and the Alt+Shift+[ / Alt+Shift+] prev/next-tab shortcut switching from
- * anywhere but the terminal — the terminal keeps its Alt chords, so the
- * shortcut never fires from inside one. */
+ * and the keymap's Alt+Shift+[ / Alt+Shift+] chord switching wherever the
+ * keymap does not leave the keys to a field, terminal or open menu. */
 export function useStripKeyboard({ tabs, activeTabId, selectTab, closeTab }: StripKeyboardArgs): {
   tabIndexFor: (id: string) => 0 | -1;
   onChipKeyDown: (id: string, event: ReactKeyboardEvent<HTMLElement>) => void;
@@ -65,32 +64,17 @@ export function useStripKeyboard({ tabs, activeTabId, selectTab, closeTab }: Str
 
   const onChipKeyDown = useCallback(
     (id: string, event: ReactKeyboardEvent<HTMLElement>) => {
-      switch (event.key) {
-        case "ArrowRight":
-        case "ArrowDown":
-          event.preventDefault();
-          step(id, 1);
-          break;
-        case "ArrowLeft":
-        case "ArrowUp":
-          event.preventDefault();
-          step(id, -1);
-          break;
-        case "Home":
-          event.preventDefault();
-          if (tabs.length > 0) jump(tabs[0].id);
-          break;
-        case "End":
-          event.preventDefault();
-          if (tabs.length > 0) jump(tabs[tabs.length - 1].id);
-          break;
-        case "Delete":
-        case "Backspace":
-          event.preventDefault();
-          closeTab(id);
-          break;
-        default:
-          break;
+      const move = tabMoveForKey(event.key);
+      if (move !== null) {
+        event.preventDefault();
+        if (move === "next") step(id, 1);
+        else if (move === "previous") step(id, -1);
+        else if (tabs.length > 0) jump(move === "first" ? tabs[0].id : tabs[tabs.length - 1].id);
+        return;
+      }
+      if (isCloseTabKey(event.key)) {
+        event.preventDefault();
+        closeTab(id);
       }
     },
     [step, jump, closeTab, tabs],
@@ -98,38 +82,18 @@ export function useStripKeyboard({ tabs, activeTabId, selectTab, closeTab }: Str
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
-      if (event.key !== "[" && event.key !== "]") return;
-      // The chord is text or composition inside a field: switching tabs
-      // would yank the caret out from under the user. Terminals, menus
-      // and dialogs own their keys the same way.
-      if (isImeComposition(event)) return;
-      const target = event.target;
-      if (target instanceof HTMLElement) {
-        const tag = target.tagName;
-        if (
-          tag === "INPUT" ||
-          tag === "TEXTAREA" ||
-          tag === "SELECT" ||
-          target.isContentEditable ||
-          target.closest(".workspace-terminal-shell") !== null ||
-          target.closest(
-            '[role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]',
-          ) !== null
-        ) {
-          return;
-        }
-      }
+      const chord = stripChordFor(event);
+      if (chord === null) return;
       if (tabs.length === 0) return;
       event.preventDefault();
       const current = activeTabId !== null ? tabs.findIndex((tab) => tab.id === activeTabId) : -1;
       const next =
         tabs[
           (current === -1
-            ? event.key === "]"
+            ? chord === "next"
               ? 0
               : tabs.length - 1
-            : current + (event.key === "]" ? 1 : -1) + tabs.length) % tabs.length
+            : current + (chord === "next" ? 1 : -1) + tabs.length) % tabs.length
         ];
       selectTab(next.id);
       focusChip(next.id);

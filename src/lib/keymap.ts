@@ -1,0 +1,248 @@
+/**
+ * The app's shortcut keymap: the matchers the handlers run and the rows the
+ * Shortcuts page lists. Both read the same definitions, so every listed chord
+ * is a chord the app answers. Keys a widget owns only while it is open —
+ * command-menu travel, dialog Escape — stay local to that widget and are not
+ * listed here as app shortcuts.
+ */
+import { isImeComposition } from "./imeComposition";
+import type { SendBehavior } from "./sendBehavior";
+
+/** What a bare arrow or Home/End asks a focused tab list for. The strip and
+ * the side-panel tab row read the same matcher. */
+export type TabKeyMove = "next" | "previous" | "first" | "last";
+
+const TAB_MOVES: readonly (readonly [string, TabKeyMove])[] = [
+  ["ArrowRight", "next"],
+  ["ArrowDown", "next"],
+  ["ArrowLeft", "previous"],
+  ["ArrowUp", "previous"],
+  ["Home", "first"],
+  ["End", "last"],
+];
+
+const TAB_MOVES_BY_KEY = new Map<string, TabKeyMove>(TAB_MOVES);
+
+export function tabMoveForKey(key: string): TabKeyMove | null {
+  return TAB_MOVES_BY_KEY.get(key) ?? null;
+}
+
+const CLOSE_TAB_KEYS: readonly string[] = ["Delete", "Backspace"];
+
+/** Delete and Backspace close the focused strip tab; panel tabs have no
+ * close key. */
+export function isCloseTabKey(key: string): boolean {
+  return CLOSE_TAB_KEYS.some((candidate) => candidate === key);
+}
+
+/** Which strip tab the window-level chord walks to. */
+export type StripChord = "next" | "previous";
+
+const STRIP_CHORDS: readonly { chord: StripChord; key: string }[] = [
+  { chord: "next", key: "]" },
+  { chord: "previous", key: "[" },
+];
+
+/** True when the event belongs to a widget that owns its keys: a text field,
+ * a terminal, or an open menu, dialog or listbox. The chord must not pull a
+ * caret or a terminal's own Alt chord out from under it. */
+function ownsItsKeys(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    target.isContentEditable ||
+    target.closest(".workspace-terminal-shell") !== null ||
+    target.closest('[role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]') !==
+      null
+  );
+}
+
+/**
+ * The window-level Alt+Shift+[ / Alt+Shift+] chord, or null. Composition and
+ * target are part of the match: the chord is text inside a field, and a
+ * terminal or an open menu keeps its own Alt keys.
+ */
+export function stripChordFor(
+  event: Pick<
+    KeyboardEvent,
+    "key" | "altKey" | "shiftKey" | "ctrlKey" | "metaKey" | "isComposing" | "keyCode"
+  > & { target: EventTarget | null },
+): StripChord | null {
+  if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return null;
+  const found = STRIP_CHORDS.find((entry) => entry.key === event.key);
+  if (found === undefined) return null;
+  if (isImeComposition(event)) return null;
+  if (ownsItsKeys(event.target)) return null;
+  return found.chord;
+}
+
+/** Enter's three answers in the composer. */
+export type ComposerKeyAction = "submit" | "alternate" | "newline";
+
+/**
+ * Enter submits, Shift+Enter makes a newline, and the command modifier asks
+ * for the other action. Either Ctrl or Meta counts on every OS — the display
+ * prints the host's own key — and Alt rides with the plain key.
+ */
+export function composerKeyAction(
+  event: Pick<
+    KeyboardEvent,
+    "key" | "shiftKey" | "ctrlKey" | "metaKey" | "isComposing" | "keyCode"
+  >,
+): ComposerKeyAction | null {
+  if (isImeComposition(event)) return null;
+  if (event.key !== "Enter") return null;
+  if (event.shiftKey) return "newline";
+  if (event.ctrlKey || event.metaKey) return "alternate";
+  return "submit";
+}
+
+/** The keys as the app prints them, per composer action. */
+export function composerChordLabel(action: ComposerKeyAction): string {
+  switch (action) {
+    case "submit":
+      return "Enter";
+    case "alternate":
+      return `${commandModifier()}+Enter`;
+    case "newline":
+      return "Shift+Enter";
+  }
+}
+
+/** Which way the crescent band pages. */
+export type CrescentPage = "next" | "previous";
+
+const CRESCENT_PAGE_KEYS: readonly { page: CrescentPage; key: string }[] = [
+  { page: "previous", key: "ArrowLeft" },
+  { page: "next", key: "ArrowRight" },
+];
+
+/** The band's paging keys. The caller owns the open/closed state and the
+ * layout's canPrev/canNext. */
+export function crescentPageForKey(key: string): CrescentPage | null {
+  const found = CRESCENT_PAGE_KEYS.find((entry) => entry.key === key);
+  return found?.page ?? null;
+}
+
+/** Typing this at the start of a message opens the command menu. */
+export const COMMAND_MENU_KEY = "/";
+
+/** The command modifier's label for a platform string. */
+export function commandModifierLabel(platform: string): "Cmd" | "Ctrl" {
+  return platform.startsWith("Mac") ? "Cmd" : "Ctrl";
+}
+
+/** The key this host draws for the command modifier, read per call: a
+ * module-scope constant would answer for a test's platform before it runs. */
+export function commandModifier(): "Cmd" | "Ctrl" {
+  return commandModifierLabel(typeof navigator === "undefined" ? "" : navigator.platform);
+}
+
+/** One line of the Shortcuts page. */
+interface ShortcutRow {
+  /** The keys, as the page prints them. */
+  keys: string;
+  /** What the keys do. */
+  title: string;
+  /** The condition the keys alone do not carry. */
+  detail?: string;
+}
+
+interface ShortcutSection {
+  label: string;
+  /** One line for the whole group, when a condition holds for every row. */
+  note?: string;
+  rows: readonly ShortcutRow[];
+}
+
+function tabMoveKeys(move: TabKeyMove): string {
+  return TAB_MOVES.filter(([, candidate]) => candidate === move)
+    .map(([key]) => key)
+    .join(" / ");
+}
+
+function tabStripRows(): readonly ShortcutRow[] {
+  const chordRows = STRIP_CHORDS.map(({ chord, key }) => ({
+    keys: `Alt+Shift+${key}`,
+    title: chord === "next" ? "Next tab" : "Previous tab",
+    detail: "Not while typing in a field or terminal, or while a menu, list or dialog is open.",
+  }));
+  return [
+    ...chordRows,
+    { keys: tabMoveKeys("next"), title: "Next tab", detail: "With the tab list focused." },
+    { keys: tabMoveKeys("previous"), title: "Previous tab", detail: "With the tab list focused." },
+    {
+      keys: `${tabMoveKeys("first")} / ${tabMoveKeys("last")}`,
+      title: "First or last tab",
+      detail: "With the tab list focused.",
+    },
+    { keys: CLOSE_TAB_KEYS.join(" / "), title: "Close the focused tab" },
+  ];
+}
+
+function composerRows(behavior: SendBehavior): readonly ShortcutRow[] {
+  const queued = behavior === "queue";
+  return [
+    {
+      keys: composerChordLabel("submit"),
+      title: "Send the message",
+      detail: queued
+        ? "While the agent is working, Enter queues the message when queueing is available; otherwise it sends."
+        : "While the agent is working, Enter interrupts the turn and sends the message.",
+    },
+    { keys: composerChordLabel("newline"), title: "Start a new line" },
+    {
+      keys: composerChordLabel("alternate"),
+      title: queued ? "Interrupt and send" : "Queue the message",
+      detail: queued
+        ? "While the agent is working, this interrupts the turn and sends the message."
+        : "While the agent is working, this queues the message when queueing is available; otherwise the draft stays in the composer.",
+    },
+    {
+      keys: COMMAND_MENU_KEY,
+      title: "Open the command menu",
+      detail:
+        "Type it at the start of a message to see the commands this agent offers. While they show, Enter picks the highlighted command instead of sending.",
+    },
+  ];
+}
+
+function crescentRows(): readonly ShortcutRow[] {
+  return CRESCENT_PAGE_KEYS.map(({ page, key }) => ({
+    keys: key,
+    title: page === "next" ? "Next surface" : "Previous surface",
+    detail: "While the surface list is open, outside text fields and dialogs.",
+  }));
+}
+
+function panelRows(): readonly ShortcutRow[] {
+  return [
+    { keys: tabMoveKeys("next"), title: "Next panel tab" },
+    { keys: tabMoveKeys("previous"), title: "Previous panel tab" },
+    {
+      keys: `${tabMoveKeys("first")} / ${tabMoveKeys("last")}`,
+      title: "First or last panel tab",
+    },
+  ];
+}
+
+/** Both composer keys are no-ops while the composer is disabled or an image
+ * send is in flight — sendInput and queueInput return early on both — so the
+ * page says it once, on the group. */
+const COMPOSER_BLOCKED_NOTE =
+  "Nothing is sent or queued while the composer is disabled or an image send is in progress.";
+
+/** The Shortcuts page's rows, grouped by where the keys work. `behavior` is
+ * the Editing page's Default send: the two Enter rows say what Enter and the
+ * command modifier do under the current choice. */
+export function shortcutSections(behavior: SendBehavior): readonly ShortcutSection[] {
+  return [
+    { label: "Tabs", rows: tabStripRows() },
+    { label: "Composer", rows: composerRows(behavior), note: COMPOSER_BLOCKED_NOTE },
+    { label: "Navigation", rows: crescentRows() },
+    { label: "Panel", rows: panelRows() },
+  ];
+}

@@ -4,6 +4,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react";
+import { tabMoveForKey } from "../../../lib/keymap";
 
 interface PanelTabsKeyboardArgs {
   tabs: readonly { id: string }[];
@@ -17,8 +18,8 @@ interface PanelTabsKeyboardArgs {
 
 /** Roving tabindex for the panel tab row: one tab stop, arrows/Home/End
  * moving between tabs with automatic activation, focus following the move.
- * The strip's hook is the reference; this one stays local because closing
- * and shortcuts do not apply to panel tabs. */
+ * The keys are the keymap's tab-move matcher; this hook adds nothing local
+ * because closing and the strip chord do not apply to panel tabs. */
 export function usePanelTabsKeyboard({
   tabs,
   activeId,
@@ -75,28 +76,12 @@ export function usePanelTabsKeyboard({
 
   const onTabKeyDown = useCallback(
     (id: string, event: ReactKeyboardEvent<HTMLElement>) => {
-      switch (event.key) {
-        case "ArrowRight":
-        case "ArrowDown":
-          event.preventDefault();
-          step(id, 1);
-          break;
-        case "ArrowLeft":
-        case "ArrowUp":
-          event.preventDefault();
-          step(id, -1);
-          break;
-        case "Home":
-          event.preventDefault();
-          if (tabs.length > 0) jump(tabs[0].id);
-          break;
-        case "End":
-          event.preventDefault();
-          if (tabs.length > 0) jump(tabs[tabs.length - 1].id);
-          break;
-        default:
-          break;
-      }
+      const move = tabMoveForKey(event.key);
+      if (move === null) return;
+      event.preventDefault();
+      if (move === "next") step(id, 1);
+      else if (move === "previous") step(id, -1);
+      else if (tabs.length > 0) jump(move === "first" ? tabs[0].id : tabs[tabs.length - 1].id);
     },
     [step, jump, tabs],
   );

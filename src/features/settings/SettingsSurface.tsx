@@ -14,6 +14,7 @@ import { ProvidersPanel } from "./panels/ProvidersPanel";
 import { AgentProfilesPanel } from "./panels/AgentsPanel";
 import { ProjectsPanel } from "./panels/ProjectsPanel";
 import { AboutPanel } from "./panels/AboutPanel";
+import { ShortcutsPanel } from "./panels/ShortcutsPanel";
 import {
   SETTINGS_MENU,
   SETTINGS_PAGE_ORDER,
@@ -113,6 +114,8 @@ export function SettingsSurface() {
         return <CloseBehaviorSetting />;
       case "editing":
         return <SendBehaviorSetting />;
+      case "shortcuts":
+        return <ShortcutsPanel />;
       case "notifications":
         return <NotificationsSection />;
       case "diagnostics":

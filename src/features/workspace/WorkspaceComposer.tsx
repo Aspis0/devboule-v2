@@ -13,6 +13,7 @@ import {
 } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { composerActionLabel } from "../../lib/sendBehavior";
+import { COMMAND_MENU_KEY, composerChordLabel, composerKeyAction } from "../../lib/keymap";
 import { isImeComposition } from "../../lib/imeComposition";
 import type { PromptAttachment } from "../../types/ipc";
 import { rankCommandMatches } from "./commandMatch";
@@ -22,7 +23,7 @@ import { WorkspaceCommandMenu, type WorkspaceCommand } from "./WorkspaceCommandM
 /** Height cap of the growing textarea: eight 20px lines. */
 const TEXTAREA_MAX_HEIGHT_PX = 160;
 
-const COMPOSER_PLACEHOLDER = "Message the agent, or type / for commands";
+const COMPOSER_PLACEHOLDER = `Message the agent, or type ${COMMAND_MENU_KEY} for commands`;
 
 /** The draft the queue hands back: applied once, then dropped. `focus` is
  * false for an Edit (the row rule owns that focus) and true for a refused
@@ -65,8 +66,8 @@ interface WorkspaceComposerProps {
 
 function commandQuery(input: string): string | null {
   const trimmed = input.trimStart();
-  if (!trimmed.startsWith("/")) return null;
-  const query = trimmed.slice(1);
+  if (!trimmed.startsWith(COMMAND_MENU_KEY)) return null;
+  const query = trimmed.slice(COMMAND_MENU_KEY.length);
   if (/\s/.test(query)) return null;
   return query.toLowerCase();
 }
@@ -344,9 +345,10 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
           }
         }
       }
-      if (event.key !== "Enter" || event.shiftKey) return;
+      const action = composerKeyAction(event.nativeEvent);
+      if (action !== "submit" && action !== "alternate") return;
       event.preventDefault();
-      if (event.ctrlKey || event.metaKey) runAlternateAction();
+      if (action === "alternate") runAlternateAction();
       else runDefaultAction();
     },
     [
@@ -514,7 +516,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
             <button
               type="button"
               className="workspace-send-action"
-              title="Send · Enter (Shift+Enter for a new line)"
+              title={`Send · ${composerChordLabel("submit")} (${composerChordLabel("newline")} for a new line)`}
               aria-label="Send"
               onClick={sendInput}
               disabled={disabled || sendingImages || !input.trim()}

@@ -166,8 +166,7 @@ describe("AboutPanel", () => {
 });
 
 describe("the About page in the settings menu", () => {
-  it("is available while Shortcuts still is not", () => {
+  it("is available in the menu", () => {
     expect(settingsPageById("about").unavailable).not.toBe(true);
-    expect(settingsPageById("shortcuts").unavailable).toBe(true);
   });
 });

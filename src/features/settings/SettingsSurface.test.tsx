@@ -528,6 +528,7 @@ describe("Settings menu shell", () => {
     ["diagnostics", "Diagnostics", "#settings-panel-diagnostics"],
     ["layout", "Layout", ".machine-card"],
     ["editing", "Editing", ".machine-card"],
+    ["shortcuts", "Shortcuts", "#settings-panel-shortcuts"],
     ["notifications", "Notifications", ".machine-card"],
   ])("mounts the %s panel", async (_id, label, selector) => {
     await renderShell();
