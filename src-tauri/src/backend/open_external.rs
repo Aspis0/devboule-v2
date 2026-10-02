@@ -1,6 +1,6 @@
 //! Handing one web link to the system browser. The command opens a
 //! caller-supplied http(s) URL from the main window only, and parses it here
-//! rather than trusting the page: the canonical `http://` or `https://` form, no
+//! rather than trusting the page: a literal `http://` or `https://` prefix, no
 //! credentials, and no control or whitespace byte a URL parser would strip.
 
 use devboule_protocol::ErrorCode;
@@ -55,7 +55,6 @@ pub(crate) fn openable_url(input: &str) -> Result<Url, CommandError> {
     Ok(parsed)
 }
 
-/// What follows a leading `http://` or `https://`, whatever the case of the scheme.
 fn after_web_prefix(input: &str) -> Option<&str> {
     ["https://", "http://"].into_iter().find_map(|prefix| {
         let head = input.get(..prefix.len())?;
@@ -64,7 +63,6 @@ fn after_web_prefix(input: &str) -> Option<&str> {
     })
 }
 
-/// Whether the authority, the text up to the first `/`, `\`, `?` or `#`, holds an `@`.
 fn authority_has_userinfo_marker(after_prefix: &str) -> bool {
     after_prefix
         .split(['/', '\\', '?', '#'])
