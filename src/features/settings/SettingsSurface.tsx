@@ -13,6 +13,7 @@ import { UsagePanel } from "./UsagePanel";
 import { ProvidersPanel } from "./panels/ProvidersPanel";
 import { AgentProfilesPanel } from "./panels/AgentsPanel";
 import { ProjectsPanel } from "./panels/ProjectsPanel";
+import { AboutPanel } from "./panels/AboutPanel";
 import {
   SETTINGS_MENU,
   SETTINGS_PAGE_ORDER,
@@ -133,6 +134,8 @@ export function SettingsSurface() {
         return <OraclePanel />;
       case "paired":
         return <DevicesPanel />;
+      case "about":
+        return <AboutPanel />;
       default:
         return null;
     }
