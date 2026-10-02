@@ -1244,9 +1244,9 @@ impl ServerState {
         self.sessions.refresh_journal_degradation();
         let output_metrics = self.sessions.output_metrics();
         // Read before the lifecycle lock below: the registry's own locks
-        // must never nest inside it. Both counts come from this one read,
-        // so the pair can never disagree about the moment it describes.
-        let (live_agents, live_terminals) = self.sessions.live_session_families();
+        // must never nest inside it. The counts come from this one read, so
+        // they can never disagree about the moment they describe.
+        let counts = self.sessions.status_counts();
         let lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         let journal_error = self
             .journal_error
@@ -1273,8 +1273,9 @@ impl ServerState {
                 clients: lifecycle.clients,
                 local_clients: lifecycle.local_clients,
                 sessions: lifecycle.sessions,
-                agents: Some(live_agents),
-                terminals: Some(live_terminals),
+                agents: Some(counts.agents),
+                terminals: Some(counts.terminals),
+                configuring_sessions: Some(counts.configuring),
                 capabilities: m3a_daemon_capabilities(),
                 // Wire names predate M3.5 (they described a 256 KiB byte
                 // ring). The ring is gone: these now report the bounded

@@ -3887,6 +3887,32 @@ fn status_carries_the_tool_policy_failure_while_a_clean_load_carries_none() {
     let _ = std::fs::remove_dir_all(path);
 }
 
+#[test]
+fn status_counts_a_session_still_configuring_apart_from_the_live_ones() {
+    let (path, state) = temp_state("status-configuring");
+    let owner = OwnerId::new("alex", "app").expect("owner");
+    let counts_of = |state: &Arc<ServerState>| match state.status_body(9) {
+        DaemonMessage::Status { body, .. } => {
+            (body.agents, body.terminals, body.configuring_sessions)
+        }
+        other => panic!("expected Status, got {other:?}"),
+    };
+    assert_eq!(counts_of(&state), (Some(0), Some(0), Some(0)));
+
+    crate::session::insert_test_live_agent(&state.sessions, "s.live", owner.clone());
+    state
+        .sessions
+        .insert_test_configuring_agent("s.starting", owner);
+
+    assert_eq!(
+        counts_of(&state),
+        (Some(1), Some(0), Some(1)),
+        "a spawned child still being configured is counted, and is not a live agent"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
 /// The leak that this guards: a state built by a test must not reach the OS
 /// credential store.
 ///

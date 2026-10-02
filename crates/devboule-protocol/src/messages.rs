@@ -3152,6 +3152,13 @@ pub struct DaemonStatusBody {
     /// from the other across counters that move at different moments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminals: Option<u32>,
+    /// How many sessions are still starting: the child process is spawned but
+    /// its delivery has not landed, so they are in neither `agents` nor
+    /// `terminals` nor any roster. From the same registry read as that pair.
+    /// Absent from a daemon that does not count them, which reads as
+    /// "unknown", never as "zero".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuring_sessions: Option<u32>,
     pub capabilities: Vec<Capability>,
     /// Highest live-session scrollback occupancy observed by the daemon.
     #[serde(default)]

@@ -15,11 +15,11 @@ use super::command_scan;
 use devboule_daemon::DaemonError;
 
 /// Bridge commands that take `State<'_, DaemonBridge>` but send the daemon no
-/// frame: a local snapshot and a `TerminateProcess` by handle. They are the
-/// only declared exception to the class rule below, checked both ways: a
-/// name here that stops being synchronous fails as stale, and a synchronous
-/// bridge command outside this list fails by name.
-const BRIDGE_COMMANDS_WITHOUT_A_WAIT: &[&str] = &["daemon_status", "daemon_restart"];
+/// frame: a local snapshot of what the bridge already holds. The only declared
+/// exception to the class rule below, checked both ways: a name here that
+/// stops being synchronous fails as stale, and a synchronous bridge command
+/// outside this list fails by name.
+const BRIDGE_COMMANDS_WITHOUT_A_WAIT: &[&str] = &["daemon_status"];
 
 /// The class pin: every `#[tauri::command]` that holds the daemon bridge is
 /// `pub async fn`, except the names the list above declares. A new
@@ -112,7 +112,7 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 66,
+        scan.helper_calls, 67,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

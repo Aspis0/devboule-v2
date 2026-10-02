@@ -244,6 +244,20 @@ terminating; a changed identity is an error rather than a risk, because a PID al
 between the query and the kill (`crates/devboule-daemon/src/transport/windows_pipe.rs`,
 `terminate_server_process_if_identity_matches`, `terminate_after_pipe_identity_check`).
 
+**It also refuses while anything is running.** Before the kill — off the window's thread, like every
+other command that waits — the command asks the daemon whether a session still holds a process: the
+session list, and the status body's own live agent and terminal counts as a second witness. An agent
+still starting up, its child spawned and its provider handshake not finished, is a
+`RegistryEntry::Configuring` and sits in neither, so the status body also carries how many there are
+(`configuringSessions`, read under the same registry lock as the live counts) and any of them refuses
+too. Because the status body is the only witness for those, a status read that fails, or a status
+that leaves a count out (an older daemon), refuses the restart rather than counting as zero. A drop
+of the app's own connection buys one more connection rather than counting as an empty roster, and
+only the daemon that connection reaches is ever stopped. If that connection finds no daemon at all,
+nothing is stopped and the supervisor's reconnect starts one, unless the daemon was asked to stop, in
+which case the command answers that it is shutting down and was not restarted
+(`src-tauri/src/client/restart_guard.rs`).
+
 ## 3. Sessions and the journal
 
 **What a session is.** One row the daemon owns: an id, an optional workspace, the directory the

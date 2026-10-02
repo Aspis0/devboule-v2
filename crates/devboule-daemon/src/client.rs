@@ -1967,6 +1967,17 @@ pub fn connect(paths: &RuntimePaths, hello: ClientHello) -> Result<DaemonClient,
     handshake(file, hello)
 }
 
+/// [`connect`] for a caller that cannot wait out a busy pipe: it stops waiting
+/// on one after about `budget`.
+pub fn connect_within(
+    paths: &RuntimePaths,
+    hello: ClientHello,
+    budget: Duration,
+) -> Result<DaemonClient, DaemonError> {
+    let file = transport::connect_within(paths, budget)?;
+    handshake(file, hello)
+}
+
 /// Connect, spawning the daemon binary if the pipe is not up yet. Racing
 /// callers converge on one daemon because the loser of the file lock exits.
 pub fn connect_or_spawn(

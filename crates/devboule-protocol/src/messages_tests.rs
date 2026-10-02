@@ -1732,6 +1732,10 @@ fn status_body_treats_journal_stats_as_optional_for_older_daemons() {
     let decoded = serde_json::from_value::<DaemonStatusBody>(older_daemon_frame)
         .expect("a status frame without journalStats");
     assert!(decoded.journal_stats.is_none());
+    assert_eq!(
+        decoded.configuring_sessions, None,
+        "an older daemon's missing count is unknown, not zero"
+    );
 }
 
 #[test]
@@ -1753,6 +1757,7 @@ fn boxing_journal_stats_and_remote_does_not_change_the_wire() {
         sessions: 0,
         agents: Some(0),
         terminals: Some(0),
+        configuring_sessions: Some(2),
         capabilities: Vec::new(),
         peak_ring_bytes: 0,
         ring_evicted_bytes: 0,
@@ -1774,6 +1779,7 @@ fn boxing_journal_stats_and_remote_does_not_change_the_wire() {
     assert_eq!(json["journalStats"]["acceptedFrames"], 1);
     assert_eq!(json["journalStats"]["failedFrames"], 5);
     assert_eq!(json["secretStore"], "file");
+    assert_eq!(json["configuringSessions"], 2);
     assert_eq!(json["remote"]["state"], "disabled");
     assert_eq!(json["remote"]["reason"], "no tailscale");
 

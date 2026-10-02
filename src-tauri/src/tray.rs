@@ -145,6 +145,7 @@ mod tests {
             sessions,
             agents,
             terminals,
+            configuring_sessions: None,
             capabilities: Vec::new(),
             peak_ring_bytes: 0,
             ring_evicted_bytes: 0,

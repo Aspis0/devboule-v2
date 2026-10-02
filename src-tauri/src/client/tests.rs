@@ -1956,8 +1956,12 @@ fn reconnect_does_not_reset_failures_when_status_keeps_failing() {
     assert_eq!(status.state, "unresponsive");
 }
 
+/// Pins the guard's type only: it takes the daemon client the bridge hands the
+/// command and answers a `CommandError`. That the command is `pub async fn` is
+/// the class pin's job (`backend::tests::async_roads`); no test reaches the
+/// command body, so nothing here proves it calls the guard.
 #[test]
-fn daemon_restart_has_the_frozen_tauri_signature() {
-    let _: fn(State<'_, DaemonBridge>) -> Result<(), crate::backend::error::CommandError> =
-        daemon_restart;
+fn the_restart_guard_takes_a_daemon_client_and_answers_a_command_error() {
+    let _: fn(&dyn restart_guard::RestartClient) -> Result<(), CommandError> =
+        restart_guard::restart;
 }

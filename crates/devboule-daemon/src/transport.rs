@@ -7,6 +7,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "server")]
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::paths::RuntimePaths;
 
@@ -14,7 +15,7 @@ use crate::paths::RuntimePaths;
 mod windows_pipe;
 #[cfg(windows)]
 pub use windows_pipe::{
-    connect_pipe, inspect_pipe_dacl, server_process_id,
+    connect_pipe, connect_pipe_within, inspect_pipe_dacl, server_process_id,
     terminate_server_process_if_identity_matches,
 };
 #[cfg(all(windows, feature = "server"))]
@@ -73,6 +74,22 @@ pub fn connect(paths: &RuntimePaths) -> io::Result<File> {
     #[cfg(not(windows))]
     {
         let _ = paths;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "devboule-daemon M3a targets Windows only",
+        ))
+    }
+}
+
+/// [`connect`] that stops waiting on a busy pipe after about `budget`.
+pub fn connect_within(paths: &RuntimePaths, budget: Duration) -> io::Result<File> {
+    #[cfg(windows)]
+    {
+        connect_pipe_within(&paths.pipe_name, budget)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (paths, budget);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "devboule-daemon M3a targets Windows only",

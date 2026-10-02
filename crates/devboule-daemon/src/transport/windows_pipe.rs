@@ -48,6 +48,8 @@ const PIPE_BUFFER: u32 = 64 * 1024;
 #[cfg(feature = "server")]
 const MAX_INSTANCES: u32 = 16;
 const WAIT_MS: u32 = 1000;
+const BUSY_RETRIES: u32 = 20;
+const RETRY_PAUSE: Duration = Duration::from_millis(20);
 
 #[cfg(feature = "server")]
 #[derive(Clone)]
@@ -215,7 +217,26 @@ impl Listener for NamedPipeListener {
 }
 
 pub fn connect_pipe(pipe_name: &str) -> io::Result<File> {
-    for _ in 0..20 {
+    connect_pipe_retrying(pipe_name, BUSY_RETRIES)
+}
+
+/// `connect_pipe` for a caller that cannot wait out a busy pipe: it gives up
+/// after about `budget`, never sooner than one try.
+pub fn connect_pipe_within(pipe_name: &str, budget: Duration) -> io::Result<File> {
+    connect_pipe_retrying(pipe_name, busy_retries_within(budget))
+}
+
+/// How many busy-pipe tries fit in `budget`, a try being one wait of up to
+/// `WAIT_MS` and the pause after it.
+fn busy_retries_within(budget: Duration) -> u32 {
+    let one_try = Duration::from_millis(u64::from(WAIT_MS)) + RETRY_PAUSE;
+    u32::try_from(budget.as_millis().div_ceil(one_try.as_millis()))
+        .unwrap_or(u32::MAX)
+        .max(1)
+}
+
+fn connect_pipe_retrying(pipe_name: &str, retries: u32) -> io::Result<File> {
+    for _ in 0..retries {
         match connect_pipe_once(pipe_name) {
             Ok(file) => return Ok(file),
             Err(error) => match error.raw_os_error().map(|code| code as u32) {
@@ -227,7 +248,7 @@ pub fn connect_pipe(pipe_name: &str) -> io::Result<File> {
                 _ => return Err(error),
             },
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(RETRY_PAUSE);
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
@@ -368,8 +389,20 @@ impl Drop for NamedPipeListener {
 
 #[cfg(test)]
 mod tests {
-    use super::terminate_after_pipe_identity_check;
+    use super::{busy_retries_within, terminate_after_pipe_identity_check, BUSY_RETRIES};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[test]
+    fn a_busy_pipe_budget_buys_whole_tries_and_at_least_one() {
+        assert_eq!(busy_retries_within(Duration::from_secs(3)), 3);
+        assert_eq!(busy_retries_within(Duration::ZERO), 1);
+        assert_eq!(
+            busy_retries_within(Duration::from_millis(20_400)),
+            BUSY_RETRIES,
+            "the default connect is the budget that buys the default retries"
+        );
+    }
 
     #[test]
     fn process_is_opened_before_pipe_recheck_and_not_terminated_after_mismatch() {

@@ -675,8 +675,15 @@ use session_types::{
 };
 pub use shell_command::write_test_pty_command;
 
+/// The session counts one status body carries, read together.
+pub(crate) struct StatusCounts {
+    pub(crate) agents: u32,
+    pub(crate) terminals: u32,
+    pub(crate) configuring: u32,
+}
+
 /// Agents and terminals over one iterator of kinds — the testable half of
-/// [`SessionRegistry::live_session_families`].
+/// [`SessionRegistry::status_counts`].
 fn count_session_families(kinds: impl Iterator<Item = SessionKind>) -> (u32, u32) {
     let mut agents = 0u32;
     let mut terminals = 0u32;
@@ -1320,17 +1327,26 @@ impl SessionRegistry {
         session.metadata.workspace_id = Some(workspace_id.to_string());
     }
 
-    /// Live sessions by family, for the status body: agents
-    /// (provider-driven) and terminals, so the app can name each truthfully
-    /// instead of calling every session an agent. Counts exactly what a
-    /// roster shows — `Live` entries only: a `Configuring` child is
-    /// invisible to every roster read, and a `Transcript` row runs nothing.
-    pub(crate) fn live_session_families(&self) -> (u32, u32) {
+    /// What the status body counts, from one registry read: live sessions by
+    /// family — agents (provider-driven) and terminals, so the app can name
+    /// each truthfully instead of calling every session an agent — and the
+    /// children still `Configuring`. The families are exactly what a roster
+    /// shows (`Live` entries only); a `Configuring` child is invisible to
+    /// every roster read yet already owns a process, so it is counted apart.
+    /// A `Transcript` row runs nothing and is in neither.
+    pub(crate) fn status_counts(&self) -> StatusCounts {
         let map = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        count_session_families(map.values().filter_map(|entry| match entry {
-            RegistryEntry::Live(_) => Some(entry.metadata().kind.clone()),
-            _ => None,
-        }))
+        let (agents, terminals) =
+            count_session_families(map.values().filter_map(|entry| match entry {
+                RegistryEntry::Live(_) => Some(entry.metadata().kind.clone()),
+                _ => None,
+            }));
+        let configuring = map.values().filter(|entry| entry.is_configuring()).count();
+        StatusCounts {
+            agents,
+            terminals,
+            configuring: u32::try_from(configuring).unwrap_or(u32::MAX),
+        }
     }
 
     pub(crate) fn state_snapshots(&self, owner: &OwnerId) -> Vec<SessionStateSnapshot> {
@@ -4312,6 +4328,17 @@ pub(crate) fn insert_test_agent_in_workspace_with_recording_writer(
 
 #[cfg(test)]
 impl SessionRegistry {
+    /// Test-only: an agent whose child is spawned and whose delivery has not
+    /// landed yet, the state every roster read hides.
+    pub(crate) fn insert_test_configuring_agent(&self, id: &str, owner: OwnerId) {
+        tests::insert_live_agent(self, id, owner);
+        let mut map = self.inner.lock().expect("registry");
+        let Some(RegistryEntry::Live(session)) = map.remove(id) else {
+            panic!("the inserted entry was live");
+        };
+        map.insert(id.to_string(), RegistryEntry::Configuring(session));
+    }
+
     /// One test-only live agent session that is `creator`'s child, with a
     /// display name — the shape `devboule_answer_permission`'s chain checks.
     pub(crate) fn insert_test_child(

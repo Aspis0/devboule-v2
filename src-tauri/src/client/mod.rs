@@ -11,8 +11,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
-    connect, connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, DaemonError,
-    DaemonState, EventHandler, ExitReason, RuntimePaths, SessionStateHandler,
+    connect, connect_or_spawn, connect_within, current_user_sid, daemon_file_name, DaemonClient,
+    DaemonError, DaemonState, EventHandler, ExitReason, RuntimePaths, SessionStateHandler,
 };
 use devboule_protocol::{
     ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
@@ -21,9 +21,11 @@ use devboule_protocol::{
 use serde::Serialize;
 use tauri::State;
 
+use crate::backend::blocking::off_main_thread;
 use crate::backend::error::CommandError;
 
 mod crash_loop;
+mod restart_guard;
 
 use crash_loop::{CrashLoopBrake, HEALTHY_CONNECTED};
 
@@ -919,7 +921,7 @@ impl DaemonBridge {
     pub fn ask_daemon_to_stop(&self) -> Result<(), String> {
         let client = match self.client() {
             Ok(client) => client,
-            Err(_) => Arc::new(connect_live_only()?),
+            Err(_) => Arc::new(connect_live_only().map_err(|error| error.to_string())?),
         };
         client
             .request_shutdown()
@@ -1389,11 +1391,11 @@ pub fn daemon_status(bridge: State<'_, DaemonBridge>) -> UiDaemonStatus {
 }
 
 #[tauri::command]
-pub fn daemon_restart(bridge: State<'_, DaemonBridge>) -> Result<(), CommandError> {
+pub async fn daemon_restart(bridge: State<'_, DaemonBridge>) -> Result<(), CommandError> {
     let client = bridge
         .client()
         .map_err(|message| CommandError::new(ErrorCode::Io, message))?;
-    Ok(client.restart_daemon()?)
+    off_main_thread(move || restart_guard::restart(&*client)).await
 }
 
 const STATUS_FAILURE_THRESHOLD: u32 = 3;
@@ -1871,13 +1873,30 @@ fn connect_once() -> Result<DaemonClient, ConnectFailure> {
         .map_err(|error| ConnectFailure::after(&paths, error))
 }
 
-/// Connect to a daemon that is already listening, never spawning one: the
-/// quit path's bounded last look. Starting a daemon only to stop it would
-/// be a worse answer than saying the daemon could not be reached.
-fn connect_live_only() -> Result<DaemonClient, String> {
-    let paths = RuntimePaths::from_env().map_err(|error| error.to_string())?;
-    let hello = client_hello()?;
-    connect(&paths, hello).map_err(|error| error.to_string())
+/// The quit path's last look: wait out a busy pipe as long as any connect does.
+fn connect_live_only() -> Result<DaemonClient, DaemonError> {
+    connect_without_spawning(connect)
+}
+
+/// The restart guard's second opinion, which stops waiting on a busy pipe
+/// after about `budget`.
+fn connect_live_within(budget: Duration) -> Result<DaemonClient, DaemonError> {
+    connect_without_spawning(|paths, hello| connect_within(paths, hello, budget))
+}
+
+/// Connect to a daemon that is already listening, never spawning one:
+/// starting a daemon only to stop it, or only to answer a question, would be a
+/// worse answer than saying the daemon could not be reached.
+///
+/// A fault before the pipe is opened is reported as `Protocol`, so the
+/// `Io(NotFound)` that means "no pipe instance" can only be the pipe's own.
+fn connect_without_spawning(
+    open: impl FnOnce(&RuntimePaths, ClientHello) -> Result<DaemonClient, DaemonError>,
+) -> Result<DaemonClient, DaemonError> {
+    let paths =
+        RuntimePaths::from_env().map_err(|error| DaemonError::Protocol(error.to_string()))?;
+    let hello = client_hello().map_err(DaemonError::Protocol)?;
+    open(&paths, hello)
 }
 
 fn locate_daemon_binary() -> Result<PathBuf, String> {
