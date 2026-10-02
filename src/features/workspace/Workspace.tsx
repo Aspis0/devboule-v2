@@ -269,13 +269,23 @@ export function Workspace({
   // shared: each pane seeds from it and writes its landed reads back.
   const [toolContentCache] = useState(createToolContentCache);
 
-  // The stats sweep covers the visible tree only; History reads branches
-  // for its own listed rows while open (useHistoryBranches).
   const sidebarWorkspaceIds = useMemo(
     () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
     [visibleProjects],
   );
   const sidebarIdSet = useMemo(() => new Set(sidebarWorkspaceIds), [sidebarWorkspaceIds]);
+  // History's rows join the visible tree's sweep while it is open, so a row
+  // the tree search hides, or no project lists, still gets its branch.
+  const [historyWorkspaceIds, setHistoryWorkspaceIds] = useState<readonly string[]>([]);
+  const handleHistoryWorkspaceIds = useCallback((ids: readonly string[]) => {
+    setHistoryWorkspaceIds((current) =>
+      current.join("\u0000") === ids.join("\u0000") ? current : ids,
+    );
+  }, []);
+  const statsWorkspaceIds = useMemo(
+    () => [...new Set([...sidebarWorkspaceIds, ...historyWorkspaceIds])].sort(),
+    [sidebarWorkspaceIds, historyWorkspaceIds],
+  );
   const endedKey = useMemo(
     () =>
       sessions
@@ -287,14 +297,15 @@ export function Workspace({
         .join("\n"),
     [sessions, sidebarIdSet],
   );
-  const { stats: workspaceStats, refresh: refreshWorkspaceStats } = useWorkspaceStats(
-    sidebarWorkspaceIds,
-    {
-      connected: daemon.state === "connected",
-      selectedWorkspace,
-      endedKey,
-    },
-  );
+  const {
+    stats: workspaceStats,
+    branches: workspaceBranches,
+    refresh: refreshWorkspaceStats,
+  } = useWorkspaceStats(statsWorkspaceIds, {
+    connected: daemon.state === "connected",
+    selectedWorkspace,
+    endedKey,
+  });
   useEffect(() => {
     setSessionFacts(sessions);
   }, [sessions, setSessionFacts]);
@@ -1427,7 +1438,8 @@ export function Workspace({
         history={{
           searchValue: historySearch,
           projects,
-          connected: daemon.state === "connected",
+          branches: workspaceBranches,
+          onWorkspaceIdsChange: handleHistoryWorkspaceIds,
           selectedSessionId: activeToolId === null ? selectedSessionId : null,
           onSearchChange: handleHistorySearchChange,
           onReopen: handleReopenSession,

@@ -948,6 +948,143 @@ describe("Workspace sessions", () => {
     expect(sessionResume).not.toHaveBeenCalled();
   });
 
+  it("finds a hidden workspace's branch in History while the tree search hides its row", async () => {
+    const projectsReply = deferred<Project[]>();
+    vi.mocked(projectsList).mockReturnValueOnce(projectsReply.promise);
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    vi.mocked(workspaceGitStatus).mockImplementation(async (id: string) =>
+      id === "workspace-2" ? { ...cleanChanges, branch: "branch-two" } : cleanChanges,
+    );
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one"),
+      {
+        id: "session-2",
+        workspaceId: "workspace-2",
+        kind: "acp",
+        title: "Recovered in two",
+        state: {
+          type: "recovered",
+          generation: 2,
+          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+        },
+        elapsedMs: null,
+        resumable: true,
+      },
+    ]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    const treeSearch = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+    if (!treeSearch) throw new Error("tree search did not render");
+    await act(async () => setSearchValue(treeSearch, "devboule main"));
+    await act(async () => projectsReply.resolve([project, secondProject]));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    // The rows render under their project heading; scope the hiding claim
+    // to the tree, whose strings share the project name with both rows.
+    const tree = container.querySelector('aside[aria-label="Workspaces"]');
+    if (tree === null) throw new Error("Workspaces sidebar did not render");
+    expect(tree.textContent).not.toContain("other-main");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
+    });
+    await act(async () => undefined);
+    const historySearch = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+    if (!historySearch) throw new Error("history search did not render");
+    await act(async () => setSearchValue(historySearch, "branch-two"));
+    await act(async () => undefined);
+    expect(container.querySelector('[data-agent-id="session-2"]')).not.toBeNull();
+  });
+
+  it("reads the branch of a History row no project lists, only while History is open", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace]);
+    vi.mocked(workspaceGitStatus).mockImplementation(async (id: string) =>
+      id === "workspace-9" ? { ...cleanChanges, branch: "orphan-branch" } : cleanChanges,
+    );
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one"),
+      {
+        id: "session-9",
+        workspaceId: "workspace-9",
+        kind: "acp",
+        title: "Recovered elsewhere",
+        state: {
+          type: "recovered",
+          generation: 2,
+          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+        },
+        elapsedMs: null,
+        resumable: true,
+      },
+    ]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    const readIds = () => vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id);
+    expect(readIds()).not.toContain("workspace-9");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
+    });
+    await act(async () => undefined);
+    const historySearch = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+    if (!historySearch) throw new Error("history search did not render");
+    await act(async () => setSearchValue(historySearch, "orphan-branch"));
+    await act(async () => undefined);
+    expect(container.querySelector('[data-agent-id="session-9"]')).not.toBeNull();
+    expect(readIds()).toContain("workspace-9");
+  });
+
+  it("opening History reads only its extra workspace, and closing it reads nothing", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace]);
+    vi.mocked(workspaceGitStatus).mockResolvedValue(cleanChanges);
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one"),
+      {
+        id: "session-9",
+        workspaceId: "workspace-9",
+        kind: "acp",
+        title: "Recovered elsewhere",
+        state: {
+          type: "recovered",
+          generation: 2,
+          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+        },
+        elapsedMs: null,
+        resumable: true,
+      },
+    ]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    const toggleHistory = () =>
+      act(async () => {
+        container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
+      });
+    const readIds = () => vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id);
+    vi.mocked(workspaceGitStatus).mockClear();
+    await toggleHistory();
+    await act(async () => undefined);
+    expect(container.querySelector('[data-agent-id="session-9"]')).not.toBeNull();
+    expect(readIds()).toEqual(["workspace-9"]);
+    vi.mocked(workspaceGitStatus).mockClear();
+    await toggleHistory();
+    await act(async () => undefined);
+    expect(container.querySelector('[data-agent-id="session-9"]')).toBeNull();
+    expect(readIds()).toEqual([]);
+  });
+
   // The right panel’s tab tests live in sidePanelTabs.test.tsx.
 
   it("exposes the checkout path on hover and omits it when the daemon sent none", async () => {
@@ -1840,7 +1977,7 @@ describe("Workspace sessions", () => {
     expect(sidebar.textContent).not.toContain("main");
   });
 
-  it("pass 7: tree sweeps skip workspaces hidden by the tree search", async () => {
+  it("tree sweeps skip workspaces hidden by the tree search", async () => {
     vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
     vi.mocked(sessionsList).mockResolvedValue([]);
     vi.mocked(workspaceGitStatus).mockResolvedValue(cleanChanges);

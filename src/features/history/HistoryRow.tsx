@@ -287,10 +287,25 @@ export const HistoryRowView = memo(function HistoryRowView({
               Not reopenable
             </button>
           )}
-          <button type="button" role="menuitem" disabled={running || deleting} onClick={menuDelete}>
+          {/* aria-disabled, not disabled: the item stays focusable so its reason
+              is announced; deleteRow refuses running rows itself. */}
+          <button
+            type="button"
+            role="menuitem"
+            aria-describedby={running ? `history-menu-delete-why-${row.id}` : undefined}
+            aria-disabled={running || undefined}
+            title={running ? CLOSE_FIRST_REASON : undefined}
+            disabled={deleting}
+            onClick={menuDelete}
+          >
             {confirming ? "Delete from history" : "Delete"}
           </button>
         </div>
+      ) : null}
+      {running ? (
+        <span id={`history-menu-delete-why-${row.id}`} className="sr-only">
+          {CLOSE_FIRST_REASON}
+        </span>
       ) : null}
     </div>
   );

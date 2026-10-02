@@ -26,13 +26,17 @@ function HookProbe(props: {
   selectedWorkspace: string | null;
   endedKey: string;
   onStats: (stats: ReadonlyMap<string, { additions: number; deletions: number }>) => void;
+  onBranches: (branches: ReadonlyMap<string, string>) => void;
+  onRefresh?: (refresh: (ids: readonly string[]) => void) => void;
 }) {
-  const { stats, refresh } = useWorkspaceStats(props.ids, {
+  const { stats, branches, refresh } = useWorkspaceStats(props.ids, {
     connected: props.connected,
     selectedWorkspace: props.selectedWorkspace,
     endedKey: props.endedKey,
   });
   props.onStats(stats);
+  props.onBranches(branches);
+  props.onRefresh?.(refresh);
   return <button type="button" data-testid="probe-refresh" onClick={() => refresh(props.ids)} />;
 }
 
@@ -40,14 +44,19 @@ describe("useWorkspaceStats", () => {
   let holder: HTMLDivElement | null = null;
   let root: import("react-dom/client").Root | null = null;
   let latest: ReadonlyMap<string, { additions: number; deletions: number }>;
+  let latestBranches: ReadonlyMap<string, string> | undefined;
   const onStats = (stats: ReadonlyMap<string, { additions: number; deletions: number }>) => {
     latest = stats;
+  };
+  const onBranches = (branches: ReadonlyMap<string, string>) => {
+    latestBranches = branches;
   };
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(workspaceGitStatus).mockReset();
     latest = new Map();
+    latestBranches = undefined;
   });
 
   afterEach(async () => {
@@ -66,12 +75,12 @@ describe("useWorkspaceStats", () => {
     holder = null;
   }
 
-  async function mount(props: Omit<Parameters<typeof HookProbe>[0], "onStats">) {
+  async function mount(props: Omit<Parameters<typeof HookProbe>[0], "onStats" | "onBranches">) {
     holder = document.createElement("div");
     document.body.appendChild(holder);
     root = createRoot(holder);
     await act(async () => {
-      root!.render(<HookProbe {...props} onStats={onStats} />);
+      root!.render(<HookProbe {...props} onStats={onStats} onBranches={onBranches} />);
     });
   }
 
@@ -103,6 +112,237 @@ describe("useWorkspaceStats", () => {
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     expect(latest.has("ws-1")).toBe(false);
+  });
+
+  it("keeps the branch from a read, even when the totals are zero", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue({
+      ...totals(0, 0),
+      branch: "feature/x",
+    });
+    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latest.has("ws-1")).toBe(false);
+    expect(latestBranches?.get("ws-1")).toBe("feature/x");
+  });
+
+  it("a failed read clears the branch along with the totals", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValueOnce(totals(4, 2));
+    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latestBranches?.get("ws-1")).toBe("main");
+    vi.mocked(workspaceGitStatus).mockRejectedValueOnce(new Error("git died"));
+    await mount2ndRefresh();
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latestBranches?.has("ws-1")).toBe(false);
+  });
+
+  it("a refresh trigger after a branch switch shows the new branch", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValueOnce(totals(1, 1));
+    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latestBranches?.get("ws-1")).toBe("main");
+    vi.mocked(workspaceGitStatus).mockResolvedValueOnce({
+      ...totals(1, 1),
+      branch: "renamed",
+    });
+    await mount2ndRefresh();
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latestBranches?.get("ws-1")).toBe("renamed");
+  });
+
+  it("drops a workspace that leaves the id list from both maps", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(totals(145, 38));
+    await mount({ ids: ["ws-1", "ws-2"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latest.has("ws-1")).toBe(true);
+    expect(latestBranches?.has("ws-1")).toBe(true);
+    await act(async () => {
+      root!.render(
+        <HookProbe
+          ids={["ws-2"]}
+          connected
+          selectedWorkspace={null}
+          endedKey=""
+          onStats={onStats}
+          onBranches={onBranches}
+        />,
+      );
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latest.has("ws-1")).toBe(false);
+    expect(latestBranches?.has("ws-1")).toBe(false);
+  });
+
+  it("returns the same maps when a read lands unchanged", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(totals(145, 38));
+    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    const statsBefore = latest;
+    const branchesBefore = latestBranches;
+    await mount2ndRefresh();
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latest).toBe(statsBefore);
+    expect(latestBranches).toBe(branchesBefore);
+  });
+
+  it("drops the late result and the follow-up of a read whose id left the list", async () => {
+    let release!: (value: ReturnType<typeof totals>) => void;
+    const pending = new Promise<ReturnType<typeof totals>>((resolve) => (release = resolve));
+    vi.mocked(workspaceGitStatus).mockImplementation((id: string) =>
+      id === "ws-2" ? pending : Promise.resolve(totals(1, 1)),
+    );
+    await mount({ ids: ["ws-1", "ws-2"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount2ndRefresh();
+    await act(async () => {
+      root!.render(
+        <HookProbe
+          ids={["ws-1"]}
+          connected
+          selectedWorkspace={null}
+          endedKey=""
+          onStats={onStats}
+          onBranches={onBranches}
+        />,
+      );
+    });
+    release(totals(7, 7));
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latest.has("ws-2")).toBe(false);
+    expect(latestBranches?.has("ws-2")).toBe(false);
+    const ws2Reads = vi.mocked(workspaceGitStatus).mock.calls.filter(([id]) => id === "ws-2");
+    expect(ws2Reads.length).toBe(1);
+  });
+
+  it("an unchanged result still issues the dirty follow-up, exactly once", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(totals(3, 4));
+    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    let release!: (value: ReturnType<typeof totals>) => void;
+    vi.mocked(workspaceGitStatus).mockImplementationOnce(
+      () => new Promise((resolve) => (release = resolve)),
+    );
+    await mount2ndRefresh();
+    await mount2ndRefresh();
+    expect(workspaceGitStatus).toHaveBeenCalledTimes(2);
+    // Same totals and branch: no state change, so no render can carry the
+    // follow-up.
+    release(totals(3, 4));
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(workspaceGitStatus).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(workspaceGitStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it("a dirty read that settles after a disconnect issues no follow-up", async () => {
+    let release!: (value: ReturnType<typeof totals>) => void;
+    vi.mocked(workspaceGitStatus).mockImplementationOnce(
+      () => new Promise((resolve) => (release = resolve)),
+    );
+    vi.mocked(workspaceGitStatus).mockResolvedValue(totals(1, 2));
+    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount2ndRefresh();
+    await act(async () => {
+      root!.render(
+        <HookProbe
+          ids={["ws-1"]}
+          connected={false}
+          selectedWorkspace={null}
+          endedKey=""
+          onStats={onStats}
+          onBranches={onBranches}
+        />,
+      );
+    });
+    release(totals(1, 2));
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(workspaceGitStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refresh captured while connected sends nothing after a disconnect", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(totals(1, 2));
+    let captured: ((ids: readonly string[]) => void) | null = null;
+    const keepFirst = (refresh: (ids: readonly string[]) => void) => {
+      captured ??= refresh;
+    };
+    holder = document.createElement("div");
+    document.body.appendChild(holder);
+    root = createRoot(holder);
+    await act(async () => {
+      root!.render(
+        <HookProbe
+          ids={["ws-1"]}
+          connected
+          selectedWorkspace={null}
+          endedKey=""
+          onStats={onStats}
+          onBranches={onBranches}
+          onRefresh={keepFirst}
+        />,
+      );
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    await act(async () => {
+      root!.render(
+        <HookProbe
+          ids={["ws-1"]}
+          connected={false}
+          selectedWorkspace={null}
+          endedKey=""
+          onStats={onStats}
+          onBranches={onBranches}
+          onRefresh={keepFirst}
+        />,
+      );
+    });
+    vi.mocked(workspaceGitStatus).mockClear();
+    await act(async () => captured!(["ws-1"]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workspaceGitStatus).not.toHaveBeenCalled();
+  });
+
+  it("a grown id list reads only the added id, and a shrunk one reads nothing", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(totals(1, 2));
+    const render = (ids: readonly string[]) =>
+      act(async () => {
+        root!.render(
+          <HookProbe
+            ids={ids}
+            connected
+            selectedWorkspace={null}
+            endedKey=""
+            onStats={onStats}
+            onBranches={onBranches}
+          />,
+        );
+      });
+    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    vi.mocked(workspaceGitStatus).mockClear();
+    await render(["ws-1", "ws-9"]);
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id)).toEqual(["ws-9"]);
+    vi.mocked(workspaceGitStatus).mockClear();
+    await render(["ws-1"]);
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(workspaceGitStatus).not.toHaveBeenCalled();
   });
 
   it("a trigger during an in-flight read marks the row dirty: one follow-up runs after it settles", async () => {
@@ -148,6 +388,7 @@ describe("useWorkspaceStats", () => {
           selectedWorkspace="ws-1"
           endedKey=""
           onStats={onStats}
+          onBranches={onBranches}
         />,
       );
     });
@@ -187,13 +428,13 @@ describe("useWorkspaceStats", () => {
     expect(vi.mocked(workspaceGitStatus).mock.calls.length).toBe(mounted);
   });
 
-  async function mount2(props: Omit<Parameters<typeof HookProbe>[0], "onStats">) {
+  async function mount2(props: Omit<Parameters<typeof HookProbe>[0], "onStats" | "onBranches">) {
     await actUnmount();
     holder = document.createElement("div");
     document.body.appendChild(holder);
     root = createRoot(holder!);
     await act(async () => {
-      root!.render(<HookProbe {...props} onStats={onStats} />);
+      root!.render(<HookProbe {...props} onStats={onStats} onBranches={onBranches} />);
     });
   }
 

@@ -9,7 +9,6 @@ import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
 import { isRunningSessionState } from "../workspace/strip/closePolicy";
 import { groupByDay, historyRowMatches } from "./historyGrouping";
-import { useHistoryBranches } from "./useHistoryBranches";
 import { getHistoryShowAll, setHistoryShowAll } from "./historyPrefs";
 import {
   HistoryRowView,
@@ -27,12 +26,16 @@ export interface HistoryPanelProps {
   onReopen?: (session: Session) => void;
   onReopenAgent?: (session: Session) => void;
   projects?: readonly WorkspaceProject[];
-  connected?: boolean;
+  branches?: ReadonlyMap<string, string>;
+  /** Receives the listed rows' workspace ids while mounted, then an empty list. */
+  onWorkspaceIdsChange?: (ids: readonly string[]) => void;
   selectedSessionId?: string | null;
 }
 
 const EMPTY_SESSIONS: Session[] = [];
 const EMPTY_PROJECTS: readonly WorkspaceProject[] = [];
+const EMPTY_BRANCHES: ReadonlyMap<string, string> = new Map();
+const EMPTY_IDS: readonly string[] = [];
 
 /** A hung daemon reply must not blank the panel forever. */
 const ROSTER_WAIT_MS = 5000;
@@ -45,7 +48,8 @@ export function HistoryPanel({
   onReopen,
   onReopenAgent,
   projects = EMPTY_PROJECTS,
-  connected = true,
+  branches = EMPTY_BRANCHES,
+  onWorkspaceIdsChange,
   selectedSessionId = null,
 }: HistoryPanelProps) {
   const loadUsage = useCallback((): Promise<JournalUsage> => journalUsage(), []);
@@ -157,14 +161,18 @@ export function HistoryPanel({
     }
     return [...byId.values()];
   }, [projects, roster, sessionsById, showAll, usage, workspaceNames]);
+  // Sorted, so a reordered list is not a new read set.
   const rowWorkspaceIds = useMemo(() => {
     const ids = new Set<string>();
     for (const row of rowsBase) {
       if (row.workspaceId) ids.add(row.workspaceId);
     }
-    return [...ids];
+    return [...ids].sort();
   }, [rowsBase]);
-  const branches = useHistoryBranches(rowWorkspaceIds, connected);
+  useEffect(() => {
+    onWorkspaceIdsChange?.(rowWorkspaceIds);
+  }, [onWorkspaceIdsChange, rowWorkspaceIds]);
+  useEffect(() => () => onWorkspaceIdsChange?.(EMPTY_IDS), [onWorkspaceIdsChange]);
   const freshRows = useMemo(
     () =>
       rowsBase.map((row) => ({

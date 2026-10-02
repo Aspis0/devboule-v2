@@ -19,7 +19,8 @@ export interface SidebarProps {
   history: {
     searchValue: string;
     projects: readonly WorkspaceProject[];
-    connected: boolean;
+    branches: ReadonlyMap<string, string>;
+    onWorkspaceIdsChange: (ids: readonly string[]) => void;
     selectedSessionId: string | null;
     onSearchChange: (event: ChangeEvent<HTMLInputElement>) => void;
     onReopen: (session: Session) => void;
@@ -147,7 +148,8 @@ export function Sidebar({
                     <HistoryPanel
                       search={history.searchValue}
                       projects={history.projects}
-                      connected={history.connected}
+                      branches={history.branches}
+                      onWorkspaceIdsChange={history.onWorkspaceIdsChange}
                       selectedSessionId={history.selectedSessionId}
                       onReopen={history.onReopen}
                       onReopenAgent={history.onReopenAgent}

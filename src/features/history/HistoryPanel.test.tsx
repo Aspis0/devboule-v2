@@ -340,23 +340,44 @@ describe("HistoryPanel", () => {
     };
     const usage = baseUsage();
     usage.perSession = [{ ...usage.perSession[0], id: agent.id, title: agent.title }];
-    vi.mocked(workspaceGitStatus).mockResolvedValueOnce({
-      isGit: true,
-      dirty: false,
-      branch: "feature/branches",
-      totals: { additions: 0, deletions: 0 },
-      rows: [],
-      error: null,
-    });
     vi.mocked(journalUsage).mockResolvedValueOnce(usage);
     vi.mocked(sessionsList).mockResolvedValueOnce([agent]);
     root = createRoot(container);
     await act(async () => {
-      root.render(<HistoryPanel now={now} search="feature/branches" />);
+      root.render(
+        <HistoryPanel
+          now={now}
+          search="feature/branches"
+          branches={new Map([["workspace-rust", "feature/branches"]])}
+        />,
+      );
       await Promise.resolve();
     });
     await act(async () => undefined);
     expect(container.querySelectorAll(".history-row-main")).toHaveLength(1);
+  });
+
+  it("renders the branch passed in as a prop and issues no git status read", async () => {
+    const agent = {
+      ...resumableSession("agent-branch"),
+      title: "Build",
+      workspaceId: "workspace-rust",
+      createdAtMs: now,
+    };
+    const usage = baseUsage();
+    usage.perSession = [{ ...usage.perSession[0], id: agent.id, title: agent.title }];
+    vi.mocked(journalUsage).mockResolvedValueOnce(usage);
+    vi.mocked(sessionsList).mockResolvedValueOnce([agent]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <HistoryPanel now={now} search="" branches={new Map([["workspace-rust", "main"]])} />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => undefined);
+    expect(container.querySelectorAll(".history-row-main")).toHaveLength(1);
+    expect(workspaceGitStatus).not.toHaveBeenCalled();
   });
 
   it("keeps row grouping memoized when only selection changes", async () => {
@@ -975,7 +996,7 @@ describe("HistoryPanel", () => {
     root = createRoot(container);
   });
 
-  it("pass 6: lists a silent agent that has a journal row, and activates it as running", async () => {
+  it("lists a silent agent that has a journal row, and activates it as running", async () => {
     const silent = {
       ...resumableSession("agent-silent"),
       title: "Silent agent",
@@ -1000,7 +1021,7 @@ describe("HistoryPanel", () => {
     expect(sessionResume).not.toHaveBeenCalled();
   });
 
-  it("pass 6: guards a silent row's delete with the archive-first explanation", async () => {
+  it("guards a silent row's delete with the archive-first explanation", async () => {
     const silent = {
       ...endedSession("session-build"),
       state: { type: "silent" as const, generation: 1 },
@@ -1020,7 +1041,7 @@ describe("HistoryPanel", () => {
     );
   });
 
-  it("pass 6: hides terminals and subagents by default, and lists them with the toggle on", async () => {
+  it("hides terminals and subagents by default, and lists them with the toggle on", async () => {
     const parent = {
       ...resumableSession("agent-parent"),
       title: "Parent agent",
@@ -1052,7 +1073,7 @@ describe("HistoryPanel", () => {
     expect(container.textContent).toContain("Shell");
   });
 
-  it("pass 6: withholds rows whose top-level state is unknown while the roster is pending", async () => {
+  it("withholds rows whose top-level state is unknown while the roster is pending", async () => {
     const usage = baseUsage();
     usage.perSession = [{ ...usage.perSession[0], id: "agent-child", title: "Child agent" }];
     vi.mocked(journalUsage).mockResolvedValueOnce(usage);
@@ -1067,7 +1088,7 @@ describe("HistoryPanel", () => {
     expect(container.textContent).toContain("Loading history");
   });
 
-  it("pass 8: states the failure truthfully when the roster read fails", async () => {
+  it("states the failure truthfully when the roster read fails", async () => {
     vi.mocked(journalUsage).mockResolvedValueOnce(baseUsage());
     vi.mocked(sessionsList).mockRejectedValueOnce(new Error("sessions unavailable"));
     root = createRoot(container);
@@ -1087,7 +1108,7 @@ describe("HistoryPanel", () => {
     expect(container.textContent).toContain("rows show no workspace");
   });
 
-  it("pass 6: groups a push-only running row under Today instead of Unknown date", async () => {
+  it("groups a push-only running row under Today instead of Unknown date", async () => {
     const live = {
       ...resumableSession("agent-push"),
       title: "Push agent",
@@ -1107,7 +1128,7 @@ describe("HistoryPanel", () => {
     );
   });
 
-  it("pass 6: opens the context menu from a non-reopenable row with the keyboard", async () => {
+  it("opens the context menu from a non-reopenable row with the keyboard", async () => {
     const usage = baseUsage();
     usage.perSession = [usage.perSession[0]];
     await renderPanel(usage, [{ ...endedSession("session-build"), resumable: false }]);
@@ -1129,7 +1150,7 @@ describe("HistoryPanel", () => {
     expect(container.querySelector('[role="menu"]')).not.toBeNull();
   });
 
-  it("pass 6: focuses the menu on open, and Escape closes it back on the row", async () => {
+  it("focuses the menu on open, and Escape closes it back on the row", async () => {
     const usage = baseUsage();
     usage.perSession = [usage.perSession[0]];
     await renderPanel(usage, [resumableSession("session-build")]);
@@ -1151,7 +1172,7 @@ describe("HistoryPanel", () => {
     expect(document.activeElement).toBe(row);
   });
 
-  it("pass 6: moves menu focus with arrow keys", async () => {
+  it("moves menu focus with arrow keys", async () => {
     const usage = baseUsage();
     usage.perSession = [usage.perSession[0]];
     await renderPanel(usage, [resumableSession("session-build")]);
@@ -1178,7 +1199,7 @@ describe("HistoryPanel", () => {
   });
 });
 
-describe("HistoryPanel pass 7", () => {
+describe("HistoryPanel show-all, delete focus and row memo", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1199,7 +1220,7 @@ describe("HistoryPanel pass 7", () => {
     vi.clearAllMocks();
   });
 
-  it("pass 8: yields the fallback to a late roster and retries on reopen", async () => {
+  it("yields the fallback to a late roster and retries on reopen", async () => {
     vi.useFakeTimers();
     const usage = baseUsage();
     usage.perSession = [{ ...usage.perSession[0], id: "agent-known", title: "Known agent" }];
@@ -1474,7 +1495,7 @@ describe("HistoryPanel pass 7", () => {
     expect(sessionDelete).toHaveBeenCalledWith("session-build");
   });
 
-  it("pass 8: re-renders only rows whose props change", async () => {
+  it("re-renders only rows whose props change", async () => {
     // rosterStateDisplay runs once per row render and nowhere else on this
     // surface, so its call delta counts row renders. A search keystroke
     // that keeps both rows must add none; selecting one row must add one;
@@ -1594,128 +1615,7 @@ describe("HistoryPanel pass 7", () => {
     }
   });
 
-  it("reads git status once per listed workspace while open, with no polling", async () => {
-    vi.useFakeTimers();
-    try {
-      const liveA = {
-        ...resumableSession("agent-a"),
-        title: "Agent A",
-        workspaceId: "ws-a",
-        state: { type: "live" as const, generation: 1 },
-        createdAtMs: now,
-      };
-      const liveB = { ...liveA, id: "agent-b", title: "Agent B", workspaceId: "ws-b" };
-      const usage = baseUsage();
-      usage.perSession = [
-        { ...usage.perSession[0], id: "agent-a", title: "Agent A" },
-        { ...usage.perSession[0], id: "agent-b", title: "Agent B" },
-      ];
-      vi.mocked(journalUsage).mockResolvedValueOnce(usage);
-      vi.mocked(sessionsList).mockResolvedValueOnce([liveA, liveB]);
-      vi.mocked(workspaceGitStatus).mockImplementation(async (id: string) => ({
-        isGit: true,
-        dirty: false,
-        branch: `branch-${id}`,
-        totals: { additions: 0, deletions: 0 },
-        rows: [],
-        error: null,
-      }));
-      root = createRoot(container);
-      await act(async () => {
-        root.render(<HistoryPanel now={now} search="" />);
-        await Promise.resolve();
-      });
-      await act(async () => undefined);
-      const calls = vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id);
-      expect(calls.filter((id) => id === "ws-a")).toHaveLength(1);
-      expect(calls.filter((id) => id === "ws-b")).toHaveLength(1);
-      expect(calls).toHaveLength(2);
-      await act(async () => {
-        vi.advanceTimersByTime(120_000);
-      });
-      await act(async () => undefined);
-      expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
-      await act(async () => {
-        root.render(<HistoryPanel now={now} search="branch-ws-b" />);
-      });
-      expect(container.querySelectorAll(".history-row-main")).toHaveLength(1);
-      expect(container.textContent).toContain("Agent B");
-    } finally {
-      vi.mocked(workspaceGitStatus).mockReset();
-      vi.mocked(workspaceGitStatus).mockResolvedValue({
-        isGit: false,
-        dirty: false,
-        branch: null,
-        totals: { additions: 0, deletions: 0 },
-        rows: [],
-        error: null,
-      });
-      vi.useRealTimers();
-    }
-  });
-
-  it("pass 8: retries a failed branch read on the panel clock", async () => {
-    vi.useFakeTimers();
-    try {
-      const liveA = {
-        ...resumableSession("agent-a"),
-        title: "Agent A",
-        workspaceId: "ws-a",
-        state: { type: "live" as const, generation: 1 },
-        createdAtMs: now,
-      };
-      const liveB = { ...liveA, id: "agent-b", title: "Agent B", workspaceId: "ws-b" };
-      const usage = baseUsage();
-      usage.perSession = [
-        { ...usage.perSession[0], id: "agent-a", title: "Agent A" },
-        { ...usage.perSession[0], id: "agent-b", title: "Agent B" },
-      ];
-      const branchFor = (id: string) => ({
-        isGit: true,
-        dirty: false,
-        branch: `branch-${id}`,
-        totals: { additions: 0, deletions: 0 },
-        rows: [],
-        error: null,
-      });
-      vi.mocked(journalUsage).mockResolvedValueOnce(usage);
-      vi.mocked(sessionsList).mockResolvedValueOnce([liveA, liveB]);
-      vi.mocked(workspaceGitStatus).mockImplementation(async (id: string) => {
-        if (id === "ws-b") throw new Error("git locked");
-        return branchFor(id);
-      });
-      root = createRoot(container);
-      await act(async () => {
-        root.render(<HistoryPanel now={now} search="branch-ws-a" />);
-        await Promise.resolve();
-      });
-      await act(async () => undefined);
-      expect(container.querySelectorAll(".history-row-main")).toHaveLength(1);
-      vi.mocked(workspaceGitStatus).mockImplementation(async (id: string) => branchFor(id));
-      await act(async () => {
-        vi.advanceTimersByTime(30_000);
-      });
-      await act(async () => undefined);
-      await act(async () => {
-        root.render(<HistoryPanel now={now} search="branch-ws-b" />);
-      });
-      expect(container.querySelectorAll(".history-row-main")).toHaveLength(1);
-      expect(container.textContent).toContain("Agent B");
-    } finally {
-      vi.mocked(workspaceGitStatus).mockReset();
-      vi.mocked(workspaceGitStatus).mockResolvedValue({
-        isGit: false,
-        dirty: false,
-        branch: null,
-        totals: { additions: 0, deletions: 0 },
-        rows: [],
-        error: null,
-      });
-      vi.useRealTimers();
-    }
-  });
-
-  it("pass 8: carries the full title on the row control that takes pointer events", async () => {
+  it("carries the full title on the row control that takes pointer events", async () => {
     const longTitle = "Work on the requested design change for the sidebar agent list panel";
     const usage = baseUsage();
     usage.perSession = [{ ...usage.perSession[0], id: "session-long", title: longTitle }];
@@ -1732,7 +1632,7 @@ describe("HistoryPanel pass 7", () => {
   });
 });
 
-describe("HistoryPanel pass 8", () => {
+describe("HistoryPanel delete refusal and focus during deletes", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1753,7 +1653,7 @@ describe("HistoryPanel pass 8", () => {
     vi.clearAllMocks();
   });
 
-  it("holds focus on Confirm when a branch read lands mid-delete", async () => {
+  it("holds focus on Confirm when a branch arrives through the prop mid-delete", async () => {
     const liveB = {
       ...resumableSession("agent-b"),
       title: "Agent B",
@@ -1771,16 +1671,6 @@ describe("HistoryPanel pass 8", () => {
       sessionCount: 1,
     };
     let resolveDelete: (() => void) | undefined;
-    let resolveBranch:
-      | ((status: {
-          isGit: boolean;
-          dirty: boolean;
-          branch: string | null;
-          totals: { additions: number; deletions: number };
-          rows: never[];
-          error: null;
-        }) => void)
-      | undefined;
     vi.mocked(journalUsage).mockResolvedValueOnce(usage).mockResolvedValue(withoutA);
     vi.mocked(sessionsList)
       .mockResolvedValueOnce([{ ...endedSession("agent-a") }, liveB])
@@ -1790,14 +1680,10 @@ describe("HistoryPanel pass 8", () => {
         resolveDelete = resolve;
       }),
     );
-    vi.mocked(workspaceGitStatus).mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveBranch = resolve;
-      }),
-    );
+    const branchesOf = (branch: string) => new Map([["workspace-rust", branch]]);
     root = createRoot(container);
     await act(async () => {
-      root.render(<HistoryPanel now={now} search="" />);
+      root.render(<HistoryPanel now={now} search="" branches={branchesOf("main")} />);
       await Promise.resolve();
     });
     await act(async () => undefined);
@@ -1814,14 +1700,7 @@ describe("HistoryPanel pass 8", () => {
     await act(async () => undefined);
     expect(document.activeElement).toBe(confirm);
     await act(async () => {
-      resolveBranch?.({
-        isGit: true,
-        dirty: false,
-        branch: "main",
-        totals: { additions: 0, deletions: 0 },
-        rows: [],
-        error: null,
-      });
+      root.render(<HistoryPanel now={now} search="" branches={branchesOf("feature/x")} />);
     });
     await act(async () => undefined);
     expect(document.activeElement).toBe(confirm);
@@ -1829,6 +1708,7 @@ describe("HistoryPanel pass 8", () => {
     await act(async () => undefined);
     expect(sessionDelete).toHaveBeenCalledWith("agent-a");
     expect(document.activeElement?.getAttribute("data-agent-id")).toBe("agent-b");
+    expect(workspaceGitStatus).not.toHaveBeenCalled();
   });
 
   it("keeps a running row's refused Delete focusable, so its reason is reachable", async () => {
@@ -1891,5 +1771,69 @@ describe("HistoryPanel pass 8", () => {
     await act(async () => undefined);
     const meta = container.querySelector<HTMLElement>(".history-row-meta");
     expect(meta?.textContent?.startsWith("Read-only · Rust workspace")).toBe(true);
+  });
+
+  it("reaches a running row's menu Delete by keyboard, hears why, and deletes nothing", async () => {
+    const live = {
+      ...endedSession("session-build"),
+      state: { type: "live" as const, generation: 1 },
+    };
+    const usage = baseUsage();
+    usage.perSession = [usage.perSession[0]];
+    vi.mocked(journalUsage).mockResolvedValueOnce(usage);
+    vi.mocked(sessionsList).mockResolvedValueOnce([live]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<HistoryPanel now={now} search="" />);
+      await Promise.resolve();
+    });
+    await act(async () => undefined);
+    const row = container.querySelector<HTMLButtonElement>(".history-row-main");
+    if (!row) throw new Error("History row did not render");
+    row.focus();
+    await act(async () => {
+      row.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "F10",
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    const menu = container.querySelector<HTMLElement>('[role="menu"]');
+    if (!menu) throw new Error("History menu did not render");
+    const item = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+      (entry) => entry.textContent === "Delete",
+    );
+    if (!item) throw new Error("menu Delete item did not render");
+    expect(item.disabled).toBe(false);
+    expect(item.getAttribute("aria-disabled")).toBe("true");
+    const describedBy = item.getAttribute("aria-describedby");
+    if (!describedBy) throw new Error("menu Delete has no describedby");
+    expect(document.getElementById(describedBy)?.textContent).toBe(
+      "Archive the session before deleting it from history.",
+    );
+    await act(async () => {
+      menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(document.activeElement).toBe(item);
+    // happy-dom runs no default activation: an unconsumed Enter or Space
+    // would make the browser click the focused item, so the test dispatches
+    // that click itself — both keys must reach the button unhandled, and
+    // both must end in the same refusal.
+    for (const key of ["Enter", " "]) {
+      const down = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => {
+        item.dispatchEvent(down);
+      });
+      expect(down.defaultPrevented).toBe(false);
+      await act(async () => item.click());
+      expect(item.textContent).toBe("Delete");
+      expect(sessionDelete).not.toHaveBeenCalled();
+    }
+    await act(async () => item.click());
+    expect(item.textContent).toBe("Delete");
+    expect(sessionDelete).not.toHaveBeenCalled();
   });
 });

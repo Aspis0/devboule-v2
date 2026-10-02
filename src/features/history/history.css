@@ -297,7 +297,8 @@
   background: var(--fill-hover);
 }
 
-.history-context-menu button:disabled {
+.history-context-menu button:disabled,
+.history-context-menu button[aria-disabled="true"] {
   color: var(--silence);
   cursor: not-allowed;
 }

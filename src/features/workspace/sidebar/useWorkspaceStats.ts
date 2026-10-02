@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { workspaceGitStatus } from "../../../lib/tauri";
+import { usableBranch } from "../changesStatusCache";
 
 export interface WorkspaceStat {
   additions: number;
@@ -29,20 +30,33 @@ const inFlight = new Map<string, Promise<void>>();
 const dirty = new Set<string>();
 let mountedInstances = 0;
 
+function dropUnlisted<V>(
+  current: ReadonlyMap<string, V>,
+  listed: ReadonlySet<string>,
+): ReadonlyMap<string, V> {
+  let next: Map<string, V> | null = null;
+  for (const id of current.keys()) {
+    if (listed.has(id)) continue;
+    next ??= new Map(current);
+    next.delete(id);
+  }
+  return next ?? current;
+}
+
 /**
- * `+N −M` per workspace row, from `workspace_git_status` totals. A failed
- * read shows no stats (never zeros, never an error line); a zero-zero total
- * shows nothing either. One request in flight per workspace across remounts;
- * a refresh settling after unmount is dropped.
+ * One status read feeds both maps — the sidebar's +N −M and the branch
+ * History renders — so History asks the daemon for nothing itself.
  */
 export function useWorkspaceStats(
   workspaceIds: readonly string[],
   options: WorkspaceStatsOptions,
 ): {
   stats: ReadonlyMap<string, WorkspaceStat>;
+  branches: ReadonlyMap<string, string>;
   refresh: (ids: readonly string[]) => void;
 } {
   const [stats, setStats] = useState<ReadonlyMap<string, WorkspaceStat>>(() => new Map());
+  const [branches, setBranches] = useState<ReadonlyMap<string, string>>(() => new Map());
   const mountedRef = useRef(true);
   const { connected, selectedWorkspace, endedKey } = options;
   // The id list arrives as a fresh array every render (roster pushes rebuild
@@ -50,27 +64,71 @@ export function useWorkspaceStats(
   // WHICH workspaces are shown triggers a refresh.
   const idsRef = useRef(workspaceIds);
   idsRef.current = workspaceIds;
+  // Read at call time, so a refresh from a settling read sees a disconnect
+  // committed after it was issued.
+  const connectedRef = useRef(connected);
+  useLayoutEffect(() => {
+    connectedRef.current = connected;
+  }, [connected]);
+  const listedRef = useRef<ReadonlySet<string>>(new Set());
+  // What the last sweep covered while connected; a list change reads only what is new.
+  const sweptRef = useRef<ReadonlySet<string>>(new Set());
 
   const readWorkspace = useCallback(async (id: string): Promise<void> => {
+    // A read that outlives its id's place in the list must not undo the prune.
+    const listed = () => mountedRef.current && listedRef.current.has(id);
     try {
       const status = await workspaceGitStatus(id);
-      if (!mountedRef.current) return;
+      if (!listed()) return;
       setStats((current) => {
-        const next = new Map(current);
-        if (status.isGit && (status.totals.additions !== 0 || status.totals.deletions !== 0)) {
-          next.set(id, {
-            additions: status.totals.additions,
-            deletions: status.totals.deletions,
-          });
-        } else {
-          next.delete(id);
+        const existing = current.get(id);
+        const showTotals =
+          status.isGit && (status.totals.additions !== 0 || status.totals.deletions !== 0);
+        if (!showTotals) {
+          if (existing === undefined) return current;
+          const cleared = new Map(current);
+          cleared.delete(id);
+          return cleared;
         }
+        if (
+          existing !== undefined &&
+          existing.additions === status.totals.additions &&
+          existing.deletions === status.totals.deletions
+        ) {
+          return current;
+        }
+        const next = new Map(current);
+        next.set(id, {
+          additions: status.totals.additions,
+          deletions: status.totals.deletions,
+        });
+        return next;
+      });
+      const branch = status.isGit ? usableBranch(status.branch) : null;
+      setBranches((current) => {
+        if (branch === null) {
+          if (!current.has(id)) return current;
+          const cleared = new Map(current);
+          cleared.delete(id);
+          return cleared;
+        }
+        if (current.get(id) === branch) return current;
+        const next = new Map(current);
+        next.set(id, branch);
         return next;
       });
     } catch {
-      if (!mountedRef.current) return;
-      // A failed read hides the stats; it never shows zeros or an error.
+      if (!listed()) return;
+      // A failed read hides the stats and the branch; it never shows zeros
+      // or an error.
       setStats((current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+      setBranches((current) => {
+        if (!current.has(id)) return current;
         const next = new Map(current);
         next.delete(id);
         return next;
@@ -80,27 +138,32 @@ export function useWorkspaceStats(
 
   const refresh = useCallback(
     (ids: readonly string[]) => {
-      // Every trigger answers to the connection: disconnected, nothing is
-      // sent and nothing is dropped from the cache.
-      if (!connected) return;
-      for (const id of ids) {
-        if (id === "") continue;
+      const read = (id: string): void => {
+        // Every trigger answers to the connection: disconnected, nothing is
+        // sent and nothing is dropped from the cache.
+        if (!connectedRef.current) return;
         if (inFlight.has(id)) {
           // A newer event arrived during the read: one follow-up refreshes
           // the row after it settles instead of leaving stale numbers.
           dirty.add(id);
-          continue;
+          return;
         }
-        // The sweep effect re-reads a dirty row once this read settles; no
-        // recursive refresh here (a follow-up issued by a dead instance
-        // would be dropped).
         inFlight.set(
           id,
-          readWorkspace(id).finally(() => inFlight.delete(id)),
+          readWorkspace(id).finally(() => {
+            inFlight.delete(id);
+            // An unchanged result renders nothing, so the follow-up cannot wait for a render.
+            // A dead instance's mark waits for the live one's next render or read of that id.
+            if (!mountedRef.current || !dirty.delete(id)) return;
+            if (listedRef.current.has(id)) read(id);
+          }),
         );
+      };
+      for (const id of ids) {
+        if (id !== "") read(id);
       }
     },
-    [connected, readWorkspace],
+    [readWorkspace],
   );
 
   useEffect(() => {
@@ -120,23 +183,31 @@ export function useWorkspaceStats(
   });
 
   useEffect(() => {
-    if (idsStable === "") return;
-    void refresh(idsRef.current);
-  }, [refresh, idsStable]);
+    // Entries for a departed id would outlive it: nothing else prunes.
+    const listed = new Set(idsRef.current);
+    listedRef.current = listed;
+    setStats((current) => dropUnlisted(current, listed));
+    setBranches((current) => dropUnlisted(current, listed));
+    if (!connected) {
+      sweptRef.current = new Set();
+      return;
+    }
+    const added = idsRef.current.filter((id) => !sweptRef.current.has(id));
+    sweptRef.current = listed;
+    if (added.length > 0) refresh(added);
+  }, [refresh, connected, idsStable]);
 
   useEffect(() => {
     if (selectedWorkspace !== null) void refresh([selectedWorkspace]);
   }, [refresh, selectedWorkspace]);
 
-  // Follow-up sweep: a trigger that arrived during an in-flight read marked
-  // its row dirty; once that read settles, this sweep (running after every
-  // render, from whichever instance is mounted) re-reads it.
+  // Follow-up sweep for marks whose read settled in an unmounted instance.
   useEffect(() => {
     if (!connected) return;
     const due = [...dirty].filter((id) => !inFlight.has(id));
     if (due.length === 0) return;
     due.forEach((id) => dirty.delete(id));
-    void refresh(due);
+    void refresh(due.filter((id) => listedRef.current.has(id)));
   });
 
   useEffect(() => {
@@ -155,7 +226,5 @@ export function useWorkspaceStats(
     return () => window.clearInterval(timer);
   }, [refresh, connected]);
 
-  const refreshStable = useCallback((ids: readonly string[]) => refresh(ids), [refresh]);
-
-  return useMemo(() => ({ stats, refresh: refreshStable }), [stats, refreshStable]);
+  return useMemo(() => ({ stats, branches, refresh }), [stats, branches, refresh]);
 }
