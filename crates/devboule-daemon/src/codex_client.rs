@@ -1075,17 +1075,20 @@ impl super::StaticImageSink for CodexStaticPrompt {
         text: &str,
         raw_text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
+        reference_paths: &[std::path::PathBuf],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
         match plan_codex_prompt(store, session_id, text, attachments)? {
             Some(mut plan) => {
                 plan.command_input =
                     command_prompt_input(&self.commands, raw_text, command_prefix(text, raw_text))?;
-                Ok(Some(Box::new(CodexPlannedPrompt {
+                let mut planned = CodexPlannedPrompt {
                     stdin: Arc::clone(&self.stdin),
                     next_id: Arc::clone(&self.next_id),
                     state: Arc::clone(&self.state),
                     plan,
-                })))
+                };
+                planned.append_reference_path_lines(reference_paths);
+                Ok(Some(Box::new(planned)))
             }
             None => {
                 // No attachments: the writer would send this text literally,
@@ -1095,13 +1098,13 @@ impl super::StaticImageSink for CodexStaticPrompt {
                 // its one
                 // job — writing text — so it never has to guess which
                 // trailing section of a composed prompt is the command, and
-                // so stored references appended later still meet the expanded
-                // blocks instead of the literal slash line.
+                // so the reference lines appended below still meet the
+                // expanded blocks instead of the literal slash line.
                 let prefix = command_prefix(text, raw_text);
                 let Some(input) = command_prompt_input(&self.commands, raw_text, prefix)? else {
                     return Ok(None);
                 };
-                Ok(Some(Box::new(CodexPlannedPrompt {
+                let mut planned = CodexPlannedPrompt {
                     stdin: Arc::clone(&self.stdin),
                     next_id: Arc::clone(&self.next_id),
                     state: Arc::clone(&self.state),
@@ -1110,7 +1113,9 @@ impl super::StaticImageSink for CodexStaticPrompt {
                         image_paths: Vec::new(),
                         command_input: Some(input),
                     },
-                })))
+                };
+                planned.append_reference_path_lines(reference_paths);
+                Ok(Some(Box::new(planned)))
             }
         }
     }
@@ -1140,12 +1145,6 @@ impl CodexPlannedPrompt {
         params["input"] = Value::Array(self.plan.input_blocks());
         params
     }
-}
-
-impl super::PlannedStaticPrompt for CodexPlannedPrompt {
-    fn text(&self) -> &str {
-        &self.plan.fallback_text
-    }
 
     /// The references join this plan's text as path lines, after the fallback
     /// lines its own attachments left there and never as `localImage` paths:
@@ -1167,6 +1166,12 @@ impl super::PlannedStaticPrompt for CodexPlannedPrompt {
                 block["text"] = Value::String(format!("{previous}{added}"));
             }
         }
+    }
+}
+
+impl super::PlannedStaticPrompt for CodexPlannedPrompt {
+    fn text(&self) -> &str {
+        &self.plan.fallback_text
     }
 
     fn send(&self) -> Result<(), WireError> {

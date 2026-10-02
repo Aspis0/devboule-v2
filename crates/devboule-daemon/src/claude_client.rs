@@ -7,7 +7,7 @@
 //! fork it.
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     ErrorCode, NoticeSeverity, PermissionOption, PermissionQuestion, PermissionQuestionOption,
-    PermissionRequestKind, SessionEvent, SessionModel, WireError,
+    PermissionRequestKind, SessionEvent, SessionModel, WireError, MAX_ATTACHMENTS_TOTAL_BYTES,
+    MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
 };
 use serde_json::Value;
 
@@ -1398,10 +1399,10 @@ fn claude_accepts_inline(mime_type: &str) -> bool {
 
 /// Prompt plan for one Claude send: the text plus any image blocks land as
 /// one `content[]` array. `fallback_text` is the user's text with the path
-/// lines for the attachments that stay out of the blocks: SVG, plus any
-/// raster outside the inline accept set. The bytes each block
-/// carries are the stripped bytes read back from the file `materialize`
-/// wrote, never the base64 that arrived on the wire.
+/// lines for the files that stay out of the blocks: SVG, plus any raster
+/// outside the inline accept set, plus any reference over the shared caps.
+/// The bytes each block carries are the stripped bytes read back from the
+/// file `materialize` wrote, never the base64 that arrived on the wire.
 ///
 /// `plan_claude_prompt` builds it and `ClaudeStaticPrompt` carries it to the
 /// frame builder and the mode gate. It travels whole (never `text` and
@@ -1422,26 +1423,117 @@ pub(super) fn claude_delivery() -> super::ImageDelivery {
     super::ImageDelivery::StaticImageBlock
 }
 
-/// Splits one request's attachments into inline image blocks and path-line
-/// fallbacks, materializing each attachment exactly once — the call the shared
-/// `with_attachment_paths` makes — so a request that fails on its third
-/// attachment leaves nothing half-built.
+/// One request's files split into inline image blocks and the paths that
+/// stay lines, with the base64 budget they share.
+#[derive(Default)]
+struct ClaudeAttachmentSplit {
+    images: Vec<super::AcpImageBlock>,
+    fallback_paths: Vec<PathBuf>,
+    inline_base64: usize,
+}
+
+fn unreadable_stored_file(error: std::io::Error) -> WireError {
+    WireError::new(
+        ErrorCode::Io,
+        format!("Could not read a stored attachment: {error}"),
+    )
+}
+
+/// The largest raw file whose base64 still fits the per-image cap.
+const MAX_INLINE_IMAGE_BYTES: usize = MAX_ATTACHMENT_DATA_BYTES / 4 * 3;
+
+/// The file's bytes, or `None` when it is not a regular file within the inline
+/// cap. Type and length come from the opened handle and the read is bounded by
+/// it, so a swap after resolution cannot make this read more than the cap.
+fn read_inline_candidate(path: &Path) -> Result<Option<Vec<u8>>, WireError> {
+    let file = std::fs::File::open(path).map_err(unreadable_stored_file)?;
+    let metadata = file.metadata().map_err(unreadable_stored_file)?;
+    let cap = MAX_INLINE_IMAGE_BYTES as u64;
+    if !metadata.is_file() || metadata.len() > cap {
+        return Ok(None);
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(cap + 1)
+        .read_to_end(&mut bytes)
+        .map_err(unreadable_stored_file)?;
+    Ok((bytes.len() as u64 <= cap).then_some(bytes))
+}
+
+impl ClaudeAttachmentSplit {
+    /// A fresh attachment: the label was checked against the sniffed bytes at
+    /// materialize, so it names the container the strip walk ran on.
+    fn push_attachment(&mut self, path: &Path, mime_type: &str) -> Result<(), WireError> {
+        if claude_accepts_inline(mime_type)
+            && crate::raster_metadata::RasterMime::from_mime_type(mime_type).is_some()
+        {
+            let block = super::AcpImageBlock::from_stored_file(path, mime_type)
+                .map_err(unreadable_stored_file)?;
+            if self.take(block) {
+                return Ok(());
+            }
+        }
+        self.fallback_paths.push(path.to_path_buf());
+        Ok(())
+    }
+
+    /// The digest the store named the file with is recomputed over what was read
+    /// and the container comes from the signature; a mismatch keeps the path line.
+    fn push_reference(&mut self, path: &Path) -> Result<(), WireError> {
+        if let Some(bytes) = read_inline_candidate(path)? {
+            let named = path
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or_default();
+            if named == crate::attachment_store::sha256_hex(&bytes) {
+                if let Some(raster) = crate::raster_metadata::sniff_raster_mime(&bytes) {
+                    let block = super::AcpImageBlock::from_bytes(&bytes, raster.as_mime_type());
+                    if self.take(block) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        self.fallback_paths.push(path.to_path_buf());
+        Ok(())
+    }
+
+    /// The wire's three caps decide admission; anything they refuse keeps its
+    /// path line — a cap never drops the file.
+    fn take(&mut self, block: super::AcpImageBlock) -> bool {
+        if self.images.len() >= MAX_ATTACHMENT_COUNT
+            || block.data_base64.len() > MAX_ATTACHMENT_DATA_BYTES
+            || self.inline_base64 + block.data_base64.len() > MAX_ATTACHMENTS_TOTAL_BYTES
+        {
+            return false;
+        }
+        self.inline_base64 += block.data_base64.len();
+        self.images.push(block);
+        true
+    }
+}
+
+/// Splits one request's attachments and stored references into the plan's
+/// blocks and path lines, materializing each attachment exactly once — the
+/// call the shared `with_attachment_paths` makes — so a request that fails on
+/// its third item leaves nothing half-built. References arrive as paths the
+/// send path already resolved; they need no materialization of their own.
 ///
-/// `None` means the route did not run at all: no attachments, or a delivery
-/// this sender is not authorised for. When it does run it answers with the
-/// text as well, even if no raster became a block — an SVG, or a gif whose
-/// container no walk follows. That is what keeps the caller from walking the
-/// attachments a second time, and it costs no wire change: with no block the
-/// frame the route sends is the text-only frame, byte for byte. (The ACP plan
-/// next door answers `None` in that case instead, because `Some` there would
-/// swap the plain-text write for a structured content array.)
+/// `None` means the route did not run at all: nothing to carry, or a
+/// delivery this sender is not authorised for. When it does run it answers
+/// with the text as well, even if no raster became a block — an SVG, or a gif
+/// whose container no walk follows. That is what keeps the caller from
+/// walking the attachments a second time, and it costs no wire change: with
+/// no block the frame the route sends is the text-only frame, byte for byte.
+/// (The ACP plan next door answers `None` in that case instead, because `Some`
+/// there would swap the plain-text write for a structured content array.)
 fn plan_claude_prompt(
     store: &AttachmentStore,
     session_id: &str,
     text: &str,
     attachments: &[devboule_protocol::PromptAttachment],
+    reference_paths: &[PathBuf],
 ) -> Result<Option<ClaudePromptPlan>, devboule_protocol::WireError> {
-    if attachments.is_empty() {
+    if attachments.is_empty() && reference_paths.is_empty() {
         return Ok(None);
     }
     // The static gate, read through the shared enum so a later change to
@@ -1456,34 +1548,17 @@ fn plan_claude_prompt(
             "Invalid session id.",
         )
     })?;
-    let mut images = Vec::new();
-    let mut fallback_paths = Vec::new();
+    let mut split = ClaudeAttachmentSplit::default();
     for attachment in attachments {
         let path = session.materialize(attachment)?;
-        // Inline needs both halves: the measured accept set AND a daemon
-        // strip walk for the container. gif/webp have the first but not the
-        // second — no walk exists, so the bytes on disk are unstripped and
-        // the honest answer is the path line, never an inline block.
-        if claude_accepts_inline(&attachment.mime_type)
-            && crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some()
-        {
-            images.push(
-                super::AcpImageBlock::from_stored_file(&path, &attachment.mime_type).map_err(
-                    |error| {
-                        devboule_protocol::WireError::new(
-                            devboule_protocol::ErrorCode::Io,
-                            format!("Could not read a stored attachment: {error}"),
-                        )
-                    },
-                )?,
-            );
-        } else {
-            fallback_paths.push(path);
-        }
+        split.push_attachment(&path, attachment.mime_type.as_str())?;
+    }
+    for path in reference_paths {
+        split.push_reference(path)?;
     }
     Ok(Some(ClaudePromptPlan {
-        fallback_text: super::prompt_text_with_fallback_paths(text, &fallback_paths),
-        images,
+        fallback_text: super::prompt_text_with_fallback_paths(text, &split.fallback_paths),
+        images: split.images,
     }))
 }
 
@@ -1536,8 +1611,10 @@ impl super::StaticImageSink for ClaudeStaticPrompt {
         text: &str,
         _raw_text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
+        reference_paths: &[PathBuf],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
-        let Some(plan) = plan_claude_prompt(store, session_id, text, attachments)? else {
+        let Some(plan) = plan_claude_prompt(store, session_id, text, attachments, reference_paths)?
+        else {
             return Ok(None);
         };
         Ok(Some(Box::new(ClaudePlannedPrompt {
@@ -1564,14 +1641,6 @@ struct ClaudePlannedPrompt {
 impl super::PlannedStaticPrompt for ClaudePlannedPrompt {
     fn text(&self) -> &str {
         &self.plan.fallback_text
-    }
-
-    /// The references join this plan's text as path lines, after the SVG-style
-    /// fallback lines its own attachments left there. They are never image
-    /// blocks on this route either, even though Claude carries images inline:
-    /// see `session::push_reference_path_lines`.
-    fn append_reference_path_lines(&mut self, reference_paths: &[std::path::PathBuf]) {
-        super::push_reference_path_lines(&mut self.plan.fallback_text, reference_paths);
     }
 
     fn send(&self) -> Result<(), WireError> {

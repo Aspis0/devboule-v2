@@ -336,7 +336,7 @@ fn a_composed_first_command_travels_expanded_on_the_static_route() {
         let raw = "/prompts:commit stage";
         let composed = format!("standing instructions\n\nspawn prompt\n\n{raw}");
         let plan = route
-            .plan_prompt(&store, "s.codex.static-wire", &composed, raw, &[])
+            .plan_prompt(&store, "s.codex.static-wire", &composed, raw, &[], &[])
             .expect("planning runs")
             .expect("a picked command is claimed by the static route");
         plan.send().expect("the turn goes out");
@@ -387,6 +387,7 @@ fn a_composed_command_with_an_svg_attachment_expands_around_its_path_line() {
                     "image/svg+xml",
                     b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
                 )],
+                &[],
             )
             .expect("planning runs")
             .expect("a picked command with an attachment is planned");
@@ -431,12 +432,18 @@ fn a_picked_skill_with_stored_references_sends_blocks_and_paths() {
         let store = store_dir.store();
         let raw = "/plotting sales.csv";
         let composed = format!("standing instructions\n\n{raw}");
-        let mut plan = route
-            .plan_prompt(&store, "s.codex.static-refs", &composed, raw, &[])
+        let deck = PathBuf::from("/deck/sales.pdf");
+        let plan = route
+            .plan_prompt(
+                &store,
+                "s.codex.static-refs",
+                &composed,
+                raw,
+                &[],
+                std::slice::from_ref(&deck),
+            )
             .expect("planning runs")
             .expect("a picked skill is claimed by the static route");
-        let deck = PathBuf::from("/deck/sales.pdf");
-        plan.append_reference_path_lines(std::slice::from_ref(&deck));
         assert_eq!(
             plan.text(),
             format!("{composed}\n\n[Image available at: /deck/sales.pdf]"),
@@ -482,7 +489,7 @@ fn a_later_paragraph_naming_a_command_is_not_one_on_any_route() {
         let text = "context\n\n/plotting sales.csv";
         assert!(
             route
-                .plan_prompt(&store, "s.codex.suffix", text, text, &[])
+                .plan_prompt(&store, "s.codex.suffix", text, text, &[], &[])
                 .expect("planning runs")
                 .is_none(),
             "the static route claims no suffix command"

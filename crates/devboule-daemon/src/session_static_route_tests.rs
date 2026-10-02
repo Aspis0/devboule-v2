@@ -45,11 +45,18 @@ impl StaticImageSink for RecordingStaticSink {
         _text: &str,
         _raw_text: &str,
         _attachments: &[PromptAttachment],
+        reference_paths: &[PathBuf],
     ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError> {
         self.calls.fetch_add(1, Ordering::AcqRel);
         Ok(self.answer.map(|text| {
+            // The same append the real plans make inside their own
+            // `plan_prompt`, so a references test on this route sees the text
+            // a provider would build rather than a separate composition the
+            // double invented.
+            let mut text = text.to_string();
+            push_reference_path_lines(&mut text, reference_paths);
             Box::new(RecordingStaticPlan {
-                text: text.to_string(),
+                text,
                 sent: Arc::clone(&self.sent),
                 seen: Arc::clone(&self.seen),
             }) as Box<dyn PlannedStaticPrompt>
@@ -69,13 +76,6 @@ struct RecordingStaticPlan {
 impl PlannedStaticPrompt for RecordingStaticPlan {
     fn text(&self) -> &str {
         &self.text
-    }
-
-    /// The same append the three real plans make, so a references test on
-    /// this route sees the text a provider would build rather than a
-    /// separate composition the double invented.
-    fn append_reference_path_lines(&mut self, reference_paths: &[PathBuf]) {
-        push_reference_path_lines(&mut self.text, reference_paths);
     }
 
     fn send(&self) -> Result<(), WireError> {
@@ -349,6 +349,7 @@ impl StaticImageSink for RawKeepingSink {
         text: &str,
         raw_text: &str,
         _attachments: &[PromptAttachment],
+        _reference_paths: &[PathBuf],
     ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError> {
         self.seen
             .lock()

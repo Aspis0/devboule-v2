@@ -1,5 +1,5 @@
 //! Attachment and prompt planning: the `[Image available at: <path>]` lines a
-//! prompt carries, the stored-reference resolution that appends to them, and
+//! prompt carries, the stored-reference resolution the routes plan from, and
 //! the ACP prompt plan - the image-delivery decision, the structured text
 //! block, and the sinks a provider hands its client.
 //!
@@ -75,15 +75,17 @@ fn push_path_lines(prompt: &mut String, paths: &[PathBuf]) {
 /// nothing, and a prompt with no references is byte for byte what it was
 /// before this existed.
 ///
-/// # Why a reference is never an inline image block
+/// # Why these routes keep a reference as a line
 ///
-/// Not an oversight, and not a missing case in the image-block routes: a
-/// reference is a line here even on a provider that negotiated `image`
-/// support. The whole reason a reference exists is that its bytes must not
-/// travel in the frame — a deck is forty pages, and the frame is what the
-/// deposit was made to keep them out of. Resolving one back into an image
-/// block at the send would undo the deposit, spend the frame cap the deposit
-/// saved, and hand the provider the same bytes by a longer road.
+/// A reference exists so its bytes need not travel: a deck is forty pages,
+/// and the deposit was made to keep them out of the frame. The ACP plan, the
+/// legacy write, recovery, and the Codex and Pi plans keep that promise — a
+/// reference is a line for them even on a route that negotiates `image`
+/// support. Claude's static plan is the exception: a path line there sends
+/// the agent to Read the person's own file through a permission card, so it
+/// inlines the PNG and JPEG references that fit the attachment caps and
+/// composes what is left the same way this does (see
+/// `claude_client::plan_claude_prompt`).
 ///
 /// The path is the store's own absolute one. A reference carries a digest and
 /// a size and nothing else, so there is no client-supplied name here to quote
@@ -239,12 +241,18 @@ impl AcpImageBlock {
         path: &std::path::Path,
         mime_type: &str,
     ) -> Result<Self, std::io::Error> {
-        use base64::Engine;
         let bytes = std::fs::read(path)?;
-        Ok(Self {
+        Ok(Self::from_bytes(&bytes, mime_type))
+    }
+
+    /// The same encode from bytes the caller has already read and vouched
+    /// for — one verified read becomes a block without re-reading the file.
+    pub(super) fn from_bytes(bytes: &[u8], mime_type: &str) -> Self {
+        use base64::Engine;
+        Self {
             mime_type: mime_type.to_string(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-        })
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
     }
 
     pub(super) fn to_content_block(&self) -> serde_json::Value {
@@ -469,11 +477,15 @@ impl AcpPromptSink {
 pub(crate) trait StaticImageSink: Send + Sync {
     /// Decides one prompt: materializes every attachment exactly once and
     /// answers with the plan — or `None` when this route does not run for the
-    /// request, which is no attachments at all or a provider that is not
+    /// request, which is nothing to carry at all or a provider that is not
     /// authorised for inline bytes right now (a Pi model that declared no
     /// `image`, an unknown model, no current model). A `None` means nothing
     /// was materialized either, so the caller's legacy path-line write is the
     /// only walk of this request.
+    ///
+    /// `reference_paths` are the already-resolved stored references. They enter
+    /// here because a plan can be nothing but references; a route that never saw
+    /// them would answer `None` and lose them to the legacy write.
     ///
     /// The text travels inside the plan rather than beside it, so the string
     /// the frame carries and the string the journal records cannot be two
@@ -491,6 +503,7 @@ pub(crate) trait StaticImageSink: Send + Sync {
         text: &str,
         raw_text: &str,
         attachments: &[PromptAttachment],
+        reference_paths: &[PathBuf],
     ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError>;
 }
 
@@ -505,22 +518,6 @@ pub(crate) trait StaticImageSink: Send + Sync {
 pub(crate) trait PlannedStaticPrompt: Send + Sync {
     /// The text the frame carries — the same value the journal records.
     fn text(&self) -> &str;
-
-    /// Appends one path line per resolved reference to the text this plan
-    /// carries, after the path lines its own attachments left behind.
-    ///
-    /// A mutation rather than a parameter of
-    /// [`StaticImageSink::plan_prompt`] because the plan owns its text on
-    /// purpose: the frame this provider builds and the string the caller
-    /// journals are one value, so the references have to be added to that
-    /// value rather than to a copy beside it. The caller appends this before
-    /// either of them reads the plan, and the route's own composition of the
-    /// inline lines stays exactly where it is.
-    ///
-    /// A reference is a path line even for a provider on this list, which is
-    /// the route that carries bytes inline — see
-    /// [`push_reference_path_lines`] for why that is a decision.
-    fn append_reference_path_lines(&mut self, reference_paths: &[PathBuf]);
 
     /// Frames and sends this prompt.
     fn send(&self) -> Result<(), WireError>;

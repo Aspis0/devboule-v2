@@ -1080,26 +1080,31 @@ impl super::SessionRegistry {
         // providers the daemon statically knows carry images (Claude, Codex,
         // Pi). Its plan is built here, before the writer is locked, for the
         // same reason the ACP plan is: the decode and the strip walk must not
-        // run under that hold. `None` means the route did not run (no
-        // attachments, or a provider not authorised for inline bytes) and
-        // nothing was materialized for it.
-        let mut static_plan = match static_image_sink.as_ref() {
-            Some(sink) => {
-                sink.plan_prompt(&self.attachments, session_id, text, raw_text, attachments)?
-            }
+        // run under that hold. The resolved references travel into the plan
+        // beside the attachments — a plan can be nothing but references (the
+        // composer sends images by reference), so planning without them would
+        // leave this route with nothing to plan. `None` means the route did
+        // not run (nothing to carry, or a provider not authorised for inline
+        // bytes) and nothing was materialized for it.
+        let static_plan = match static_image_sink.as_ref() {
+            Some(sink) => sink.plan_prompt(
+                &self.attachments,
+                session_id,
+                text,
+                raw_text,
+                attachments,
+                &reference_paths,
+            )?,
             None => None,
         };
-        // The references join the text of whichever route planned this prompt,
-        // as path lines, before anything reads that text — the frame the
-        // provider receives and the string the journal records are one value in
-        // both plans, so appending to it here is appending to both. A
-        // reference never becomes an image block, on any route: see
-        // [`push_reference_path_lines`] for why that is a decision.
+        // The ACP route's references join its text as path lines before
+        // anything reads that text — the frame the sibling receives and the
+        // string the journal records are one value in that plan, so appending
+        // to it here is appending to both. The static routes took their
+        // references inside `plan_prompt` above, where each one decides
+        // between a block and a line.
         if let Some(plan) = plan.as_mut() {
             push_reference_path_lines(&mut plan.fallback_text, &reference_paths);
-        }
-        if let Some(plan) = static_plan.as_mut() {
-            plan.append_reference_path_lines(&reference_paths);
         }
         // A session carries one route or the other, never both: `image_sink`
         // is the ACP one and `static_image_sink` the three static providers'.

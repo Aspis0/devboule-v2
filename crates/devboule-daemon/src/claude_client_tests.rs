@@ -4,12 +4,22 @@ use super::*;
 use crate::claude_catalog::ClaudeCatalogSnapshot;
 use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
 use crate::session::{ConnHandle, PendingEvent, StaticImageSink};
+use devboule_protocol::AttachmentReference;
 use devboule_protocol::AvailableCommandView;
 use devboule_protocol::PermissionOutcome;
 use devboule_protocol::PromptAttachment;
 use devboule_protocol::SessionModelEffort;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout};
+
+#[path = "claude_client_tests/stored_reference_tests.rs"]
+mod stored_reference_tests;
+
+#[path = "claude_client_tests/stored_reference_plan_tests.rs"]
+mod stored_reference_plan_tests;
+
+#[path = "claude_client_tests/stored_reference_admission_tests.rs"]
+mod stored_reference_admission_tests;
 
 const CLAUDE_MODE_CAPTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -1877,6 +1887,16 @@ fn plan_attachment(name: &str, mime_type: &str, bytes: &[u8]) -> PromptAttachmen
     }
 }
 
+/// The reference the send path would answer for a file the store holds.
+fn reference_for(session_id: &str, path: &Path) -> AttachmentReference {
+    let bytes = std::fs::read(path).expect("stored bytes");
+    AttachmentReference {
+        session_id: session_id.to_string(),
+        digest: crate::attachment_store::sha256_hex(&bytes),
+        stored_bytes: bytes.len() as u64,
+    }
+}
+
 #[test]
 fn claude_delivery_is_the_static_variant() {
     // No handshake to negotiate with: the format accepts images, so the
@@ -1907,6 +1927,7 @@ fn a_capable_claude_prompt_builds_the_nested_source_block_and_no_path_line() {
         session_id,
         "describe this",
         &[plan_attachment("photo.png", "image/png", &sent)],
+        &[],
     )
     .expect("materialized")
     .expect("a raster plans a block");
@@ -1967,6 +1988,7 @@ fn an_svg_only_claude_prompt_plans_no_block_and_still_builds_the_legacy_text() {
         session_id,
         "logo",
         std::slice::from_ref(&attachment),
+        &[],
     )
     .expect("materialized")
     .expect("an SVG plans no block, but the plan still carries the text");
@@ -1999,6 +2021,7 @@ fn an_svg_keeps_its_path_line_beside_claude_image_blocks() {
             plan_attachment("photo.png", "image/png", &clean_png(0x13)),
             plan_attachment("drawing.svg", "image/svg+xml", source),
         ],
+        &[],
     )
     .expect("materialized")
     .expect("the raster plans a block");
@@ -2047,6 +2070,7 @@ fn a_jpeg_stays_a_jpeg_in_the_claude_block() {
         "claude-plan-jpeg",
         "describe this",
         &[plan_attachment("photo.jpg", "image/jpeg", &sent)],
+        &[],
     )
     .expect("materialized")
     .expect("a JPEG plans a block");
@@ -2111,6 +2135,7 @@ fn the_static_route_frames_the_blocks_it_planned_through_the_mode_gate() {
             "describe this",
             "describe this",
             &[plan_attachment("photo.png", "image/png", &sent)],
+            &[],
         )
         .expect("planned")
         .expect("a raster plans a frame");
@@ -2150,6 +2175,7 @@ fn the_static_route_declines_a_prompt_with_no_attachments() {
             "claude-route-none",
             "describe this",
             "describe this",
+            &[],
             &[]
         )
         .expect("planned")

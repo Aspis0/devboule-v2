@@ -200,6 +200,15 @@ impl RasterMime {
             _ => None,
         }
     }
+
+    /// The wire name of this container — the label a block carries when the
+    /// bytes, not the sender, proved what they are.
+    pub(crate) fn as_mime_type(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+        }
+    }
 }
 
 /// Which container these bytes actually are, read from their leading bytes and
@@ -684,6 +693,21 @@ fn push_png_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(chunk_type);
     out.extend_from_slice(data);
     out.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+}
+
+/// The same synthetic container at a size that presses the attachment byte
+/// caps: `idat_len` filler bytes ride in the IDAT, which the walk keeps as it
+/// finds them (see `clean_png`), so the stored file keeps the size.
+/// `idat` varies the tail so two calls produce two different files.
+#[cfg(test)]
+pub(crate) fn bulky_png(idat: u8, idat_len: usize) -> Vec<u8> {
+    let mut out = PNG_SIGNATURE.to_vec();
+    push_png_chunk(&mut out, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    let mut payload = vec![0u8; idat_len.saturating_sub(1)];
+    payload.push(idat);
+    push_png_chunk(&mut out, b"IDAT", &payload);
+    push_png_chunk(&mut out, b"IEND", &[]);
+    out
 }
 
 /// The shared vectors, bound at compile time on purpose: `include_str!` makes

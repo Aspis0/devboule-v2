@@ -1831,6 +1831,7 @@ fn the_static_route_answers_for_the_model_current_at_prompt_time() {
             "describe this",
             "describe this",
             std::slice::from_ref(&attachment),
+            &[],
         )
         .expect("planned")
         .expect("a model that declared image plans a frame");
@@ -1844,7 +1845,8 @@ fn the_static_route_answers_for_the_model_current_at_prompt_time() {
             "pi-route",
             "describe this",
             "describe this",
-            std::slice::from_ref(&attachment)
+            std::slice::from_ref(&attachment),
+            &[]
         )
         .expect("planned")
         .is_none());
