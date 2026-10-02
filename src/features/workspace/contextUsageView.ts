@@ -5,6 +5,7 @@ import type {
   PlanWindow,
   SessionManifest,
 } from "../../types/ipc";
+import { usdCopy } from "../../lib/format";
 
 /**
  * The pure display logic of the context meter, its popover and the Settings
@@ -144,4 +145,66 @@ export function planFrameHasContent(plan: PlanUsage): boolean {
     plan.windows.length > 0 ||
     planCreditsCopy(plan.credits) !== null
   );
+}
+
+/**
+ * Whether the daemon ever pushes plan frames for a provider id: only its
+ * Claude and Codex roads produce them, and those views stamp exactly these
+ * ids (`crates/devboule-daemon/src/plan_usage_cache.rs`). Null = the manifest
+ * named no id, which claims nothing either way.
+ */
+export function reportsPlanLimits(providerId: string | undefined): boolean | null {
+  if (providerId === undefined) return null;
+  return providerId === "claude" || providerId === "codex";
+}
+
+/**
+ * Whether a billed turn cost can arrive for a provider id: true where the
+ * adapter reads one (Claude `total_cost_usd`, pi `cost.total`, xAI
+ * `costUsdTicks`), false only for Codex, whose frames name none
+ * (`codex_view.rs:1209`). Null for no id and for every other ACP provider:
+ * the ACP adapter keeps cost for the xAI model alone, so for those the
+ * absence is unproven.
+ */
+export function reportsTurnCost(providerId: string | undefined): boolean | null {
+  if (providerId === "claude" || providerId === "pi" || providerId === "grok") return true;
+  if (providerId === "codex") return false;
+  return null;
+}
+
+/** The plan section's line when no window row can show: the provider's
+    inability, or the reading that has not arrived. */
+export function planAbsenceCopy(providerId: string | undefined): string {
+  if (providerId !== undefined && !reportsPlanLimits(providerId)) {
+    return "This provider does not report plan limits.";
+  }
+  return "No plan reading yet.";
+}
+
+/** The cost row: the turn's billed figure, or why none shows. A missing —
+    or zero — cost never becomes "$0.00": the formatter hides both. The
+    manifest carries no display name for a provider, so the absence names no
+    one rather than print its id. */
+export function turnCostCopy(costUsd: number | undefined, providerId: string | undefined): string {
+  const shown = costUsd === undefined ? null : usdCopy(costUsd);
+  if (shown !== null) return `Turn cost: ${shown}`;
+  if (reportsTurnCost(providerId) === false) return "Turn cost: not reported by this agent";
+  return "Turn cost: no reading yet";
+}
+
+/** "updated 5 min ago" — how long since the app saw the frame change, so a
+    reading kept from an earlier session shows its age instead of posing as
+    current. Null when the clock reads earlier than the stamp: no claim.
+    Phrasing follows the provider-usage card's age footer in Paseo
+    (`packages/app/src/provider-usage/card.tsx`); the units are ours, matching
+    `resetsInLabel`. */
+export function updatedAgoLabel(recordedAtMs: number, nowMs: number): string | null {
+  const elapsedMs = nowMs - recordedAtMs;
+  if (elapsedMs < 0) return null;
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return "updated just now";
+  if (minutes < 60) return `updated ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `updated ${hours} h ago`;
+  return `updated ${Math.floor(hours / 24)} d ago`;
 }

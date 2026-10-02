@@ -10,15 +10,19 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useMenuOpen } from "../../lib/menuOpen";
+import type { AgentFinished } from "../../lib/agentSession";
 import type { PlanUsage } from "../../types/ipc";
 import {
   formatContextTokens,
+  planAbsenceCopy,
   planCreditsCopy,
   planFrameHasContent,
   planWindowBarPercent,
   planWindowKey,
   planWindowLabel,
   planWindowMeta,
+  turnCostCopy,
+  updatedAgoLabel,
   type ContextMeterNumbers,
 } from "./contextUsageView";
 import { POPOVER_MARGIN } from "./popoverPlace";
@@ -93,8 +97,17 @@ export interface ContextPopoverProps {
   /** Whether the reading is a mid-turn push (`true`) or the end of the last
       turn (`false`, labelled as such). */
   live: boolean;
-  /** The provider's latest plan frame, or null when it reports none. */
+  /** The provider's latest plan frame, or null while none has arrived. */
   plan: PlanUsage | null;
+  /** When the app saw that frame change — the age label on a reading kept
+      from an earlier session; null while there is nothing to date. */
+  planRecordedAt: number | null;
+  /** The session's last finished turn, or null before the first one — the
+      cost row's source. */
+  lastFinished: AgentFinished | null;
+  /** The manifest's provider id: the key both absence lines make their claim
+      about; absent when the manifest named none. */
+  providerId?: string;
 }
 
 function readingBody(numbers: ContextMeterNumbers, live: boolean): ReactNode {
@@ -192,13 +205,34 @@ function planBody(plan: PlanUsage, nowMs: number): ReactNode {
   );
 }
 
+/** The plan section's contents: the frame's rows and its age when it carries
+    a reading, or the one line that says which reading is missing. */
+function planSection(
+  plan: PlanUsage | null,
+  providerId: string | undefined,
+  recordedAtMs: number | null,
+  nowMs: number,
+): ReactNode {
+  if (plan !== null && planFrameHasContent(plan)) {
+    const age = recordedAtMs === null ? null : updatedAgoLabel(recordedAtMs, nowMs);
+    return (
+      <>
+        {planBody(plan, nowMs)}
+        {age !== null ? <div className="workspace-context-note">{age}</div> : null}
+      </>
+    );
+  }
+  return <div className="workspace-context-note">{planAbsenceCopy(providerId)}</div>;
+}
+
 /**
  * The context popover: 300 px of plain facts above the ring — the reading the
- * meter draws, then the provider's own plan windows when the session has a
- * plan reading. A `null` plan means "no reading" (a session that predates the
- * frame, or no frame arrived), never "the provider cannot"; a frame that
- * carried nothing displayable reads the same way. Neither renders a plan
- * section or its divider. Every number here is one the provider sent.
+ * meter draws, the turn's billed cost, and the provider's plan: its windows
+ * when the frame carried a reading, otherwise one line saying either that the
+ * provider never reports plan limits or that no reading has arrived yet. A
+ * frame the app has seen change carries its age, so a reading kept from an
+ * earlier session shows that age instead of posing as current. Every number
+ * here is one the provider sent.
  *
  * It renders through a portal on `document.body` with fixed positioning: the
  * meter's pane (`.workspace-center-panel`) clips its own children, which is
@@ -213,6 +247,9 @@ export function ContextPopover({
   numbers,
   live,
   plan,
+  planRecordedAt,
+  lastFinished,
+  providerId,
 }: ContextPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const [placement, setPlacement] = useState<PopoverPlacement | null>(null);
@@ -315,9 +352,12 @@ export function ContextPopover({
       style={style}
     >
       <div className="workspace-context-popover-head">{readingBody(numbers, live)}</div>
-      {plan !== null && planFrameHasContent(plan) ? (
-        <div className="workspace-context-popover-plan">{planBody(plan, nowMs)}</div>
-      ) : null}
+      <div className="workspace-context-cost">
+        {turnCostCopy(lastFinished?.usage?.costUsd, providerId)}
+      </div>
+      <div className="workspace-context-popover-plan">
+        {planSection(plan, providerId, planRecordedAt, nowMs)}
+      </div>
     </div>,
     document.body,
   );

@@ -1,6 +1,7 @@
 import { useCallback, useSyncExternalStore, useRef, useState } from "react";
 import type { ContextUsage, SessionManifest } from "../../types/ipc";
-import { usePlanUsage } from "../../lib/planUsageStore";
+import type { AgentFinished } from "../../lib/agentSession";
+import { usePlanRecordedAt, usePlanUsage } from "../../lib/planUsageStore";
 import { contextMeterNumbers, formatContextTokens } from "./contextUsageView";
 import { ContextPopover } from "./ContextPopover";
 
@@ -13,6 +14,9 @@ export interface ContextMeterProps {
   /** A turn is running: with no reading yet, the track-only ring reserves
       the spot instead of leaving the row to jump later. */
   running: boolean;
+  /** The session's last finished turn, or null before the first one — the
+      popover's cost row reads the figure it carried. */
+  lastFinished: AgentFinished | null;
 }
 
 /** What the meter needs of the session: its own slice of the store, with its
@@ -26,6 +30,7 @@ export interface SessionContextMeterProps {
   session: UsageSource | null;
   manifest: SessionManifest | null;
   running: boolean;
+  lastFinished: AgentFinished | null;
 }
 
 /**
@@ -33,14 +38,21 @@ export interface SessionContextMeterProps {
  * arrives (or is retired); the surface that mounts it does not — its own
  * `state` lane never sees the frame.
  */
-export function SessionContextMeter({ session, manifest, running }: SessionContextMeterProps) {
+export function SessionContextMeter({
+  session,
+  manifest,
+  running,
+  lastFinished,
+}: SessionContextMeterProps) {
   const subscribe = useCallback(
     (listener: () => void) => session?.subscribeUsage(listener) ?? (() => {}),
     [session],
   );
   const read = useCallback(() => session?.getContextUsage() ?? null, [session]);
   const usage = useSyncExternalStore(subscribe, read);
-  return <ContextMeter usage={usage} manifest={manifest} running={running} />;
+  return (
+    <ContextMeter usage={usage} manifest={manifest} running={running} lastFinished={lastFinished} />
+  );
 }
 
 /**
@@ -51,7 +63,7 @@ export function SessionContextMeter({ session, manifest, running }: SessionConte
  * track alone; and with nothing to say and nothing running it renders
  * nothing at all. Click opens {@link ContextPopover} above it.
  */
-export function ContextMeter({ usage, manifest, running }: ContextMeterProps) {
+export function ContextMeter({ usage, manifest, running, lastFinished }: ContextMeterProps) {
   const [open, setOpen] = useState(false);
   // The popover anchors to the button, not to the span: it is centred above
   // this rect, and it renders on the body (see ContextPopover), so the
@@ -59,6 +71,7 @@ export function ContextMeter({ usage, manifest, running }: ContextMeterProps) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const numbers = contextMeterNumbers(usage, manifest);
   const plan = usePlanUsage(manifest?.providerId ?? null);
+  const planRecordedAt = usePlanRecordedAt(manifest?.providerId ?? null);
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -124,6 +137,9 @@ export function ContextMeter({ usage, manifest, running }: ContextMeterProps) {
         numbers={numbers}
         live={usage?.live ?? false}
         plan={plan}
+        planRecordedAt={planRecordedAt}
+        lastFinished={lastFinished}
+        providerId={manifest?.providerId}
       />
     </span>
   );

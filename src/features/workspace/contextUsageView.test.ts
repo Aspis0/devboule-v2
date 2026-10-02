@@ -3,13 +3,18 @@ import type { ContextUsage, PlanUsage, SessionManifest } from "../../types/ipc";
 import {
   contextMeterNumbers,
   formatContextTokens,
+  planAbsenceCopy,
   planCreditsCopy,
   planFrameHasContent,
   planWindowBarPercent,
   planWindowKey,
   planWindowLabel,
   planWindowMeta,
+  reportsPlanLimits,
+  reportsTurnCost,
   resetsInLabel,
+  turnCostCopy,
+  updatedAgoLabel,
 } from "./contextUsageView";
 
 function usage(partial: Partial<ContextUsage>): ContextUsage {
@@ -301,5 +306,100 @@ describe("planFrameHasContent", () => {
         credits: {},
       }),
     ).toBe(false);
+  });
+});
+
+describe("reportsPlanLimits", () => {
+  it("is true only for the two roads whose daemon view stamps a plan frame", () => {
+    expect(reportsPlanLimits("claude")).toBe(true);
+    expect(reportsPlanLimits("codex")).toBe(true);
+    expect(reportsPlanLimits("pi")).toBe(false);
+    expect(reportsPlanLimits("grok")).toBe(false);
+    expect(reportsPlanLimits("qwen")).toBe(false);
+    expect(reportsPlanLimits("codex-acp")).toBe(false);
+  });
+
+  it("claims nothing when the manifest named no provider id", () => {
+    expect(reportsPlanLimits(undefined)).toBeNull();
+  });
+});
+
+describe("reportsTurnCost", () => {
+  it("is true for the roads whose adapter reads a billed cost", () => {
+    expect(reportsTurnCost("claude")).toBe(true);
+    expect(reportsTurnCost("pi")).toBe(true);
+    expect(reportsTurnCost("grok")).toBe(true);
+  });
+
+  it("is false only where the adapter is known to send none", () => {
+    expect(reportsTurnCost("codex")).toBe(false);
+  });
+
+  it("claims nothing for the other ACP providers, whose cost the adapter drops", () => {
+    expect(reportsTurnCost("qwen")).toBeNull();
+    expect(reportsTurnCost("gemini")).toBeNull();
+    expect(reportsTurnCost("claude-acp")).toBeNull();
+  });
+
+  it("claims nothing when the manifest named no provider id", () => {
+    expect(reportsTurnCost(undefined)).toBeNull();
+  });
+});
+
+describe("planAbsenceCopy", () => {
+  it("says the reading has not arrived for a road that reports plan limits", () => {
+    expect(planAbsenceCopy("claude")).toBe("No plan reading yet.");
+    expect(planAbsenceCopy("codex")).toBe("No plan reading yet.");
+  });
+
+  it("says the road never reports plan limits for every other provider id", () => {
+    expect(planAbsenceCopy("pi")).toBe("This provider does not report plan limits.");
+    expect(planAbsenceCopy("grok")).toBe("This provider does not report plan limits.");
+    expect(planAbsenceCopy("gemini")).toBe("This provider does not report plan limits.");
+  });
+
+  it("claims nothing when the manifest named no provider id", () => {
+    expect(planAbsenceCopy(undefined)).toBe("No plan reading yet.");
+  });
+});
+
+describe("turnCostCopy", () => {
+  it("shows the turn's billed cost when one arrived", () => {
+    expect(turnCostCopy(1.239, "claude")).toBe("Turn cost: $1.23");
+    expect(turnCostCopy(0.042, "pi")).toBe("Turn cost: $0.04");
+  });
+
+  it("says the agent never sends cost instead of rendering a money zero, without naming an id", () => {
+    expect(turnCostCopy(undefined, "codex")).toBe("Turn cost: not reported by this agent");
+    expect(turnCostCopy(undefined, "codex")).not.toContain("codex");
+    expect(turnCostCopy(undefined, "codex")).not.toContain("$0.00");
+  });
+
+  it("says no reading yet when the road can send cost but none arrived, or none is proven", () => {
+    expect(turnCostCopy(undefined, "claude")).toBe("Turn cost: no reading yet");
+    expect(turnCostCopy(undefined, "gemini")).toBe("Turn cost: no reading yet");
+    expect(turnCostCopy(undefined, "claude-acp")).toBe("Turn cost: no reading yet");
+    expect(turnCostCopy(undefined, undefined)).toBe("Turn cost: no reading yet");
+    // A zero cost is not a bill to print: the formatter hides it, so the row
+    // falls back to the reading state rather than to "$0.00".
+    expect(turnCostCopy(0, "claude")).toBe("Turn cost: no reading yet");
+    expect(turnCostCopy(0, "claude")).not.toContain("$0.00");
+  });
+});
+
+describe("updatedAgoLabel", () => {
+  it("ages a frame's arrival in the popover's own units", () => {
+    const recordedAt = Date.parse("2026-10-02T12:00:00Z");
+    expect(updatedAgoLabel(recordedAt, recordedAt + 30_000)).toBe("updated just now");
+    expect(updatedAgoLabel(recordedAt, recordedAt + 5 * 60_000)).toBe("updated 5 min ago");
+    expect(updatedAgoLabel(recordedAt, recordedAt + 3 * 3_600_000)).toBe("updated 3 h ago");
+    expect(updatedAgoLabel(recordedAt, recordedAt + 2 * 86_400_000)).toBe("updated 2 d ago");
+  });
+
+  it("makes no age claim when the clock now reads earlier than the stamp", () => {
+    const recordedAt = Date.parse("2026-10-02T12:00:00Z");
+    expect(updatedAgoLabel(recordedAt, recordedAt - 1)).toBeNull();
+    expect(updatedAgoLabel(recordedAt, recordedAt - 3_600_000)).toBeNull();
+    expect(updatedAgoLabel(recordedAt, recordedAt)).toBe("updated just now");
   });
 });

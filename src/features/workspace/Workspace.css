@@ -1430,8 +1430,13 @@
   color: var(--muted);
 }
 
-/* The rule between the reading and the plan belongs to the plan section, so
-   a session with no plan reading renders neither the section nor the rule. */
+.workspace-context-cost {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 .workspace-context-popover-plan {
   display: flex;
   flex-direction: column;

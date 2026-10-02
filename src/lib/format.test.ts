@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { usdCopy } from "./AgentChatSurface";
+import { usdCopy } from "./format";
 
 describe("usdCopy", () => {
   it("truncates at every magnitude, never rounding up", () => {

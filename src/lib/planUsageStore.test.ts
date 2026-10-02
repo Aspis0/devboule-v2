@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PlanUsage } from "../types/ipc";
-import { planUsageFor, recordPlanUsage } from "./planUsageStore";
+import { planRecordedAtFor, planUsageFor, recordPlanUsage } from "./planUsageStore";
 
 function plan(partial: Partial<PlanUsage> & { providerId: string }): PlanUsage {
   return { type: "plan_usage", windows: [], ...partial };
@@ -29,5 +29,61 @@ describe("the plan-usage store", () => {
     const stored = planUsageFor("claude-partial");
     expect(stored?.windows).toHaveLength(1);
     expect(stored?.windows[0]?.usedPercent).toBe(41);
+  });
+
+  describe("the stamp the age label reads", () => {
+    const windowAt = (usedPercent: number) => [
+      { durationMins: 300, usedPercent, resetsAt: 1_790_632_800 },
+    ];
+
+    it("is the moment the content changed, never the moment it was delivered again", () => {
+      // The daemon re-delivers its cached frame to every viewer that attaches;
+      // that replay must not make an old reading look fresh.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2026-10-02T12:00:00Z"));
+        recordPlanUsage(plan({ providerId: "codex-seen", windows: windowAt(40) }));
+        vi.setSystemTime(new Date("2026-10-02T12:05:00Z"));
+        recordPlanUsage(plan({ providerId: "codex-seen", windows: windowAt(41) }));
+        const changedAt = Date.parse("2026-10-02T12:05:00Z");
+        expect(planRecordedAtFor("codex-seen")).toBe(changedAt);
+
+        vi.setSystemTime(new Date("2026-10-02T12:15:00Z"));
+        recordPlanUsage(plan({ providerId: "codex-seen", windows: windowAt(41) }));
+        expect(planRecordedAtFor("codex-seen")).toBe(changedAt);
+
+        vi.setSystemTime(new Date("2026-10-02T12:20:00Z"));
+        recordPlanUsage(plan({ providerId: "codex-seen", windows: windowAt(42) }));
+        expect(planRecordedAtFor("codex-seen")).toBe(Date.parse("2026-10-02T12:20:00Z"));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("claims nothing for a frame first seen here, whatever the clock says", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2026-10-02T12:00:00Z"));
+        recordPlanUsage(plan({ providerId: "codex-first", windows: windowAt(40) }));
+        expect(planUsageFor("codex-first")).not.toBeNull();
+        expect(planRecordedAtFor("codex-first")).toBeNull();
+
+        vi.setSystemTime(new Date("2026-10-02T12:10:00Z"));
+        recordPlanUsage(plan({ providerId: "codex-first", windows: windowAt(40) }));
+        expect(planRecordedAtFor("codex-first")).toBeNull();
+
+        expect(planRecordedAtFor("never-sent")).toBeNull();
+        expect(planRecordedAtFor(null)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the stored frame itself when the same frame comes again", () => {
+      recordPlanUsage(plan({ providerId: "codex-same", windows: windowAt(40) }));
+      const first = planUsageFor("codex-same");
+      recordPlanUsage(plan({ providerId: "codex-same", windows: windowAt(40) }));
+      expect(planUsageFor("codex-same")).toBe(first);
+    });
   });
 });

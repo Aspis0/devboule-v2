@@ -358,6 +358,8 @@ describe("every dialog outranks the crescent and no ancestor traps it", () => {
         numbers={{ used: 10, max: 100, percent: 10 }}
         live={false}
         plan={null}
+        planRecordedAt={null}
+        lastFinished={null}
       />,
       (container) => container.querySelector(".workspace-context-popover"),
     );

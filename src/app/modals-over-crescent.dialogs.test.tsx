@@ -57,6 +57,8 @@ describe("walking every dialog the source finds", () => {
           numbers={{ used: 10, max: 100, percent: 10 }}
           live={false}
           plan={null}
+          planRecordedAt={null}
+          lastFinished={null}
         />
       </ShellWith>
     );

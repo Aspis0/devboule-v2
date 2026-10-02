@@ -44,6 +44,7 @@ function meter(props: Partial<Parameters<typeof ContextMeter>[0]>): ReactElement
       usage={props.usage ?? null}
       manifest={props.manifest ?? null}
       running={props.running ?? false}
+      lastFinished={props.lastFinished ?? null}
     />
   );
 }
@@ -291,38 +292,41 @@ describe("the context popover", () => {
     expect(popover.textContent).not.toContain("Credits");
   });
 
-  it("shows no plan section at all when the session has no plan reading", async () => {
-    // `null` is "no reading" — a session that has had no plan frame yet, not
-    // "the provider cannot": Codex reports plan usage, this session has none.
+  it("says a reporting provider has no plan reading yet, never that it cannot report", async () => {
+    // Codex reports plan usage; this session simply has no frame yet. The
+    // absence line must keep "not arrived" apart from "never arrives".
     const host = await render(
       meter({
         usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }),
-        manifest: manifest({ providerId: "provider-without-plan", models: [] }),
+        manifest: manifest({ providerId: "codex", models: [] }),
       }),
     );
     const popover = await openPopover(host);
-    expect(popover.querySelector(".workspace-context-popover-plan")).toBeNull();
-    expect(popover.textContent).not.toContain("does not report plan usage");
+    expect(popover.querySelector(".workspace-context-popover-plan")).not.toBeNull();
+    expect(popover.textContent).toContain("No plan reading yet.");
+    expect(popover.textContent).not.toContain("does not report plan limits");
     // The reading itself stays whole.
     expect(popover.querySelector(".workspace-context-percent")?.textContent).toBe("38% used");
   });
 
-  it("renders no plan section for a frame that carried nothing", async () => {
-    // Codex can deliver a rate-limits frame naming neither window; without
-    // the guard it would draw the plan block's divider over nothing.
+  it("treats a frame that carried nothing as a reading that has not arrived", async () => {
+    // Codex can deliver a rate-limits frame naming neither window; without a
+    // displayable reading the section says so instead of drawing rows over an
+    // empty frame.
     recordPlanUsage({
       type: "plan_usage",
-      providerId: "codex-empty-frame",
+      providerId: "codex",
       windows: [],
     });
     const host = await render(
       meter({
         usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }),
-        manifest: manifest({ providerId: "codex-empty-frame", models: [] }),
+        manifest: manifest({ providerId: "codex", models: [] }),
       }),
     );
     const popover = await openPopover(host);
-    expect(popover.querySelector(".workspace-context-popover-plan")).toBeNull();
+    expect(popover.textContent).toContain("No plan reading yet.");
+    expect(popover.querySelectorAll(".plan-window")).toHaveLength(0);
   });
 
   it("keeps the countdown moving while the popover sits open", async () => {
@@ -461,7 +465,7 @@ describe("binding the meter to its session", () => {
       getContextUsage: () => stored,
     };
     const host = await render(
-      <SessionContextMeter session={source} manifest={null} running={false} />,
+      <SessionContextMeter session={source} manifest={null} running={false} lastFinished={null} />,
     );
     // No reading, nothing running: nothing at all.
     expect(host.querySelector(".workspace-context-meter-button")).toBeNull();
