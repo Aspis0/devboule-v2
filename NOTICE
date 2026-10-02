@@ -201,6 +201,11 @@ source, and that line is the authority for the entry:
 - `src/features/workspace/commandMatch.ts` —
   `packages/protocol/src/search/text-match.ts` and
   `packages/app/src/utils/agent-command-autocomplete.ts`
+- `src/features/workspace/transcript/UserImageThumbnails.tsx` —
+  `packages/app/src/components/message.tsx` (pressable 48 px thumbnails
+  opening a modal lightbox), `packages/app/src/components/attachment-pill.tsx`
+  (the 48 px size) and `packages/app/src/components/attachment-lightbox.tsx`
+  (Escape and backdrop close)
 - `src/lib/chatFilePaths.ts` —
   `packages/app/src/assistant-file-links/parse.ts`
   (`resolveRelativePathUnderRoot`; Apache-2.0, Copyright (c) 2025-present

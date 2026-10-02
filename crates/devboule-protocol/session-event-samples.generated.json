@@ -127,6 +127,13 @@
   {
     "atMs": 1789053471559,
     "author": "human",
+    "images": [
+      {
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sessionId": "s.owner.sample",
+        "storedBytes": 12
+      }
+    ],
     "messageId": null,
     "messageKind": "unknown",
     "text": "",

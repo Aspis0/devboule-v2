@@ -145,6 +145,7 @@ fn view_from_session_update(
                 author: UserMessageAuthor::Human,
                 message_kind: UserMessageKind::Unknown,
                 at_ms: None,
+                images: Vec::new(),
             })
         }
         Some("agent_thought_chunk") => {
@@ -1695,6 +1696,7 @@ mod tests {
                 author: UserMessageAuthor::Human,
                 message_kind: UserMessageKind::Unknown,
                 at_ms: None,
+                images: Vec::new(),
             }
         );
         assert_eq!(

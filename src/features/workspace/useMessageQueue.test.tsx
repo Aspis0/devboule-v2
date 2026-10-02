@@ -128,7 +128,7 @@ describe("useMessageQueue", () => {
     // The refusal the queue can raise: text with nothing in it.
     await click("queue-blank");
     expect(probe.snapshot().error).toBe("There is nothing to queue.");
-    expect(probe.handlers.onQueueRefused).toHaveBeenCalledWith("   ");
+    expect(probe.handlers.onQueueRefused).toHaveBeenCalledWith("   ", []);
 
     await click("queue-it");
     expect(probe.snapshot().error).toBeNull();
@@ -141,7 +141,7 @@ describe("useMessageQueue", () => {
     const probe = renderProbe(harness);
 
     await click("edit-it");
-    expect(probe.handlers.onEditRestored).toHaveBeenCalledWith("a row");
+    expect(probe.handlers.onEditRestored).toHaveBeenCalledWith("a row", []);
     expect(probe.snapshot().items).toEqual([]);
   });
 
@@ -228,7 +228,7 @@ describe("useMessageQueue", () => {
     const harness = createQueueHarness();
     const probe = renderProbe(harness);
     await click("steer-blank");
-    expect(probe.handlers.onSteerRefused).toHaveBeenCalledWith("   ");
+    expect(probe.handlers.onSteerRefused).toHaveBeenCalledWith("   ", []);
     expect(probe.snapshot().error).toBe("There is nothing to send.");
   });
 });

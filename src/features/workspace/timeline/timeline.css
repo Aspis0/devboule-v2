@@ -142,3 +142,172 @@
 .workspace-chat-assistant:focus-within .workspace-chat-copy {
   padding-right: 84px;
 }
+
+/* Chat image thumbnails: a wrapping row of pressable 48 px frames above the
+   user bubble's text, with room below when text follows. */
+.workspace-chat-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.workspace-chat-image-thumb {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.workspace-chat-image-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.workspace-chat-image-thumb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.workspace-chat-image-loading {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+/* An expired reference: the same 48 px height, quiet, never a hole. The
+   tile sizes to its words at the slice's 12 px floor rather than shrinking
+   the text to fit the thumbnail's square. */
+.workspace-chat-image-unavailable {
+  display: grid;
+  place-items: center;
+  min-width: 48px;
+  height: 48px;
+  padding: 0 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+/* Image lightbox: scrim over the window, image card. */
+.chat-image-lightbox-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: var(--modal-dim);
+}
+
+.chat-image-lightbox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--panel-card);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: var(--shadow-pop);
+}
+
+.chat-image-lightbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
+}
+
+.chat-image-lightbox-count {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chat-image-lightbox-close {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.chat-image-lightbox-close:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.chat-image-lightbox-close:focus-visible,
+.chat-image-lightbox-prev:focus-visible,
+.chat-image-lightbox-next:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.chat-image-lightbox-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 220px);
+  border-radius: 8px;
+}
+
+.chat-image-lightbox-unavailable {
+  padding: 32px 48px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chat-image-lightbox-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-image-lightbox-prev,
+.chat-image-lightbox-next {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.chat-image-lightbox-prev:hover,
+.chat-image-lightbox-next:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+/* A lightbox page still resolving: quiet, same card, no layout shift. */
+.chat-image-lightbox-loading {
+  padding: 32px 48px;
+  color: var(--muted);
+  font-size: 13px;
+}

@@ -27,11 +27,13 @@ use crate::raster_metadata::clean_png;
 
 /// A route double: records that it was consulted and that its plan was the
 /// one sent, and answers with a plan carrying the text the caller must
-/// journal — or declines, which is what a provider not authorised for
-/// inline bytes answers.
+/// send — or declines, which is what a provider not authorised for
+/// inline bytes answers. Sent plan texts are kept so a test can prove what
+/// the provider received without a child.
 struct RecordingStaticSink {
     calls: Arc<AtomicU64>,
     sent: Arc<AtomicU64>,
+    seen: Arc<Mutex<Vec<String>>>,
     answer: Option<&'static str>,
 }
 
@@ -49,6 +51,7 @@ impl StaticImageSink for RecordingStaticSink {
             Box::new(RecordingStaticPlan {
                 text: text.to_string(),
                 sent: Arc::clone(&self.sent),
+                seen: Arc::clone(&self.seen),
             }) as Box<dyn PlannedStaticPrompt>
         }))
     }
@@ -60,6 +63,7 @@ impl StaticImageSink for RecordingStaticSink {
 struct RecordingStaticPlan {
     text: String,
     sent: Arc<AtomicU64>,
+    seen: Arc<Mutex<Vec<String>>>,
 }
 
 impl PlannedStaticPrompt for RecordingStaticPlan {
@@ -75,28 +79,38 @@ impl PlannedStaticPrompt for RecordingStaticPlan {
     }
 
     fn send(&self) -> Result<(), WireError> {
+        self.seen.lock().expect("seen").push(self.text.clone());
         self.sent.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 }
 
-fn test_static_sink(
-    answer: Option<&'static str>,
-) -> (Arc<RecordingStaticSink>, Arc<AtomicU64>, Arc<AtomicU64>) {
+/// What a test reads back from the sink: how often it planned, how often a
+/// plan was sent, and the text each send carried.
+struct StaticSinkRecord {
+    calls: Arc<AtomicU64>,
+    sent: Arc<AtomicU64>,
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+fn test_static_sink(answer: Option<&'static str>) -> (Arc<RecordingStaticSink>, StaticSinkRecord) {
     let calls = Arc::new(AtomicU64::new(0));
     let sent = Arc::new(AtomicU64::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::new(RecordingStaticSink {
         calls: Arc::clone(&calls),
         sent: Arc::clone(&sent),
+        seen: Arc::clone(&seen),
         answer,
     });
-    (sink, calls, sent)
+    (sink, StaticSinkRecord { calls, sent, seen })
 }
 
 #[test]
 fn the_static_route_sends_its_own_frame_and_leaves_the_writer_alone() {
     // The route owns the send: on this branch the plain-text writer is not
-    // typed into at all, and the text the journal records is the plan's.
+    // typed into at all, while the journal records the user's own text —
+    // the plan's text travels to the provider only.
     // That is also what holds a send to one materialization per attachment
     // — `with_attachment_paths`, the legacy walk, is reached only when the
     // route answered nothing.
@@ -104,7 +118,8 @@ fn the_static_route_sends_its_own_frame_and_leaves_the_writer_alone() {
     let owner = test_owner("S-1-5-21-static-route", "process-static-route");
     let session_id = "static-route";
     let received = Arc::new(Mutex::new(Vec::new()));
-    let (sink, calls, sent) = test_static_sink(Some("the plan's own text"));
+    let (sink, StaticSinkRecord { calls, sent, .. }) =
+        test_static_sink(Some("the plan's own text"));
     let runtime = insert_live_agent_with_kind_writer_and_sink(
         &registry,
         session_id,
@@ -141,26 +156,31 @@ fn the_static_route_sends_its_own_frame_and_leaves_the_writer_alone() {
         .pull_events()
         .into_iter()
         .find_map(|event| match event.envelope.event {
-            SessionEvent::AgentUserMessage { text, .. } => Some(text),
+            SessionEvent::AgentUserMessage { text, images, .. } => Some((text, images)),
             _ => None,
         })
-        .expect("the plan's text is what the journal records");
-    assert_eq!(recorded, "the plan's own text");
+        .expect("the user's text is what the journal records");
+    assert_eq!(recorded.0, "describe this");
+    assert!(
+        recorded.1.is_empty(),
+        "no references were sent: {recorded:?}"
+    );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The same append on a plan route: the references go into the plan's own
-/// text, which is the string the provider's frame carries *and* the string
-/// the journal records, so the two cannot disagree about which files the
-/// prompt named.
+/// text, which is the string the provider's frame carries. The journal
+/// records the user's text with the references beside it, so the two agree
+/// about which files the prompt named without sharing one string.
 #[test]
 fn the_static_routes_plan_text_carries_the_reference_lines_too() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-ref-static", "process-ref-static");
     let session_id = "ref-static";
     let received = Arc::new(Mutex::new(Vec::new()));
-    let (sink, calls, sent) = test_static_sink(Some("the plan's own text"));
+    let (sink, StaticSinkRecord { calls, sent, seen }) =
+        test_static_sink(Some("the plan's own text"));
     let runtime = insert_live_agent_with_kind_writer_and_sink(
         &registry,
         session_id,
@@ -206,16 +226,18 @@ fn the_static_routes_plan_text_carries_the_reference_lines_too() {
         .pull_events()
         .into_iter()
         .find_map(|event| match event.envelope.event {
-            SessionEvent::AgentUserMessage { text, .. } => Some(text),
+            SessionEvent::AgentUserMessage { text, images, .. } => Some((text, images)),
             _ => None,
         })
-        .expect("the plan's text is what the journal records");
+        .expect("the user's text is what the journal records");
+    assert_eq!(recorded.0, "read the deck");
+    assert_eq!(recorded.1, std::slice::from_ref(&reference));
     assert_eq!(
-        recorded,
-        format!(
+        seen.lock().expect("seen").as_slice(),
+        [format!(
             "the plan's own text\n\n[Image available at: {}]",
             stored_path(&registry, session_id, &reference.digest).display()
-        ),
+        )],
         "the reference line is part of the plan's text, not a block beside it"
     );
     journal.shutdown();
@@ -226,7 +248,7 @@ fn the_static_routes_plan_text_carries_the_reference_lines_too() {
 fn the_first_picked_command_expands_from_the_raw_message() {
     // The P2 hand-off: the send path must hand the static plan the user's
     // message as `raw_text`, beside the composed text — the plan expands the
-    // former, the journal records the expansion. Passing `text` where
+    // former, the journal records the message. Passing `text` where
     // `raw_text` goes reverts B1: the whole composed string parses as no
     // command, the plan declines, and the literal slash line is journaled.
     let (dir, registry, journal) = tmp_delete_registry();
@@ -298,10 +320,10 @@ fn the_first_picked_command_expands_from_the_raw_message() {
             SessionEvent::AgentUserMessage { text, .. } => Some(text),
             _ => None,
         })
-        .expect("the plan's text is what the journal records");
+        .expect("the user's message is what the journal records");
     assert_eq!(
-        recorded, "standing instructions\n\nDo stage\n",
-        "the first picked command expands on the composed turn"
+        recorded, "/prompts:commit stage",
+        "the journal keeps the user's message; the expansion travels provider-side"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -355,6 +377,7 @@ impl StaticImageSink for RawKeepingSink {
         Ok(Some(Box::new(RecordingStaticPlan {
             text: expanded,
             sent: Arc::clone(&self.sent),
+            seen: Arc::new(Mutex::new(Vec::new())),
         }) as Box<dyn PlannedStaticPrompt>))
     }
 }
@@ -368,7 +391,7 @@ fn a_static_route_that_declines_keeps_the_legacy_write_byte_for_byte() {
     let owner = test_owner("S-1-5-21-static-declined", "process-static-declined");
     let session_id = "static-declined";
     let received = Arc::new(Mutex::new(Vec::new()));
-    let (sink, calls, sent) = test_static_sink(None);
+    let (sink, StaticSinkRecord { calls, sent, .. }) = test_static_sink(None);
     let runtime = insert_live_agent_with_kind_writer_and_sink(
         &registry,
         session_id,

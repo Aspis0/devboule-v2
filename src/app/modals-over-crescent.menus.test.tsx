@@ -345,7 +345,7 @@ describe("walking every menu the source finds — the band's open is the outside
       root.render(
         <Shell activeSurface="workspace">
           <WorkspaceComposer
-            {...composerProps({ onSend: () => undefined, onQueue: () => undefined })}
+            {...composerProps({ onSend: async () => true, onQueue: () => undefined })}
             availableCommands={MENU_COMMANDS}
           />
         </Shell>,

@@ -14,7 +14,9 @@ import {
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { composerActionLabel } from "../../lib/sendBehavior";
 import { isImeComposition } from "../../lib/imeComposition";
+import type { PromptAttachment } from "../../types/ipc";
 import { rankCommandMatches } from "./commandMatch";
+import { ComposerImagePicker, MAX_COMPOSER_IMAGES } from "./ComposerImagePicker";
 import { WorkspaceCommandMenu, type WorkspaceCommand } from "./WorkspaceCommandMenu";
 
 /** Height cap of the growing textarea: eight 20px lines. */
@@ -27,6 +29,8 @@ const COMPOSER_PLACEHOLDER = "Message the agent, or type / for commands";
  * steer, whose text the user must look at. */
 interface RestoredDraft {
   text: string;
+  /** Images a failed send handed back with the text, restored as previews. */
+  images?: readonly PromptAttachment[];
   focus: boolean;
   nonce: number;
 }
@@ -38,9 +42,9 @@ interface WorkspaceComposerProps {
   disabled?: boolean;
   disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>;
   /** Queue the composer's text while the turn runs; absent, Enter always sends. */
-  onQueue?: (text: string) => void;
+  onQueue?: (text: string, attachments: readonly PromptAttachment[]) => void;
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
   onStop?: () => void;
@@ -103,6 +107,14 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   contextMeter = null,
 }: WorkspaceComposerProps) {
   const [input, setInput] = useState("");
+  const [attachedImages, setAttachedImages] = useState<readonly PromptAttachment[]>([]);
+  // A send with images stays in flight until the sender answers: the picked
+  // images stay put (shown as sending, picker disabled) and clear only on
+  // success, so a failure keeps the submission whole without a hand-back.
+  const [sendingImages, setSendingImages] = useState(false);
+  // Restored images that did not fit beside the current picks; named once
+  // in the picker's refusal line, cleared by the next pick or removal.
+  const [restoreOverflow, setRestoreOverflow] = useState<string | null>(null);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -143,6 +155,30 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const restoreNonce = restoreDraft?.nonce ?? null;
   const restoreText = restoreDraft?.text ?? null;
   const restoreFocus = restoreDraft?.focus ?? false;
+  const restoreImages = restoreDraft?.images ?? null;
+  // A taken queue row lands its images here, beside whatever the composer
+  // already holds — capped at the picker's bound, with the overflow named
+  // rather than silently dropped. Guarded by the nonce (not array
+  // identity), so a re-fire is a no-op and mid-composition hand-backs
+  // apply at once: unlike text this never touches the textarea.
+  const appliedImagesNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (restoreNonce === null) return;
+    if (appliedImagesNonceRef.current === restoreNonce) return;
+    appliedImagesNonceRef.current = restoreNonce;
+    if (restoreImages === null || restoreImages.length === 0) return;
+    // `attachedImages` rides along so the merge measures the current picks;
+    // the nonce guard above makes the extra firings no-ops.
+    const room = Math.max(0, MAX_COMPOSER_IMAGES - attachedImages.length);
+    const fitting = restoreImages.slice(0, room);
+    if (fitting.length > 0) {
+      setAttachedImages((current) => [...current, ...fitting]);
+    }
+    const dropped = restoreImages.length - fitting.length;
+    setRestoreOverflow(
+      dropped === 0 ? null : `Only ${fitting.length} restored images fit; ${dropped} omitted.`,
+    );
+  }, [restoreNonce, restoreImages, attachedImages]);
 
   // A queue hand-back (an Edit's text, a refused steer's text) is applied
   // once, keyed by its nonce — primitive deps, so a fresh object with the
@@ -185,17 +221,44 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   const sendInput = useCallback(() => {
     const text = input.trim();
-    if (!text || disabled) return;
-    onSend(text);
+    if (!text || disabled || sendingImages) return;
+    // Imageless sends keep the fire-and-forget they always had. A send with
+    // images takes a snapshot and waits for the answer: the picks stay put
+    // as sending and clear only on success, so a failure keeps the
+    // submission whole without a hand-back.
+    if (attachedImages.length === 0) {
+      onSend(text, attachedImages);
+      setInput("");
+      return;
+    }
+    const snapshot = attachedImages;
+    setSendingImages(true);
+    setRestoreOverflow(null);
     setInput("");
-  }, [disabled, input, onSend, setInput]);
+    void Promise.resolve()
+      .then(() => onSend(text, snapshot))
+      .then(
+        (sent) => {
+          setSendingImages(false);
+          if (sent) {
+            setAttachedImages((current) => current.filter((image) => !snapshot.includes(image)));
+          }
+        },
+        () => setSendingImages(false),
+      );
+  }, [attachedImages, disabled, input, onSend, sendingImages, setInput]);
 
   const queueInput = useCallback(() => {
     const text = input.trim();
-    if (!text || disabled || onQueue === undefined) return;
-    onQueue(text);
+    // Blocked while an image send is in flight, like the buttons: the
+    // in-flight picks still belong to that send, and queueing them again
+    // would send them twice.
+    if (!text || disabled || sendingImages || onQueue === undefined) return;
+    onQueue(text, attachedImages);
+    setRestoreOverflow(null);
+    setAttachedImages([]);
     setInput("");
-  }, [disabled, input, onQueue, setInput]);
+  }, [attachedImages, disabled, input, onQueue, sendingImages, setInput]);
 
   const queueAvailable = turnActive && queueAllowed && !disabled && onQueue !== undefined;
   const defaultActionQueues = enterQueues && queueAvailable;
@@ -353,6 +416,30 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         />
         <div className="workspace-composer-bar">
           <div className="workspace-composer-controls">
+            <ComposerImagePicker
+              images={attachedImages}
+              disabled={disabled}
+              sending={sendingImages}
+              overflowNotice={restoreOverflow}
+              onAdd={(picked) => {
+                setRestoreOverflow(null);
+                setAttachedImages((current) => {
+                  const room = Math.max(0, MAX_COMPOSER_IMAGES - current.length);
+                  const fitting = picked.slice(0, room);
+                  const dropped = picked.length - fitting.length;
+                  if (dropped > 0) {
+                    setRestoreOverflow(
+                      `${dropped} picked image${dropped === 1 ? "" : "s"} omitted: the composer carries at most ${MAX_COMPOSER_IMAGES} images.`,
+                    );
+                  }
+                  return [...current, ...fitting];
+                });
+              }}
+              onRemove={(position) => {
+                setRestoreOverflow(null);
+                setAttachedImages((current) => current.filter((_, at) => at !== position));
+              }}
+            />
             {controls}
             {disabled && disabledReason !== null ? (
               <span className="workspace-composer-hint">{disabledReason}</span>
@@ -367,7 +454,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               title={actionLabel}
               aria-label={actionLabel}
               onClick={runDefaultAction}
-              disabled={disabled || !input.trim()}
+              disabled={disabled || sendingImages || !input.trim()}
             >
               {/* A clock while the action queues: it sends later. The
                   interrupt-and-send default steers, which sends, so it wears
@@ -430,7 +517,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               title="Send · Enter (Shift+Enter for a new line)"
               aria-label="Send"
               onClick={sendInput}
-              disabled={disabled || !input.trim()}
+              disabled={disabled || sendingImages || !input.trim()}
             >
               <svg
                 width={14}

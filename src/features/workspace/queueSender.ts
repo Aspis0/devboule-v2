@@ -1,11 +1,13 @@
 import {
   createSessionChannel,
   sessionAttach,
+  sessionDeposit,
   sessionDetach,
   sessionInterrupt,
   sessionSend,
 } from "../../lib/tauri";
 import type { PromptAttachment } from "../../types/ipc";
+import { sendChatImagesByReference } from "./chatImageTransport";
 import type { MessageQueueHost } from "./messageQueue";
 
 /**
@@ -44,8 +46,26 @@ const NOTHING_WANTED = Number.MAX_SAFE_INTEGER;
 
 const PRODUCTION_DEPS: QueueSendDeps = {
   attach: (sessionId, fromCursor) => sessionAttach(sessionId, fromCursor, createSessionChannel()),
+  // Composer images travel by reference here too: the queue holds the
+  // bytes, but the send deposits them first and names the answers, so the
+  // echo carries what replay resolves. An imageless send keeps its arity.
+  // A retry deposits again from the still-held bytes; the store names files
+  // by digest, so identical bytes reuse the identical file.
   send: (sessionId, subscriptionId, text, attachments, idempotencyKey) =>
-    sessionSend(sessionId, subscriptionId, text, attachments, undefined, [], idempotencyKey),
+    sendChatImagesByReference({
+      images: attachments,
+      deposit: (attachment) => sessionDeposit(sessionId, attachment),
+      send: (references) =>
+        sessionSend(
+          sessionId,
+          subscriptionId,
+          text,
+          undefined,
+          undefined,
+          references.length === 0 ? undefined : references,
+          idempotencyKey,
+        ),
+    }),
   interrupt: (sessionId, subscriptionId) => sessionInterrupt(sessionId, subscriptionId),
   detach: (subscriptionId) => sessionDetach(subscriptionId),
 };

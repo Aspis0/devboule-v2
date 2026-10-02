@@ -651,6 +651,7 @@ fn the_transcript_store_holds_the_whole_history_whatever_the_cursor_says() {
             author: devboule_protocol::UserMessageAuthor::Human,
             message_kind: devboule_protocol::UserMessageKind::Unknown,
             at_ms: None,
+            images: Vec::new(),
         },
     )
     .unwrap();

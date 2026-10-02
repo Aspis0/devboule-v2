@@ -13,14 +13,15 @@ import {
   type ComposerDrivers,
   type ComposerMocks,
 } from "./composerTestKit";
+import type { PromptAttachment } from "../../types/ipc";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement;
 let root: Root;
-let onSend: Mock<(text: string) => void>;
-let onQueue: Mock<(text: string) => void>;
+let onSend: Mock<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>;
+let onQueue: Mock<(text: string, attachments: readonly PromptAttachment[]) => void>;
 let onStop: Mock<() => void>;
 let mocks: ComposerMocks & { onStop: () => void };
 let drive: ComposerDrivers;
@@ -42,8 +43,8 @@ async function renderComposer(
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
-  onSend = vi.fn<(text: string) => void>();
-  onQueue = vi.fn<(text: string) => void>();
+  onSend = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>();
+  onQueue = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => void>();
   onStop = vi.fn<() => void>();
   mocks = { onSend, onQueue, onStop };
   drive = composerDrivers(container);
@@ -66,7 +67,7 @@ describe("the send control", () => {
 
     await act(async () => send.click());
 
-    expect(onSend).toHaveBeenCalledWith("hello");
+    expect(onSend).toHaveBeenCalledWith("hello", []);
   });
 
   it("is absent while the turn runs, where Stop takes its place", async () => {
@@ -176,7 +177,7 @@ describe("the queue action", () => {
 
     await act(async () => queue.click());
 
-    expect(onQueue).toHaveBeenCalledWith("later");
+    expect(onQueue).toHaveBeenCalledWith("later", []);
     expect(onSend).not.toHaveBeenCalled();
   });
 });

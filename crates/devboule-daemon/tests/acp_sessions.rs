@@ -4690,6 +4690,10 @@ impl Slice5Test {
                 "DEVBOULE_ACP_STUB_ARGV_FILE",
                 file_name(&dir, "stub argv.txt"),
             ),
+            (
+                "DEVBOULE_ACP_STUB_PROMPT_FILE",
+                file_name(&dir, "stub prompts.txt"),
+            ),
         ];
         let env: Vec<(&str, &str)> = values
             .iter()
@@ -4712,6 +4716,25 @@ impl Slice5Test {
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    /// Every prompt text the stub provider received, each followed by a
+    /// newline, once `done` accepts it. A prompt can span lines, so this is
+    /// the whole file rather than `observations`' lines.
+    fn wait_for_provider_prompts(&self, done: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            let prompts =
+                std::fs::read_to_string(self.dir.join("stub prompts.txt")).unwrap_or_default();
+            if done(&prompts) {
+                return prompts;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the provider's prompts never matched: {prompts:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     fn wait_for_observations(&self, name: &str, count: usize) -> Vec<String> {
@@ -6525,10 +6548,17 @@ fn the_standing_instructions_reach_a_session_a_human_opens() {
     test.client
         .session_send(&session.id, "what is the state of the repo?")
         .expect("send the human's first message");
+    let composed =
+        "Always answer in English and keep the diff small.\n\nwhat is the state of the repo?";
+    let prompts = test.wait_for_provider_prompts(|prompts| !prompts.is_empty());
+    assert!(
+        prompts.starts_with(&format!("{composed}\n")),
+        "the provider gets the standing instructions and the human's message, in that order: {prompts:?}"
+    );
     assert_eq!(
         wait_for_user_message(&events, Duration::from_secs(45)),
-        "Always answer in English and keep the diff small.\n\nwhat is the state of the repo?",
-        "the standing instructions and the human's message, in that order"
+        "what is the state of the repo?",
+        "the transcript keeps what the human typed"
     );
 }
 
@@ -6560,10 +6590,15 @@ fn a_resumed_session_does_not_re_inject_the_standing_instructions() {
     test.client
         .session_send(&session.id, "first prompt")
         .expect("send the first prompt");
+    let first = "Always answer in English and keep the diff small.\n\nfirst prompt\n";
+    let prompts = test.wait_for_provider_prompts(|prompts| !prompts.is_empty());
+    assert!(
+        prompts.starts_with(first),
+        "control: the session's first prompt carries the standing instructions: {prompts:?}"
+    );
     assert_eq!(
         wait_for_user_message(&events, Duration::from_secs(45)),
-        "Always answer in English and keep the diff small.\n\nfirst prompt",
-        "control: the session's first prompt carries the standing instructions"
+        "first prompt"
     );
 
     let pids = test.wait_for_observations("stub pids.txt", 1);
@@ -6595,9 +6630,9 @@ fn a_resumed_session_does_not_re_inject_the_standing_instructions() {
 
     // A fresh attach replays the whole transcript across generations,
     // pre-resume history included: this stream carries generation 1's
-    // "Always answer …\n\nfirst prompt" and generation 1's own
-    // `end_turn`, so neither a finished event nor a `last()` read can tell
-    // the live turn from the replay. The one event only the post-resume
+    // "first prompt" and generation 1's own `end_turn`, so neither a
+    // finished event nor a `last()` read can tell the live turn from the
+    // replay. The one event only the post-resume
     // turn can supply is its own user message: no earlier generation ever
     // contained "second prompt". Its arrival is the delivery signal.
     wait_for(&after, Duration::from_secs(45), |events| {
@@ -6632,6 +6667,11 @@ fn a_resumed_session_does_not_re_inject_the_standing_instructions() {
         !prompts.iter().any(|prompt| prompt.as_str() == re_composed),
         "the daemon must not prefix standing instructions onto a resumed session's prompt: {:?}",
         prompts
+    );
+    let prompts = test.wait_for_provider_prompts(|prompts| prompts.contains("\nsecond prompt\n"));
+    assert!(
+        !prompts.contains(&format!("{re_composed}\n")),
+        "the resumed provider gets the caller's text alone: {prompts:?}"
     );
     test.client
         .session_close(&session.id)
@@ -6684,10 +6724,17 @@ fn the_standing_instructions_reach_the_design_host() {
     test.client
         .session_send(&host.id, grounded)
         .expect("send the Design host's first prompt");
+    let prompts = test.wait_for_provider_prompts(|prompts| !prompts.is_empty());
+    assert!(
+        prompts.starts_with(&format!(
+            "Always answer in English and keep the diff small.\n\n{grounded}\n"
+        )),
+        "the Design prompt is the prompt; the instructions go in front of it: {prompts:?}"
+    );
     assert_eq!(
         wait_for_user_message(&events, Duration::from_secs(45)),
-        format!("Always answer in English and keep the diff small.\n\n{grounded}"),
-        "the Design prompt is the prompt; the instructions go in front of it"
+        grounded,
+        "the transcript keeps the Design prompt as sent"
     );
 }
 

@@ -50,6 +50,12 @@ export type AgentChatItem =
       spawnDepth?: number;
       /** When the daemon published this user message (Unix ms). Present for Composer messages and for kind-less native `agent_report` rows replayed from before `messageKind` existed; provider-envelope-derived `Unknown` rows have no turn time. */
       atMs?: number;
+      /**
+       * Image references the composer deposited before sending, carried from
+       * the echo. Present only on user rows whose echo named them; a row
+       * without it is the text-only row it always was.
+       */
+      images?: AttachmentReference[];
     }
   | {
       id: string;
@@ -785,7 +791,15 @@ export class AgentSession {
   ): void {
     this.ensureTurn();
     this.closeActiveBlocks();
-    this.appendText("user", event.messageId, event.text, undefined, undefined, event.atMs);
+    this.appendText(
+      "user",
+      event.messageId,
+      event.text,
+      undefined,
+      undefined,
+      event.atMs,
+      event.images,
+    );
   }
 
   private appendOutgoingA2aMessage(text: string): void {
@@ -1342,6 +1356,7 @@ export class AgentSession {
     parentToolUseId?: string,
     spawnDepth?: number,
     atMs?: number,
+    images?: readonly AttachmentReference[],
   ): void {
     this.prepareRole(role);
     const key = this.blockKey(role, messageId, parentToolUseId);
@@ -1354,6 +1369,9 @@ export class AgentSession {
         messageId,
         ...itemParentage(parentToolUseId, spawnDepth),
         ...(atMs === undefined ? {} : { atMs }),
+        // Only the composer path passes images; an absent or empty list
+        // keeps the text-only shape every older row has.
+        ...(images === undefined || images.length === 0 ? {} : { images: [...images] }),
       };
       this.blocks.set(key, this.state.items.length);
       this.activeBlocks.set(this.activeBlockKey(role, parentToolUseId), key);
@@ -1365,10 +1383,15 @@ export class AgentSession {
     const item = items[index];
     if (item.role !== role) return;
     // The first send time wins: a later fragment only fills an absent one.
+    // Images follow the same rule: the echo carries them once, and a replay
+    // of that echo must not stack a second copy beside the first.
     items[index] = {
       ...item,
       text: item.text + text,
       ...(item.atMs === undefined && atMs !== undefined ? { atMs } : {}),
+      ...(item.images === undefined && images !== undefined && images.length > 0
+        ? { images: [...images] }
+        : {}),
     };
     this.activeBlocks.set(this.activeBlockKey(role, parentToolUseId), key);
     this.update({ items });

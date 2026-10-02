@@ -117,6 +117,7 @@ fn a_stop_tail_cursor_owes_nothing_not_even_history() {
                 author: devboule_protocol::UserMessageAuthor::Human,
                 message_kind: devboule_protocol::UserMessageKind::Unknown,
                 at_ms: None,
+                images: Vec::new(),
             },
             SessionEvent::AgentMessage {
                 message_id: Some("m2".into()),

@@ -36,6 +36,7 @@ fn history_does_not_move_the_transcript_cursor_or_starve_the_reattach() {
                 author: devboule_protocol::UserMessageAuthor::Human,
                 message_kind: devboule_protocol::UserMessageKind::Unknown,
                 at_ms: None,
+                images: Vec::new(),
             },
             SessionEvent::AgentMessage {
                 message_id: Some("m2".into()),
@@ -218,6 +219,7 @@ fn reattach_to_history_serves_the_whole_conversation() {
                 author: devboule_protocol::UserMessageAuthor::Human,
                 message_kind: devboule_protocol::UserMessageKind::Unknown,
                 at_ms: None,
+                images: Vec::new(),
             },
             SessionEvent::Output {
                 seq: 6,

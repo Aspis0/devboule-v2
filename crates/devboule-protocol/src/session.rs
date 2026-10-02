@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorCode, ErrorDetails, WireError};
-use crate::messages::PeerRole;
+use crate::messages::{AttachmentReference, PeerRole};
 
 /// Identifies one live observer of a session. It is scoped by the daemon
 /// connection and must be retained by the client until that observer detaches.
@@ -765,6 +765,12 @@ pub enum SessionEvent {
         /// envelope's echo of the prompt.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at_ms: Option<u64>,
+        /// Image references the composer deposited before sending. References
+        /// only, never bytes or paths: the display resolves them through the
+        /// stored-bytes read. Absent on rows written before references
+        /// existed, which read as carrying no images.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<AttachmentReference>,
     },
     /// A prompt accepted by a running turn. This is journaled for audit but
     /// intentionally not pushed to live observers; the normal user-message

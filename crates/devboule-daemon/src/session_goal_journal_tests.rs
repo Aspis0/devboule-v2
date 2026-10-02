@@ -223,6 +223,7 @@ fn recovered_user(text: &str) -> SessionEvent {
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Composer,
         at_ms: None,
+        images: Vec::new(),
     }
 }
 

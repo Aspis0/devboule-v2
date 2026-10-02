@@ -813,6 +813,27 @@ export interface PromptAttachment {
 }
 
 /**
+ * One attachment a prompt names rather than carries: the reply of
+ * `session_deposit`, the value `session_send` sends as `attachmentReferences`,
+ * and the value the user-message echo carries as `images`.
+ *
+ * On the wire it is the daemon's `AttachmentReference` with serde's
+ * camelCase, so the three field names are the daemon's. `digest` is the
+ * SHA-256 of the bytes **as stored** — the store's metadata strip runs before
+ * the hash, which is why the app cannot compute it and the deposit answers
+ * with it — and `storedBytes` is the size of the stored file, which only the
+ * daemon can state.
+ */
+export interface AttachmentReference {
+  /** The session the deposit was made to. A digest resolves only inside it. */
+  sessionId: Id;
+  /** SHA-256, lowercase hex (64 characters), of the stored bytes. */
+  digest: string;
+  /** The stored file's size, in bytes. */
+  storedBytes: number;
+}
+
+/**
  * Whether a session can pass a permission moment with no human answering (the
  * closed wire enum the daemon derives from the session's **delivered** mode).
  * A mode whose vocabulary is the provider's own — an ACP agent's modes are
@@ -1327,6 +1348,13 @@ export type SessionEvent =
       author: UserMessageAuthor;
       /** Optional for frames written before this field existed. */
       messageKind?: UserMessageKind;
+      /**
+       * Image references the composer deposited before sending. References
+       * only, never bytes or paths: the transcript resolves them through
+       * the stored-bytes read. Absent on rows written before references
+       * existed, which render as text-only rows.
+       */
+      images?: AttachmentReference[];
       /**
        * When this daemon published the message (Unix ms — the same instant
        * the journal row stores as `ts_ms`; a turn typed on a paired device

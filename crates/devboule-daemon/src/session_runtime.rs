@@ -8,9 +8,10 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
-    cursor_replay_ok, AgentActivityState, Attention, AttentionReason, Cursor, ErrorCode,
-    NoticeSeverity, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionModel,
-    SessionOrigin, TranscriptIntegrity, UserMessageAuthor, UserMessageKind, WireError,
+    cursor_replay_ok, AgentActivityState, AttachmentReference, Attention, AttentionReason, Cursor,
+    ErrorCode, NoticeSeverity, Session, SessionEvent, SessionEventEnvelope, SessionKind,
+    SessionModel, SessionOrigin, TranscriptIntegrity, UserMessageAuthor, UserMessageKind,
+    WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -1405,6 +1406,20 @@ impl SessionRuntime {
         author: UserMessageAuthor,
         message_kind: UserMessageKind,
     ) -> Option<String> {
+        self.publish_agent_user_message_with_images(text, author, message_kind, Vec::new())
+    }
+
+    /// The same echo carrying the send's deposited image references, so the
+    /// journal row and the replay resolve the stored bytes. References only:
+    /// the prompt's path lines already name the files for the provider, and
+    /// the base64 stays out of the transcript either way.
+    pub(crate) fn publish_agent_user_message_with_images(
+        &self,
+        text: String,
+        author: UserMessageAuthor,
+        message_kind: UserMessageKind,
+        images: Vec<AttachmentReference>,
+    ) -> Option<String> {
         // The id is built by the publisher, so the event, the transcript and the
         // journal row that links to it (`Steered`) name one message: the caller
         // takes the id back out of the event that was actually published rather
@@ -1420,6 +1435,7 @@ impl SessionRuntime {
                 author,
                 message_kind,
                 at_ms: message_kind.is_user_turn().then_some(at_ms),
+                images,
             }
         })
         .and_then(|event| match event {

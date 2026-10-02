@@ -15,6 +15,28 @@ use super::session_resume_fixture::{acp_row, take_bystander_slot, AcpEnv, Resume
 use super::*;
 use devboule_protocol::{UserMessageAuthor, UserMessageKind};
 
+/// A fresh store directory per test. Removal is best effort: the store
+/// hardens the session folders it creates.
+struct ScratchDir(std::path::PathBuf);
+
+impl ScratchDir {
+    fn new(tag: &str) -> Self {
+        Self(crate::test_dirs::test_temp_dir(&format!(
+            "devboule-recovery-{tag}"
+        )))
+    }
+
+    fn store(&self) -> crate::attachment_store::AttachmentStore {
+        crate::attachment_store::AttachmentStore::new(&self.0)
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn user(text: &str) -> SessionEvent {
     SessionEvent::AgentUserMessage {
         message_id: None,
@@ -22,6 +44,7 @@ fn user(text: &str) -> SessionEvent {
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Composer,
         at_ms: None,
+        images: Vec::new(),
     }
 }
 
@@ -77,9 +100,13 @@ fn the_context_carries_what_the_two_sides_said_and_merges_one_message() {
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
             at_ms: None,
+            images: Vec::new(),
         },
     ];
-    let context = recovered_context("s.old", "it is gone", &events, 4096).expect("a conversation");
+    let scratch = ScratchDir::new("context");
+    let store = scratch.store();
+    let context =
+        recovered_context("s.old", "it is gone", &events, 4096, &store).expect("a conversation");
     assert!(
         context.text.starts_with(RECOVERED_HEADER),
         "{}",
@@ -138,13 +165,16 @@ fn a_session_where_nothing_was_said_yields_no_context() {
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::SystemNotice,
             at_ms: None,
+            images: Vec::new(),
         },
     ];
+    let scratch = ScratchDir::new("context");
+    let store = scratch.store();
     assert!(
-        recovered_context("s.old", "it is gone", &events, 4096).is_none(),
+        recovered_context("s.old", "it is gone", &events, 4096, &store).is_none(),
         "no conversation, no context"
     );
-    assert!(recovered_context("s.old", "it is gone", &[], 4096).is_none());
+    assert!(recovered_context("s.old", "it is gone", &[], 4096, &store).is_none());
 }
 
 /// The cut, from the oldest end, and **declared**: the header says how many of
@@ -162,8 +192,10 @@ fn a_conversation_over_the_budget_declares_the_oldest_turns_omitted() {
     }
     events.push(user("the last thing that was said"));
     let budget = 1024;
+    let scratch = ScratchDir::new("context");
+    let store = scratch.store();
     let context =
-        recovered_context("s.old", "it is gone", &events, budget).expect("a conversation");
+        recovered_context("s.old", "it is gone", &events, budget, &store).expect("a conversation");
     assert!(
         context.text.contains(RECOVERED_CUT_MARKER),
         "the header declares the cut: {}",
@@ -202,7 +234,10 @@ fn a_conversation_over_the_budget_declares_the_oldest_turns_omitted() {
 #[test]
 fn a_single_turn_over_the_budget_recovers_its_tail_and_says_so() {
     let events = vec![user(&format!("{} the end", "y".repeat(4096)))];
-    let context = recovered_context("s.old", "it is gone", &events, 256).expect("a conversation");
+    let scratch = ScratchDir::new("context");
+    let store = scratch.store();
+    let context =
+        recovered_context("s.old", "it is gone", &events, 256, &store).expect("a conversation");
     assert!(
         context.text.contains(RECOVERED_CUT_MARKER),
         "the header declares the cut: {}",
@@ -240,6 +275,34 @@ fn a_preset_preamble_comes_before_the_recovered_conversation() {
         preamble_with_recovered(Some("preset"), Some("recovered")).as_deref(),
         Some("preset\n\nrecovered")
     );
+}
+
+/// A person's composer line to `session_id`, on the ordinary send path.
+fn send_human_line(fixture: &ResumeFixture, session_id: &str, text: &str) {
+    let conn = ConnHandle::with_peer(11, None);
+    fixture
+        .state
+        .sessions
+        .send_with_subscription_timeout(&SendRequest {
+            session_id,
+            subscription_id: 1,
+            text,
+            attachments: &[],
+            attachment_references: &[],
+            owner: &fixture.owner,
+            conn: &conn,
+            mcp_timeout: crate::mcp_broker::ready_timeout(),
+            active_turn_behavior: None,
+            require_attachment: false,
+            interrupt_on_steer_refusal: true,
+            message_slot: None,
+            preset_preamble: None,
+            spawn_prompt: None,
+            author: UserMessageAuthor::Human,
+            message_kind: UserMessageKind::Composer,
+            steer_origin: SteerOrigin::Person,
+        })
+        .expect("the first prompt reaches the recovered session");
 }
 
 fn wait_for_prompt(path: &std::path::Path) -> String {
@@ -323,30 +386,7 @@ fn a_resume_for_a_gone_directory_recovers_the_conversation_into_a_new_session() 
 
     // The human's next line, on the ordinary send path: this is the prompt the
     // provider receives, and the whole claim is about its text.
-    let conn = ConnHandle::with_peer(11, None);
-    fixture
-        .state
-        .sessions
-        .send_with_subscription_timeout(&SendRequest {
-            session_id: &session.id,
-            subscription_id: 1,
-            text: "continue from here",
-            attachments: &[],
-            attachment_references: &[],
-            owner: &fixture.owner,
-            conn: &conn,
-            mcp_timeout: crate::mcp_broker::ready_timeout(),
-            active_turn_behavior: None,
-            require_attachment: false,
-            interrupt_on_steer_refusal: true,
-            message_slot: None,
-            preset_preamble: None,
-            spawn_prompt: None,
-            author: UserMessageAuthor::Human,
-            message_kind: UserMessageKind::Composer,
-            steer_origin: SteerOrigin::Person,
-        })
-        .expect("the first prompt reaches the recovered session");
+    send_human_line(&fixture, &session.id, "continue from here");
 
     let sent = wait_for_prompt(&prompts);
     assert!(
@@ -361,6 +401,61 @@ fn a_resume_for_a_gone_directory_recovers_the_conversation_into_a_new_session() 
     assert!(
         sent.trim_end().ends_with("continue from here"),
         "the human's own words come last: {sent}"
+    );
+    let _ = fixture
+        .state
+        .sessions
+        .close(&session.id, &fixture.owner, &None);
+    fixture.finish();
+}
+
+/// A journaled turn holds only what the person typed, so the standing
+/// instructions must come from the replacement's own first-prompt composition,
+/// read from the store at that send, in front of the recovered conversation.
+#[test]
+fn a_recovered_first_prompt_still_carries_the_standing_instructions() {
+    let fixture = ResumeFixture::new("recover-standing");
+    fixture
+        .state
+        .agent_profiles
+        .set(devboule_protocol::AgentProfilesDocument {
+            standing_instructions: "Always run the gate.".to_string(),
+            ..devboule_protocol::AgentProfilesDocument::default()
+        })
+        .expect("standing instructions");
+    let id = fixture.id("recover-standing");
+    let prompts = fixture.dir.join("stub prompts.txt");
+    let _env = AcpEnv::stub(&[(
+        "DEVBOULE_ACP_STUB_PROMPT_FILE",
+        prompts.to_string_lossy().into_owned(),
+    )]);
+    let _broker = fixture.state.mcp.start(&fixture.state).expect("MCP server");
+    let mut row = acp_row(&id, &fixture.owner, "handle-recover-standing");
+    row.cwd = Some(
+        fixture
+            .dir
+            .join("removed-worktree")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    fixture.write_row(row);
+    fixture.record_turn(&id, 1, &user("did you check the tests?"));
+    take_bystander_slot(&fixture.state);
+
+    let session = fixture
+        .resume(&id, &fixture.conn())
+        .expect("a conversation is recovered into a new session");
+    send_human_line(&fixture, &session.id, "continue from here");
+
+    let sent = wait_for_prompt(&prompts);
+    assert!(
+        sent.starts_with(&format!("Always run the gate.\n\n{RECOVERED_HEADER}")),
+        "the standing instructions lead, then the recovered conversation: {sent}"
+    );
+    assert_eq!(
+        sent.matches("Always run the gate.").count(),
+        1,
+        "carried once: {sent}"
     );
     let _ = fixture
         .state
@@ -420,4 +515,119 @@ fn a_recovered_session_journals_why_it_replaced_the_session_that_was_clicked() {
         .sessions
         .close(&session.id, &fixture.owner, &None);
     fixture.finish();
+}
+
+/// One image deposited into `store` for session `s.old`: its stored path and
+/// the reference a journaled turn carries.
+fn deposited_ref(
+    store: &crate::attachment_store::AttachmentStore,
+    name: &str,
+    byte: u8,
+) -> (std::path::PathBuf, devboule_protocol::AttachmentReference) {
+    use base64::Engine;
+    let image = crate::raster_metadata::clean_png(byte);
+    let deposited = store
+        .deposit(
+            "s.old",
+            &devboule_protocol::PromptAttachment {
+                name: name.to_string(),
+                mime_type: "image/png".to_string(),
+                data: base64::engine::general_purpose::STANDARD.encode(&image),
+            },
+        )
+        .expect("deposit");
+    let reference = devboule_protocol::AttachmentReference {
+        session_id: "s.old".to_string(),
+        digest: deposited.digest.clone(),
+        stored_bytes: deposited.stored_bytes,
+    };
+    (deposited.path, reference)
+}
+
+fn user_with_images(
+    text: &str,
+    images: Vec<devboule_protocol::AttachmentReference>,
+) -> SessionEvent {
+    SessionEvent::AgentUserMessage {
+        message_id: None,
+        text: text.to_string(),
+        author: UserMessageAuthor::Human,
+        message_kind: UserMessageKind::Composer,
+        at_ms: None,
+        images,
+    }
+}
+
+/// A journaled user turn with refs resolves both into the recovered provider
+/// context, as the same path lines the live send composes — so a recovered
+/// agent still sees the images.
+#[test]
+fn recovered_context_resolves_both_refs_into_path_lines() {
+    let scratch = ScratchDir::new("images");
+    let store = scratch.store();
+    let (first, first_ref) = deposited_ref(&store, "first.png", 0x0b);
+    let (second, second_ref) = deposited_ref(&store, "second.png", 0x0c);
+    let events = vec![user_with_images(
+        "look at these",
+        vec![first_ref, second_ref],
+    )];
+    let context =
+        recovered_context("s.old", "it is gone", &events, 4096, &store).expect("a conversation");
+    assert!(
+        context.text.contains("user: look at these"),
+        "the turn's own words stay first: {}",
+        context.text
+    );
+    for path in [&first, &second] {
+        assert!(
+            context
+                .text
+                .contains(&format!("[Image available at: {}]", path.display())),
+            "each deposited file is named by its stored path: {}",
+            context.text
+        );
+    }
+}
+
+/// A file that is gone (deposited elsewhere stands in for an expired one)
+/// still leaves a line, so the replacement agent knows an image was there.
+#[test]
+fn a_missing_ref_is_declared_beside_the_resolved_one() {
+    let scratch = ScratchDir::new("missing");
+    let store = scratch.store();
+    let elsewhere = ScratchDir::new("missing-elsewhere");
+    let (kept, kept_ref) = deposited_ref(&store, "kept.png", 0x0d);
+    let (_, gone_ref) = deposited_ref(&elsewhere.store(), "gone.png", 0x0e);
+    let events = vec![user_with_images("look at these", vec![kept_ref, gone_ref])];
+    let context =
+        recovered_context("s.old", "it is gone", &events, 4096, &store).expect("a conversation");
+    assert!(
+        context.text.contains(&format!(
+            "user: look at these\n\n[Image available at: {}]\n[Image no longer available]",
+            kept.display()
+        )),
+        "the resolved line, then one line for the missing image: {}",
+        context.text
+    );
+}
+
+/// An image-only turn whose files are all gone says so, line per image,
+/// instead of handing the agent an empty `user: ` turn.
+#[test]
+fn an_image_only_turn_whose_files_are_all_gone_declares_each_one() {
+    let scratch = ScratchDir::new("all-missing");
+    let store = scratch.store();
+    let elsewhere = ScratchDir::new("all-missing-elsewhere");
+    let (_, first_ref) = deposited_ref(&elsewhere.store(), "first.png", 0x0f);
+    let (_, second_ref) = deposited_ref(&elsewhere.store(), "second.png", 0x10);
+    let events = vec![user_with_images("", vec![first_ref, second_ref])];
+    let context =
+        recovered_context("s.old", "it is gone", &events, 4096, &store).expect("a conversation");
+    assert!(
+        context
+            .text
+            .contains("user: [Image no longer available]\n[Image no longer available]"),
+        "one line per missing image, on the turn itself: {}",
+        context.text
+    );
 }

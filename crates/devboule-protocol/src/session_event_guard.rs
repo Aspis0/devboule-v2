@@ -66,6 +66,14 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             // committed snapshot is what pins the wire name, and a sample
             // that omitted the field would leave `atMs` unexercised by it.
             at_ms: Some(1_789_053_471_559),
+            // Carried rather than empty for the same reason: the snapshot
+            // pins the `images` wire name, and an empty sample would leave
+            // it unexercised by it.
+            images: vec![crate::AttachmentReference {
+                session_id: "s.owner.sample".to_string(),
+                digest: "a".repeat(64),
+                stored_bytes: 12,
+            }],
         },
         Steered => SessionEvent::Steered {
             message_id: None,

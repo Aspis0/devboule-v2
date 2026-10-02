@@ -53,6 +53,7 @@ fn live_agent_replay_delivers_the_generations_before_the_attach() {
         author: devboule_protocol::UserMessageAuthor::Human,
         message_kind: devboule_protocol::UserMessageKind::Unknown,
         at_ms: None,
+        images: Vec::new(),
     };
     let answer_before = SessionEvent::AgentMessage {
         message_id: Some("m2".into()),
@@ -157,6 +158,7 @@ fn replay_stamps_the_user_turn_time_from_the_journal_row() {
         author: devboule_protocol::UserMessageAuthor::Human,
         message_kind: devboule_protocol::UserMessageKind::Composer,
         at_ms: None,
+        images: Vec::new(),
     };
     let row_ts = 1_789_053_471_559_u64;
     journal
@@ -413,6 +415,7 @@ fn live_agent_replay_stamps_history_envelopes_with_their_own_generation() {
         author: devboule_protocol::UserMessageAuthor::Human,
         message_kind: devboule_protocol::UserMessageKind::Unknown,
         at_ms: None,
+        images: Vec::new(),
     };
     let answer_after = SessionEvent::AgentMessage {
         message_id: Some("m2".into()),

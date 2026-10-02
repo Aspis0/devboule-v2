@@ -1202,14 +1202,21 @@ impl super::SessionRegistry {
                 if let Some(broker) = runtime.permission_broker() {
                     broker.cancel_pending_for_new_prompt();
                 }
-                // The journal records `prompt`: on the fallback path that is
-                // the same string the writer got (the user's text plus one
-                // path per attachment); on the structured path it is the
-                // text block (the user's text plus any SVG path lines). The
-                // base64 never leaves `PromptAttachment` either way — a
-                // turn's row must not grow by hundreds of KiB, and the user's
-                // images must not be copied into the history database.
-                match runtime.publish_agent_user_message(prompt.clone(), author, message_kind) {
+                // A person's composer message journals what they typed, with
+                // the deposited references beside it for the display; every
+                // other kind journals the prompt as sent, path lines included.
+                // Neither carries the base64.
+                let (journaled, images) = if message_kind.is_user_turn() {
+                    (raw_text.to_string(), attachment_references.to_vec())
+                } else {
+                    (prompt.clone(), Vec::new())
+                };
+                match runtime.publish_agent_user_message_with_images(
+                    journaled,
+                    author,
+                    message_kind,
+                    images,
+                ) {
                     Some(message_id) => delivered_message_id = Some(message_id),
                     None => return Err(internal("Agent input could not be recorded.")),
                 }

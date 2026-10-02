@@ -32,6 +32,7 @@ fn composer(text: &str, kind: UserMessageKind, at_ms: Option<u64>) -> SessionEve
         author: UserMessageAuthor::Human,
         message_kind: kind,
         at_ms,
+        images: Vec::new(),
     }
 }
 

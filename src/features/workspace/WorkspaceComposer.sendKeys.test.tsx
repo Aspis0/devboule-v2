@@ -13,14 +13,15 @@ import {
   type ComposerDrivers,
   type ComposerMocks,
 } from "./composerTestKit";
+import type { PromptAttachment } from "../../types/ipc";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement;
 let root: Root;
-let onSend: Mock<(text: string) => void>;
-let onQueue: Mock<(text: string) => void>;
+let onSend: Mock<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>;
+let onQueue: Mock<(text: string, attachments: readonly PromptAttachment[]) => void>;
 let mocks: ComposerMocks;
 let drive: ComposerDrivers;
 
@@ -36,8 +37,8 @@ async function renderComposer(
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
-  onSend = vi.fn<(text: string) => void>();
-  onQueue = vi.fn<(text: string) => void>();
+  onSend = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>();
+  onQueue = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => void>();
   mocks = { onSend, onQueue };
   drive = composerDrivers(container);
 });
@@ -56,7 +57,7 @@ describe("Enter with the menu closed", () => {
 
     await drive.press("Enter");
 
-    expect(onSend).toHaveBeenCalledWith("hello");
+    expect(onSend).toHaveBeenCalledWith("hello", []);
     expect(drive.textarea().value).toBe("");
   });
 
@@ -66,7 +67,7 @@ describe("Enter with the menu closed", () => {
 
     await drive.press("Enter");
 
-    expect(onQueue).toHaveBeenCalledWith("later");
+    expect(onQueue).toHaveBeenCalledWith("later", []);
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -76,7 +77,7 @@ describe("Enter with the menu closed", () => {
 
     await drive.press("Enter", { ctrlKey: true });
 
-    expect(onQueue).toHaveBeenCalledWith("later");
+    expect(onQueue).toHaveBeenCalledWith("later", []);
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -86,7 +87,7 @@ describe("Enter with the menu closed", () => {
 
     await drive.press("Enter", { ctrlKey: true });
 
-    expect(onSend).toHaveBeenCalledWith("later");
+    expect(onSend).toHaveBeenCalledWith("later", []);
     expect(onQueue).not.toHaveBeenCalled();
   });
 
@@ -99,7 +100,7 @@ describe("Enter with the menu closed", () => {
 
     await drive.press("Enter");
 
-    expect(onQueue).toHaveBeenCalledWith("/remember to also bump the changelog");
+    expect(onQueue).toHaveBeenCalledWith("/remember to also bump the changelog", []);
     expect(drive.textarea().value).toBe("");
   });
 });
@@ -112,7 +113,7 @@ describe("Enter and the chord with the menu open", () => {
 
     await drive.press("Enter", { ctrlKey: true });
 
-    expect(onQueue).toHaveBeenCalledWith("/go");
+    expect(onQueue).toHaveBeenCalledWith("/go", []);
     expect(onSend).not.toHaveBeenCalled();
     expect(drive.textarea().value).toBe("");
 
@@ -120,7 +121,7 @@ describe("Enter and the chord with the menu open", () => {
     await drive.press("Enter", { metaKey: true });
 
     expect(onQueue).toHaveBeenCalledTimes(2);
-    expect(onQueue).toHaveBeenLastCalledWith("/go");
+    expect(onQueue).toHaveBeenLastCalledWith("/go", []);
     expect(drive.textarea().value).toBe("");
   });
 
@@ -130,7 +131,7 @@ describe("Enter and the chord with the menu open", () => {
 
     await drive.press("Enter", { ctrlKey: true });
 
-    expect(onSend).toHaveBeenCalledWith("/go");
+    expect(onSend).toHaveBeenCalledWith("/go", []);
     expect(onQueue).not.toHaveBeenCalled();
   });
 

@@ -474,6 +474,7 @@ fn composer_turn(text: &str, at_ms: Option<u64>) -> SessionEvent {
         author: devboule_protocol::UserMessageAuthor::Human,
         message_kind: devboule_protocol::UserMessageKind::Composer,
         at_ms,
+        images: Vec::new(),
     }
 }
 

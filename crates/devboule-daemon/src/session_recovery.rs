@@ -40,6 +40,10 @@ pub(super) const RECOVERED_HEADER: &str = "Recovered conversation";
 /// turns were dropped, so its absence is a claim too.
 pub(super) const RECOVERED_CUT_MARKER: &str = "the oldest turns were omitted";
 
+/// What a journaled image whose file is gone becomes: the replacement agent
+/// learns an image was there instead of reading a turn that never had one.
+const IMAGE_GONE_LINE: &str = "[Image no longer available]";
+
 /// One side of the conversation, as the renderer sees it. `id` is the
 /// message the provider chunked: two events carrying the same id are one turn,
 /// and two events with no id are two — a peer that does not name its messages
@@ -48,6 +52,8 @@ struct Turn {
     role: &'static str,
     id: Option<String>,
     text: String,
+    image_paths: Vec<std::path::PathBuf>,
+    missing_images: usize,
 }
 
 /// The recovered conversation and what happened to it on the way in.
@@ -78,32 +84,53 @@ impl RecoveredContext {
 /// creation stamp, a thought or an error is not something either side *said*,
 /// so it is not part of what the agent is handed back: a recovery that quoted
 /// the daemon to itself would be a worse reconstruction than a shorter one.
-fn conversation_turns(events: &[SessionEvent]) -> Vec<Turn> {
+fn conversation_turns(
+    events: &[SessionEvent],
+    store: &AttachmentStore,
+    session_id: &str,
+) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
     for event in events {
-        let (role, id, text) = match event {
+        let (role, id, text, images): (
+            &'static str,
+            Option<String>,
+            &str,
+            &[devboule_protocol::AttachmentReference],
+        ) = match event {
             SessionEvent::AgentUserMessage {
                 message_id,
                 text,
                 message_kind,
+                images,
                 ..
             } => match message_kind {
                 devboule_protocol::UserMessageKind::Composer
                 | devboule_protocol::UserMessageKind::OutgoingA2a
                 | devboule_protocol::UserMessageKind::IncomingA2a
                 | devboule_protocol::UserMessageKind::Unknown => {
-                    ("user", message_id.clone(), text.as_str())
+                    ("user", message_id.clone(), text.as_str(), images.as_slice())
                 }
                 devboule_protocol::UserMessageKind::SystemNotice
                 | devboule_protocol::UserMessageKind::Creation => continue,
             },
             SessionEvent::AgentMessage {
                 message_id, text, ..
-            } => ("agent", message_id.clone(), text.as_str()),
+            } => ("agent", message_id.clone(), text.as_str(), &[]),
             _ => continue,
         };
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && images.is_empty() {
             continue;
+        }
+        // One missing file must not hide the resolved ones: each reference
+        // resolves alone, under the rules the send path enforces.
+        let mut image_paths = Vec::with_capacity(images.len());
+        let mut missing_images = 0;
+        for reference in images {
+            match resolve_attachment_references(store, session_id, std::slice::from_ref(reference))
+            {
+                Ok(mut resolved) => image_paths.append(&mut resolved),
+                Err(_) => missing_images += 1,
+            }
         }
         // Chunks of one message arrive as separate events carrying the same
         // id; consecutive text from the same side with the same id is one
@@ -112,11 +139,15 @@ fn conversation_turns(events: &[SessionEvent]) -> Vec<Turn> {
         match turns.last_mut() {
             Some(last) if last.role == role && last.id.is_some() && last.id == id => {
                 last.text.push_str(text);
+                last.image_paths.extend(image_paths);
+                last.missing_images += missing_images;
             }
             _ => turns.push(Turn {
                 role,
                 id,
                 text: text.to_string(),
+                image_paths,
+                missing_images,
             }),
         }
     }
@@ -124,7 +155,20 @@ fn conversation_turns(events: &[SessionEvent]) -> Vec<Turn> {
 }
 
 fn rendered(turn: &Turn) -> String {
-    format!("{}: {}", turn.role, turn.text.trim_end())
+    let text = turn.text.trim_end();
+    let mut line = format!("{}: {text}", turn.role);
+    push_reference_path_lines(&mut line, &turn.image_paths);
+    for index in 0..turn.missing_images {
+        // Beside other image lines, one break; after words, the paragraph
+        // break path lines use; on an image-only turn, the turn itself.
+        if index > 0 || !turn.image_paths.is_empty() {
+            line.push('\n');
+        } else if !text.is_empty() {
+            line.push_str("\n\n");
+        }
+        line.push_str(IMAGE_GONE_LINE);
+    }
+    line
 }
 
 /// The newest `budget` bytes of one turn, on a character boundary, marked.
@@ -150,8 +194,9 @@ pub(super) fn recovered_context(
     reason: &str,
     events: &[SessionEvent],
     budget: usize,
+    store: &AttachmentStore,
 ) -> Option<RecoveredContext> {
-    let turns = conversation_turns(events);
+    let turns = conversation_turns(events, store, session_id);
     if turns.is_empty() {
         return None;
     }
@@ -250,6 +295,7 @@ impl SessionRegistry {
             &reason.message,
             &replay.events,
             RECOVERED_CONTEXT_BYTES,
+            &self.attachments,
         ) else {
             // Nothing was ever said in this session: there is no conversation
             // to hand on, and a new empty session would answer a question the

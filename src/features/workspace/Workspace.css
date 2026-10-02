@@ -1878,3 +1878,102 @@
 .workspace-menu-option-destructive {
   color: var(--accent-text);
 }
+
+/* Composer image picker: the attach button flows with the control row while
+   the previews and the refusal sentence take their own wrapped lines above
+   it — `display: contents` puts all three in the row's flex formatting. */
+.workspace-composer-images {
+  display: contents;
+}
+
+.workspace-composer-previews {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.workspace-composer-preview {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  overflow: visible;
+}
+
+.workspace-composer-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+
+.workspace-composer-preview-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--ink-soft);
+  background: var(--panel-card);
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.workspace-composer-preview-remove:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-composer-preview-remove:focus-visible,
+.workspace-composer-attach:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.workspace-composer-image-refusal {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.workspace-composer-attach {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.workspace-composer-attach:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-composer-attach:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.workspace-composer-image-input {
+  display: none;
+}
+
+/* Composer images mid-send: picks stay visible but wait for the answer. */
+.workspace-composer-images.is-sending {
+  opacity: 0.6;
+}

@@ -31,6 +31,7 @@ import type {
   ProviderUpdateOutcome,
   ProviderVocabulary,
   PromptAttachment,
+  AttachmentReference,
   ResumeResult,
   Session,
   ToolPolicyReply,
@@ -53,36 +54,19 @@ import { errorSentence } from "./errorSentence";
 
 export type SubscriptionId = number;
 
-/**
- * One attachment a prompt names rather than carries: the reply of
- * `session_deposit`, and the value `session_send` sends back as
- * `attachmentReferences`.
- *
- * Declared in this module rather than in `types/ipc.ts`: it is one command's
- * reply, and this is where that command is declared. On the wire it is the
- * daemon's `AttachmentReference` with serde's camelCase, so the three field
- * names are the daemon's. `digest` is the SHA-256 of the bytes **as stored** —
- * the store's metadata strip runs before the hash, which is why the app cannot
- * compute it and the deposit answers with it — and `storedBytes` is the size of
- * the stored file, which only the daemon can state.
- */
-export type AttachmentReference = {
-  /** The session the deposit was made to. A digest resolves only inside it. */
-  sessionId: Id;
-  /** SHA-256, lowercase hex (64 characters), of the stored bytes. */
-  digest: string;
-  /** The stored file's size, in bytes. */
-  storedBytes: number;
-};
+// `AttachmentReference` lives in `types/ipc.ts` beside the `SessionEvent`
+// that names it; it is re-exported here so the deposit and read doors keep
+// their existing import sites.
+export type { AttachmentReference };
 
 /**
  * The bytes of one stored attachment, as the daemon hands them back: the
  * reply of `session_attachment_read`.
  *
- * Declared beside `AttachmentReference` for the same reason: it is one
- * command's reply, and this is where that command is declared. `data` is
- * base64 and `mimeType` is the store's own statement from its extension
- * table — not the finish event's report, which is a claim about the file.
+ * Declared here because it is one command's reply, and this is where that
+ * command is declared. `data` is base64 and `mimeType` is the store's own
+ * statement from its extension table — not the finish event's report, which
+ * is a claim about the file.
  */
 export type StoredAttachment = {
   /** The stored file's type, from the store's extension table. */

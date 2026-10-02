@@ -13,14 +13,15 @@ import {
   type ComposerDrivers,
   type ComposerMocks,
 } from "./composerTestKit";
+import type { PromptAttachment } from "../../types/ipc";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement;
 let root: Root;
-let onSend: Mock<(text: string) => void>;
-let onQueue: Mock<(text: string) => void>;
+let onSend: Mock<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>;
+let onQueue: Mock<(text: string, attachments: readonly PromptAttachment[]) => void>;
 let mocks: ComposerMocks;
 let drive: ComposerDrivers;
 
@@ -87,8 +88,8 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  onSend = vi.fn<(text: string) => void>();
-  onQueue = vi.fn<(text: string) => void>();
+  onSend = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>();
+  onQueue = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => void>();
   mocks = { onSend, onQueue };
   drive = composerDrivers(container);
 });

@@ -531,7 +531,7 @@ fn a_fallback_session_measures_the_text_cap_before_appending_lines() {
 }
 
 #[test]
-fn a_fallback_session_journals_the_path_and_never_the_bytes() {
+fn a_fallback_session_journals_the_users_text_and_never_the_bytes() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-attach-journal", "process-attach");
     let conn = agent_ready_for_attachment(&registry, "attach-journal", &owner, 50);
@@ -562,18 +562,30 @@ fn a_fallback_session_journals_the_path_and_never_the_bytes() {
     let recorded = events
         .iter()
         .find_map(|event| match event {
-            SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+            SessionEvent::AgentUserMessage { text, images, .. } => {
+                Some((text.clone(), images.clone()))
+            }
             _ => None,
         })
         .expect("the user message is published, and that is what is journaled");
-    assert!(recorded.contains("[Image available at: "), "{recorded}");
-    assert!(recorded.ends_with(".png]"), "{recorded}");
+    assert_eq!(
+        recorded.0, "look at this",
+        "the echo is the user's own text, not the provider-composed prompt"
+    );
     assert!(
-        !recorded.contains(&encoded),
+        !recorded.0.contains("[Image available at: "),
+        "no provider-composed line reaches the transcript: {recorded:?}"
+    );
+    assert!(
+        recorded.1.is_empty(),
+        "inline attachments travel no references: {recorded:?}"
+    );
+    assert!(
+        !recorded.0.contains(&encoded),
         "the base64 must never reach the transcript"
     );
     assert!(
-        recorded.len() < MAX_WRITE_BYTES,
+        recorded.0.len() < MAX_WRITE_BYTES,
         "the transcript row stays the size it was before attachments"
     );
 
@@ -904,6 +916,243 @@ fn the_block_mime_type_matches_what_was_stored() {
             "stripped JPEG bytes, JPEG label"
         );
     }
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// --- chat images: deposited references on the user message ---
+
+/// A composer send that names deposited references echoes those references on
+/// its `AgentUserMessage`, so replay can find the stored bytes. The prompt
+/// text carries a path line, never the base64.
+#[test]
+fn a_send_with_references_echoes_them_on_the_user_message_without_bytes() {
+    use base64::Engine;
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-chat-images", "process-chat-images");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let runtime = insert_live_agent_with_writer(
+        &registry,
+        "chat-images",
+        owner.clone(),
+        Box::new(RecordingWriter(Arc::clone(&received))),
+    );
+    let conn = attach_live_agent_for_test(&runtime, "chat-images", 61);
+    let image = clean_png(0x0b);
+    let reference = registry
+        .deposit(
+            "chat-images",
+            &owner,
+            &conn,
+            &attachment("photo.png", "image/png", &image),
+        )
+        .expect("the owner may deposit into their own session");
+
+    registry
+        .send_with_subscription(
+            "chat-images",
+            61,
+            "look at this",
+            &[],
+            std::slice::from_ref(&reference),
+            &owner,
+            &conn,
+        )
+        .expect("send with one deposited reference");
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&image);
+    let echoed = conn
+        .pull_events()
+        .into_iter()
+        .map(|event| event.envelope.event)
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { text, images, .. } => Some((text, images)),
+            _ => None,
+        })
+        .expect("the user message is published, and that is what is journaled");
+    assert_eq!(
+        echoed.1,
+        vec![reference],
+        "the echo carries the deposited reference: {echoed:?}"
+    );
+    assert!(
+        !echoed.0.contains(&encoded),
+        "the base64 must never reach the transcript"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A recovered transcript replays the references, so thumbnails resolve after
+/// a restart. Rows written before references existed replay with none.
+#[test]
+fn image_references_survive_journal_replay_for_recovered_transcripts() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-chat-replay", "process-chat-replay");
+    // The journal row the live registry never writes itself: replay reads
+    // the row, so the test births it the way `Journal::create_session`
+    // callers do and lets the send append its event rows under it.
+    journal
+        .create_session(crate::journal::new_session_record(
+            "chat-replay",
+            "S-1-5-21-chat-replay",
+            None,
+            devboule_protocol::SessionKind::Acp,
+            "Chat images",
+        ))
+        .expect("birth the journal row");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let runtime = insert_live_agent_with_writer(
+        &registry,
+        "chat-replay",
+        owner.clone(),
+        Box::new(RecordingWriter(Arc::clone(&received))),
+    );
+    let conn = attach_live_agent_for_test(&runtime, "chat-replay", 62);
+    let image = clean_png(0x0b);
+    let reference = registry
+        .deposit(
+            "chat-replay",
+            &owner,
+            &conn,
+            &attachment("photo.png", "image/png", &image),
+        )
+        .expect("deposit");
+    registry
+        .send_with_subscription(
+            "chat-replay",
+            62,
+            "look at this",
+            &[],
+            std::slice::from_ref(&reference),
+            &owner,
+            &conn,
+        )
+        .expect("send");
+
+    let replay = journal.replay("chat-replay").expect("replay");
+    let replayed = replay
+        .events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { text, images, .. } => Some((text, images)),
+            _ => None,
+        })
+        .expect("the journaled user message replays");
+    assert_eq!(
+        *replayed.1,
+        vec![reference],
+        "replay keeps the deposited reference: {replayed:?}"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A send with deposited references journals and replays the user's own text
+/// with those references: the provider-composed path lines travel to the
+/// provider only, never into the transcript the user sees.
+#[test]
+fn a_send_with_references_journals_the_users_text_without_path_lines() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-chat-clean", "process-chat-clean");
+    // The journal row the live registry never writes itself: birth it first
+    // so the send's event rows land in the journal and replay serves them.
+    journal
+        .create_session(crate::journal::new_session_record(
+            "chat-clean",
+            "S-1-5-21-chat-clean",
+            None,
+            devboule_protocol::SessionKind::Acp,
+            "Chat clean",
+        ))
+        .expect("birth the journal row");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let runtime = insert_live_agent_with_writer(
+        &registry,
+        "chat-clean",
+        owner.clone(),
+        Box::new(RecordingWriter(Arc::clone(&received))),
+    );
+    let conn = attach_live_agent_for_test(&runtime, "chat-clean", 63);
+    let first = registry
+        .deposit(
+            "chat-clean",
+            &owner,
+            &conn,
+            &attachment("first.png", "image/png", &clean_png(0x0b)),
+        )
+        .expect("deposit");
+    let second = registry
+        .deposit(
+            "chat-clean",
+            &owner,
+            &conn,
+            &attachment("second.png", "image/png", &clean_png(0x0c)),
+        )
+        .expect("deposit");
+
+    registry
+        .send_with_subscription(
+            "chat-clean",
+            63,
+            "look at these",
+            &[],
+            &[first.clone(), second.clone()],
+            &owner,
+            &conn,
+        )
+        .expect("send with two deposited references");
+
+    // The provider still gets the composed text with one path line per file.
+    let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
+    assert_eq!(
+        written
+            .split('\n')
+            .filter(|line| line.starts_with("[Image available at: "))
+            .count(),
+        2,
+        "the provider keeps both path lines: {written}"
+    );
+    let user_turn = conn
+        .pull_events()
+        .into_iter()
+        .map(|event| event.envelope.event)
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { text, images, .. } => Some((text, images)),
+            _ => None,
+        })
+        .expect("the user message is published");
+    assert_eq!(
+        user_turn.0, "look at these",
+        "the echo is the user's text: {:?}",
+        user_turn.0
+    );
+    assert!(
+        !user_turn.0.contains("[Image available at: "),
+        "no provider-composed line reaches the transcript: {:?}",
+        user_turn.0
+    );
+    assert_eq!(user_turn.1, vec![first.clone(), second.clone()]);
+
+    // Replay serves the same clean row: the event and its references
+    // survive the journal. What the replacement agent is handed is proven
+    // separately, by the recovery-context tests.
+    let replayed = journal
+        .replay("chat-clean")
+        .expect("replay")
+        .events
+        .into_iter()
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { text, images, .. } => Some((text, images)),
+            _ => None,
+        })
+        .expect("the journaled user message replays");
+    assert_eq!(replayed.0, "look at these");
+    assert!(!replayed.0.contains("[Image available at: "));
+    assert_eq!(replayed.1, vec![first, second]);
+
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }

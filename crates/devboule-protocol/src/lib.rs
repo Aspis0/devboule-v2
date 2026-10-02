@@ -151,22 +151,23 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// `agent_background_tasks_changed`, `agent_tasks`, `goal_changed`) are
 /// deliberately ungated: these output-only tags change no request shape. The
 /// additive command-row fields (`command`/`exitCode` on the tool events,
-/// `atMs` on the user echo) and the per-turn usage fields
-/// (`cacheReadTokens`/`cacheWriteTokens`/`costUsd` on `agent_finished`) are
+/// `atMs` on the user echo), the per-turn usage fields
+/// (`cacheReadTokens`/`cacheWriteTokens`/`costUsd` on `agent_finished`) and
+/// the user echo's image references (`images`, deposit digests only) are
 /// likewise output-only and skipped when absent, so a v16 peer parses every
-/// v18 event; the version bump marks the dialect, and the floor below stays
+/// v20 event; the version bump marks the dialect, and the floor below stays
 /// put. `SessionCreate`'s optional `cols`/`rows` is an input pair added
 /// without a bump: an older daemon drops the unknown keys and spawns at its
 /// default size, which the first resize corrects.
 ///
 /// A new **request** frame bumps this too: an older reader cannot deserialize
 /// an unknown variant (protocol 19 added `WorkspaceSetTitle`).
-pub const PROTOCOL_VERSION: u32 = 19;
-/// Oldest dialect this crate still accepts. Protocols 17 and 18 added only
+pub const PROTOCOL_VERSION: u32 = 20;
+/// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
-/// command chip, turn time, cache or cost until rebuilt, and opens a created
-/// terminal at its default size until the first resize. The floor
-/// moves only for a required-field or type change (`created_at_ms`,
+/// command chip, turn time, cache, cost or chat-image thumbnails until
+/// rebuilt, and opens a created terminal at its default size until the first
+/// resize. The floor moves only for a required-field or type change (`created_at_ms`,
 /// `Workspace.path`), which forces it up to [`PROTOCOL_VERSION`]: agreeing
 /// on an older version would still emit the new struct, and the peer would
 /// fail to parse it.

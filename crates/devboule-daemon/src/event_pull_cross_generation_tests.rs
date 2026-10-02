@@ -24,6 +24,7 @@ fn transcript_replay_keeps_rows_from_different_generations() {
                 author: devboule_protocol::UserMessageAuthor::Human,
                 message_kind: devboule_protocol::UserMessageKind::Unknown,
                 at_ms: None,
+                images: Vec::new(),
             },
             SessionEvent::AgentMessage {
                 message_id: Some("m2".into()),

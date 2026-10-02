@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorSentence } from "../../lib/errorSentence";
+import type { PromptAttachment } from "../../types/ipc";
 import type { MessageQueue, QueuedMessage } from "./messageQueue";
 
 export interface MessageQueueUiHandlers {
-  /** Edit took the row out: its text goes back to the composer. */
-  onEditRestored: (text: string) => void;
+  /** Edit took the row out: its text and images go back to the composer. */
+  onEditRestored: (text: string, attachments: readonly PromptAttachment[]) => void;
   /** The composer's steer was refused: its text goes back to the composer. */
-  onSteerRefused: (text: string) => void;
+  onSteerRefused: (text: string, attachments: readonly PromptAttachment[]) => void;
   /** The queue refused the composer's text: it goes back, un-sent. */
-  onQueueRefused: (text: string) => void;
+  onQueueRefused: (text: string, attachments: readonly PromptAttachment[]) => void;
 }
 
 export interface MessageQueueUi {
@@ -18,7 +19,7 @@ export interface MessageQueueUi {
   turnActive: boolean;
   /** The rejection to show next to the composer, until the next attempt. */
   error: string | null;
-  queueMessage(text: string): void;
+  queueMessage(text: string, attachments?: readonly PromptAttachment[]): void;
   editRow(id: string): void;
   deleteRow(id: string): void;
   steerRow(id: string): void;
@@ -58,16 +59,16 @@ export function useMessageQueue(
   }, [queue]);
 
   const queueMessage = useCallback(
-    (text: string) => {
+    (text: string, attachments: readonly PromptAttachment[] = []) => {
       if (queue === null) return;
       setError(null);
       try {
-        queue.add(text, []);
+        queue.add(text, attachments);
       } catch (cause: unknown) {
         // The queue never took the text, so this is its only copy: hand it
         // back the way a refused steer does, with the reason beside it.
         setError(errorSentence(cause).sentence);
-        handlersRef.current.onQueueRefused(text);
+        handlersRef.current.onQueueRefused(text, attachments);
       }
     },
     [queue],
@@ -85,7 +86,7 @@ export function useMessageQueue(
         setError(ROW_GONE);
         return;
       }
-      handlersRef.current.onEditRestored(taken.text);
+      handlersRef.current.onEditRestored(taken.text, taken.attachments);
     },
     [queue],
   );
@@ -128,7 +129,7 @@ export function useMessageQueue(
       setError(null);
       queue.steer(text, []).catch((cause: unknown) => {
         setError(errorSentence(cause).sentence);
-        handlersRef.current.onSteerRefused(text);
+        handlersRef.current.onSteerRefused(text, []);
       });
     },
     [queue],

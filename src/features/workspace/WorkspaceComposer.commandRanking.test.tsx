@@ -11,6 +11,7 @@ import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { composerDrivers, type ComposerDrivers, type ComposerMocks } from "./composerTestKit";
+import type { PromptAttachment } from "../../types/ipc";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import type { WorkspaceCommand } from "./WorkspaceCommandMenu";
 
@@ -40,8 +41,8 @@ const WITH_APPENDED_GOAL: WorkspaceCommand[] = [
 
 let container: HTMLDivElement;
 let root: Root | null = null;
-let onSend: Mock<(text: string) => void>;
-let onQueue: Mock<(text: string) => void>;
+let onSend: Mock<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>;
+let onQueue: Mock<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>;
 let mocks: ComposerMocks;
 let drive: ComposerDrivers;
 
@@ -72,8 +73,8 @@ function firstName(row: HTMLButtonElement): string | undefined {
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
-  onSend = vi.fn<(text: string) => void>();
-  onQueue = vi.fn<(text: string) => void>();
+  onSend = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>();
+  onQueue = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>();
   mocks = { onSend, onQueue };
   drive = composerDrivers(container);
 });

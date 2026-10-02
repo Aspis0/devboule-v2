@@ -11,12 +11,14 @@ import {
 import {
   createSessionChannel,
   sessionAttach,
+  sessionDeposit,
   sessionDetach,
   sessionInterrupt,
   sessionSend,
   sessionSetFeature,
   sessionSetMode,
   sessionSetModel,
+  type AttachmentReference,
   type SubscriptionId,
   type SessionChannel,
 } from "../../lib/tauri";
@@ -41,6 +43,7 @@ import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { WorkspaceComposer } from "./WorkspaceComposer";
+import { sendChatImagesByReference } from "./chatImageTransport";
 import { SubagentMenu } from "./SubagentMenu";
 import { SessionContextMeter } from "./ContextMeter";
 import { journalLossCopy } from "./journalLoss";
@@ -199,6 +202,8 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
       args?.ch as SessionChannel,
     ) as Promise<T>;
   }
+  if (command === "session_deposit")
+    return sessionDeposit(id, args?.attachment as PromptAttachment) as Promise<T>;
   if (command === "session_send") {
     // Left off when absent, not passed as an explicit `undefined`, so a send
     // with no attachment keeps the arity every existing caller expects.
@@ -219,9 +224,17 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     // below has to count it.
     const key = args?.idempotencyKey;
     const idempotencyKey = typeof key === "string" ? key : undefined;
+    // References ride beside the text, never as empty: a send that names no
+    // stored attachment is every send that predates the deposit path, and its
+    // frame must not grow a key. The controller deposits composer images
+    // first and sends what the deposit answered with.
+    const rawReferences = args?.attachmentReferences as readonly AttachmentReference[] | undefined;
+    const attachmentReferences =
+      rawReferences === undefined || rawReferences.length === 0 ? undefined : rawReferences;
     if (
       attachments === undefined &&
       activeTurnBehavior === undefined &&
+      attachmentReferences === undefined &&
       idempotencyKey === undefined
     ) {
       return sessionSend(id, subscriptionId, text) as Promise<T>;
@@ -232,7 +245,7 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
       text,
       attachments,
       activeTurnBehavior,
-      undefined,
+      attachmentReferences,
       idempotencyKey,
     ) as Promise<T>;
   }
@@ -423,17 +436,23 @@ export const AgentChatSurface = memo(function AgentChatSurface({
 
   // The composer's handed-back draft. `focus` is false for an Edit, whose
   // focus follows the row rule in the track; true for a refusal, whose text
-  // the user must look at before sending it again.
+  // the user must look at before sending it again. `images` ride along when
+  // a taken queue row held them; a failed image send never hands back — its
+  // picks stay in the composer while sending and clear only on success.
   const [restoreDraft, setRestoreDraft] = useState<{
     text: string;
+    images: readonly PromptAttachment[];
     focus: boolean;
     nonce: number;
   } | null>(null);
   const restoreNonceRef = useRef(0);
-  const handDraftBack = useCallback((text: string, focus: boolean) => {
-    restoreNonceRef.current += 1;
-    setRestoreDraft({ text, focus, nonce: restoreNonceRef.current });
-  }, []);
+  const handDraftBack = useCallback(
+    (text: string, focus: boolean, images: readonly PromptAttachment[] = []) => {
+      restoreNonceRef.current += 1;
+      setRestoreDraft({ text, images, focus, nonce: restoreNonceRef.current });
+    },
+    [],
+  );
 
   // One queue per session, held by the app for as long as the session is in
   // the roster and handed down here; without one the surface renders no rows
@@ -442,9 +461,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     queue ?? null,
     useMemo(
       () => ({
-        onEditRestored: (text: string) => handDraftBack(text, false),
-        onSteerRefused: (text: string) => handDraftBack(text, true),
-        onQueueRefused: (text: string) => handDraftBack(text, true),
+        onEditRestored: (text: string, images: readonly PromptAttachment[] = []) =>
+          handDraftBack(text, false, images),
+        onSteerRefused: (text: string, images: readonly PromptAttachment[] = []) =>
+          handDraftBack(text, true, images),
+        onQueueRefused: (text: string, images: readonly PromptAttachment[] = []) =>
+          handDraftBack(text, true, images),
       }),
       [handDraftBack],
     ),
@@ -470,14 +492,27 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const turnActive = composerQueue.turnActive;
 
   const sendSession = useCallback(
-    async (text: string, attachments?: readonly PromptAttachment[]): Promise<boolean> => {
+    async (text: string, attachments: readonly PromptAttachment[] = []): Promise<boolean> => {
       const session = sessionRef.current;
       if (session === null) return false;
       const submissionId = queue?.submissionStarted();
       let replyTurnActive: boolean | undefined;
+      const reportTurn = (turnActive: boolean) => {
+        replyTurnActive = turnActive;
+      };
       try {
-        return await session.send(text, attachments, undefined, [], undefined, (turnActive) => {
-          replyTurnActive = turnActive;
+        // Composer images travel by reference: one deposit each, then the
+        // send names what the deposits answered with. The echo carries the
+        // names, so replay resolves the stored bytes instead of the bytes
+        // the composer held.
+        if (attachments.length === 0) {
+          return await session.send(text, [], undefined, [], undefined, reportTurn);
+        }
+        return await sendChatImagesByReference({
+          images: attachments,
+          deposit: (attachment) => session.depositAttachment(attachment),
+          send: (references) =>
+            session.send(text, [], undefined, references, undefined, reportTurn),
         });
       } finally {
         if (submissionId !== undefined) queue?.submissionSettled(submissionId, replyTurnActive);
@@ -491,16 +526,18 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       const session = sessionRef.current;
       if (session === null) return { accepted: false, turnActive: null };
       let replyTurnActive: boolean | undefined;
-      const accepted = await session.send(
-        text,
-        attachments,
-        undefined,
-        [],
-        idempotencyKey,
-        (turnActive) => {
-          replyTurnActive = turnActive;
-        },
-      );
+      const reportTurn = (turnActive: boolean) => {
+        replyTurnActive = turnActive;
+      };
+      const accepted =
+        attachments.length === 0
+          ? await session.send(text, [], undefined, [], idempotencyKey, reportTurn)
+          : await sendChatImagesByReference({
+              images: attachments,
+              deposit: (attachment) => session.depositAttachment(attachment),
+              send: (references) =>
+                session.send(text, [], undefined, references, idempotencyKey, reportTurn),
+            });
       return { accepted, turnActive: replyTurnActive ?? null };
     },
     [],
@@ -767,17 +804,39 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         onQueue={queue === null ? undefined : composerQueue.queueMessage}
         enterQueues={enterQueues}
         captureTextarea={captureComposerTextarea}
-        onSend={(text) => {
+        onSend={async (text, attachments) => {
+          // Images never join a running turn: the daemon refuses a steer
+          // that carries them, so an image send waits in the queue behind
+          // the turn or starts its own when nothing runs. The answer tells
+          // the composer whether its in-flight images may clear: queued
+          // transfers and steers clear at once, a refused send keeps them.
+          if (attachments.length > 0) {
+            if (queue !== null && (turnActive || hasPendingPermission)) {
+              composerQueue.queueMessage(text, attachments);
+              return true;
+            }
+            // Images stay in the composer while sending; only the cleared
+            // text rides a hand-back on failure, so the retry is whole.
+            try {
+              const sent = await sendSession(text, attachments);
+              if (!sent) handDraftBack(text, true);
+              return sent;
+            } catch {
+              handDraftBack(text, true);
+              return false;
+            }
+          }
           // A running turn with a queue in hand goes through the queue's steer,
           // which interrupts and then waits for the daemon's turn-over. An idle
           // session takes the plain send it always took — and a refusal puts
           // the text back in the composer instead of losing it (review F9).
           if ((turnActive || hasPendingPermission) && queue !== null) {
             composerQueue.steerComposer(text);
-            return;
+            return true;
           }
-          void sendSession(text).then((sent: boolean) => {
+          return sendSession(text).then((sent: boolean) => {
             if (!sent) handDraftBack(text, true);
+            return sent;
           });
         }}
         onStop={() => void sessionRef.current?.interrupt()}

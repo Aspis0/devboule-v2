@@ -3,6 +3,7 @@
 use std::{collections::BTreeSet, path::PathBuf};
 
 use super::*;
+use crate::AttachmentReference;
 
 #[test]
 fn transcript_integrity_variants_round_trip_with_exact_wire_shape() {
@@ -442,6 +443,7 @@ fn agent_user_message_kind_defaults_for_legacy_rows_and_serializes_current_rows(
         author: UserMessageAuthor::Agent,
         message_kind: UserMessageKind::OutgoingA2a,
         at_ms: None,
+        images: Vec::new(),
     };
     let encoded = serde_json::to_value(&current).expect("current event");
     assert_eq!(encoded["messageKind"], "outgoing_a2a");
@@ -455,6 +457,7 @@ fn user_message_at_ms_round_trips_and_is_skipped_when_absent() {
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Composer,
         at_ms: Some(1_789_053_471_559),
+        images: Vec::new(),
     };
     let encoded = serde_json::to_value(&timed).expect("json");
     assert_eq!(encoded["atMs"], 1_789_053_471_559_u64);
@@ -467,6 +470,7 @@ fn user_message_at_ms_round_trips_and_is_skipped_when_absent() {
         author: UserMessageAuthor::Human,
         message_kind: UserMessageKind::Composer,
         at_ms: None,
+        images: Vec::new(),
     };
     let encoded = serde_json::to_value(&untimed).expect("json");
     assert!(encoded.get("atMs").is_none(), "absent time stays absent");
@@ -1922,4 +1926,63 @@ fn permission_request_without_kind_reads_as_tool() {
         }
         _ => panic!("expected a permission request"),
     }
+}
+
+#[test]
+fn user_message_images_round_trip_and_are_skipped_when_empty() {
+    let reference = AttachmentReference {
+        session_id: "s.owner.chat1".to_string(),
+        digest: "a".repeat(64),
+        stored_bytes: 1234,
+    };
+    let with_images = SessionEvent::AgentUserMessage {
+        message_id: Some("devboule-user-1-9".to_string()),
+        text: "look at this".to_string(),
+        author: UserMessageAuthor::Human,
+        message_kind: UserMessageKind::Composer,
+        at_ms: Some(1_789_053_471_559),
+        images: vec![reference.clone()],
+    };
+    let encoded = serde_json::to_value(&with_images).expect("json");
+    assert_eq!(encoded["images"][0]["digest"], "a".repeat(64));
+    assert_eq!(encoded["images"][0]["sessionId"], "s.owner.chat1");
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, with_images);
+
+    let without_images = SessionEvent::AgentUserMessage {
+        message_id: None,
+        text: "plain prompt".to_string(),
+        author: UserMessageAuthor::Human,
+        message_kind: UserMessageKind::Composer,
+        at_ms: None,
+        images: Vec::new(),
+    };
+    let encoded = serde_json::to_value(&without_images).expect("json");
+    assert!(
+        encoded.get("images").is_none(),
+        "a message with no images stays the frame it always was: {encoded}"
+    );
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, without_images);
+}
+
+#[test]
+fn user_message_without_images_still_parses_from_an_old_row() {
+    let old = serde_json::json!({
+        "type": "agent_user_message",
+        "messageId": "m-old",
+        "text": "written before image references existed",
+        "author": "human",
+        "messageKind": "composer",
+        "atMs": 1_789_053_471_559_u64
+    });
+    assert!(old.get("images").is_none());
+    let decoded: SessionEvent = serde_json::from_value(old).expect("old row");
+    assert!(
+        matches!(
+            decoded,
+            SessionEvent::AgentUserMessage { ref images, .. } if images.is_empty()
+        ),
+        "a legacy row reads as carrying no images: {decoded:?}"
+    );
 }
