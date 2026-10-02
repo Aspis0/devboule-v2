@@ -322,7 +322,7 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
         parent_tool_use_id: None,
         spawn_depth: None,
         command: None,
-        exit_code: None,
+        exit_code: result_exit_code(value.get("result")),
     }];
     if let Some(tool_name) = value.get("toolName").and_then(Value::as_str) {
         if let Some(items) =
@@ -341,6 +341,22 @@ fn tool_result_text(value: &Value) -> Option<String> {
     }
     let text = blocks_text(content);
     (!text.is_empty()).then_some(text)
+}
+
+/// `exitCode` then `code` translated from Paseo's `resolveToolCallOutput` (pi/tool-call-mapper.ts).
+fn result_exit_code(result: Option<&Value>) -> Option<i32> {
+    let result = result?;
+    [
+        result.get("exitCode"),
+        result.get("code"),
+        // The installed pi build stores the code here.
+        result
+            .get("structuredContent")
+            .and_then(|structured| structured.get("exit_code")),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|value| value.as_i64().and_then(|code| i32::try_from(code).ok()))
 }
 
 /// The turn's finish, then the context reading it proves: pi's own
@@ -609,6 +625,139 @@ mod tests {
             }
             other => panic!("expected AgentToolUpdate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_result_exit_code_lands_on_the_command_row() {
+        // Synthesized envelopes — the capture above never held a code to
+        // pin.
+        let with_exit_code = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bash_exit_two","toolName":"bash","result":{"content":[{"type":"text","text":"boom"}],"exitCode":2},"isError":true}"#,
+        );
+        match events_from_line(&with_exit_code).as_slice() {
+            [SessionEvent::AgentToolUpdate {
+                tool_call_id,
+                status,
+                exit_code,
+                ..
+            }] => {
+                assert_eq!(tool_call_id, "call_bash_exit_two");
+                // A non-zero code is pi's own error verdict for the row.
+                assert_eq!(status.as_deref(), Some("failed"));
+                assert_eq!(*exit_code, Some(2));
+            }
+            other => panic!("expected one tool row, got {other:?}"),
+        }
+        let with_code = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bash_code_zero","toolName":"bash","result":{"content":[{"type":"text","text":"ok"}],"code":0},"isError":false}"#,
+        );
+        match events_from_line(&with_code).as_slice() {
+            [SessionEvent::AgentToolUpdate {
+                status, exit_code, ..
+            }] => {
+                assert_eq!(status.as_deref(), Some("completed"));
+                // `code` is the same number under the fallback field.
+                assert_eq!(*exit_code, Some(0));
+            }
+            other => panic!("expected one tool row, got {other:?}"),
+        }
+        let both = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bash_both","toolName":"bash","result":{"content":[],"exitCode":2,"code":9},"isError":true}"#,
+        );
+        match events_from_line(&both).as_slice() {
+            [SessionEvent::AgentToolUpdate { exit_code, .. }] => {
+                // Two numbers: the first field wins.
+                assert_eq!(*exit_code, Some(2));
+            }
+            other => panic!("expected one tool row, got {other:?}"),
+        }
+        let structured_only = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bash_structured","toolName":"bash","result":{"content":[{"type":"text","text":"three"}],"structuredContent":{"exit_code":3}},"isError":true}"#,
+        );
+        match events_from_line(&structured_only).as_slice() {
+            [SessionEvent::AgentToolUpdate { exit_code, .. }] => {
+                // The installed pi build keeps its code in
+                // `structuredContent`, not on the result's top level.
+                assert_eq!(*exit_code, Some(3));
+            }
+            other => panic!("expected one tool row, got {other:?}"),
+        }
+        let all_three = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bash_all_fields","toolName":"bash","result":{"content":[],"exitCode":2,"code":9,"structuredContent":{"exit_code":3}},"isError":true}"#,
+        );
+        match events_from_line(&all_three).as_slice() {
+            [SessionEvent::AgentToolUpdate { exit_code, .. }] => {
+                // Every field present: the first still wins.
+                assert_eq!(*exit_code, Some(2));
+            }
+            other => panic!("expected one tool row, got {other:?}"),
+        }
+        let code_over_structured = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bash_code_over_sc","toolName":"bash","result":{"content":[],"code":9,"structuredContent":{"exit_code":3}},"isError":true}"#,
+        );
+        match events_from_line(&code_over_structured).as_slice() {
+            [SessionEvent::AgentToolUpdate { exit_code, .. }] => {
+                // Without the first field the second still beats the third.
+                assert_eq!(*exit_code, Some(9));
+            }
+            other => panic!("expected one tool row, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_result_without_a_number_carries_no_exit_code() {
+        // Rebuilt around the captured aborted run (`details: {}`); its text and flag are filler.
+        let aborted = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"chatcmpl-tool-9eed2627b0642d23","toolName":"bash","result":{"content":[{"type":"text","text":"Command aborted"}],"details":{}},"isError":true}"#,
+        );
+        assert!(
+            matches!(
+                events_from_line(&aborted).as_slice(),
+                [SessionEvent::AgentToolUpdate {
+                    exit_code: None,
+                    ..
+                }]
+            ),
+            "an aborted result carries no code: {:?}",
+            events_from_line(&aborted)
+        );
+        // `isError` is a verdict, not a number: a failed result with no code
+        // field stays without one.
+        let failed = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_write_failed","toolName":"write","result":{"content":[{"type":"text","text":"EACCES: permission denied"}]},"isError":true}"#,
+        );
+        assert!(
+            matches!(
+                events_from_line(&failed).as_slice(),
+                [SessionEvent::AgentToolUpdate {
+                    exit_code: None,
+                    ..
+                }]
+            ),
+            "an error flag is not a code: {:?}",
+            events_from_line(&failed)
+        );
+    }
+
+    #[test]
+    fn the_exit_code_row_replays_as_the_live_row() {
+        let end = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bash_replay","toolName":"bash","result":{"content":[{"type":"text","text":"boom"}],"exitCode":2},"isError":true}"#,
+        );
+        let live = events_from_line(&end);
+        let mut withheld = false;
+        let replayed = drive_replay(&mut withheld, &end);
+        assert_eq!(replayed, live);
+        assert!(
+            matches!(
+                replayed.as_slice(),
+                [SessionEvent::AgentToolUpdate {
+                    exit_code: Some(2),
+                    ..
+                }]
+            ),
+            "the replayed row carries the code too: {replayed:?}"
+        );
     }
 
     #[test]
