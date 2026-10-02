@@ -35,7 +35,7 @@ import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
-import { activeTabFor, forgetTab, rememberActiveTab, type TabMemory } from "./workspaceTabMemory";
+import { activeTabFor, forgetTab, pruneTabMemory, rememberActiveTab } from "./workspaceTabMemory";
 import { useTabSelection } from "./strip/useTabSelection";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
 import { useSessionRename } from "./strip/useSessionRename";
@@ -264,9 +264,20 @@ export function Workspace({
     create: createSession,
     select: selectSession,
     open: openSession,
-    closeTabs: closeSessionTabs,
+    closeTabs: closeSessionTabsIn,
     dismissError: dismissSessionsError,
   } = useWorkspaceSessions(selectedWorkspace);
+  // Every road that takes a session's tab out of the strip lands here, so a
+  // closed id leaves every workspace's memory — an unscoped session's tab
+  // belongs to all of them, and an entry left behind elsewhere would restore
+  // it the next time the same id came back.
+  const closeSessionTabs = useCallback(
+    (ids: readonly string[]) => {
+      for (const id of ids) forgetTab(id);
+      closeSessionTabsIn(ids);
+    },
+    [closeSessionTabsIn],
+  );
   // Tool tabs live beside the sessions; the last session stays selected
   // underneath an active tool so the reconcile below keeps passing.
   const [toolTabs, setToolTabs] = useState<ToolTab[]>([]);
@@ -275,9 +286,6 @@ export function Workspace({
   // re-reads over its old content instead of an empty cell. Per mount, never
   // shared: each pane seeds from it and writes its landed reads back.
   const [toolContentCache] = useState(createToolContentCache);
-  // Which tab each workspace was last left on. Per mount and never persisted:
-  // a restart restores exactly what the one persisted selection restores.
-  const [tabMemory] = useState<TabMemory>(() => new Map());
 
   const sidebarWorkspaceIds = useMemo(
     () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
@@ -406,6 +414,7 @@ export function Workspace({
   const [prunedWorkspaceKey, setPrunedWorkspaceKey] = useState(workspaceIdKey);
   if (prunedWorkspaceKey !== workspaceIdKey) {
     setPrunedWorkspaceKey(workspaceIdKey);
+    pruneTabMemory(knownWorkspaceIds);
     setToolTabs((prev) => {
       for (const tab of prev) {
         if (!knownWorkspaceIds.has(tab.workspaceId))
@@ -484,6 +493,22 @@ export function Workspace({
     () => composeStripTabs(visibleSessions, visibleToolTabs),
     [visibleSessions, visibleToolTabs],
   );
+  // The one writer of the per-workspace tab memory, because there are many
+  // roads to a selection and only one answer to "what is on screen now": a
+  // chip, the Overview, a History reopen, the roster reconcile below, a tool
+  // pane. A tab that is not in this workspace's strip is a frame between two
+  // workspaces, and an empty selection over a strip that still has tabs is
+  // the same frame — neither is recorded, so neither can file one workspace's
+  // tab under another's key.
+  useEffect(() => {
+    const key = selectedWorkspace;
+    if (key === null) return;
+    if (activeTabId === null) {
+      if (composedTabs.length === 0) rememberActiveTab(key, null);
+      return;
+    }
+    if (composedTabs.some((tab) => tab.id === activeTabId)) rememberActiveTab(key, activeTabId);
+  }, [activeTabId, composedTabs, selectedWorkspace]);
   // What a toast may quote for a session: the pending permission card's text
   // and the last assistant message, and only for a row this window's tab
   // strip actually renders. The provider is rebuilt from the rendered rows
@@ -573,9 +598,6 @@ export function Workspace({
       );
       if (closedWorkspaceIds.size > 0) refreshWorkspaceStats([...closedWorkspaceIds]);
       closeSessionTabs(matched.map((session) => session.id));
-      if (selectedWorkspace !== null) {
-        for (const session of matched) forgetTab(tabMemory, selectedWorkspace, session.id);
-      }
       for (const session of matched) {
         closeActions.act(
           kind,
@@ -593,16 +615,7 @@ export function Workspace({
         );
       }
     },
-    [
-      closeActions,
-      closeSessionTabs,
-      openSession,
-      selectSession,
-      refreshWorkspaceStats,
-      selectedWorkspace,
-      sessions,
-      tabMemory,
-    ],
+    [closeActions, closeSessionTabs, openSession, selectSession, refreshWorkspaceStats, sessions],
   );
   // Multi-select and the tab close flow live in the strip's folder; the
   // strip only wires their handlers. The "+" button's ref is the flow's
@@ -617,17 +630,10 @@ export function Workspace({
   }, []);
   // Opening the same (kind, workspace, path) again focuses the existing
   // tab instead of duplicating it; opening focuses either way.
-  const openToolTab = useCallback(
-    (workspaceId: string, path: string, kind: ToolTabKind) => {
-      setToolTabs((prev) => openToolTabs(prev, makeToolTab(kind, workspaceId, path)));
-      const id = toolTabId(kind, workspaceId, path);
-      // Activates without `selectTab`, because re-clicking the tab already open
-      // must not re-read it — so the memory is written on this road instead.
-      rememberActiveTab(tabMemory, workspaceId, id);
-      setActiveToolTabId(id);
-    },
-    [tabMemory],
-  );
+  const openToolTab = useCallback((workspaceId: string, path: string, kind: ToolTabKind) => {
+    setToolTabs((prev) => openToolTabs(prev, makeToolTab(kind, workspaceId, path)));
+    setActiveToolTabId(toolTabId(kind, workspaceId, path));
+  }, []);
   // Every stand-down routes through here. The landed create is the only caller
   // that may skip it (guarded below); the roster reconcile never calls it.
   const standDownToolTab = useCallback(() => writeToolTab(null), [writeToolTab]);
@@ -643,14 +649,9 @@ export function Workspace({
   });
   // The ONE selection write the strip-facing readers use: a tool id parks
   // beside the session authority, a session id clears it. A stale tool id
-  // resolves to no visible tab, so the session underneath shows instead. It
-  // is also the one writer of the per-workspace tab memory. `key` is the
-  // workspace the id belongs to, which a switch names itself: the id it
-  // restores already belongs to the workspace being entered, not the one
-  // being left.
+  // resolves to no visible tab, so the session underneath shows instead.
   const selectTab = useCallback(
-    (id: string | null, key: string | null = selectedWorkspace) => {
-      if (key !== null) rememberActiveTab(tabMemory, key, id);
+    (id: string | null) => {
       if (id !== null && isToolTabId(id)) {
         if (id === activeToolTabIdRef.current) setToolRefreshNonce((nonce) => nonce + 1);
         writeToolTab(id);
@@ -659,7 +660,7 @@ export function Workspace({
       standDownToolTab();
       selectSession(id);
     },
-    [selectSession, selectedWorkspace, standDownToolTab, tabMemory, writeToolTab],
+    [selectSession, standDownToolTab, writeToolTab],
   );
   // A landed create takes the pane only while the tool axis stood still: the
   // same tab as at start and no counted move in between. A move keeps the pane.
@@ -685,9 +686,6 @@ export function Workspace({
     (ids: readonly string[]): void => {
       if (ids.length === 0) return;
       const gone = new Set(ids);
-      if (selectedWorkspace !== null) {
-        for (const id of ids) forgetTab(tabMemory, selectedWorkspace, id);
-      }
       setToolTabs((prev) => {
         for (const tab of prev) {
           if (gone.has(tab.id)) evictToolContent(toolContentCache, tab.workspaceId, tab.path);
@@ -695,7 +693,7 @@ export function Workspace({
         return prev.filter((tab) => !gone.has(tab.id));
       });
     },
-    [selectedWorkspace, tabMemory, toolContentCache],
+    [toolContentCache],
   );
   const tabSelection = useTabSelection({
     tabs: composedTabs,
@@ -1058,15 +1056,13 @@ export function Workspace({
       // selectTab leaves the old workspace's tool tab behind with it.
       selectTab(
         activeTabFor(
-          tabMemory,
           workspaceId,
           liveTabIdsFor(workspaceId),
           openSessions.find((session) => session.workspaceId === workspaceId)?.id ?? null,
         ),
-        workspaceId,
       );
     },
-    [liveTabIdsFor, openSessions, selectTab, setSelectedWorkspace, tabMemory],
+    [liveTabIdsFor, openSessions, selectTab, setSelectedWorkspace],
   );
   const handleNewSession = useCallback(
     (trigger: HTMLButtonElement | null) => {

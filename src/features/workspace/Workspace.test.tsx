@@ -328,6 +328,7 @@ import { Workspace, WorkspacePermissionCard } from "./Workspace";
 import type { MessageQueue } from "./messageQueue";
 import { resetSharedSessionControllerForTests, sharedSessionController } from "./workspaceSessions";
 import { getLastSelectedWorkspaceId, setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
+import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe, type SenderProbe } from "./queueSenderDouble";
 import { createDelegationController } from "../../lib/delegation";
@@ -531,6 +532,9 @@ describe("Workspace sessions", () => {
     // inherit the roster a previous test left in it.
     localStorage.removeItem("devboule.openSessionTabs");
     resetSharedSessionControllerForTests();
+    // The tab memory is app-lifetime like the controller, so a test must not
+    // inherit what the previous one left a workspace remembering.
+    resetTabMemoryForTests();
     // The queue owner is app-lifetime too, and its sender is the wire a queued
     // message leaves on: both are reset and counted, never left to the last test.
     resetSharedSessionQueueOwnerForTests();

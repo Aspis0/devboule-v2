@@ -161,7 +161,7 @@ describe("leaving a workspace and coming back", () => {
     expect(tabElement("a-one").getAttribute("aria-selected")).toBe("false");
   });
 
-  it("restores the tool tab the workspace was left on, warm from the cache", async () => {
+  it("restores the tool tab the workspace was left on: cached body at once, one fresh read", async () => {
     twoWorkspaces();
     vi.mocked(sessionsList).mockResolvedValue(listedSessions());
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusWithRow());
@@ -177,7 +177,10 @@ describe("leaving a workspace and coming back", () => {
     expect(tabRendered(id)).toBe(false);
     expect(tabPanelText()).not.toContain("const first = 1;");
 
-    // The re-entry read is held: anything on screen came from the cache.
+    // A diff may have moved while the tab was away, so the pane reads again on
+    // every mount. The cache only decides that the old body stands until that
+    // read lands: gate it, and anything on screen came from the cache.
+    const before = vi.mocked(workspaceGitDiff).mock.calls.length;
     const gate = deferred<ReturnType<typeof diffReply>>();
     vi.mocked(workspaceGitDiff).mockReturnValue(gate.promise);
     await showWorkspace("alpha");
@@ -185,6 +188,7 @@ describe("leaving a workspace and coming back", () => {
     expect(tabElement(id).getAttribute("aria-selected")).toBe("true");
     expect(tabPanelText()).toContain("const first = 1;");
     expect(tabPanelText()).not.toContain("Loading diff");
+    expect(vi.mocked(workspaceGitDiff).mock.calls.length - before).toBe(1);
     gate.resolve(diffReply("const first = 1;"));
     await flush();
   });

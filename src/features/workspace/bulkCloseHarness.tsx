@@ -227,6 +227,7 @@ import {
 import { Workspace } from "./Workspace";
 import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
+import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { resetSharedCloseActionsForTests } from "./strip/closeActions";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe } from "./queueSenderDouble";
@@ -527,6 +528,7 @@ export function bulkErrorBlock(): HTMLElement {
 export function beforeEachHarness(): void {
   localStorage.removeItem("devboule.openSessionTabs");
   resetSharedSessionControllerForTests();
+  resetTabMemoryForTests();
   vi.useFakeTimers();
   resetSharedCloseActionsForTests();
   // The queue owner is app-lifetime like the close store, and a close now
