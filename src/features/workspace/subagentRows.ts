@@ -18,7 +18,7 @@ export interface SubagentRow {
   generation: number | null;
 }
 
-export type RosterChild = Pick<
+type RosterChild = Pick<
   Session,
   "id" | "kind" | "title" | "displayName" | "createdBy" | "activity"
 > & { state?: SessionState };
