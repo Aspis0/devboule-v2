@@ -6,6 +6,10 @@ import type { DaemonStatus, PeerRow } from "../../types/ipc";
 // are the same screen, and a second interval is a second thing to start and stop.
 const POLL_MS = 2000;
 
+// How long a device read may stay unanswered before it is abandoned. Longer than
+// a tick on purpose: the slot exists to skip the ticks behind a slow read.
+const DEVICES_READ_BUDGET_MS = 10_000;
+
 // The supervisor itself reports "connecting" before its first answer, so the
 // footer must not claim a verdict it has not heard yet.
 const CONNECTING_DAEMON: DaemonStatus = {
@@ -68,9 +72,19 @@ let generation = 0;
 let daemonRequested = 0;
 let daemonApplied = 0;
 let devicesRequested = 0;
-let devicesApplied = 0;
-// A device read that never settles must not stack a new request every 2 s.
-let devicesPending = false;
+
+// The one device read allowed to be unanswered. The slot belongs to that
+// request: only its own answer applies and frees it, so an abandoned request
+// (expired, or left over from a daemon that went away) settles into nothing.
+interface LiveRead {
+  seq: number;
+  startedAt: number;
+}
+let liveDevices: LiveRead | null = null;
+
+function staleDevices(devices: PairedDevices): PairedDevices {
+  return devices.stale ? devices : { peers: devices.peers, stale: true };
+}
 
 function publish(next: DaemonPoll): void {
   current = next;
@@ -95,33 +109,35 @@ async function pollDaemon(gen: number): Promise<void> {
   );
   if (gen !== generation || seq <= daemonApplied) return;
   daemonApplied = seq;
-  const reconnected = daemon.state === "connected" && current.daemon.state !== "connected";
-  publish({ ...current, daemon });
-  // A read left over from before the pipe bounced can be the one that never
-  // answers, and the transition into connected is the moment we know the pipe
-  // is open again: this read goes out past a pending one.
-  if (reconnected) readDevices(gen, true);
+  const down = daemon.state !== "connected";
+  const reconnected = !down && current.daemon.state !== "connected";
+  // Without the daemon the roster is the last known one and its liveness is
+  // not current; a read still out cannot be the answer to the next connection.
+  if (down) liveDevices = null;
+  publish({ daemon, devices: down ? staleDevices(current.devices) : current.devices });
+  if (reconnected) readDevices();
 }
 
-function readDevices(gen: number, pastAPendingRead: boolean): void {
+function readDevices(): void {
   // `devices_list` is a daemon command: while the daemon is down the read
   // cannot answer, so it waits for the bridge instead of spending a request on
   // it. A surface that never looks at the device list never pays for one.
   if (deviceReaders === 0 || current.daemon.state !== "connected") return;
-  if (devicesPending && !pastAPendingRead) return;
-  devicesPending = true;
+  if (liveDevices !== null) {
+    if (Date.now() - liveDevices.startedAt < DEVICES_READ_BUDGET_MS) return;
+    liveDevices = null;
+    publish({ ...current, devices: staleDevices(current.devices) });
+  }
   const seq = (devicesRequested += 1);
+  liveDevices = { seq, startedAt: Date.now() };
   void read(
     () => devicesList(),
     () => null,
   ).then((reply) => {
-    devicesPending = false;
-    if (gen !== generation || seq <= devicesApplied) return;
-    devicesApplied = seq;
+    if (liveDevices?.seq !== seq) return;
+    liveDevices = null;
     const devices =
-      reply === null
-        ? { peers: current.devices.peers, stale: true }
-        : { peers: reply.peers, stale: false };
+      reply === null ? staleDevices(current.devices) : { peers: reply.peers, stale: false };
     if (sameDevices(devices, current.devices)) return;
     publish({ ...current, devices });
   });
@@ -151,7 +167,7 @@ function sameDevices(a: PairedDevices, b: PairedDevices): boolean {
 // hold the daemon status back, which is what the whole surface waits on.
 function tick(): void {
   void pollDaemon(generation);
-  readDevices(generation, false);
+  readDevices();
 }
 
 function addReader(reader: Reader): () => void {
@@ -166,7 +182,7 @@ function addReader(reader: Reader): () => void {
   }
   // A device list that arrives on a running poll is wanted now, not two
   // seconds from now.
-  if (firstDeviceReader) readDevices(generation, false);
+  if (firstDeviceReader) readDevices();
   return () => {
     readers.delete(reader);
     if (reader.wantsDevices) deviceReaders -= 1;
@@ -177,11 +193,10 @@ function addReader(reader: Reader): () => void {
     }
     generation += 1;
     // A fresh mount cycle starts from connecting and no peers: without the
-    // reset a mount would first render the previous cycle's rows. The pending
-    // flag goes with it, or a read hung in the last cycle would block this one;
-    // its answer cannot land, because the generation no longer matches.
+    // reset a mount would first render the previous cycle's rows. A read still
+    // out loses its slot with them, so its answer cannot land in the next cycle.
     current = FIRST_POLL;
-    devicesPending = false;
+    liveDevices = null;
   };
 }
 
