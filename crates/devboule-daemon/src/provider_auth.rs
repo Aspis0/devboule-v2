@@ -2,7 +2,7 @@
 
 use crate::provider_catalog::ProviderOrigin;
 use crate::provider_catalog::{InstalledAgent, KNOWN_AGENTS};
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 #[cfg(not(test))]
@@ -13,12 +13,13 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_STATUS_OUTPUT: usize = 64 * 1024;
 
 /// A child that exited has closed its end of the pipe; the reader only has
-/// to drain what is left. Bounding this wait by the *remaining* deadline
-/// reported a check that finished at 4.99 s of a 5 s budget as timed out —
-/// a false negative with a successful exit code in hand. The worst case per
-/// provider is now the poll plus this grace (6 s), so three sequential
-/// providers cost up to 18 s plus discovery, inside the 30 s RPC budget.
+/// to drain what is left — a tighter bound can time out a check that exited.
 const DRAIN_GRACE: Duration = Duration::from_secs(1);
+
+/// The check's tree-reap bound: a successful wait means the job reported no active members;
+/// a failed wait leaves cleanup best effort, a kill-on-close drop only requests termination.
+#[cfg(windows)]
+const REAP_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Test-only: the buffer the reader thread captured on the last
 /// `run_check_with_timeout` call, so a test can assert what the real reader
@@ -276,7 +277,7 @@ fn run_check_with_timeout(
                 #[cfg(test)]
                 record_job_pids(&_job);
                 #[cfg(windows)]
-                let _ = _job.terminate_and_wait(Duration::from_millis(250));
+                reap_check_job(&agent.id, "timeout", &_job);
                 let _ = child.kill();
                 let _ = child.wait();
                 return classify_failure(ProbeFailure::TimedOut);
@@ -286,7 +287,7 @@ fn run_check_with_timeout(
     #[cfg(test)]
     record_job_pids(&_job);
     #[cfg(windows)]
-    let _ = _job.terminate();
+    reap_check_job(&agent.id, "success", &_job);
     // claude and codex classify by exit code alone; waiting for the pipe on
     // their path would let a descendant that outlives the direct child turn
     // a successful exit into a false timeout. pi parses stdout, so it drains
@@ -313,6 +314,31 @@ fn run_check_with_timeout(
         exit_status.and_then(|status| status.code()),
         &stdout,
     )
+}
+
+/// A failed wait is printed, never returned: cleanup trouble is not evidence
+/// about credentials, so it must not change the classification.
+#[cfg(windows)]
+fn reap_check_job(provider_id: &str, path: &str, job: &crate::process_tree::JobObject) {
+    report_failed_reap(
+        provider_id,
+        path,
+        job.terminate_and_wait(REAP_TIMEOUT),
+        &mut io::stderr(),
+    );
+}
+
+/// Writes the failed-wait line naming the provider and the path — never the
+/// check's arguments — and ignores the sink's own error: reporting must not
+/// become a failure of the auth check.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn report_failed_reap(provider_id: &str, path: &str, wait: io::Result<()>, sink: &mut impl Write) {
+    if let Err(error) = wait {
+        let _ = writeln!(
+            sink,
+            "provider auth cleanup for {provider_id} failed on the {path} path: {error}"
+        );
+    }
 }
 
 fn classify_failure(failure: ProbeFailure) -> (&'static str, &'static str) {

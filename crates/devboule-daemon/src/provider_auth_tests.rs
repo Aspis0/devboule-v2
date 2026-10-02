@@ -99,37 +99,10 @@ fn run_check_timeout_returns_static_unknown_reason() {
     let _lock = runner_test_lock();
     #[cfg(windows)]
     {
-        // cmd.exe starts far faster than PowerShell, so the child is
-        // running well inside the five-second budget — no cold-start race.
-        // ping then holds the tree as a real grandchild of the direct
-        // child, which is the shape the job has to reap.
-        //
-        // A bare name is resolved from the current directory and PATH, so a
-        // PATH without System32 would end the fixture at once instead of
-        // timing it out; the full path removes that dependency. The path
-        // rides alone in its own argument, trailing space included, because
-        // only that shape leaves cmd.exe's /C quote-stripping with the
-        // quotes std::process::Command wraps around it: cmd drops those
-        // quotes when the line begins with one — its first rule never spares
-        // them, since the unexpanded `%SystemRoot%` token is no executable
-        // name — which costs nothing until the expanded root contains a
-        // space. The leading `@` means the line never begins with a quote, so
-        // the fixture holds on a spaced root too. A literal quote in an
-        // argument reaches cmd as \" and is read as part of the filename.
         let executable = std::env::var_os("COMSPEC")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"));
-        let agent = fake_agent_at(
-            executable,
-            vec![
-                "/C".into(),
-                "@".into(),
-                "%SystemRoot%\\System32\\PING.EXE ".into(),
-                "-n".into(),
-                "31".into(),
-                "127.0.0.1".into(),
-            ],
-        );
+        let agent = fake_agent_at(executable, timeout_ping_fixture());
         let result = run_check_with_timeout(&agent, &[], Duration::from_secs(5));
         assert_eq!(result, ("unknown", "The provider status check timed out."));
         // The kill is checked against the PIDs the job actually held, never
@@ -150,9 +123,8 @@ fn run_check_reaps_the_whole_tree_after_a_successful_child_exits() {
     let _lock = runner_test_lock();
     #[cfg(windows)]
     {
-        // cmd.exe exits at once; `start /b` leaves ping holding the pipe as
-        // a real grandchild. The post-exit job terminate is what reaps it
-        // — `Child::kill` alone would not.
+        // cmd.exe exits at once; `start /b` leaves ping as a grandchild on the
+        // pipe, which only the job terminate targets (`Child::kill` would not).
         let executable = std::env::var_os("COMSPEC")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"));
@@ -168,6 +140,36 @@ fn run_check_reaps_the_whole_tree_after_a_successful_child_exits() {
             crate::test_support::wait_until_pid_gone(pid, "the grandchild");
         }
     }
+}
+
+#[test]
+fn report_failed_reap_writes_one_line_per_failure_and_nothing_on_success() {
+    // The production path writes through this same function, so the exact
+    // bytes of the diagnostic are pinned here.
+    fn failed_wait() -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "wait timed out",
+        ))
+    }
+
+    let mut timeout_sink = Vec::new();
+    report_failed_reap("codex", "timeout", failed_wait(), &mut timeout_sink);
+    assert_eq!(
+        timeout_sink,
+        b"provider auth cleanup for codex failed on the timeout path: wait timed out\n"
+    );
+
+    let mut success_sink = Vec::new();
+    report_failed_reap("codex", "success", failed_wait(), &mut success_sink);
+    assert_eq!(
+        success_sink,
+        b"provider auth cleanup for codex failed on the success path: wait timed out\n"
+    );
+
+    let mut ok_sink = Vec::new();
+    report_failed_reap("codex", "success", Ok(()), &mut ok_sink);
+    assert!(ok_sink.is_empty(), "a wait that succeeds writes nothing");
 }
 
 #[test]
@@ -265,11 +267,22 @@ fn assert_cmd_safe_path(path: &std::path::Path) {
     }
 }
 
-/// The `start /b` fixture both post-exit tests run: cmd.exe exits at once
-/// and ping stays behind as a grandchild holding the pipe. The empty
-/// argument is `start`'s window title (or `start` reads the next token as
-/// one and swallows the quoted path); the trailing-space wrap is the
-/// timeout fixture's, above.
+/// Foreground ping that outlives any sane deadline. The `@`, trailing space and
+/// lone argument are load-bearing: cmd's /C quote-stripping breaks on a spaced root.
+#[cfg(windows)]
+fn timeout_ping_fixture() -> Vec<String> {
+    vec![
+        "/C".into(),
+        "@".into(),
+        "%SystemRoot%\\System32\\PING.EXE ".into(),
+        "-n".into(),
+        "31".into(),
+        "127.0.0.1".into(),
+    ]
+}
+
+/// The `start /b` fixture: cmd exits at once, ping stays behind as a grandchild.
+/// The empty argument is `start`'s window title — without it, `start` swallows the path.
 #[cfg(windows)]
 fn start_grandchild_fixture() -> Vec<String> {
     vec![

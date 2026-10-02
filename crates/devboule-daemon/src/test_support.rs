@@ -37,15 +37,8 @@ pub(crate) fn external_program_skip_reason(program: &str) -> Option<String> {
 
 /// Wait until the process `pid` has exited, or fail at the bound.
 ///
-/// The callers' job cleanup does not guarantee a member is gone when it
-/// returns: `run_check_with_timeout` fires `terminate()` with no wait on the
-/// success path and bounds `terminate_and_wait(250 ms)` with the result
-/// dropped on the timeout path, `terminate_git_process` drops the result of
-/// `terminate_and_wait(GIT_REAP_TIMEOUT)` — so a member may still be dying
-/// when the test looks, and one immediate check flakes on a kill that
-/// worked. The wait is on the process object itself: no process-list text
-/// to parse or localise, and it returns
-/// the moment the process exits, bounded by the timeout. Scoped to PIDs this
+/// A job can report empty before its members' process objects signal, so an
+/// immediate check flakes on a kill that worked. Scoped to PIDs this
 /// test started: those it may open, so an open failure short of `ERROR_INVALID_PARAMETER` —
 /// `ERROR_ACCESS_DENIED` would be somebody else's process — panics instead of
 /// reading as gone. Opening the PID after the death can catch a reused PID of
