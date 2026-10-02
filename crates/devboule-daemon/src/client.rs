@@ -1243,6 +1243,26 @@ impl DaemonClient {
         }
     }
 
+    /// Store a workspace's new title; the reply is the row as it now stands,
+    /// so the caller shows the stored title rather than the one it sent.
+    pub fn workspace_set_title(
+        &self,
+        workspace_id: &str,
+        title: &str,
+    ) -> Result<Workspace, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::WORKSPACE_RENAME)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceSetTitle {
+            id,
+            workspace_id: workspace_id.to_string(),
+            title: title.to_string(),
+        })? {
+            DaemonMessage::Workspace { workspace, .. } => Ok(workspace),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// This device's identity plus every paired and pending peer, straight from
     /// the daemon's frame. The panel needs the frame's field names unchanged, so
     /// this method hands the reply on instead of re-shaping it.

@@ -4,6 +4,7 @@ import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import type { WorkspaceProject } from "../workspaceProjects";
 import { avatarStyle } from "./avatars";
+import { WorkspaceRow } from "./WorkspaceRow";
 import type { WorkspaceStat } from "./useWorkspaceStats";
 
 export interface WorkspaceTreeProps {
@@ -15,6 +16,8 @@ export interface WorkspaceTreeProps {
   onRetryProjects: () => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onNewWorkspace: (trigger: HTMLButtonElement, projectId: string) => void;
+  /** Persists a row's new title; answers with the refusal, if one came. */
+  onRenameWorkspace: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
   /** The project whose new-row wrap hosts the provider choice UI. */
   providerMenuAnchorProjectId: string | null;
   /** The provider choice UI itself (popover or consent card). */
@@ -24,15 +27,10 @@ export interface WorkspaceTreeProps {
 
 /**
  * The project tree under the host header: project headers with avatars and a
- * hover-revealed "+", workspace rows with avatar, title, optional meta, `+N −M`
- * stats and the trailing state dot, and the quiet "New workspace" row.
+ * hover-revealed "+", the workspace rows (each its own component: label,
+ * stats, context menu and in-place title editor), and the quiet "New
+ * workspace" row.
  */
-const DOT_LABELS: Record<string, string> = {
-  pulse: "running",
-  attention: "needs attention",
-  unattended: "running unattended",
-};
-
 export function WorkspaceTree({
   projects,
   loading,
@@ -42,6 +40,7 @@ export function WorkspaceTree({
   onRetryProjects,
   onSelectWorkspace,
   onNewWorkspace,
+  onRenameWorkspace,
   providerMenuAnchorProjectId,
   providerMenu,
   stats,
@@ -112,53 +111,17 @@ export function WorkspaceTree({
             </div>
           ) : null}
           <div className="workspace-project-items">
-            {project.workspaces.map((workspace) => {
-              const stat = stats.get(workspace.id);
-              return (
-                <button
-                  type="button"
-                  className={`workspace-row${
-                    selectedWorkspace === workspace.id ? " workspace-row-selected" : ""
-                  }`}
-                  key={workspace.id}
-                  onClick={() => onSelectWorkspace(workspace.id)}
-                  aria-pressed={selectedWorkspace === workspace.id}
-                  aria-label={`${workspace.title}, ${project.name}${
-                    workspace.stateDot !== null ? `, ${DOT_LABELS[workspace.stateDot]}` : ""
-                  }`}
-                  title={workspace.path ? workspace.path : undefined}
-                >
-                  <span
-                    className="sidebar-avatar sidebar-avatar-workspace"
-                    style={avatarStyle(workspace.id)}
-                    aria-hidden="true"
-                  >
-                    {firstGrapheme(workspace.title)}
-                  </span>
-                  <span className="workspace-row-copy">
-                    <span className="workspace-row-title">{workspace.title}</span>
-                    {workspace.meta !== null ? (
-                      <span className="workspace-row-meta">{workspace.meta}</span>
-                    ) : null}
-                  </span>
-                  {stat !== undefined ? (
-                    <span className="sidebar-row-stats">
-                      <span className="sidebar-stat-add">+{stat.additions}</span>{" "}
-                      <span className="sidebar-stat-del">−{stat.deletions}</span>
-                    </span>
-                  ) : null}
-                  {workspace.stateDot !== null ? (
-                    <span
-                      role="img"
-                      aria-label={DOT_LABELS[workspace.stateDot]}
-                      className={`sidebar-row-dot sidebar-row-dot-${workspace.stateDot}${
-                        workspace.stateDot === "pulse" ? " dot-pulse" : ""
-                      }`}
-                    />
-                  ) : null}
-                </button>
-              );
-            })}
+            {project.workspaces.map((workspace) => (
+              <WorkspaceRow
+                key={workspace.id}
+                workspace={workspace}
+                projectName={project.name}
+                selected={selectedWorkspace === workspace.id}
+                stat={stats.get(workspace.id)}
+                onSelect={onSelectWorkspace}
+                onRename={onRenameWorkspace}
+              />
+            ))}
             <div className="workspace-new-row-wrap">
               <button
                 type="button"

@@ -380,6 +380,14 @@ pub(super) fn dispatch_journal(
             Ok(()) => DaemonMessage::Ok { id },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
+        ClientMessage::WorkspaceSetTitle {
+            id,
+            workspace_id,
+            title,
+        } => match state.sessions.workspace_set_title(&workspace_id, &title) {
+            Ok(workspace) => DaemonMessage::Workspace { id, workspace },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("unexpected journal frame {other:?}"),

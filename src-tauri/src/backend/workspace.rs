@@ -53,6 +53,18 @@ pub async fn workspace_create(
     off_main_thread(move || client.workspace_create(&project_id, isolation, branch)).await
 }
 
+/// Bounded like the other workspace frames: `RPC_TIMEOUT` (30 s) is what
+/// this caller feels; the daemon's own work is one journal write.
+#[tauri::command]
+pub async fn workspace_set_title(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    title: String,
+) -> Result<Workspace, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_set_title(&workspace_id, &title)).await
+}
+
 /// The uncommitted working-tree state of one workspace. `workspace_id` is the
 /// whole argument: the daemon resolves the directory from it, because the
 /// `path` the frontend holds is declared display-only.

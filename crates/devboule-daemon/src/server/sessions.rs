@@ -508,6 +508,7 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceFilePreviewUnstage { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
+        | ClientMessage::WorkspaceSetTitle { .. }
         | ClientMessage::ProvidersList { .. }
         | ClientMessage::ProvidersAuthCheck { .. }
         | ClientMessage::ProvidersRefresh { .. }

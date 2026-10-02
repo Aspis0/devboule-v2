@@ -191,6 +191,39 @@ fn project_and_workspace_rows_round_trip_and_project_add_is_idempotent() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The numbering with no threads and no timing: both records arrive bare, so
+/// the titles can only have been chosen inside the writer.
+#[test]
+fn two_auto_titled_workspace_creates_get_distinct_titles() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("journal");
+    let project = ProjectRecord {
+        id: "p.numbered".to_string(),
+        name: "devboule-v2".to_string(),
+        path: r"C:\src\devboule-v2".to_string(),
+        git_state: "not_repository".to_string(),
+        created_at_ms: 10,
+        updated_at_ms: 10,
+    };
+    journal
+        .project_add(project.clone())
+        .expect("insert project");
+    let bare = || crate::workspace::local_workspace_record(&project);
+
+    let first = journal
+        .workspace_create_auto_titled(bare())
+        .expect("first auto-titled create");
+    let second = journal
+        .workspace_create_auto_titled(bare())
+        .expect("second auto-titled create");
+
+    assert_eq!(first.title, "devboule-v2");
+    assert_eq!(second.title, "devboule-v2 2");
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn project_wire_path_is_human_readable_but_storage_keeps_verbatim_path() {
     let project = ProjectRecord {

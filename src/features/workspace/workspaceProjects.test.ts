@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { Session, Workspace } from "../../types/ipc";
-import { reconcileProjectRecords, workspaceView } from "./workspaceProjects";
+import { projectView, reconcileProjectRecords, workspaceView } from "./workspaceProjects";
 
 // What the production path stores on a failed per-project read: the cause
 // through errorSentence, never a bare message (E1).
@@ -130,5 +130,30 @@ describe("reconcileProjectRecords", () => {
     const next = reconcileProjectRecords([failed], []);
     expect(next[0]!.workspaces).toEqual([]);
     expect(next[0]!.workspaceError).toEqual(pipeBusy);
+  });
+});
+
+describe("projectView", () => {
+  it("numbers rows that share a title so each row reads apart", () => {
+    const sameTitle = (id: string): Workspace => ({
+      id,
+      projectId: "project-1",
+      title: "devboule-v2",
+      isolation: "local",
+      path: "C:\\devboule-v2",
+    });
+    const view = projectView(
+      {
+        id: "project-1",
+        name: "devboule-v2",
+        path: "C:\\devboule-v2",
+        workspaces: [sameTitle("w1"), sameTitle("w2")],
+      },
+      new Map(),
+    );
+    expect(view.workspaces.map((workspace) => workspace.displayTitle)).toEqual([
+      "devboule-v2",
+      "devboule-v2 2",
+    ]);
   });
 });

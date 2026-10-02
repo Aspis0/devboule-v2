@@ -788,6 +788,13 @@ pub enum ClientMessage {
         #[serde(default)]
         force: bool,
     },
+    /// An unknown frame kills the connection where an unknown field is only
+    /// dropped, so the client sends this only under `workspace.rename`.
+    WorkspaceSetTitle {
+        id: u64,
+        workspace_id: String,
+        title: String,
+    },
     ProvidersList {
         id: u64,
     },
@@ -1003,6 +1010,26 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+/// Mirrored sentence for sentence in `src/lib/workspaceTitles.ts`; empty is
+/// refused rather than cleared — a caller that sent no title chooses no name.
+pub fn validate_workspace_title(title: &str) -> Result<String, String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err("A workspace title is required; it was empty.".to_string());
+    }
+    if let Some(category) = crate::text_safety::unsafe_character(trimmed) {
+        return Err(format!("A workspace title must not contain {category}."));
+    }
+    let length = trimmed.chars().count();
+    if length > crate::MAX_DISPLAY_NAME_CHARS {
+        return Err(format!(
+            "A workspace title is {length} characters; the limit is {}.",
+            crate::MAX_DISPLAY_NAME_CHARS
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 /// Derive an agent session's title from its first prompt.
 ///
 /// The rule: the first non-empty line, whitespace-collapsed, clamped to
@@ -1157,6 +1184,7 @@ impl ClientMessage {
             | Self::WorkspaceFilePreviewUnstage { id }
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
+            | Self::WorkspaceSetTitle { id, .. }
             | Self::ProvidersList { id }
             | Self::ProvidersAuthCheck { id, .. }
             | Self::ProvidersRefresh { id }
@@ -1266,6 +1294,7 @@ impl ClientMessage {
             | Self::WorkspaceFilePreviewUnstage { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
+            | Self::WorkspaceSetTitle { .. }
             | Self::Invoke { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
@@ -1341,6 +1370,7 @@ impl ClientMessage {
             Self::WorkspaceFilePreviewUnstage { .. } => "WorkspaceFilePreviewUnstage",
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
+            Self::WorkspaceSetTitle { .. } => "WorkspaceSetTitle",
             Self::ProvidersList { .. } => "ProvidersList",
             Self::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             Self::ProvidersRefresh { .. } => "ProvidersRefresh",
@@ -1427,6 +1457,7 @@ impl ClientMessage {
             | Self::ProjectAdd { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
+            | Self::WorkspaceSetTitle { .. }
             | Self::WorkspaceFileRename { .. }
             | Self::WorkspaceFileDuplicate { .. }
             // The one act that destroys data — audited like the two writes

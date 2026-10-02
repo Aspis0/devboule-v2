@@ -269,6 +269,7 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::ProjectAdd { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::WorkspaceCreate { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::WorkspaceDelete { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::WorkspaceSetTitle { .. } => with_capability(caps, CAP_ADMIN),
         // `Invoke` is the wire's generic tenant door — "run this command" — and
         // the daemon's own arm answers it with `Unimplemented`
         // (`dispatch.rs`), because this daemon is not a plugin backend. What the
@@ -1278,6 +1279,11 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 force: false,
+            },
+            ClientMessage::WorkspaceSetTitle {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                title: "night build".to_string(),
             },
             ClientMessage::Invoke {
                 id: 1,
@@ -2480,6 +2486,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitLog { .. } => administrative(),
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
+            ClientMessage::WorkspaceSetTitle { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
             ClientMessage::ProvidersAuthCheck { .. } => administrative(),
             ClientMessage::ProvidersRefresh { .. } => administrative(),
@@ -2508,7 +2515,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 71;
+    pub(crate) const VARIANT_COUNT: usize = 72;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2567,6 +2574,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceFilePreviewUnstage { .. } => "WorkspaceFilePreviewUnstage",
             ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
             ClientMessage::WorkspaceDelete { .. } => "WorkspaceDelete",
+            ClientMessage::WorkspaceSetTitle { .. } => "WorkspaceSetTitle",
             ClientMessage::ProvidersList { .. } => "ProvidersList",
             ClientMessage::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             ClientMessage::ProvidersRefresh { .. } => "ProvidersRefresh",
@@ -2849,6 +2857,11 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 force: false,
+            },
+            ClientMessage::WorkspaceSetTitle {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                title: "night build".to_string(),
             },
             ClientMessage::ProvidersList { id: 1 },
             ClientMessage::ProvidersAuthCheck {

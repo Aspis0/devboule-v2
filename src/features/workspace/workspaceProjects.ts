@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { projectsList, workspaceCreate, workspacesList } from "../../lib/tauri";
+import { projectsList, workspaceCreate, workspaceSetTitle, workspacesList } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { workspaceDisplayTitles } from "../../lib/workspaceTitles";
 import type { Project, Session, Workspace } from "../../types/ipc";
 import { sessionNeedsApproval } from "./sessionAttention";
 
@@ -11,6 +12,8 @@ export interface WorkspaceProject extends Project {
 }
 
 export interface WorkspaceView extends Workspace {
+  /** What the sidebar prints; `title` stays the stored row. */
+  displayTitle: string;
   /** A word only when the row differs from the norm; null renders no line. */
   meta: string | null;
   /** The row's trailing state dot, in the tab chips' vocabulary. */
@@ -52,7 +55,11 @@ export function workspaceView(
   workspace: Workspace,
   sessions: readonly Session[] = [],
 ): WorkspaceView {
-  return workspaceViewFromIndex(workspace, buildSessionIndex(sessions).get(workspace.id) ?? []);
+  return workspaceViewFromIndex(
+    workspace,
+    buildSessionIndex(sessions).get(workspace.id) ?? [],
+    workspace.title,
+  );
 }
 
 export function buildSessionIndex(sessions: readonly Session[]): Map<string, Session[]> {
@@ -71,6 +78,7 @@ export function buildSessionIndex(sessions: readonly Session[]): Map<string, Ses
 function workspaceViewFromIndex(
   workspace: Workspace,
   sessionsOfWorkspace: readonly Session[],
+  displayTitle: string,
 ): WorkspaceView {
   const recovered = sessionsOfWorkspace.filter((session) => session.state.type === "recovered");
   // The meta line appears only when the row differs from the norm (spec): a
@@ -84,19 +92,27 @@ function workspaceViewFromIndex(
   const running = sessionsOfWorkspace.some((session) => session.state.type === "live");
   return {
     ...workspace,
+    displayTitle,
     meta,
     stateDot: attention ? "attention" : unattended ? "unattended" : running ? "pulse" : null,
   };
 }
 
-function projectView(
+/** One project's row views: the equal titles numbered apart first, so every
+ * row is named before search narrows the list. */
+export function projectView(
   project: ProjectRecord,
   byWorkspace: Map<string, Session[]>,
 ): WorkspaceProject {
+  const titles = workspaceDisplayTitles(project.workspaces);
   return {
     ...project,
     workspaces: project.workspaces.map((workspace) =>
-      workspaceViewFromIndex(workspace, byWorkspace.get(workspace.id) ?? []),
+      workspaceViewFromIndex(
+        workspace,
+        byWorkspace.get(workspace.id) ?? [],
+        titles.get(workspace.id) ?? workspace.title,
+      ),
     ),
   };
 }
@@ -206,6 +222,36 @@ export function useWorkspaceProjects() {
     [addWorkspace, projectRecords],
   );
 
+  /**
+   * Answers with the stored row, so the sidebar needs no reload; a refusal
+   * comes back as the sentence the row renders.
+   */
+  const renameWorkspace = useCallback(
+    async (workspaceId: string, title: string): Promise<ErrorSentence | null> => {
+      try {
+        const renamed = await workspaceSetTitle(workspaceId, title);
+        setProjectRecords((currentProjects) =>
+          currentProjects.map((project) =>
+            project.id !== renamed.projectId
+              ? project
+              : {
+                  ...project,
+                  workspaces: project.workspaces.map((workspace) =>
+                    workspace.id === renamed.id
+                      ? { ...workspace, title: renamed.title }
+                      : workspace,
+                  ),
+                },
+          ),
+        );
+        return null;
+      } catch (cause: unknown) {
+        return errorSentence(cause);
+      }
+    },
+    [],
+  );
+
   const openProjectDialog = useCallback(() => setProjectDialogOpen(true), []);
   const closeProjectDialog = useCallback(() => {
     setProjectDialogOpen(false);
@@ -242,7 +288,9 @@ export function useWorkspaceProjects() {
           workspaces: project.workspaces.filter(
             (workspace) =>
               !query ||
-              `${project.name} ${workspace.title} ${workspace.meta ?? ""}`
+              // Both spellings: a row is found by what it prints (its
+              // numbered title) and by what the journal stores under it.
+              `${project.name} ${workspace.title} ${workspace.displayTitle} ${workspace.meta ?? ""}`
                 .toLowerCase()
                 .includes(query),
           ),
@@ -271,6 +319,7 @@ export function useWorkspaceProjects() {
     handleSearchChange,
     addWorkspace,
     reuseOrCreateWorkspace,
+    renameWorkspace,
     projectDialogOpen,
     openProjectDialog,
     closeProjectDialog,

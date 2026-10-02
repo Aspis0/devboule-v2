@@ -251,6 +251,68 @@
   font-size: var(--type-meta);
 }
 
+/* The row wraps its button so the context menu and the title editor are
+   siblings of the row, never children of a button. */
+.workspace-row-wrap {
+  position: relative;
+}
+
+.workspace-row-editing {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  background: var(--fill-selected);
+}
+
+.workspace-row-editing input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  font: inherit;
+}
+
+.workspace-row-editing input:focus {
+  outline: none;
+}
+
+.workspace-row-rename-refusal {
+  color: var(--danger);
+  font-size: var(--type-meta);
+}
+
+.workspace-row-menu {
+  position: absolute;
+  z-index: 3;
+  top: 100%;
+  right: 4px;
+  display: flex;
+  min-width: 140px;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-8);
+  background: var(--panel-side);
+}
+
+.workspace-row-menu button {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-row-menu button:hover,
+.workspace-row-menu button:focus-visible {
+  background: var(--fill-hover);
+}
+
 .sidebar-row-stats {
   flex: none;
   margin-left: auto;

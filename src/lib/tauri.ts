@@ -109,6 +109,7 @@ export type CommandArgs = {
     isolation: Workspace["isolation"];
     branch?: string | null;
   };
+  workspace_set_title: { workspaceId: Id; title: string };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
   workspace_git_log: { workspaceId: Id };
@@ -268,6 +269,7 @@ type CommandResults = {
   project_add: Project;
   workspaces_list: Workspace[];
   workspace_create: Workspace;
+  workspace_set_title: Workspace;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
   /** The commit history of one workspace: the branch's own commits and
@@ -429,6 +431,7 @@ export const COMMAND_ARG_KEYS = {
   project_add: ["path"],
   workspaces_list: ["projectId"],
   workspace_create: ["projectId", "isolation", "branch"],
+  workspace_set_title: ["workspaceId", "title"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
   workspace_git_log: ["workspaceId"],
@@ -760,6 +763,9 @@ export const workspaceCreate = (
     isolation,
     branch: branch ?? null,
   });
+/** Answers with the row as the daemon stored it, not the string sent. */
+export const workspaceSetTitle = (workspaceId: Id, title: string) =>
+  invokeTyped("workspace_set_title", { workspaceId, title });
 export const sessionCreate = (
   workspaceId: Id | null,
   kind: SessionKind = "terminal",

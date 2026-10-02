@@ -37,6 +37,24 @@ pub(crate) fn local_workspace_record(project: &ProjectRecord) -> WorkspaceRecord
     }
 }
 
+/// Numbered so two local rows on one folder never read alike.
+pub(crate) fn default_local_title(project: &ProjectRecord, siblings: &[WorkspaceRecord]) -> String {
+    let folder_already_has_a_local_row = siblings.iter().any(|sibling| {
+        sibling.isolation == WorkspaceIsolation::Local && sibling.path == project.path
+    });
+    if !folder_already_has_a_local_row {
+        return project.name.clone();
+    }
+    let mut number = 2;
+    loop {
+        let candidate = format!("{} {number}", project.name);
+        if !siblings.iter().any(|sibling| sibling.title == candidate) {
+            return candidate;
+        }
+        number += 1;
+    }
+}
+
 pub(crate) fn worktree_workspace_record(
     project: &ProjectRecord,
     checkout: &Path,

@@ -116,6 +116,7 @@ pub fn run() {
             backend::workspace::project_add,
             backend::workspace::workspaces_list,
             backend::workspace::workspace_create,
+            backend::workspace::workspace_set_title,
             backend::workspace::workspace_git_status,
             backend::workspace::workspace_git_diff,
             backend::workspace::workspace_git_log,

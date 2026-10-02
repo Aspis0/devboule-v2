@@ -2815,6 +2815,7 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::WorkspaceFilePreviewUnstage { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
+        ClientMessage::WorkspaceSetTitle { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
         ClientMessage::ProvidersAuthCheck { .. } => None,
         ClientMessage::ProvidersRefresh { .. } => None,

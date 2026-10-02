@@ -1439,6 +1439,39 @@ describe("the + new-tab menu", () => {
     expect(workspaceCreate).not.toHaveBeenCalled();
   });
 
+  it("+ → Agent with a workspace selected creates the session in that workspace and mints no row", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, workspaceTwo]);
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, claudeProvider],
+      unreadableDirs: 0,
+    });
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...terminal("session-claude", "Agent"),
+      kind: "claude",
+    });
+    ({ container, unmount } = await renderWorkspace());
+
+    const rows = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")];
+    expect(rows, "the project's two workspace rows did not render").toHaveLength(2);
+    await act(async () => rows[1]!.click());
+
+    await openMenu(container);
+    await act(async () => menuItem(container, "Agent").click());
+    await act(async () => undefined);
+
+    const menu = document.querySelector('[aria-label="Choose agent"]');
+    if (menu === null) throw new Error("provider popover did not render");
+    const claudeOption = Array.from(menu.querySelectorAll("button")).find(
+      (button) => button.textContent === "claude",
+    );
+    if (claudeOption === undefined) throw new Error("claude option did not render");
+    await act(async () => claudeOption.click());
+    await act(async () => undefined);
+
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-2", "claude");
+    expect(workspaceCreate).not.toHaveBeenCalled();
+  });
+
   it("splits the provider picker into installed and available-to-install groups", async () => {
     vi.mocked(providersList).mockResolvedValue({
       providers: [npxProvider, claudeProvider, grokProvider],

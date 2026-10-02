@@ -202,6 +202,7 @@ export function Workspace({
     handleCreateProject,
     newProjectTriggerRef,
     retryProjects,
+    renameWorkspace,
     reuseOrCreateWorkspace,
   } = useWorkspaceProjects();
   // The one seam Settings → Providers may use: the last-selected workspace,
@@ -1460,6 +1461,7 @@ export function Workspace({
           onRetryProjects: handleRetryProjects,
           onSelectWorkspace: selectWorkspace,
           onNewWorkspace: handleNewWorkspace,
+          onRenameWorkspace: renameWorkspace,
           providerMenuAnchorProjectId:
             providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
           providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,

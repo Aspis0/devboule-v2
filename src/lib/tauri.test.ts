@@ -41,6 +41,7 @@ import {
   toolPolicyGet,
   toolPolicySet,
   workspaceGitLog,
+  workspaceSetTitle,
   type PairingOutcome,
 } from "./tauri";
 import type { AgentProfilesDocument, PeerRow, PendingPairing, WorkspaceGitLog } from "../types/ipc";
@@ -1009,5 +1010,30 @@ describe("agent profiles command wrappers", () => {
   it("pins the wire keys of both agent profile commands", () => {
     expect(COMMAND_ARG_KEYS.agent_profiles_get).toEqual([]);
     expect(COMMAND_ARG_KEYS.agent_profiles_set).toEqual(["document"]);
+  });
+});
+
+describe("workspace_set_title command wrapper", () => {
+  it("passes the workspace id and the new title, and answers with the row", async () => {
+    vi.mocked(invoke).mockClear();
+    const workspace = {
+      id: "w.1",
+      projectId: "p.1",
+      title: "renamed",
+      isolation: "local",
+      path: "C:\\devboule",
+    };
+    vi.mocked(invoke).mockResolvedValue(workspace as never);
+
+    const answer = await workspaceSetTitle("w.1", "renamed");
+
+    expect(invoke).toHaveBeenCalledWith("workspace_set_title", {
+      workspaceId: "w.1",
+      title: "renamed",
+    });
+    expect(answer).toEqual(workspace);
+    // The manifest the structural parity test compares with the Rust
+    // parameter list, so a rename on either side has to fail here.
+    expect(COMMAND_ARG_KEYS.workspace_set_title).toEqual(["workspaceId", "title"]);
   });
 });

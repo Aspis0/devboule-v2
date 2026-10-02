@@ -101,20 +101,21 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    clamp_display_name, derive_session_title, validate_display_name, AgentMessageState,
-    AgentProfile, AgentProfilesDocument, AttachmentReference, ClientMessage, DaemonMessage,
-    DaemonStatusBody, DelegationSource, JournalLimits, JournalRetention, JournalSessionUsage,
-    JournalStats, JournalUsage, PairingSecret, PeerAgent, PeerRole, PeerRosterScope, PeerRow,
-    PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit,
-    RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope, StoredAttachment,
-    ToolDescriptor, ToolPolicyEntry, Unreclaimable, VocabularyFeature, VocabularyFeatureControl,
-    VocabularyFeatureOption, VocabularyFeatures, VocabularyModels, VocabularyModes,
-    VocabularyOrigin, VocabularySource, VocabularyState, WorkspaceDirectory, WorkspaceFileContent,
-    WorkspaceFileContentKind, WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind,
-    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFilePreviewStatus,
-    WorkspaceGitCommitEntry, WorkspaceGitDiffLine, WorkspaceGitDiffLineKind,
-    WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus, WorkspaceGitLog,
-    WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS, PEER_DEFAULT_CAPS,
+    clamp_display_name, derive_session_title, validate_display_name, validate_workspace_title,
+    AgentMessageState, AgentProfile, AgentProfilesDocument, AttachmentReference, ClientMessage,
+    DaemonMessage, DaemonStatusBody, DelegationSource, JournalLimits, JournalRetention,
+    JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerAgent, PeerRole,
+    PeerRosterScope, PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState,
+    RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource, SelfInfo,
+    SessionEventEnvelope, StoredAttachment, ToolDescriptor, ToolPolicyEntry, Unreclaimable,
+    VocabularyFeature, VocabularyFeatureControl, VocabularyFeatureOption, VocabularyFeatures,
+    VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource, VocabularyState,
+    WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileContentKind, WorkspaceFileContentStatus,
+    WorkspaceFileEntry, WorkspaceFileKind, WorkspaceFileMutation, WorkspaceFilePreview,
+    WorkspaceFilePreviewStatus, WorkspaceGitCommitEntry, WorkspaceGitDiffLine,
+    WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus,
+    WorkspaceGitLog, WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS,
+    PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -157,7 +158,10 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// put. `SessionCreate`'s optional `cols`/`rows` is an input pair added
 /// without a bump: an older daemon drops the unknown keys and spawns at its
 /// default size, which the first resize corrects.
-pub const PROTOCOL_VERSION: u32 = 18;
+///
+/// A new **request** frame bumps this too: an older reader cannot deserialize
+/// an unknown variant (protocol 19 added `WorkspaceSetTitle`).
+pub const PROTOCOL_VERSION: u32 = 19;
 /// Oldest dialect this crate still accepts. Protocols 17 and 18 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache or cost until rebuilt, and opens a created
@@ -166,6 +170,8 @@ pub const PROTOCOL_VERSION: u32 = 18;
 /// `Workspace.path`), which forces it up to [`PROTOCOL_VERSION`]: agreeing
 /// on an older version would still emit the new struct, and the peer would
 /// fail to parse it.
+/// Protocol 19's one frame rides its own capability, so it does not move
+/// the floor either.
 pub const PROTOCOL_MIN_VERSION: u32 = 16;
 
 /// Well-known capability names. These are strings on the wire so a peer that
@@ -220,6 +226,10 @@ pub mod caps {
     /// app's daemon client refuses the call unless this name was negotiated,
     /// which is what this name exists for.
     pub const WORKSPACE_GIT_LOG: &str = "workspace.git_log";
+
+    /// The workspace rename (`WorkspaceSetTitle`): the name the client
+    /// requires before it sends the frame.
+    pub const WORKSPACE_RENAME: &str = "workspace.rename";
 
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
@@ -680,6 +690,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // and the app reads it to tell a daemon that serves the Commits section
     // from one that predates the frame.
     capabilities.push(Capability::new(caps::WORKSPACE_GIT_LOG));
+    // The rename: offered so the handshake negotiates it, and read by the
+    // client before `WorkspaceSetTitle` leaves for an older daemon.
+    capabilities.push(Capability::new(caps::WORKSPACE_RENAME));
     capabilities
 }
 
@@ -741,6 +754,9 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // intersection keeps it, and reads it before asking a daemon that
     // predates `WorkspaceGitLog`.
     capabilities.push(Capability::new(caps::WORKSPACE_GIT_LOG));
+    // The rename, paired the same way: offered so the intersection keeps it,
+    // and read before `WorkspaceSetTitle` leaves for an older daemon.
+    capabilities.push(Capability::new(caps::WORKSPACE_RENAME));
     capabilities
 }
 
@@ -812,6 +828,16 @@ mod tests {
         assert!(m3a_client_capabilities()
             .iter()
             .any(|cap| cap.as_str() == caps::WORKSPACE_GIT_LOG));
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_workspace_rename_capability() {
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::WORKSPACE_RENAME));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::WORKSPACE_RENAME));
     }
 
     #[test]

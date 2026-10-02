@@ -340,7 +340,8 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::WorkspaceFilePreviewStage { .. }
         | ClientMessage::WorkspaceFilePreviewUnstage { .. }
         | ClientMessage::WorkspaceCreate { .. }
-        | ClientMessage::WorkspaceDelete { .. } => {
+        | ClientMessage::WorkspaceDelete { .. }
+        | ClientMessage::WorkspaceSetTitle { .. } => {
             if !journal_ok {
                 return capability_not_supported(request.request_id(), caps::JOURNAL);
             }

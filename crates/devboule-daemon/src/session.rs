@@ -78,13 +78,14 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_attachment_references, validate_attachments,
-    validate_display_name, validate_session_id, ActiveTurnBehavior, AgentActivityState,
-    AgentTaskState, AttachmentReference, Cursor, DelegationRunState, DelegationState, ErrorCode,
-    ErrorDetails, FinishArtifact, FinishArtifactPart, FinishArtifactPartMetadata, JournalRetention,
-    JournalStats, OwnerId, PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session,
-    SessionEvent, SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
-    SessionStateSnapshot, StoredAttachment, UnattendedState, UserMessageAuthor, UserMessageKind,
-    WireError, Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
+    validate_display_name, validate_session_id, validate_workspace_title, ActiveTurnBehavior,
+    AgentActivityState, AgentTaskState, AttachmentReference, Cursor, DelegationRunState,
+    DelegationState, ErrorCode, ErrorDetails, FinishArtifact, FinishArtifactPart,
+    FinishArtifactPartMetadata, JournalRetention, JournalStats, OwnerId, PermissionOutcome,
+    Project, PromptAttachment, RetentionPatch, Session, SessionEvent, SessionKind, SessionModel,
+    SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot, StoredAttachment,
+    UnattendedState, UserMessageAuthor, UserMessageKind, WireError, Workspace, WorkspaceIsolation,
+    MAX_WRITE_BYTES,
 };
 #[cfg(test)]
 use std::sync::Barrier;
@@ -654,6 +655,9 @@ mod session_workspace_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "workspace_identity_tests.rs"]
+mod workspace_identity_tests;
 use session_resume::{provider_refused_session, resume_end_generation_detached};
 
 pub use event_pull::ConnHandle;

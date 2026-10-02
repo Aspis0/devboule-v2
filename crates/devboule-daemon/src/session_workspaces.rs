@@ -361,6 +361,23 @@ impl super::SessionRegistry {
         self.workspace_create_titled(project_id, isolation, branch, None)
     }
 
+    /// Rename a workspace (`WorkspaceSetTitle`): a rename changes a label,
+    /// never an identity — the id and the sessions on the row are untouched.
+    pub fn workspace_set_title(
+        &self,
+        workspace_id: &str,
+        title: &str,
+    ) -> Result<Workspace, WireError> {
+        let title = validate_workspace_title(title)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .workspace_set_title(workspace_id, &title)
+            .map(|record| record.to_workspace())
+            .map_err(WireError::from)
+    }
+
     pub(crate) fn workspace_create_titled(
         &self,
         project_id: &str,
@@ -444,10 +461,14 @@ impl super::SessionRegistry {
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let project = self.require_project(journal, project_id)?;
         let mut record = crate::workspace::local_workspace_record(&project);
-        if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
-            record.title = title.to_string();
+        let workspace = match title.map(str::trim).filter(|title| !title.is_empty()) {
+            Some(title) => {
+                record.title = title.to_string();
+                journal.workspace_create(record)
+            }
+            None => journal.workspace_create_auto_titled(record),
         }
-        let workspace = journal.workspace_create(record).map_err(WireError::from)?;
+        .map_err(WireError::from)?;
         self.remember_workspace_path(&workspace.id, PathBuf::from(&workspace.path));
         Ok(workspace.to_workspace())
     }

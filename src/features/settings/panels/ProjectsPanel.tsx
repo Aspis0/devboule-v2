@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { projectsList, workspacesList } from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
+import { workspaceDisplayTitles } from "../../../lib/workspaceTitles";
 import { ErrorText } from "../../../components/ErrorText";
 import { NewProjectDialog } from "../../../components/NewProjectDialog";
 import type { Project, Workspace } from "../../../types/ipc";
@@ -85,23 +86,26 @@ export function ProjectsPanel() {
               const workspaces = workspacesByProject[project.id];
               const workspaceCount = workspaces?.length;
               const workspaceError = workspaceErrors[project.id];
+              // A local workspace's path IS its project's path by construction,
+              // so a path line renders only where a row's checkout differs.
+              const titles = workspaceDisplayTitles(workspaces ?? []);
               return (
                 <div className="proj-row settings-project-card" key={project.id}>
                   <span className="settings-card-copy">
                     <span className="settings-card-title proj-name">{project.name}</span>
                     <span className="settings-card-meta">{project.path}</span>
-                    {(workspaces ?? []).map((workspace) =>
-                      // Render exactly what the daemon sent: no project-path
+                    {(workspaces ?? []).map((workspace) => (
+                      // Render what the daemon sent: no project-path
                       // fallback, no joined path. Same contract as Session.cwd.
-                      // A local workspace's path IS its project's path by
-                      // construction, so repeating it prints the same line
-                      // three times — skip only that duplicate.
-                      workspace.path && workspace.path !== project.path ? (
-                        <span className="settings-card-meta" key={workspace.id}>
-                          {workspace.path}
+                      <Fragment key={workspace.id}>
+                        <span className="settings-card-meta">
+                          {titles.get(workspace.id) ?? workspace.title}
                         </span>
-                      ) : null,
-                    )}
+                        {workspace.path && workspace.path !== project.path ? (
+                          <span className="settings-card-meta">{workspace.path}</span>
+                        ) : null}
+                      </Fragment>
+                    ))}
                   </span>
                   {workspaceError !== undefined ? (
                     <span role="alert">

@@ -151,6 +151,37 @@ describe("Settings projects", () => {
     expect(projectPaths).toHaveLength(1);
   });
 
+  it("names two workspaces on the project path as two rows, and prints the path once", async () => {
+    // Two real local records on the project folder: both carry the project
+    // path, so identifying them means their titles, never the path again.
+    vi.mocked(workspacesList).mockResolvedValue([
+      {
+        id: "workspace-local-one",
+        projectId: project.id,
+        title: "real-project",
+        isolation: "local",
+        path: "D:\\real-project",
+      },
+      {
+        id: "workspace-local-two",
+        projectId: project.id,
+        title: "real-project",
+        isolation: "local",
+        path: "D:\\real-project",
+      },
+    ]);
+    await renderProjects();
+
+    const lines = [...container.querySelectorAll(".settings-project-card .settings-card-meta")].map(
+      (meta) => meta.textContent,
+    );
+    // The project's own line, then each row named by its title: the shared
+    // folder path prints once, never once per record.
+    expect(lines).toEqual(["D:\\real-project", "real-project", "real-project 2"]);
+    expect(container.querySelector(".proj-name")?.textContent).toBe("real-project");
+    expect(container.textContent).toContain("2 workspaces");
+  });
+
   it("keeps other projects visible when one workspace list fails and retries", async () => {
     const brokenProject: Project = {
       id: "project-settings-broken",

@@ -855,6 +855,7 @@ enum JournalCmd {
     },
     WorkspaceCreate {
         record: WorkspaceRecord,
+        derive_default_title: bool,
         reply: mpsc::Sender<Result<WorkspaceRecord, JournalError>>,
     },
     WorkspaceGet {
@@ -864,6 +865,11 @@ enum JournalCmd {
     WorkspaceDelete {
         id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    WorkspaceSetTitle {
+        id: String,
+        title: String,
+        reply: mpsc::Sender<Result<WorkspaceRecord, JournalError>>,
     },
     Replay {
         session_id: String,
@@ -1438,7 +1444,22 @@ impl Journal {
         &self,
         record: WorkspaceRecord,
     ) -> Result<WorkspaceRecord, JournalError> {
-        self.rpc(|reply| JournalCmd::WorkspaceCreate { record, reply })
+        self.rpc(|reply| JournalCmd::WorkspaceCreate {
+            record,
+            derive_default_title: false,
+            reply,
+        })
+    }
+
+    pub fn workspace_create_auto_titled(
+        &self,
+        record: WorkspaceRecord,
+    ) -> Result<WorkspaceRecord, JournalError> {
+        self.rpc(|reply| JournalCmd::WorkspaceCreate {
+            record,
+            derive_default_title: true,
+            reply,
+        })
     }
 
     pub fn workspace_get(&self, id: &str) -> Result<Option<WorkspaceRecord>, JournalError> {
@@ -1451,6 +1472,18 @@ impl Journal {
     pub fn workspace_delete(&self, id: &str) -> Result<(), JournalError> {
         self.rpc(|reply| JournalCmd::WorkspaceDelete {
             id: id.to_string(),
+            reply,
+        })
+    }
+
+    pub fn workspace_set_title(
+        &self,
+        id: &str,
+        title: &str,
+    ) -> Result<WorkspaceRecord, JournalError> {
+        self.rpc(|reply| JournalCmd::WorkspaceSetTitle {
+            id: id.to_string(),
+            title: title.to_string(),
             reply,
         })
     }
@@ -2262,8 +2295,12 @@ fn journal_loop(
             JournalCmd::WorkspacesList { project_id, reply } => {
                 let _ = reply.send(list_workspaces(&conn, &project_id));
             }
-            JournalCmd::WorkspaceCreate { record, reply } => {
-                let result = add_workspace(&conn, &record);
+            JournalCmd::WorkspaceCreate {
+                record,
+                derive_default_title,
+                reply,
+            } => {
+                let result = add_workspace(&conn, &record, derive_default_title);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }
@@ -2274,6 +2311,13 @@ fn journal_loop(
             }
             JournalCmd::WorkspaceDelete { id, reply } => {
                 let result = delete_workspace(&conn, &id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::WorkspaceSetTitle { id, title, reply } => {
+                let result = set_workspace_title(&conn, &id, &title);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }
@@ -2508,9 +2552,18 @@ fn list_workspaces(
             "Project '{project_id}' does not exist."
         )));
     }
+    query_workspaces(conn, project_id)
+}
+
+/// A project's rows in creation order: the order the app numbers equal titles
+/// in, and the order a new row's default title is chosen from.
+fn query_workspaces(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<WorkspaceRecord>, JournalError> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms, branch
-         FROM workspaces WHERE project_id = ?1 ORDER BY id",
+         FROM workspaces WHERE project_id = ?1 ORDER BY created_at_ms, id",
     )?;
     let rows = stmt.query_map([project_id], workspace_from_row)?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -2528,16 +2581,24 @@ fn get_workspace(conn: &Connection, id: &str) -> Result<Option<WorkspaceRecord>,
     .map_err(JournalError::from)
 }
 
+/// The project's rows are read and the default title chosen in the command
+/// that inserts; a read taken earlier could hand two creates the same number.
 fn add_workspace(
     conn: &Connection,
     record: &WorkspaceRecord,
+    derive_default_title: bool,
 ) -> Result<WorkspaceRecord, JournalError> {
-    if get_project(conn, &record.project_id)?.is_none() {
-        return Err(JournalError::InvalidRequest(format!(
-            "Project '{}' does not exist.",
-            record.project_id
-        )));
-    }
+    let project = get_project(conn, &record.project_id)?.ok_or_else(|| {
+        JournalError::InvalidRequest(format!("Project '{}' does not exist.", record.project_id))
+    })?;
+    let record = if derive_default_title {
+        let siblings = query_workspaces(conn, &record.project_id)?;
+        let mut record = record.clone();
+        record.title = crate::workspace::default_local_title(&project, &siblings);
+        record
+    } else {
+        record.clone()
+    };
     conn.execute(
         "INSERT INTO workspaces (
             id, project_id, title, isolation, path, created_at_ms, updated_at_ms, branch
@@ -2553,7 +2614,7 @@ fn add_workspace(
             record.branch,
         ],
     )?;
-    Ok(record.clone())
+    Ok(record)
 }
 
 fn delete_workspace(conn: &Connection, id: &str) -> Result<(), JournalError> {
@@ -2564,6 +2625,26 @@ fn delete_workspace(conn: &Connection, id: &str) -> Result<(), JournalError> {
         )));
     }
     Ok(())
+}
+
+/// A row the journal does not hold is an error, never a silent success: a
+/// title stored against no row would be forgotten while callers still show it.
+fn set_workspace_title(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+) -> Result<WorkspaceRecord, JournalError> {
+    let updated = conn.execute(
+        "UPDATE workspaces SET title = ?1, updated_at_ms = ?2 WHERE id = ?3",
+        params![title, now_ms() as i64, id],
+    )?;
+    if updated == 0 {
+        return Err(JournalError::InvalidRequest(format!(
+            "Workspace '{id}' does not exist."
+        )));
+    }
+    get_workspace(conn, id)?
+        .ok_or_else(|| JournalError::InvalidRequest(format!("Workspace '{id}' does not exist.")))
 }
 
 const PEER_COLUMNS: &str = "device_id, display_name, role, public_key, paired_by_user, \

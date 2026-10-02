@@ -4139,3 +4139,49 @@ fn the_send_reply_carries_whether_a_turn_began() {
         );
     }
 }
+
+/// The frame's wire words, pinned against what `src/lib/tauri.ts` sends.
+#[test]
+fn workspace_set_title_round_trips_with_its_wire_words() {
+    let request = ClientMessage::WorkspaceSetTitle {
+        id: 7,
+        workspace_id: "ws.1".to_string(),
+        title: "night build".to_string(),
+    };
+    let json = serde_json::to_string(&request).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_set_title\"",
+        "\"workspaceId\":\"ws.1\"",
+        "\"title\":\"night build\"",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        request
+    );
+    assert_eq!(request.name(), "WorkspaceSetTitle");
+    assert_eq!(request.request_id(), Some(7));
+}
+
+#[test]
+fn a_workspace_title_follows_the_display_name_rule_in_workspace_words() {
+    assert_eq!(
+        validate_workspace_title("  night build  "),
+        Ok("night build".to_string())
+    );
+    assert!(validate_workspace_title("").is_err());
+    assert!(validate_workspace_title("   \t ").is_err());
+    let sixty = "x".repeat(60);
+    assert_eq!(validate_workspace_title(&sixty), Ok(sixty.clone()));
+    let error = validate_workspace_title(&"x".repeat(61)).expect_err("61 characters");
+    assert_eq!(
+        error,
+        "A workspace title is 61 characters; the limit is 60."
+    );
+    let error = validate_workspace_title("na\u{200b}me").expect_err("invisible formatting");
+    assert_eq!(
+        error,
+        "A workspace title must not contain an invisible formatting character."
+    );
+}
