@@ -269,6 +269,18 @@ fn cmd_gated_exit(ready_file: &Path) -> PtyCommand {
     ))
 }
 
+/// Prints `marker` after `gate_file` opens, records it in `done_file`, then idles; a send
+/// needs an attached subscription, so a gate is how a test emits output while detached.
+fn cmd_gated_marker(gate_file: &Path, done_file: &Path, marker: &str) -> PtyCommand {
+    let gate_file = gate_file.display().to_string().replace('\'', "''");
+    let done_file = done_file.display().to_string().replace('\'', "''");
+    powershell_command(format!(
+        "while (-not (Test-Path -LiteralPath '{gate_file}')) {{ Start-Sleep -Milliseconds 25 }}; \
+         Write-Output '{marker}'; Set-Content -LiteralPath '{done_file}' -Value 'ran'; \
+         while ($true) {{ Start-Sleep -Milliseconds 100 }}"
+    ))
+}
+
 fn cmd_spawn_long_lived_child_with_pid_file(marker: &str, pid_file: &Path) -> PtyCommand {
     let pid_file = pid_file.display().to_string().replace('\'', "''");
     // Start-Process always dispatches through ShellExecuteExW, which is licensed to
@@ -307,6 +319,16 @@ fn powershell_command(script: String) -> PtyCommand {
         std::env::current_dir().unwrap(),
         Vec::new(),
     )
+}
+
+/// Renders a helper command as one shell input line (quoted for cmd.exe's re-parse): a send
+/// needs an attached subscription, so gated helpers start mid-session, not at spawn.
+fn command_line(command: &PtyCommand) -> String {
+    let mut line = command.program.clone();
+    for arg in &command.args {
+        line.push_str(&format!(" \"{arg}\""));
+    }
+    line
 }
 
 /// A marker counts as observed when it reached the client as live output OR
@@ -523,9 +545,14 @@ fn real_pty_spawn_read_resize_and_teardown() {
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
     let received = Arc::new(Mutex::new(Vec::new()));
-    client
+    let subscription = client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
         .expect("attach");
+    // Attach creates an observer; resize control is a separate claim that
+    // only the claiming subscription owns.
+    client
+        .session_claim_with_subscription(&session.id, subscription)
+        .expect("claim resize control");
     client.session_resize(&session.id, 100, 30).expect("resize");
     let saw_marker = wait_for_marker(&received, "DEVBOULE_PTY_OK", Duration::from_secs(10));
     client.session_close(&session.id).expect("close");
@@ -542,6 +569,15 @@ fn pty_session_interrupt_is_rejected_for_terminal_sessions() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create terminal session");
+    // The client refuses an interrupt that has no attachment before the
+    // frame is sent; attach so the terminal-kind refusal is what answers.
+    client
+        .session_attach(
+            &session.id,
+            None,
+            collect_handler(Arc::new(Mutex::new(Vec::new()))),
+        )
+        .expect("attach");
     let error = client
         .session_interrupt(&session.id)
         .expect_err("terminal sessions must reject interrupt");
@@ -565,7 +601,12 @@ fn pty_session_interrupt_is_rejected_for_terminal_sessions() {
 fn real_pty_detach_keeps_screen_state_and_close_reaps_child() {
     const MARKER: &str = "DEVBOULE_DETACH_BUFFER";
     let harness = Harness::spawn();
-    queue_command(&harness.paths, cmd_keep());
+    let gate_file = harness.dir.join("detach-marker.gate");
+    let done_file = harness.dir.join("detach-marker.done");
+    queue_command(
+        &harness.paths,
+        cmd_gated_marker(&gate_file, &done_file, MARKER),
+    );
     let client = harness.client("detach");
     let session = client
         .session_create(None, SessionKind::Terminal, None)
@@ -574,27 +615,28 @@ fn real_pty_detach_keeps_screen_state_and_close_reaps_child() {
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
         .expect("attach");
-    // Attach always enqueues a snapshot; let it arrive before sampling so
-    // the assertion below cannot count an in-flight pre-detach event.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && received.lock().unwrap().is_empty() {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let received_before_detach = received.lock().unwrap().len();
-
     client.session_detach(&session.id).expect("detach");
     assert_eq!(
         client.sessions_list().expect("list").len(),
         1,
         "detach must leave the session alive"
     );
+    // Sampled after the detach reply: events precede their reply, so this
+    // count covers exactly the detached window.
+    let received_before_detach = received.lock().unwrap().len();
 
-    // Output produced while detached goes to the journal and the emulator.
-    // The reattaching client synchronises through a screen snapshot, so the
-    // detached command's text must be part of the snapshot's ANSI.
-    client
-        .session_send(&session.id, &format!("echo {MARKER}\r\n"))
-        .expect("send while detached");
+    std::fs::write(&gate_file, b"open").expect("open the output gate");
+    let gate_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < gate_deadline && !done_file.exists() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        done_file.exists(),
+        "the gated output never ran while detached"
+    );
+    // Output produced while detached goes to the journal and the emulator;
+    // the reattaching client synchronises through a screen snapshot, so the
+    // marker must be part of the snapshot's ANSI.
 
     let replayed = Arc::new(Mutex::new(Vec::new()));
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -687,7 +729,12 @@ fn output_flows_to_an_attached_client() {
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
 fn detach_stops_delivery_without_killing_the_process() {
     let harness = Harness::spawn();
-    queue_command(&harness.paths, cmd_keep());
+    let gate_file = harness.dir.join("detach-live.gate");
+    let done_file = harness.dir.join("detach-live.done");
+    queue_command(
+        &harness.paths,
+        cmd_gated_marker(&gate_file, &done_file, "still-alive"),
+    );
     let client = harness.client("live");
     let session = client
         .session_create(None, SessionKind::Terminal, None)
@@ -698,10 +745,20 @@ fn detach_stops_delivery_without_killing_the_process() {
         .expect("attach");
     client.session_detach(&session.id).expect("detach");
     let after = received.lock().unwrap().len();
-    client
-        .session_send(&session.id, "echo still-alive\r\n")
-        .expect("send");
-    std::thread::sleep(Duration::from_millis(400));
+
+    // The shell prints only after the gate opens, so the output is produced
+    // entirely inside the detached window this assertion watches.
+    std::fs::write(&gate_file, b"open").expect("open the output gate");
+    let gate_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < gate_deadline && !done_file.exists() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        done_file.exists(),
+        "the gated output never ran while detached"
+    );
+    // Give a working delivery path time to arrive before counting.
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(received.lock().unwrap().len(), after);
     assert_eq!(client.sessions_list().expect("list").len(), 1);
     client.session_close(&session.id).expect("close");
@@ -712,6 +769,8 @@ fn detach_stops_delivery_without_killing_the_process() {
 fn reattach_with_a_cursor_synchronises_screen_state() {
     let harness = Harness::spawn();
     queue_command(&harness.paths, cmd_keep());
+    let gate_file = harness.dir.join("cursor.gate");
+    let done_file = harness.dir.join("cursor.done");
     let client = harness.client("cursor");
     let session = client
         .session_create(None, SessionKind::Terminal, None)
@@ -770,11 +829,22 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
         })
         .max()
         .expect("seq");
-    client.session_detach(&session.id).expect("detach");
+    // A send needs an attached subscription, so the gated marker starts now and
+    // prints only after the test opens the gate past the detach reply.
+    let gated_marker = cmd_gated_marker(&gate_file, &done_file, "DEVBOULE_CURSOR_TWO");
     client
-        .session_send(&session.id, "echo DEVBOULE_CURSOR_TWO\r\n")
-        .expect("send");
-    std::thread::sleep(Duration::from_millis(400));
+        .session_send(&session.id, &format!("{}\r\n", command_line(&gated_marker)))
+        .expect("start the gated marker before detach");
+    client.session_detach(&session.id).expect("detach");
+    std::fs::write(&gate_file, b"open").expect("open the output gate");
+    let gate_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < gate_deadline && !done_file.exists() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        done_file.exists(),
+        "the gated marker never ran while detached"
+    );
     let second = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(
@@ -862,6 +932,14 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
     while Instant::now() < deadline && delivered.lock().unwrap().is_empty() {
         std::thread::sleep(Duration::from_millis(10));
     }
+    // A send needs an attached subscription, so the flood goes in before the
+    // detach; the detached-window backlog is what the cursor replay deduplicates.
+    let flood = (0..2500)
+        .map(|index| format!("echo DEVBOULE_DUP_{index:04}\r\n"))
+        .collect::<String>();
+    client
+        .session_send(&session.id, &flood)
+        .expect("queue flood before detach");
     client.session_detach(&session.id).expect("initial detach");
     // Detach is an ordinary request. Fairness may deliver one more output
     // before its reply, so the cursor must be sampled after the reply rather
@@ -874,13 +952,6 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
             delivered.len(),
         )
     };
-
-    let flood = (0..2500)
-        .map(|index| format!("echo DEVBOULE_DUP_{index:04}\r\n"))
-        .collect::<String>();
-    client
-        .session_send(&session.id, &flood)
-        .expect("send flood");
     // Let the detached process accumulate output before the reattach. The
     // final marker below is still required after every attach, so this
     // pause cannot make the test accept a partial flood.
@@ -1018,8 +1089,8 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
         .last()
         .copied()
         .expect("initial output sequence");
-    client.session_detach(&session.id).expect("initial detach");
-
+    // A send needs an attached subscription, so the flood goes in before the
+    // detach; the detached-window backlog is what Shutdown's drain delivers once.
     let ready_file = harness.dir.join("shutdown-flood.ready");
     let ready_path = ready_file.display();
     let flood = format!(
@@ -1027,7 +1098,8 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
     );
     client
         .session_send(&session.id, &flood)
-        .expect("send flood");
+        .expect("queue flood before detach");
+    client.session_detach(&session.id).expect("initial detach");
     let ready_deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < ready_deadline && !ready_file.exists() {
         std::thread::sleep(Duration::from_millis(20));
@@ -1145,23 +1217,53 @@ fn two_clients_can_both_attach() {
     let session = a
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    let first_subscription = a
-        .session_attach(
-            &session.id,
-            None,
-            collect_handler(Arc::new(Mutex::new(Vec::new()))),
-        )
+    let a_events = Arc::new(Mutex::new(Vec::new()));
+    let b_events = Arc::new(Mutex::new(Vec::new()));
+    a.session_attach(&session.id, None, collect_handler(Arc::clone(&a_events)))
         .expect("first attach");
     let second_subscription = b
-        .session_attach(
-            &session.id,
-            None,
-            collect_handler(Arc::new(Mutex::new(Vec::new()))),
-        )
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&b_events)))
         .expect("second attach");
-    assert_ne!(first_subscription, second_subscription);
+    // (connection, subscription id) keys an observer, so both clients may
+    // open their own first subscription: the ids need not differ.
+    a.session_send(&session.id, "echo DEVBOULE_TWO_CLIENTS_ONE\r\n")
+        .expect("send");
+    assert!(
+        wait_for_marker(
+            &a_events,
+            "DEVBOULE_TWO_CLIENTS_ONE",
+            Duration::from_secs(10)
+        ),
+        "the sending client saw none of its own output"
+    );
+    assert!(
+        wait_for_marker(
+            &b_events,
+            "DEVBOULE_TWO_CLIENTS_ONE",
+            Duration::from_secs(10)
+        ),
+        "the second client saw none of the broadcast output"
+    );
     b.session_detach_with_subscription(&session.id, second_subscription)
         .expect("second detach");
+    // The attachments are independent: b's detach must not take a with it.
+    a.session_send(&session.id, "echo DEVBOULE_TWO_CLIENTS_TWO\r\n")
+        .expect("send after the second detach");
+    assert!(
+        wait_for_marker(
+            &a_events,
+            "DEVBOULE_TWO_CLIENTS_TWO",
+            Duration::from_secs(10)
+        ),
+        "the first client stopped receiving after the second detached"
+    );
+    let b_frozen = b_events.lock().unwrap().len();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        b_events.lock().unwrap().len(),
+        b_frozen,
+        "a detached connection must receive nothing further"
+    );
     a.session_close(&session.id).expect("close");
 }
 
@@ -1716,6 +1818,15 @@ fn detach_does_not_trip_idle_exit() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
+    // Detach addresses an attached subscription; without one the client
+    // refuses the request locally.
+    client
+        .session_attach(
+            &session.id,
+            None,
+            collect_handler(Arc::new(Mutex::new(Vec::new()))),
+        )
+        .expect("attach");
     client.session_detach(&session.id).expect("detach");
     drop(client);
     std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(300));
@@ -2426,12 +2537,15 @@ fn killed_daemon_replays_scrollback_as_recovered() {
             .all(|event| !matches!(event, SessionEvent::Exit { .. })),
         "killed session must not look like a clean Exit"
     );
+    // Recovered ends the pull and drops the idle transcript runtime with it,
+    // so a later send fails on the id itself: the same refusal an unknown
+    // session gets. The PTY process is gone either way.
     let err = client
         .session_send(&session_id, "echo no\r\n")
         .expect_err("send to recovered");
     assert!(
-        err.to_string().to_ascii_lowercase().contains("gone"),
-        "expected process-gone error, got {err}"
+        err.to_string().contains("No session with that id"),
+        "expected the post-Recovered session-not-found refusal, got {err}"
     );
 }
 
@@ -3316,9 +3430,14 @@ fn control_traffic_is_answered_within_bound_during_flood() {
             }
         }
     });
-    client
+    let subscription = client
         .session_attach(&session.id, None, handler)
         .expect("attach");
+    // Attach creates an observer; resize control is a separate claim that
+    // only the claiming subscription owns.
+    client
+        .session_claim_with_subscription(&session.id, subscription)
+        .expect("claim resize control");
 
     // Control traffic on the SAME connection whose writer is busy draining
     // the flood — exactly the path that used to starve. Ping and resize

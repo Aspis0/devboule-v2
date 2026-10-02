@@ -337,4 +337,6 @@ jobs:
           restore-keys: ort-dfbin-${{ runner.os }}-
 
       - name: "Run #[ignore]d tests (failures here are informational)"
-        run: cargo test --workspace --exclude oracle-core --locked -- --ignored --test-threads=4
+        # --no-fail-fast: one red test must not stop the run, or every
+        # ignored test after it reports nothing at all.
+        run: cargo test --workspace --exclude oracle-core --locked --no-fail-fast -- --ignored --test-threads=4

@@ -32,16 +32,33 @@ use crate::oracle::{FileTab, OracleModelState};
 fn real_model_choose_index_query() {
     let env = TestEnvironment::new("onnx");
     env.set("ORACLE_RS_EP", "cpu");
-    let source = std::env::var_os("DEVBOULE_E2E_MODEL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let source = match std::env::var_os("DEVBOULE_E2E_MODEL_DIR") {
+        Some(configured) => {
+            let configured = PathBuf::from(configured);
+            assert!(
+                configured.is_dir(),
+                "DEVBOULE_E2E_MODEL_DIR points to {}, which is not a directory",
+                configured.display()
+            );
+            configured
+        }
+        None => {
+            let default = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("..")
                 .join("..")
                 .join("recon")
                 .join("models")
-                .join(DEFAULT_ORACLE_MODEL)
-        });
+                .join(DEFAULT_ORACLE_MODEL);
+            if !default.is_dir() {
+                println!(
+                    "skipping real_model_choose_index_query: model directory {} is absent",
+                    default.display()
+                );
+                return;
+            }
+            default
+        }
+    };
     let source = source
         .canonicalize()
         .unwrap_or_else(|error| panic!("real model directory {}: {error}", source.display()));
