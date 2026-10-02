@@ -4373,6 +4373,81 @@ fn a_daemon_peer_uses_far_sender_ids_and_refuses_relays_at_the_gate() {
     let _ = std::fs::remove_dir_all(path);
 }
 
+/// A retried `AgentMessageSend` — the same idempotency key and the same
+/// payload — is one delivery: the far daemon answers the first receipt and
+/// writes nothing a second time. The same key with a changed payload is a
+/// conflict, not a retry, and delivers nothing.
+#[test]
+fn a_retried_agent_message_with_the_same_key_delivers_once() {
+    let (path, state) = temp_state("agent-message-idempotent");
+    let owner = OwnerId::new("peer_dev-peer-1", "daemon").expect("owner");
+    let peer = remote_conn_with_caps(
+        PeerRole::Daemon,
+        Some("local-user"),
+        &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
+    );
+    let received = crate::session::insert_test_live_agent_with_recording_writer(
+        &state.sessions,
+        "s.retry.target",
+        OwnerId::new("local-user", "local-process").expect("local owner"),
+        devboule_protocol::SessionKind::Pi,
+    );
+    let send = |id: u64, text: &str| {
+        dispatch(
+            &state,
+            &owner,
+            ClientMessage::AgentMessageSend {
+                id,
+                from_session: "s.far.source".to_string(),
+                to_session: "s.retry.target".to_string(),
+                text: text.to_string(),
+                idempotency_key: Some("retry-once".to_string()),
+            },
+            &peer,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("the gate answers")
+    };
+    for id in [20, 21] {
+        assert!(
+            matches!(
+                send(id, "one delivery"),
+                DaemonMessage::AgentMessageReceipt {
+                    state: AgentMessageState::Accepted,
+                    ..
+                }
+            ),
+            "the retry is answered from the first receipt"
+        );
+    }
+    let envelope = String::from_utf8(received.lock().expect("received").clone())
+        .expect("the envelope is utf8");
+    assert_eq!(
+        envelope.matches("from_agent:").count(),
+        1,
+        "one delivery, one envelope: {envelope}"
+    );
+    assert!(
+        matches!(
+            send(22, "a different payload"),
+            DaemonMessage::Error(WireError {
+                code: ErrorCode::IdempotencyConflict,
+                ..
+            })
+        ),
+        "the same key with a changed payload is a conflict, not a retry"
+    );
+    let after_conflict = String::from_utf8(received.lock().expect("received").clone())
+        .expect("the envelope is utf8");
+    assert_eq!(after_conflict, envelope, "a conflict delivers nothing");
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
 /// §8b A5 in the trail: a paired device asking for a mode that runs without
 /// the prompt is refused, and the row says *that*, not a plain denial.
 #[test]

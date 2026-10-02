@@ -1,5 +1,8 @@
-//! The `devboule_list_peer_agents` tool: name one paired device, dial it
-//! once, and render the live agent roster it answers with.
+//! The paired-device door and the `devboule_list_peer_agents` tool: resolve
+//! one device this session may call, dial it once, and render the live agent
+//! roster it answers with. `devboule_send_message` passes through the same
+//! door when it names a device, so one rule decides whose device either tool
+//! may reach.
 //!
 //! One call names one device and makes one dial — never a fan-out, because
 //! the daemon's whole outbound budget is four slots. The dial is bounded,
@@ -61,15 +64,18 @@ impl PeerAgentsError {
     }
 }
 
-/// The roster for one device, or the failure naming its cause.
-pub(crate) fn list_peer_agents(
+/// Resolve one paired device by id from this daemon's rows and attribute it
+/// to the calling session's own user: absence, a pairing with no recorded
+/// user, another user's pairing and a revoked pairing are four different
+/// refusals. Both dialled tools pass through this door, so the roster read
+/// and the agent send cannot drift about whose device they may call.
+pub(crate) fn resolve_paired_device(
     state: &Arc<ServerState>,
     caller: &OwnerId,
     device_id: &str,
-) -> Result<Value, PeerAgentsError> {
+) -> Result<PeerRecord, PeerAgentsError> {
     // The device is resolved from this daemon's rows by id first, then
-    // attributed: absence, a pairing with no recorded user, and a pairing
-    // that belongs to someone else are three different refusals.
+    // attributed.
     let row = state
         .peers()
         .map_err(|error| PeerAgentsError {
@@ -110,6 +116,16 @@ pub(crate) fn list_peer_agents(
             row.display_name
         )));
     }
+    Ok(row)
+}
+
+/// The roster for one device, or the failure naming its cause.
+pub(crate) fn list_peer_agents(
+    state: &Arc<ServerState>,
+    caller: &OwnerId,
+    device_id: &str,
+) -> Result<Value, PeerAgentsError> {
+    let row = resolve_paired_device(state, caller, device_id)?;
     match call_peer(state, device_id, ClientMessage::PeerAgentsList { id: 0 }) {
         Ok(DaemonMessage::PeerAgents { agents, scope, .. }) => {
             // The responder's own "cannot scope" verdict: its pairing row
@@ -205,8 +221,9 @@ fn roster_document(
 }
 
 /// The sentence for a dial that failed, mapped from the step it failed at:
-/// what happened and what to do about it, never the debug string.
-fn dial_error_sentence(error: &DialError, row: &PeerRecord) -> String {
+/// what happened and what to do about it, never the debug string. Shared by
+/// every tool that dials, so one device failure reads one way.
+pub(crate) fn dial_error_sentence(error: &DialError, row: &PeerRecord) -> String {
     let name = &row.display_name;
     match error.step() {
         "row_missing" => format!(

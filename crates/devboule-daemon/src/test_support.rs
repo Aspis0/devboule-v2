@@ -135,6 +135,21 @@ pub(crate) fn spawn_canned_noise_responder(
     capabilities: Vec<devboule_protocol::Capability>,
     reply: devboule_protocol::DaemonMessage,
 ) -> std::net::SocketAddr {
+    spawn_capturing_noise_responder(static_private, capabilities, reply, 1).0
+}
+
+/// The same responder, reporting each of `dials` requests; `None` is a
+/// handshake with no request, which is how a capability refusal looks from the far side.
+#[cfg(test)]
+pub(crate) fn spawn_capturing_noise_responder(
+    static_private: [u8; 32],
+    capabilities: Vec<devboule_protocol::Capability>,
+    reply: devboule_protocol::DaemonMessage,
+    dials: usize,
+) -> (
+    std::net::SocketAddr,
+    std::sync::mpsc::Receiver<Option<devboule_protocol::ClientMessage>>,
+) {
     use crate::framing::Framed;
     use crate::peer_transport::{
         responder_handshake, split_session, HANDSHAKE_DEADLINE, PEER_NOISE_PATTERN, PEER_PROLOGUE,
@@ -147,6 +162,76 @@ pub(crate) fn spawn_canned_noise_responder(
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the fake responder");
     let address = listener.local_addr().expect("fake responder address");
+    let (requests_tx, requests_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for _ in 0..dials {
+            let (stream, _) = listener.accept().expect("accept one dial");
+            let session = responder_handshake(
+                &stream,
+                Instant::now() + HANDSHAKE_DEADLINE,
+                &static_private,
+                PEER_PROLOGUE,
+                None,
+                PEER_NOISE_PATTERN,
+            )
+            .expect("fake responder handshake");
+            let (reader, writer, closer) = split_session(&stream, session).expect("split");
+            let framed = Framed::from_stream(reader, writer, closer);
+            let hello: ClientMessage = framed
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the dial's hello");
+            assert!(matches!(hello, ClientMessage::Hello(_)));
+            framed
+                .send(&DaemonMessage::Hello(DaemonHello {
+                    protocol_version: PROTOCOL_VERSION,
+                    min_protocol_version: PROTOCOL_MIN_VERSION,
+                    daemon_version: "test".to_string(),
+                    instance_id: "fake-responder".to_string(),
+                    pid: std::process::id(),
+                    capabilities: capabilities.clone(),
+                }))
+                .expect("hello reply");
+            let request = match framed.recv_timeout::<ClientMessage>(Duration::from_secs(10)) {
+                Ok(request) => request,
+                Err(_) => {
+                    let _ = requests_tx.send(None);
+                    continue;
+                }
+            };
+            // The reply must go out even when the test dropped the report channel.
+            let reported = requests_tx.send(Some(request));
+            framed.send(&reply).expect("send the canned reply");
+            if reported.is_err() {
+                return;
+            }
+        }
+    });
+    (address, requests_rx)
+}
+
+/// A far end that takes the request and goes quiet; it holds the connection
+/// past the dialer's deadline so the failure is the timeout, not a racing close.
+#[cfg(test)]
+pub(crate) fn spawn_silent_noise_responder(
+    static_private: [u8; 32],
+    capabilities: Vec<devboule_protocol::Capability>,
+) -> (
+    std::net::SocketAddr,
+    std::sync::mpsc::Receiver<Option<devboule_protocol::ClientMessage>>,
+) {
+    use crate::framing::Framed;
+    use crate::peer_transport::{
+        responder_handshake, split_session, HANDSHAKE_DEADLINE, PEER_NOISE_PATTERN, PEER_PROLOGUE,
+    };
+    use devboule_protocol::{
+        ClientMessage, DaemonHello, DaemonMessage, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    };
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the fake responder");
+    let address = listener.local_addr().expect("fake responder address");
+    let (requests_tx, requests_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept one dial");
         let session = responder_handshake(
@@ -171,15 +256,21 @@ pub(crate) fn spawn_canned_noise_responder(
                 daemon_version: "test".to_string(),
                 instance_id: "fake-responder".to_string(),
                 pid: std::process::id(),
-                capabilities,
+                capabilities: capabilities.clone(),
             }))
             .expect("hello reply");
-        let _request: ClientMessage = framed
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the dial's request");
-        framed.send(&reply).expect("send the canned reply");
+        match framed.recv_timeout::<ClientMessage>(Duration::from_secs(10)) {
+            Ok(request) => {
+                let _ = requests_tx.send(Some(request));
+            }
+            Err(_) => {
+                let _ = requests_tx.send(None);
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_secs(15));
     });
-    address
+    (address, requests_rx)
 }
 
 /// Every `.rs` file under `src/mcp_broker/`, read from disk at test time.

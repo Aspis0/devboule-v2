@@ -631,11 +631,12 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_send_message",
     label: "Send Devboule message",
-    description: `Sends a message to one live Devboule agent session.`,
+    description: `Sends a message to one live Devboule agent session. Name a session on this machine with to_agent; to send to an agent on a paired device, pass that device's id from devboule_list_devices as deviceId and the session id devboule_list_peer_agents answered for it as to_agent. A paired-device send dials the device once and answers with that daemon's own delivery receipt - accepted, rejected_absent, rejected_denied and so on - never a delivery the far machine did not confirm.`,
     parameters: Type.Object(
       {
         to_agent: Type.String(),
         text: Type.String(),
+        deviceId: Type.Optional(Type.String({ description: "A paired device's id from devboule_list_devices; to_agent is then a session id devboule_list_peer_agents answered for that device." })),
       },
       { required: ["to_agent", "text"], additionalProperties: false },
     ),

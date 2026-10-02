@@ -31,6 +31,25 @@ pub(in crate::mcp_broker) fn send(
             "to_agent and text are required",
         )));
     };
+    // A named device sends across the peer link; only an absent property
+    // keeps today's local road. An explicit null, an empty id, or a
+    // wrong-typed id is a caller error, never a quiet local send: the message
+    // was meant for another machine.
+    let device_id = match message.pointer("/params/arguments/deviceId") {
+        None => None,
+        Some(Value::String(value)) if !value.is_empty() => Some(value.as_str()),
+        Some(_) => {
+            return Ok(Some(rpc_error(
+                id,
+                -32602,
+                "deviceId must be a non-empty paired-device id from devboule_list_devices; \
+                 omit it to message a session on this machine",
+            )))
+        }
+    };
+    if let Some(device_id) = device_id {
+        return super::messaging_peer::send(state, registration, id, device_id, to_agent, text);
+    }
     let target = state
         .sessions
         .live_agent_entries(&registration.owner)

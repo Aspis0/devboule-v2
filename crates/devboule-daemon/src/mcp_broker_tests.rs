@@ -3699,6 +3699,13 @@ fn the_tool_list_filter_drops_a_named_disabled_tool() {
         send_tool["inputSchema"]["required"],
         serde_json::json!(["to_agent", "text"])
     );
+    // The optional paired-device target rides the same schema: a model that
+    // has a device id from `devboule_list_devices` is told how to use it,
+    // and a model that has none is not asked for one.
+    assert_eq!(
+        send_tool["inputSchema"]["properties"]["deviceId"]["type"],
+        serde_json::json!("string")
+    );
 }
 
 #[test]

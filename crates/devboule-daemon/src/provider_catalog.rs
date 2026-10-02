@@ -237,7 +237,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_SEND_MESSAGE_TOOL,
-        "Sends a message to one live Devboule agent session.",
+        "Sends a message to one live Devboule agent session. Name a session on this machine with to_agent; to send to an agent on a paired device, pass that device's id from devboule_list_devices as deviceId and the session id devboule_list_peer_agents answered for it as to_agent. A paired-device send dials the device once and answers with that daemon's own delivery receipt - accepted, rejected_absent, rejected_denied and so on - never a delivery the far machine did not confirm.",
     ),
     (
         MCP_CREATE_AGENT_TOOL,

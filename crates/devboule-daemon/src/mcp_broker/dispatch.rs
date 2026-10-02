@@ -251,6 +251,14 @@ pub(super) fn enabled_tool_list(
                     "properties": {
                         "to_agent": {"type": "string"},
                         "text": {"type": "string"},
+                        // Optional, and only this tool spells it: a local
+                        // target and a paired device's target are two
+                        // different lookups, and the value that decides
+                        // which one runs is the caller's own device id.
+                        "deviceId": {
+                            "type": "string",
+                            "description": "A paired device's id from devboule_list_devices; to_agent is then a session id devboule_list_peer_agents answered for that device.",
+                        },
                     },
                     "required": ["to_agent", "text"],
                     "additionalProperties": false,

@@ -6,6 +6,7 @@ pub(super) mod creation;
 pub(super) mod first_use;
 pub(super) mod graph;
 pub(super) mod messaging;
+mod messaging_peer;
 pub(super) mod peers;
 pub(super) mod permissions;
 pub(super) mod terminal_args;

@@ -4,7 +4,7 @@
 use super::*;
 use crate::journal::PeerRecord;
 use crate::peer_transport::responder_handshake;
-use devboule_protocol::{DaemonHello, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION};
+use devboule_protocol::{AgentMessageState, DaemonHello, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION};
 use std::io;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -243,6 +243,50 @@ fn a_dial_refuses_a_far_end_that_does_not_advertise_agent_messages() {
     responder
         .join()
         .expect("the old responder must see no request");
+}
+
+/// The frame `devboule_send_message` dials with comes back as the far
+/// daemon's own receipt: the dialer carries the reply through unchanged, so
+/// the tool's answer is the far machine's verdict and never this daemon's
+/// guess.
+#[test]
+fn a_dialled_agent_message_returns_the_far_receipt() {
+    let state = ServerState::new("peer-dial-agent-message".into());
+    let keypair = pinned_keypair();
+    let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
+    let address = crate::test_support::spawn_canned_noise_responder(
+        private,
+        vec![devboule_protocol::Capability::new(
+            devboule_protocol::caps::AGENT_MESSAGES,
+        )],
+        DaemonMessage::AgentMessageReceipt {
+            id: 0,
+            state: AgentMessageState::RejectedAbsent,
+        },
+    );
+    state
+        .peer_upsert(dial_row(address.to_string(), &keypair.public))
+        .expect("upsert the row");
+    let reply = call_peer(
+        &state,
+        "b",
+        ClientMessage::AgentMessageSend {
+            id: 0,
+            from_session: "s.dial.source".to_string(),
+            to_session: "s.dial.target".to_string(),
+            text: "hello".to_string(),
+            idempotency_key: Some("dial-once".to_string()),
+        },
+    )
+    .expect("the dialled send is answered");
+    match reply {
+        DaemonMessage::AgentMessageReceipt { state, .. } => assert_eq!(
+            state,
+            AgentMessageState::RejectedAbsent,
+            "the far verdict is carried through, not reinterpreted"
+        ),
+        other => panic!("expected AgentMessageReceipt, got {other:?}"),
+    }
 }
 
 #[test]

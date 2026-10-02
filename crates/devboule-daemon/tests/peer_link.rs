@@ -32,7 +32,10 @@ use devboule_daemon::{
     connect_pipe, dial_peer, initiator_handshake, split_session, Framed, RuntimePaths,
     PEER_NOISE_PATTERN, PEER_PROLOGUE,
 };
-use devboule_protocol::{ClientHello, ClientMessage, DaemonMessage, ErrorCode, OwnerId, PeerRole};
+use devboule_protocol::{
+    AgentMessageState, ClientHello, ClientMessage, DaemonMessage, ErrorCode, OwnerId, PeerRole,
+    SessionEvent, SessionKind, UserMessageKind,
+};
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -85,6 +88,23 @@ fn unique_dir(tag: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).expect("runtime directory");
     dir
+}
+
+/// The ACP stub provider's argv, as the daemon reads `DEVBOULE_ACP_COMMAND`.
+/// The delivery test's target session must be a real live agent; the stub is
+/// built by the same `cargo test` invocation, so the test does not depend on
+/// what this machine happens to have installed.
+fn stub_command() -> String {
+    let path = std::env::var("CARGO_BIN_EXE_devboule-acp-stub")
+        .ok()
+        .or_else(|| option_env!("CARGO_BIN_EXE_devboule-acp-stub").map(str::to_string))
+        .unwrap_or_else(|| {
+            panic!(
+                "CARGO_BIN_EXE_devboule-acp-stub was not provided by Cargo; refusing to \
+                 guess a target directory binary (a stale one would test the past)"
+            )
+        });
+    serde_json::to_string(&[path]).expect("stub argv")
 }
 
 fn hello(name: &str) -> ClientHello {
@@ -140,6 +160,24 @@ impl Pipe {
         self.request(message)
             .unwrap_or_else(|error| panic!("request failed: {error}"))
     }
+
+    /// Read frames until one satisfies `wanted`, or `deadline` passes: an
+    /// attached session's events arrive on the same pipe as replies, so a
+    /// test that waits for one cannot use `request`.
+    fn recv_until<T>(
+        &self,
+        deadline: Instant,
+        mut wanted: impl FnMut(&DaemonMessage) -> Option<T>,
+    ) -> Option<T> {
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let frame = self.framed.recv_timeout::<DaemonMessage>(remaining).ok()?;
+            if let Some(found) = wanted(&frame) {
+                return Some(found);
+            }
+        }
+        None
+    }
 }
 
 /// Wait for the daemon's pipe to accept a hello. Bounded: a daemon that never
@@ -175,6 +213,13 @@ impl Peer {
     /// daemon, and a fixed port would make this test skip (or fail) on exactly
     /// the machine it is meant to prove itself on.
     fn spawn(tag: &'static str, port: u16) -> Self {
+        Self::spawn_with_env(tag, port, &[])
+    }
+
+    /// The same daemon carrying `extra_env` for its providers, so the
+    /// delivery test points one at the stub without touching the process
+    /// environment every other test in this binary inherits.
+    fn spawn_with_env(tag: &'static str, port: u16, extra_env: &[(&str, &str)]) -> Self {
         let dir = unique_dir(tag);
         let paths = RuntimePaths::from_dir(&dir);
         let mut command = Command::new(daemon_bin());
@@ -182,6 +227,7 @@ impl Peer {
             .env("DEVBOULE_RUNTIME_DIR", &dir)
             .env("DEVBOULE_PEER_PORT", port.to_string())
             .env("DEVBOULE_SECRET_STORE", "file")
+            .envs(extra_env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -1035,4 +1081,164 @@ fn a_dial_refuses_an_address_that_is_not_on_the_tailnet() {
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
         accepted => panic!("the refused dial must not have connected anywhere: {accepted:?}"),
     }
+}
+
+/// The point of the slice, over two real daemons: A dials B with the frame
+/// `devboule_send_message` sends for a paired device, B delivers the envelope
+/// into a live session and answers `accepted`, and the same idempotency key a
+/// second time is answered from the first receipt without a second delivery.
+#[test]
+fn a_paired_daemon_delivers_an_agent_message_and_replays_its_receipt_once() {
+    let _guard = lock_tests();
+
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn("send-a", port_a);
+    let stub = stub_command();
+    let b = Peer::spawn_with_env(
+        "send-b",
+        port_b,
+        &[
+            ("DEVBOULE_ACP_COMMAND", stub.as_str()),
+            ("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub"),
+        ],
+    );
+
+    let (Some(_address_a), Some(address_b)) = (a.peer_address(), b.peer_address()) else {
+        eprintln!(
+            "SKIP peer_link send: no reachable tailnet address. A said {}; B said {}.",
+            a.remote_label(),
+            b.remote_label()
+        );
+        return;
+    };
+    let a_self = a.self_info();
+    let b_self = b.self_info();
+    pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
+
+    // ---- B grows a live agent the paired daemon may write into -------------
+    let created = b.pipe.expect(ClientMessage::SessionCreate {
+        id: b.pipe.id(),
+        workspace_id: None,
+        kind: SessionKind::Acp,
+        provider: Some("devboule-acp-stub".to_string()),
+        mode: None,
+        display_name: None,
+        idempotency_key: None,
+        cols: None,
+        rows: None,
+    });
+    let session_id = match created {
+        DaemonMessage::Session { session, .. } => session.id,
+        other => panic!(
+            "expected Session on create, got {other:?}; B stderr: {}",
+            b.stderr_contents()
+        ),
+    };
+
+    // ---- watch the session's own event stream ------------------------------
+    const SUBSCRIPTION: u64 = 1;
+    match b.pipe.expect(ClientMessage::SessionAttach {
+        id: b.pipe.id(),
+        session_id: session_id.clone(),
+        subscription_id: SUBSCRIPTION,
+        from_cursor: None,
+    }) {
+        DaemonMessage::SessionAttached { .. } => {}
+        other => panic!("expected SessionAttached, got {other:?}"),
+    }
+
+    // ---- A sends, then sends the same key again ----------------------------
+    let (pinned_key, stored_address) = a
+        .stored_row_for(&b_self.device_id)
+        .expect("A holds a row for B");
+    let dial_hello = ClientHello::m3a(
+        OwnerId::new(format!("peer_{}", a_self.device_id), "daemon").expect("owner"),
+        "devboule-daemon",
+    );
+    for _ in 0..2 {
+        let reply = dial_peer(
+            &a.static_private(),
+            &pinned_key,
+            &stored_address,
+            &dial_hello,
+            &ClientMessage::AgentMessageSend {
+                id: 0,
+                from_session: "s.far.source".to_string(),
+                to_session: session_id.clone(),
+                text: "hello from the other machine".to_string(),
+                idempotency_key: Some("peer-link-once".to_string()),
+            },
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "a paired daemon sends: {error}; B stderr: {}",
+                b.stderr_contents()
+            )
+        });
+        match reply {
+            DaemonMessage::AgentMessageReceipt {
+                state: AgentMessageState::Accepted,
+                ..
+            } => {}
+            other => panic!(
+                "expected an accepted receipt, got {other:?}; B stderr: {}",
+                b.stderr_contents()
+            ),
+        }
+    }
+
+    // ---- the receiver published the incoming a2a envelope ------------------
+    let delivered = b
+        .pipe
+        .recv_until(
+            Instant::now() + Duration::from_secs(10),
+            |frame| match frame {
+                DaemonMessage::SubscriptionEvent {
+                    subscription_id,
+                    envelope,
+                } if *subscription_id == SUBSCRIPTION => match &envelope.event {
+                    SessionEvent::AgentUserMessage {
+                        text, message_kind, ..
+                    } if *message_kind == UserMessageKind::IncomingA2a => Some(text.clone()),
+                    _ => None,
+                },
+                _ => None,
+            },
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "B never published the incoming a2a; B stderr: {}",
+                b.stderr_contents()
+            )
+        });
+    assert!(
+        delivered.contains("from_agent: peer:") && delivered.contains("/s.far.source"),
+        "the envelope names the authenticated device and the far label: {delivered}"
+    );
+
+    // A second delivery would be a second `agent_user_message` report in B's
+    // journal; the replay above must leave it at one. The journal writer is a
+    // queue, so the count is read once the row appears and again after the
+    // queue has had time to drain: both reads must say one.
+    let count_incoming = || -> i64 {
+        let connection = rusqlite::Connection::open(b.dir.join("journal.db")).expect("journal");
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND kind = 'agent_report' \
+                 AND CAST(payload AS TEXT) LIKE '%\"incoming_a2a\"%'",
+                [&session_id],
+                |row| row.get(0),
+            )
+            .expect("count B's incoming a2a rows")
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while count_incoming() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "B never journaled the incoming a2a"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(count_incoming(), 1, "the replay is one delivery, not two");
 }
