@@ -533,8 +533,10 @@ describe("Workspace sessions", () => {
     localStorage.removeItem("devboule.openSessionTabs");
     resetSharedSessionControllerForTests();
     // The tab memory is app-lifetime like the controller, so a test must not
-    // inherit what the previous one left a workspace remembering.
+    // inherit what the previous one left a workspace remembering. Neither the
+    // workspace in force: the next mount of this surface starts on it.
     resetTabMemoryForTests();
+    setLastSelectedWorkspaceId(null);
     // The queue owner is app-lifetime too, and its sender is the wire a queued
     // message leaves on: both are reset and counted, never left to the last test.
     resetSharedSessionQueueOwnerForTests();

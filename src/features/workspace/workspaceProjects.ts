@@ -123,12 +123,15 @@ export function projectView(
   };
 }
 
-export function useWorkspaceProjects() {
+export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
   const [projectRecords, setProjectRecords] = useState<ProjectRecord[]>([]);
   const [sessionFacts, setSessionFactsState] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ErrorSentence | null>(null);
-  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
+  // Starts on the workspace the surface was last showing, so returning to it
+  // lands where the user left; a null one (a fresh start, no cell) takes the
+  // first listed row when the list settles, as this hook always has.
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(restoredWorkspaceId);
   const [search, setSearch] = useState("");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const newProjectTriggerRef = useRef<HTMLButtonElement>(null);

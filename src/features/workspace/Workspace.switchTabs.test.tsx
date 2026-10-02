@@ -209,6 +209,30 @@ describe("leaving a workspace and coming back", () => {
     expect(tabElement("a-one").getAttribute("aria-selected")).toBe("true");
   });
 
+  it("the workspace row already in force navigates nowhere, and reads no tool pane again", async () => {
+    twoWorkspaces();
+    vi.mocked(sessionsList).mockResolvedValue(listedSessions());
+    vi.mocked(workspaceGitStatus).mockResolvedValue(statusWithRow());
+    vi.mocked(workspaceGitDiff).mockResolvedValue(diffReply("const first = 1;"));
+    await renderWorkspace();
+
+    const id = await openActiveDiffTab();
+    expect(tabElement(id).getAttribute("aria-selected")).toBe("true");
+
+    // Clicking the row that is already in force leaves the workspace alone, so
+    // the pane it is showing is not re-read: re-reading is the nudge a click on
+    // the tab itself gets.
+    const before = vi.mocked(workspaceGitDiff).mock.calls.length;
+    const gate = deferred<ReturnType<typeof diffReply>>();
+    vi.mocked(workspaceGitDiff).mockReturnValue(gate.promise);
+    await showWorkspace("alpha");
+
+    expect(tabElement(id).getAttribute("aria-selected")).toBe("true");
+    expect(vi.mocked(workspaceGitDiff).mock.calls.length - before).toBe(0);
+    gate.resolve(diffReply("const first = 1;"));
+    await flush();
+  });
+
   it("a workspace the memory has never met still lands on its first tab", async () => {
     twoWorkspaces();
     vi.mocked(sessionsList).mockResolvedValue(listedSessions());

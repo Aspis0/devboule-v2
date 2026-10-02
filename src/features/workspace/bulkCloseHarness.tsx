@@ -228,6 +228,7 @@ import { Workspace } from "./Workspace";
 import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
+import { setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
 import { resetSharedCloseActionsForTests } from "./strip/closeActions";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe } from "./queueSenderDouble";
@@ -529,6 +530,9 @@ export function beforeEachHarness(): void {
   localStorage.removeItem("devboule.openSessionTabs");
   resetSharedSessionControllerForTests();
   resetTabMemoryForTests();
+  // The workspace in force is app-lifetime too, and the next mount starts on
+  // it: a test that leaves a workspace selected would hand it to the next one.
+  setLastSelectedWorkspaceId(null);
   vi.useFakeTimers();
   resetSharedCloseActionsForTests();
   // The queue owner is app-lifetime like the close store, and a close now

@@ -60,7 +60,7 @@ import {
   useWorkspacePanelResize,
 } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
-import { setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
+import { getLastSelectedWorkspaceId, setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
 import { useProviderConsent } from "./useProviderConsent";
@@ -160,6 +160,26 @@ function belongsToWorkspace(session: Session, workspaceId: string | null): boole
 }
 
 /**
+ * The workspace the view is about to move to, or null when it stays. The
+ * roster names one (`pushed`) by selecting a session in it, and the view
+ * follows that name until the user has taken the wheel with a row click —
+ * or until the workspace in force is the one this mount restored, which is
+ * the user's own last navigation and outlives the surface that recorded it.
+ * Both roads that answer a selection the strip cannot show read this: the one
+ * that moves the view and the one that picks the tab it lands on.
+ */
+function workspaceTheViewMovesTo(
+  pushed: string | null,
+  userNavigated: boolean,
+  restoredWorkspace: string | null,
+  selectedWorkspace: string | null,
+): string | null {
+  if (pushed === null || userNavigated) return null;
+  if (restoredWorkspace !== null && restoredWorkspace === selectedWorkspace) return null;
+  return pushed;
+}
+
+/**
  * One attribution an outside answer carried. Both fields are honest-or-null:
  * `answeredBy` is null when the daemon did not say who — silence is never
  * read as "a person answered" — and `outcome` is null when the daemon did not
@@ -190,6 +210,12 @@ export function Workspace({
   delegation: delegationControllerProp,
 }: WorkspaceProps = {}) {
   const delegation = delegationControllerProp ?? delegationController;
+  // Captured once per mount, not read on every render: the cell moves with the
+  // selection, so a mount that re-read it would take its own navigation for
+  // the user's. App keys the surface boundary by surface, so a visit to
+  // Settings or Design remounts this component, and the workspace the user was
+  // standing in outlives the surface that recorded it.
+  const [restoredWorkspace] = useState(getLastSelectedWorkspaceId);
   const {
     projects,
     visibleProjects,
@@ -209,10 +235,11 @@ export function Workspace({
     renameWorkspace,
     deleteWorkspace,
     reuseOrCreateWorkspace,
-  } = useWorkspaceProjects();
+  } = useWorkspaceProjects(restoredWorkspace);
   // The one seam Settings → Providers may use: the last-selected workspace,
-  // read when a provider install/login opens its terminal tab. The surfaces
-  // never mount together, so the cell outlives them; unmount clears nothing.
+  // read when a provider install/login opens its terminal tab. It is also what
+  // the next mount of this surface starts on. The surfaces never mount
+  // together, so the cell outlives them; unmount clears nothing.
   useEffect(() => {
     setLastSelectedWorkspaceId(selectedWorkspace);
   }, [selectedWorkspace]);
@@ -462,6 +489,19 @@ export function Workspace({
     },
     [closingIds, openSessions, toolTabs],
   );
+  // Where a workspace lands when it is entered: the tab it was last showing,
+  // if that tab is still live, else the fallback the switch has always used —
+  // the workspace's first open session, or none. The row click and the mount
+  // both ask here, so a fallback written twice cannot drift.
+  const landingTabFor = useCallback(
+    (workspaceId: string): string | null =>
+      activeTabFor(
+        workspaceId,
+        liveTabIdsFor(workspaceId),
+        openSessions.find((session) => session.workspaceId === workspaceId)?.id ?? null,
+      ),
+    [liveTabIdsFor, openSessions],
+  );
   const openEndedIds = useMemo(
     () => new Set(openSessions.filter((row) => row.state.type === "ended").map((row) => row.id)),
     [openSessions],
@@ -537,6 +577,23 @@ export function Workspace({
     );
     return () => setAttentionHeldContentProvider(null);
   }, [renderedSessionIds, permissionQueue, closeActions]);
+  // Where a selection this workspace's strip cannot show says the view belongs:
+  // a session in another listed workspace is the roster naming a view, not a
+  // leftover. Null means nothing is asking for a move. The reconcile below and
+  // the restore after it read this, so the road that moves the view and the
+  // road that picks the tab cannot disagree about what is pushing.
+  const pushedWorkspaceId = useMemo(() => {
+    const selected = sessions.find((session) => session.id === selectedSessionId);
+    if (
+      selected === undefined ||
+      selected.workspaceId === null ||
+      selected.workspaceId === selectedWorkspace ||
+      !knownWorkspaceIds.has(selected.workspaceId)
+    ) {
+      return null;
+    }
+    return selected.workspaceId;
+  }, [knownWorkspaceIds, selectedSessionId, selectedWorkspace, sessions]);
   // Selection is navigation, reconciled in ONE effect from ONE
   // snapshot so workspace and session can never undo each other across
   // renders (two effects here once fought: one scheduled the workspace
@@ -545,32 +602,31 @@ export function Workspace({
   // or pushed selection that lives in another listed workspace selects that
   // workspace and keeps the session — until the user has navigated by row
   // click once, after which their clicks alone steer the view (a create that
-  // lands after a switch must not yank it back). Every other way of losing
-  // the selected session from the selected workspace's strip falls to that
-  // workspace's first tab or the empty state.
+  // lands after a switch must not yank it back). workspaceTheViewMovesTo owns
+  // the rest of that rule. Every other way of losing the selected session from
+  // the selected workspace's strip falls to that workspace's first tab or the
+  // empty state.
   useEffect(() => {
     if (sessionsLoading || projectsLoading) return;
-    if (!userNavigatedRef.current) {
-      const selected = sessions.find((session) => session.id === selectedSessionId);
-      if (
-        selected !== undefined &&
-        selected.workspaceId !== null &&
-        selected.workspaceId !== selectedWorkspace &&
-        knownWorkspaceIds.has(selected.workspaceId)
-      ) {
-        setSelectedWorkspace(selected.workspaceId);
-        return;
-      }
+    const movesTo = workspaceTheViewMovesTo(
+      pushedWorkspaceId,
+      userNavigatedRef.current,
+      restoredWorkspace,
+      selectedWorkspace,
+    );
+    if (movesTo !== null) {
+      setSelectedWorkspace(movesTo);
+      return;
     }
     if (visibleSessions.some((session) => session.id === selectedSessionId)) return;
     selectSession(visibleSessions[0]?.id ?? null);
   }, [
-    sessions,
-    sessionsLoading,
     projectsLoading,
+    pushedWorkspaceId,
+    restoredWorkspace,
     selectedSessionId,
     selectedWorkspace,
-    knownWorkspaceIds,
+    sessionsLoading,
     visibleSessions,
     setSelectedWorkspace,
     selectSession,
@@ -662,6 +718,47 @@ export function Workspace({
     },
     [selectSession, standDownToolTab, writeToolTab],
   );
+  // The roads that set the selected workspace WITHOUT choosing a tab for it:
+  // the workspace this mount restores, a project list that no longer holds the
+  // selection, a project row whose workspace the "+" reuses. Each lands on the
+  // tab the workspace was last showing, asked of the same memory and with the
+  // same fallback the row click uses. It waits for the roster, because until
+  // the list settles every workspace looks empty and the fallback would be the
+  // empty strip. It follows the reconcile above, whose write would otherwise
+  // land on top of this one.
+  useEffect(() => {
+    if (sessionsLoading || projectsLoading) return;
+    // The view is about to carry off to the workspace the roster named: the
+    // reconcile above moves there and keeps that session, so no tab is chosen
+    // for the workspace being left behind.
+    if (
+      workspaceTheViewMovesTo(
+        pushedWorkspaceId,
+        userNavigatedRef.current,
+        restoredWorkspace,
+        selectedWorkspace,
+      ) !== null
+    ) {
+      return;
+    }
+    const key = selectedWorkspace;
+    if (key === null) return;
+    // A tab this strip is showing was chosen by the road that got here.
+    if (activeTabId !== null && composedTabs.some((tab) => tab.id === activeTabId)) return;
+    const landing = landingTabFor(key);
+    if (landing === activeTabId) return;
+    selectTab(landing);
+  }, [
+    activeTabId,
+    composedTabs,
+    landingTabFor,
+    projectsLoading,
+    pushedWorkspaceId,
+    restoredWorkspace,
+    selectTab,
+    selectedWorkspace,
+    sessionsLoading,
+  ]);
   // A landed create takes the pane only while the tool axis stood still: the
   // same tab as at start and no counted move in between. A move keeps the pane.
   const createAndShowSession = useCallback(
@@ -1048,21 +1145,19 @@ export function Workspace({
   const handleRetryProjects = useCallback(() => void retryProjects(), [retryProjects]);
   const selectWorkspace = useCallback(
     (workspaceId: string) => {
+      // The row already in force is not navigation: no workspace changes, so
+      // nothing is chosen either — which keeps it from reading the tool pane
+      // again, a nudge that belongs to a click on the tab itself.
+      if (workspaceId === selectedWorkspace) return;
       userNavigatedRef.current = true;
       setSelectedWorkspace(workspaceId);
       // The selection moves with the navigation: the tab this workspace was
       // last left on, else the fallback the switch has always used — the
       // workspace's first tab, or none (its empty state). Routing through
       // selectTab leaves the old workspace's tool tab behind with it.
-      selectTab(
-        activeTabFor(
-          workspaceId,
-          liveTabIdsFor(workspaceId),
-          openSessions.find((session) => session.workspaceId === workspaceId)?.id ?? null,
-        ),
-      );
+      selectTab(landingTabFor(workspaceId));
     },
-    [liveTabIdsFor, openSessions, selectTab, setSelectedWorkspace],
+    [landingTabFor, selectTab, selectedWorkspace, setSelectedWorkspace],
   );
   const handleNewSession = useCallback(
     (trigger: HTMLButtonElement | null) => {

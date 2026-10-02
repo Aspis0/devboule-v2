@@ -2,9 +2,10 @@
 
 // What the per-workspace tab memory learns, and how long it keeps it: it
 // records the tab a workspace is actually SHOWING, whichever road chose it —
-// the Overview, the roster reconcile — it outlives the surface, a closed
-// session leaves every workspace's memory, and a workspace that no longer
-// exists takes its key with it.
+// the Overview, the roster reconcile — it outlives the surface, as does the
+// workspace the user was standing in, a closed session leaves every
+// workspace's memory, and a workspace that no longer exists takes its key
+// with it.
 
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +23,7 @@ import {
   pushSnapshots,
   renderWorkspace,
   tabElement,
+  tabTitles,
   terminalSession,
   unmountWorkspace,
 } from "./bulkCloseHarness";
@@ -91,6 +93,13 @@ function listedSessions(): Session[] {
   ];
 }
 
+/** Only alpha holds tabs: the shape the live check found the bug in. A
+ * workspace with no tab of its own leaves the global selection empty, so
+ * nothing on the mount can name it — only the workspace in force can. */
+function listedSessionsWithoutBetaTabs(): Session[] {
+  return [terminalSession("a-one", "A one"), terminalSession("a-two", "A two")];
+}
+
 const claude: ProviderInfo = {
   id: "claude",
   executable: "claude",
@@ -119,6 +128,13 @@ async function openFromOverview(sessionId: string): Promise<void> {
   if (option === null) throw new Error(`the Overview did not offer ${sessionId}`);
   await act(async () => option.click());
   await flush();
+}
+
+/** Which workspace the sidebar has in force. */
+function selectedWorkspaceRow(): string {
+  const row = document.querySelector<HTMLButtonElement>(".workspace-row-selected");
+  if (row === null) throw new Error("no workspace row is selected");
+  return row.textContent ?? "";
 }
 
 async function deleteWorkspaceRow(index: number): Promise<void> {
@@ -228,6 +244,61 @@ describe("how long the tab memory keeps it", () => {
     await showWorkspace("beta");
     await showWorkspace("alpha");
     expect(tabElement("a-two").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("comes back to the workspace in force, and to the tab it was left on", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([alpha, beta]);
+    vi.mocked(sessionsList).mockResolvedValue(listedSessionsWithoutBetaTabs());
+    await renderWorkspace();
+
+    await plainClick("a-two");
+    await showWorkspace("beta");
+    await unmountWorkspace();
+    // What a surface change looks like: App keys the surface boundary by
+    // surface, so Settings and back remounts this component. Nothing names
+    // beta — its strip is empty, so the global selection is empty too, and
+    // the project's first listed workspace is alpha.
+    await renderWorkspace(false);
+    expect(selectedWorkspaceRow()).toContain("beta");
+
+    await showWorkspace("alpha");
+    expect(tabElement("a-two").getAttribute("aria-selected")).toBe("true");
+    expect(tabElement("a-one").getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("keeps showing the remembered tab when the remount happens on its own workspace", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([alpha, beta]);
+    vi.mocked(sessionsList).mockResolvedValue(listedSessions());
+    await renderWorkspace();
+
+    await plainClick("a-two");
+    await unmountWorkspace();
+    await renderWorkspace(false);
+
+    expect(selectedWorkspaceRow()).toContain("alpha");
+    expect(tabElement("a-two").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("a selection naming another workspace does not carry the view off the one it came back to", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([alpha, beta]);
+    vi.mocked(sessionsList).mockResolvedValue(listedSessions());
+    await renderWorkspace();
+
+    await showWorkspace("beta");
+    await plainClick("b-two");
+    await unmountWorkspace();
+    await renderWorkspace(false);
+    expect(selectedWorkspaceRow()).toContain("beta");
+
+    // The global selection outlives the surface, and this one names a session
+    // in another workspace: beta is where the user left off, so the view stays
+    // and beta lands on the tab it was showing.
+    await act(async () => sharedSessionController().select("a-two"));
+    await flush();
+
+    expect(selectedWorkspaceRow()).toContain("beta");
+    expect(tabElement("b-two").getAttribute("aria-selected")).toBe("true");
+    expect(tabTitles()).not.toContain("A two");
   });
 
   it("drops the key of a workspace that no longer exists", async () => {

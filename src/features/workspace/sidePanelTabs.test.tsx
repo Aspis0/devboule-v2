@@ -103,6 +103,8 @@ import {
 import { Workspace } from "./Workspace";
 import { SIDE_PANEL_REGISTRY } from "./sidePanelRegistry";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
+import { resetTabMemoryForTests } from "./workspaceTabMemory";
+import { setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe, type SenderProbe } from "./queueSenderDouble";
 import { assembleCssProof, removeCssProof } from "./cssProof";
@@ -179,6 +181,8 @@ describe("the right panel's tabs", () => {
 
   beforeEach(() => {
     resetSharedSessionControllerForTests();
+    resetTabMemoryForTests();
+    setLastSelectedWorkspaceId(null);
     resetSharedSessionQueueOwnerForTests();
     sender = createSenderProbe();
     sharedSessionQueueOwner({ newSender: sender.newSender });

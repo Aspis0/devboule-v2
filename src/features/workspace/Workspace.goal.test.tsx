@@ -110,6 +110,8 @@ import {
 import { Workspace } from "./Workspace";
 import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
+import { resetTabMemoryForTests } from "./workspaceTabMemory";
+import { setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe } from "./queueSenderDouble";
 
@@ -166,6 +168,8 @@ let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   localStorage.removeItem("devboule.openSessionTabs");
   resetSharedSessionControllerForTests();
+  resetTabMemoryForTests();
+  setLastSelectedWorkspaceId(null);
   resetSharedSessionQueueOwnerForTests();
   const sender = createSenderProbe();
   sharedSessionQueueOwner({ newSender: sender.newSender });
