@@ -1,5 +1,6 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { openInBrowser, opensExternally } from "../lib/openInBrowser";
+import { opensExternally } from "../lib/externalUrl";
+import { openInBrowser } from "../lib/openInBrowser";
 
 /**
  * A link whose activation opens the system browser instead of the webview: a

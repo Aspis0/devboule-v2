@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { ExternalLink } from "./ExternalLink";
 import { parseChatCodeFilePath, scanChatFilePaths, type ChatFileLinks } from "../lib/chatFilePaths";
-import { carriesCredentials } from "../lib/urlCredentials";
+import { opensExternally } from "../lib/externalUrl";
 
 export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
   const links = fileLinks ?? null;
@@ -209,11 +209,11 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
     else {
       const href = text.slice(contentEnd + 2, end - 1);
       const label = text.slice(contentStart, contentEnd);
-      // A credentialed http(s) destination stays the text the agent wrote: the
-      // command refuses it, and hiding the URL protects nothing that the raw
-      // message, journal and copy do not already show.
+      // An http(s) destination the command would refuse stays the text the agent
+      // wrote: a link that opens nothing is worse than none, and hiding the URL
+      // protects nothing that the raw message, journal and copy do not show.
       nodes.push(
-        /^(https?:|mailto:)/i.test(href) && !carriesCredentials(href) ? (
+        opensExternally(href) || /^mailto:/i.test(href) ? (
           <ExternalLink key={key} href={href}>
             {label}
           </ExternalLink>

@@ -65,6 +65,27 @@ describe("external links in markdown", () => {
     expect(vi.mocked(openInBrowser)).not.toHaveBeenCalled();
   });
 
+  it("leaves any other mouse button alone", async () => {
+    const container = await render("see [docs](https://e.com/a)");
+    const link = container.querySelector<HTMLAnchorElement>("a[href]");
+    if (link === null) throw new Error("markdown link did not render");
+    const secondary = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 2 });
+    await act(async () => link.dispatchEvent(secondary));
+    expect(secondary.defaultPrevented).toBe(false);
+    expect(vi.mocked(openInBrowser)).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["over the byte ceiling", `https://e.com/${"a".repeat(8192)}`],
+    ["malformed", "https://[::1"],
+    ["holding a no-break space", "https://e.com/a b"],
+  ])("renders a destination %s as the text the agent wrote", async (_name, destination) => {
+    const written = `see [docs](${destination})`;
+    const container = await render(written);
+    expect(container.querySelector("a[href]")).toBeNull();
+    expect(container.textContent).toBe(written);
+  });
+
   it("leaves a mailto click to the browser", async () => {
     const container = await render("write to [them](mailto:someone@example.com)");
     const link = container.querySelector<HTMLAnchorElement>("a[href]");

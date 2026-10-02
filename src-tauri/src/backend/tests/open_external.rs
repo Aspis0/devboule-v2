@@ -47,6 +47,7 @@ fn a_user_or_a_password_in_the_authority_is_refused() {
         "https://user@example.com/a",
         "https://user:pass@example.com/a",
         "http://:pass@example.com/a",
+        "https://user@[::1]/",
     ] {
         assert_eq!(
             refusal(input),
@@ -61,8 +62,30 @@ fn an_at_sign_outside_the_authority_is_part_of_the_url() {
     let query =
         openable_url("https://example.com/?mail=user@example.com").expect("an at sign in a query");
 
+    let fragment =
+        openable_url("https://example.com/#user@example.com").expect("an at sign in a fragment");
+
     assert_eq!(path.as_str(), "https://example.com/a@b");
     assert_eq!(query.as_str(), "https://example.com/?mail=user@example.com");
+    assert_eq!(fragment.as_str(), "https://example.com/#user@example.com");
+}
+
+#[test]
+fn an_empty_userinfo_marker_is_refused_though_the_parser_drops_it() {
+    for input in ["https://@example.com/", "https://:@example.com/"] {
+        assert_eq!(
+            refusal(input),
+            (ErrorCode::InvalidRequest, WITH_CREDENTIALS.to_string())
+        );
+    }
+}
+
+#[test]
+fn input_the_parser_rejects_is_refused_as_not_a_web_url() {
+    assert_eq!(
+        refusal("https://[::1"),
+        (ErrorCode::InvalidRequest, NOT_A_WEB_URL.to_string())
+    );
 }
 
 #[test]
@@ -73,6 +96,9 @@ fn whitespace_the_parser_would_strip_is_refused() {
         "https://example.com/a\tb",
         "https://example.com/a\nb",
         "https://example.com/a\u{0}b",
+        "https://example.com/a\u{a0}b",
+        "https://example.com/a\u{85}b",
+        "https://example.com/a\u{3000}b",
     ] {
         assert_eq!(
             refusal(input),
@@ -87,6 +113,21 @@ fn input_longer_than_the_ceiling_is_refused_before_it_is_parsed() {
     let at_ceiling = format!("{prefix}{}", "a".repeat(MAX_URL_LENGTH - prefix.len()));
     let over_ceiling = format!("{at_ceiling}a");
 
+    assert!(openable_url(&at_ceiling).is_ok());
+    assert_eq!(
+        refusal(&over_ceiling),
+        (ErrorCode::InvalidRequest, TOO_LONG.to_string())
+    );
+}
+
+#[test]
+fn the_ceiling_counts_bytes_not_characters() {
+    let prefix = "https://example.com/";
+    let two_byte_characters = (MAX_URL_LENGTH - prefix.len()) / 2;
+    let at_ceiling = format!("{prefix}{}", "é".repeat(two_byte_characters));
+    let over_ceiling = format!("{at_ceiling}a");
+
+    assert_eq!(at_ceiling.len(), MAX_URL_LENGTH);
     assert!(openable_url(&at_ceiling).is_ok());
     assert_eq!(
         refusal(&over_ceiling),

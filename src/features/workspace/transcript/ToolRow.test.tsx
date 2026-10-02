@@ -108,6 +108,13 @@ describe("ToolRow", () => {
     expect(container.querySelectorAll("a[href]")).toHaveLength(0);
   });
 
+  it("links nothing for a fetched URL the command would refuse", async () => {
+    const title = `https://docs.example.com/${"a".repeat(8192)}`;
+    const container = await renderRow(tool({ kind: "fetch", title }));
+    expect(container.querySelector(".workspace-chat-tool-link")).toBeNull();
+    expect(container.querySelectorAll("a[href]")).toHaveLength(0);
+  });
+
   it("shows a fetched page title and links nothing when the title is not a URL", async () => {
     const container = await renderRow(tool({ kind: "fetch", title: "Rust testing guide" }));
     expect(container.querySelector(".workspace-chat-tool-summary-text")?.textContent).toBe(

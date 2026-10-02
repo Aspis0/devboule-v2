@@ -1,7 +1,7 @@
-//! Handing one web link to the system browser. The URL is parsed here, not
-//! trusted from the page: only the main window's own http(s) links, written
-//! without credentials and without a byte a URL parser would normalize away,
-//! may reach the OS handler.
+//! Handing one web link to the system browser. The command opens a
+//! caller-supplied http(s) URL from the main window only, and parses it here
+//! rather than trusting the page: no credentials, and no byte a URL parser would
+//! normalize away.
 
 use devboule_protocol::ErrorCode;
 use tauri::Url;
@@ -9,7 +9,6 @@ use tauri_plugin_opener::OpenerExt;
 
 use super::error::CommandError;
 
-/// The window tauri.conf.json declares; only its links open.
 const MAIN_WINDOW_LABEL: &str = "main";
 
 const NOT_THE_MAIN_WINDOW: &str = "only a link in the main window is opened";
@@ -19,11 +18,8 @@ const TOO_LONG: &str = "a link this long is never opened";
 const NOT_EXACT: &str = "a link with whitespace or control characters is never opened";
 const BROWSER_FAILED: &str = "the system browser could not be opened";
 
-/// Past any link a user clicks, and the ceiling that keeps the parse and the
-/// OS call bounded when the input is not a link at all.
 pub(crate) const MAX_URL_LENGTH: usize = 8192;
 
-/// The URL the OS may open, or the sentence for why it may not.
 pub(crate) fn openable_url(input: &str) -> Result<Url, CommandError> {
     if input.len() > MAX_URL_LENGTH {
         return Err(CommandError::new(ErrorCode::InvalidRequest, TOO_LONG));
@@ -41,13 +37,29 @@ pub(crate) fn openable_url(input: &str) -> Result<Url, CommandError> {
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(CommandError::new(ErrorCode::InvalidRequest, NOT_A_WEB_URL));
     }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
+    // The parser drops an empty user and password, so `https://@host/` only
+    // shows in the raw authority; the page's predicate applies the same rule.
+    if authority_has_userinfo_marker(input)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
         return Err(CommandError::new(
             ErrorCode::InvalidRequest,
             WITH_CREDENTIALS,
         ));
     }
     Ok(parsed)
+}
+
+/// The raw text between `//` and the first `/`, `?` or `#` holds an `@`.
+fn authority_has_userinfo_marker(input: &str) -> bool {
+    let Some(start) = input.find("//") else {
+        return false;
+    };
+    input[start + 2..]
+        .split(|character| matches!(character, '/' | '?' | '#'))
+        .next()
+        .is_some_and(|authority| authority.contains('@'))
 }
 
 /// The link click's other half: the page cancels the clicks it routes here, and

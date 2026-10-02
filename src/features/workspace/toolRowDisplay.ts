@@ -1,4 +1,5 @@
 import type { AgentChatItem } from "../../lib/agentSession";
+import { openableUrl, opensExternally } from "../../lib/externalUrl";
 import { carriesCredentials } from "../../lib/urlCredentials";
 
 export type ToolItem = Extract<AgentChatItem, { role: "tool" }>;
@@ -120,22 +121,24 @@ function thinkDisplayName(subagentType?: string): string {
 }
 
 /**
- * A fetch title is a link only when it is one exact http(s) URL: no whitespace
- * anywhere, the web scheme, and a parse. A URL carrying a username or password
- * keeps its host as the summary and gets no `href`, so credentials never reach
- * the DOM; any other title is shown as sent.
+ * A fetch title is a link only when the system-browser command opens it. A URL
+ * carrying a username or password keeps its host as the summary and gets no
+ * `href`, so credentials never reach the DOM; any other title is shown as sent.
  */
 function fetchDisplay(title: string): { summary?: string; linkUrl?: string } {
   if (title.length === 0) return {};
   if (!/^https?:\/\//i.test(title)) return { summary: title };
-  const url = parsedUrl(title);
+  const opened = openableUrl(title);
+  // The anchor carries the normalized href, which percent-encoding can push past
+  // the byte ceiling, and a click is checked against that string.
+  if (opened !== null && opensExternally(opened.href)) {
+    return { summary: opened.host, linkUrl: opened.href };
+  }
   if (carriesCredentials(title)) {
+    const url = parsedUrl(title);
     return url !== null && url.host.length > 0 ? { summary: url.host } : {};
   }
-  // The parser trims or percent-encodes whitespace and accepts a URL plus
-  // commentary, so only a title with none of it may state a navigation target.
-  if (url === null || /\s/.test(title)) return { summary: title };
-  return { summary: url.host, linkUrl: url.href };
+  return { summary: title };
 }
 
 /** The URL a title states, or null when no parser accepts it. */

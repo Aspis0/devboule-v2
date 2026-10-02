@@ -115,11 +115,38 @@ describe("toolRowDisplay", () => {
     }
   });
 
+  it("shows a URL the command would refuse as sent and unlinked", () => {
+    for (const title of [
+      `https://example.com/${"a".repeat(8192)}`,
+      "https://example.com/a b",
+      "https://[::1",
+    ]) {
+      expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
+        displayName: "Fetch",
+        summary: title,
+        icon: "search",
+      });
+    }
+  });
+
+  it("never links a URL whose normalized form exceeds the byte ceiling", () => {
+    // Each é becomes six bytes once percent-encoded, so the anchor's own
+    // destination would be a link the command refuses.
+    const title = `https://example.com/${"é".repeat(2000)}`;
+    expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
+      displayName: "Fetch",
+      summary: title,
+      icon: "search",
+    });
+  });
+
   it("never links a URL that carries credentials and keeps only its host", () => {
     for (const title of [
       "https://user:pass@example.com/path",
       "https://user@example.com/path",
       "https://user:pass@example.com/path   ",
+      "https://@example.com/path",
+      "https://:@example.com/path",
     ]) {
       expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
         displayName: "Fetch",

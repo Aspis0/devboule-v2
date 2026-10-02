@@ -216,6 +216,15 @@ function snakeToCamel(name: string): string {
   return name.replace(/_([a-z])/g, (_match, character: string) => character.toUpperCase());
 }
 
+/** A parameter Tauri fills from the invoking call, so it has no wire key. */
+function isInjectedByTauri(type: string): boolean {
+  return (
+    /\bState\s*</.test(type) ||
+    /\bAppHandle\b/.test(type) ||
+    /^(?:tauri::)?WebviewWindow$/.test(type)
+  );
+}
+
 function parseRustCommandArguments(): Record<string, readonly string[]> {
   const sourceRoot = resolve(process.cwd(), "src-tauri", "src");
   if (!existsSync(sourceRoot)) throw new Error(`Rust source root not found: ${sourceRoot}`);
@@ -249,11 +258,7 @@ function parseRustCommandArguments(): Record<string, readonly string[]> {
             .trim()
             .replace(/^mut\s+/, "");
           const type = parameter.slice(colon + 1).trim();
-          return /\bState\s*</.test(type) ||
-            /\bAppHandle\b/.test(type) ||
-            /\bWebview(Window)?\b/.test(type)
-            ? null
-            : snakeToCamel(name);
+          return isInjectedByTauri(type) ? null : snakeToCamel(name);
         })
         .filter((name): name is string => name !== null);
       const commandName = functionMatch[1];
@@ -649,6 +654,24 @@ describe("stop command wrapper", () => {
   });
 });
 
+describe("injected Tauri parameters", () => {
+  it.each([
+    "tauri::WebviewWindow",
+    "WebviewWindow",
+    "tauri::State<'_, Daemon>",
+    "tauri::AppHandle",
+  ])("skips %s, which Tauri fills in", (type) => {
+    expect(isInjectedByTauri(type)).toBe(true);
+  });
+
+  it.each(["WebviewSettings", "Vec<WebviewWindow>", "tauri::WebviewWindowBuilder"])(
+    "keeps %s, a type the caller serializes, in the wire keys",
+    (type) => {
+      expect(isInjectedByTauri(type)).toBe(false);
+    },
+  );
+});
+
 describe("bridge wire-key convention", () => {
   it("keeps every argument key in the command map camelCase", () => {
     const offenders = Object.entries(COMMAND_ARG_KEYS).flatMap(([command, keys]) =>
@@ -695,7 +718,7 @@ describe("bridge wire-key convention", () => {
     expect(
       { missing, extra, mismatched },
       "TypeScript Tauri argument keys must match the Rust command signatures. State, " +
-        "AppHandle and Webview/WebviewWindow parameters are injected by Tauri and " +
+        "AppHandle and WebviewWindow parameters are injected by Tauri and " +
         "intentionally omitted.",
     ).toEqual({ missing: [], extra: [], mismatched: [] });
   });
