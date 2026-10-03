@@ -1,11 +1,13 @@
-// What one run leaves for the next: every workspace's remembered tab under a
-// single versioned localStorage key. Best-effort both ways — a store that
-// cannot be read or written costs a landing tab, never the click that set it.
+// What one run leaves for the next: the workspace the window was standing in,
+// and every workspace's remembered tab. One localStorage key each, read
+// validated, written best-effort both ways — a store that cannot be read or
+// written costs where the app starts, never the click that put it there.
 
 import { isWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { isToolTabId } from "./strip/toolTabs";
 
 export const TAB_MEMORY_STORAGE_KEY = "devboule.workspaceTabMemory";
+export const LAST_WORKSPACE_STORAGE_KEY = "devboule.lastWorkspace";
 
 /**
  * Bumped only when the shape below changes in a way an older build cannot
@@ -17,6 +19,7 @@ const TAB_MEMORY_VERSION = 1;
 interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -69,7 +72,42 @@ export function readTabMemory(): Map<WorkspaceKey, string | null> {
   }
 }
 
-export function writeTabMemory(tabs: ReadonlyMap<WorkspaceKey, string | null>): void {
+/**
+ * The workspace the last run was standing in, or none. Text this build did not
+ * mint as a key reads as none: a start on the wrong workspace only costs the
+ * project's first row, which is where a start with no record goes anyway.
+ */
+export function readLastWorkspaceKey(): WorkspaceKey | null {
+  try {
+    const raw = tabMemoryStorage()?.getItem(LAST_WORKSPACE_STORAGE_KEY) ?? null;
+    return isWorkspaceKey(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeLastWorkspaceKey(workspaceKey: WorkspaceKey | null): boolean {
+  try {
+    const storage = tabMemoryStorage();
+    if (storage === null) return false;
+    if (workspaceKey === null) storage.removeItem(LAST_WORKSPACE_STORAGE_KEY);
+    else storage.setItem(LAST_WORKSPACE_STORAGE_KEY, workspaceKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearTabMemory(): void {
+  try {
+    tabMemoryStorage()?.removeItem(TAB_MEMORY_STORAGE_KEY);
+  } catch {
+    // A blocked store keeps the record it already had; there is nothing else
+    // to try.
+  }
+}
+
+export function writeTabMemory(tabs: ReadonlyMap<WorkspaceKey, string | null>): boolean {
   try {
     const entries: Record<string, string | null> = {};
     for (const [workspaceKey, tabId] of tabs) entries[workspaceKey] = tabId;
@@ -77,7 +115,9 @@ export function writeTabMemory(tabs: ReadonlyMap<WorkspaceKey, string | null>): 
       TAB_MEMORY_STORAGE_KEY,
       JSON.stringify({ v: TAB_MEMORY_VERSION, tabs: entries }),
     );
+    return true;
   } catch {
     // A full or blocked store loses the record; the tabs in memory stand.
+    return false;
   }
 }

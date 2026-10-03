@@ -111,12 +111,17 @@ describe("what the tab memory leaves for the next run", () => {
     expect(after.activeTabFor(key("a"), live("a-2"), "a-1")).toBe("a-1");
   });
 
-  it("writes back what pruning removed", async () => {
+  it("writes back what pruning removed, once the prune's own stack has ended", async () => {
     const first = await startApp();
     first.rememberActiveTab(key("a"), "a-1");
     first.rememberActiveTab(key("gone"), "g-1");
+    const setItem = vi.spyOn(window.localStorage, "setItem");
+
     first.pruneTabMemory(new Set([key("a")]));
 
+    // Workspace asks for the prune from a render, where storage is off limits.
+    expect(setItem).not.toHaveBeenCalled();
+    await Promise.resolve();
     expect(storedTabs()).toEqual({ [key("a")]: "a-1" });
     const after = await startApp();
     expect(after.activeTabFor(key("gone"), live("g-1"), "g-2")).toBe("g-2");
@@ -156,6 +161,49 @@ describe("what the tab memory leaves for the next run", () => {
     app.rememberActiveTab(key("a"), "a-2");
 
     expect(app.activeTabFor(key("a"), live("a-1", "a-2"), "a-1")).toBe("a-2");
+  });
+
+  it("writes again after a refused one, even where the answer does not change", async () => {
+    // A tool tab above the remembered session tab is the one answer that
+    // leaves the record as it was, so it is what a refused write waits for.
+    let refusing = true;
+    let stored: string | null = null;
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: (_key: string, value: string) => {
+        if (refusing) throw new Error("full");
+        stored = value;
+      },
+    });
+    const app = await startApp();
+
+    app.rememberActiveTab(key("a"), "a-2");
+    refusing = false;
+    app.rememberActiveTab(key("a"), diffTab);
+
+    expect(JSON.parse(stored ?? "null")).toEqual({ v: 1, tabs: { [key("a")]: "a-2" } });
+  });
+
+  it("does not file the tab the app picked before the memory was read", async () => {
+    localStorage.setItem(STORED_KEY, JSON.stringify({ v: 1, tabs: { [key("a")]: "a-2" } }));
+    const after = await startApp();
+
+    after.rememberActiveTab(key("a"), "a-1");
+    expect(storedTabs()).toEqual({ [key("a")]: "a-2" });
+
+    after.activeTabFor(key("a"), live("a-1", "a-2"), "a-1");
+    after.rememberActiveTab(key("a"), "a-3");
+    expect(storedTabs()).toEqual({ [key("a")]: "a-3" });
+  });
+
+  it("leaves nothing on disk for the next run to inherit", async () => {
+    const app = await startApp();
+    app.rememberActiveTab(key("a"), "a-2");
+    expect(localStorage.getItem(STORED_KEY)).not.toBeNull();
+
+    app.resetTabMemoryForTests();
+
+    expect(localStorage.getItem(STORED_KEY)).toBeNull();
   });
 
   it("writes once per change, and not at all for a repeat of the same answer", async () => {

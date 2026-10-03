@@ -10,7 +10,7 @@
 
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import { isToolTabId } from "./strip/toolTabs";
-import { readTabMemory, writeTabMemory } from "./tabMemoryStorage";
+import { clearTabMemory, readTabMemory, writeTabMemory } from "./tabMemoryStorage";
 
 const shown = new Map<WorkspaceKey, string | null>();
 
@@ -19,9 +19,19 @@ const shown = new Map<WorkspaceKey, string | null>();
  * the identity is what says a write is owed.
  */
 let durable = readTabMemory();
-/** What storage already holds. A record just read is not a change. */
+/** What storage already holds. A record just read is not a change, and a
+ * refused write stays owed, so the next change tries again. */
 let written = durable;
 for (const [key, tabId] of durable) shown.set(key, tabId);
+
+/**
+ * The remembered entries this run has not answered for yet, and asking where a
+ * workspace lands is the answer (see activeTabFor). A selection the app made
+ * on its own while the roster was settling is therefore never filed as what
+ * the user left behind: it loses to the remembered tab and is recorded only
+ * once that entry has been stood in.
+ */
+const unanswered = new Set<WorkspaceKey>(durable.keys());
 
 /** The same entries, minus the ones `keep` refuses, or the same map when it
  * refused none — and that identity is what spares a write. */
@@ -35,13 +45,13 @@ function keeping(
 
 function writeDurable(): void {
   if (durable === written) return;
-  written = durable;
-  writeTabMemory(durable);
+  if (writeTabMemory(durable)) written = durable;
 }
 
 /** What a workspace was last showing. `null` is its empty state, which is
  * not the same as "never met" — see activeTabFor. */
 export function rememberActiveTab(key: WorkspaceKey, tabId: string | null): void {
+  if (unanswered.has(key)) return;
   // The reader that writes this also re-runs on every roster push, and a
   // value that did not change must leave the map alone.
   if (shown.get(key) === tabId) return;
@@ -62,6 +72,7 @@ export function activeTabFor(
   liveTabIds: ReadonlySet<string>,
   fallbackId: string | null,
 ): string | null {
+  unanswered.delete(key);
   const tabId = shown.get(key);
   if (tabId === undefined) return fallbackId;
   if (tabId === null) return null;
@@ -74,7 +85,9 @@ export function activeTabFor(
  * restore it the next time the same id came back. */
 export function forgetTab(tabId: string): void {
   for (const [key, rememberedId] of shown) {
-    if (rememberedId === tabId) shown.delete(key);
+    if (rememberedId !== tabId) continue;
+    shown.delete(key);
+    unanswered.delete(key);
   }
   durable = keeping(durable, (_key, rememberedId) => rememberedId !== tabId);
   writeDurable();
@@ -83,14 +96,20 @@ export function forgetTab(tabId: string): void {
 /** A workspace the project list no longer holds has nothing to restore into. */
 export function pruneTabMemory(knownWorkspaceKeys: ReadonlySet<WorkspaceKey>): void {
   for (const key of shown.keys()) {
-    if (!knownWorkspaceKeys.has(key)) shown.delete(key);
+    if (knownWorkspaceKeys.has(key)) continue;
+    shown.delete(key);
+    unanswered.delete(key);
   }
   durable = keeping(durable, (key) => knownWorkspaceKeys.has(key));
-  writeDurable();
+  // Asked for from a render, and storage is not touched while one is on the
+  // stack: the in-memory prune stands now, the write after it.
+  queueMicrotask(writeDurable);
 }
 
 export function resetTabMemoryForTests(): void {
   shown.clear();
+  unanswered.clear();
   durable = new Map();
   written = durable;
+  clearTabMemory();
 }

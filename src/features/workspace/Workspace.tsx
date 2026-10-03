@@ -735,11 +735,10 @@ export function Workspace({
   // The roads that set the selected workspace WITHOUT choosing a tab for it:
   // the workspace this mount restores, a project list that no longer holds the
   // selection, a project row whose workspace the "+" reuses. Each lands on the
-  // tab the workspace was last showing, asked of the same memory and with the
-  // same fallback the row click uses. It waits for the roster, because until
-  // the list settles every workspace looks empty and the fallback would be the
-  // empty strip. It follows the reconcile above, whose write would otherwise
-  // land on top of this one.
+  // tab the workspace was last showing, while that tab is still one of its
+  // own. It waits for the roster, because a remembered tab can only be tested
+  // against a workspace's tabs once they are all there. It follows the
+  // reconcile above, whose write would otherwise land on top of this one.
   useEffect(() => {
     if (sessionsLoading || projectsLoading) return;
     // The view is about to carry off to the workspace the roster named: the
@@ -756,15 +755,16 @@ export function Workspace({
       return;
     }
     if (selectedKey === null) return;
-    // A tab this strip is showing was chosen by the road that got here.
-    if (activeTabId !== null && composedTabs.some((tab) => tab.id === activeTabId)) return;
-    const landing = landingTabFor(selectedKey);
-    if (landing === activeTabId) return;
-    selectTab(landing);
+    // The tab this workspace was left on, while that tab is still one of its
+    // own. What is showing stands as the answer to everything else: the
+    // roster picks a tab before the app has asked, and the one the user
+    // picked is already filed by the writer above.
+    const remembered = activeTabFor(selectedKey, liveTabIdsFor(selectedKey), activeTabId);
+    if (remembered === null || remembered === activeTabId) return;
+    selectTab(remembered);
   }, [
     activeTabId,
-    composedTabs,
-    landingTabFor,
+    liveTabIdsFor,
     projectsLoading,
     pushedWorkspaceKey,
     restoredWorkspaceKey,

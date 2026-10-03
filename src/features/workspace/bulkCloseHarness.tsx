@@ -217,13 +217,7 @@ vi.mock("./AgentChatSurface", async () => {
   };
 });
 
-import {
-  projectsList,
-  providersList,
-  sessionCreate,
-  sessionsList,
-  workspacesList,
-} from "../../lib/tauri";
+import * as tauri from "../../lib/tauri";
 import { Workspace } from "./Workspace";
 import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
@@ -324,7 +318,7 @@ export const defaultSessions = (): Session[] => [
 ];
 
 let container: HTMLDivElement;
-let root: Root;
+let root: Root | undefined;
 
 export async function flush(): Promise<void> {
   await act(async () => {
@@ -367,9 +361,10 @@ export function tabElement(id: string): HTMLButtonElement {
 
 export async function renderWorkspace(openRosterTabs = true): Promise<void> {
   if (openRosterTabs) await openListedSessionsForTest();
-  root = createRoot(container);
+  const mounted = createRoot(container);
+  root = mounted;
   await act(async () => {
-    root.render(<Workspace />);
+    mounted.render(<Workspace />);
   });
   await flush();
   await flush();
@@ -377,7 +372,32 @@ export async function renderWorkspace(openRosterTabs = true): Promise<void> {
 }
 
 export async function unmountWorkspace(): Promise<void> {
-  await act(async () => root.unmount());
+  await act(async () => root?.unmount());
+}
+
+/**
+ * A restart: every app module evaluates again, so the stores that answer from
+ * storage read it fresh — what a page reload does. The daemon doubles are
+ * restubbed because a fresh module graph gets fresh ones, and the roster it is
+ * given is the one the restart finds: the harness's own open-the-listed-tabs
+ * helper would open tabs in the controller the mount no longer uses.
+ */
+export async function restartWorkspace(
+  sessions: readonly Session[],
+  workspaces: readonly IpcWorkspace[] = [workspace],
+): Promise<void> {
+  // One act around the whole run: loading the graph awaits real promises, and
+  // React work that settles outside one leaves the mounted tree half-rendered.
+  await act(async () => {
+    root?.unmount();
+    vi.resetModules();
+    stubDaemonDoubles(await import("../../lib/tauri"), sessions, workspaces);
+    const { Workspace: Restarted } = await import("./Workspace");
+    root = createRoot(container);
+    root.render(<Restarted />);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+  });
 }
 
 export async function rightClick(id: string): Promise<void> {
@@ -526,6 +546,20 @@ export function bulkErrorBlock(): HTMLElement {
   return block;
 }
 
+function stubDaemonDoubles(
+  doubles: typeof tauri,
+  sessions: readonly Session[],
+  workspaces: readonly IpcWorkspace[],
+): void {
+  vi.mocked(doubles.projectsList).mockResolvedValue([project]);
+  vi.mocked(doubles.workspacesList).mockResolvedValue([...workspaces]);
+  vi.mocked(doubles.sessionsList).mockResolvedValue([...sessions]);
+  vi.mocked(doubles.providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
+  // A topic file that forgets its own create stub still gets a real session
+  // instead of undefined deep inside the controller.
+  vi.mocked(doubles.sessionCreate).mockResolvedValue(terminalSession("session-9", "shell nine"));
+}
+
 export function beforeEachHarness(): void {
   localStorage.removeItem("devboule.openSessionTabs");
   resetSharedSessionControllerForTests();
@@ -544,17 +578,11 @@ export function beforeEachHarness(): void {
   window.localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
-  vi.mocked(projectsList).mockResolvedValue([project]);
-  vi.mocked(workspacesList).mockResolvedValue([workspace]);
-  vi.mocked(sessionsList).mockResolvedValue(defaultSessions());
-  vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
-  // A topic file that forgets its own create stub still gets a real session
-  // instead of undefined deep inside the controller.
-  vi.mocked(sessionCreate).mockResolvedValue(terminalSession("session-9", "shell nine"));
+  stubDaemonDoubles(tauri, defaultSessions(), [workspace]);
 }
 
 export async function afterEachHarness(): Promise<void> {
-  await act(async () => root.unmount());
+  await act(async () => root?.unmount());
   container.remove();
   vi.clearAllMocks();
   vi.useRealTimers();
