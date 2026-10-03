@@ -203,6 +203,7 @@ function renderStrip(
             onToggle: vi.fn(),
             onAgent: vi.fn(),
             onTerminal: vi.fn(),
+            onBrowser: vi.fn(),
             onCloseMenu: onCloseNewTabMenu,
           }}
           providerMenu={null}

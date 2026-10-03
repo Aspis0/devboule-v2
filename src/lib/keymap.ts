@@ -163,6 +163,37 @@ export function searchChordFor(
   return !holdsTheKeyboard(event.target);
 }
 
+/** Whether the event is a command-modified plain letter, which is the shape
+ * both browser chords share. Either modifier counts, as everywhere else in
+ * this keymap; Alt and Shift make it a different chord. */
+function isCommandLetter(
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">,
+): boolean {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey;
+}
+
+/**
+ * The two chords a browser tab answers, and only while one is in front: the
+ * command modifier with L focuses the address bar and selects what is in it,
+ * and with R reloads — or stops a load in progress, which is what the tab's
+ * own reload button does at that moment.
+ *
+ * Read here rather than in the pane so the Shortcuts page and the keymap
+ * cannot disagree; the pane binds them while it is mounted, which is exactly
+ * while a browser tab is the active tab.
+ */
+export function browserFocusAddress(
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">,
+): boolean {
+  return isCommandLetter(event) && event.key.toLowerCase() === "l";
+}
+
+export function browserReloadChord(
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">,
+): boolean {
+  return isCommandLetter(event) && event.key.toLowerCase() === "r";
+}
+
 /** The command modifier's label for a platform string. */
 export function commandModifierLabel(platform: string): "Cmd" | "Ctrl" {
   return platform.startsWith("Mac") ? "Cmd" : "Ctrl";
@@ -278,6 +309,21 @@ function panelRows(): readonly ShortcutRow[] {
   ];
 }
 
+function browserRows(): readonly ShortcutRow[] {
+  return [
+    {
+      keys: `${commandModifier()}+L`,
+      title: "Focus the address bar",
+      detail: "While a browser tab is in front.",
+    },
+    {
+      keys: `${commandModifier()}+R`,
+      title: "Reload the page, or stop it while it loads",
+      detail: "While a browser tab is in front.",
+    },
+  ];
+}
+
 /** Both composer keys are no-ops while the composer is disabled or an image
  * send is in flight — sendInput and queueInput return early on both — so the
  * page says it once, on the group. */
@@ -293,5 +339,6 @@ export function shortcutSections(behavior: SendBehavior): readonly ShortcutSecti
     { label: "Composer", rows: composerRows(behavior), note: COMPOSER_BLOCKED_NOTE },
     { label: "Navigation", rows: navigationRows() },
     { label: "Panel", rows: panelRows() },
+    { label: "Browser", rows: browserRows() },
   ];
 }

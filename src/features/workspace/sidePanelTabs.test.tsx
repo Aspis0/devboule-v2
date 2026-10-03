@@ -405,11 +405,7 @@ describe("the right panel's tabs", () => {
     if (menu === null) throw new Error("kebab menu did not render");
     expect(menu.getAttribute("role")).toBe("menu");
     expect(tablist().contains(menu)).toBe(false);
-    expect(menuItems().map((item) => item.textContent)).toEqual([
-      "Interactive app",
-      "Pull request",
-      "Collapse panel",
-    ]);
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Pull request", "Collapse panel"]);
   });
 
   it("paints no tab underline while a kebab panel shows, only the kebab's mark", async () => {
@@ -506,7 +502,7 @@ describe("the right panel's tabs", () => {
     await renderWorkspace();
 
     await act(async () => kebab().click());
-    expect(menuItems()).toHaveLength(3);
+    expect(menuItems()).toHaveLength(2);
     await act(async () => {
       menuItems()[0].dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
@@ -514,37 +510,10 @@ describe("the right panel's tabs", () => {
     });
     expect(document.activeElement).toBe(menuItems()[1]);
     await act(async () => {
-      menuItems()[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      menuItems()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
     expect(container.querySelector(".workspace-panel-menu")).toBeNull();
     expect(document.activeElement).toBe(kebab());
-  });
-
-  it("shows Interactive app as an honest empty state with no controls", async () => {
-    await renderWorkspace();
-
-    await act(async () => kebab().click());
-    const app = menuItems().find((item) => item.textContent === "Interactive app");
-    if (app === undefined) throw new Error("Interactive app menu entry did not render");
-    await act(async () => app.click());
-
-    const panel = tabpanel();
-    // A kebab body is menu-opened, not tab-associated: a named region, never
-    // a tabpanel, so the tablist keeps exactly one selected tab (APG tabs)
-    // and the name comes from a live aria-label (no dead labelledby).
-    expect(panel.getAttribute("role")).toBe("region");
-    expect(panel.getAttribute("aria-label")).toBe("Interactive app");
-    expect(panel.hasAttribute("aria-labelledby")).toBe(false);
-    expect(panel.tabIndex).toBe(0);
-    expect(panel.textContent).toContain("Interactive app");
-    expect(panel.textContent).toContain("not available yet");
-    expect(panel.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
-    // The last real tab stays selected; the stop stays with it, and the
-    // kebab names what is showing.
-    expect(tabByName("Changes").getAttribute("aria-selected")).toBe("true");
-    expect(tabByName("Changes").tabIndex).toBe(0);
-    expect(kebab().getAttribute("aria-label")).toBe("More panels, Interactive app open");
-    expect(kebab().className).toContain("workspace-panel-kebab-active");
   });
 
   it("shows Pull request as an honest empty state with no controls", async () => {

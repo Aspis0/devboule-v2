@@ -2,6 +2,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  browserFocusAddress,
+  browserReloadChord,
   COMMAND_MENU_KEY,
   commandModifier,
   commandModifierLabel,
@@ -213,12 +215,13 @@ describe("the command modifier display", () => {
 });
 
 describe("shortcutSections", () => {
-  it("groups the rows under the four scopes, in order", () => {
+  it("groups the rows under the five scopes, in order", () => {
     expect(shortcutSections("queue").map((section) => section.label)).toEqual([
       "Tabs",
       "Composer",
       "Navigation",
       "Panel",
+      "Browser",
     ]);
   });
 
@@ -259,5 +262,41 @@ describe("shortcutSections", () => {
       "Not while typing in a field or terminal, or while a menu, list or dialog is open.",
     );
     expect(listed).toContain("While the surface list is open, outside text fields and dialogs.");
+  });
+});
+
+describe("the browser chords", () => {
+  const chord = (key: string, over: Partial<KeyboardEvent> = {}) => ({
+    key,
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...over,
+  });
+
+  it("answers the command modifier with L and with R, either modifier", () => {
+    expect(browserFocusAddress(chord("l"))).toBe(true);
+    expect(browserReloadChord(chord("r"))).toBe(true);
+    expect(browserFocusAddress(chord("L"))).toBe(true);
+    expect(browserFocusAddress(chord("l", { ctrlKey: false, metaKey: true }))).toBe(true);
+    expect(browserReloadChord(chord("r", { ctrlKey: false, metaKey: true }))).toBe(true);
+  });
+
+  it("leaves every other chord to whatever else owns it", () => {
+    expect(browserFocusAddress(chord("k"))).toBe(false);
+    expect(browserReloadChord(chord("f"))).toBe(false);
+    // Alt and Shift make it a different chord: reload is not force-reload and
+    // selecting an address is not a select-all.
+    expect(browserFocusAddress(chord("l", { shiftKey: true }))).toBe(false);
+    expect(browserReloadChord(chord("r", { altKey: true }))).toBe(false);
+    // An unmodified letter is text.
+    expect(browserFocusAddress({ ...chord("l"), ctrlKey: false })).toBe(false);
+  });
+
+  it("lists both chords on the Shortcuts page", () => {
+    vi.stubGlobal("navigator", { platform: "Win32" });
+    expect(rows("queue")).toContain("Ctrl+L");
+    expect(rows("queue")).toContain("Ctrl+R");
   });
 });

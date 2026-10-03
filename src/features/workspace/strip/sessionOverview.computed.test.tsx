@@ -83,6 +83,7 @@ function renderOpenStrip() {
           onToggle: vi.fn(),
           onAgent: vi.fn(),
           onTerminal: vi.fn(),
+          onBrowser: vi.fn(),
           onCloseMenu: vi.fn(),
         }}
         providerMenu={null}

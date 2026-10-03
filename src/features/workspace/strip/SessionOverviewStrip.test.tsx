@@ -97,6 +97,7 @@ function renderStrip(tabs: StripTab[], overview: readonly Session[], activeTabId
           onToggle: vi.fn(),
           onAgent: vi.fn(),
           onTerminal: vi.fn(),
+          onBrowser: vi.fn(),
           onCloseMenu: vi.fn(),
         }}
         providerMenu={null}

@@ -283,6 +283,7 @@ describe("walking every menu the source finds — the band's open is the outside
       onToggle: vi.fn(),
       onAgent: vi.fn(),
       onTerminal: vi.fn(),
+      onBrowser: vi.fn(),
       onCloseMenu: vi.fn(),
     };
     const tabClose = {

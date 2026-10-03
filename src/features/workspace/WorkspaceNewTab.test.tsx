@@ -15,6 +15,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
+import { browserTabsFor, resetBrowserLayoutForTests } from "./browserTabs";
+import { localWorkspaceKey } from "./hosts/hostIdentity";
+import { clearBrowserLayout } from "./browserTabStorage";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonStatus, Session } from "../../types/ipc";
@@ -23,8 +26,29 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   ask: vi.fn(async () => false),
 }));
 
+const OPENED_PAGE = {
+  url: "https://example.com/",
+  title: null,
+  favicon: null,
+  loading: false,
+  canGoBack: false,
+  canGoForward: false,
+  error: null,
+};
+
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async () => undefined),
+  invoke: vi.fn(async (command: string) =>
+    command === "browser_open" ? structuredClone(OPENED_PAGE) : undefined,
+  ),
+  // The browser tab controller hands Rust a channel per tab; the fake only
+  // has to hold the callback the controller was given.
+  Channel: class {
+    constructor(private readonly onmessage: (update: unknown) => void) {}
+    send(update: unknown) {
+      this.onmessage(update);
+      return Promise.resolve();
+    }
+  },
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -352,6 +376,8 @@ describe("the + new-tab menu", () => {
 
   beforeEach(() => {
     localStorage.removeItem("devboule.openSessionTabs");
+    clearBrowserLayout();
+    resetBrowserLayoutForTests();
     resetSharedSessionControllerForTests();
     resetTabMemoryForTests();
     setLastSelectedWorkspaceKey(null);
@@ -370,7 +396,7 @@ describe("the + new-tab menu", () => {
     vi.clearAllMocks();
   });
 
-  it("opens a menu whose items are exactly Agent, Terminal, in that order", async () => {
+  it("opens a menu whose items are exactly Agent, Terminal, Browser, in that order", async () => {
     ({ container, unmount } = await renderWorkspace());
 
     expect(document.querySelector("[role='menu']")).toBeNull();
@@ -380,7 +406,7 @@ describe("the + new-tab menu", () => {
     expect(menu).not.toBeNull();
     expect(menu?.getAttribute("aria-label")).toBe("New tab");
     const items = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
-    expect(items.map((item) => item.textContent)).toEqual(["Agent", "Terminal"]);
+    expect(items.map((item) => item.textContent)).toEqual(["Agent", "Terminal", "Browser"]);
   });
 
   it("Terminal closes the menu, creates a terminal session in the selected workspace, and selects the new tab", async () => {
@@ -399,6 +425,22 @@ describe("the + new-tab menu", () => {
     expect(container.querySelector("[data-testid=terminal-surface]")?.textContent).toContain(
       "session-2",
     );
+  });
+
+  it("Browser opens a page tab in the selected workspace, with no session created", async () => {
+    ({ container, unmount } = await renderWorkspace());
+
+    await openMenu(container);
+    await act(async () => menuItem(container, "Browser").click());
+    await act(async () => undefined);
+
+    expect(document.querySelector("[role='menu']")).toBeNull();
+    // A browser tab is frontend state: it creates no daemon session, and it
+    // is in front because its chip carries the panel id the pane reads.
+    expect(sessionCreate).not.toHaveBeenCalled();
+    const [record] = browserTabsFor(localWorkspaceKey("workspace-1")!);
+    expect(record?.url).toBe("https://example.com/");
+    expect(container.querySelector(".browser-chrome")).not.toBeNull();
   });
 
   it("disables + while the terminal create is in flight and re-enables it when it settles or fails", async () => {

@@ -1,0 +1,93 @@
+/* The browser tab's own chrome: the control row above the page, the inline
+   error line under it, and the box the page is drawn over. Lives apart from
+   the strip's stylesheet because it belongs to the pane, not to the tab row,
+   and beside Workspace.css because it is one surface's glass and measures. */
+
+.workspace-browser-pane {
+  display: flex;
+  min-height: 0;
+  background: var(--surface-muted);
+  flex-direction: column;
+}
+
+.browser-chrome {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+}
+
+.browser-chrome-button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+}
+
+.browser-chrome-button:hover:not(:disabled) {
+  background: var(--panel-menu);
+}
+
+.browser-chrome-button:disabled {
+  /* Disabled, not hidden: a control that vanishes moves the bar's left edge
+     under the pointer the moment a page lands. */
+  color: var(--silence);
+  opacity: 0.4;
+}
+
+.browser-address {
+  min-width: 0;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel-menu);
+  color: var(--ink);
+  font-size: var(--type-meta);
+  flex: 1;
+}
+
+.browser-address[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.browser-error {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px 6px;
+  color: var(--danger);
+  font-size: var(--type-meta);
+  line-height: 1.55;
+}
+
+.browser-error-text {
+  overflow-wrap: anywhere;
+}
+
+/* The rectangle the child webview is placed over. It is painted with the
+   surface ground and not with the pane's own: a page that has not been
+   placed yet must read as an empty page box, not as a hole. */
+.browser-page-area {
+  position: relative;
+  min-height: 0;
+  margin: 0 12px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  flex: 1;
+}
+
+/* The page is over this box while it loads, so the box's own outline is the
+   only clue that anything is coming. */
+.browser-page-area-loading {
+  border-style: dashed;
+}

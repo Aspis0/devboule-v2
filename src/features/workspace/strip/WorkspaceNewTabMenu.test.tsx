@@ -17,9 +17,17 @@ interface HarnessProps {
   onClose: () => void;
   onAgent: () => void;
   onTerminal: () => void;
+  onBrowser: () => void;
 }
 
-function Harness({ creating, workspaceSelected, onClose, onAgent, onTerminal }: HarnessProps) {
+function Harness({
+  creating,
+  workspaceSelected,
+  onClose,
+  onAgent,
+  onTerminal,
+  onBrowser,
+}: HarnessProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   return (
     <>
@@ -33,6 +41,7 @@ function Harness({ creating, workspaceSelected, onClose, onAgent, onTerminal }: 
         workspaceSelected={workspaceSelected}
         onAgent={onAgent}
         onTerminal={onTerminal}
+        onBrowser={onBrowser}
         onClose={onClose}
       />
     </>
@@ -47,6 +56,7 @@ function renderMenu(options: { creating?: boolean; workspaceSelected?: boolean }
     onClose: vi.fn(),
     onAgent: vi.fn(),
     onTerminal: vi.fn(),
+    onBrowser: vi.fn(),
   };
   act(() => {
     root.render(
@@ -56,6 +66,7 @@ function renderMenu(options: { creating?: boolean; workspaceSelected?: boolean }
         onClose={menu.onClose}
         onAgent={menu.onAgent}
         onTerminal={menu.onTerminal}
+        onBrowser={menu.onBrowser}
       />,
     );
   });
@@ -97,31 +108,33 @@ describe("the + menu entries and keys", () => {
     return menu;
   }
 
-  it("disables both entries while a create is in flight", () => {
+  it("disables every entry while a create is in flight", () => {
     const menu = render({ creating: true });
     expect(menu.entry("Agent").disabled).toBe(true);
     expect(menu.entry("Terminal").disabled).toBe(true);
+    expect(menu.entry("Browser").disabled).toBe(true);
   });
 
-  it("disables Terminal alone when no workspace is selected", () => {
+  it("disables Terminal and Browser when no workspace is selected", () => {
     const menu = render({ workspaceSelected: false });
     expect(menu.entry("Agent").disabled).toBe(false);
     expect(menu.entry("Terminal").disabled).toBe(true);
+    expect(menu.entry("Browser").disabled).toBe(true);
   });
 
   it("Home and End move to the first and last entries from real focus positions", () => {
     const menu = render();
     const agent = menu.entry("Agent");
-    const terminal = menu.entry("Terminal");
+    const browser = menu.entry("Browser");
     // Opening the menu focuses the first entry; the keys are dispatched on
     // the element that has focus, as a real keypress would be.
     expect(document.activeElement).toBe(agent);
     act(() => {
       agent.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     });
-    expect(document.activeElement).toBe(terminal);
+    expect(document.activeElement).toBe(browser);
     act(() => {
-      terminal.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+      browser.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
     });
     expect(document.activeElement).toBe(agent);
   });
@@ -146,6 +159,7 @@ describe("the + menu entries and keys", () => {
     const menu = render();
     const agent = menu.entry("Agent");
     const terminal = menu.entry("Terminal");
+    const browser = menu.entry("Browser");
     act(() => agent.focus());
     act(() => {
       agent.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
@@ -153,6 +167,10 @@ describe("the + menu entries and keys", () => {
     expect(document.activeElement).toBe(terminal);
     act(() => {
       terminal.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(document.activeElement).toBe(browser);
+    act(() => {
+      browser.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     });
     expect(document.activeElement).toBe(agent);
   });

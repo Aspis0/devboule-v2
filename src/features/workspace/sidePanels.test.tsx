@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AppSurface, DesignPanel, PullRequestSurface } from "./sidePanels";
+import { DesignPanel, PullRequestSurface } from "./sidePanels";
 import { useAppStore } from "../../store/appStore";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -50,23 +50,6 @@ describe("side panel dead controls", () => {
   // now, so their guarantees — which controls each panel may draw (and
   // that the one act that loses data asks first), and no mockup notice —
   // are anchored there against real content instead of the mock's.
-  describe("AppSurface", () => {
-    it("names the panel and says what will live here", async () => {
-      await render(<AppSurface />);
-
-      expect(container.textContent).toContain("Interactive app");
-      expect(container.textContent).toContain("not available yet");
-    });
-
-    it("carries no controls and no mock browser", async () => {
-      await render(<AppSurface />);
-
-      expect(container.querySelectorAll("button, input, select, textarea, a")).toHaveLength(0);
-      expect(container.textContent).not.toContain("Mockup");
-      expect(container.querySelector('[role="note"]')).toBeNull();
-    });
-  });
-
   describe("PullRequestSurface", () => {
     it("names the panel and says what will live here", async () => {
       await render(<PullRequestSurface />);
