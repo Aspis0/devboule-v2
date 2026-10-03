@@ -20,7 +20,7 @@ import { browserChrome, submitBrowserAddress } from "./browserChrome";
 import { browserTabLabel } from "./browserUrl";
 import { browserHistory, browserNavigate, browserReload } from "./browserController";
 import { followBrowserPage, type BrowserPagePlacement } from "./browserPlacement";
-import { watchBrowserPage } from "./browserPages";
+import { watchBrowserChords, watchBrowserPage } from "./browserPages";
 import { patchBrowserTab, requestBrowserPopup } from "./browserTabs";
 import type { BrowserUpdate, BrowserViewState } from "../../types/ipc";
 import { browserFocusAddress, browserReloadChord } from "../../lib/keymap";
@@ -64,6 +64,11 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
         // The strip owns which workspace a tab belongs to, so a page asking
         // for a window is answered there rather than here.
         requestBrowserPopup(browserId, update.url);
+        return;
+      }
+      if (update.kind === "chord") {
+        // The page's own focus sent this; the store routes it to the pane
+        // watching, which is here.
         return;
       }
       const { kind: _kind, ...state } = update;
@@ -145,6 +150,11 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
     [browserId, chrome.barValue, draft],
   );
 
+  const focusAddress = useCallback((): void => {
+    addressRef.current?.focus({ preventScroll: true });
+    addressRef.current?.select();
+  }, []);
+
   const act = useCallback(
     (what: "back" | "forward" | "stop" | "reload") => {
       if (what === "reload") void browserReload(browserId);
@@ -160,8 +170,7 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
     const onKey = (event: KeyboardEvent) => {
       if (browserFocusAddress(event)) {
         event.preventDefault();
-        addressRef.current?.focus({ preventScroll: true });
-        addressRef.current?.select();
+        focusAddress();
         return;
       }
       if (browserReloadChord(event)) {
@@ -171,7 +180,19 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [act, page.loading]);
+  }, [act, focusAddress, page.loading]);
+
+  // The same two chords, pressed while the PAGE had the focus: the child
+  // webview is its own window, so those keys never reach the listener above
+  // and the controller forwards them down this tab's channel instead.
+  useEffect(
+    () =>
+      watchBrowserChords(browserId, (chord) => {
+        if (chord === "focusAddress") focusAddress();
+        else act(page.loading ? "stop" : "reload");
+      }),
+    [act, browserId, focusAddress, page.loading],
+  );
 
   // "+ then Browser" closes a menu that held the focus, which leaves the
   // document with none: this pane is the only surface that can take it, and

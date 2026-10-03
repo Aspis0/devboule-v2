@@ -24,6 +24,7 @@ function sources(): string[] {
 const rust = read("src-tauri/src/browser.rs");
 const tab = read("src-tauri/src/browser/tab.rs");
 const registry = read("src-tauri/src/browser/registry.rs");
+const pageHost = read("src-tauri/src/browser/page_host.rs");
 const lib = read("src-tauri/src/lib.rs");
 const capabilities = read("src-tauri/capabilities/default.json");
 const controller = read("src/features/workspace/browserController.ts");
@@ -92,5 +93,42 @@ describe("the Rust controller and the TypeScript door", () => {
 
   it("enables the feature the child-webview API is behind", () => {
     expect(CARGO).toContain('"unstable"');
+  });
+
+  it("starts a child on an empty document and restricts it before it loads anything", () => {
+    // The order is the whole point: a page created on its own address is a page
+    // that has already asked for something before the handlers exist.
+    expect(tab).toContain("BOOTSTRAP_URL");
+    expect(tab.indexOf("page_host::restrict")).toBeLessThan(
+      tab.indexOf("webview.navigate(target)"),
+    );
+    // And a failure to restrict fails the open rather than showing the page.
+    expect(tab).toMatch(/if let Err\(error\) = page_host::restrict/);
+  });
+
+  it("refuses every permission and cancels every download", () => {
+    expect(pageHost).toContain("COREWEBVIEW2_PERMISSION_STATE_DENY");
+    expect(pageHost).toContain("add_DownloadStarting");
+    expect(pageHost).toContain("SetCancel(true)");
+  });
+
+  it("reports a chord pressed inside the page, and keeps the icon as data", () => {
+    expect(pageHost).toContain("add_AcceleratorKeyPressed");
+    expect(tab).toContain("BrowserUpdate::Chord");
+    // An icon is bytes: a URL would be fetched by the app's own webview, from
+    // a record on disk, on every start.
+    expect(pageHost).toContain('icon.starts_with("data:image/")');
+  });
+
+  it("keeps the claim until the native close has actually happened", () => {
+    const closing = rust.indexOf("webview.close()");
+    const released = rust.indexOf("registry.release(&id)", closing);
+    expect(closing).toBeGreaterThan(-1);
+    // Releasing first would let a reopen claim the id while the old child
+    // still holds the label.
+    expect(released).toBeGreaterThan(closing);
+    // And a close that found no child cancels the claim a create is holding,
+    // because that create is the only thing that can dispose of it.
+    expect(rust).toContain("registry.cancel(&id)");
   });
 });

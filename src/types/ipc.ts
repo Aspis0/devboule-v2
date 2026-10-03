@@ -2520,11 +2520,21 @@ export interface BrowserViewState {
  * What travels down one browser tab's channel. A `newWindow` is a page
  * asking for a window of its own: the controller refuses the native popup
  * and sends this instead, and the strip opens a tab for it in the
- * workspace the asking tab belongs to.
+ * workspace the asking tab belongs to. A `chord` is a key pressed while the
+ * page itself held the focus, where the app's own keymap cannot hear it.
  */
 export type BrowserUpdate =
   | ({ kind: "state" } & BrowserViewState)
-  | { kind: "newWindow"; url: string };
+  | { kind: "newWindow"; url: string }
+  | { kind: "chord"; chord: BrowserChord };
+
+/**
+ * The two keys a browser tab answers wherever the focus is
+ * (`BrowserChord` in `src-tauri/src/browser/tab.rs`). Named rather than sent
+ * as a key event, so the app's keymap stays the only thing that decides what
+ * a chord means.
+ */
+export type BrowserChord = "focusAddress" | "reload";
 
 /** A rectangle in the units `browser_present` takes. The main webview's CSS
  * pixels and Tauri logical pixels are the same unit on every platform this

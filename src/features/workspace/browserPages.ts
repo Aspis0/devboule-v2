@@ -10,7 +10,7 @@
 
 import { browserClose, browserOpen } from "./browserController";
 import { requestBrowserPopup } from "./browserTabs";
-import type { BrowserUpdate, BrowserViewState } from "../../types/ipc";
+import type { BrowserChord, BrowserUpdate, BrowserViewState } from "../../types/ipc";
 
 /** A view of a page, told what the page reports. */
 type PageWatch = (update: BrowserUpdate) => void;
@@ -60,18 +60,36 @@ function remember(page: Page, state: BrowserViewState): void {
 }
 
 /** What one page reports, read once and shared by every view of it. A page
- * asking for a window of its own is a request about the page, not its state,
- * so it is routed once however many views are mounted. An update that arrives
- * after the tab was closed has no page to land on and is dropped. */
+ * asking for a window of its own, or a chord pressed inside it, is a request
+ * about the page rather than its state, so each is routed once however many
+ * views are mounted. An update that arrives after the tab was closed has no
+ * page to land on and is dropped. */
 function report(id: string, update: BrowserUpdate): void {
-  if (update.kind !== "state") {
+  if (update.kind === "newWindow") {
     requestBrowserPopup(id, update.url);
+    return;
+  }
+  if (update.kind === "chord") {
+    chordWatchers.get(id)?.(update.chord);
     return;
   }
   const page = pages.get(id);
   if (page === undefined) return;
   const { kind: _state, ...state } = update;
   remember(page, state);
+}
+
+/** The pane currently watching one page, for a chord the page's own focus
+ * sent down the channel. It is a pane while a pane is watching it and nothing
+ * after that, which is the whole lifetime a chord has. */
+const chordWatchers = new Map<string, (chord: BrowserChord) => void>();
+
+/** Hand a page's chords to the pane showing it. */
+export function watchBrowserChords(id: string, onChord: (chord: BrowserChord) => void): () => void {
+  chordWatchers.set(id, onChord);
+  return () => {
+    if (chordWatchers.get(id) === onChord) chordWatchers.delete(id);
+  };
 }
 
 function create(id: string, url: string): Page {
@@ -143,5 +161,6 @@ export function subscribeBrowserPages(listener: () => void): () => void {
 export function resetBrowserPagesForTests(): void {
   pages.clear();
   listeners.clear();
+  chordWatchers.clear();
   reported = new Map();
 }

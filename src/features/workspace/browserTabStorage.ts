@@ -58,6 +58,15 @@ function optionalText(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
+/** The page's own icon as a `data:` URL, or null. An older record may hold a
+ * page's URL there, and the chip would render it: an `<img>` in the app's
+ * webview pointed at a page's address is a third party beacon fired on every
+ * start, so a value that is not data is dropped on the way in. */
+function storedIcon(value: unknown): string | null {
+  const text = optionalText(value);
+  return text !== null && text.startsWith("data:image/") ? text : null;
+}
+
 /** A record this build could have written. Anything else costs that record,
  * not the whole layout: one bad entry must not cost every open tab. */
 function storedRecord(value: unknown): BrowserTabRecord | null {
@@ -74,7 +83,7 @@ function storedRecord(value: unknown): BrowserTabRecord | null {
     workspaceKey: value.workspaceKey,
     url,
     title: optionalText(value.title),
-    favicon: optionalText(value.favicon),
+    favicon: storedIcon(value.favicon),
   };
 }
 

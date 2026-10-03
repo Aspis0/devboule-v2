@@ -13,6 +13,10 @@ import {
   type BrowserTabRecord,
 } from "./browserTabStorage";
 
+/** The longest title kept. A page names itself whatever it likes, and this is
+ * what is written to localStorage for every tab the run leaves behind. */
+const TITLE_MAX = 300;
+
 /** What a page reports back about itself. Every field is optional because
  * Rust sends the whole state each time, and a tab that has not loaded yet
  * answers with none of it. */
@@ -106,13 +110,13 @@ export function openBrowserTab(
 /** What the page said about itself. The tab keeps its place in the strip; only
  * the words on its chip and the address in its bar change. */
 export function patchBrowserTab(browserId: string, page: BrowserPageState): void {
+  const title = page.title === null ? null : page.title.slice(0, TITLE_MAX);
   let changed = false;
   const tabs = layout.tabs.map((tab) => {
     if (tab.browserId !== browserId) return tab;
-    if (tab.url === page.url && tab.title === page.title && tab.favicon === page.favicon)
-      return tab;
+    if (tab.url === page.url && tab.title === title && tab.favicon === page.favicon) return tab;
     changed = true;
-    return { ...tab, url: page.url, title: page.title, favicon: page.favicon };
+    return { ...tab, url: page.url, title, favicon: page.favicon };
   });
   if (!changed) return;
   commit({ ...layout, tabs });

@@ -138,7 +138,9 @@ describe("browser tab persistence", () => {
     patchBrowserTab(beta.browserId, {
       url: "https://example.net/",
       title: "Example Net",
-      favicon: "https://example.net/icon.png",
+      // The icon as the app keeps it: bytes, not an address. An `<img>` in the
+      // app's own webview pointed at a page's host is a third party beacon.
+      favicon: "data:image/png;base64,iVBORw0KGgo=",
     });
     // Alpha keeps two tabs, and lands on the second one.
     openBrowserTab(ALPHA);
@@ -154,7 +156,7 @@ describe("browser tab persistence", () => {
         browserId: beta.browserId,
         url: "https://example.net/",
         title: "Example Net",
-        favicon: "https://example.net/icon.png",
+        favicon: "data:image/png;base64,iVBORw0KGgo=",
       }),
     ]);
   });
