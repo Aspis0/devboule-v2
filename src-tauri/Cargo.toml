@@ -26,7 +26,17 @@ tauri-build = { version = "=2.6.3", features = ["config-json5"] }
 # (checked with bytes in `backend/tests/asset_scope.rs`). `tray-icon` is the
 # notification-area/menu-bar icon the app lives in after the window hides;
 # runtime API only — nothing in `tauri.conf.json` configures a tray.
-tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset", "tray-icon"] }
+# `unstable` is `Window::add_child`: the browser tab is a child webview in
+# the main window, and that API is still behind the flag in Tauri 2.11.
+tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset", "tray-icon", "unstable"] }
+# Direct because `src-tauri/src/browser/page_host.rs` calls WebView2's COM
+# interfaces itself for the four things Tauri 2.11 does not expose: history,
+# stop, the page's favicon, and the permission answer. Versions must match
+# Cargo.lock exactly, so we name the SAME types wry and Tauri use. Windows
+# only; every other target compiles the refusals in the same module.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.38.2"
+windows = "=0.61.3"
 # Direct because the public session contract derives Serialize/Deserialize. The exact
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }

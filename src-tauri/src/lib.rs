@@ -1,5 +1,6 @@
 mod artifact_export;
 mod backend;
+mod browser;
 mod client;
 mod close_flow;
 mod close_prompt;
@@ -35,6 +36,9 @@ pub fn run() {
         // managed before any window can ask for a plugin file.
         .manage(plugins::PluginRegistry::default())
         .manage(plugins::rpc::PluginRuntime::default())
+        // The registry every browser tab resolves through: which child
+        // webview a tab owns, and the one profile directory they share.
+        .manage(browser::registry::BrowserRegistry::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         // The opener behind the pencil's Reveal in folder target — its Rust
@@ -197,6 +201,13 @@ pub fn run() {
             plugins::rpc::plugin_backend_ensure,
             plugins::rpc::plugin_backend_stop,
             plugins::rpc::plugin_invoke,
+            browser::browser_open,
+            browser::browser_present,
+            browser::browser_park,
+            browser::browser_navigate,
+            browser::browser_history,
+            browser::browser_reload,
+            browser::browser_close,
         ])
         .on_window_event(|window, event| {
             // Every close of the main window becomes a decision (hide, quit,
