@@ -37,7 +37,7 @@ const EPOCH = "0123456789abcdef0123456789abcdef";
 type QueueSnapshot = Extract<SessionEvent, { type: "queue_snapshot" }>;
 
 let container: HTMLDivElement;
-let root: Root;
+let root: Root | null = null;
 let latest: MessageQueueUi | null = null;
 let lastKey = "";
 let handedBack: Array<{ text: string; focus: boolean }>;
@@ -111,9 +111,10 @@ function renderProbe(overrides: Partial<MessageQueueOptions> = {}): void {
       </div>
     );
   }
-  root = createRoot(container);
+  const mounted = createRoot(container);
+  root = mounted;
   act(() => {
-    root.render(<Probe />);
+    mounted.render(<Probe />);
   });
 }
 
@@ -215,6 +216,59 @@ describe("useMessageQueue", () => {
 
     expect(read().error).toBe("The agent daemon refused that request as invalid.");
     expect(handedBack).toEqual([{ text: "too big", focus: true }]);
+  });
+
+  it("reuses the lost answer's id when the same text is submitted again", async () => {
+    // The daemon applied the add and its reply was lost, so the text is in
+    // doubt: a resubmit under a new id would be a second row of the same words.
+    renderProbe();
+    vi.mocked(sessionQueueAdd)
+      .mockRejectedValueOnce({ code: "connection_lost", message: "The connection was lost." })
+      .mockResolvedValue(undefined);
+
+    await press(() => latest?.queueMessage("in doubt"));
+    expect(handedBack).toEqual([{ text: "in doubt", focus: true }]);
+    const firstId = vi.mocked(sessionQueueAdd).mock.calls[0]?.[1];
+
+    // The user's own resubmit of the same unchanged words: the same id, so the
+    // daemon answers its ledger instead of queueing a second row.
+    await press(() => latest?.queueMessage("in doubt"));
+    expect(vi.mocked(sessionQueueAdd).mock.calls[1]?.[1]).toBe(firstId);
+    expect(vi.mocked(sessionQueueAdd).mock.calls[1]?.[2]).toBe("in doubt");
+  });
+
+  it("mints a new id when the handed-back draft was changed", async () => {
+    renderProbe();
+    vi.mocked(sessionQueueAdd)
+      .mockRejectedValueOnce({ code: "connection_lost", message: "The connection was lost." })
+      .mockResolvedValue(undefined);
+
+    await press(() => latest?.queueMessage("in doubt"));
+    await press(() => latest?.queueMessage("in doubt, with a line added"));
+    const calls = vi.mocked(sessionQueueAdd).mock.calls;
+    expect(calls[1]?.[1]).not.toBe(calls[0]?.[1]);
+    expect(calls[1]?.[2]).toBe("in doubt, with a line added");
+  });
+
+  it("asks no more once the view is gone", async () => {
+    vi.useFakeTimers();
+    renderProbe();
+    vi.mocked(sessionQueueAdd).mockRejectedValue({ code: "operation_in_flight", message: "busy" });
+
+    await act(async () => {
+      latest?.queueMessage("still on the wire");
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    expect(sessionQueueAdd).toHaveBeenCalledTimes(2);
+
+    await act(async () => root?.unmount());
+    root = null;
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+
+    // Nothing fired for a session this view no longer holds, and nothing said
+    // anything to the user about it.
+    expect(sessionQueueAdd).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 
   it("gives back the text of an edit the daemon no longer has a row for", async () => {

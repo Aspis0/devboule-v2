@@ -47,8 +47,10 @@ interface WorkspaceComposerProps {
   disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
   onSend: (text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>;
-  /** Queue the composer's text while the turn runs; absent, Enter always sends. */
-  onQueue?: (text: string, attachments: readonly PromptAttachment[]) => void;
+  /** Queue the composer's text while the turn runs; absent, Enter always sends.
+   * Settles when the daemon has answered, which is what holds a second
+   * activation of the same intent off the wire. */
+  onQueue?: (text: string, attachments: readonly PromptAttachment[]) => void | Promise<void>;
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
   onStop?: () => void;
@@ -124,6 +126,8 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const [activeIndex, setActiveIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  // True from a queue press until the daemon has answered it.
+  const queuePendingRef = useRef(false);
   const parkedRestoreRef = useRef<{ text: string; focus: boolean } | null>(null);
   const pendingPrefixRef = useRef<string | null>(null);
   const menuId = useId();
@@ -259,7 +263,16 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     // in-flight picks still belong to that send, and queueing them again
     // would send them twice.
     if (!text || disabled || sendingImages || onQueue === undefined) return;
-    onQueue(text, attachedImages);
+    // One intent, one frame. A second activation inside this render still reads
+    // the text the first press is about to clear, so the daemon would see two
+    // adds of the same words under two ids.
+    if (queuePendingRef.current) return;
+    queuePendingRef.current = true;
+    void Promise.resolve(onQueue(text, attachedImages))
+      .catch(() => undefined)
+      .finally(() => {
+        queuePendingRef.current = false;
+      });
     setRestoreOverflow(null);
     setAttachedImages([]);
     setInput("");

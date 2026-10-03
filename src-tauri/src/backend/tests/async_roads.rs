@@ -126,6 +126,9 @@ fn every_wait_goes_through_the_blocking_helper() {
 /// send — it carries the subscription a send needs — so it must confirm this
 /// view holds that attach before the frame goes; the other four carry no
 /// subscription and have no such guard to make.
+///
+/// Both sides are compared sorted: which guards a command makes is a fact, the
+/// order it happens to write them in is not.
 #[test]
 fn the_queue_forwarders_make_the_checks_their_frames_need() {
     let scan = command_scan::scan();
@@ -134,10 +137,9 @@ fn the_queue_forwarders_make_the_checks_their_frames_need() {
         .iter()
         .filter(|command| command.name.starts_with("session_queue_"))
         .map(|command| {
-            (
-                command.name.as_str(),
-                command.guards.iter().map(String::as_str).collect(),
-            )
+            let mut found: Vec<&str> = command.guards.iter().map(String::as_str).collect();
+            found.sort_unstable();
+            (command.name.as_str(), found)
         })
         .collect();
     let named = |command: &str| {
@@ -148,21 +150,22 @@ fn the_queue_forwarders_make_the_checks_their_frames_need() {
     };
     assert_eq!(
         named("session_queue_add"),
-        "require_session_id require_write_size require_attachment_limits",
+        "require_attachment_limits require_session_id require_write_size",
         "an add is the one queue frame that carries a prompt: it is checked as a prompt is"
     );
     assert_eq!(
         named("session_queue_send_now"),
-        "require_session_id ensure_subscription_attached",
+        "ensure_subscription_attached require_session_id",
         "a send-now is a send, so it waits through the same attachment guard every other send does"
     );
-    // Every other queue frame names a session and one row, and carries neither
-    // a prompt nor a subscription.
-    for command in [
-        "session_queue_edit",
-        "session_queue_remove",
-        "session_queue_move",
-    ] {
+    // The other three name a session and one row: remove and move carry no
+    // prompt at all, and an edit carries text but no attachment.
+    assert_eq!(
+        named("session_queue_edit"),
+        "require_session_id require_write_size",
+        "an edit carries the row's new text, so it is size-checked like a send"
+    );
+    for command in ["session_queue_remove", "session_queue_move"] {
         assert_eq!(
             named(command),
             "require_session_id",

@@ -21,7 +21,7 @@ import { WorkspaceComposer } from "./WorkspaceComposer";
 let container: HTMLDivElement;
 let root: Root;
 let onSend: Mock<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>;
-let onQueue: Mock<(text: string, attachments: readonly PromptAttachment[]) => void>;
+let onQueue: Mock<(text: string, attachments: readonly PromptAttachment[]) => void | Promise<void>>;
 let mocks: ComposerMocks;
 let drive: ComposerDrivers;
 
@@ -38,7 +38,8 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   onSend = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>();
-  onQueue = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => void>();
+  onQueue =
+    vi.fn<(text: string, attachments: readonly PromptAttachment[]) => void | Promise<void>>();
   mocks = { onSend, onQueue };
   drive = composerDrivers(container);
 });
@@ -89,6 +90,34 @@ describe("Enter with the menu closed", () => {
 
     expect(onSend).toHaveBeenCalledWith("later", []);
     expect(onQueue).not.toHaveBeenCalled();
+  });
+
+  it("queues once when the queue action fires twice before the first answer", async () => {
+    // One intent, one frame: a second activation inside the same render still
+    // reads the text the first press is about to clear.
+    await renderComposer({ turnActive: true, enterQueues: true });
+    let settle!: () => void;
+    onQueue.mockReturnValue(new Promise<void>((resolve) => (settle = resolve)));
+    await drive.type("twice");
+
+    await act(async () => {
+      for (let press = 0; press < 2; press += 1) {
+        drive
+          .textarea()
+          .dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+          );
+      }
+    });
+    expect(onQueue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      settle();
+    });
+    // Once the queue has answered, the action is live again.
+    await drive.type("and again");
+    await drive.press("Enter");
+    expect(onQueue).toHaveBeenCalledTimes(2);
   });
 
   it("queues a slash-leading message with more than a command in it", async () => {

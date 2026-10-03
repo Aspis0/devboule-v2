@@ -36,6 +36,7 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import {
+  sessionQueueAdd,
   sessionQueueEdit,
   sessionQueueMove,
   sessionQueueRemove,
@@ -109,6 +110,14 @@ beforeEach(() => {
   harness.revision = 0;
   localStorage.removeItem("devboule.sendBehavior");
   localStorage.removeItem("devboule.modelEffortPrefs");
+  // Every queue frame answers cleanly unless this test says otherwise:
+  // `clearAllMocks` leaves a queued one-shot refusal behind, and the next test
+  // would read the row's own success as a failure.
+  vi.mocked(sessionQueueAdd).mockResolvedValue(undefined);
+  vi.mocked(sessionQueueEdit).mockResolvedValue(undefined);
+  vi.mocked(sessionQueueRemove).mockResolvedValue(undefined);
+  vi.mocked(sessionQueueMove).mockResolvedValue(undefined);
+  vi.mocked(sessionQueueSendNow).mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -134,9 +143,11 @@ describe("AgentChatSurface queue rows", () => {
     expect(vi.mocked(sessionQueueEdit).mock.calls).toEqual([
       ["agent-1", expect.stringMatching(/^[0-9a-f-]{36}$/), "queue-2", "second, edited"],
     ]);
-    // The row never left the queue, so the composer keeps what it had.
+    // The row never left the queue and the composer never heard about it: the
+    // edited words exist once, on the row the daemon still holds.
     expect(rows()).toHaveLength(2);
     expect(textarea().value).toBe("");
+    expect(rows()[1].textContent).toContain("second");
   });
 
   it("hands an edited row's text back when the daemon no longer has the row", async () => {

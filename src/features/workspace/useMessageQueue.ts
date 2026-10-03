@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { sendQueueOperation } from "./daemonQueue";
+import { isCommandError } from "../../lib/commandError";
+import { newOperationId, sendQueueOperation, type QueueOperation } from "./daemonQueue";
 import { sendChatImagesByReference } from "./chatImageTransport";
 import { errorSentence } from "../../lib/errorSentence";
 import { EMPTY_QUEUE_GATE, nextQueueGate } from "./queueSnapshot";
@@ -54,7 +55,9 @@ export interface MessageQueueUi {
   readonly error: string | null;
   /** The one note a dropped row gets. Said once, then cleared. */
   readonly dropNote: string | null;
-  queueMessage(text: string, images?: readonly PromptAttachment[]): void;
+  /** Queues the composer's text. Settles when the daemon has answered or the
+   * frame never got one, so a caller can hold one queue press at a time. */
+  queueMessage(text: string, images?: readonly PromptAttachment[]): Promise<void>;
   editRow(itemId: string, text: string): void;
   deleteRow(itemId: string): void;
   steerRow(itemId: string): void;
@@ -67,6 +70,21 @@ export interface MessageQueueUi {
   submissionStarted(): string;
   /** Settle one composer send; only an accepted turn leaves a bounded hold. */
   submissionSettled(id: string, turnActive?: boolean): void;
+}
+
+/** The codes that mean the frame left and no answer came back: the daemon may
+ * have applied it, and nothing in the reply says so. */
+function answerNeverArrived(cause: unknown): boolean {
+  return isCommandError(cause) && (cause.code === "connection_lost" || cause.code === "io");
+}
+
+/** The same picks, not the same picks again: a re-picked file is a new
+ * attachment and therefore a new intent. */
+function sameImages(
+  before: readonly PromptAttachment[],
+  after: readonly PromptAttachment[],
+): boolean {
+  return before.length === after.length && before.every((image, at) => image === after[at]);
 }
 
 /**
@@ -90,10 +108,23 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
   const gateRef = useRef(EMPTY_QUEUE_GATE);
   const itemsRef = useRef(items);
   const optionsRef = useRef(options);
+  // This view's whole lifetime as far as the queue is concerned: one abort
+  // signal ends every wait this hook started, and every timer it left behind.
+  const lifetimeRef = useRef<AbortController | null>(null);
+  lifetimeRef.current ??= new AbortController();
   useEffect(() => {
     itemsRef.current = items;
     optionsRef.current = options;
   });
+  useEffect(
+    () => () => {
+      lifetimeRef.current?.abort();
+      // The reply holds are timers of their own, bounded by the cap but still
+      // owed a state write that has nowhere to land.
+      holds.discard();
+    },
+    [holds],
+  );
 
   const onSnapshot = useCallback((event: QueueSnapshotEvent) => {
     const next = nextQueueGate(gateRef.current, event);
@@ -118,8 +149,45 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
     setError(errorSentence(cause).sentence);
   }, []);
 
+  const abandoned = useCallback(() => lifetimeRef.current?.signal.aborted === true, []);
+
+  /** Say a refusal beside the composer — unless this view stopped asking, in
+   * which case there is no user left to answer. */
+  const say = useCallback(
+    (cause: unknown) => {
+      if (!abandoned()) report(cause);
+    },
+    [abandoned, report],
+  );
+
+  /** Ask the daemon to apply one intent, resolving the id it asked under once
+   * the daemon has answered. */
+  const ask = useCallback(
+    (operation: QueueOperation, clientOperationId?: string) =>
+      sendQueueOperation({
+        sessionId,
+        operation,
+        ...(clientOperationId === undefined ? {} : { clientOperationId }),
+        signal: lifetimeRef.current?.signal,
+      }),
+    [sessionId],
+  );
+
+  /**
+   * The id a lost add went out under, kept with the draft the composer gets
+   * back. The daemon may have applied that frame and lost the reply, so the
+   * same unchanged words submitted again are the same intent: re-asked under
+   * the same id, they are answered from the ledger instead of queued twice.
+   * Anything else is a new intent and gets a new id.
+   */
+  const lostAddRef = useRef<{
+    readonly id: string;
+    readonly text: string;
+    readonly images: readonly PromptAttachment[];
+  } | null>(null);
+
   const queueMessage = useCallback(
-    (text: string, images: readonly PromptAttachment[] = []) => {
+    async (text: string, images: readonly PromptAttachment[] = []): Promise<void> => {
       if (!optionsRef.current.supported) return;
       setError(null);
       const trimmed = text.trim();
@@ -130,27 +198,39 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
         optionsRef.current.onDraftBack(text, true, images);
         return;
       }
+      const lost = lostAddRef.current;
+      lostAddRef.current = null;
+      const clientOperationId =
+        lost !== null && lost.text === trimmed && sameImages(lost.images, images)
+          ? lost.id
+          : newOperationId();
       const add = (attachmentReferences: readonly AttachmentReference[]) =>
-        sendQueueOperation(sessionId, {
-          kind: "add",
-          text: trimmed,
-          attachments: [],
-          attachmentReferences,
-        });
-      void (
-        images.length === 0
-          ? add([])
-          : sendChatImagesByReference({
-              images,
-              deposit: (image) => optionsRef.current.depositAttachment(image),
-              send: add,
-            })
-      ).catch((cause: unknown) => {
-        report(cause);
+        ask(
+          { kind: "add", text: trimmed, attachments: [], attachmentReferences },
+          clientOperationId,
+        );
+      try {
+        if (images.length === 0) {
+          await add([]);
+        } else {
+          await sendChatImagesByReference({
+            images,
+            deposit: (image) => optionsRef.current.depositAttachment(image),
+            send: (references) => add(references),
+          });
+        }
+      } catch (cause: unknown) {
+        if (abandoned()) return;
+        say(cause);
         optionsRef.current.onDraftBack(text, true, images);
-      });
+        // Only a lost answer leaves the daemon's state unknown; a refusal is an
+        // answer, and the intent ended either way.
+        lostAddRef.current = answerNeverArrived(cause)
+          ? { id: clientOperationId, text: trimmed, images }
+          : null;
+      }
     },
-    [report, sessionId],
+    [abandoned, ask, say],
   );
 
   // The daemon edits a row where it stands, so nothing goes back to the
@@ -160,21 +240,24 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
     (itemId: string, text: string) => {
       if (!optionsRef.current.supported) return;
       setError(null);
-      void sendQueueOperation(sessionId, { kind: "edit", itemId, text }).catch((cause: unknown) => {
-        report(cause);
+      void ask({ kind: "edit", itemId, text }).catch((cause: unknown) => {
+        // A refused edit is the one case where the row the user edited is gone
+        // and cannot hold the words, so they go back to the composer.
+        if (abandoned()) return;
+        say(cause);
         optionsRef.current.onDraftBack(text, true);
       });
     },
-    [report, sessionId],
+    [abandoned, ask, say],
   );
 
   const deleteRow = useCallback(
     (itemId: string) => {
       if (!optionsRef.current.supported) return;
       setError(null);
-      void sendQueueOperation(sessionId, { kind: "remove", itemId }).catch(report);
+      void ask({ kind: "remove", itemId }).catch(say);
     },
-    [report, sessionId],
+    [ask, say],
   );
 
   const steerRow = useCallback(
@@ -188,9 +271,9 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
       }
       // A refusal travels to the user once and the press is dropped: a retry on
       // the send path is a second send of that row.
-      void sendQueueOperation(sessionId, { kind: "sendNow", itemId, subscriptionId }).catch(report);
+      void ask({ kind: "sendNow", itemId, subscriptionId }).catch(say);
     },
-    [report, sessionId],
+    [ask, say],
   );
 
   const moveRow = useCallback(
@@ -207,9 +290,9 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
       // A move the daemon refuses is answered by its next snapshot, which holds
       // the order it settled on; saying it beside the composer would report a
       // row that moved on its own as a failure.
-      void sendQueueOperation(sessionId, { kind: "move", itemId, toIndex }).catch(() => undefined);
+      void ask({ kind: "move", itemId, toIndex }).catch(() => undefined);
     },
-    [sessionId],
+    [ask],
   );
 
   const submissionStarted = useCallback(() => {

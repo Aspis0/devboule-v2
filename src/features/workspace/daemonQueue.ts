@@ -10,25 +10,24 @@ import type { AttachmentReference, PromptAttachment } from "../../types/ipc";
 
 /**
  * The app's one door to the daemon's shared queue (protocol 22). Every frame
- * here names a `client_operation_id` minted for ONE user intent, and the
- * daemon keys its replay ledger on it: the same id with the same payload is
- * answered again without queueing or sending a second time, and the same id
- * with a different payload is refused.
+ * here names a `clientOperationId`, and the daemon keys its replay ledger on
+ * it: the same id with the same payload is answered again without queueing or
+ * sending a second time, and the same id with a different payload is refused.
  *
- * Two of the daemon's answers are therefore not the end of an intent, and
- * only this module may act on them:
+ * Two of the daemon's answers are therefore not the end of an intent, and only
+ * this module may act on them:
  *
  * - `operation_in_flight` — the first attempt is still on the wire. The
- *   identical id and payload go again after a short wait, until the recorded
- *   answer arrives. A NEW id here would be a second press, and a second press
- *   on a send-now sends that row twice.
+ *   identical id and payload go again after a wait, until the recorded answer
+ *   arrives. A NEW id here would be a second press, and a second press on a
+ *   send-now sends that row twice.
  * - `operation_conflict` — the id is spent on other bytes, which no retry can
  *   change. It travels to the user like any other refusal.
  *
  * Everything else, a typed refusal or a lost connection alike, is the end of
- * the intent and is reported as it is. A transport failure is not retried
- * here: the next snapshot says whether the daemon applied the frame, and
- * re-asking would be a second press in all but name.
+ * the intent and is reported as it is. A transport failure is not retried here:
+ * only the caller knows whether its text may be asked again, and the next
+ * snapshot says whether the daemon applied the frame.
  */
 
 /** One user intent on the queue. `attachments`/`attachmentReferences` ride an
@@ -46,12 +45,38 @@ export type QueueOperation =
   | { readonly kind: "move"; readonly itemId: string; readonly toIndex: number }
   | { readonly kind: "sendNow"; readonly itemId: string; readonly subscriptionId: SubscriptionId };
 
-/** Short, and bounded: a daemon still busy after the last rung says so rather
- * than asking forever. */
-const IN_FLIGHT_BACKOFF_MS = [250, 750, 2000] as const;
+/** The identity one user intent carries for as long as the daemon may still
+ * answer it. Two devices must not collide, so it is a uuid and not a count. */
+export function newOperationId(): string {
+  return crypto.randomUUID();
+}
 
-function wait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+/** What an abandoned wait answers with, so a caller can tell "the daemon said
+ * no" from "this view stopped asking". */
+export class AbortError extends Error {
+  constructor() {
+    super("The queue operation was abandoned.");
+    this.name = "AbortError";
+  }
+}
+
+export interface QueueOperationRequest {
+  readonly sessionId: string;
+  readonly operation: QueueOperation;
+  /** The id of this intent, when the caller already minted one — the answer to
+   * a frame it never got. Omitted for a first attempt. */
+  readonly clientOperationId?: string;
+  /** Stops the asking between attempts. An aborted operation rejects with
+   * {@link AbortError} and leaves no timer behind. */
+  readonly signal?: AbortSignal;
+}
+
+/** Capped, not counted: the protocol's rule is "until the recorded answer
+ * arrives", so the last rung repeats instead of the ladder ending. */
+const BACKOFF_RUNG_MS = [250, 750, 2000] as const;
+
+function backoffFor(attempt: number): number {
+  return BACKOFF_RUNG_MS[Math.min(attempt, BACKOFF_RUNG_MS.length - 1)];
 }
 
 function inFlight(cause: unknown): boolean {
@@ -63,7 +88,26 @@ function inFlight(cause: unknown): boolean {
   );
 }
 
-function ask(
+/** A wait that gives its timer back when the signal aborts. */
+function wait(milliseconds: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(new AbortError());
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new AbortError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function askDaemon(
   sessionId: string,
   operation: QueueOperation,
   clientOperationId: string,
@@ -93,24 +137,24 @@ function ask(
   }
 }
 
-/** Ask the daemon to apply one intent, and resolve when it has answered.
+/**
+ * Ask the daemon to apply one intent, and resolve the id it asked under once
+ * the daemon has answered.
  *
  * Rejects with whatever the daemon or the transport said, so the caller can
- * put the daemon's own sentence where the user reads it.
+ * put the daemon's own sentence where the user reads it, and with
+ * {@link AbortError} when the caller's signal stopped the asking.
  */
-export async function sendQueueOperation(
-  sessionId: string,
-  operation: QueueOperation,
-): Promise<void> {
-  const clientOperationId = crypto.randomUUID();
-  for (let rung = 0; ; rung += 1) {
+export async function sendQueueOperation(request: QueueOperationRequest): Promise<string> {
+  const { sessionId, operation, signal } = request;
+  const clientOperationId = request.clientOperationId ?? newOperationId();
+  for (let attempt = 0; ; attempt += 1) {
     try {
-      await ask(sessionId, operation, clientOperationId);
-      return;
+      await askDaemon(sessionId, operation, clientOperationId);
+      return clientOperationId;
     } catch (cause: unknown) {
-      const backoff = IN_FLIGHT_BACKOFF_MS[rung];
-      if (!inFlight(cause) || backoff === undefined) throw cause;
-      await wait(backoff);
+      if (!inFlight(cause)) throw cause;
+      await wait(backoffFor(attempt), signal);
     }
   }
 }

@@ -42,7 +42,7 @@ const WITH_APPENDED_GOAL: WorkspaceCommand[] = [
 let container: HTMLDivElement;
 let root: Root | null = null;
 let onSend: Mock<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>;
-let onQueue: Mock<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>;
+let onQueue: Mock<(text: string, attachments: readonly PromptAttachment[]) => void | Promise<void>>;
 let mocks: ComposerMocks;
 let drive: ComposerDrivers;
 
@@ -74,7 +74,8 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   onSend = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>();
-  onQueue = vi.fn<(text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>>();
+  onQueue =
+    vi.fn<(text: string, attachments: readonly PromptAttachment[]) => void | Promise<void>>();
   mocks = { onSend, onQueue };
   drive = composerDrivers(container);
 });

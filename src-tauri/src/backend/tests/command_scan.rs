@@ -80,8 +80,9 @@ impl FileScan {
 }
 
 /// The guard calls inside one command body. The same call written as
-/// `self::require_session_id(..)` or `crate::x::require_write_size(..)` is the
-/// same check, so only the last path segment is read — exactly the rule
+/// `self::require_session_id(..)`, `crate::x::require_write_size(..)` or as a
+/// method (`inner.ensure_subscription_attached(..)`) is the same check, so only
+/// the last path segment — or the method name — is read, exactly the rule
 /// `helper_calls` already applies to `off_main_thread`.
 struct GuardScan<'a> {
     guards: &'a mut BTreeSet<String>,
@@ -98,6 +99,14 @@ impl<'ast> Visit<'ast> for GuardScan<'_> {
             }
         }
         syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let name = node.method.to_string();
+        if GUARD_CALLS.contains(&name.as_str()) {
+            self.guards.insert(name);
+        }
+        syn::visit::visit_expr_method_call(self, node);
     }
 }
 

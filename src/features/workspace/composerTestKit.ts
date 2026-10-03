@@ -16,7 +16,7 @@ export const MENU_COMMANDS = [
 
 export interface ComposerMocks {
   onSend: (text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>;
-  onQueue: (text: string, attachments: readonly PromptAttachment[]) => void;
+  onQueue: (text: string, attachments: readonly PromptAttachment[]) => void | Promise<void>;
 }
 
 export function composerProps(
