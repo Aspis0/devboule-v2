@@ -1193,6 +1193,7 @@ export class AgentSession {
           event.title,
           event.command,
           event.exitCode,
+          event.replace,
         );
         return;
       case "exit":
@@ -1576,6 +1577,7 @@ export class AgentSession {
     title?: string,
     command?: string,
     exitCode?: number,
+    replace?: boolean,
   ): void {
     const key = this.toolRows.get(toolCallId) ?? `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
@@ -1594,7 +1596,10 @@ export class AgentSession {
           spawnDepth,
           kind,
           locations,
-          output: nextCommand === undefined && nextTitle === undefined ? "" : (text ?? ""),
+          output:
+            replace !== true && nextCommand === undefined && nextTitle === undefined
+              ? ""
+              : (text ?? ""),
           command,
           exitCode,
         },
@@ -1611,9 +1616,11 @@ export class AgentSession {
     items[index] = {
       ...item,
       status: status ?? item.status,
-      ...(text === null || text === ""
-        ? {}
-        : { output: item.output ? `${item.output}\n${text}` : text }),
+      ...(replace === true && text !== null
+        ? { output: text }
+        : text === null || text === ""
+          ? {}
+          : { output: item.output ? `${item.output}\n${text}` : text }),
       ...(nextTitle === undefined ? {} : { title: nextTitle }),
       ...(kind === undefined ? {} : { kind }),
       ...(locations === undefined ? {} : { locations }),
