@@ -136,6 +136,21 @@ describe("useWorkspaceStats", () => {
     expect(latestBranches?.get(keyFor("ws-1"))).toBe("feature/x");
   });
 
+  it("gives a detached worktree no branch to name, and never the git word", async () => {
+    // A detached HEAD has no branch name. The row's second line carries things
+    // that exist — a branch, a diff, agents — so "(detached)" would be noise
+    // where a real name goes, and the Changes panel already reports the
+    // detached state in full.
+    vi.mocked(workspaceGitStatus).mockResolvedValue({
+      ...totals(0, 0),
+      branch: "(detached)",
+    });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(latestBranches?.has(keyFor("ws-1"))).toBe(false);
+  });
+
   it("a failed read clears the branch along with the totals", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(totals(4, 2));
     await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });

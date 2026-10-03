@@ -7,15 +7,25 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceView } from "../workspaceProjects";
+import type { Session } from "../../../types/ipc";
+import { workspaceView, type WorkspaceView } from "../workspaceProjects";
 import { LOCAL_HOST_ID, localWorkspaceKey } from "../hosts/hostIdentity";
 import type { WorkspaceStat } from "./useWorkspaceStats";
 import { WorkspaceRow } from "./WorkspaceRow";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const NOW = 1_700_000_000_000;
-const silentFor = (ms: number): number => NOW - ms;
+/** One roster row as the daemon sends it: `elapsedMs` counts milliseconds SINCE
+ * the last observed output, so it grows with silence and is never an instant. */
+const rosterSession = (over: Partial<Session> = {}): Session => ({
+  id: "session-1",
+  workspaceId: "workspace-1",
+  kind: "claude",
+  title: "agent",
+  state: { type: "live", generation: 1 },
+  elapsedMs: 0,
+  ...over,
+});
 
 const workspace = (over: Partial<WorkspaceView> = {}): WorkspaceView => ({
   id: "workspace-1",
@@ -59,7 +69,6 @@ describe("the workspace row's two lines", () => {
           selected={false}
           branch={facts.branch}
           stat={facts.stat}
-          now={NOW}
           onSelect={vi.fn()}
           onRename={vi.fn(async () => null)}
           onDelete={vi.fn(async () => null)}
@@ -117,9 +126,51 @@ describe("the workspace row's two lines", () => {
   });
 
   it("puts the last activity right of the name", async () => {
-    const row = await render(workspace({ elapsedMs: silentFor(4 * 60_000) }));
+    const row = await render(
+      workspaceView(workspace(), [rosterSession({ elapsedMs: 4 * 60_000 })]),
+    );
 
     expect(row.querySelector(".workspace-row-line")?.textContent).toBe("devboule-v24m");
+  });
+
+  it("reads a session that just spoke as now, not as a year", async () => {
+    // The row's age is the roster's silence measured as a duration. Anything
+    // that subtracts it from a clock dates the agent to the epoch.
+    const row = await render(workspaceView(workspace(), [rosterSession({ elapsedMs: 30_000 })]));
+
+    expect(row.querySelector(".workspace-row-age")?.textContent).toBe("now");
+  });
+
+  it("reads a recovered-only workspace as no time at all", async () => {
+    const row = await render(
+      workspaceView(workspace(), [
+        rosterSession({
+          state: {
+            type: "recovered",
+            generation: 1,
+            integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+          },
+          elapsedMs: null,
+        }),
+      ]),
+    );
+
+    expect(row.querySelector(".workspace-row-age")).toBeNull();
+  });
+
+  it("shows when a workspace's only session stopped", async () => {
+    // An ended row still reports its last output, so the age is real and must
+    // read as minutes — never as the epoch, never as nothing.
+    const row = await render(
+      workspaceView(workspace(), [
+        rosterSession({
+          state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+          elapsedMs: 4 * 60_000,
+        }),
+      ]),
+    );
+
+    expect(row.querySelector(".workspace-row-age")?.textContent).toBe("4m");
   });
 
   it("prints no time for a workspace whose roster carries no activity fact", async () => {

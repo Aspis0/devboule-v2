@@ -64,6 +64,17 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(style.minHeight).toBe("32px");
   });
 
+  it("the row button fills its wrap, so the age sits against the right edge", async () => {
+    // A button shrink-wraps its content by default: the row measured 113px
+    // inside a 195px wrap, so the age had nothing to right-align against.
+    expect(rulesFor(".workspace-row")).toContain("width: 100%");
+    inject([".workspace-row"]);
+    await renderWorkspace();
+    const row = document.querySelector<HTMLElement>(".workspace-row");
+    if (row === null) throw new Error("workspace row did not render");
+    expect(getComputedStyle(row).width).toBe("100%");
+  });
+
   it("a row carrying a facts line is the 40px row, and the name sits above it", () => {
     expect(rulesFor(".workspace-row:has(.workspace-row-facts)")).toContain("min-height: 40px");
     expect(rulesFor(".workspace-row-line")).toContain("display: flex");

@@ -1,14 +1,18 @@
 /**
  * How long ago a workspace's last output was, in the vocabulary a row's first
  * line has room for: "now", "4m", "3h", "2d", then the wider units rather
- * than a three-digit day count. Null in, null out — a roster row with no
- * activity fact has no age to print, which is not "a long time ago".
+ * than a three-digit day count.
+ *
+ * The input is the roster's `elapsedMs`, a DURATION counted since the last
+ * observed output — not an instant — so it is read directly and never
+ * subtracted from a clock. Null in, null out: a recovered row has no runtime to
+ * have reported a silence, which is unknown, not "a long time ago".
  */
 const MINUTE_MS = 60_000;
 
-export function compactAge(elapsedMs: number | null, now: number): string | null {
+export function compactAge(elapsedMs: number | null): string | null {
   if (elapsedMs === null || !Number.isFinite(elapsedMs)) return null;
-  const elapsed = Math.max(0, now - elapsedMs);
+  const elapsed = Math.max(0, elapsedMs);
   if (elapsed < MINUTE_MS) return "now";
 
   const minutes = Math.floor(elapsed / MINUTE_MS);

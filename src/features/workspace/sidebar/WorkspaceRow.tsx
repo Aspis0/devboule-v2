@@ -59,8 +59,6 @@ export interface WorkspaceRowProps {
   stat: WorkspaceStat | undefined;
   /** The branch the workspace's last status read reported. */
   branch: string | undefined;
-  /** The clock the row reads its last activity against (WorkspaceTree's). */
-  now: number;
   onSelect: (workspaceKey: WorkspaceKey) => void;
   /** Persists a new title and answers with the refusal, if one came back. */
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
@@ -75,7 +73,6 @@ export function WorkspaceRow({
   selected,
   stat,
   branch,
-  now,
   onSelect,
   onRename,
   onDelete,
@@ -267,7 +264,7 @@ export function WorkspaceRow({
   };
 
   const dot = workspace.stateDot !== null ? `, ${DOT_LABELS[workspace.stateDot]}` : null;
-  const age = compactAge(workspace.elapsedMs, now);
+  const age = compactAge(workspace.elapsedMs);
   return (
     <div className="workspace-row-wrap" onContextMenu={openMenu}>
       {editing ? (

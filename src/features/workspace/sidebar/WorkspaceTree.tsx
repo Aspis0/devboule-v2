@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { ErrorText } from "../../../components/ErrorText";
 import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
@@ -31,18 +31,6 @@ export interface WorkspaceTreeProps {
   branches: ReadonlyMap<WorkspaceKey, string>;
 }
 
-/** One clock for the rows' last-activity labels. The roster pushes whenever a
- * turn moves, but a workspace nobody has touched must still see its own label
- * age, and a timer per row would be a timer per row. */
-function useRowClock(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(id);
-  }, []);
-  return now;
-}
-
 /**
  * The project tree under the host header: project headers with avatars and a
  * hover-revealed "+", the workspace rows (each its own component: label,
@@ -65,7 +53,6 @@ export function WorkspaceTree({
   stats,
   branches,
 }: WorkspaceTreeProps) {
-  const now = useRowClock();
   return (
     <>
       {loading ? (
@@ -143,7 +130,6 @@ export function WorkspaceTree({
                   selected={key !== null && selectedWorkspace === key}
                   stat={key === null ? undefined : stats.get(key)}
                   branch={key === null ? undefined : branches.get(key)}
-                  now={now}
                   onSelect={onSelectWorkspace}
                   onRename={onRenameWorkspace}
                   onDelete={onDeleteWorkspace}
