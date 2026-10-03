@@ -26,6 +26,7 @@ import { useStripKeyboard } from "./useStripKeyboard";
 import { StripChip, ToolStripChip, type BrowserTabPage } from "./StripChip";
 import type { StripTab } from "./toolTabs";
 import { browserLayoutSnapshot, subscribeBrowserLayout } from "../browserTabs";
+import { browserPagesSnapshot, subscribeBrowserPages } from "../browserPages";
 import { browserTabLabel } from "../browserUrl";
 import "./strip.css";
 
@@ -124,14 +125,22 @@ export function SessionStrip({
   // does. The strip reads the tab model itself rather than taking a map
   // through Workspace, and `MemoToolChip` still keeps the other chips still.
   const browserRecords = useSyncExternalStore(subscribeBrowserLayout, browserLayoutSnapshot);
+  const pageStates = useSyncExternalStore(subscribeBrowserPages, browserPagesSnapshot);
   const browserPages = useMemo(() => {
     return new Map<string, BrowserTabPage>(
       browserRecords.tabs.map((tab) => [
         tab.browserId,
-        { label: browserTabLabel(tab.title, tab.url), favicon: tab.favicon, url: tab.url },
+        {
+          label: browserTabLabel(tab.title, tab.url),
+          favicon: tab.favicon,
+          url: tab.url,
+          // The live page, not the record: a tab restored after a restart has
+          // a record and no page, so it is not loading.
+          loading: pageStates.get(tab.browserId)?.loading ?? false,
+        },
       ]),
     );
-  }, [browserRecords.tabs]);
+  }, [browserRecords.tabs, pageStates]);
   useSelectedTabVisible(scrollportRef, activeTabId, tabs);
   const fade = useStripFade(scrollportRef, tabs);
   const { selection, handleTabClick } = tabSelection;

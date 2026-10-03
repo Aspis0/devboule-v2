@@ -182,6 +182,19 @@ export interface BrowserTabPage {
   label: string;
   favicon: string | null;
   url: string;
+  /** Whether the page is loading now. False for a tab restored after a
+   * restart: it has a record and no page, and nothing is loading. */
+  loading: boolean;
+}
+
+/** The page is loading: a ring in the favicon's place, so the chip keeps the
+ * width it had while the page arrives. */
+function BrowserLoading() {
+  return (
+    <span className="strip-kind" aria-hidden="true">
+      <span className="strip-browser-loading" />
+    </span>
+  );
 }
 
 /** No take-back, no rename — a tool tab has no session behind it to act on. */
@@ -202,6 +215,7 @@ export function ToolStripChip({
   const isBrowser = tool.kind === "browser";
   const label = isBrowser ? (browser?.label ?? toolTabSubject(tool)) : toolTabLabel(tool);
   const stateLine = toolTabKindLabel(tool);
+  const loading = isBrowser && browser?.loading === true;
   const subject = isBrowser ? (browser?.url ?? toolTabSubject(tool)) : toolTabSubject(tool);
   return (
     <div className="workspace-session-row" onContextMenu={onRowContextMenu}>
@@ -222,13 +236,18 @@ export function ToolStripChip({
         onKeyDown={onChipKeyDown}
       >
         {isBrowser ? (
-          <BrowserFavicon favicon={browser?.favicon ?? null} />
+          loading ? (
+            <BrowserLoading />
+          ) : (
+            <BrowserFavicon favicon={browser?.favicon ?? null} />
+          )
         ) : (
           <StripKindMark kind={tool.kind} />
         )}
         <span className="workspace-tab-label">{label}</span>
-        {/* Heard, never seen: the kind and the path, never a session state. */}
-        <span className="workspace-sr-only">{`${stateLine} ${subject}`}</span>
+        {/* Heard, never seen: the kind, whether the page is loading, and the
+            path — never a session state. */}
+        <span className="workspace-sr-only">{`${stateLine}${loading ? " loading" : ""} ${subject}`}</span>
       </button>
       <span className="workspace-session-chip">
         <button
