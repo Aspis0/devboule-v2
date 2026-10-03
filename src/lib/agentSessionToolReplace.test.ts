@@ -39,12 +39,13 @@ const CALL: SessionEvent = {
   status: "in_progress",
 };
 
-function update(text: string, replace?: boolean): SessionEvent {
+function update(text: string | null, replace?: boolean, title?: string): SessionEvent {
   return {
     type: "agent_tool_update",
     toolCallId: "call-1",
     status: "in_progress",
     text,
+    ...(title === undefined ? {} : { title }),
     ...(replace === undefined ? {} : { replace }),
   };
 }
@@ -62,6 +63,12 @@ describe("tool output replace flag", () => {
     expect(onlyRow(session).output).toBe("");
   });
 
+  it("keeps the output when replace is true and the text is null", async () => {
+    const { session, emit } = await startedSession();
+    emit([CALL, update("old output"), update(null, true)]);
+    expect(onlyRow(session).output).toBe("old output");
+  });
+
   it("appends with a newline when replace is absent", async () => {
     const { session, emit } = await startedSession();
     emit([CALL, update("one"), update("two")]);
@@ -74,15 +81,29 @@ describe("tool output replace flag", () => {
     expect(onlyRow(session).output).toBe("one\ntwo");
   });
 
-  it("gives a row created by a replacing update that text as its output", async () => {
+  it("gives a row created by a replacing update with a title that text as its output", async () => {
     const { session, emit } = await startedSession();
-    emit([update("first snapshot", true)]);
-    expect(onlyRow(session).output).toBe("first snapshot");
+    emit([update("first snapshot", true, "Bash")]);
+    expect(onlyRow(session)).toMatchObject({ title: "Bash", output: "first snapshot" });
   });
 
-  it("takes a mid-line growth as a replacement, not a new line", async () => {
+  it("does not show the same text as title and output on a bare replacing update", async () => {
     const { session, emit } = await startedSession();
-    emit([CALL, update("abc", true), update("abcdef", true)]);
-    expect(onlyRow(session).output).toBe("abcdef");
+    emit([update("first snapshot", true)]);
+    expect(onlyRow(session)).toMatchObject({ title: "first snapshot", output: "" });
+  });
+
+  it("falls back to a generic title when a bare update has empty text", async () => {
+    const { session, emit } = await startedSession();
+    emit([update("", true)]);
+    expect(onlyRow(session).title).toBe("Tool call");
+  });
+
+  it("replaces output built from an append with the grown text", async () => {
+    const { session, emit } = await startedSession();
+    emit([CALL, update("abc", false), update("def")]);
+    expect(onlyRow(session).output).toBe("abc\ndef");
+    emit([update("abc\ndefgh", true)]);
+    expect(onlyRow(session).output).toBe("abc\ndefgh");
   });
 });

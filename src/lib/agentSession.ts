@@ -1585,21 +1585,18 @@ export class AgentSession {
     const nextCommand =
       kind === "execute" && typeof command === "string" && command.length > 0 ? command : undefined;
     if (index === undefined) {
-      // A bare execute patch borrows the raw command line as its title —
-      // never the output — until the call's own title replaces it above.
+      // A bare patch borrows the command line, else its text, as the title; the
+      // output then stays empty so the row does not show the same text twice.
       this.appendTool(
         toolCallId,
-        nextTitle ?? nextCommand ?? text ?? "Tool call",
+        nextTitle ?? nextCommand ?? (text || "Tool call"),
         status ?? "running",
         {
           parentToolUseId,
           spawnDepth,
           kind,
           locations,
-          output:
-            replace !== true && nextCommand === undefined && nextTitle === undefined
-              ? ""
-              : (text ?? ""),
+          output: nextCommand === undefined && nextTitle === undefined ? "" : (text ?? ""),
           command,
           exitCode,
         },
