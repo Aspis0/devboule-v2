@@ -254,10 +254,47 @@ describe("SubagentMenu pill words", () => {
     pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
     // Nothing is working any more: the breathing dot goes with the last
-    // completion. The pill stays — the only place a subagent is named —
-    // chevron-only.
+    // completion. The pill stays, naming the run it covers.
     expect(pill.querySelector(".dot-pulse")).toBeNull();
-    expect(pill.querySelector(".workspace-subagent-pill-group")).toBeNull();
+    expect(pill.textContent).toContain("2 subagents");
+  });
+
+  it("names the run it covers in the singular, once its only child has settled", async () => {
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <AgentChatSurface daemonState="connected" sessionId="pill-one" title="Agent" />
+        </StrictMode>,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_task_started",
+        taskId: "task-only",
+        title: "Only task",
+        subagentType: "worker",
+        toolUseId: "toolu-only",
+        spawnDepth: 1,
+      });
+      channelHarness.active?.({
+        type: "agent_task_notification",
+        taskId: "task-only",
+        status: "completed",
+      });
+    });
+
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    if (pill === null) throw new Error("subagent pill did not render");
+    // A chevron alone tells the user nothing about what the menu opens, so
+    // the settled pill paints the total it covers — and says it aloud.
+    expect(pill.textContent).toContain("1 subagent");
+    expect(pill.textContent).not.toContain("1 subagents");
+    expect(pill.getAttribute("aria-label")).toBe("1 subagent");
+    expect(pill.querySelectorAll(".workspace-subagent-pill-group")).toHaveLength(1);
+    expect(pill.querySelector(".workspace-subagent-status-dot")).toBeNull();
+    expect(pill.querySelector(".workspace-subagent-pill-chevron")).not.toBeNull();
   });
 
   it("keeps the pill when the run has settled, and opens its menu", async () => {
@@ -300,12 +337,14 @@ describe("SubagentMenu pill words", () => {
     });
 
     // A settled run keeps the pill — the only place the app names a
-    // subagent — with every part hidden and the breathing dot gone.
+    // subagent — naming the total it covers, with the breathing dot gone.
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
-    expect(pill.querySelector(".workspace-subagent-pill-group")).toBeNull();
+    expect(pill.querySelectorAll(".workspace-subagent-pill-group")).toHaveLength(1);
+    expect(pill.querySelector(".workspace-subagent-status-dot")).toBeNull();
     expect(pill.querySelector(".dot-pulse")).toBeNull();
-    expect(pill.getAttribute("aria-label")).toBe("Subagents");
+    expect(pill.textContent).toContain("2 subagents");
+    expect(pill.getAttribute("aria-label")).toBe("2 subagents");
 
     await act(async () => pill.click());
     const list = container.querySelector<HTMLElement>(".workspace-subagent-list");

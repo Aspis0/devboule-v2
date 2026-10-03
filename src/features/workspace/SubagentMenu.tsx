@@ -166,7 +166,10 @@ export function SubagentMenu({
     ...(failed > 0 ? [`${failed} failed`] : []),
     ...(working > 0 ? [`${working} working`] : []),
   ].join(", ");
-  const pillLabel = counts === "" ? "Subagents" : `Subagents: ${counts}`;
+  // A settled fan-out has no colour worth showing, so the pill names what
+  // its chevron opens instead of going wordless.
+  const totalLabel = `${rows.length} subagent${rows.length === 1 ? "" : "s"}`;
+  const pillLabel = counts === "" ? totalLabel : `Subagents: ${counts}`;
 
   return (
     <div className="workspace-subagent-menu">
@@ -209,6 +212,7 @@ export function SubagentMenu({
             <span>{working} working</span>
           </span>
         ) : null}
+        {counts === "" ? <span className="workspace-subagent-pill-group">{totalLabel}</span> : null}
         <svg
           className="workspace-subagent-pill-chevron"
           width={12}
