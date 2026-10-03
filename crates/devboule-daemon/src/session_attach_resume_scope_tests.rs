@@ -6,10 +6,7 @@
 //! These are the neighbours of the outcome, not the outcome: each of them is a
 //! contract that already existed, and a reset must not move any of them.
 
-use devboule_protocol::{
-    caps, intersect_capabilities, m3a_client_capabilities, m3a_daemon_capabilities, Cursor,
-    ErrorCode, SessionEvent,
-};
+use devboule_protocol::{Cursor, ErrorCode, SessionEvent};
 
 use super::session_attach_resume_fixtures::{answer, AttachFixture};
 
@@ -17,22 +14,15 @@ fn fixture() -> AttachFixture {
     AttachFixture::new("process-attach-resume-scope")
 }
 
-/// Whether the app's own hello would negotiate `capability` with a daemon: the
-/// intersection `server::connection` computes from the two lists.
-fn app_negotiates(capability: &str) -> bool {
-    intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities())
-        .iter()
-        .any(|cap| cap.as_str() == capability)
-}
-
+/// What a connection that never negotiated the name gets. The app lane
+/// negotiates it today, so this is the shape of a client that predates the
+/// capability rather than anything the app itself presents.
 #[test]
-fn a_connection_without_the_capability_keeps_the_mismatch_error_and_a_bare_reply() {
+fn a_pre_capability_connection_keeps_the_mismatch_error_and_a_bare_reply() {
     let f = fixture();
     f.runtime.test_publish_journaled(answer("one"));
     f.journal.flush().expect("flush");
-    // The app's own capability list decides this, so the test fails the day the
-    // app lane starts negotiating a name whose outcome it cannot read.
-    let conn = f.conn(5, app_negotiates(caps::SESSION_RESUME_OUTCOMES));
+    let conn = f.conn(5, false);
 
     let stale = f.registry.attach_with_subscription(
         &f.id,

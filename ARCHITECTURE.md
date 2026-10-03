@@ -350,8 +350,17 @@ The whole thing is output-only and capability-gated on `session.resume_outcomes`
 (`crates/devboule-protocol/src/lib.rs`, `caps`). A connection whose hello did not agree it gets
 today's reply byte for byte, including the `session_generation_mismatch` error
 (`crates/devboule-protocol/src/session.rs`, `cursor_replay_ok`); only a negotiated connection reads
-`resume`. The daemon offers the name; the app does not, because nothing on its Tauri/TS side reads
-the outcome yet, and it adds the name with that consumer (`m3a_client_capabilities`). The attach
+`resume`. Both sides offer the name, so the app's connection negotiates it and reads the outcome:
+`DaemonClient` raises a `reset` on its reader thread at the frame where it matches the attach reply
+(`crates/devboule-daemon/src/client.rs`), which is strictly before the replay frames that follow it,
+and the Tauri channel carries it beside the events as an untagged message a view tells apart by the
+absent `type` (`src-tauri/src/backend/session.rs`, `SessionAttachMessage`; `src/lib/agentSession.ts`,
+`replaceWithResumeTail`). The view replaces its timeline with the tail, keeps the entry's cursor at
+`tail.cursor` so the next reattach resumes instead of resetting again
+(`src-tauri/src/client/mod.rs`, `AttachmentRegistry::reset`), and never attaches a second time — a
+reset answers from the same reply that named it, so re-attaching with the same stale cursor would
+reset forever. Nothing re-attaches on a reset; the one self-retry keys on
+`session_generation_mismatch`, which a negotiated reset cannot produce. The attach
 request is unchanged, so no protocol number moved. The shared queue's attach
 snapshot still crosses once per attach, after the tail (`crates/devboule-daemon/src/session.rs`,
 `attach_with_subscription` → `publish_queue_attach_snapshot`), never per replay page and never again

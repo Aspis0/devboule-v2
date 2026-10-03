@@ -1176,8 +1176,11 @@ export function createAgentHost(): DesignHost {
       sessionId,
       invoke: invokeAgentCommand,
       createChannel: (onEvent) =>
-        createSessionChannel((event) => {
-          if (event.type === "agent_tool_call" || event.type === "agent_tool_update") {
+        createSessionChannel((message) => {
+          if (
+            "type" in message &&
+            (message.type === "agent_tool_call" || message.type === "agent_tool_update")
+          ) {
             // A pre-flight turn is the host's own question, not the user's request, so
             // nothing it touches belongs in "the agent wrote N files".  Today the run's
             // observation map is also created after the pre-flight returns, which would
@@ -1185,9 +1188,9 @@ export function createAgentHost(): DesignHost {
             // rule, and reordering them would break this silently.
             const duringPreflight = activePreflight?.sessionId === sessionId;
             const run = activeRun;
-            if (!duringPreflight && run?.sessionId === sessionId) observeToolEvent(event, run);
+            if (!duringPreflight && run?.sessionId === sessionId) observeToolEvent(message, run);
           }
-          onEvent(event);
+          onEvent(message);
         }),
       onPermissionRequest: (request: PermissionRequest, subscriptionId: number) => {
         // Every permission request is queued for the user to answer, including one raised by

@@ -5,8 +5,10 @@ import type {
   PermissionRequest,
   PermissionResolved,
   PromptAttachment,
+  SessionAttachMessage,
   SessionEvent,
   SessionManifest,
+  SessionResumeReset,
   ToolLocation,
 } from "../types/ipc";
 import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
@@ -218,7 +220,7 @@ export interface AgentSessionDeps {
    */
   initialGoal?: string | null;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-  createChannel: (onEvent: (event: SessionEvent) => void) => AgentChannel;
+  createChannel: (onEvent: (event: SessionAttachMessage) => void) => AgentChannel;
   /**
    * Where a created child's finish is recorded. Absent means the Design history
    * (`recordChildFinishedHistory`), which is what every host but the read-only
@@ -281,6 +283,13 @@ const MAX_PENDING_SEND_REJECTIONS = 8;
  * workspace's reopen bar states the same fact once.
  */
 export const RECOVERED_SESSION_UNAVAILABLE = "This agent session is no longer available.";
+
+/**
+ * The one sentence a replaced timeline shows above its tail. It states the
+ * fact and promises nothing: the daemon named a reset and did not count the
+ * rows behind it, so a count here would be a guess.
+ */
+const LOST_HISTORY_NOTICE = "Some earlier messages are no longer available.";
 
 type MessageRole = "user" | "assistant" | "thought";
 
@@ -887,6 +896,53 @@ export class AgentSession {
     this.appendComposerMessage(event);
   }
 
+  /**
+   * A reset is a new timeline, not a patch: every row is dropped and the tail
+   * takes its place. `INITIAL_STATE` is the same empty timeline a fresh
+   * session starts from, and every counter that names a row goes back to it,
+   * so the tail renders through the same pipeline — and the same block keys —
+   * as a fresh open. `journalLoss` survives: it is worst-known totals, and a
+   * reset is one more reason the history is shorter than it was.
+   *
+   * Nothing here re-attaches. The tail is in the answer, so a second attach
+   * would ask with the same stale cursor and reset again.
+   */
+  private replaceWithResumeTail(reset: SessionResumeReset): void {
+    // The marker states what is missing ABOVE the tail, so it is the first row
+    // of the replaced timeline rather than a note under the rows that follow.
+    const items: AgentChatItem[] = reset.tail.tail_complete
+      ? []
+      : [
+          {
+            id: `system-${this.nextItemId}`,
+            role: "system",
+            text: LOST_HISTORY_NOTICE,
+            severity: "info",
+          },
+        ];
+    this.state = {
+      ...INITIAL_STATE,
+      items,
+      goal: normalizeGoal(this.deps.initialGoal),
+      journalLoss: this.state.journalLoss,
+    };
+    this.blocks.clear();
+    this.toolRows.clear();
+    this.activeBlocks.clear();
+    this.activeRole = null;
+    this.nextItemId = 1 + items.length;
+    this.nextAnonymousBlock = 1;
+    this.turn = 0;
+    // Requests still waiting for a subscription id belong to the replaced
+    // rows; answering one now would answer a turn this view no longer shows.
+    this.pendingPermissionRequests.length = 0;
+    this.heldAgentErrors.length = 0;
+    this.pendingSendRejections.length = 0;
+    this.turnOpen = false;
+    this.notify();
+    for (const event of reset.tail.events) this.handleEvent(event);
+  }
+
   private appendSystemMessage(text: string): void {
     this.closeActiveBlocks();
     this.update({
@@ -902,9 +958,16 @@ export class AgentSession {
     });
   }
 
-  handleEvent(event: SessionEvent): void {
+  handleEvent(message: SessionAttachMessage): void {
     if (this.disposed) return;
+    if (!("type" in message)) {
+      this.replaceWithResumeTail(message);
+      return;
+    }
+    this.handleSessionEvent(message);
+  }
 
+  private handleSessionEvent(event: SessionEvent): void {
     switch (event.type) {
       case "agent_user_message": {
         this.handleAgentUserMessage(event);

@@ -5,6 +5,48 @@ export interface Cursor {
   seq: number;
 }
 
+/**
+ * Why an attach's cursor could not be resumed. Every one of them means the
+ * same thing to this app — the timeline is replaced with the tail — and the
+ * names are the wire's own.
+ */
+export type SessionResumeReason =
+  | "epoch_changed"
+  | "cursor_ahead"
+  | "cursor_compacted"
+  | "journal_gap";
+
+/** The bounded tail a reset hands the view: oldest first, plus where to continue. */
+export interface SessionResumeTail {
+  cursor: Cursor;
+  events: SessionEvent[];
+  /** The tail reaches the retained floor; false leaves an older prefix unseen. */
+  tail_complete: boolean;
+}
+
+/**
+ * The daemon's answer that the cursor could not be resumed, as the session
+ * channel carries it. `outcome` is the wire's tag and only ever `reset`: a
+ * `resumed` outcome names no tail and crosses as no message at all.
+ */
+export interface SessionResumeReset {
+  outcome: "reset";
+  reason: SessionResumeReason;
+  tail: SessionResumeTail;
+  /** The lowest sequence still retained for the current generation. */
+  oldest_seq: number;
+  /** The highest sequence allocated when the attach captured it. */
+  head: number;
+}
+
+/**
+ * One frame on a session channel. The reset is untagged beside the events on
+ * purpose — the daemon's events all carry `type` and a reset does not — so the
+ * two are told apart by that field's absence and no `SessionEvent` variant is
+ * spent on a message that is not one.
+ */
+export type SessionAttachMessage = SessionEvent | SessionResumeReset;
+
 export interface Project {
   id: Id;
   name: string;

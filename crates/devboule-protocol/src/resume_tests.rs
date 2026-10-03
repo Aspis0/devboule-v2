@@ -246,3 +246,50 @@ fn every_reason_round_trips_under_its_wire_name() {
         );
     }
 }
+
+/// The reset the app reads key for key. The frontend mirrors these names in
+/// `src/types/ipc.ts`, and nothing in that file is compiled against this crate,
+/// so a rename on either side has to fail here rather than in a browser.
+#[test]
+fn a_reset_carries_exactly_the_keys_the_app_reads() {
+    let value = serde_json::to_value(message(Some(SessionResumeInfo {
+        resume: SessionResumeOutcome::Reset {
+            reason: SessionResumeReason::JournalGap,
+            tail: SessionResumeTail {
+                cursor: Cursor {
+                    generation: 4,
+                    seq: 9,
+                },
+                events: vec![crate::SessionEvent::AgentMessage {
+                    message_id: Some("m-9".to_string()),
+                    text: "tail row".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                }],
+                tail_complete: false,
+            },
+        },
+        oldest_seq: 3,
+        head: 9,
+    })))
+    .expect("json");
+    assert_eq!(
+        value["resume"],
+        json!({
+            "outcome": "reset",
+            "reason": "journal_gap",
+            "tail": {
+                "cursor": { "generation": 4, "seq": 9 },
+                "events": [{
+                    "type": "agent_message",
+                    "messageId": "m-9",
+                    "text": "tail row",
+                }],
+                "tail_complete": false,
+            },
+            "oldest_seq": 3,
+            "head": 9,
+        }),
+        "the app replaces its timeline from exactly these keys"
+    );
+}

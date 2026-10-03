@@ -12,11 +12,12 @@ use tauri::State;
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
 use devboule_protocol::{
     ActiveTurnBehavior, AttachmentReference, ErrorCode, PermissionOutcome, Persistence,
-    PersistenceKind, PromptAttachment, ResumeResult, StoredAttachment, SubscriptionId,
-    MAX_WRITE_BYTES,
+    PersistenceKind, PromptAttachment, ResumeResult, SessionResumeInfo, StoredAttachment,
+    SubscriptionId, MAX_WRITE_BYTES,
 };
+use serde::Serialize;
 
-use crate::client::DaemonBridge;
+use crate::client::{AttachmentSink, DaemonBridge};
 
 use super::blocking::off_main_thread;
 use super::error::CommandError;
@@ -80,22 +81,52 @@ pub async fn session_resume(
     .await
 }
 
+/// One frame on a session's channel: a daemon event, or the reset an attach's
+/// reply named.
+///
+/// Untagged on the wire: every `SessionEvent` carries `type` and a reset does
+/// not, so the frontend tells the two apart by that field's absence and no
+/// event variant is spent on a message that is not one.
+// A boxed event would be one heap allocation per transcript row, and this is
+// built once per frame; the wide variant is the frame, the narrow one is the
+// marker that arrives once per attach.
+#[allow(clippy::large_enum_variant)]
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum SessionAttachMessage {
+    Event(SessionEvent),
+    Reset(SessionResumeInfo),
+}
+
 /// IMPORTANT STARTUP ORDER: the client registers the Channel as the
 /// session's event handler *before* it sends `session_attach`, so replay
 /// frames that follow the attach reply cannot land on a missing subscriber. Live
 /// reader output on the daemon waits until that attach is registered
 /// under the stream mutex; there is no subscribe/snapshot race.
+///
+/// A reset lands on the same channel and by the same rule: the daemon client's
+/// reader thread raises it at the frame where it matches the attach reply, so
+/// the view has replaced its timeline before the first replayed row of that
+/// attach reaches it. The bridge sends it from that hook, never from the
+/// command body.
 #[tauri::command]
 pub async fn session_attach(
     bridge: State<'_, DaemonBridge>,
     id: String,
     from_cursor: Option<u64>,
-    ch: Channel<SessionEvent>,
+    ch: Channel<SessionAttachMessage>,
 ) -> Result<SubscriptionId, CommandError> {
     require_session_id(&id)?;
-    let sink = Arc::new(move |event| {
-        let _ = ch.send(event);
-    });
+    let events = ch.clone();
+    let reset = ch.clone();
+    let sink = AttachmentSink {
+        events: Arc::new(move |event| {
+            let _ = events.send(SessionAttachMessage::Event(event));
+        }),
+        reset: Arc::new(move |answer| {
+            let _ = reset.send(SessionAttachMessage::Reset(answer));
+        }),
+    };
     let inner = bridge.shared();
     off_main_thread(move || inner.session_attach(&id, from_cursor, sink)).await
 }

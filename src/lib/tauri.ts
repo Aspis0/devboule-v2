@@ -45,7 +45,7 @@ import type {
   WorkspaceGitFileDiff,
   WorkspaceGitLog,
   WorkspaceGitStatus,
-  SessionEvent,
+  SessionAttachMessage,
   SessionKind,
   SessionStateSnapshot,
   RetentionPatch,
@@ -596,11 +596,13 @@ type AssertUnlistedCommandArgKeysAreNever = UnlistedCommandArgKeys extends never
  */
 export const _unlistedCommandArgKeysMustBeNever: AssertUnlistedCommandArgKeysAreNever = true;
 
-export type SessionChannel = Channel<SessionEvent>;
+export type SessionChannel = Channel<SessionAttachMessage>;
 export type SessionStateChannel = Channel<SessionStateSnapshot[]>;
 
-export function createSessionChannel(onEvent?: (event: SessionEvent) => void): SessionChannel {
-  return new Channel<SessionEvent>(onEvent ?? (() => undefined));
+export function createSessionChannel(
+  onEvent?: (event: SessionAttachMessage) => void,
+): SessionChannel {
+  return new Channel<SessionAttachMessage>(onEvent ?? (() => undefined));
 }
 
 export function createSessionStateChannel(

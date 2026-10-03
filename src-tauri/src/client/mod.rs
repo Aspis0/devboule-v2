@@ -12,11 +12,13 @@ use std::time::{Duration, Instant};
 
 use devboule_daemon::{
     connect, connect_or_spawn, connect_within, current_user_sid, daemon_file_name, DaemonClient,
-    DaemonError, DaemonState, EventHandler, ExitReason, RuntimePaths, SessionStateHandler,
+    DaemonError, DaemonState, EventHandler, ExitReason, RuntimePaths, SessionResetHandler,
+    SessionStateHandler,
 };
 use devboule_protocol::{
     ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
-    SessionState, SessionStateSnapshot, SubscriptionId, NOTHING_OWED_CURSOR,
+    SessionResumeInfo, SessionResumeOutcome, SessionState, SessionStateSnapshot, SubscriptionId,
+    NOTHING_OWED_CURSOR,
 };
 use serde::Serialize;
 use tauri::State;
@@ -287,7 +289,19 @@ impl RosterSubscription {
     }
 }
 
-pub(crate) type AttachmentSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
+/// One attachment's event lane: the frames the daemon published to it.
+pub(crate) type AttachmentEventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
+
+/// Where one attachment's frames go: its events, and the reset an attach's
+/// reply may name. Two lanes because the reset has to arrive before any frame
+/// of that attach, and it is raised on the connection's reader thread while
+/// every event is raised there too. Cloneable so one sink can serve the
+/// subscriptions of one session that a test watches together.
+#[derive(Clone)]
+pub(crate) struct AttachmentSink {
+    pub(crate) events: AttachmentEventSink,
+    pub(crate) reset: SessionResetHandler,
+}
 
 trait SessionAttachmentClient {
     fn session_attach(
@@ -296,6 +310,7 @@ trait SessionAttachmentClient {
         session_id: &str,
         from_cursor: Option<Cursor>,
         handler: EventHandler,
+        reset: SessionResetHandler,
     ) -> Result<SubscriptionId, DaemonError>;
 }
 
@@ -306,6 +321,7 @@ impl SessionAttachmentClient for DaemonClient {
         session_id: &str,
         from_cursor: Option<Cursor>,
         handler: EventHandler,
+        reset: SessionResetHandler,
     ) -> Result<SubscriptionId, DaemonError> {
         DaemonClient::session_attach_with_subscription(
             self,
@@ -313,6 +329,7 @@ impl SessionAttachmentClient for DaemonClient {
             session_id,
             from_cursor,
             handler,
+            Some(reset),
         )
     }
 }
@@ -515,7 +532,7 @@ impl AttachmentRegistry {
                 .collect::<Vec<_>>();
             for id in ids {
                 if let Some(entry) = state.entries.remove(&id) {
-                    terminal.push((entry.sink, event.clone()));
+                    terminal.push((entry.sink.events, event.clone()));
                 }
             }
         }
@@ -546,7 +563,7 @@ impl AttachmentRegistry {
         subscription_id: SubscriptionId,
         cursor: Option<Cursor>,
     ) -> Result<(), DaemonError> {
-        let (binding, session_id, handler) = {
+        let (binding, session_id, handler, reset_handler) = {
             let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
             let binding = next_binding(&mut state);
             let Some(entry) = state.entries.get_mut(&subscription_id) else {
@@ -557,9 +574,11 @@ impl AttachmentRegistry {
             entry.binding = Some(binding);
             let session_id = entry.session_id.clone();
             let handler = self.handler(subscription_id, session_id.clone(), binding);
-            (binding, session_id, handler)
+            let reset_handler = self.reset_handler(subscription_id, session_id.clone(), binding);
+            (binding, session_id, handler, reset_handler)
         };
-        let result = client.session_attach(subscription_id, &session_id, cursor, handler);
+        let result =
+            client.session_attach(subscription_id, &session_id, cursor, handler, reset_handler);
         match result {
             Ok(confirmed) if confirmed == subscription_id => Ok(()),
             Ok(_) => {
@@ -583,6 +602,46 @@ impl AttachmentRegistry {
     ) -> EventHandler {
         let registry = Arc::clone(self);
         Arc::new(move |envelope| registry.dispatch(subscription_id, &session_id, binding, envelope))
+    }
+
+    /// The other lane of an attach: the reset its reply named. It carries the
+    /// binding token for the same reason the event handler does, so a replaced
+    /// client's late answer cannot overwrite the cursor its successor owns.
+    fn reset_handler(
+        self: &Arc<Self>,
+        subscription_id: SubscriptionId,
+        session_id: String,
+        binding: u64,
+    ) -> SessionResetHandler {
+        let registry = Arc::clone(self);
+        Arc::new(move |reset| registry.reset(subscription_id, &session_id, binding, reset))
+    }
+
+    fn reset(
+        &self,
+        subscription_id: SubscriptionId,
+        session_id: &str,
+        binding: u64,
+        reset: SessionResumeInfo,
+    ) {
+        let SessionResumeOutcome::Reset { tail, .. } = &reset.resume else {
+            return;
+        };
+        let sink = {
+            let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+            let Some(entry) = state.entries.get_mut(&subscription_id) else {
+                return;
+            };
+            if entry.binding != Some(binding) || entry.session_id != session_id {
+                return;
+            }
+            // Continue from the tail, not from where the reset was taken: the
+            // next reattach asks after the tail, so it resumes instead of
+            // resetting again.
+            entry.cursor = Some(tail.cursor);
+            Arc::clone(&entry.sink.reset)
+        };
+        sink(reset);
     }
 
     fn clear_binding(&self, subscription_id: SubscriptionId, binding: u64) {
@@ -622,7 +681,7 @@ impl AttachmentRegistry {
                     return;
                 }
                 advance_cursor(entry, &envelope);
-                let sink = Arc::clone(&entry.sink);
+                let sink = Arc::clone(&entry.sink.events);
                 let event = envelope.event;
                 let remove = matches!(
                     &event,
@@ -665,7 +724,7 @@ impl AttachmentRegistry {
     fn terminal_for_replacement(
         &self,
         subscription_id: SubscriptionId,
-    ) -> Option<(AttachmentSink, SessionEvent)> {
+    ) -> Option<(AttachmentEventSink, SessionEvent)> {
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
         let session_id = state.entries.get(&subscription_id)?.session_id.clone();
         let snapshot = state
@@ -674,7 +733,7 @@ impl AttachmentRegistry {
             .and_then(|roster| roster.get(&session_id))?;
         let event = terminal_event(&snapshot.state)?;
         let entry = state.entries.remove(&subscription_id)?;
-        Some((entry.sink, event))
+        Some((entry.sink.events, event))
     }
 
     fn attach_one<C: SessionAttachmentClient>(
@@ -756,7 +815,7 @@ impl AttachmentRegistry {
             .unwrap_or_else(|err| err.into_inner())
             .entries
             .get(&subscription_id)
-            .map(|entry| Arc::clone(&entry.sink));
+            .map(|entry| Arc::clone(&entry.sink.events));
         if let Some(sink) = sink {
             sink(SessionEvent::AgentError {
                 message: format!("Could not reattach the agent session: {error}"),
@@ -1311,7 +1370,14 @@ impl BridgeInner {
         client: &DaemonClient,
         session_id: &str,
     ) -> Result<(), DaemonError> {
-        let sink: AttachmentSink = Arc::new(|_| {});
+        // The temporary view of a session nobody is watching: it takes the
+        // frames so the attach reads as subscribed and discards them. A reset
+        // needs no reader here — nothing renders this timeline, and its cursor
+        // is dropped with the entry.
+        let sink = AttachmentSink {
+            events: Arc::new(|_| {}),
+            reset: Arc::new(|_| {}),
+        };
         // The tail, not zero: a cursorless attach replays the whole journal
         // into this sink — for a live journaled agent that is the entire
         // transcript over the socket, thrown away frame by frame. `seq:

@@ -5,6 +5,7 @@ import { errorSentence } from "../../lib/errorSentence";
 import { eventTypeName } from "../../lib/eventTypeName";
 import type {
   Session,
+  SessionAttachMessage,
   SessionEvent,
   SessionSnapshot,
   PermissionRequest,
@@ -66,7 +67,7 @@ export interface TerminalSessionDeps {
     },
   ) => Promise<TerminalViewHandle>;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-  createChannel: (onEvent: (event: TerminalEvent) => void) => TerminalChannel;
+  createChannel: (onEvent: (event: SessionAttachMessage) => void) => TerminalChannel;
   registry: TerminalSessionRegistry;
   onBanner: (banner: TerminalBanner) => void;
   onCtrlCArmed: (armed: boolean) => void;
@@ -245,7 +246,12 @@ export class TerminalSession {
 
     let channel: TerminalChannel;
     try {
-      channel = this.deps.createChannel((event) => this.handleEvent(event));
+      channel = this.deps.createChannel((message) => {
+        // A terminal attaches cursorless and is never a live agent, so the
+        // daemon answers it without a reset. The arm is skipped because the
+        // channel carries the whole union, not because one is expected.
+        if ("type" in message) this.handleEvent(message);
+      });
     } catch (error: unknown) {
       const mapped = errorSentence(error);
       this.showError(

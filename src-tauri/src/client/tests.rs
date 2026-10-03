@@ -1,11 +1,14 @@
 //! Tests for the daemon client: attachment cursors, reconnection and request routing.
 
 use super::*;
-use devboule_daemon::{DaemonError, EventHandler, SessionStateHandler};
+use devboule_daemon::{DaemonError, EventHandler, SessionResetHandler, SessionStateHandler};
 use devboule_protocol::DaemonStatusBody;
-use devboule_protocol::{SessionKind, SessionState, SessionStateSnapshot};
+use devboule_protocol::{SessionKind, SessionResumeInfo, SessionState, SessionStateSnapshot};
 use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
+
+#[path = "resume_tests.rs"]
+mod resume;
 
 #[test]
 fn stop_attach_asks_for_nothing_after_everything_when_generation_known() {
@@ -24,7 +27,7 @@ fn stop_attach_stays_cursorless_without_a_generation() {
 #[test]
 fn delivered_history_leaves_the_client_cursor_at_its_real_position() {
     let registry = AttachmentRegistry::default();
-    let sink: AttachmentSink = Arc::new(|_| {});
+    let sink = discarding_sink();
     let subscription = registry.insert("s.1", None, sink);
     // Pre-attach history is history: a cross-generation replay delivers
     // its rows with their own generation on the envelope. Such an
@@ -67,8 +70,8 @@ fn delivered_history_leaves_the_client_cursor_at_its_real_position() {
 #[test]
 fn generation_for_prefers_the_roster_over_any_entry_cursor() {
     let registry = AttachmentRegistry::default();
-    let sink: AttachmentSink = Arc::new(|_| {});
-    registry.insert("s.1", None, Arc::clone(&sink));
+    let sink = discarding_sink();
+    registry.insert("s.1", None, sink.clone());
     registry.insert("s.1", None, sink);
     // Mid-replay a cursor can legitimately name an older generation:
     // history is restamped to its own generation and never advances
@@ -96,6 +99,21 @@ fn generation_for_prefers_the_roster_over_any_entry_cursor() {
         Some(2),
         "a stale entry cursor must not outrank the roster's generation"
     );
+}
+
+/// A sink that keeps nothing: the shape an attachment that is bound but not
+/// watched needs.
+fn discarding_sink() -> AttachmentSink {
+    AttachmentSink {
+        events: Arc::new(|_| {}),
+        reset: discarding_reset(),
+    }
+}
+
+/// The reset lane of a sink that is not watching the timeline. A test that
+/// asserts on a reset builds its own sink with a recording lane.
+fn discarding_reset() -> Arc<dyn Fn(SessionResumeInfo) + Send + Sync> {
+    Arc::new(|_| {})
 }
 
 fn bind_attachment(registry: &AttachmentRegistry, subscription_id: SubscriptionId) {
@@ -148,9 +166,9 @@ fn stop_test_snapshot(id: &str, state: SessionState) -> SessionStateSnapshot {
 #[test]
 fn stop_reuse_prefers_the_newest_bound_attachment() {
     let registry = AttachmentRegistry::default();
-    let sink: AttachmentSink = Arc::new(|_| {});
-    let first = registry.insert("s.1", None, Arc::clone(&sink));
-    let second = registry.insert("s.1", None, Arc::clone(&sink));
+    let sink = discarding_sink();
+    let first = registry.insert("s.1", None, sink.clone());
+    let second = registry.insert("s.1", None, sink.clone());
     registry.insert("s.2", None, sink);
     // Nothing bound yet: entries a deferred reattach left behind cannot
     // serve the daemon's observer check, whatever their age.
@@ -205,6 +223,10 @@ struct FakeAttachmentClient {
     failures: Mutex<HashSet<String>>,
     in_flight: AtomicUsize,
     max_in_flight: AtomicUsize,
+    /// The answer the next attach for a session gets, taken as the attach is
+    /// made so it lands where the daemon's own reply lands: before the frames
+    /// that follow it.
+    resume_answers: Mutex<HashMap<String, SessionResumeInfo>>,
 }
 
 impl FakeAttachmentClient {
@@ -219,6 +241,14 @@ impl FakeAttachmentClient {
         for handler in handlers {
             handler(envelope.clone());
         }
+    }
+
+    /// Answer the next attach for `session_id` with this resume outcome.
+    fn answer_attach_with(&self, session_id: &str, resume: SessionResumeInfo) {
+        self.resume_answers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id.to_string(), resume);
     }
 
     fn emit_stale(&self, session_id: &str, envelope: devboule_protocol::SessionEventEnvelope) {
@@ -255,6 +285,7 @@ impl SessionAttachmentClient for FakeAttachmentClient {
         session_id: &str,
         from_cursor: Option<devboule_protocol::Cursor>,
         handler: EventHandler,
+        reset: SessionResetHandler,
     ) -> Result<SubscriptionId, DaemonError> {
         self.calls
             .lock()
@@ -270,6 +301,14 @@ impl SessionAttachmentClient for FakeAttachmentClient {
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         if failed {
             return Err(DaemonError::Protocol("fake attach failed".to_string()));
+        }
+        if let Some(answer) = self
+            .resume_answers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(session_id)
+        {
+            reset(answer);
         }
         self.handlers
             .lock()
@@ -326,12 +365,15 @@ fn derived_rows_sharing_one_envelope_seq_all_reach_the_sink() {
     let subscription_id = registry.insert(
         "session-shared-seq",
         None,
-        Arc::new(move |event| {
-            received_by_sink
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push(event);
-        }),
+        AttachmentSink {
+            events: Arc::new(move |event| {
+                received_by_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+            reset: discarding_reset(),
+        },
     );
     let client = FakeAttachmentClient::default();
     registry.bind(&client, subscription_id).expect("attach");
@@ -377,12 +419,15 @@ fn reattach_redelivers_every_row_from_the_boundary_envelope() {
     let subscription_id = registry.insert(
         "session-boundary",
         None,
-        Arc::new(move |event| {
-            received_by_sink
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push(event);
-        }),
+        AttachmentSink {
+            events: Arc::new(move |event| {
+                received_by_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+            reset: discarding_reset(),
+        },
     );
     let old_client = FakeAttachmentClient::default();
     let new_client = FakeAttachmentClient::default();
@@ -440,7 +485,7 @@ fn live_terminal_output_cursor_survives_connection_replacement() {
     let registry = Arc::new(AttachmentRegistry::default());
     let old_client = FakeAttachmentClient::default();
     let new_client = FakeAttachmentClient::default();
-    let subscription_id = registry.insert("session-terminal", None, Arc::new(|_| {}));
+    let subscription_id = registry.insert("session-terminal", None, discarding_sink());
     registry
         .bind(&old_client, subscription_id)
         .expect("initial attach");
@@ -475,7 +520,7 @@ fn live_chat_cursor_survives_connection_replacement() {
     let registry = Arc::new(AttachmentRegistry::default());
     let old_client = FakeAttachmentClient::default();
     let new_client = FakeAttachmentClient::default();
-    let subscription_id = registry.insert("session-chat", None, Arc::new(|_| {}));
+    let subscription_id = registry.insert("session-chat", None, discarding_sink());
     registry
         .bind(&old_client, subscription_id)
         .expect("initial attach");
@@ -513,12 +558,15 @@ fn unpositioned_envelope_is_forwarded_without_advancing() {
     let subscription_id = registry.insert(
         "session-marker",
         None,
-        Arc::new(move |event| {
-            received_by_sink
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push(event);
-        }),
+        AttachmentSink {
+            events: Arc::new(move |event| {
+                received_by_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+            reset: discarding_reset(),
+        },
     );
     let client = FakeAttachmentClient::default();
     registry.bind(&client, subscription_id).expect("attach");
@@ -551,12 +599,15 @@ fn attached_session_reattaches_with_the_cursor_received_before_replacement() {
     let registry = Arc::new(AttachmentRegistry::default());
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_by_handler = Arc::clone(&received);
-    let sink: AttachmentSink = Arc::new(move |event| {
-        received_by_handler
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(event);
-    });
+    let sink = AttachmentSink {
+        events: Arc::new(move |event| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
+        }),
+        reset: discarding_reset(),
+    };
     let old_client = FakeAttachmentClient::default();
     let new_client = FakeAttachmentClient::default();
 
@@ -663,22 +714,28 @@ fn attachment_registry_keeps_same_session_subscriptions_independent() {
     let first = registry.insert(
         "shared",
         None,
-        Arc::new(move |event| {
-            first_sink_events
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push(event);
-        }),
+        AttachmentSink {
+            events: Arc::new(move |event| {
+                first_sink_events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+            reset: discarding_reset(),
+        },
     );
     let second = registry.insert(
         "shared",
         None,
-        Arc::new(move |event| {
-            second_sink_events
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push(event);
-        }),
+        AttachmentSink {
+            events: Arc::new(move |event| {
+                second_sink_events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+            reset: discarding_reset(),
+        },
     );
     let client = FakeAttachmentClient::default();
     registry.bind(&client, first).expect("first attach");
@@ -710,7 +767,7 @@ fn attachment_registry_keeps_same_session_subscriptions_independent() {
 #[test]
 fn generation_bump_discards_the_old_sequence_but_keeps_the_session_binding() {
     let registry = Arc::new(AttachmentRegistry::default());
-    let sink: AttachmentSink = Arc::new(|_| {});
+    let sink = discarding_sink();
     let old_client = FakeAttachmentClient::default();
     let new_client = FakeAttachmentClient::default();
     let subscription_id = registry.insert("session-2", None, sink);
@@ -772,12 +829,15 @@ fn ended_while_disconnected_is_delivered_as_ended_without_an_attach() {
     let registry = Arc::new(AttachmentRegistry::default());
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_by_handler = Arc::clone(&received);
-    let sink: AttachmentSink = Arc::new(move |event| {
-        received_by_handler
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(event);
-    });
+    let sink = AttachmentSink {
+        events: Arc::new(move |event| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
+        }),
+        reset: discarding_reset(),
+    };
     let old_client = FakeAttachmentClient::default();
     let new_client = FakeAttachmentClient::default();
     let subscription_id = registry.insert("ended", None, sink);
@@ -832,16 +892,19 @@ fn a_failed_reattach_does_not_abort_the_remaining_tabs() {
     let registry = Arc::new(AttachmentRegistry::default());
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_by_handler = Arc::clone(&received);
-    let sink: AttachmentSink = Arc::new(move |event| {
-        received_by_handler
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(event);
-    });
-    let second_sink = Arc::clone(&sink);
+    let sink = AttachmentSink {
+        events: Arc::new(move |event| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
+        }),
+        reset: discarding_reset(),
+    };
+    let second_sink = sink.clone();
     let client = FakeAttachmentClient::default();
     client.fail_for("bad");
-    registry.insert("bad", None, Arc::clone(&sink));
+    registry.insert("bad", None, sink.clone());
     registry.insert("good", None, second_sink);
     registry.begin_replacement();
     let failures = registry.reattach_all(&client);
@@ -875,12 +938,15 @@ fn a_failed_reattach_can_be_retried_for_a_later_user_action() {
     let registry = Arc::new(AttachmentRegistry::default());
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_by_handler = Arc::clone(&received);
-    let sink: AttachmentSink = Arc::new(move |event| {
-        received_by_handler
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(event);
-    });
+    let sink = AttachmentSink {
+        events: Arc::new(move |event| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
+        }),
+        reset: discarding_reset(),
+    };
     let client = FakeAttachmentClient::default();
     client.fail_for("retry");
     let subscription_id = registry.insert("retry", None, sink);
@@ -919,7 +985,7 @@ fn reattach_worker_allows_only_one_attach_in_flight() {
     let registry = Arc::new(AttachmentRegistry::default());
     let client = FakeAttachmentClient::default();
     for index in 0..8 {
-        registry.insert(&format!("session-{index}"), None, Arc::new(|_| {}));
+        registry.insert(&format!("session-{index}"), None, discarding_sink());
     }
     registry.begin_replacement();
     registry.reattach_all(&client);
@@ -931,7 +997,7 @@ fn reattach_worker_allows_only_one_attach_in_flight() {
 fn closed_session_events_remove_the_registry_entry() {
     let registry = Arc::new(AttachmentRegistry::default());
     let client = FakeAttachmentClient::default();
-    let subscription_id = registry.insert("closed", None, Arc::new(|_| {}));
+    let subscription_id = registry.insert("closed", None, discarding_sink());
     registry.bind(&client, subscription_id).expect("attach");
     client.emit(
         "closed",
@@ -949,8 +1015,8 @@ fn closed_session_events_remove_the_registry_entry() {
 #[test]
 fn removing_one_session_subscription_keeps_the_other() {
     let registry = Arc::new(AttachmentRegistry::default());
-    let first = registry.insert("shared", None, Arc::new(|_| {}));
-    let second = registry.insert("shared", None, Arc::new(|_| {}));
+    let first = registry.insert("shared", None, discarding_sink());
+    let second = registry.insert("shared", None, discarding_sink());
 
     registry.remove(first);
 
@@ -962,9 +1028,9 @@ fn removing_one_session_subscription_keeps_the_other() {
 #[test]
 fn forgetting_a_session_drops_only_that_sessions_attachments() {
     let registry = Arc::new(AttachmentRegistry::default());
-    let first = registry.insert("shared", None, Arc::new(|_| {}));
-    let second = registry.insert("shared", None, Arc::new(|_| {}));
-    let other = registry.insert("kept", None, Arc::new(|_| {}));
+    let first = registry.insert("shared", None, discarding_sink());
+    let second = registry.insert("shared", None, discarding_sink());
+    let other = registry.insert("kept", None, discarding_sink());
 
     assert_eq!(
         registry.subscriptions_for_session("shared"),

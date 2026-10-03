@@ -12,10 +12,10 @@ use devboule_protocol::{
     Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode, JournalRetention,
     JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
-    WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
-    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus,
-    WorkspaceIsolation,
+    SessionEventEnvelope, SessionKind, SessionResumeInfo, SessionResumeOutcome,
+    SessionStateSnapshot, StoredAttachment, SubscriptionId, WireError, Workspace,
+    WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation, WorkspaceFilePreview,
+    WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -119,6 +119,12 @@ fn session_create_deadline() -> Duration {
 
 pub type EventHandler = Arc<dyn Fn(SessionEventEnvelope) + Send + Sync>;
 pub type SessionStateHandler = Arc<dyn Fn(Vec<SessionStateSnapshot>) + Send + Sync>;
+/// The attach reply's `resume`, for the subscriber that can read it. Called on
+/// the connection's reader thread, at the frame where the reply is matched,
+/// and only for a `reset`: a `resumed` outcome names no tail and has nothing
+/// to hand over. Ordering is the contract — that thread is also the only thing
+/// that dispatches the envelopes following the reply.
+pub type SessionResetHandler = Arc<dyn Fn(SessionResumeInfo) + Send + Sync>;
 /// The daemon-pushed delegation switch (`DelegationChanged`): the stored
 /// value and where it came from. Fired for a server-initiated broadcast, so
 /// unlike an RPC reply it carries no request id.
@@ -129,6 +135,9 @@ struct PendingSubscription {
     subscription_id: SubscriptionId,
     session_id: String,
     handler: EventHandler,
+    /// Absent for an attach whose caller cannot read the outcome; then the
+    /// reply's `resume` is dropped exactly as it was before it existed.
+    reset: Option<SessionResetHandler>,
 }
 
 struct Subscription {
@@ -343,15 +352,27 @@ impl DaemonClient {
         handler: EventHandler,
     ) -> Result<SubscriptionId, DaemonError> {
         let subscription_id = self.alloc_subscription_id();
-        self.session_attach_with_subscription(subscription_id, session_id, from_cursor, handler)
+        self.session_attach_with_subscription(
+            subscription_id,
+            session_id,
+            from_cursor,
+            handler,
+            None,
+        )
     }
 
+    /// `reset` is the caller's reader for the reply's resume outcome. Pass
+    /// `None` and a reset is dropped with the rest of the reply's extras; pass
+    /// a reader and it is called on the reader thread before the reply
+    /// resolves, so the caller learns about a replaced timeline before any
+    /// frame of this attach reaches it.
     pub fn session_attach_with_subscription(
         &self,
         subscription_id: SubscriptionId,
         session_id: &str,
         from_cursor: Option<Cursor>,
         handler: EventHandler,
+        reset: Option<SessionResetHandler>,
     ) -> Result<SubscriptionId, DaemonError> {
         if subscription_id == 0 {
             return Err(DaemonError::Protocol(
@@ -371,6 +392,7 @@ impl DaemonClient {
                     subscription_id,
                     session_id: session_id.to_string(),
                     handler,
+                    reset,
                 },
             );
         }
@@ -2285,7 +2307,9 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                 }
                 if let Some(id) = daemon_message_id(&message) {
                     if let DaemonMessage::SessionAttached {
-                        subscription_id, ..
+                        subscription_id,
+                        resume,
+                        ..
                     } = &message
                     {
                         // Keep the token in the pending table until the daemon
@@ -2300,9 +2324,21 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                             subscription_id: _,
                             session_id,
                             handler,
+                            reset,
                         }) = pending_subscription
                             .filter(|pending| pending.subscription_id == *subscription_id)
                         {
+                            if let Some(on_reset) = reset {
+                                if let Some(reset) = resume.as_ref().filter(|info| {
+                                    matches!(info.resume, SessionResumeOutcome::Reset { .. })
+                                }) {
+                                    // On this thread, at this frame, so it is
+                                    // strictly before the replay that follows
+                                    // the reply: the view replaces its timeline
+                                    // before a single row of it arrives.
+                                    on_reset(reset.clone());
+                                }
+                            }
                             inner
                                 .subscriptions
                                 .lock()
@@ -2495,3 +2531,7 @@ fn pairing_reply_mismatch<T>() -> Result<T, DaemonError> {
 #[cfg(all(test, feature = "server"))]
 #[path = "client_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "server"))]
+#[path = "client_resume_tests.rs"]
+mod resume_tests;

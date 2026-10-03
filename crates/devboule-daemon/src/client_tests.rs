@@ -878,7 +878,7 @@ fn a_daemon_that_did_not_negotiate_the_queue_is_never_sent_a_queue_rpc() {
 /// the teardown both deadline tests need: they differ only in what the far
 /// side does with the frames and when.
 #[cfg(windows)]
-fn with_a_fake_daemon(
+pub(super) fn with_a_fake_daemon(
     label: &str,
     serve: impl FnOnce(Framed) + Send + 'static,
     body: impl FnOnce(&super::DaemonClient),
