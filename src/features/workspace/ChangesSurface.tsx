@@ -238,8 +238,7 @@ export const ChangesSurface = memo(function ChangesSurface({
   canListCommits,
   onOpenFile,
 }: ChangesSurfaceProps) {
-  // The daemon's own id for that workspace — what every read and write below
-  // is addressed by. The key is the panel's identity and its cache's key.
+  // What every read and write below is addressed by.
   const workspaceId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).workspaceId;
   const { status, diff, selection, select, refresh } = useWorkspaceChanges(workspaceKey);
   const { stage, unstage, discard, commit } = useWorkspaceGitActions({ workspaceId, refresh });

@@ -25,7 +25,6 @@ import { ChangesSurface } from "./ChangesSurface";
 import { assembleCssProof, removeCssProof } from "./cssProof";
 import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 
-/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

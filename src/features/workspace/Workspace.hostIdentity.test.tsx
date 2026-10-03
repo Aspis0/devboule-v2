@@ -1,9 +1,7 @@
 // @vitest-environment happy-dom
 
-// One host, and the screen must read exactly as it read before workspaces were
-// host-qualified: the same chips under the same DOM ids, the same selection,
-// the same tool pane, the same side panel, the same sidebar row. The host is
-// the UI's name for a workspace and never reaches a tab id or a DOM attribute.
+// One host: the host-qualified identity must reach no DOM id, or the screen
+// it names would differ from the one it replaced.
 
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

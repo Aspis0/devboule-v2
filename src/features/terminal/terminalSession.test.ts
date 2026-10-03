@@ -15,7 +15,6 @@ import type { TerminalSessionRecord, TerminalSessionRegistry } from "./terminalR
 
 import { localWorkspaceKey, type WorkspaceKey } from "../workspace/hosts/hostIdentity";
 
-/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 interface MockView extends TerminalViewHandle {

@@ -16,8 +16,8 @@ interface StorageLike {
   setItem(key: string, value: string): void;
 }
 
-/** What a tab's row carried before a tab knew its host. Still written into
- * every row, so a build that only reads v1 keeps reading its own file. */
+/** What a tab's row carried before a tab knew its host, still written into
+ * every row so a v1-only build keeps reading its own file. */
 interface TabIdentity {
   id: string;
   workspaceId: string | null;
@@ -25,8 +25,8 @@ interface TabIdentity {
 }
 
 interface StoredTab extends TabIdentity {
-  /** The host whose roster row the tab arrived on; set even when it has no
-   * workspace, which is the only place a tab's host outlives its key. */
+  /** The host whose roster row the tab arrived on: the only place a tab
+   * records a host it has no workspace key for. */
   hostId: HostId;
   /** Null for an unscoped tab: it belongs to every workspace key on its host. */
   workspaceKey: WorkspaceKey | null;

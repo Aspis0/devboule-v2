@@ -18,7 +18,6 @@ import { FilesSurface } from "./FilesSurface";
 import { assembleCssProof, removeCssProof } from "./cssProof";
 import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 
-/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 /** How many folder sorts the panel ran: the memo test's only observable.

@@ -38,7 +38,6 @@ vi.mock("../features/design/DesignHistoryList", () => ({ DesignHistoryList: () =
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { localWorkspaceKey, type WorkspaceKey } from "../features/workspace/hosts/hostIdentity";
 
-/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 beforeEach(() => {

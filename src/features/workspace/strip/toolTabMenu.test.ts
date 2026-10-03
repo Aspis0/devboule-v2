@@ -5,7 +5,6 @@ import { toolTabMenuEntries } from "./toolTabMenu";
 import type { Session } from "../../../types/ipc";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 
-/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 function session(id: string): Session {

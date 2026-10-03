@@ -8,8 +8,8 @@
  * key degrades to the project list's first row or the daemon refusing the
  * create, which the panel reports honestly. App-lifetime, never persisted.
  *
- * The cell holds the UI's key for the workspace, not the daemon's id: the two
- * readers above need different ones.
+ * The cell holds the UI's key; the reader that calls the daemon resolves it to
+ * an id first.
  */
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 

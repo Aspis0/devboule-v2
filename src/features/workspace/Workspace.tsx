@@ -1994,7 +1994,6 @@ export function Workspace({
                 <ConfirmProvider>
                   {selectedSurface.render({
                     workspaceKey: selectedKey,
-                    workspaceId: selectedWorkspaceId,
                     // The one fact the Changes panel gates on, computed from
                     // the daemon status this component already holds — a
                     // panel reads it here instead of polling for its own.

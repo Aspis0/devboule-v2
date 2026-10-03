@@ -4,7 +4,6 @@ import { buildTabCopyEntries, isTabCopyAction, tabCopyValue } from "./tabCopyAct
 import { composeStripTabs, makeToolTab } from "./toolTabs";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 
-/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 describe("single-tab copy actions", () => {

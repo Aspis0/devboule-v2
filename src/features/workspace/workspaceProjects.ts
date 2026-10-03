@@ -19,9 +19,8 @@ import {
   type WorkspaceKey,
 } from "./hosts/hostIdentity";
 
-/** A workspace as loaded, with the host whose feed it arrived on. Every
- * workspace comes off the local bridge today; the field is the seam the next
- * host's rows are stamped through. */
+/** A workspace as loaded, with the host whose feed it arrived on — today
+ * the only feed, so every row carries the local host. */
 export interface HostWorkspace extends Workspace {
   hostId: HostId;
 }
@@ -220,9 +219,9 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
 
   useEffect(() => {
     if (loading || error !== null) return;
-    const keys = projectRecords.flatMap((project) =>
-      project.workspaces.map((workspace) => keyOfWorkspace(workspace)),
-    );
+    const keys = projectRecords
+      .flatMap((project) => project.workspaces.map(keyOfWorkspace))
+      .filter((key) => key !== null);
     setSelectedKey((current) =>
       current !== null && keys.includes(current) ? current : (keys[0] ?? null),
     );
@@ -336,7 +335,12 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
         if (existingIndex < 0) return [...currentProjects, next];
         return currentProjects.map((current, index) => (index === existingIndex ? next : current));
       });
-      setSelectedKey((current) => current ?? keyOfWorkspace(workspaces[0]));
+      // A project the daemon added has no workspace until one is created, so
+      // the list may be empty: the selection stays where it was.
+      const firstKey = workspaces.at(0);
+      setSelectedKey(
+        (current) => current ?? (firstKey === undefined ? null : keyOfWorkspace(firstKey)),
+      );
       setSearch("");
       setError(null);
     } catch (cause: unknown) {

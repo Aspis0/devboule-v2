@@ -14,7 +14,6 @@ import { SessionStrip } from "./SessionStrip";
 import { composeStripTabs, makeToolTab, type StripTab } from "./toolTabs";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 
-/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 function session(id: string, overrides: Partial<Session> = {}): Session {

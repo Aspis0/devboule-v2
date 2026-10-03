@@ -1,9 +1,5 @@
-// Why a branded string and not a `{ hostId, workspaceId }` pair: every IPC
-// call — sessionCreate, workspaceGitStatus, workspaceFilesList, terminalSession
-// — takes a bare daemon-minted workspace id, and a pair would put a host on
-// the wire, where the wire has no host field. The key is the UI's name for
-// "this workspace on this host"; the brand is what stops the compiler from
-// handing one to the other.
+// Why branded strings and not a `{ hostId, workspaceId }` pair: every IPC call
+// takes a bare daemon-minted id, and a pair would put a host on the wire.
 
 /** A machine that owns workspaces: the local one today, a peer's device id later. */
 export type HostId = string & { readonly __brand: "HostId" };
@@ -11,7 +7,7 @@ export type HostId = string & { readonly __brand: "HostId" };
 /** A workspace's identity WITHIN a host — never a value the daemon is sent. */
 export type WorkspaceKey = string & { readonly __brand: "WorkspaceKey" };
 
-/** The machine the app runs on. Its id is the registry's, the sidebar's and this one. */
+/** The machine the app runs on: the one id the sidebar's registry and the tab stores share. */
 export const LOCAL_HOST_ID = "local" as HostId;
 
 const SEPARATOR = ":";
@@ -27,20 +23,16 @@ export function localWorkspaceKey(workspaceId: string): WorkspaceKey | null {
 }
 
 /**
- * Splits at the FIRST separator: the host is the prefix this app minted, and
- * the workspace id is the daemon's, so the workspace half is the one that may
- * carry a separator of its own. Total by design — every caller passes a key
- * this module composed, where a blank half was already refused.
+ * Splits at the FIRST separator: the host is the prefix this app minted, the
+ * workspace id is the daemon's, so only the workspace half may carry one.
+ * Total — every caller passes a key this module composed.
  */
 export function parseWorkspaceKey(key: WorkspaceKey): { hostId: HostId; workspaceId: string } {
   const cut = key.indexOf(SEPARATOR);
   return { hostId: key.slice(0, cut) as HostId, workspaceId: key.slice(cut + 1) };
 }
 
-/**
- * The same rule `workspaceKey` applies, for text read back from storage: a
- * candidate is a key only if it has a separator and neither half is blank.
- */
+/** The rule `workspaceKey` applies, for text read back from storage. */
 export function isWorkspaceKey(value: unknown): value is WorkspaceKey {
   if (typeof value !== "string") return false;
   const cut = value.indexOf(SEPARATOR);

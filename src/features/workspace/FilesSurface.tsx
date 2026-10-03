@@ -115,8 +115,7 @@ export const FilesSurface = memo(function FilesSurface({
   workspaceKey,
   onOpenFile,
 }: FilesSurfaceProps) {
-  // The daemon's own id for that workspace: what the file reads, the preview
-  // and the rename/duplicate/delete acts are all addressed by.
+  // What the file reads and every row act are addressed by.
   const workspaceId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).workspaceId;
   const { cells, expanded, toggle, refresh, refreshPath, rekey } = useWorkspaceFiles(workspaceId);
   const {

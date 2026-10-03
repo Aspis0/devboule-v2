@@ -12,15 +12,11 @@ export type PanelPlacement = "tab" | "menu";
 
 export interface SidePanelContext {
   /**
-   * The selected workspace as the UI names it — which panel this is, and what
-   * every cache the panel fills is keyed by.
+   * The selected workspace as the UI names it: which panel this is, what
+   * every cache it fills is keyed by, and what it resolves to a daemon id
+   * where it calls one.
    */
   workspaceKey: WorkspaceKey | null;
-  /**
-   * The selected workspace's daemon id — the only form of it that may leave
-   * this process (`src/types/ipc.ts` declares `Workspace.path` display-only).
-   */
-  workspaceId: string | null;
   /**
    * Whether the running daemon can list a workspace's history — the one
    * fact the Changes panel gates on, as a primitive so the surface's
@@ -28,9 +24,8 @@ export interface SidePanelContext {
    */
   canListCommits: boolean;
   /**
-   * Open a path as a main tab. Each entry binds its own kind — the Changes
-   * entry a diff tab, the Files entry a file tab — so the trees keep their
-   * (workspaceId, path) call shape and the kind travels only this far.
+   * Open a path as a main tab, under the panel's workspace. Each entry binds
+   * its own kind, so the kind travels only this far.
    */
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string, kind: ToolTabKind) => void;
 }

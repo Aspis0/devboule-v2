@@ -9,7 +9,6 @@ import * as createTerminalViewModule from "./createTerminalView";
 import { hasTerminalInput, requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
 import { localWorkspaceKey, type WorkspaceKey } from "../workspace/hosts/hostIdentity";
 
-/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (
