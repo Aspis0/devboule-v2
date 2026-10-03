@@ -8,12 +8,18 @@ use serde_json::Value;
 
 use crate::wire_json::{blocks_text, shell_command_from_tool, tool_kind_from_name, tool_status};
 
-/// The one field that matters, in the same priority as Claude's fallback:
-/// command, then path, then pattern.
-fn tool_summary(arguments: Option<&Value>) -> Option<String> {
+/// The one field that matters. The web tools of the `rpiv-web-tools`
+/// extension read `query` / `url`; every other tool keeps Claude's fallback
+/// priority: command, then path, then pattern.
+fn tool_summary(name: Option<&str>, arguments: Option<&Value>) -> Option<String> {
     let arguments = arguments?;
-    ["command", "path", "pattern"]
-        .into_iter()
+    let keys: &[&str] = match name.map(str::to_ascii_lowercase).as_deref() {
+        Some("web_search") => &["query"],
+        Some("web_fetch") => &["url"],
+        _ => &["command", "path", "pattern"],
+    };
+    keys.iter()
+        .copied()
         .filter_map(|key| {
             arguments
                 .get(key)
@@ -273,7 +279,7 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
         status: Some("in_progress".to_string()),
         text: None,
         // Arguments arrive here, so retitle the row with the summary.
-        title: tool_summary(tool_call.get("arguments")),
+        title: tool_summary(name, tool_call.get("arguments")),
         kind: name.map(|name| tool_kind_from_name(name).to_string()),
         locations: None,
         parent_tool_use_id: None,
@@ -466,6 +472,10 @@ pub(crate) fn stats_reply_from_response(response: &Value) -> StatsReply {
         window_tokens: context.get("contextWindow").and_then(Value::as_u64),
     }
 }
+
+#[cfg(test)]
+#[path = "pi_view_web_tools_tests.rs"]
+mod web_tools_tests;
 
 #[cfg(test)]
 mod tests {

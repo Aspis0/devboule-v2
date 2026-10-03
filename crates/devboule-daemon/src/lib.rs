@@ -4,6 +4,8 @@
 use std::time::Duration;
 
 #[cfg(feature = "server")]
+mod acp_tool_content;
+#[cfg(feature = "server")]
 mod acp_view;
 #[cfg(feature = "server")]
 mod agent_activity;

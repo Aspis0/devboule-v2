@@ -12,6 +12,8 @@
 //! case-sensitive (lowercase `read`, `grep`, `task`, … fell to `other`, as
 //! did the Pi-only `find`/`ls`), and the old Pi table knew nothing of
 //! `glob`, `websearch`, `notebookedit`, `webfetch`, `agent`, or `task`.
+//! The snake_case `web_search` / `web_fetch` spellings (pi's `rpiv-web-tools`
+//! extension) join the same two kinds.
 //! Those names now resolve to the same kind on both wires, so an MCP tool
 //! named like a built-in gets the same icon whichever provider serves it.
 //! The `tool_kind_widening_is_deliberate` test pins this; do not "fix" it
@@ -49,8 +51,8 @@ pub(crate) fn tool_kind_from_name(name: &str) -> &'static str {
         "read" => "read",
         "edit" | "write" | "notebookedit" => "edit",
         "bash" | "powershell" => "execute",
-        "glob" | "grep" | "websearch" | "find" | "ls" => "search",
-        "webfetch" => "fetch",
+        "glob" | "grep" | "websearch" | "web_search" | "find" | "ls" => "search",
+        "webfetch" | "web_fetch" => "fetch",
         "agent" | "task" => "think",
         _ => "other",
     }
@@ -155,6 +157,8 @@ mod tests {
             ("glob", "search"),
             ("websearch", "search"),
             ("webfetch", "fetch"),
+            ("web_search", "search"),
+            ("web_fetch", "fetch"),
             ("agent", "think"),
             ("notebookedit", "edit"),
         ];

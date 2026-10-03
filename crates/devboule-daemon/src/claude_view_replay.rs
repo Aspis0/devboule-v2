@@ -29,7 +29,12 @@ pub(crate) fn drive_replay(view: &mut ClaudeView, value: &mut Value) -> Vec<Sess
     // The ACP view relativises tool locations against the view's cwd, the
     // same cwd the live views were constructed with — a replayed row must
     // not turn a relative location absolute.
-    let views = crate::acp_view::view_from_envelope_in(value, "", view.cwd.as_deref());
+    let views = crate::acp_view::view_from_envelope_with(
+        value,
+        "",
+        view.cwd.as_deref(),
+        &mut view.acp_tool_content,
+    );
     let views = if views.is_empty() {
         view.ingest(value)
     } else {

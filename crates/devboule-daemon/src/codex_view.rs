@@ -1590,6 +1590,7 @@ fn item_event(
                 }]
             }
         }
+        Some("webSearch") => web_search::web_search_events(id, item, completed),
         _ => Vec::new(),
     }
 }
@@ -1712,6 +1713,9 @@ fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent>
         _ => Vec::new(),
     }
 }
+
+#[path = "codex_web_search.rs"]
+mod web_search;
 
 #[cfg(test)]
 #[path = "codex_plan_view_tests.rs"]

@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use crate::acp_tool_content::{call_content_update, ToolContentMemory};
 use crate::tool_paths::relativize_tool_path;
 use devboule_protocol::{
     AgentTaskItem, AgentTaskStatus, AvailableCommandView, SessionEvent, SessionModeStateView,
@@ -50,15 +51,39 @@ pub(crate) fn view_from_envelope(
     view_from_envelope_in(value, expected_session_id, None)
 }
 
+/// The same view with no memory of earlier tool content: every snapshot
+/// reads as new, so a reader that sees one envelope at a time uses this.
 pub(crate) fn view_from_envelope_in(
     value: &serde_json::Value,
     expected_session_id: &str,
     cwd: Option<&Path>,
 ) -> Vec<SessionEvent> {
+    view_from_envelope_with(
+        value,
+        expected_session_id,
+        cwd,
+        &mut ToolContentMemory::default(),
+    )
+}
+
+/// `memory` carries the tool content already sent across the envelopes of
+/// one session, live or replayed, so a repeated snapshot is not sent twice.
+pub(crate) fn view_from_envelope_with(
+    value: &serde_json::Value,
+    expected_session_id: &str,
+    cwd: Option<&Path>,
+    memory: &mut ToolContentMemory,
+) -> Vec<SessionEvent> {
     if carries_modeled_session_update(value) {
-        return view_from_session_update(value, expected_session_id, cwd)
-            .into_iter()
-            .collect();
+        let mut events: Vec<SessionEvent> =
+            view_from_session_update(value, expected_session_id, cwd, memory)
+                .into_iter()
+                .collect();
+        let call_content = value
+            .pointer("/params/update")
+            .and_then(|update| call_content_update(update, &events, memory));
+        events.extend(call_content);
+        return events;
     }
     if value.get("method").and_then(serde_json::Value::as_str) == Some("_x.ai/models/update") {
         let Some(params) = value.get("params") else {
@@ -114,6 +139,7 @@ fn view_from_session_update(
     value: &serde_json::Value,
     expected_session_id: &str,
     cwd: Option<&Path>,
+    memory: &mut ToolContentMemory,
 ) -> Option<SessionEvent> {
     let params = value.get("params")?;
     if !expected_session_id.is_empty()
@@ -201,18 +227,16 @@ fn view_from_session_update(
             })
         }
         Some("tool_call_update") => {
-            let text = text_from_content(update.get("content")).map(str::to_string);
+            let tool_call_id = update
+                .get("toolCallId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let status = update.get("status").and_then(serde_json::Value::as_str);
+            let text = memory.new_text(tool_call_id, update.get("content"), status);
             let (command, exit_code) = command_row_from_update(update, Frame::Update);
             Some(SessionEvent::AgentToolUpdate {
-                tool_call_id: update
-                    .get("toolCallId")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                status: update
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
+                tool_call_id: tool_call_id.to_string(),
+                status: status.map(str::to_string),
                 text,
                 title: update
                     .get("title")

@@ -17,6 +17,7 @@ use devboule_protocol::{
 };
 use serde_json::Value;
 
+use crate::acp_tool_content::ToolContentMemory;
 use crate::claude_task_state::ClaudeTaskState;
 use rate_limit::rate_limit_plan_usage;
 use tasks::spawn_depth;
@@ -108,6 +109,9 @@ pub(crate) struct ClaudeView {
     /// running total as that turn's cost — which for a new process is the
     /// same number.
     cost_baseline: CostBaseline,
+    /// ACP tool content already derived, for the replay road that runs ACP
+    /// envelopes through this view (`claude_view_replay::drive_replay`).
+    acp_tool_content: ToolContentMemory,
 }
 
 /// What the view knows about the running total its deltas are measured
@@ -142,6 +146,7 @@ impl ClaudeView {
             withheld_finish_pending: false,
             compaction_announced: false,
             cost_baseline: CostBaseline::Known(None),
+            acp_tool_content: ToolContentMemory::default(),
         }
     }
 
@@ -385,3 +390,7 @@ mod test_support;
 #[cfg(test)]
 #[path = "claude_view_notices_tests.rs"]
 mod notices_tests;
+
+#[cfg(test)]
+#[path = "claude_view_websearch_tests.rs"]
+mod websearch_tests;

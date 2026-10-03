@@ -9,7 +9,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -20,11 +20,12 @@ use agent_client_protocol::schema::ProtocolVersion;
 use devboule_protocol::{ErrorCode, NoticeSeverity, PermissionOption, SessionEvent, WireError};
 
 use super::acp_host::{AcpHost, RpcError, RpcRespond};
+use crate::acp_tool_content::ToolContentMemory;
 use crate::acp_view::{
     add_vendor_surface, catalog_from_config_options, classify_line, current_mode_id_from_update,
     has_standard_modes, merge_handshake_manifest, unmodeled_content_kind, view_from_envelope_in,
-    AcpLineKind, ConfigOptionSurface, HandshakeManifest, ModelSwitchShape, PromptCapabilities,
-    SwitchControlShape,
+    view_from_envelope_with, AcpLineKind, ConfigOptionSurface, HandshakeManifest, ModelSwitchShape,
+    PromptCapabilities, SwitchControlShape,
 };
 use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
@@ -3003,6 +3004,9 @@ struct AcpReader {
     /// dropped image and an agent that never sent one look identical from the
     /// outside; the block is named and counted, never rendered here.
     unmodeled_content_count: AtomicU64,
+    /// The tool content already published, so a content snapshot the agent
+    /// repeats is not appended to its row a second time.
+    tool_content: Mutex<ToolContentMemory>,
 }
 
 impl AcpReader {
@@ -3040,6 +3044,7 @@ impl AcpReader {
             handshake_manifest,
             replay_count: AtomicU64::new(0),
             unmodeled_content_count: AtomicU64::new(0),
+            tool_content: Mutex::new(ToolContentMemory::default()),
         }
     }
 
@@ -3412,7 +3417,15 @@ impl AcpReader {
                     self.dispatch_sessions_changed(&value, runtime, event_seq);
                     return;
                 }
-                let views = view_from_envelope_in(&value, &self.session_id, Some(self.host.cwd()));
+                let views = view_from_envelope_with(
+                    &value,
+                    &self.session_id,
+                    Some(self.host.cwd()),
+                    &mut self
+                        .tool_content
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner),
+                );
                 if !views.is_empty() {
                     let models_updated = value.get("method").and_then(serde_json::Value::as_str)
                         == Some("_x.ai/models/update");
