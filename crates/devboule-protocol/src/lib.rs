@@ -795,8 +795,8 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // now reads: with the reset consumer in place the name belongs to both
     // lists (see `m3a_client_capabilities`).
     capabilities.push(Capability::new(caps::SESSION_RESUME_OUTCOMES));
-    // The browser host: the daemon serves its broker, and no client offers the
-    // name yet, so it is never negotiated until the app lane adds it.
+    // The browser host: the daemon serves its broker and the app registers as
+    // the place that runs the commands, so both ends must offer the name.
     capabilities.push(Capability::new(caps::BROWSER_HOST));
     capabilities
 }
@@ -883,6 +883,11 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // would never be negotiated and every reattach would append the whole
     // conversation a second time.
     capabilities.push(Capability::new(caps::SESSION_RESUME_OUTCOMES));
+    // Same pairing, for the browser host: the app registers as the one place
+    // that runs an agent's browser command and reads the registration's
+    // answer, so a name only the daemon offered would never be negotiated and
+    // every `browser_execute_request` would be refused on the way in.
+    capabilities.push(Capability::new(caps::BROWSER_HOST));
     capabilities
 }
 
@@ -948,8 +953,8 @@ mod tests {
     }
 
     /// The browser-host frames ride their own capability, so the floor stays
-    /// put: a client that does not host a browser negotiates everything else
-    /// and is simply never sent a request.
+    /// put: a client that drops the name negotiates everything else and is
+    /// never sent a request.
     #[test]
     fn browser_host_is_negotiated_only_by_a_client_that_offers_it() {
         assert_eq!(PROTOCOL_MIN_VERSION, 16, "no required field changed in 24");
@@ -962,15 +967,25 @@ mod tests {
             capabilities: m3a_daemon_capabilities(),
         };
         let owner = OwnerId::new("S-1-5-21-1", "client").expect("owner");
-        let plain = ClientHello::m3a(owner.clone(), "devboule-test");
+        // The app offers the name, because the app is the one place that runs
+        // the command, so the hello it presents already carries it.
+        let hosting = ClientHello::m3a(owner.clone(), "devboule-test");
+        assert!(hosting
+            .capabilities
+            .iter()
+            .any(|cap| cap.as_str() == caps::BROWSER_HOST));
+        // A client that does not host a browser — an app older than the host —
+        // still connects, and is never sent a request.
+        let mut plain = hosting.clone();
+        plain
+            .capabilities
+            .retain(|cap| cap.as_str() != caps::BROWSER_HOST);
         let negotiated = negotiate(&plain, &daemon_hello).expect("a plain client connects");
         assert!(!negotiated
             .capabilities
             .iter()
             .any(|cap| cap.as_str() == caps::BROWSER_HOST));
-        let mut host = ClientHello::m3a(owner, "devboule-test");
-        host.capabilities.push(Capability::new(caps::BROWSER_HOST));
-        let negotiated = negotiate(&host, &daemon_hello).expect("a hosting client connects");
+        let negotiated = negotiate(&hosting, &daemon_hello).expect("a hosting client connects");
         assert!(negotiated
             .capabilities
             .iter()
@@ -992,10 +1007,7 @@ mod tests {
     /// statement that names its own exceptions. Empty once every name the
     /// daemon serves has a consumer on this side.
     ///
-    /// `browser.host` is here because the app has no browser host to register
-    /// yet: the app lane adds the name to `m3a_client_capabilities` together
-    /// with the webview that executes the commands (slice 4b).
-    const DAEMON_ONLY_CAPABILITIES: &[&str] = &[caps::BROWSER_HOST];
+    const DAEMON_ONLY_CAPABILITIES: &[&str] = &[];
 
     #[test]
     fn daemon_and_client_advertise_sessions() {
