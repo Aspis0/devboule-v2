@@ -21,15 +21,15 @@ const cardCssDark = assembleCssProof(
 afterEach(removeCssProof);
 
 describe("PermissionCard computed styles", () => {
-  it("gives the card the mockup shell: panel fill, hairline, r12, 12/14 padding", () => {
+  it("gives the card the mockup shell: panel fill, hairline, r8, 10/12 padding", () => {
     cardCss.inject([".permission-card"]);
     const card = document.createElement("div");
     card.className = "permission-card";
     document.body.appendChild(card);
     const style = getComputedStyle(card);
     expect(style.backgroundColor).toBe(cardCss.token("--panel-card"));
-    expect(style.borderRadius).toBe("12px");
-    expect(style.padding).toBe("12px 14px");
+    expect(style.borderRadius).toBe("8px");
+    expect(style.padding).toBe("10px 12px");
     // The hairline: the rule source carries the resolved token.
     expect(cardCss.rulesFor(".permission-card")).toContain("border: 1px solid #ded6c4");
     // The design surface's notice box shares the sheet and the ramp's floor.
@@ -68,7 +68,7 @@ describe("PermissionCard computed styles", () => {
     card.remove();
   });
 
-  it("puts the command on the code ground at mono 12.5, r6, 6/10 padding", () => {
+  it("puts the command on the code ground at mono 12.5, r6, 8px padding", () => {
     cardCss.inject([".permission-card-command"]);
     const command = document.createElement("div");
     command.className = "permission-card-command";
@@ -79,27 +79,37 @@ describe("PermissionCard computed styles", () => {
     expect(style.fontFamily).toContain("JetBrains Mono");
     expect(style.fontSize).toBe("12.5px");
     expect(style.borderRadius).toBe("6px");
-    expect(style.padding).toBe("6px 10px");
+    expect(style.padding).toBe("8px");
+    // The command is the card's verbosity, not its decision: it shares the
+    // transcript's bound so one long line scrolls instead of growing the card.
+    expect(style.maxHeight).toBe("200px");
+    expect(style.overflow).toBe("auto");
     command.remove();
   });
 
   it("gives the option chips the mockup geometry and the chosen state its accent trio", () => {
-    cardCss.inject([".permission-card-question-option", ".permission-card-question-option-chosen"]);
+    cardCss.inject([
+      ".permission-card-question-text",
+      ".permission-card-question-option",
+      ".permission-card-question-option-chosen",
+    ]);
     const chip = document.createElement("div");
     chip.className = "permission-card-question-option";
     const chosen = document.createElement("div");
     chosen.className = "permission-card-question-option permission-card-question-option-chosen";
-    document.body.append(chip, chosen);
+    const question = document.createElement("legend");
+    question.className = "permission-card-question-text";
+    document.body.append(chip, chosen, question);
     const chipStyle = getComputedStyle(chip);
-    expect(chipStyle.minHeight).toBe("28px");
+    expect(chipStyle.minHeight).toBe("26px");
     // No fixed height: the chip grows with a wrapped description. The rule
     // source is the honest expression of that intent — a computed-height
     // assertion would encode a happy-dom quirk, not the intent.
-    expect(cardCss.rulesFor(".permission-card-question-option")).toContain("min-height: 28px");
+    expect(cardCss.rulesFor(".permission-card-question-option")).toContain("min-height: 26px");
     expect(chipStyle.borderRadius).toBe("6px");
     expect(chipStyle.fontSize).toBe("13px");
     expect(chipStyle.color).toBe(cardCss.token("--ink-soft"));
-    expect(chipStyle.padding).toBe("4px 10px");
+    expect(chipStyle.padding).toBe("4px 8px");
     const chosenStyle = getComputedStyle(chosen);
     expect(chosenStyle.borderColor).toBe(cardCss.token("--accent"));
     expect(chosenStyle.color).toBe(cardCss.token("--ink"));
@@ -108,8 +118,12 @@ describe("PermissionCard computed styles", () => {
     expect(cardCss.rulesFor(".permission-card-question-option-chosen")).toContain(
       "background: color-mix(in srgb, #bd4a26 10%, transparent)",
     );
+    // The asked question is the card's body text, not its headline: 13 px,
+    // one step below the action line it answers.
+    expect(getComputedStyle(question).fontSize).toBe("13px");
     chip.remove();
     chosen.remove();
+    question.remove();
   });
 
   it("pairs an outline Deny with a filled Allow once, both h28 r6 13px", () => {

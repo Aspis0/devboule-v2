@@ -174,11 +174,11 @@ describe("PermissionCard question answers", () => {
     const description = card.querySelector(".permission-card-question-description");
     if (chip === null || description === null) throw new Error("option chip did not render");
 
-    // The chip's geometry is min-height 28 with no fixed height (pinned in
+    // The chip's geometry is min-height 26 with no fixed height (pinned in
     // PermissionCard.computed.test.tsx), so a wrapped description grows the
     // chip instead of rendering over its border.
     cardCss.inject([".permission-card-question-option"]);
-    expect(getComputedStyle(chip).minHeight).toBe("28px");
+    expect(getComputedStyle(chip).minHeight).toBe("26px");
     // And the description is the chip's own content, never a line over it.
     expect(chip.contains(description)).toBe(true);
     expect(description.textContent).toBe(

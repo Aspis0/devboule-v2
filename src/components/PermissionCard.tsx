@@ -719,11 +719,16 @@ export function PermissionCard({
           <MarkdownText text={request.plan ?? "No plan text was provided."} />
         </div>
       ) : null}
-      {commandLine ? <div className="permission-card-command">{commandLine}</div> : null}
-      {request.env && request.env.length > 0 ? (
-        <div className="permission-card-env">
-          {request.env.map((variable) => `${variable.name}=${variable.value}`).join("\n")}
-        </div>
+      {commandLine || (request.env && request.env.length > 0) ? (
+        <details className="permission-card-verbose">
+          <summary className="permission-card-verbose-trigger">Command and environment</summary>
+          {commandLine ? <div className="permission-card-command">{commandLine}</div> : null}
+          {request.env && request.env.length > 0 ? (
+            <div className="permission-card-env">
+              {request.env.map((variable) => `${variable.name}=${variable.value}`).join("\n")}
+            </div>
+          ) : null}
+        </details>
       ) : null}
       {!daemonReachable ? (
         <div className="permission-card-unavailable" role="status">
