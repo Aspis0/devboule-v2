@@ -56,7 +56,7 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
   // Read once, at open. The record's own address changes as the page moves,
   // and re-running the open effect on it would open a second page for the
   // same tab.
-  const startUrl = useRef(url).current;
+  const [startUrl] = useState(url);
 
   const onUpdate = useCallback(
     (update: BrowserUpdate) => {
