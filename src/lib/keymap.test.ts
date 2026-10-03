@@ -266,14 +266,29 @@ describe("shortcutSections", () => {
 });
 
 describe("the browser chords", () => {
-  const chord = (key: string, over: Partial<KeyboardEvent> = {}) => ({
+  const chord = (
+    key: string,
+    over: Partial<KeyboardEvent> & { target?: EventTarget | null } = {},
+  ) => ({
     key,
     ctrlKey: true,
     metaKey: false,
     altKey: false,
     shiftKey: false,
+    isComposing: false,
+    keyCode: 0,
+    target: null,
     ...over,
   });
+
+  /** The chord as it arrives from the pane's own window listener, or from a
+   * dialog or field standing in front of the pane. */
+  function inElement(html: string): EventTarget {
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    document.body.append(host);
+    return host.firstElementChild as EventTarget;
+  }
 
   it("answers the command modifier with L and with R, either modifier", () => {
     expect(browserFocusAddress(chord("l"))).toBe(true);
@@ -292,6 +307,22 @@ describe("the browser chords", () => {
     expect(browserReloadChord(chord("r", { altKey: true }))).toBe(false);
     // An unmodified letter is text.
     expect(browserFocusAddress({ ...chord("l"), ctrlKey: false })).toBe(false);
+  });
+
+  it("leaves the chords to a field, a dialog or a composition", () => {
+    const address = inElement('<input class="browser-address" />');
+    const dialog = inElement('<div role="dialog"><span>x</span></div>');
+    const menu = inElement('<div role="menu"><span>x</span></div>');
+    const composing = inElement('<input />');
+
+    expect(browserFocusAddress(chord("l", { target: address }))).toBe(false);
+    expect(browserReloadChord(chord("r", { target: address }))).toBe(false);
+    expect(browserFocusAddress(chord("l", { target: dialog }))).toBe(false);
+    expect(browserReloadChord(chord("r", { target: menu }))).toBe(false);
+    expect(browserFocusAddress(chord("l", { target: composing, isComposing: true }))).toBe(false);
+    expect(browserReloadChord(chord("r", { target: composing, keyCode: 229 }))).toBe(false);
+    // The pane itself still answers: the target is the document, not a field.
+    expect(browserFocusAddress(chord("l", { target: document.body }))).toBe(true);
   });
 
   it("lists both chords on the Shortcuts page", () => {

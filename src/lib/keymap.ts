@@ -172,6 +172,22 @@ function isCommandLetter(
   return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey;
 }
 
+/** The two chords as a keymap matcher is given one: a chord is only a chord
+ * outside a field, a terminal or an open dialog, and never mid-composition. */
+type BrowserChordEvent = Pick<
+  KeyboardEvent,
+  "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "isComposing" | "keyCode"
+> & { target: EventTarget | null };
+
+/** The same two guards every other matcher in this file applies. A browser
+ * tab's chords are window-level, so without them Ctrl+L inside a dialog would
+ * pull the focus out of the dialog and into a pane behind it. */
+function browserChordAllowed(event: BrowserChordEvent): boolean {
+  if (isImeComposition(event)) return false;
+  if (ownsItsKeys(event.target)) return false;
+  return true;
+}
+
 /**
  * The two chords a browser tab answers, and only while one is in front: the
  * command modifier with L focuses the address bar and selects what is in it,
@@ -182,16 +198,16 @@ function isCommandLetter(
  * cannot disagree; the pane binds them while it is mounted, which is exactly
  * while a browser tab is the active tab.
  */
-export function browserFocusAddress(
-  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">,
-): boolean {
-  return isCommandLetter(event) && event.key.toLowerCase() === "l";
+export function browserFocusAddress(event: BrowserChordEvent): boolean {
+  return (
+    isCommandLetter(event) && event.key.toLowerCase() === "l" && browserChordAllowed(event)
+  );
 }
 
-export function browserReloadChord(
-  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">,
-): boolean {
-  return isCommandLetter(event) && event.key.toLowerCase() === "r";
+export function browserReloadChord(event: BrowserChordEvent): boolean {
+  return (
+    isCommandLetter(event) && event.key.toLowerCase() === "r" && browserChordAllowed(event)
+  );
 }
 
 /** The command modifier's label for a platform string. */
