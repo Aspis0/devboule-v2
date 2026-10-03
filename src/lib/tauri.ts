@@ -54,6 +54,7 @@ import type {
   RetentionPatch,
 } from "../types/ipc";
 import { errorSentence } from "./errorSentence";
+import type { BrowserUpdate, BrowserViewState, LogicalRect } from "../types/ipc";
 
 export type SubscriptionId = number;
 
@@ -282,6 +283,13 @@ export type CommandArgs = {
   };
   delegation_get: undefined;
   delegation_set: { enabled: boolean };
+  browser_open: { id: string; url: string; updates: BrowserChannel };
+  browser_present: { id: string; rect: LogicalRect };
+  browser_park: { id: string };
+  browser_navigate: { id: string; url: string };
+  browser_history: { id: string; act: "back" | "forward" | "stop" };
+  browser_reload: { id: string };
+  browser_close: { id: string };
 };
 
 type CommandResults = {
@@ -450,6 +458,13 @@ type CommandResults = {
   delegation_get: void;
   /** The daemon answers `DelegationSetOk`; the store's own get proves it. */
   delegation_set: void;
+  browser_open: BrowserViewState;
+  browser_present: void;
+  browser_park: void;
+  browser_navigate: void;
+  browser_history: void;
+  browser_reload: void;
+  browser_close: void;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -583,6 +598,13 @@ export const COMMAND_ARG_KEYS = {
   provider_vocabulary_get: ["provider", "model", "refresh"],
   delegation_get: [],
   delegation_set: ["enabled"],
+  browser_open: ["id", "url", "updates"],
+  browser_present: ["id", "rect"],
+  browser_park: ["id"],
+  browser_navigate: ["id", "url"],
+  browser_history: ["id", "act"],
+  browser_reload: ["id"],
+  browser_close: ["id"],
 } as const satisfies {
   [K in CommandName]: readonly (CommandArgs[K] extends undefined
     ? never
@@ -608,6 +630,10 @@ type AssertUnlistedCommandArgKeysAreNever = UnlistedCommandArgKeys extends never
  * role; exported only so `noUnusedLocals` does not strip the check.
  */
 export const _unlistedCommandArgKeysMustBeNever: AssertUnlistedCommandArgKeysAreNever = true;
+
+/** One browser tab's report channel: the controller pushes the page's state
+ * and any window it asked for down it, and nothing else listens. */
+export type BrowserChannel = Channel<BrowserUpdate>;
 
 export type SessionChannel = Channel<SessionAttachMessage>;
 export type SessionStateChannel = Channel<SessionStateSnapshot[]>;

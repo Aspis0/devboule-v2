@@ -45,12 +45,12 @@ describe("ShortcutsPanel", () => {
     }
   });
 
-  it("groups the rows under the four scopes, in order", async () => {
+  it("groups the rows under the five scopes, in order", async () => {
     await renderPanel();
     const headings = Array.from(container.querySelectorAll("h3")).map(
       (heading) => heading.textContent,
     );
-    expect(headings).toEqual(["Tabs", "Composer", "Navigation", "Panel"]);
+    expect(headings).toEqual(["Tabs", "Composer", "Navigation", "Panel", "Browser"]);
   });
 
   it("prints the strip chord and the tab-list keys", async () => {

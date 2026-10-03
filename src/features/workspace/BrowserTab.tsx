@@ -26,10 +26,9 @@ import {
   browserPresent,
   browserRectOf,
   browserReload,
-  type BrowserUpdate,
-  type BrowserViewState,
 } from "./browserController";
 import { patchBrowserTab, requestBrowserPopup } from "./browserTabs";
+import type { BrowserUpdate, BrowserViewState } from "../../types/ipc";
 import { browserFocusAddress, browserReloadChord } from "../../lib/keymap";
 import "./BrowserTab.css";
 

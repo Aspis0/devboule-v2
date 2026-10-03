@@ -142,18 +142,6 @@ impl BrowserRegistry {
       .remove(id)
       .is_some()
   }
-
-  pub fn ids(&self) -> Vec<String> {
-    let mut ids: Vec<String> = self
-      .tabs
-      .lock()
-      .expect("browser registry poisoned")
-      .keys()
-      .cloned()
-      .collect();
-    ids.sort();
-    ids
-  }
 }
 
 impl Default for BrowserRegistry {
@@ -208,7 +196,6 @@ mod tests {
     registry.claim("tab-1", owned("browser-tab-1")).expect("claim");
     assert!(registry.release("tab-1"), "the first close releases");
     assert!(!registry.release("tab-1"), "the second close finds nothing");
-    assert!(registry.ids().is_empty());
   }
 
   #[test]
@@ -247,6 +234,5 @@ mod tests {
     assert_eq!(registry.rect_of("a"), Some((rect, false)));
     // Parked is the default; one tab's presentation never moves another's.
     assert_eq!(registry.rect_of("b"), Some((PARK_RECT, true)));
-    assert_eq!(registry.ids(), vec!["a".to_owned(), "b".to_owned()]);
   }
 }

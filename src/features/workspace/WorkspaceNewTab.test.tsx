@@ -37,9 +37,7 @@ const OPENED_PAGE = {
 };
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (command: string) =>
-    command === "browser_open" ? structuredClone(OPENED_PAGE) : undefined,
-  ),
+  invoke: vi.fn(async () => undefined),
   // The browser tab controller hands Rust a channel per tab; the fake only
   // has to hold the callback the controller was given.
   Channel: class {
@@ -52,6 +50,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("../../lib/tauri", () => ({
+  // The browser controller reaches Rust through the typed bridge like every
+  // other command, so this harness has to hand it one.
+  invokeTyped: vi.fn(async (command: string) =>
+    command === "browser_open" ? structuredClone(OPENED_PAGE) : undefined,
+  ),
   daemonStatus: vi.fn(async () => ({
     state: "connected",
     pid: 42,

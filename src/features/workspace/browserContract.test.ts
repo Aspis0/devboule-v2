@@ -15,6 +15,7 @@ const root = resolve(import.meta.dirname, "../../..");
 const read = (path: string): string => readFileSync(resolve(root, path), "utf8");
 
 const rust = read("src-tauri/src/browser.rs");
+const tab = read("src-tauri/src/browser/tab.rs");
 const registry = read("src-tauri/src/browser/registry.rs");
 const lib = read("src-tauri/src/lib.rs");
 const capabilities = read("src-tauri/capabilities/default.json");
@@ -24,32 +25,36 @@ const CARGO = read("src-tauri/Cargo.toml");
 
 describe("the Rust controller and the TypeScript door", () => {
   it("registers every command the frontend calls", () => {
-    const invoked = [...controller.matchAll(/invoke(?:<[^>]*>)?\("(\w+)"/g)].map(
+    const invoked = [...controller.matchAll(/invoke(?:Typed)?(?:<[^>]*>)?\("(\w+)"/g)].map(
       (match) => match[1],
     );
-    const registered = [...lib.matchAll(/browser::(browser_\w+)/g)].map((match) => match[1]);
+    const registered = [...rust.matchAll(/pub (?:async )?fn (browser_\w+)/g)].map(
+      (match) => match[1],
+    );
+    const inHandler = [...lib.matchAll(/browser::(browser_\w+)/g)].map((match) => match[1]);
+    const declared = [...new Set([...registered, ...inHandler])].sort();
     for (const command of invoked) {
-      expect(registered, `${command} is invoked but not registered`).toContain(command);
+      expect(declared, `${command} is invoked but not a registered command`).toContain(command);
     }
     // And nothing is registered that no caller reaches, which is how a
     // renamed command shows up instead of failing at runtime.
-    for (const command of registered) {
-      expect(invoked, `${command} is registered but never called`).toContain(command);
+    for (const command of declared) {
+      expect(invoked, `${command} is declared but never called`).toContain(command);
     }
   });
 
   it("gives every browser page an external URL, so no page is on the app's origin", () => {
-    expect(rust).toContain("WebviewUrl::External");
-    expect(rust).not.toContain("WebviewUrl::App(");
+    expect(tab).toContain("WebviewUrl::External");
+    expect(tab).not.toContain("WebviewUrl::App(");
   });
 
   it("gates every navigation in the webview's own hook, not only the address bar", () => {
-    expect(rust).toContain(".on_navigation(");
-    expect(rust).toContain("url::gate(candidate)");
+    expect(tab).toContain(".on_navigation(");
+    expect(tab).toContain("url::gate(candidate)");
   });
 
   it("refuses a native popup and reports the request instead", () => {
-    expect(rust).toContain("NewWindowResponse::Deny");
+    expect(tab).toContain("NewWindowResponse::Deny");
   });
 
   it("keeps the shared profile in one fixed folder this app owns", () => {

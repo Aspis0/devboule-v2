@@ -2497,3 +2497,42 @@ export interface BrowserExecuteResponse {
   hostId: string;
   outcome: BrowserOutcome;
 }
+
+/**
+ * What one browser tab's chrome reads, as the Rust controller reports it
+ * (`BrowserViewState` in `src-tauri/src/browser/tab.rs`). `url` is the
+ * address the page actually reached, after every redirect the controller's
+ * gate allowed; `title` and `favicon` are null while a page declares
+ * neither, which is the chip's globe and hostname fallbacks.
+ */
+export interface BrowserViewState {
+  url: string;
+  title: string | null;
+  favicon: string | null;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /** Why the last navigation was refused, in the chrome's own words. */
+  error: string | null;
+}
+
+/**
+ * What travels down one browser tab's channel. A `newWindow` is a page
+ * asking for a window of its own: the controller refuses the native popup
+ * and sends this instead, and the strip opens a tab for it in the
+ * workspace the asking tab belongs to.
+ */
+export type BrowserUpdate =
+  | ({ kind: "state" } & BrowserViewState)
+  | { kind: "newWindow"; url: string };
+
+/** A rectangle in the units `browser_present` takes. The main webview's CSS
+ * pixels and Tauri logical pixels are the same unit on every platform this
+ * ships on — both are physical pixels over 96 dpi — so the values a
+ * `getBoundingClientRect()` reports are handed over unchanged. */
+export interface LogicalRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
