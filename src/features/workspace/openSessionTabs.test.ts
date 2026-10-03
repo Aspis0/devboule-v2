@@ -73,8 +73,14 @@ describe("persisted open session tabs", () => {
     expect(restored.reconcile(roster, null, true)).toBe("b");
     expect(restored.sessions(roster).map((row) => row.id)).toEqual(["b", "legacy"]);
     expect(JSON.parse(disk.getItem()!).tabs).toEqual([
-      { id: "b", workspaceId: "workspace-2", createdAtMs: 123 },
-      { id: "legacy", workspaceId: null, createdAtMs: 123 },
+      {
+        id: "b",
+        hostId: "local",
+        workspaceId: "workspace-2",
+        workspaceKey: "local:workspace-2",
+        createdAtMs: 123,
+      },
+      { id: "legacy", hostId: "local", workspaceId: null, workspaceKey: null, createdAtMs: 123 },
     ]);
   });
 
@@ -149,7 +155,13 @@ describe("persisted open session tabs", () => {
       tabs.persist([resolved], verified.id);
       expect(JSON.parse(disk.getItem()!).selected).toEqual(
         createdAtMs === 123
-          ? { id: verified.id, workspaceId: verified.workspaceId, createdAtMs }
+          ? {
+              id: verified.id,
+              hostId: "local",
+              workspaceId: verified.workspaceId,
+              workspaceKey: "local:workspace-1",
+              createdAtMs,
+            }
           : null,
       );
     },

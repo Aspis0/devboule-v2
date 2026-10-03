@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bannerText, TerminalSurface } from "./TerminalSurface";
 import * as createTerminalViewModule from "./createTerminalView";
 import { hasTerminalInput, requestTerminalInput, takeTerminalInput } from "./pendingTerminalInput";
+import { localWorkspaceKey, type WorkspaceKey } from "../workspace/hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -218,7 +222,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           autoFocus
           onAutoFocusTaken={onAutoFocusTaken}
@@ -239,7 +243,7 @@ describe("TerminalSurface observer wiring", () => {
     root = createRoot(container);
     // start() opens the view first: no request yet, so nothing is focused.
     await act(async () => {
-      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root!.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await act(async () => flush(400));
     const helper = container.querySelector(".xterm-helper-textarea");
@@ -250,7 +254,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           autoFocus
           onAutoFocusTaken={onAutoFocusTaken}
@@ -271,7 +275,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           autoFocusGuard={guard}
           onAutoFocusTaken={onAutoFocusTaken}
@@ -290,7 +294,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           autoFocus
           autoFocusGuard={guard}
@@ -308,7 +312,11 @@ describe("TerminalSurface observer wiring", () => {
     root = createRoot(container);
     await act(async () => {
       root!.render(
-        <TerminalSurface workspaceId="w1" sessionId="session-1" onPermissionRequest={vi.fn()} />,
+        <TerminalSurface
+          workspaceKey={keyFor("w1")}
+          sessionId="session-1"
+          onPermissionRequest={vi.fn()}
+        />,
       );
     });
     // Let the first controller attach, consume its snapshot, and finish its
@@ -319,7 +327,11 @@ describe("TerminalSurface observer wiring", () => {
     // stale observer closure would still hold the disposed first session.
     await act(async () => {
       root!.render(
-        <TerminalSurface workspaceId="w1" sessionId="session-1" onPermissionRequest={vi.fn()} />,
+        <TerminalSurface
+          workspaceKey={keyFor("w1")}
+          sessionId="session-1"
+          onPermissionRequest={vi.fn()}
+        />,
       );
     });
     await act(async () => flush(350));
@@ -339,7 +351,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           observedState={{
             type: "recovered",
@@ -367,7 +379,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           observedState={{ type: "live", generation: 3 }}
         />,
@@ -410,7 +422,7 @@ describe("TerminalSurface observer wiring", () => {
     requestTerminalInput("session-1", ["npm install -g @openai/codex@latest"]);
     root = createRoot(container);
     await act(async () => {
-      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root!.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await waitForSends(1);
 
@@ -430,7 +442,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => {
       root!.render(
         <StrictMode>
-          <TerminalSurface workspaceId="w1" sessionId="session-1" />
+          <TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />
         </StrictMode>,
       );
     });
@@ -458,7 +470,7 @@ describe("TerminalSurface observer wiring", () => {
     });
     root = createRoot(container);
     await act(async () => {
-      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root!.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await act(async () => flush(200));
     expect(
@@ -470,7 +482,7 @@ describe("TerminalSurface observer wiring", () => {
     await act(async () => root?.unmount());
     root = createRoot(container);
     await act(async () => {
-      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root!.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await waitForSends(1);
 
@@ -484,7 +496,7 @@ describe("TerminalSurface observer wiring", () => {
     requestTerminalInput("session-1", ["codex login"]);
     root = createRoot(container);
     await act(async () => {
-      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root!.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await waitForSends(1);
 
@@ -498,7 +510,7 @@ describe("TerminalSurface observer wiring", () => {
     requestTerminalInput("session-1", ["codex login"]);
     root = createRoot(container);
     await act(async () => {
-      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root!.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await act(async () => {
       outside.focus();
@@ -511,7 +523,7 @@ describe("TerminalSurface observer wiring", () => {
   it("sends nothing when no run was requested for the tab", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root!.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await act(async () => flush(400));
 
@@ -523,7 +535,7 @@ describe("TerminalSurface observer wiring", () => {
   it("shows Copy failed when the view reports a denied clipboard write", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root!.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await act(async () => flush(400));
 
@@ -575,7 +587,7 @@ describe("a recovered terminal states its ended state once", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           observedState={{
             type: "recovered",
@@ -662,7 +674,7 @@ describe("an attach refusal reads as one mapped sentence", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           observedState={{ type: "live", generation }}
         />,
@@ -726,7 +738,7 @@ describe("an attach refusal reads as one mapped sentence", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           observedState={{ type: "live", generation: 2 }}
         />,

@@ -5,6 +5,7 @@
 // pane reads its seed and writes landed cells.
 
 import type { WorkspaceGitFileDiff } from "../../types/ipc";
+import type { WorkspaceKey } from "./hosts/hostIdentity";
 import type { ChangesReply } from "./useWorkspaceChanges";
 import type { PreviewCell } from "./useWorkspaceFilePreview";
 
@@ -17,13 +18,17 @@ export function createToolContentCache(): ToolContentCache {
   return { diffs: new Map(), fileCells: new Map() };
 }
 
-export function toolContentKey(workspaceId: string, path: string): string {
-  return `${workspaceId}\n${path}`;
+export function toolContentKey(workspaceKey: WorkspaceKey, path: string): string {
+  return `${workspaceKey}\n${path}`;
 }
 
 /** Drop one tab's entries: closing a tab forgets what it showed. */
-export function evictToolContent(cache: ToolContentCache, workspaceId: string, path: string): void {
-  const key = toolContentKey(workspaceId, path);
+export function evictToolContent(
+  cache: ToolContentCache,
+  workspaceKey: WorkspaceKey,
+  path: string,
+): void {
+  const key = toolContentKey(workspaceKey, path);
   cache.diffs.delete(key);
   cache.fileCells.delete(key);
 }

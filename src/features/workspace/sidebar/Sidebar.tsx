@@ -2,6 +2,7 @@ import type { ChangeEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
 import { HistoryPanel } from "../../history/HistoryPanel";
 import type { DaemonStatus, Session } from "../../../types/ipc";
 import type { WorkspaceProject } from "../workspaceProjects";
+import type { WorkspaceKey } from "../hosts/hostIdentity";
 import { HostSections } from "./HostSections";
 import { SidebarFooter } from "./SidebarFooter";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
@@ -20,8 +21,8 @@ export interface SidebarProps {
   history: {
     searchValue: string;
     projects: readonly WorkspaceProject[];
-    branches: ReadonlyMap<string, string>;
-    onWorkspaceIdsChange: (ids: readonly string[]) => void;
+    branches: ReadonlyMap<WorkspaceKey, string>;
+    onWorkspaceKeysChange: (keys: readonly WorkspaceKey[]) => void;
     selectedSessionId: string | null;
     onSearchChange: (event: ChangeEvent<HTMLInputElement>) => void;
     onReopen: (session: Session) => void;
@@ -127,7 +128,7 @@ export function Sidebar({
                       search={history.searchValue}
                       projects={history.projects}
                       branches={history.branches}
-                      onWorkspaceIdsChange={history.onWorkspaceIdsChange}
+                      onWorkspaceKeysChange={history.onWorkspaceKeysChange}
                       selectedSessionId={history.selectedSessionId}
                       onReopen={history.onReopen}
                       onReopenAgent={history.onReopenAgent}

@@ -10,6 +10,10 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalSurface } from "./TerminalSurface";
+import { localWorkspaceKey, type WorkspaceKey } from "../workspace/hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -97,7 +101,7 @@ describe("terminal pane header", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           title="zsh · api"
           observedState={{ type: "live", generation: 1 }}
@@ -113,7 +117,7 @@ describe("terminal pane header", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           observedState={{ type: "live", generation: 1 }}
         />,
@@ -128,7 +132,7 @@ describe("terminal pane header", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           title="Human title"
           observedState={{ type: "live", generation: 1 }}
@@ -156,7 +160,7 @@ describe("terminal pane header", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           observedState={{ type: "live", generation: 1 }}
         />,
@@ -176,7 +180,7 @@ describe("terminal pane header", () => {
     await act(async () => {
       root!.render(
         <TerminalSurface
-          workspaceId="w1"
+          workspaceKey={keyFor("w1")}
           sessionId="session-1"
           observedState={{ type: "silent", generation: 1 }}
         />,

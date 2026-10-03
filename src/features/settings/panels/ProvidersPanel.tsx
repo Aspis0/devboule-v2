@@ -35,7 +35,8 @@ import {
   type ProviderShell,
 } from "../providers/providerTerminalCommands";
 import { SHELL_QUERY_LOADING, fetchTerminalShell } from "../providers/terminalShell";
-import { getLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
+import { getLastSelectedWorkspaceKey } from "../../workspace/lastSelectedWorkspace";
+import { parseWorkspaceKey } from "../../workspace/hosts/hostIdentity";
 import {
   TERMINAL_TAKE_TIMEOUT_MS,
   clearTerminalRun,
@@ -235,7 +236,10 @@ export function ProvidersPanel() {
   // The workspace a terminal handoff opens under: the "+" menu's own rule
   // is that a terminal without one starts in the daemon's directory, so
   // without one this page offers no tab at all (headless install instead).
-  const terminalWorkspaceId = getLastSelectedWorkspaceId();
+  const terminalWorkspaceKey = getLastSelectedWorkspaceKey();
+  // What the daemon is sent for that handoff: the id, never the UI's key.
+  const terminalWorkspaceId =
+    terminalWorkspaceKey === null ? null : parseWorkspaceKey(terminalWorkspaceKey).workspaceId;
   const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
   const providerSwitchSupported = daemon.capabilities.includes(PROVIDER_SWITCHES_CAPABILITY);
   const providerAuthCheckSupported = daemon.capabilities.includes(PROVIDER_AUTH_CHECK_CAPABILITY);

@@ -15,6 +15,7 @@ import { useMenuOpen } from "../../../lib/menuOpen";
 import { validateWorkspaceTitle } from "../../../lib/workspaceTitles";
 import { moveMenuFocus } from "../strip/menuNav";
 import type { WorkspaceView } from "../workspaceProjects";
+import type { WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
 import type { WorkspaceStat } from "./useWorkspaceStats";
 
@@ -55,10 +56,13 @@ function focusSurvivor(target: HTMLElement | null, panel: Element | null): void 
 
 export interface WorkspaceRowProps {
   workspace: WorkspaceView;
+  /** The row's identity in the UI; null only when the daemon's id is blank,
+   * and a row the UI cannot name cannot be selected. */
+  workspaceKey: WorkspaceKey | null;
   projectName: string;
   selected: boolean;
   stat: WorkspaceStat | undefined;
-  onSelect: (workspaceId: string) => void;
+  onSelect: (workspaceKey: WorkspaceKey) => void;
   /** Persists a new title and answers with the refusal, if one came back. */
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
   /** Deletes the workspace and answers with the refusal, if one came back. */
@@ -67,6 +71,7 @@ export interface WorkspaceRowProps {
 
 export function WorkspaceRow({
   workspace,
+  workspaceKey,
   projectName,
   selected,
   stat,
@@ -290,7 +295,9 @@ export function WorkspaceRow({
           type="button"
           ref={rowRef}
           className={`workspace-row${selected ? " workspace-row-selected" : ""}`}
-          onClick={() => onSelect(workspace.id)}
+          onClick={() => {
+            if (workspaceKey !== null) onSelect(workspaceKey);
+          }}
           aria-pressed={selected}
           aria-label={`${workspace.displayTitle}, ${projectName}${dot ?? ""}`}
           title={workspace.path ? workspace.path : undefined}

@@ -16,7 +16,7 @@ vi.mock("../../workspace/workspaceSessions", async (importOriginal) => {
 import { daemonDiagnostics, providerUpdate, providersRefresh } from "../../../lib/tauri";
 import { requestTerminalInput, takeTerminalInput } from "../../terminal/pendingTerminalInput";
 import { recordTerminalRun, terminalRuns } from "../providers/providerTerminalRuns";
-import { setLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
+import { setLastSelectedWorkspaceKey } from "../../workspace/lastSelectedWorkspace";
 import { useAppStore } from "../../../store/appStore";
 import { sessionMocks } from "./providersPanelTestMocks";
 import { installedProvider, installProvidersPanelMockReset } from "./providersPanelTestSetup";
@@ -62,7 +62,7 @@ describe("terminal login and the handoff note", () => {
   });
 
   it("names the open workspace instead of Log in where none is known", async () => {
-    setLastSelectedWorkspaceId(null);
+    setLastSelectedWorkspaceKey(null);
     listOnce([installedProvider({ id: "claude", executable: "claude" })]);
     await renderPanel();
 

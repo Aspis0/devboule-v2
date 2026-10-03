@@ -1,5 +1,6 @@
 import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import type { WorkspaceGitRow } from "../../types/ipc";
+import type { WorkspaceKey } from "./hosts/hostIdentity";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { buildChangesTree, type ChangesTreeFolder, type ChangesTreeNode } from "./changesTree";
 
@@ -31,8 +32,8 @@ interface ChangesTreeViewProps {
   acting: boolean;
   /** Slice 8's hand-off: open the selected file as a diff tab. Absent until
    * then, and the pencil with it — a control with no destination is a lie. */
-  onOpenFile?: (workspaceId: string, path: string) => void;
-  workspaceId: string;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
+  workspaceKey: WorkspaceKey;
 }
 
 /**
@@ -110,7 +111,7 @@ const FileNode = memo(function FileNode({
   onToggleMenu,
   acting,
   onOpenFile,
-  workspaceId,
+  workspaceKey,
 }: {
   path: string;
   name: string;
@@ -124,8 +125,8 @@ const FileNode = memo(function FileNode({
   menuPath: string | null;
   onToggleMenu: (path: string) => void;
   acting: boolean;
-  onOpenFile?: (workspaceId: string, path: string) => void;
-  workspaceId: string;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
+  workspaceKey: WorkspaceKey;
 }) {
   const selected = selection === path;
   return (
@@ -203,7 +204,7 @@ const FileNode = memo(function FileNode({
           className="workspace-changes-pencil"
           aria-label="Open diff in a tab"
           title="Open diff in a tab"
-          onClick={() => onOpenFile(workspaceId, path)}
+          onClick={() => onOpenFile(workspaceKey, path)}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path
@@ -298,7 +299,7 @@ export const ChangesTreeView = memo(function ChangesTreeView({
   onCloseMenu,
   acting,
   onOpenFile,
-  workspaceId,
+  workspaceKey,
 }: ChangesTreeViewProps) {
   useMenuOpen(menuPath !== null, onCloseMenu);
   const nodes = useMemo(() => buildChangesTree(rows, inexact), [rows, inexact]);
@@ -331,7 +332,7 @@ export const ChangesTreeView = memo(function ChangesTreeView({
           onToggleMenu={onToggleMenu}
           acting={acting}
           onOpenFile={onOpenFile}
-          workspaceId={workspaceId}
+          workspaceKey={workspaceKey}
         />
       ) : (
         <FolderNode

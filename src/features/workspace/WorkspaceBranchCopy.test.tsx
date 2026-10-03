@@ -11,6 +11,10 @@ import { SessionTabMenu } from "./strip/SessionTabMenu";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
 import { buildTabCopyEntries, tabCopyValue } from "./strip/tabCopyActions";
 import { composeStripTabs, makeToolTab } from "./strip/toolTabs";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 vi.mock("../../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/tauri")>()),
@@ -76,7 +80,11 @@ function TabProbe() {
 function HeaderProbe() {
   const menu = headerMenu(
     undefined,
-    { workspaceId: session.workspaceId, closeEntries: [], onCloseEntry: () => undefined },
+    {
+      workspaceKey: keyFor(session.workspaceId ?? ""),
+      closeEntries: [],
+      onCloseEntry: () => undefined,
+    },
     session.id,
   );
   return menu ? <PaneHeaderKebab menu={menu} /> : null;
@@ -88,8 +96,8 @@ const item = (label: string) =>
 beforeEach(() => {
   vi.useFakeTimers();
   vi.mocked(workspaceGitStatus).mockReset().mockResolvedValue(status());
-  rememberChangesStatus("own-workspace", null);
-  rememberChangesStatus("active-workspace", status("wrong-active-branch"));
+  rememberChangesStatus(keyFor("own-workspace"), null);
+  rememberChangesStatus(keyFor("active-workspace"), status("wrong-active-branch"));
   writeText.mockReset().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
   host = document.createElement("div");
@@ -167,7 +175,7 @@ describe.each(["tab", "header"])("%s branch copy", (kind) => {
 });
 
 it("never offers a workspace branch on tool tabs", () => {
-  const [tab] = composeStripTabs([], [makeToolTab("file", "own-workspace", "a.ts")]);
+  const [tab] = composeStripTabs([], [makeToolTab("file", keyFor("own-workspace"), "a.ts")]);
   expect(buildTabCopyEntries(tab, "feature/session").map((entry) => entry.key)).not.toContain(
     "copy-branch-name",
   );

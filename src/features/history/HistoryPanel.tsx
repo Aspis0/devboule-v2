@@ -5,6 +5,8 @@ import { ErrorText } from "../../components/ErrorText";
 import type { JournalUsage, Session } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
 import type { WorkspaceProject } from "../workspace/workspaceProjects";
+import { keyOfWorkspace } from "../workspace/workspaceProjects";
+import { localWorkspaceKey, type WorkspaceKey } from "../workspace/hosts/hostIdentity";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
 import { isRunningSessionState } from "../workspace/strip/closePolicy";
@@ -26,19 +28,30 @@ export interface HistoryPanelProps {
   onReopen?: (session: Session) => void;
   onReopenAgent?: (session: Session) => void;
   projects?: readonly WorkspaceProject[];
-  branches?: ReadonlyMap<string, string>;
-  /** Receives the listed rows' workspace ids while mounted, then an empty list. */
-  onWorkspaceIdsChange?: (ids: readonly string[]) => void;
+  branches?: ReadonlyMap<WorkspaceKey, string>;
+  /** Receives the listed rows' workspace keys while mounted, then an empty list. */
+  onWorkspaceKeysChange?: (keys: readonly WorkspaceKey[]) => void;
   selectedSessionId?: string | null;
 }
 
 const EMPTY_SESSIONS: Session[] = [];
 const EMPTY_PROJECTS: readonly WorkspaceProject[] = [];
-const EMPTY_BRANCHES: ReadonlyMap<string, string> = new Map();
-const EMPTY_IDS: readonly string[] = [];
+const EMPTY_BRANCHES: ReadonlyMap<WorkspaceKey, string> = new Map();
+const EMPTY_KEYS: readonly WorkspaceKey[] = [];
 
 /** A hung daemon reply must not blank the panel forever. */
 const ROSTER_WAIT_MS = 5000;
+
+/** The branch a row's workspace is on, or none: a row with no workspace, or
+ * one whose workspace the sidebar never read a branch for, shows nothing. */
+function branchOf(
+  branches: ReadonlyMap<WorkspaceKey, string>,
+  workspaceId: string | null,
+): string | null {
+  if (workspaceId === null) return null;
+  const key = localWorkspaceKey(workspaceId);
+  return key === null ? null : (branches.get(key) ?? null);
+}
 
 type FocusTarget = { deletedId: string; id: string } | { deletedId: string; heading: true } | null;
 
@@ -49,7 +62,7 @@ export function HistoryPanel({
   onReopenAgent,
   projects = EMPTY_PROJECTS,
   branches = EMPTY_BRANCHES,
-  onWorkspaceIdsChange,
+  onWorkspaceKeysChange,
   selectedSessionId = null,
 }: HistoryPanelProps) {
   const loadUsage = useCallback((): Promise<JournalUsage> => journalUsage(), []);
@@ -104,11 +117,14 @@ export function HistoryPanel({
     return () => window.clearInterval(intervalId);
   }, [injectedNow]);
   const now = typeof injectedNow === "number" ? injectedNow : renderNow;
+  // Rows name their workspace by key, so the labels they print come from the
+  // row that owns the key, not from a workspace id two hosts could share.
   const workspaceNames = useMemo(() => {
-    const names = new Map<string, string>();
+    const names = new Map<WorkspaceKey, string>();
     for (const project of projects) {
       for (const workspace of project.workspaces) {
-        names.set(workspace.id, workspace.title);
+        const key = keyOfWorkspace(workspace);
+        if (key !== null) names.set(key, workspace.title);
       }
     }
     return names;
@@ -118,27 +134,30 @@ export function HistoryPanel({
     [roster],
   );
   const rowsBase = useMemo(() => {
-    const projectsByWorkspace = new Map<string, string>();
+    const projectsByWorkspace = new Map<WorkspaceKey, string>();
     for (const project of projects) {
-      for (const workspace of project.workspaces)
-        projectsByWorkspace.set(workspace.id, project.name);
+      for (const workspace of project.workspaces) {
+        const key = keyOfWorkspace(workspace);
+        if (key !== null) projectsByWorkspace.set(key, project.name);
+      }
     }
     const byId = new Map<string, HistoryRow>();
     // A workspace the tree no longer lists is deleted only when every
     // project's list answered; a failed list leaves its roster unknown.
     const everyListAnswered =
       projects.length > 0 && projects.every((project) => project.workspaceError === undefined);
-    const workspaceLabel = (workspaceId: string): string | null =>
-      workspaceNames.get(workspaceId) ?? (everyListAnswered ? "Deleted workspace" : null);
+    const workspaceLabel = (key: WorkspaceKey): string | null =>
+      workspaceNames.get(key) ?? (everyListAnswered ? "Deleted workspace" : null);
     for (const saved of usage?.perSession ?? []) {
       if (!showAll && !isAgentKind(saved.kind)) continue;
       const session = sessionsById.get(saved.id) ?? null;
       if (!showAll && session && !isTopLevelAgent(session)) continue;
       const workspaceId = session?.workspaceId ?? null;
+      const key = workspaceId === null ? null : localWorkspaceKey(workspaceId);
       byId.set(saved.id, {
         ...saved,
-        workspace: workspaceId ? workspaceLabel(workspaceId) : null,
-        project: workspaceId ? (projectsByWorkspace.get(workspaceId) ?? null) : null,
+        workspace: key === null ? null : workspaceLabel(key),
+        project: key === null ? null : (projectsByWorkspace.get(key) ?? null),
         branch: null,
         session,
         updatedAtMs: saved.updatedAtMs,
@@ -150,6 +169,7 @@ export function HistoryPanel({
       if (!showAll && !isTopLevelAgent(session)) continue;
       if (!isOpenRosterState(session.state)) continue;
       const workspaceId = session.workspaceId;
+      const key = workspaceId === null ? null : localWorkspaceKey(workspaceId);
       byId.set(session.id, {
         id: session.id,
         title: session.title,
@@ -157,8 +177,8 @@ export function HistoryPanel({
         kind: session.kind,
         bytes: 0,
         updatedAtMs: session.createdAtMs ?? null,
-        workspace: workspaceId ? workspaceLabel(workspaceId) : null,
-        project: workspaceId ? (projectsByWorkspace.get(workspaceId) ?? null) : null,
+        workspace: key === null ? null : workspaceLabel(key),
+        project: key === null ? null : (projectsByWorkspace.get(key) ?? null),
         branch: null,
         session,
         workspaceId,
@@ -168,22 +188,24 @@ export function HistoryPanel({
     return [...byId.values()];
   }, [projects, roster, sessionsById, showAll, usage, workspaceNames]);
   // Sorted, so a reordered list is not a new read set.
-  const rowWorkspaceIds = useMemo(() => {
-    const ids = new Set<string>();
+  const rowWorkspaceKeys = useMemo(() => {
+    const keys = new Set<WorkspaceKey>();
     for (const row of rowsBase) {
-      if (row.workspaceId) ids.add(row.workspaceId);
+      if (!row.workspaceId) continue;
+      const key = localWorkspaceKey(row.workspaceId);
+      if (key !== null) keys.add(key);
     }
-    return [...ids].sort();
+    return [...keys].sort();
   }, [rowsBase]);
   useEffect(() => {
-    onWorkspaceIdsChange?.(rowWorkspaceIds);
-  }, [onWorkspaceIdsChange, rowWorkspaceIds]);
-  useEffect(() => () => onWorkspaceIdsChange?.(EMPTY_IDS), [onWorkspaceIdsChange]);
+    onWorkspaceKeysChange?.(rowWorkspaceKeys);
+  }, [onWorkspaceKeysChange, rowWorkspaceKeys]);
+  useEffect(() => () => onWorkspaceKeysChange?.(EMPTY_KEYS), [onWorkspaceKeysChange]);
   const freshRows = useMemo(
     () =>
       rowsBase.map((row) => ({
         ...row,
-        branch: row.workspaceId ? (branches.get(row.workspaceId) ?? null) : null,
+        branch: branchOf(branches, row.workspaceId),
       })),
     [branches, rowsBase],
   );

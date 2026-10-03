@@ -1,23 +1,41 @@
 import type { Session } from "../../types/ipc";
+import {
+  LOCAL_HOST_ID,
+  isWorkspaceKey,
+  localWorkspaceKey,
+  type HostId,
+  type WorkspaceKey,
+} from "./hosts/hostIdentity";
 
 // Tab persistence assumes one desktop process per profile; storage has no cross-process merge.
 const STORAGE_KEY = "devboule.openSessionTabs";
+const STORED_VERSION = 2;
 
 interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
 }
 
-interface TabKey {
+/** What a tab's row carried before a tab knew its host. Still written into
+ * every row, so a build that only reads v1 keeps reading its own file. */
+interface TabIdentity {
   id: string;
   workspaceId: string | null;
   createdAtMs: number;
 }
 
+interface StoredTab extends TabIdentity {
+  /** The host whose roster row the tab arrived on; set even when it has no
+   * workspace, which is the only place a tab's host outlives its key. */
+  hostId: HostId;
+  /** Null for an unscoped tab: it belongs to every workspace key on its host. */
+  workspaceKey: WorkspaceKey | null;
+}
+
 interface StoredTabs {
-  version: 1;
-  tabs: TabKey[];
-  selected: TabKey | null;
+  version: 2;
+  tabs: StoredTab[];
+  selected: StoredTab | null;
 }
 
 export function openTabsStorage(): StorageLike | null {
@@ -28,7 +46,7 @@ export function openTabsStorage(): StorageLike | null {
   }
 }
 
-function isTabKey(value: unknown): value is TabKey {
+function isTabIdentity(value: unknown): value is TabIdentity {
   if (typeof value !== "object" || value === null) return false;
   const row = value as Record<string, unknown>;
   return (
@@ -41,6 +59,28 @@ function isTabKey(value: unknown): value is TabKey {
   );
 }
 
+function isStoredTab(value: unknown): value is StoredTab {
+  return (
+    isTabIdentity(value) &&
+    typeof (value as StoredTab).hostId === "string" &&
+    (value as StoredTab).hostId.length > 0 &&
+    ((value as StoredTab).workspaceKey === null ||
+      isWorkspaceKey((value as StoredTab).workspaceKey))
+  );
+}
+
+/** The tab row of the local host: both a v1 file and today's roster could
+ * only have come from it. */
+function localTab(row: TabIdentity): StoredTab {
+  return {
+    id: row.id,
+    hostId: LOCAL_HOST_ID,
+    workspaceId: row.workspaceId,
+    workspaceKey: row.workspaceId === null ? null : localWorkspaceKey(row.workspaceId),
+    createdAtMs: row.createdAtMs,
+  };
+}
+
 function readTabs(storage: StorageLike | null): StoredTabs | null {
   try {
     const raw = storage?.getItem(STORAGE_KEY);
@@ -48,28 +88,37 @@ function readTabs(storage: StorageLike | null): StoredTabs | null {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return null;
     const row = parsed as Record<string, unknown>;
-    if (row.version !== 1 || !Array.isArray(row.tabs) || !row.tabs.every(isTabKey)) return null;
-    if (row.selected !== null && !isTabKey(row.selected)) return null;
-    return { version: 1, tabs: row.tabs, selected: row.selected };
+    // A v1 file is stamped, never refused, and never rewritten here: the first
+    // persist writes v2 on its own.
+    if (row.version === 1 && Array.isArray(row.tabs) && row.tabs.every(isTabIdentity)) {
+      if (row.selected !== null && !isTabIdentity(row.selected)) return null;
+      return {
+        version: STORED_VERSION,
+        tabs: row.tabs.map(localTab),
+        selected: row.selected === null ? null : localTab(row.selected),
+      };
+    }
+    if (row.version !== STORED_VERSION || !Array.isArray(row.tabs)) return null;
+    if (!row.tabs.every(isStoredTab)) return null;
+    if (row.selected !== null && !isStoredTab(row.selected)) return null;
+    return { version: STORED_VERSION, tabs: row.tabs, selected: row.selected };
   } catch {
     return null;
   }
 }
 
-function keyOf(session: Session): TabKey | null {
-  return isTabKey(session)
-    ? { id: session.id, workspaceId: session.workspaceId, createdAtMs: session.createdAtMs! }
-    : null;
+function keyOf(session: Session): StoredTab | null {
+  return isTabIdentity(session) ? localTab(session) : null;
 }
 
-function matches(key: TabKey, session: Session): boolean {
+function matches(key: StoredTab, session: Session): boolean {
   return key.id === session.id && key.createdAtMs === session.createdAtMs;
 }
 
 export function createOpenSessionTabs(storage: StorageLike | null = openTabsStorage()) {
   const stored = readTabs(storage);
   const pending = new Map(stored?.tabs.map((key) => [key.id, key]));
-  const opened = new Map<string, TabKey | null>();
+  const opened = new Map<string, StoredTab | null>();
   const unverifiedIds = new Set<string>();
   let initialized = stored !== null;
   let lastWritten: string | null = null;
@@ -149,7 +198,7 @@ export function createOpenSessionTabs(storage: StorageLike | null = openTabsStor
       const current = roster.find((session) => session.id === selected && opened.has(session.id));
       try {
         const serialized = JSON.stringify({
-          version: 1,
+          version: STORED_VERSION,
           tabs,
           selected: current === undefined ? restoredSelection : (opened.get(current.id) ?? null),
         });

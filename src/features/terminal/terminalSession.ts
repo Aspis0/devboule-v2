@@ -1,4 +1,5 @@
 import { type SessionChannel } from "../../lib/tauri";
+import { parseWorkspaceKey, type WorkspaceKey } from "../workspace/hosts/hostIdentity";
 import { isCommandError } from "../../lib/commandError";
 import { errorSentence } from "../../lib/errorSentence";
 import { eventTypeName } from "../../lib/eventTypeName";
@@ -45,7 +46,7 @@ export type TerminalBanner =
 type PersistentTerminalBanner = Exclude<TerminalBanner, { kind: "silent" } | null>;
 
 export interface TerminalSessionDeps {
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
   /** A Workspace tab may select a listed session instead of adopting by workspace. */
   sessionId?: string | null;
   /**
@@ -159,9 +160,15 @@ export class TerminalSession {
     if (this.disposed || this.started) return;
     this.started = true;
 
+    // The daemon is addressed by the workspace's own id, derived once here:
+    // every path below that names a workspace to the wire uses this.
+    const workspaceId =
+      this.deps.workspaceKey === null
+        ? null
+        : parseWorkspaceKey(this.deps.workspaceKey).workspaceId;
     const requestedSessionId = this.deps.sessionId ?? null;
     const existing =
-      requestedSessionId === null ? this.deps.registry.get(this.deps.workspaceId) : null;
+      requestedSessionId === null ? this.deps.registry.get(this.deps.workspaceKey) : null;
     const adopted = requestedSessionId === null && existing !== null;
     let sessionId = requestedSessionId ?? existing?.sessionId ?? null;
     // Whether THIS call created the session. Adopted, restored, and handed-in
@@ -172,10 +179,10 @@ export class TerminalSession {
     if (sessionId === null) {
       try {
         const listed = await this.deps.invoke<Session[]>("sessions_list");
-        const restorable = pickRestorable(listed, this.deps.workspaceId);
+        const restorable = pickRestorable(listed, workspaceId);
         if (restorable !== null) {
           sessionId = restorable.id;
-          this.deps.registry.register(this.deps.workspaceId, sessionId);
+          this.deps.registry.register(this.deps.workspaceKey, sessionId);
         }
       } catch {
         // Listing is best-effort. Create still works if the journal is down.
@@ -186,7 +193,7 @@ export class TerminalSession {
       let session: Session;
       try {
         session = await this.deps.invoke<Session>("session_create", {
-          workspaceId: this.deps.workspaceId,
+          workspaceId,
           kind: "terminal",
         });
       } catch (error: unknown) {
@@ -199,7 +206,7 @@ export class TerminalSession {
       }
       sessionId = session.id;
       createdHere = true;
-      this.deps.registry.register(this.deps.workspaceId, sessionId);
+      this.deps.registry.register(this.deps.workspaceKey, sessionId);
     }
 
     this.sessionId = sessionId;
@@ -295,7 +302,7 @@ export class TerminalSession {
       this.disposeViewAndChannel();
       if (adopted && isMissingSessionError(attachError) && !this.disposed) {
         this.resetSessionIdentity();
-        this.deps.registry.remove(this.deps.workspaceId, sessionId);
+        this.deps.registry.remove(this.deps.workspaceKey, sessionId);
         this.sessionId = null;
         this.started = false;
         await this.start();
@@ -575,7 +582,7 @@ export class TerminalSession {
       this.deps.onBanner(this.persistentBanner);
     }
     if (this.sessionId !== null) {
-      this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.seq);
+      this.deps.registry.updateCursor(this.deps.workspaceKey, this.sessionId, event.seq);
     }
     this.pendingOutput.push(event);
     if (!this.applyingSnapshot) this.scheduleOutputFlush();
@@ -599,7 +606,7 @@ export class TerminalSession {
     this.snapshotAsOfSeq = snapshot.asOfSeq;
     this.lastSeenSeq = Math.max(this.lastSeenSeq ?? snapshot.asOfSeq, snapshot.asOfSeq);
     if (this.sessionId !== null) {
-      this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, snapshot.asOfSeq);
+      this.deps.registry.updateCursor(this.deps.workspaceKey, this.sessionId, snapshot.asOfSeq);
     }
     this.releaseSnapshotEvents(snapshot.asOfSeq);
   }
@@ -697,7 +704,7 @@ export class TerminalSession {
     this.exited = true;
     this.silenceBannerVisible = false;
     const sessionId = this.sessionId;
-    if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
+    if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceKey, sessionId);
     this.sessionId = null;
     this.subscriptionId = null;
     this.persistentBanner = {
@@ -715,7 +722,7 @@ export class TerminalSession {
     this.exited = true;
     this.silenceBannerVisible = false;
     const sessionId = this.sessionId;
-    if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
+    if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceKey, sessionId);
     this.sessionId = null;
     this.subscriptionId = null;
     this.persistentBanner = { kind: "recovered", integrity };
@@ -857,7 +864,7 @@ export class TerminalSession {
       // view never received a subscription. Removing the registry entry first
       // keeps a later start() from adopting an id that is on its way out.
       this.backendTeardownSent = true;
-      this.deps.registry.remove(this.deps.workspaceId, sessionId);
+      this.deps.registry.remove(this.deps.workspaceKey, sessionId);
       this.invokeTeardown("session_close", { id: sessionId, subscriptionId });
       return;
     }

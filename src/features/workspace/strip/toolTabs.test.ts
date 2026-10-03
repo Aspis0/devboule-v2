@@ -14,6 +14,15 @@ import {
   type ToolTab,
 } from "./toolTabs";
 import type { Session } from "../../../types/ipc";
+import { LOCAL_HOST_ID, workspaceKey, type HostId, type WorkspaceKey } from "../hosts/hostIdentity";
+
+/** A host that owns a workspace with the same id as the local one: no code
+ * path can produce one yet, so the tests name it themselves. */
+const PEER = "peer-7" as HostId;
+
+function at(workspaceId: string, hostId: HostId = LOCAL_HOST_ID): WorkspaceKey {
+  return workspaceKey(hostId, workspaceId)!;
+}
 
 function session(id: string): Session {
   return {
@@ -46,26 +55,31 @@ describe("toolTabId", () => {
     expect(isToolTabId("session-2")).toBe(false);
     expect(isToolTabId("")).toBe(false);
   });
+
+  it("mints the tab id from the workspace alone, so the host never reaches it", () => {
+    expect(makeToolTab("diff", at("ws"), "a.ts").id).toBe("tool:diff:ws:a.ts");
+    expect(makeToolTab("file", at("ws"), "a.ts").id).toBe(toolTabId("file", "ws", "a.ts"));
+  });
 });
 
 describe("openToolTabs", () => {
   it("appends a new tab at the end", () => {
-    const first = makeToolTab("diff", "ws", "a.ts");
+    const first = makeToolTab("diff", at("ws"), "a.ts");
     const tabs = openToolTabs([], first);
     expect(tabs.map((tab) => tab.id)).toEqual([first.id]);
-    const second = makeToolTab("file", "ws", "b.ts");
+    const second = makeToolTab("file", at("ws"), "b.ts");
     expect(openToolTabs(tabs, second).map((tab) => tab.id)).toEqual([first.id, second.id]);
   });
 
   it("opening the same kind, workspace and path again returns the list unchanged", () => {
-    const tabs = [makeToolTab("diff", "ws", "a.ts")];
-    expect(openToolTabs(tabs, makeToolTab("diff", "ws", "a.ts"))).toBe(tabs);
+    const tabs = [makeToolTab("diff", at("ws"), "a.ts")];
+    expect(openToolTabs(tabs, makeToolTab("diff", at("ws"), "a.ts"))).toBe(tabs);
   });
 
   it("the same path in the other kind is a second tab", () => {
     const tabs = openToolTabs(
-      [makeToolTab("diff", "ws", "a.ts")],
-      makeToolTab("file", "ws", "a.ts"),
+      [makeToolTab("diff", at("ws"), "a.ts")],
+      makeToolTab("file", at("ws"), "a.ts"),
     );
     expect(tabs).toHaveLength(2);
   });
@@ -82,7 +96,7 @@ describe("composeStripTabs", () => {
   it("holds sessions first, tool tabs appended", () => {
     const tabs = composeStripTabs(
       [session("s1"), session("s2")],
-      [makeToolTab("diff", "ws", "a.ts")],
+      [makeToolTab("diff", at("ws"), "a.ts")],
     );
     expect(tabs.map((tab) => tab.id)).toEqual(["s1", "s2", "tool:diff:ws:a.ts"]);
     expect(tabs[0].type).toBe("session");
@@ -114,14 +128,20 @@ describe("successorOf", () => {
 
 describe("pruneToolTabsForWorkspaces", () => {
   const tabs: ToolTab[] = [
-    makeToolTab("diff", "ws-1", "a.ts"),
-    makeToolTab("file", "ws-2", "b.ts"),
+    makeToolTab("diff", at("ws-1"), "a.ts"),
+    makeToolTab("file", at("ws-2"), "b.ts"),
   ];
   it("drops only the tabs of workspaces that are gone", () => {
-    expect(pruneToolTabsForWorkspaces(tabs, new Set(["ws-1", "ws-2"]))).toBe(tabs);
-    expect(pruneToolTabsForWorkspaces(tabs, new Set(["ws-1"])).map((tab) => tab.id)).toEqual([
+    expect(pruneToolTabsForWorkspaces(tabs, new Set([at("ws-1"), at("ws-2")]))).toBe(tabs);
+    expect(pruneToolTabsForWorkspaces(tabs, new Set([at("ws-1")])).map((tab) => tab.id)).toEqual([
       tabs[0].id,
     ]);
     expect(pruneToolTabsForWorkspaces(tabs, new Set())).toEqual([]);
+  });
+
+  it("prunes on the whole key, so another host's same workspace id cannot keep a tab", () => {
+    const mine = [makeToolTab("diff", at("ws"), "a.ts")];
+    expect(pruneToolTabsForWorkspaces(mine, new Set([mine[0].workspaceKey]))).toBe(mine);
+    expect(pruneToolTabsForWorkspaces(mine, new Set([workspaceKey(PEER, "ws")!]))).toEqual([]);
   });
 });

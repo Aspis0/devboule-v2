@@ -1,5 +1,6 @@
 import { memo, useMemo, type ReactNode } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
+import type { WorkspaceKey } from "./hosts/hostIdentity";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { isImeComposition } from "../../lib/imeComposition";
 import { ErrorText } from "../../components/ErrorText";
@@ -37,8 +38,8 @@ interface FilesTreeViewProps {
   onDelete: (entry: WorkspaceFileEntry) => void;
   /** Slice 8's hand-off: open a file as a main tab. Absent until that tab
    * kind exists, and the pencil with it. */
-  onOpenFile?: (workspaceId: string, path: string) => void;
-  workspaceId: string;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
+  workspaceKey: WorkspaceKey;
 }
 
 /** The mockup's row geometry: 6px pad plus one 14px step per depth — the
@@ -275,7 +276,7 @@ const FileRow = memo(function FileRow({
   onDuplicate,
   onDelete,
   onOpenFile,
-  workspaceId,
+  workspaceKey,
 }: {
   entry: WorkspaceFileEntry;
   depth: number;
@@ -292,8 +293,8 @@ const FileRow = memo(function FileRow({
   onCommitRename: (entry: WorkspaceFileEntry, value: string) => void;
   onDuplicate: (entry: WorkspaceFileEntry) => void;
   onDelete: (entry: WorkspaceFileEntry) => void;
-  onOpenFile?: (workspaceId: string, path: string) => void;
-  workspaceId: string;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
+  workspaceKey: WorkspaceKey;
 }) {
   const beingRenamed = isRenaming;
   return (
@@ -353,7 +354,7 @@ const FileRow = memo(function FileRow({
           className="workspace-files-pencil"
           aria-label="Open file in a tab"
           title="Open file in a tab"
-          onClick={() => onOpenFile(workspaceId, entry.path)}
+          onClick={() => onOpenFile(workspaceKey, entry.path)}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path
@@ -421,7 +422,7 @@ function FolderGroup({
   onDuplicate,
   onDelete,
   onOpenFile,
-  workspaceId,
+  workspaceKey,
 }: FolderGroupProps): ReactNode {
   const entries = cell?.reply?.entries;
   const sorted = useMemo(() => (entries === undefined ? [] : sortFileEntries(entries)), [entries]);
@@ -518,7 +519,7 @@ function FolderGroup({
                       onDuplicate={onDuplicate}
                       onDelete={onDelete}
                       onOpenFile={onOpenFile}
-                      workspaceId={workspaceId}
+                      workspaceKey={workspaceKey}
                     />
                   </ul>
                 ) : null}
@@ -543,7 +544,7 @@ function FolderGroup({
                 onDuplicate={onDuplicate}
                 onDelete={onDelete}
                 onOpenFile={onOpenFile}
-                workspaceId={workspaceId}
+                workspaceKey={workspaceKey}
               />
             )}
           </li>
@@ -582,7 +583,7 @@ export const FilesTreeView = memo(function FilesTreeView({
   onDuplicate,
   onDelete,
   onOpenFile,
-  workspaceId,
+  workspaceKey,
 }: FilesTreeViewProps) {
   useMenuOpen(menuPath !== null, onCloseMenu);
   return (
@@ -609,7 +610,7 @@ export const FilesTreeView = memo(function FilesTreeView({
         onDuplicate={onDuplicate}
         onDelete={onDelete}
         onOpenFile={onOpenFile}
-        workspaceId={workspaceId}
+        workspaceKey={workspaceKey}
       />
     </ul>
   );

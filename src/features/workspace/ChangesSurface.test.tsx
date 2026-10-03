@@ -20,6 +20,10 @@ vi.mock("../../lib/tauri", () => ({
 
 import { workspaceGitDiff, workspaceGitLog, workspaceGitStatus } from "../../lib/tauri";
 import { ChangesSurface } from "./ChangesSurface";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -130,7 +134,7 @@ describe("ChangesSurface", () => {
   it("holds a loading state until the first status answer arrives", async () => {
     const pending = deferred<WorkspaceGitStatus>();
     vi.mocked(workspaceGitStatus).mockReturnValue(pending.promise);
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Loading changes…");
     expect(container.querySelector(".workspace-file-change")).toBeNull();
@@ -143,7 +147,7 @@ describe("ChangesSurface", () => {
 
   it("labels a folder that is not a repository as its own state, not an error", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply({ isGit: false }));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.textContent).toContain("This workspace folder is not a git repository.");
     expect(container.querySelector('[role="alert"]')).toBeNull();
@@ -151,7 +155,7 @@ describe("ChangesSurface", () => {
   });
 
   it("says the tree is clean and keeps the refresh action there", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     // Anchored on the panel's own words first: the absence assertions below
     // must not be satisfiable by a panel that renders nothing.
@@ -166,7 +170,7 @@ describe("ChangesSurface", () => {
   it("shows the wire's caveat sentence instead of claiming anything about the tree", async () => {
     const caveat = "git status exited with code 128";
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply({ error: caveat }));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(caveat);
     expect(container.textContent).not.toContain("No uncommitted changes");
@@ -189,7 +193,7 @@ describe("ChangesSurface", () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({ branch: null, error: "git status exited with code 128" }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.querySelector(".workspace-changes-branch")?.textContent).toContain(
       "No branch",
@@ -218,7 +222,7 @@ describe("ChangesSurface", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(caveat);
     expect(container.querySelectorAll(".workspace-file-change")).toHaveLength(1);
@@ -251,7 +255,7 @@ describe("ChangesSurface", () => {
         rows,
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.querySelectorAll(".workspace-file-change")).toHaveLength(3);
     expect(
@@ -284,7 +288,7 @@ describe("ChangesSurface", () => {
   it("shows a failed read's own sentence, distinct from 'not a repository'", async () => {
     const failure = "the app did not answer";
     vi.mocked(workspaceGitStatus).mockRejectedValue(new Error(failure));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(failure);
     expect(container.textContent).not.toContain("not a git repository");
@@ -315,7 +319,9 @@ describe("ChangesSurface", () => {
         lines: [{ kind: "add", text: "export const a = 1;" }],
       }),
     );
-    await render(<ChangesSurface workspaceId="workspace-changes-a" canListCommits={true} />);
+    await render(
+      <ChangesSurface workspaceKey={keyFor("workspace-changes-a")} canListCommits={true} />,
+    );
 
     // Anchor: A's list, A's selected row and A's diff are on screen.
     expect(container.textContent).toContain("a.ts");
@@ -327,7 +333,9 @@ describe("ChangesSurface", () => {
 
     // Switch to B, whose answer has not arrived yet.
     await act(async () => {
-      root.render(<ChangesSurface workspaceId="workspace-changes-b" canListCommits={true} />);
+      root.render(
+        <ChangesSurface workspaceKey={keyFor("workspace-changes-b")} canListCommits={true} />,
+      );
     });
     expect(container.textContent).toContain("Loading changes…");
     expect(container.textContent).not.toContain("a.ts");
@@ -355,7 +363,7 @@ describe("ChangesSurface", () => {
         rows: [row({ path: "src/real-change.ts", additions: 14, deletions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     // Anchor: the real reply's file must be on screen first, by its title —
     // the tree shows basenames — so the absence assertions cannot pass on
@@ -396,7 +404,7 @@ describe("ChangesSurface", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const first = container.querySelector<HTMLButtonElement>(".workspace-file-change");
     if (first === null) throw new Error("row did not render");
@@ -435,7 +443,9 @@ describe("ChangesSurface", () => {
         : statusReply(),
     );
     vi.mocked(workspaceGitDiff).mockResolvedValue(diffReply({ path: "a.ts" }));
-    await render(<ChangesSurface workspaceId="workspace-changes-a" canListCommits={true} />);
+    await render(
+      <ChangesSurface workspaceKey={keyFor("workspace-changes-a")} canListCommits={true} />,
+    );
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
     });
@@ -449,10 +459,14 @@ describe("ChangesSurface", () => {
     const pending = deferred<WorkspaceGitFileDiff>();
     vi.mocked(workspaceGitDiff).mockReturnValue(pending.promise);
     await act(async () => {
-      root.render(<ChangesSurface workspaceId="workspace-changes-b" canListCommits={true} />);
+      root.render(
+        <ChangesSurface workspaceKey={keyFor("workspace-changes-b")} canListCommits={true} />,
+      );
     });
     await act(async () => {
-      root.render(<ChangesSurface workspaceId="workspace-changes-a" canListCommits={true} />);
+      root.render(
+        <ChangesSurface workspaceKey={keyFor("workspace-changes-a")} canListCommits={true} />,
+      );
     });
 
     expect(readsOfA()).toBe(2);
@@ -475,7 +489,7 @@ describe("ChangesSurface", () => {
     );
     const pending = deferred<WorkspaceGitFileDiff>();
     vi.mocked(workspaceGitDiff).mockReturnValue(pending.promise);
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const first = container.querySelector<HTMLButtonElement>(".workspace-file-change");
     if (first === null) throw new Error("row did not render");
@@ -499,7 +513,7 @@ describe("ChangesSurface", () => {
     vi.mocked(workspaceGitDiff).mockResolvedValue(
       diffReply({ path: "assets/logo.png", status: "binary" }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
@@ -521,7 +535,7 @@ describe("ChangesSurface", () => {
     vi.mocked(workspaceGitDiff).mockResolvedValue(
       diffReply({ path: "vendor/big.ts", status: "too_large", error: cap }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
@@ -542,7 +556,7 @@ describe("ChangesSurface", () => {
     vi.mocked(workspaceGitDiff).mockResolvedValue(
       diffReply({ path: ".gitignore", status: "error", error: refusal }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-file-change")?.click();
@@ -557,7 +571,7 @@ describe("ChangesSurface", () => {
 
   it("re-reads every 5 seconds while the panel is open", async () => {
     vi.useFakeTimers();
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
     await act(async () => {
@@ -572,7 +586,7 @@ describe("ChangesSurface", () => {
 
   it("stops reading once the panel is unmounted", async () => {
     vi.useFakeTimers();
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     // Dropping the panel from the tree runs the same cleanup as closing it.
     await act(async () => {
       root.render(null);
@@ -585,7 +599,7 @@ describe("ChangesSurface", () => {
   });
 
   it("reads again on the manual refresh button", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
 
     const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
@@ -608,7 +622,7 @@ describe("ChangesSurface", () => {
         rows: [row({ path: "src/real.ts", additions: 14, deletions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={id} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(id)} canListCommits={true} />);
     expect(container.querySelector('.workspace-file-change[title="src/real.ts"]')).not.toBeNull();
 
     vi.mocked(workspaceGitStatus).mockRejectedValue(new Error("the daemon refused this read"));
@@ -625,7 +639,7 @@ describe("ChangesSurface", () => {
   });
 
   it("asks nothing while no workspace is selected and says so", async () => {
-    await render(<ChangesSurface workspaceId={null} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={null} canListCommits={true} />);
 
     expect(vi.mocked(workspaceGitStatus)).not.toHaveBeenCalled();
     expect(container.textContent).toContain("No workspace is selected.");
@@ -634,7 +648,7 @@ describe("ChangesSurface", () => {
   // Fix round R5: with no workspace there is nothing to refresh, so the
   // control is not drawn at all. Kills the mutation that renders it anyway.
   it("offers no refresh control while no workspace is selected", async () => {
-    await render(<ChangesSurface workspaceId={null} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={null} canListCommits={true} />);
 
     // Anchored on the panel's own words, so the absence cannot pass on an
     // empty panel.
@@ -648,7 +662,7 @@ describe("ChangesSurface", () => {
   // poll is no substitute when the reads themselves are what fails.
   it("keeps a refresh control on a refused first read", async () => {
     vi.mocked(workspaceGitStatus).mockRejectedValue(new Error("the daemon is restarting"));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
 
     const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
@@ -662,7 +676,7 @@ describe("ChangesSurface", () => {
   it("keeps a refresh control while the first read is still in flight", async () => {
     const pending = deferred<WorkspaceGitStatus>();
     vi.mocked(workspaceGitStatus).mockReturnValue(pending.promise);
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Loading changes…");
 
     const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
@@ -680,7 +694,7 @@ describe("ChangesSurface", () => {
 
   it("keeps a refresh control when the folder is not a repository", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply({ isGit: false }));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(container.textContent).toContain("This workspace folder is not a git repository.");
 
     const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');
@@ -708,7 +722,7 @@ describe("ChangesSurface", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await act(async () => {
       commitsSegment().click();
@@ -730,7 +744,7 @@ describe("ChangesSurface", () => {
   it("shows a wire refusal as the daemon's sentence, alone", async () => {
     const refusal = "the base branch main is not local and not on origin";
     vi.mocked(workspaceGitLog).mockResolvedValue(logReply({ commits: [], error: refusal }));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await act(async () => {
       commitsSegment().click();
@@ -746,7 +760,7 @@ describe("ChangesSurface", () => {
     vi.mocked(workspaceGitLog).mockResolvedValue(
       logReply({ commits: [commitEntry({ shortSha: "b2c3d4e", isOnBase: true })] }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await act(async () => {
       commitsSegment().click();
@@ -761,7 +775,7 @@ describe("ChangesSurface", () => {
   it("shows a cut-short list beside the sentence that cut it", async () => {
     const cut = "git log produced more than the reply cap; the oldest commits are missing";
     vi.mocked(workspaceGitLog).mockResolvedValue(logReply({ error: cut }));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await act(async () => {
       commitsSegment().click();
@@ -773,7 +787,7 @@ describe("ChangesSurface", () => {
 
   it("shows a refused history read as the daemon's sentence", async () => {
     vi.mocked(workspaceGitLog).mockRejectedValue(new Error("the folder is not a repository"));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await act(async () => {
       commitsSegment().click();
@@ -789,7 +803,7 @@ describe("ChangesSurface", () => {
   // present. A daemon that cannot list history leaves the switch with
   // one segment — and a hidden segment reads nothing.
   it("hides the Commits segment when the daemon cannot list history", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={false} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={false} />);
 
     expect(() => commitsSegment()).toThrow();
     expect(container.textContent).not.toContain("Commits");
@@ -802,7 +816,7 @@ describe("ChangesSurface", () => {
   // read stops with it.
   it("stops the history poll when the folder ceases to be a repository", async () => {
     vi.useFakeTimers();
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     await act(async () => {
       commitsSegment().click();
     });
@@ -826,7 +840,7 @@ describe("ChangesSurface", () => {
   });
 
   it("refreshes the history beside the status on the panel's refresh button", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
 
     const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]');

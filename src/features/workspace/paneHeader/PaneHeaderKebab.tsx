@@ -9,7 +9,7 @@ import { useCopyFeedback } from "../../../lib/useCopyFeedback";
 
 export function PaneHeaderKebab({ menu: baseMenu }: { menu: PaneHeaderMenu }) {
   const [open, setOpen] = useState(false);
-  const branch = useMenuBranch(baseMenu.workspaceId ?? null, open);
+  const branch = useMenuBranch(baseMenu.workspaceKey ?? null, open);
   const menu: PaneHeaderMenu = { ...baseMenu, copyBranchName: branch };
   const feedback = useCopyFeedback({ resetAfterMs: 1500, clearOnCopy: true });
   useMenuOpen(open, closeToKebab);

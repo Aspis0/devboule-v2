@@ -8,11 +8,13 @@
 // restart. Nothing is persisted, so a restart restores exactly what the one
 // persisted selection restores.
 
-const shown = new Map<string, string | null>();
+import type { WorkspaceKey } from "./hosts/hostIdentity";
+
+const shown = new Map<WorkspaceKey, string | null>();
 
 /** What a workspace was last showing. `null` is its empty state, which is
  * not the same as "never met" — see activeTabFor. */
-export function rememberActiveTab(key: string, tabId: string | null): void {
+export function rememberActiveTab(key: WorkspaceKey, tabId: string | null): void {
   // The reader that writes this also re-runs on every roster push, and a
   // value that did not change must leave the map alone.
   if (shown.get(key) === tabId) return;
@@ -24,7 +26,7 @@ export function rememberActiveTab(key: string, tabId: string | null): void {
  * strip no longer holds — takes the caller's fallback, so a workspace this
  * store has never met behaves exactly as it did without it. */
 export function activeTabFor(
-  key: string,
+  key: WorkspaceKey,
   liveTabIds: ReadonlySet<string>,
   fallbackId: string | null,
 ): string | null {
@@ -45,9 +47,9 @@ export function forgetTab(tabId: string): void {
 }
 
 /** A workspace the project list no longer holds has nothing to restore into. */
-export function pruneTabMemory(knownWorkspaceIds: ReadonlySet<string>): void {
+export function pruneTabMemory(knownWorkspaceKeys: ReadonlySet<WorkspaceKey>): void {
   for (const key of shown.keys()) {
-    if (!knownWorkspaceIds.has(key)) shown.delete(key);
+    if (!knownWorkspaceKeys.has(key)) shown.delete(key);
   }
 }
 

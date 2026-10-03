@@ -1,5 +1,6 @@
 // Tab closes remove membership locally; pane Close and Delete apply session lifecycle policy.
 import { useMenuBranch } from "../useMenuBranch";
+import { localWorkspaceKey } from "../hosts/hostIdentity";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionsForSelection, sessionsForTabAction } from "./bulkCloseSessions";
@@ -197,10 +198,11 @@ export function useTabCloseFlow({
   const openMenuState = menuIsValid(menuState, selection, tabs) ? menuState : null;
   const anchorTab =
     openMenuState === null ? undefined : tabs.find((tab) => tab.id === openMenuState.anchorId);
+  const anchorWorkspaceId = anchorTab?.type === "session" ? anchorTab.session.workspaceId : null;
   const branch = useMenuBranch(
-    anchorTab?.type === "session" && !openMenuState?.viaSelection
-      ? anchorTab.session.workspaceId
-      : null,
+    anchorWorkspaceId === null || openMenuState?.viaSelection
+      ? null
+      : localWorkspaceKey(anchorWorkspaceId),
     openMenuState !== null && !openMenuState.viaSelection,
   );
   // Selection menus act on the whole selection; copies name a single anchor.

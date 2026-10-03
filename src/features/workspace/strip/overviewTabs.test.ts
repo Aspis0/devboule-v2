@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { Session } from "../../../types/ipc";
 import { composeOverviewGroups } from "./overviewTabs";
 import { composeStripTabs, makeToolTab } from "./toolTabs";
+import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 function session(id: string, overrides: Partial<Session> = {}): Session {
   return {
@@ -28,7 +32,7 @@ const recovered = (id: string, overrides: Partial<Session> = {}) =>
 
 describe("composeOverviewGroups", () => {
   it("puts approval requests first, then every open tab in strip order, then the rest", () => {
-    const file = makeToolTab("file", "workspace-1", "notes/todo.md");
+    const file = makeToolTab("file", keyFor("workspace-1"), "notes/todo.md");
     const tabs = composeStripTabs([session("a"), session("b")], [file]);
     const sessions = [
       session("a", { elapsedMs: 60_000 }),

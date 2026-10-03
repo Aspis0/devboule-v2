@@ -33,6 +33,10 @@ import {
   workspaceFilesList,
 } from "../../lib/tauri";
 import { FilesSurface } from "./FilesSurface";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -204,7 +208,7 @@ describe("FilesFileActions", () => {
     container.querySelector('[role="alert"]')?.textContent ?? null;
 
   it("renames a row inline: no confirmation, the wire called once, the parent re-read", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     expect(vi.mocked(workspaceFilesList).mock.calls).toEqual([[WORKSPACE, ""]]);
 
     await openMenu("README.md");
@@ -235,7 +239,7 @@ describe("FilesFileActions", () => {
       rootEntries = [...rootEntries, entry("README copy.md", "file", 12)];
       return { newPath: "README copy.md", error: null };
     });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Duplicate");
@@ -255,7 +259,7 @@ describe("FilesFileActions", () => {
   it("shows a refusal's own sentence under the toolbar and refreshes the tree anyway", async () => {
     const refusal = "an entry with that new name already exists";
     vi.mocked(workspaceFileRename).mockResolvedValue({ newPath: null, error: refusal });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const reads = vi.mocked(workspaceFilesList).mock.calls.length;
 
     await openMenu("README.md");
@@ -276,7 +280,7 @@ describe("FilesFileActions", () => {
 
   it("shows a transport failure the same way, without losing the edit", async () => {
     vi.mocked(workspaceFileRename).mockRejectedValue(new Error("the daemon did not answer"));
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Rename");
@@ -290,7 +294,7 @@ describe("FilesFileActions", () => {
   });
 
   it("abandons the rename on Escape without touching the wire", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Rename");
@@ -305,7 +309,7 @@ describe("FilesFileActions", () => {
   // Enter and Escape during an IME composition belong to the candidate list:
   // neither may reach the rename, and the typed name stays untouched.
   it("leaves Enter and Escape to an open IME composition", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Rename");
@@ -342,7 +346,7 @@ describe("FilesFileActions", () => {
       );
       return { newPath: name, error: null };
     });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     const srcRow = container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src"]');
     if (srcRow === null) throw new Error("the src row did not render");
@@ -383,7 +387,7 @@ describe("FilesFileActions", () => {
       );
       return { newPath: name, error: null };
     });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     const fileRow = container.querySelector<HTMLButtonElement>(
       '.workspace-tree-file[title="README.md"]',
@@ -413,7 +417,7 @@ describe("FilesFileActions", () => {
   // re-read, because nothing happened to re-read. Kills the mutation that
   // drops the confirmation gate from `deleteEntry`.
   it("asks through our dialog, and a No stops everything before the wire", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Delete");
@@ -437,7 +441,7 @@ describe("FilesFileActions", () => {
 
   // Escape and the scrim decline the same way: no wire, no re-read.
   it("Escape and the scrim decline the delete", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Delete");
@@ -458,7 +462,7 @@ describe("FilesFileActions", () => {
   // Unmounting with the ask standing (a workspace or panel switch remounts
   // the host) declines it: no wire, and the modal token goes with the dialog.
   it("unmounting with the ask standing declines it and leaks no modal", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Delete");
@@ -476,7 +480,7 @@ describe("FilesFileActions", () => {
   // menu trigger the menu opened from — the dialog stays mounted and
   // closes through its `open` prop, so its own trigger return runs.
   it("Cancel hands focus back to the row's menu trigger", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const trigger = container.querySelector<HTMLButtonElement>(
       '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
     );
@@ -498,7 +502,7 @@ describe("FilesFileActions", () => {
   // it; the item dies with the menu, so without the trigger's pre-focus
   // the dialog would capture a gone element and strand focus on <body>.
   it("returns focus to the trigger even when the menu item held focus at the ask", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const trigger = container.querySelector<HTMLButtonElement>(
       '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
     );
@@ -528,7 +532,7 @@ describe("FilesFileActions", () => {
       rootEntries = rootEntries.filter((item) => item.path !== "README.md");
       return { newPath: null, error: null };
     });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const trigger = container.querySelector<HTMLButtonElement>(
       '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
     );
@@ -572,7 +576,7 @@ describe("FilesFileActions", () => {
           resolveWire = resolve;
         }),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const trigger = container.querySelector<HTMLButtonElement>(
       '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
     );
@@ -615,7 +619,7 @@ describe("FilesFileActions", () => {
   // No ask at all: a refresh that takes the focused row still lands on
   // the panel — the rescue answers every rows change, not just an act's.
   it("a refresh that takes the focused row lands on the panel with no ask behind it", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const trigger = container.querySelector<HTMLButtonElement>(
       '.workspace-tree-menu-trigger[aria-label="README.md actions"]',
     );
@@ -641,7 +645,7 @@ describe("FilesFileActions", () => {
   // The rescue answers only for a focus the removal stranded: a row that
   // leaves while focus sits on an outside control moves nothing.
   it("moves no focus when the row leaves while focus is outside the panel", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const elsewhere = document.createElement("button");
     elsewhere.textContent = "elsewhere";
     document.body.appendChild(elsewhere);
@@ -687,7 +691,7 @@ describe("FilesFileActions", () => {
           resolveWire = resolve;
         }),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src"]')!.click();
     });
@@ -734,7 +738,7 @@ describe("FilesFileActions", () => {
       rootEntries = rootEntries.filter((item) => item.path !== "README.md");
       return { newPath: null, error: null };
     });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const fileRow = container.querySelector<HTMLButtonElement>(
       '.workspace-tree-file[title="README.md"]',
     );
@@ -766,7 +770,7 @@ describe("FilesFileActions", () => {
       rootEntries = rootEntries.filter((item) => !item.path.startsWith(`${path}/`));
       return { newPath: null, error: null };
     });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const srcRow = container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src"]');
     if (srcRow === null) throw new Error("the src row did not render");
     await act(async () => {
@@ -795,7 +799,7 @@ describe("FilesFileActions", () => {
   // for — a folder deletion takes everything inside it, and the text the
   // user confirms must say so, not just "this entry".
   it("names the entry in the confirmation, differently for a file and a folder", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Delete");
@@ -829,7 +833,7 @@ describe("FilesFileActions", () => {
       if (path === "lib") return Promise.resolve(listing([entry("lib/index.ts", "file", 6)]));
       return Promise.resolve(listing([]));
     });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src"]')!.click();
     });
@@ -849,7 +853,7 @@ describe("FilesFileActions", () => {
   it("shows a delete refusal under the toolbar and refreshes the tree anyway", async () => {
     const refusal = "the workspace's own folder cannot be renamed, duplicated or deleted";
     vi.mocked(workspaceFileDelete).mockResolvedValue({ newPath: null, error: refusal });
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     const reads = vi.mocked(workspaceFilesList).mock.calls.length;
 
     await openMenu("README.md");
@@ -862,7 +866,7 @@ describe("FilesFileActions", () => {
 
   it("shows a transport failure after a confirmed delete the same way", async () => {
     vi.mocked(workspaceFileDelete).mockRejectedValue(new Error("the daemon did not answer"));
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await openMenu("README.md");
     await menuItem("Delete");

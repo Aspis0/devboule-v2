@@ -1,10 +1,11 @@
 import type { TabMenuEntry } from "../strip/tabCloseMenu";
 import { displayPath } from "../../../lib/displayPath";
+import type { WorkspaceKey } from "../hosts/hostIdentity";
 
 /** Do not add a file named PaneHeaderMenu.* beside this one: on a
  * case-insensitive filesystem it collides with this module (TS1149). */
 export interface HeaderMenuSeam {
-  workspaceId?: string | null;
+  workspaceKey?: WorkspaceKey | null;
   closeEntries: TabMenuEntry[];
   onCloseEntry: (key: TabMenuEntry["key"]) => void;
   /** Opens the rename dialog for this header's session. Absent when the
@@ -14,7 +15,7 @@ export interface HeaderMenuSeam {
 }
 
 export interface PaneHeaderMenu {
-  workspaceId?: string | null;
+  workspaceKey?: WorkspaceKey | null;
   copyBranchName?: string | null;
   copySessionId: string | null;
   copyPath: string | null;
@@ -64,7 +65,7 @@ export function headerMenu(
   if (copySessionId === null && copyPath === null && closeEntries.length === 0 && onRename === null)
     return null;
   return {
-    workspaceId: seam?.workspaceId ?? null,
+    workspaceKey: seam?.workspaceKey ?? null,
     copyBranchName: null,
     copySessionId,
     copyPath,

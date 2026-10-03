@@ -153,7 +153,7 @@ import { sharedSessionController, resetSharedSessionControllerForTests } from ".
 import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedCloseActionsForTests } from "./strip/closeActions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
-import { setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
+import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe } from "./queueSenderDouble";
 
@@ -333,7 +333,7 @@ async function answerCard(): Promise<void> {
 beforeEach(() => {
   resetSharedSessionControllerForTests();
   resetTabMemoryForTests();
-  setLastSelectedWorkspaceId(null);
+  setLastSelectedWorkspaceKey(null);
   vi.useFakeTimers();
   resetSharedCloseActionsForTests();
   resetSharedSessionQueueOwnerForTests();

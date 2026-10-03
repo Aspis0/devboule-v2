@@ -2,6 +2,7 @@ import { rememberChangesStatus } from "./changesStatusCache";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import type { WorkspaceGitFileDiff, WorkspaceGitStatus } from "../../types/ipc";
 
 /**
@@ -26,16 +27,16 @@ export interface ChangesReply<T> {
  * under another's name.
  */
 interface StatusCell extends ChangesReply<WorkspaceGitStatus> {
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
 }
 
 interface DiffCell extends ChangesReply<WorkspaceGitFileDiff> {
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
   path: string | null;
 }
 
 interface Selection {
-  workspaceId: string;
+  workspaceKey: WorkspaceKey;
   path: string;
 }
 
@@ -57,14 +58,14 @@ export interface WorkspaceChanges {
  * it (or switching the panel away) stops them, and nothing here writes to the
  * checkout: every command it calls is a read.
  */
-export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChanges {
+export function useWorkspaceChanges(workspaceKey: WorkspaceKey | null): WorkspaceChanges {
   const [statusCell, setStatusCell] = useState<StatusCell>(() => ({
-    workspaceId,
+    workspaceKey,
     reply: null,
     failure: null,
   }));
   const [diffCell, setDiffCell] = useState<DiffCell>(() => ({
-    workspaceId,
+    workspaceKey,
     path: null,
     reply: null,
     failure: null,
@@ -76,16 +77,18 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
   const diffGeneration = useRef(0);
 
   const readStatus = useCallback(async (): Promise<void> => {
-    if (workspaceId === null) return;
+    if (workspaceKey === null) return;
+    // The daemon is addressed by id; the panel and its caches by key.
+    const workspaceId = parseWorkspaceKey(workspaceKey).workspaceId;
     const generation = ++statusGeneration.current;
     try {
       const reply = await workspaceGitStatus(workspaceId);
       if (generation !== statusGeneration.current) return;
-      rememberChangesStatus(workspaceId, reply);
-      setStatusCell({ workspaceId, reply, failure: null });
+      rememberChangesStatus(workspaceKey, reply);
+      setStatusCell({ workspaceKey, reply, failure: null });
     } catch (cause: unknown) {
       if (generation !== statusGeneration.current) return;
-      rememberChangesStatus(workspaceId, null);
+      rememberChangesStatus(workspaceKey, null);
       const message = errorSentence(cause);
       // A refusal is not a reading, so the badge is deliberately NOT touched
       // here: it keeps the last value actually read, and the panel shows this
@@ -94,34 +97,35 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
       // list the panel knows for one read that did not answer would hide the
       // state the user was just looking at.
       setStatusCell((current) => ({
-        workspaceId,
-        reply: current.workspaceId === workspaceId ? current.reply : null,
+        workspaceKey,
+        reply: current.workspaceKey === workspaceKey ? current.reply : null,
         failure: message,
       }));
     }
-  }, [workspaceId]);
+  }, [workspaceKey]);
 
   const readDiff = useCallback(
     async (path: string): Promise<void> => {
-      if (workspaceId === null) return;
+      if (workspaceKey === null) return;
+      const workspaceId = parseWorkspaceKey(workspaceKey).workspaceId;
       const generation = ++diffGeneration.current;
       try {
         const reply = await workspaceGitDiff(workspaceId, path);
         if (generation !== diffGeneration.current) return;
-        setDiffCell({ workspaceId, path, reply, failure: null });
+        setDiffCell({ workspaceKey, path, reply, failure: null });
       } catch (cause: unknown) {
         if (generation !== diffGeneration.current) return;
         const message = errorSentence(cause);
         setDiffCell((current) => ({
-          workspaceId,
+          workspaceKey,
           path,
           reply:
-            current.workspaceId === workspaceId && current.path === path ? current.reply : null,
+            current.workspaceKey === workspaceKey && current.path === path ? current.reply : null,
           failure: message,
         }));
       }
     },
-    [workspaceId],
+    [workspaceKey],
   );
 
   // Stays useCallback-wrapped on exactly these deps: the writer hook's
@@ -134,13 +138,13 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
   const refresh = useCallback((): void => {
     void readStatus();
     const path =
-      selection !== null && selection.workspaceId === workspaceId ? selection.path : null;
+      selection !== null && selection.workspaceKey === workspaceKey ? selection.path : null;
     if (path !== null) void readDiff(path);
-  }, [readDiff, readStatus, selection, workspaceId]);
+  }, [readDiff, readStatus, selection, workspaceKey]);
 
   const select = useCallback(
     (path: string): void => {
-      if (workspaceId === null) return;
+      if (workspaceKey === null) return;
       // Selecting is state only — the effect below owns the request for the
       // current selection, so a click and an activation can never both start
       // one. A new path starts with no answer: the previous file's diff must
@@ -148,21 +152,21 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
       // (Object.is-equal state → no re-render → no new read): re-reading a
       // file is Refresh's or the poll's job, not a second click's.
       setSelection((current) =>
-        current !== null && current.workspaceId === workspaceId && current.path === path
+        current !== null && current.workspaceKey === workspaceKey && current.path === path
           ? current
-          : { workspaceId, path },
+          : { workspaceKey, path },
       );
       setDiffCell((current) =>
-        current.workspaceId === workspaceId && current.path === path
+        current.workspaceKey === workspaceKey && current.path === path
           ? current
-          : { workspaceId, path, reply: null, failure: null },
+          : { workspaceKey, path, reply: null, failure: null },
       );
     },
-    [workspaceId],
+    [workspaceKey],
   );
 
   useEffect(() => {
-    if (workspaceId === null) return;
+    if (workspaceKey === null) return;
     const tick = () => {
       void readStatus();
     };
@@ -172,10 +176,10 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
       statusGeneration.current += 1;
       window.clearInterval(timer);
     };
-  }, [readStatus, workspaceId]);
+  }, [readStatus, workspaceKey]);
 
   const selectionPath =
-    selection !== null && selection.workspaceId === workspaceId ? selection.path : null;
+    selection !== null && selection.workspaceKey === workspaceKey ? selection.path : null;
 
   // The selected file rides the same cadence, with no loading state of its own
   // on a poll: the lines already on screen stay until the newer ones arrive.
@@ -195,11 +199,11 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
   }, [readDiff, selectionPath]);
 
   const status: ChangesReply<WorkspaceGitStatus> =
-    statusCell.workspaceId === workspaceId
+    statusCell.workspaceKey === workspaceKey
       ? { reply: statusCell.reply, failure: statusCell.failure }
       : { reply: null, failure: null };
   const diff: ChangesReply<WorkspaceGitFileDiff> =
-    diffCell.workspaceId === workspaceId &&
+    diffCell.workspaceKey === workspaceKey &&
     selectionPath !== null &&
     diffCell.path === selectionPath
       ? { reply: diffCell.reply, failure: diffCell.failure }

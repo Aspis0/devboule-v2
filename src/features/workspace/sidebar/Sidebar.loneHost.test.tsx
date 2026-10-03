@@ -7,6 +7,7 @@ import { daemonStatus, devicesList, workspaceGitStatus } from "../../../lib/taur
 import type { DaemonStatus, DevicesReply, Project } from "../../../types/ipc";
 import type { WorkspaceView } from "../workspaceProjects";
 import { Sidebar, type SidebarProps } from "./Sidebar";
+import { LOCAL_HOST_ID } from "../hosts/hostIdentity";
 
 vi.mock("../../../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/tauri")>()),
@@ -36,6 +37,7 @@ const WORKSPACES: readonly WorkspaceView[] = [
     id: "workspace-one",
     projectId: PROJECT.id,
     title: "shell one",
+    hostId: LOCAL_HOST_ID,
     isolation: "local",
     path: "C:/code/alpha",
     displayTitle: "shell one",
@@ -46,6 +48,7 @@ const WORKSPACES: readonly WorkspaceView[] = [
     id: "workspace-two",
     projectId: PROJECT.id,
     title: "shell two",
+    hostId: LOCAL_HOST_ID,
     isolation: "local",
     path: "C:/code/alpha",
     displayTitle: "shell two",
@@ -87,7 +90,7 @@ function sidebarProps(): SidebarProps {
       searchValue: "",
       projects: [],
       branches: new Map(),
-      onWorkspaceIdsChange: vi.fn(),
+      onWorkspaceKeysChange: vi.fn(),
       selectedSessionId: null,
       onSearchChange: vi.fn(),
       onReopen: vi.fn(),
@@ -98,7 +101,7 @@ function sidebarProps(): SidebarProps {
     onAddProject: vi.fn(),
     addProjectRef: { current: null },
     tree: {
-      projects: [{ ...PROJECT, workspaces: [...WORKSPACES] }],
+      projects: [{ ...PROJECT, hostId: LOCAL_HOST_ID, workspaces: [...WORKSPACES] }],
       loading: false,
       error: null,
       providerError: null,

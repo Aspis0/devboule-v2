@@ -16,7 +16,7 @@ vi.mock("../../workspace/workspaceSessions", async (importOriginal) => {
 import { daemonDiagnostics, providerUpdate, providersList } from "../../../lib/tauri";
 import { takeTerminalInput } from "../../terminal/pendingTerminalInput";
 import { terminalRuns } from "../providers/providerTerminalRuns";
-import { setLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
+import { setLastSelectedWorkspaceKey } from "../../workspace/lastSelectedWorkspace";
 import { useAppStore } from "../../../store/appStore";
 import type { Session } from "../../../types/ipc";
 import { sessionMocks } from "./providersPanelTestMocks";
@@ -199,7 +199,7 @@ describe("terminal install", () => {
   });
 
   it("installs headlessly when no workspace is open, with no login step", async () => {
-    setLastSelectedWorkspaceId(null);
+    setLastSelectedWorkspaceKey(null);
     listOnce([available()]);
     await renderPanel();
     await openInstall();

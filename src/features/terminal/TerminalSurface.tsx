@@ -14,6 +14,7 @@ import { terminalSessionRegistry } from "./terminalRegistry";
 import { PaneHeader } from "../workspace/paneHeader/PaneHeader";
 import { headerDisplay } from "../workspace/paneHeader/paneHeaderStatus";
 import { headerMenu, type HeaderMenuSeam } from "../workspace/paneHeader/paneHeaderMenu";
+import type { WorkspaceKey } from "../workspace/hosts/hostIdentity";
 
 // How long the Ctrl+C chip wears the failure label before it goes back to
 // itself — the same beat MessageCopyButton's copy chip uses.
@@ -24,7 +25,7 @@ const COPY_FAILED_LABEL_MS = 1500;
 const BANNER_DETAIL_ID = "terminal-banner-detail";
 
 interface TerminalSurfaceProps {
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
   sessionId: string;
   observedState?: SessionState | null;
   cwd?: string;
@@ -134,7 +135,7 @@ function focusIfIdle(host: HTMLElement): void {
 }
 
 export const TerminalSurface = memo(function TerminalSurface({
-  workspaceId,
+  workspaceKey,
   sessionId,
   observedState,
   cwd,
@@ -223,7 +224,7 @@ export const TerminalSurface = memo(function TerminalSurface({
     setCopyFailed(false);
 
     const session = new TerminalSession({
-      workspaceId,
+      workspaceKey,
       sessionId,
       sessionRecovered: sessionRecoveredRef.current,
       host,
@@ -283,7 +284,7 @@ export const TerminalSurface = memo(function TerminalSurface({
       session.dispose();
     };
   }, [
-    workspaceId,
+    workspaceKey,
     sessionId,
     onExited,
     onPermissionRequest,
@@ -301,7 +302,7 @@ export const TerminalSurface = memo(function TerminalSurface({
     const observer = new ResizeObserver(() => sessionRef.current?.requestResize());
     observer.observe(host);
     return () => observer.disconnect();
-  }, [workspaceId, sessionId]);
+  }, [workspaceKey, sessionId]);
 
   const message = bannerText(banner);
   // The ended banner is this failure's ONE surface: its sentence (with the

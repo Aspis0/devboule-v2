@@ -8,6 +8,8 @@ import type { WorkspaceGitFileDiff } from "../../types/ipc";
 import { CHANGES_POLL_MS, type ChangesReply } from "./useWorkspaceChanges";
 import { DiffTab } from "./DiffTab";
 import { toolContentKey } from "./toolContentCache";
+import type { WorkspaceKey } from "./hosts/hostIdentity";
+import { parseWorkspaceKey } from "./hosts/hostIdentity";
 
 /** Structural equality: same status, counts, flags, lines and sentence. */
 function sameFileDiff(a: WorkspaceGitFileDiff, b: WorkspaceGitFileDiff): boolean {
@@ -28,19 +30,21 @@ function sameFileDiff(a: WorkspaceGitFileDiff, b: WorkspaceGitFileDiff): boolean
 }
 
 export function ToolDiffPane({
-  workspaceId,
+  workspaceKey,
   path,
   refreshNonce,
   cache,
 }: {
-  workspaceId: string;
+  workspaceKey: WorkspaceKey;
   path: string;
   /** Bumped when the already-active tab is clicked again: re-reads. */
   refreshNonce: number;
   /** The last landed reads, owned by Workspace: the seed while re-reading. */
   cache: Map<string, ChangesReply<WorkspaceGitFileDiff>>;
 }) {
-  const cacheKey = toolContentKey(workspaceId, path);
+  // What the daemon is addressed by, read off the tab's own key.
+  const workspaceId = parseWorkspaceKey(workspaceKey).workspaceId;
+  const cacheKey = toolContentKey(workspaceKey, path);
   const seed = cache.get(cacheKey) ?? { reply: null, failure: null };
   const [diff, setDiff] = useState<ChangesReply<WorkspaceGitFileDiff>>(seed);
   const landedReply = useRef<WorkspaceGitFileDiff | null>(seed.reply);

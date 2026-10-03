@@ -36,6 +36,10 @@ vi.mock("../terminal/createTerminalView", () => ({
 import { AgentChatSurface, goalCommandsFor, withGoalCommand } from "./AgentChatSurface";
 import { RECOVERED } from "./queueTestKit";
 import { TerminalSurface } from "../terminal/TerminalSurface";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -214,7 +218,7 @@ describe("the /goal entry and terminals", () => {
   it("renders no composer and no slash menu on a terminal", async () => {
     root = createRoot(container);
     await act(async () => {
-      root?.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+      root?.render(<TerminalSurface workspaceKey={keyFor("w1")} sessionId="session-1" />);
     });
     await act(async () => undefined);
 

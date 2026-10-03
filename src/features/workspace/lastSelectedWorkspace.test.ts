@@ -1,17 +1,18 @@
 // The last-selected workspace cell: written on change, never cleared on
 // unmount, read by surfaces Workspace never mounts alongside.
 import { describe, expect, it } from "vitest";
-import { getLastSelectedWorkspaceId, setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
+import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
+import { localWorkspaceKey } from "./hosts/hostIdentity";
 
 describe("lastSelectedWorkspace", () => {
   it("starts with no workspace and remembers the last selection", () => {
-    setLastSelectedWorkspaceId(null);
-    expect(getLastSelectedWorkspaceId()).toBeNull();
-    setLastSelectedWorkspaceId("w1");
-    expect(getLastSelectedWorkspaceId()).toBe("w1");
-    setLastSelectedWorkspaceId("w2");
-    expect(getLastSelectedWorkspaceId()).toBe("w2");
-    setLastSelectedWorkspaceId(null);
-    expect(getLastSelectedWorkspaceId()).toBeNull();
+    setLastSelectedWorkspaceKey(null);
+    expect(getLastSelectedWorkspaceKey()).toBeNull();
+    setLastSelectedWorkspaceKey(localWorkspaceKey("w1")!);
+    expect(getLastSelectedWorkspaceKey()).toBe("local:w1");
+    setLastSelectedWorkspaceKey(localWorkspaceKey("w2")!);
+    expect(getLastSelectedWorkspaceKey()).toBe("local:w2");
+    setLastSelectedWorkspaceKey(null);
+    expect(getLastSelectedWorkspaceKey()).toBeNull();
   });
 });

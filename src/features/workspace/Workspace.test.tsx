@@ -104,14 +104,23 @@ vi.mock("../../lib/tauri", () => ({
 vi.mock("../terminal/TerminalSurface", () => ({
   TerminalSurface: ({
     sessionId,
-    workspaceId,
+    workspaceKey,
     cwd,
   }: {
     sessionId: string;
-    workspaceId?: string | null;
+    workspaceKey?: WorkspaceKey | null;
     cwd?: string;
   }) => (
-    <div data-testid="terminal-surface" data-workspace-id={workspaceId ?? "null"}>
+    <div
+      data-testid="terminal-surface"
+      // The pane is addressed by the daemon's id even though the surface is
+      // handed the UI's key.
+      data-workspace-id={
+        workspaceKey === null || workspaceKey === undefined
+          ? "null"
+          : parseWorkspaceKey(workspaceKey).workspaceId
+      }
+    >
       {sessionId}
       {cwd ? `cwd:${cwd}` : ""}
     </div>
@@ -327,8 +336,9 @@ import type {
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
 import type { MessageQueue } from "./messageQueue";
 import { resetSharedSessionControllerForTests, sharedSessionController } from "./workspaceSessions";
-import { getLastSelectedWorkspaceId, setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
+import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
+import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { createSenderProbe, type SenderProbe } from "./queueSenderDouble";
 import { createDelegationController } from "../../lib/delegation";
@@ -536,7 +546,7 @@ describe("Workspace sessions", () => {
     // inherit what the previous one left a workspace remembering. Neither the
     // workspace in force: the next mount of this surface starts on it.
     resetTabMemoryForTests();
-    setLastSelectedWorkspaceId(null);
+    setLastSelectedWorkspaceKey(null);
     // The queue owner is app-lifetime too, and its sender is the wire a queued
     // message leaves on: both are reset and counted, never left to the last test.
     resetSharedSessionQueueOwnerForTests();
@@ -601,7 +611,7 @@ describe("Workspace sessions", () => {
   });
 
   it("publishes the selected workspace for surfaces it never mounts alongside", async () => {
-    setLastSelectedWorkspaceId(null);
+    setLastSelectedWorkspaceKey(null);
     root = createRoot(container);
     await act(async () => {
       await openListedSessionsForTest();
@@ -609,7 +619,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    expect(getLastSelectedWorkspaceId()).toBe("workspace-1");
+    expect(getLastSelectedWorkspaceKey()).toBe("local:workspace-1");
   });
 
   it("after a reconnect, a restored selection in another workspace is honoured again", async () => {

@@ -29,6 +29,10 @@ import { CHANGES_POLL_MS, type ChangesReply } from "./useWorkspaceChanges";
 import { ToolDiffPane } from "./ToolDiffPane";
 import { toolContentKey } from "./toolContentCache";
 import { resetDiffTabModeMemoryForTests } from "./DiffTab";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -84,7 +88,9 @@ describe("the Diff tab poll", () => {
 
   async function mountPane() {
     await act(async () => {
-      root.render(<ToolDiffPane workspaceId="ws" path="src/a.ts" refreshNonce={0} cache={cache} />);
+      root.render(
+        <ToolDiffPane workspaceKey={keyFor("ws")} path="src/a.ts" refreshNonce={0} cache={cache} />,
+      );
     });
     await act(async () => {});
   }
@@ -261,7 +267,7 @@ describe("the Diff tab poll", () => {
   });
 
   it("never writes a failure into the content cache", async () => {
-    const key = toolContentKey("ws", "src/a.ts");
+    const key = toolContentKey(keyFor("ws"), "src/a.ts");
     vi.mocked(workspaceGitDiff).mockRejectedValueOnce(new Error("daemon went away"));
     await mountPane();
     expect(paneText()).toContain("daemon went away");

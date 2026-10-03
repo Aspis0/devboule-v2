@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { Session } from "../../../types/ipc";
 import { buildTabCopyEntries, isTabCopyAction, tabCopyValue } from "./tabCopyActions";
 import { composeStripTabs, makeToolTab } from "./toolTabs";
+import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 describe("single-tab copy actions", () => {
   it.each(["acp", "terminal"] as const)("copies the stable ID and display cwd for %s", (kind) => {
@@ -23,7 +27,7 @@ describe("single-tab copy actions", () => {
   });
 
   it.each(["file", "diff"] as const)("offers only the file path on a %s tab", (kind) => {
-    const [tab] = composeStripTabs([], [makeToolTab(kind, "ws", "src/my file.ts")]);
+    const [tab] = composeStripTabs([], [makeToolTab(kind, keyFor("ws"), "src/my file.ts")]);
     expect(buildTabCopyEntries(tab)).toEqual([
       { key: "copy-path", label: "Copy relative path", disabled: false, separatorAfter: true },
     ]);

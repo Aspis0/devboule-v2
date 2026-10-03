@@ -5,12 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceTree } from "./WorkspaceTree";
 import type { WorkspaceProject } from "../workspaceProjects";
 import type { ErrorSentence } from "../../../lib/errorSentence";
+import { LOCAL_HOST_ID, localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const project: WorkspaceProject = {
   id: "project-1",
   name: "devboule-v2",
+  hostId: LOCAL_HOST_ID,
   path: "C:\\devboule-v2",
   workspaces: [
     {
@@ -18,6 +23,7 @@ const project: WorkspaceProject = {
       projectId: "project-1",
       title: "devboule-v2",
       displayTitle: "devboule-v2",
+      hostId: LOCAL_HOST_ID,
       isolation: "local",
       path: "C:\\devboule-v2",
       meta: null,
@@ -28,6 +34,7 @@ const project: WorkspaceProject = {
       projectId: "project-1",
       title: "devboule-v2",
       displayTitle: "devboule-v2 2",
+      hostId: LOCAL_HOST_ID,
       isolation: "local",
       path: "C:\\devboule-v2",
       meta: null,
@@ -68,7 +75,7 @@ describe("the sidebar's workspace rows", () => {
           loading={false}
           error={null}
           providerError={null}
-          selectedWorkspace="workspace-1"
+          selectedWorkspace={keyFor("workspace-1")}
           onRetryProjects={vi.fn()}
           onSelectWorkspace={vi.fn()}
           onNewWorkspace={vi.fn()}

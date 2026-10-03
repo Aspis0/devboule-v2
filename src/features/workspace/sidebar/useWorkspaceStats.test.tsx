@@ -8,6 +8,10 @@ vi.mock("../../../lib/tauri", () => ({ workspaceGitStatus: vi.fn() }));
 
 import { workspaceGitStatus } from "../../../lib/tauri";
 import { useWorkspaceStats } from "./useWorkspaceStats";
+import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,18 +25,18 @@ const totals = (additions: number, deletions: number, isGit = true) => ({
 });
 
 function HookProbe(props: {
-  ids: readonly string[];
+  ids: readonly WorkspaceKey[];
   connected: boolean;
-  selectedWorkspace: string | null;
+  selectedKey: WorkspaceKey | null;
   endedKey: string;
-  onStats: (stats: ReadonlyMap<string, { additions: number; deletions: number }>) => void;
-  onBranches: (branches: ReadonlyMap<string, string>) => void;
-  onRefresh?: (refresh: (ids: readonly string[]) => void) => void;
-  onEvict?: (evict: (id: string) => void) => void;
+  onStats: (stats: ReadonlyMap<WorkspaceKey, { additions: number; deletions: number }>) => void;
+  onBranches: (branches: ReadonlyMap<WorkspaceKey, string>) => void;
+  onRefresh?: (refresh: (ids: readonly WorkspaceKey[]) => void) => void;
+  onEvict?: (evict: (id: WorkspaceKey) => void) => void;
 }) {
   const { stats, branches, refresh, evict } = useWorkspaceStats(props.ids, {
     connected: props.connected,
-    selectedWorkspace: props.selectedWorkspace,
+    selectedKey: props.selectedKey,
     endedKey: props.endedKey,
   });
   props.onStats(stats);
@@ -92,28 +96,33 @@ describe("useWorkspaceStats", () => {
 
   it("fetches each visible row once and keeps the totals", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(145, 38));
-    await mount({ ids: ["ws-1", "ws-2"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({
+      ids: [keyFor("ws-1"), keyFor("ws-2")],
+      connected: true,
+      selectedKey: null,
+      endedKey: "",
+    });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     expect(workspaceGitStatus).toHaveBeenCalledTimes(2);
-    expect(latest.get("ws-1")).toEqual({ additions: 145, deletions: 38 });
-    expect(latest.get("ws-2")).toEqual({ additions: 145, deletions: 38 });
+    expect(latest.get(keyFor("ws-1"))).toEqual({ additions: 145, deletions: 38 });
+    expect(latest.get(keyFor("ws-2"))).toEqual({ additions: 145, deletions: 38 });
   });
 
   it("hides zero-zero totals", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(0, 0));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.has("ws-1")).toBe(false);
+    expect(latest.has(keyFor("ws-1"))).toBe(false);
   });
 
   it("a failed read shows no stats, not zeros, and no error", async () => {
     vi.mocked(workspaceGitStatus).mockRejectedValueOnce(new Error("git died"));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.has("ws-1")).toBe(false);
+    expect(latest.has(keyFor("ws-1"))).toBe(false);
   });
 
   it("keeps the branch from a read, even when the totals are zero", async () => {
@@ -121,32 +130,32 @@ describe("useWorkspaceStats", () => {
       ...totals(0, 0),
       branch: "feature/x",
     });
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.has("ws-1")).toBe(false);
-    expect(latestBranches?.get("ws-1")).toBe("feature/x");
+    expect(latest.has(keyFor("ws-1"))).toBe(false);
+    expect(latestBranches?.get(keyFor("ws-1"))).toBe("feature/x");
   });
 
   it("a failed read clears the branch along with the totals", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(totals(4, 2));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latestBranches?.get("ws-1")).toBe("main");
+    expect(latestBranches?.get(keyFor("ws-1"))).toBe("main");
     vi.mocked(workspaceGitStatus).mockRejectedValueOnce(new Error("git died"));
     await mount2ndRefresh();
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latestBranches?.has("ws-1")).toBe(false);
+    expect(latestBranches?.has(keyFor("ws-1"))).toBe(false);
   });
 
   it("a refresh trigger after a branch switch shows the new branch", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(totals(1, 1));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latestBranches?.get("ws-1")).toBe("main");
+    expect(latestBranches?.get(keyFor("ws-1"))).toBe("main");
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce({
       ...totals(1, 1),
       branch: "renamed",
@@ -154,22 +163,27 @@ describe("useWorkspaceStats", () => {
     await mount2ndRefresh();
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latestBranches?.get("ws-1")).toBe("renamed");
+    expect(latestBranches?.get(keyFor("ws-1"))).toBe("renamed");
   });
 
   it("drops a workspace that leaves the id list from both maps", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(145, 38));
-    await mount({ ids: ["ws-1", "ws-2"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({
+      ids: [keyFor("ws-1"), keyFor("ws-2")],
+      connected: true,
+      selectedKey: null,
+      endedKey: "",
+    });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.has("ws-1")).toBe(true);
-    expect(latestBranches?.has("ws-1")).toBe(true);
+    expect(latest.has(keyFor("ws-1"))).toBe(true);
+    expect(latestBranches?.has(keyFor("ws-1"))).toBe(true);
     await act(async () => {
       root!.render(
         <HookProbe
-          ids={["ws-2"]}
+          ids={[keyFor("ws-2")]}
           connected
-          selectedWorkspace={null}
+          selectedKey={null}
           endedKey=""
           onStats={onStats}
           onBranches={onBranches}
@@ -178,17 +192,17 @@ describe("useWorkspaceStats", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.has("ws-1")).toBe(false);
-    expect(latestBranches?.has("ws-1")).toBe(false);
+    expect(latest.has(keyFor("ws-1"))).toBe(false);
+    expect(latestBranches?.has(keyFor("ws-1"))).toBe(false);
   });
 
   it("evicts a deleted id from both maps while the list still names it", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(145, 38));
-    let evict!: (id: string) => void;
+    let evict!: (id: WorkspaceKey) => void;
     await mount({
-      ids: ["ws-gone"],
+      ids: [keyFor("ws-gone")],
       connected: true,
-      selectedWorkspace: null,
+      selectedKey: null,
       endedKey: "",
       onEvict: (fn) => {
         evict = fn;
@@ -196,34 +210,34 @@ describe("useWorkspaceStats", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.get("ws-gone")).toEqual({ additions: 145, deletions: 38 });
-    expect(latestBranches?.get("ws-gone")).toBe("main");
+    expect(latest.get(keyFor("ws-gone"))).toEqual({ additions: 145, deletions: 38 });
+    expect(latestBranches?.get(keyFor("ws-gone"))).toBe("main");
 
-    await act(async () => evict("ws-gone"));
-    expect(latest.has("ws-gone")).toBe(false);
-    expect(latestBranches?.has("ws-gone")).toBe(false);
+    await act(async () => evict(keyFor("ws-gone")));
+    expect(latest.has(keyFor("ws-gone"))).toBe(false);
+    expect(latestBranches?.has(keyFor("ws-gone"))).toBe(false);
 
     // History can keep the deleted id listed for its sessions: the sweep
     // must not read it back in, whatever still names it.
     const readsBefore = vi.mocked(workspaceGitStatus).mock.calls.length;
     await mount2ndRefresh();
     expect(vi.mocked(workspaceGitStatus).mock.calls.length).toBe(readsBefore);
-    expect(latest.has("ws-gone")).toBe(false);
+    expect(latest.has(keyFor("ws-gone"))).toBe(false);
   });
 
   it("reads an evicted id again once it reappears in the list", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(7, 3));
-    let evict!: (id: string) => void;
-    const onEvict = (fn: (id: string) => void) => {
+    let evict!: (id: WorkspaceKey) => void;
+    const onEvict = (fn: (id: WorkspaceKey) => void) => {
       evict = fn;
     };
-    const render = (ids: readonly string[]) =>
+    const render = (ids: readonly WorkspaceKey[]) =>
       act(async () => {
         root!.render(
           <HookProbe
             ids={ids}
             connected
-            selectedWorkspace={null}
+            selectedKey={null}
             endedKey=""
             onStats={onStats}
             onBranches={onBranches}
@@ -232,20 +246,20 @@ describe("useWorkspaceStats", () => {
         );
       });
     await mount({
-      ids: ["ws-reborn"],
+      ids: [keyFor("ws-reborn")],
       connected: true,
-      selectedWorkspace: null,
+      selectedKey: null,
       endedKey: "",
       onEvict,
     });
     await vi.advanceTimersByTimeAsync(0);
-    await act(async () => evict("ws-reborn"));
+    await act(async () => evict(keyFor("ws-reborn")));
     await render([]);
-    await render(["ws-reborn"]);
+    await render([keyFor("ws-reborn")]);
     await vi.advanceTimersByTimeAsync(0);
     await reread();
 
-    expect(latest.get("ws-reborn")).toEqual({ additions: 7, deletions: 3 });
+    expect(latest.get(keyFor("ws-reborn"))).toEqual({ additions: 7, deletions: 3 });
   });
 
   it("ignores an in-flight read for an evicted id when it lands", async () => {
@@ -253,11 +267,11 @@ describe("useWorkspaceStats", () => {
     vi.mocked(workspaceGitStatus).mockImplementation(
       () => new Promise((resolve) => (release = resolve)),
     );
-    let evict!: (id: string) => void;
+    let evict!: (id: WorkspaceKey) => void;
     await mount({
-      ids: ["ws-gone-flight"],
+      ids: [keyFor("ws-gone-flight")],
       connected: true,
-      selectedWorkspace: null,
+      selectedKey: null,
       endedKey: "",
       onEvict: (fn) => {
         evict = fn;
@@ -266,17 +280,17 @@ describe("useWorkspaceStats", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(workspaceGitStatus).toHaveBeenCalledTimes(1);
 
-    await act(async () => evict("ws-gone-flight"));
+    await act(async () => evict(keyFor("ws-gone-flight")));
     release(totals(10, 5));
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.has("ws-gone-flight")).toBe(false);
-    expect(latestBranches?.has("ws-gone-flight")).toBe(false);
+    expect(latest.has(keyFor("ws-gone-flight"))).toBe(false);
+    expect(latestBranches?.has(keyFor("ws-gone-flight"))).toBe(false);
   });
 
   it("returns the same maps when a read lands unchanged", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(145, 38));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     const statsBefore = latest;
@@ -294,14 +308,19 @@ describe("useWorkspaceStats", () => {
     vi.mocked(workspaceGitStatus).mockImplementation((id: string) =>
       id === "ws-2" ? pending : Promise.resolve(totals(1, 1)),
     );
-    await mount({ ids: ["ws-1", "ws-2"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({
+      ids: [keyFor("ws-1"), keyFor("ws-2")],
+      connected: true,
+      selectedKey: null,
+      endedKey: "",
+    });
     await mount2ndRefresh();
     await act(async () => {
       root!.render(
         <HookProbe
-          ids={["ws-1"]}
+          ids={[keyFor("ws-1")]}
           connected
-          selectedWorkspace={null}
+          selectedKey={null}
           endedKey=""
           onStats={onStats}
           onBranches={onBranches}
@@ -311,15 +330,15 @@ describe("useWorkspaceStats", () => {
     release(totals(7, 7));
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.has("ws-2")).toBe(false);
-    expect(latestBranches?.has("ws-2")).toBe(false);
+    expect(latest.has(keyFor("ws-2"))).toBe(false);
+    expect(latestBranches?.has(keyFor("ws-2"))).toBe(false);
     const ws2Reads = vi.mocked(workspaceGitStatus).mock.calls.filter(([id]) => id === "ws-2");
     expect(ws2Reads.length).toBe(1);
   });
 
   it("an unchanged result still issues the dirty follow-up, exactly once", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(3, 4));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     let release!: (value: ReturnType<typeof totals>) => void;
@@ -346,14 +365,14 @@ describe("useWorkspaceStats", () => {
       () => new Promise((resolve) => (release = resolve)),
     );
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(1, 2));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await mount2ndRefresh();
     await act(async () => {
       root!.render(
         <HookProbe
-          ids={["ws-1"]}
+          ids={[keyFor("ws-1")]}
           connected={false}
-          selectedWorkspace={null}
+          selectedKey={null}
           endedKey=""
           onStats={onStats}
           onBranches={onBranches}
@@ -368,8 +387,8 @@ describe("useWorkspaceStats", () => {
 
   it("a refresh captured while connected sends nothing after a disconnect", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(1, 2));
-    let captured: ((ids: readonly string[]) => void) | null = null;
-    const keepFirst = (refresh: (ids: readonly string[]) => void) => {
+    let captured: ((ids: readonly WorkspaceKey[]) => void) | null = null;
+    const keepFirst = (refresh: (ids: readonly WorkspaceKey[]) => void) => {
       captured ??= refresh;
     };
     holder = document.createElement("div");
@@ -378,9 +397,9 @@ describe("useWorkspaceStats", () => {
     await act(async () => {
       root!.render(
         <HookProbe
-          ids={["ws-1"]}
+          ids={[keyFor("ws-1")]}
           connected
-          selectedWorkspace={null}
+          selectedKey={null}
           endedKey=""
           onStats={onStats}
           onBranches={onBranches}
@@ -393,9 +412,9 @@ describe("useWorkspaceStats", () => {
     await act(async () => {
       root!.render(
         <HookProbe
-          ids={["ws-1"]}
+          ids={[keyFor("ws-1")]}
           connected={false}
-          selectedWorkspace={null}
+          selectedKey={null}
           endedKey=""
           onStats={onStats}
           onBranches={onBranches}
@@ -404,36 +423,36 @@ describe("useWorkspaceStats", () => {
       );
     });
     vi.mocked(workspaceGitStatus).mockClear();
-    await act(async () => captured!(["ws-1"]));
+    await act(async () => captured!([keyFor("ws-1")]));
     await vi.advanceTimersByTimeAsync(0);
     expect(workspaceGitStatus).not.toHaveBeenCalled();
   });
 
   it("a grown id list reads only the added id, and a shrunk one reads nothing", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(1, 2));
-    const render = (ids: readonly string[]) =>
+    const render = (ids: readonly WorkspaceKey[]) =>
       act(async () => {
         root!.render(
           <HookProbe
             ids={ids}
             connected
-            selectedWorkspace={null}
+            selectedKey={null}
             endedKey=""
             onStats={onStats}
             onBranches={onBranches}
           />,
         );
       });
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     vi.mocked(workspaceGitStatus).mockClear();
-    await render(["ws-1", "ws-9"]);
+    await render([keyFor("ws-1"), keyFor("ws-9")]);
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     expect(vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id)).toEqual(["ws-9"]);
     vi.mocked(workspaceGitStatus).mockClear();
-    await render(["ws-1"]);
+    await render([keyFor("ws-1")]);
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     expect(workspaceGitStatus).not.toHaveBeenCalled();
@@ -445,7 +464,7 @@ describe("useWorkspaceStats", () => {
       () => new Promise((resolve) => (release = resolve)),
     );
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(totals(5, 6));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     // A second trigger for the same id while the first is in flight must not
     // fire a second request yet — and must not be silently dropped either:
     // one follow-up runs after the read settles.
@@ -456,7 +475,7 @@ describe("useWorkspaceStats", () => {
     await reread();
     expect(workspaceGitStatus).toHaveBeenCalledTimes(2);
     // The follow-up's fresh numbers, not the first read's stale ones.
-    expect(latest.get("ws-1")).toEqual({ additions: 5, deletions: 6 });
+    expect(latest.get(keyFor("ws-1"))).toEqual({ additions: 5, deletions: 6 });
   });
 
   async function mount2ndRefresh() {
@@ -469,7 +488,7 @@ describe("useWorkspaceStats", () => {
 
   it("selection refreshes that workspace's numbers", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(3, 4));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     const afterLoad = vi.mocked(workspaceGitStatus).mock.calls.length;
@@ -477,9 +496,9 @@ describe("useWorkspaceStats", () => {
     await act(async () => {
       root!.render(
         <HookProbe
-          ids={["ws-1"]}
+          ids={[keyFor("ws-1")]}
           connected
-          selectedWorkspace="ws-1"
+          selectedKey={keyFor("ws-1")}
           endedKey=""
           onStats={onStats}
           onBranches={onBranches}
@@ -493,7 +512,7 @@ describe("useWorkspaceStats", () => {
 
   it("refreshes at most every 30 seconds, and only while connected", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(totals(3, 4));
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     const afterLoad = vi.mocked(workspaceGitStatus).mock.calls.length;
@@ -509,9 +528,9 @@ describe("useWorkspaceStats", () => {
     // Disconnected: the interval stops. (The remount itself fetches once,
     // as every mount does; the count is reset after it.)
     await mount2({
-      ids: ["ws-1"],
+      ids: [keyFor("ws-1")],
       connected: false,
-      selectedWorkspace: null,
+      selectedKey: null,
       endedKey: "",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -533,15 +552,15 @@ describe("useWorkspaceStats", () => {
   }
 
   it("every trigger answers to the connection: focus and selection while disconnected send nothing", async () => {
-    await mount({ ids: ["ws-1"], connected: false, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: false, selectedKey: null, endedKey: "" });
     await vi.advanceTimersByTimeAsync(0);
     await reread();
     expect(workspaceGitStatus).not.toHaveBeenCalled();
 
     await mount2({
-      ids: ["ws-1"],
+      ids: [keyFor("ws-1")],
       connected: false,
-      selectedWorkspace: "ws-1",
+      selectedKey: keyFor("ws-1"),
       endedKey: "",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -554,7 +573,7 @@ describe("useWorkspaceStats", () => {
     vi.mocked(workspaceGitStatus).mockImplementationOnce(
       () => new Promise((resolve) => (release = resolve)),
     );
-    await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
+    await mount({ ids: [keyFor("ws-1")], connected: true, selectedKey: null, endedKey: "" });
     await actUnmount();
     release(totals(9, 9));
     await vi.advanceTimersByTimeAsync(0);

@@ -18,6 +18,7 @@ import type {
   UnattendedState,
 } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
 import { lastFittedGrid } from "../terminal/lastFittedGrid";
@@ -40,14 +41,14 @@ export interface WorkspaceSessionSource {
  * One failure of the strip's create/list, in the words a surface renders it:
  * the plain sentence plus the daemon's own words for tooltips and
  * Diagnostics. `errorSentence` is what fills it. A create failure names the
- * workspace it was asked for — the line belongs over that workspace, not
- * over whichever one is selected when it renders; a list failure is the
- * roster's and carries `null`.
+ * workspace it was asked for, by the key the view selects on — the line
+ * belongs over that workspace, not over whichever one is selected when it
+ * renders; a list failure is the roster's and carries `null`.
  */
 export interface WorkspaceSessionError {
   sentence: string;
   detail: string | null;
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
 }
 
 export interface WorkspaceSessionState {
@@ -99,7 +100,7 @@ const DEFAULT_SOURCE: WorkspaceSessionSource = {
 const LIST_ERROR: WorkspaceSessionError = {
   sentence: "Could not load sessions. The daemon is unreachable.",
   detail: null,
-  workspaceId: null,
+  workspaceKey: null,
 };
 
 export function isRecoveredSession(session: Pick<Session, "state">): boolean {
@@ -811,7 +812,7 @@ export function createWorkspaceSessionController(
         error: {
           sentence: mapped.sentence,
           detail: mapped.detail,
-          workspaceId: workspaceId ?? null,
+          workspaceKey: workspaceId === null ? null : localWorkspaceKey(workspaceId),
         },
       });
       return null;

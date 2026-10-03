@@ -35,6 +35,14 @@ import {
   workspaceGitStatus,
 } from "../../lib/tauri";
 import { HistoryPanel } from "./HistoryPanel";
+import {
+  LOCAL_HOST_ID,
+  localWorkspaceKey,
+  type WorkspaceKey,
+} from "../workspace/hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -265,6 +273,7 @@ describe("HistoryPanel", () => {
       {
         id: "project-rust",
         name: "Rust project",
+        hostId: LOCAL_HOST_ID,
         path: "C:\\rust",
         workspaces: [
           {
@@ -272,6 +281,7 @@ describe("HistoryPanel", () => {
             projectId: "project-rust",
             title: "Rust workspace",
             displayTitle: "Rust workspace",
+            hostId: LOCAL_HOST_ID,
             isolation: "local",
             path: "C:\\rust",
             meta: null,
@@ -300,6 +310,7 @@ describe("HistoryPanel", () => {
       {
         id: "project-rust",
         name: "Rust project",
+        hostId: LOCAL_HOST_ID,
         path: "C:\\rust",
         workspaces: [
           {
@@ -307,6 +318,7 @@ describe("HistoryPanel", () => {
             projectId: "project-rust",
             title: "Rust workspace",
             displayTitle: "Rust workspace",
+            hostId: LOCAL_HOST_ID,
             isolation: "local",
             path: "C:\\rust",
             meta: null,
@@ -342,6 +354,7 @@ describe("HistoryPanel", () => {
       {
         id: "project-rust",
         name: "Rust project",
+        hostId: LOCAL_HOST_ID,
         path: "C:\\rust",
         workspaces: [],
         workspaceError: { sentence: "The agent daemon is not responding.", detail: null },
@@ -411,7 +424,7 @@ describe("HistoryPanel", () => {
         <HistoryPanel
           now={now}
           search="feature/branches"
-          branches={new Map([["workspace-rust", "feature/branches"]])}
+          branches={new Map([[keyFor("workspace-rust"), "feature/branches"]])}
         />,
       );
       await Promise.resolve();
@@ -434,7 +447,11 @@ describe("HistoryPanel", () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
-        <HistoryPanel now={now} search="" branches={new Map([["workspace-rust", "main"]])} />,
+        <HistoryPanel
+          now={now}
+          search=""
+          branches={new Map([[keyFor("workspace-rust"), "main"]])}
+        />,
       );
       await Promise.resolve();
     });
@@ -1743,7 +1760,7 @@ describe("HistoryPanel delete refusal and focus during deletes", () => {
         resolveDelete = resolve;
       }),
     );
-    const branchesOf = (branch: string) => new Map([["workspace-rust", branch]]);
+    const branchesOf = (branch: string) => new Map([[keyFor("workspace-rust"), branch]]);
     root = createRoot(container);
     await act(async () => {
       root.render(<HistoryPanel now={now} search="" branches={branchesOf("main")} />);
@@ -1810,6 +1827,7 @@ describe("HistoryPanel delete refusal and focus during deletes", () => {
       {
         id: "project-rust",
         name: "Rust project",
+        hostId: LOCAL_HOST_ID,
         path: "C:\\rust",
         workspaces: [
           {
@@ -1817,6 +1835,7 @@ describe("HistoryPanel delete refusal and focus during deletes", () => {
             projectId: "project-rust",
             title: "Rust workspace",
             displayTitle: "Rust workspace",
+            hostId: LOCAL_HOST_ID,
             isolation: "local",
             path: "C:\\rust",
             meta: null,

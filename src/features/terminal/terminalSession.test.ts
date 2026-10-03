@@ -13,6 +13,11 @@ import {
 } from "./terminalSession";
 import type { TerminalSessionRecord, TerminalSessionRegistry } from "./terminalRegistry";
 
+import { localWorkspaceKey, type WorkspaceKey } from "../workspace/hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
+
 interface MockView extends TerminalViewHandle {
   written: string[];
   snapshots: SessionSnapshot[];
@@ -82,7 +87,7 @@ function makeHarness(options?: {
       registeredSessionId === null
         ? null
         : {
-            workspaceId: "rust-core",
+            workspaceKey: keyFor("rust-core"),
             sessionId: registeredSessionId,
             lastSeenSeq: null,
           },
@@ -192,7 +197,7 @@ function makeHarness(options?: {
   const failCreateView = options?.failCreateView === true;
   const failCreateChannel = options?.failCreateChannel === true;
   const deps: TerminalSessionDeps = {
-    workspaceId: "rust-core",
+    workspaceKey: keyFor("rust-core"),
     sessionId: options?.explicitSessionId,
     sessionRecovered: options?.recoveredSession === true,
     host: {} as HTMLElement,
@@ -328,7 +333,7 @@ describe("TerminalSession startup and channel ordering", () => {
       }),
     );
     expect(harness.invoke).toHaveBeenCalledWith("session_claim", { subscriptionId: 17 });
-    expect(harness.registry.register).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.registry.register).toHaveBeenCalledWith(keyFor("rust-core"), "session-1");
   });
 
   it("adopts the registered session without creating another shell", async () => {
@@ -438,7 +443,7 @@ describe("TerminalSession startup and channel ordering", () => {
     harness.completeSnapshot();
 
     expect(harness.view.written).toEqual(["live"]);
-    expect(harness.registry.updateCursor).toHaveBeenCalledWith("rust-core", "session-1", 2);
+    expect(harness.registry.updateCursor).toHaveBeenCalledWith(keyFor("rust-core"), "session-1", 2);
     expect(harness.invoke).toHaveBeenCalledWith("session_send", {
       id: "session-1",
       subscriptionId: 17,
@@ -481,7 +486,7 @@ describe("TerminalSession lifecycle and errors", () => {
       id: "session-1",
       subscriptionId: null,
     });
-    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.registry.remove).toHaveBeenCalledWith(keyFor("rust-core"), "session-1");
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.invoke).not.toHaveBeenCalledWith("session_detach", expect.anything());
     expect(harness.banners).toContainEqual({
@@ -550,7 +555,7 @@ describe("TerminalSession lifecycle and errors", () => {
       id: "session-1",
       subscriptionId: null,
     });
-    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.registry.remove).toHaveBeenCalledWith(keyFor("rust-core"), "session-1");
     expect(harness.banners).toContainEqual({
       kind: "error",
       message: "Could not open the terminal view. view unavailable",
@@ -575,7 +580,7 @@ describe("TerminalSession lifecycle and errors", () => {
       id: "session-1",
       subscriptionId: null,
     });
-    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.registry.remove).toHaveBeenCalledWith(keyFor("rust-core"), "session-1");
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.banners).toContainEqual({
       kind: "error",
@@ -607,7 +612,7 @@ describe("TerminalSession lifecycle and errors", () => {
       id: "session-1",
       subscriptionId: null,
     });
-    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.registry.remove).toHaveBeenCalledWith(keyFor("rust-core"), "session-1");
   });
 
   it("keeps the attach error when the close is rejected", async () => {
@@ -790,7 +795,7 @@ describe("TerminalSession lifecycle and errors", () => {
       lost: null,
       trimmedBytes: 0,
     });
-    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.registry.remove).toHaveBeenCalledWith(keyFor("rust-core"), "session-1");
     expect(harness.invoke).not.toHaveBeenCalled();
   });
 
@@ -934,7 +939,7 @@ describe("TerminalSession lifecycle and errors", () => {
     harness.session.close();
     harness.session.close();
 
-    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.registry.remove).toHaveBeenCalledWith(keyFor("rust-core"), "session-1");
     expect(
       harness.invoke.mock.calls.filter(([command]) => command === "session_close"),
     ).toHaveLength(1);
@@ -1326,7 +1331,7 @@ describe("the production view wiring at the PTY boundary", () => {
       return undefined;
     });
     session = new TerminalSession({
-      workspaceId: "rust-core",
+      workspaceKey: keyFor("rust-core"),
       host,
       createView: async (viewHost, viewOptions) => createTerminalView(viewHost, viewOptions),
       invoke: invoke as unknown as TerminalSessionDeps["invoke"],

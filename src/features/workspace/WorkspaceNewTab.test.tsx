@@ -15,7 +15,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
-import { setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
+import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonStatus, Session } from "../../types/ipc";
 
@@ -354,7 +354,7 @@ describe("the + new-tab menu", () => {
     localStorage.removeItem("devboule.openSessionTabs");
     resetSharedSessionControllerForTests();
     resetTabMemoryForTests();
-    setLastSelectedWorkspaceId(null);
+    setLastSelectedWorkspaceKey(null);
     vi.mocked(projectsList).mockResolvedValue([project]);
     vi.mocked(workspacesList).mockResolvedValue([workspace]);
     vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one")]);

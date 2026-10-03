@@ -39,6 +39,10 @@ import {
   workspaceGitUnstage,
 } from "../../lib/tauri";
 import { ChangesSurface } from "./ChangesSurface";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -219,7 +223,7 @@ describe("ChangesSurface actions", () => {
   // the ask from `discard` (call the command directly) — the wire assertion
   // below fails on the open ask.
   it("asks through our dialog and calls no wire before the answer", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     // The tree shows the basename; the full path rides the row's title.
     expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
@@ -243,7 +247,7 @@ describe("ChangesSurface actions", () => {
   // refresh (a No means nothing happened, so even the status re-read would
   // be a lie), the row intact, the ask gone.
   it("Cancel, Escape and the scrim decline: no wire, no refresh, the row intact", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await openMenu();
     await chooseDiscard();
@@ -273,7 +277,7 @@ describe("ChangesSurface actions", () => {
   // menu trigger the menu opened from — the dialog stays mounted and
   // closes through its `open` prop, so its own trigger return runs.
   it("Cancel hands focus back to the row's menu trigger", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -292,7 +296,7 @@ describe("ChangesSurface actions", () => {
   // it; the item dies with the menu, so without the trigger's pre-focus
   // the dialog would capture a gone element and strand focus on <body>.
   it("returns focus to the trigger even when the menu item held focus at the ask", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -316,7 +320,7 @@ describe("ChangesSurface actions", () => {
   it("a confirmed discard that empties the tree parks focus on the panel", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(dirtyReply());
     vi.mocked(workspaceGitStatus).mockResolvedValue(statusReply());
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -349,7 +353,7 @@ describe("ChangesSurface actions", () => {
           resolveWire = resolve;
         }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -393,7 +397,7 @@ describe("ChangesSurface actions", () => {
           resolveWire = resolve;
         }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -451,7 +455,7 @@ describe("ChangesSurface actions", () => {
           resolveWire = resolve;
         }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -500,7 +504,7 @@ describe("ChangesSurface actions", () => {
   // it and focus stays where the removal dropped it.
   it("moves no focus when the row leaves while a modal is open", async () => {
     vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(dirtyReply()));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -526,7 +530,7 @@ describe("ChangesSurface actions", () => {
   // the rescue still reclaims the panel when the next tree lands.
   it("reclaims the panel when a removal reports its focusout onto the body", async () => {
     vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(dirtyReply()));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -560,7 +564,7 @@ describe("ChangesSurface actions", () => {
           resolveWire = resolve;
         }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     const trigger = button(`button[aria-label="${ROW_PATH} actions"]`);
     await act(async () => {
       trigger.focus();
@@ -591,7 +595,7 @@ describe("ChangesSurface actions", () => {
   // its own: the only focus change this test could see is the hook's.
   it("moves no focus for a rows change with no ask behind it", async () => {
     vi.mocked(workspaceGitStatus).mockImplementation(() => Promise.resolve(dirtyReply()));
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await openMenu();
     await act(async () => {
@@ -633,7 +637,7 @@ describe("ChangesSurface actions", () => {
         }),
       ),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await openMenu(nested);
     await chooseDiscard();
@@ -647,7 +651,7 @@ describe("ChangesSurface actions", () => {
   // immediate refresh the panel owes follows without any timer being
   // advanced (the poll is 5 s; this test runs in milliseconds).
   it("the affirmative discards once and re-reads the status immediately", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await openMenu();
     await chooseDiscard();
@@ -663,7 +667,7 @@ describe("ChangesSurface actions", () => {
   // Unmounting with the ask standing (a workspace or panel switch remounts
   // the host) declines it: no wire, and the modal token goes with the dialog.
   it("unmounting with the ask standing declines it and leaks no modal", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     await openMenu();
     await chooseDiscard();
@@ -685,7 +689,7 @@ describe("ChangesSurface actions", () => {
   it("stages without asking and re-reads the status immediately, not on the poll", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(dirtyReply());
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(statusReply());
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
     await act(async () => {
@@ -725,7 +729,7 @@ describe("ChangesSurface actions", () => {
         rows: [renamed],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(
       container.querySelector('.workspace-file-change[title="notes/todo-v2.md"]'),
     ).not.toBeNull();
@@ -761,7 +765,7 @@ describe("ChangesSurface actions", () => {
   // Enter during an IME composition is the candidate list's key: it must
   // not reach the commit, and the typed message stays untouched.
   it("leaves Enter to an open IME composition instead of committing", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const input = container.querySelector<HTMLInputElement>('[aria-label="Commit message"]');
     if (input === null) throw new Error("no message field");
@@ -814,7 +818,7 @@ describe("ChangesSurface actions", () => {
   // sent verbatim, and a landed commit clears the field so the next one
   // starts honest.
   it("refuses an empty commit message at the toolbar and sends a written one verbatim", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const commit = commitButton();
     expect(commit.disabled).toBe(true);
@@ -850,7 +854,7 @@ describe("ChangesSurface actions", () => {
   // list is stale whether or not that view is the one on screen, so the
   // read is repeated beside the status refresh the act already owes.
   it("refetches the history after a commit lands", async () => {
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(vi.mocked(workspaceGitLog)).not.toHaveBeenCalled();
 
     const input = container.querySelector<HTMLInputElement>('[aria-label="Commit message"]');

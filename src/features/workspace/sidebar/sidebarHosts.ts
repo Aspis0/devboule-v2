@@ -1,4 +1,5 @@
 import type { DaemonConnectionState, PeerRow } from "../../../types/ipc";
+import { LOCAL_HOST_ID } from "../hosts/hostIdentity";
 import type { PairedDevices } from "../workspaceDaemon";
 
 export type HostDotTone = "green" | "border";
@@ -14,9 +15,6 @@ export interface SidebarHost {
   isLocal: boolean;
   status: HostStatus;
 }
-
-/** The machine the app runs on. Its id is this module's, not the daemon's. */
-const LOCAL_HOST_ID = "local";
 
 const LOCAL_HOST_NAME = "This PC";
 

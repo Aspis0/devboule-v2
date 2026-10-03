@@ -11,13 +11,28 @@ import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { workspaceDisplayTitles } from "../../lib/workspaceTitles";
 import type { Project, Session, Workspace } from "../../types/ipc";
 import { sessionNeedsApproval } from "./sessionAttention";
+import {
+  LOCAL_HOST_ID,
+  localWorkspaceKey,
+  workspaceKey,
+  type HostId,
+  type WorkspaceKey,
+} from "./hosts/hostIdentity";
+
+/** A workspace as loaded, with the host whose feed it arrived on. Every
+ * workspace comes off the local bridge today; the field is the seam the next
+ * host's rows are stamped through. */
+export interface HostWorkspace extends Workspace {
+  hostId: HostId;
+}
 
 export interface WorkspaceProject extends Project {
+  hostId: HostId;
   workspaces: WorkspaceView[];
   workspaceError?: ErrorSentence;
 }
 
-export interface WorkspaceView extends Workspace {
+export interface WorkspaceView extends HostWorkspace {
   /** What the sidebar prints; `title` stays the stored row. */
   displayTitle: string;
   /** A word only when the row differs from the norm; null renders no line. */
@@ -26,8 +41,26 @@ export interface WorkspaceView extends Workspace {
   stateDot: "pulse" | "attention" | "unattended" | null;
 }
 
+/** The UI's name for a workspace: it is never the value the daemon is sent. */
+export function keyOfWorkspace(workspace: HostWorkspace): WorkspaceKey | null {
+  return workspaceKey(workspace.hostId, workspace.id);
+}
+
+function sessionsOf(
+  index: Map<WorkspaceKey, Session[]>,
+  workspace: HostWorkspace,
+): readonly Session[] {
+  const key = keyOfWorkspace(workspace);
+  return key === null ? [] : (index.get(key) ?? []);
+}
+
+function onLocalHost(workspaces: readonly Workspace[]): HostWorkspace[] {
+  return workspaces.map((workspace) => ({ ...workspace, hostId: LOCAL_HOST_ID }));
+}
+
 interface ProjectRecord extends Project {
-  workspaces: Workspace[];
+  hostId: HostId;
+  workspaces: HostWorkspace[];
   workspaceError?: ErrorSentence;
 }
 
@@ -58,31 +91,33 @@ export function reconcileProjectRecords(
 }
 
 export function workspaceView(
-  workspace: Workspace,
+  workspace: HostWorkspace,
   sessions: readonly Session[] = [],
 ): WorkspaceView {
   return workspaceViewFromIndex(
     workspace,
-    buildSessionIndex(sessions).get(workspace.id) ?? [],
+    sessionsOf(buildSessionIndex(sessions), workspace),
     workspace.title,
   );
 }
 
-export function buildSessionIndex(sessions: readonly Session[]): Map<string, Session[]> {
+export function buildSessionIndex(sessions: readonly Session[]): Map<WorkspaceKey, Session[]> {
   // One pass over the roster, not one filter per workspace: pushes arrive
   // often and the sidebar derives every row from the same array.
-  const index = new Map<string, Session[]>();
+  const index = new Map<WorkspaceKey, Session[]>();
   for (const session of sessions) {
     if (session.workspaceId === null) continue;
-    const list = index.get(session.workspaceId);
-    if (list === undefined) index.set(session.workspaceId, [session]);
+    const key = localWorkspaceKey(session.workspaceId);
+    if (key === null) continue;
+    const list = index.get(key);
+    if (list === undefined) index.set(key, [session]);
     else list.push(session);
   }
   return index;
 }
 
 function workspaceViewFromIndex(
-  workspace: Workspace,
+  workspace: HostWorkspace,
   sessionsOfWorkspace: readonly Session[],
   displayTitle: string,
 ): WorkspaceView {
@@ -108,7 +143,7 @@ function workspaceViewFromIndex(
  * row is named before search narrows the list. */
 export function projectView(
   project: ProjectRecord,
-  byWorkspace: Map<string, Session[]>,
+  byWorkspace: Map<WorkspaceKey, Session[]>,
 ): WorkspaceProject {
   const titles = workspaceDisplayTitles(project.workspaces);
   return {
@@ -116,14 +151,14 @@ export function projectView(
     workspaces: project.workspaces.map((workspace) =>
       workspaceViewFromIndex(
         workspace,
-        byWorkspace.get(workspace.id) ?? [],
+        sessionsOf(byWorkspace, workspace),
         titles.get(workspace.id) ?? workspace.title,
       ),
     ),
   };
 }
 
-export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
+export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) {
   const [projectRecords, setProjectRecords] = useState<ProjectRecord[]>([]);
   const [sessionFacts, setSessionFactsState] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -131,7 +166,7 @@ export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
   // Starts on the workspace the surface was last showing, so returning to it
   // lands where the user left; a null one (a fresh start, no cell) takes the
   // first listed row when the list settles, as this hook always has.
-  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(restoredWorkspaceId);
+  const [selectedKey, setSelectedKey] = useState<WorkspaceKey | null>(restoredWorkspaceKey);
   const [search, setSearch] = useState("");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const newProjectTriggerRef = useRef<HTMLButtonElement>(null);
@@ -145,10 +180,15 @@ export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
       const records = await Promise.all(
         listedProjects.map(async (project): Promise<ProjectRecord> => {
           try {
-            return { ...project, workspaces: await workspacesList(project.id) };
+            return {
+              ...project,
+              hostId: LOCAL_HOST_ID,
+              workspaces: onLocalHost(await workspacesList(project.id)),
+            };
           } catch (cause: unknown) {
             return {
               ...project,
+              hostId: LOCAL_HOST_ID,
               workspaces: [],
               workspaceError: errorSentence(cause),
             };
@@ -180,11 +220,11 @@ export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
 
   useEffect(() => {
     if (loading || error !== null) return;
-    const workspaceIds = projectRecords.flatMap((project) =>
-      project.workspaces.map((workspace) => workspace.id),
+    const keys = projectRecords.flatMap((project) =>
+      project.workspaces.map((workspace) => keyOfWorkspace(workspace)),
     );
-    setSelectedWorkspace((current) =>
-      current !== null && workspaceIds.includes(current) ? current : (workspaceIds[0] ?? null),
+    setSelectedKey((current) =>
+      current !== null && keys.includes(current) ? current : (keys[0] ?? null),
     );
   }, [error, loading, projectRecords]);
 
@@ -198,11 +238,14 @@ export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
       setProjectRecords((currentProjects) =>
         currentProjects.map((project) =>
           project.id === projectId
-            ? { ...project, workspaces: [...project.workspaces, workspace] }
+            ? {
+                ...project,
+                workspaces: [...project.workspaces, { ...workspace, hostId: LOCAL_HOST_ID }],
+              }
             : project,
         ),
       );
-      setSelectedWorkspace(workspace.id);
+      setSelectedKey(keyOfWorkspace({ ...workspace, hostId: LOCAL_HOST_ID }));
       setError(null);
       return workspace;
     } catch (cause: unknown) {
@@ -223,7 +266,7 @@ export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
         .find((project) => project.id === projectId)
         ?.workspaces.find((workspace) => workspace.isolation === "local");
       if (existing !== undefined) {
-        setSelectedWorkspace(existing.id);
+        setSelectedKey(keyOfWorkspace(existing));
         return existing;
       }
       return addWorkspace(projectId);
@@ -286,14 +329,14 @@ export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
   }, []);
   const handleCreateProject = useCallback(async (project: Project): Promise<void> => {
     try {
-      const workspaces = await workspacesList(project.id);
+      const workspaces = onLocalHost(await workspacesList(project.id));
       setProjectRecords((currentProjects) => {
-        const next = { ...project, workspaces };
+        const next = { ...project, hostId: LOCAL_HOST_ID, workspaces };
         const existingIndex = currentProjects.findIndex((current) => current.id === project.id);
         if (existingIndex < 0) return [...currentProjects, next];
         return currentProjects.map((current, index) => (index === existingIndex ? next : current));
       });
-      setSelectedWorkspace((current) => current ?? workspaces[0]?.id ?? null);
+      setSelectedKey((current) => current ?? keyOfWorkspace(workspaces[0]));
       setSearch("");
       setError(null);
     } catch (cause: unknown) {
@@ -339,8 +382,8 @@ export function useWorkspaceProjects(restoredWorkspaceId: string | null) {
     visibleProjects,
     loading,
     error,
-    selectedWorkspace,
-    setSelectedWorkspace,
+    selectedKey,
+    setSelectedKey,
     setSessionFacts,
     search,
     handleSearchChange,

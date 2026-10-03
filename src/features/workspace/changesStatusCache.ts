@@ -1,21 +1,25 @@
+import type { WorkspaceKey } from "./hosts/hostIdentity";
 import type { WorkspaceGitStatus } from "../../types/ipc";
 
-const statuses = new Map<string, { status: WorkspaceGitStatus; readAt: number }>();
+const statuses = new Map<WorkspaceKey, { status: WorkspaceGitStatus; readAt: number }>();
 const FRESH_MS = 5000;
 
-export function rememberChangesStatus(workspaceId: string, status: WorkspaceGitStatus | null) {
-  for (const [id, cell] of statuses) {
-    if (Date.now() - cell.readAt > FRESH_MS) statuses.delete(id);
+export function rememberChangesStatus(
+  workspaceKey: WorkspaceKey,
+  status: WorkspaceGitStatus | null,
+) {
+  for (const [key, cell] of statuses) {
+    if (Date.now() - cell.readAt > FRESH_MS) statuses.delete(key);
   }
-  if (status === null || status.error !== null) statuses.delete(workspaceId);
-  else statuses.set(workspaceId, { status, readAt: Date.now() });
+  if (status === null || status.error !== null) statuses.delete(workspaceKey);
+  else statuses.set(workspaceKey, { status, readAt: Date.now() });
 }
 
-export function freshChangesStatus(workspaceId: string): WorkspaceGitStatus | null {
-  const cell = statuses.get(workspaceId);
+export function freshChangesStatus(workspaceKey: WorkspaceKey): WorkspaceGitStatus | null {
+  const cell = statuses.get(workspaceKey);
   if (cell === undefined) return null;
   if (Date.now() - cell.readAt <= FRESH_MS) return cell.status;
-  statuses.delete(workspaceId);
+  statuses.delete(workspaceKey);
   return null;
 }
 

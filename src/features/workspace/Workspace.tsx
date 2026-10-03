@@ -27,7 +27,6 @@ import {
   makeToolTab,
   openToolTabs,
   pruneToolTabsForWorkspaces,
-  toolTabId,
   type ToolTab,
   type ToolTabKind,
 } from "./strip/toolTabs";
@@ -35,6 +34,7 @@ import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
+import { localWorkspaceKey, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { activeTabFor, forgetTab, pruneTabMemory, rememberActiveTab } from "./workspaceTabMemory";
 import { useTabSelection } from "./strip/useTabSelection";
 import { useTabCloseFlow } from "./strip/useTabCloseFlow";
@@ -59,8 +59,8 @@ import {
   MIN_RIGHT_WIDTH,
   useWorkspacePanelResize,
 } from "./workspaceResize";
-import { useWorkspaceProjects } from "./workspaceProjects";
-import { getLastSelectedWorkspaceId, setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
+import { keyOfWorkspace, useWorkspaceProjects } from "./workspaceProjects";
+import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
 import { useProviderConsent } from "./useProviderConsent";
@@ -153,10 +153,11 @@ export function paneSessionOf<S extends { id: string }>(
 /**
  * Which strips a session's tab belongs to. A session with no workspace — the
  * Design surface creates those — belongs to every one of them, so its tab
- * stays reachable wherever the user navigates.
+ * stays reachable wherever the user navigates. A tab takes its host from the
+ * workspace it belongs to; the roster carries no host of its own.
  */
-function belongsToWorkspace(session: Session, workspaceId: string | null): boolean {
-  return session.workspaceId === workspaceId || session.workspaceId === null;
+function belongsToWorkspaceKey(session: Session, key: WorkspaceKey | null): boolean {
+  return session.workspaceId === null || localWorkspaceKey(session.workspaceId) === key;
 }
 
 /**
@@ -169,13 +170,13 @@ function belongsToWorkspace(session: Session, workspaceId: string | null): boole
  * that moves the view and the one that picks the tab it lands on.
  */
 function workspaceTheViewMovesTo(
-  pushed: string | null,
+  pushed: WorkspaceKey | null,
   userNavigated: boolean,
-  restoredWorkspace: string | null,
-  selectedWorkspace: string | null,
-): string | null {
+  restoredWorkspaceKey: WorkspaceKey | null,
+  selectedKey: WorkspaceKey | null,
+): WorkspaceKey | null {
   if (pushed === null || userNavigated) return null;
-  if (restoredWorkspace !== null && restoredWorkspace === selectedWorkspace) return null;
+  if (restoredWorkspaceKey !== null && restoredWorkspaceKey === selectedKey) return null;
   return pushed;
 }
 
@@ -215,14 +216,14 @@ export function Workspace({
   // the user's. App keys the surface boundary by surface, so a visit to
   // Settings or Design remounts this component, and the workspace the user was
   // standing in outlives the surface that recorded it.
-  const [restoredWorkspace] = useState(getLastSelectedWorkspaceId);
+  const [restoredWorkspaceKey] = useState(getLastSelectedWorkspaceKey);
   const {
     projects,
     visibleProjects,
     loading: projectsLoading,
     error: projectsError,
-    selectedWorkspace,
-    setSelectedWorkspace,
+    selectedKey,
+    setSelectedKey,
     setSessionFacts,
     search,
     handleSearchChange,
@@ -235,14 +236,17 @@ export function Workspace({
     renameWorkspace,
     deleteWorkspace,
     reuseOrCreateWorkspace,
-  } = useWorkspaceProjects(restoredWorkspace);
+  } = useWorkspaceProjects(restoredWorkspaceKey);
   // The one seam Settings → Providers may use: the last-selected workspace,
   // read when a provider install/login opens its terminal tab. It is also what
   // the next mount of this surface starts on. The surfaces never mount
   // together, so the cell outlives them; unmount clears nothing.
   useEffect(() => {
-    setLastSelectedWorkspaceId(selectedWorkspace);
-  }, [selectedWorkspace]);
+    setLastSelectedWorkspaceKey(selectedKey);
+  }, [selectedKey]);
+  // What the daemon is sent: the selection's own id, never its key.
+  const selectedWorkspaceId =
+    selectedKey === null ? null : parseWorkspaceKey(selectedKey).workspaceId;
   const {
     leftWidth,
     rightWidth,
@@ -293,7 +297,7 @@ export function Workspace({
     open: openSession,
     closeTabs: closeSessionTabsIn,
     dismissError: dismissSessionsError,
-  } = useWorkspaceSessions(selectedWorkspace);
+  } = useWorkspaceSessions(selectedWorkspaceId);
   // Every road that takes a session's tab out of the strip lands here, so a
   // closed id leaves every workspace's memory — an unscoped session's tab
   // belongs to all of them, and an entry left behind elsewhere would restore
@@ -314,42 +318,43 @@ export function Workspace({
   // shared: each pane seeds from it and writes its landed reads back.
   const [toolContentCache] = useState(createToolContentCache);
 
-  const sidebarWorkspaceIds = useMemo(
-    () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
+  const sidebarWorkspaceKeys = useMemo(
+    () =>
+      visibleProjects
+        .flatMap((project) => project.workspaces.map(keyOfWorkspace))
+        .filter((key) => key !== null),
     [visibleProjects],
   );
-  const sidebarIdSet = useMemo(() => new Set(sidebarWorkspaceIds), [sidebarWorkspaceIds]);
+  const sidebarKeySet = useMemo(() => new Set(sidebarWorkspaceKeys), [sidebarWorkspaceKeys]);
   // History's rows join the visible tree's sweep while it is open, so a row
   // the tree search hides, or no project lists, still gets its branch.
-  const [historyWorkspaceIds, setHistoryWorkspaceIds] = useState<readonly string[]>([]);
-  const handleHistoryWorkspaceIds = useCallback((ids: readonly string[]) => {
-    setHistoryWorkspaceIds((current) =>
-      current.join("\u0000") === ids.join("\u0000") ? current : ids,
+  const [historyWorkspaceKeys, setHistoryWorkspaceKeys] = useState<readonly WorkspaceKey[]>([]);
+  const handleHistoryWorkspaceKeys = useCallback((keys: readonly WorkspaceKey[]) => {
+    setHistoryWorkspaceKeys((current) =>
+      current.join("\u0000") === keys.join("\u0000") ? current : keys,
     );
   }, []);
-  const statsWorkspaceIds = useMemo(
-    () => [...new Set([...sidebarWorkspaceIds, ...historyWorkspaceIds])].sort(),
-    [sidebarWorkspaceIds, historyWorkspaceIds],
+  const statsWorkspaceKeys = useMemo(
+    () => [...new Set([...sidebarWorkspaceKeys, ...historyWorkspaceKeys])].sort(),
+    [sidebarWorkspaceKeys, historyWorkspaceKeys],
   );
-  const endedKey = useMemo(
-    () =>
-      sessions
-        .filter(
-          (session) =>
-            session.state.type === "ended" && sidebarIdSet.has(session.workspaceId ?? ""),
-        )
-        .map((session) => session.id)
-        .join("\n"),
-    [sessions, sidebarIdSet],
-  );
+  const endedKey = useMemo(() => {
+    const ended: string[] = [];
+    for (const session of sessions) {
+      if (session.state.type !== "ended" || session.workspaceId === null) continue;
+      const key = localWorkspaceKey(session.workspaceId);
+      if (key !== null && sidebarKeySet.has(key)) ended.push(session.id);
+    }
+    return ended.join("\n");
+  }, [sessions, sidebarKeySet]);
   const {
     stats: workspaceStats,
     branches: workspaceBranches,
     refresh: refreshWorkspaceStats,
     evict: evictWorkspaceStats,
-  } = useWorkspaceStats(statsWorkspaceIds, {
+  } = useWorkspaceStats(statsWorkspaceKeys, {
     connected: daemon.state === "connected",
-    selectedWorkspace,
+    selectedKey,
     endedKey,
   });
   const handleDeleteWorkspace = useCallback(
@@ -357,7 +362,8 @@ export function Workspace({
       const refusal = await deleteWorkspace(workspaceId);
       // The daemon's row is gone; History can keep naming the id for its
       // sessions, so the cache is dropped here and never waits for History.
-      if (refusal === null) evictWorkspaceStats(workspaceId);
+      const key = localWorkspaceKey(workspaceId);
+      if (refusal === null && key !== null) evictWorkspaceStats(key);
       return refusal;
     },
     [deleteWorkspace, evictWorkspaceStats],
@@ -426,28 +432,33 @@ export function Workspace({
         ),
     }),
   );
-  const knownWorkspaceIds = useMemo(
+  const knownWorkspaceKeys = useMemo(
     // All listed projects, not the search-filtered view: search hiding a
     // workspace's row must not veto navigation into it.
-    () => new Set(projects.flatMap((project) => project.workspaces.map((w) => w.id))),
+    () =>
+      new Set(
+        projects
+          .flatMap((project) => project.workspaces.map(keyOfWorkspace))
+          .filter((key) => key !== null),
+      ),
     [projects],
   );
   // Pruned during render from this render's workspace set; keyed on contents,
   // never Set identity, so roster pushes skip the extra pass.
-  const workspaceIdKey = useMemo(
-    () => [...knownWorkspaceIds].sort().join("\n"),
-    [knownWorkspaceIds],
+  const workspaceKeyText = useMemo(
+    () => [...knownWorkspaceKeys].sort().join("\n"),
+    [knownWorkspaceKeys],
   );
-  const [prunedWorkspaceKey, setPrunedWorkspaceKey] = useState(workspaceIdKey);
-  if (prunedWorkspaceKey !== workspaceIdKey) {
-    setPrunedWorkspaceKey(workspaceIdKey);
-    pruneTabMemory(knownWorkspaceIds);
+  const [prunedWorkspaceKeyText, setPrunedWorkspaceKeyText] = useState(workspaceKeyText);
+  if (prunedWorkspaceKeyText !== workspaceKeyText) {
+    setPrunedWorkspaceKeyText(workspaceKeyText);
+    pruneTabMemory(knownWorkspaceKeys);
     setToolTabs((prev) => {
       for (const tab of prev) {
-        if (!knownWorkspaceIds.has(tab.workspaceId))
-          evictToolContent(toolContentCache, tab.workspaceId, tab.path);
+        if (!knownWorkspaceKeys.has(tab.workspaceKey))
+          evictToolContent(toolContentCache, tab.workspaceKey, tab.path);
       }
-      return pruneToolTabsForWorkspaces(prev, knownWorkspaceIds);
+      return pruneToolTabsForWorkspaces(prev, knownWorkspaceKeys);
     });
   }
 
@@ -458,8 +469,8 @@ export function Workspace({
   );
   // One workspace predicate serves both the strip and overview so navigation cannot drift.
   const inSelectedWorkspace = useCallback(
-    (session: Session) => belongsToWorkspace(session, selectedWorkspace),
-    [selectedWorkspace],
+    (session: Session) => belongsToWorkspaceKey(session, selectedKey),
+    [selectedKey],
   );
   const visibleSessions = useMemo(() => {
     const hiding = new Set(closingIds);
@@ -468,22 +479,21 @@ export function Workspace({
     );
   }, [openSessions, closingIds, inSelectedWorkspace]);
   const visibleToolTabs = useMemo(
-    () => toolTabs.filter((tab) => tab.workspaceId === selectedWorkspace),
-    [toolTabs, selectedWorkspace],
+    () => toolTabs.filter((tab) => tab.workspaceKey === selectedKey),
+    [toolTabs, selectedKey],
   );
   // The tab ids another workspace would render: the live set a remembered
   // tab has to still belong to, or the switch falls back. Built per call
   // because it is only ever asked for a workspace being entered.
   const liveTabIdsFor = useCallback(
-    (workspaceId: string): ReadonlySet<string> => {
+    (key: WorkspaceKey): ReadonlySet<string> => {
       const hiding = new Set(closingIds);
       const ids = new Set<string>();
       for (const session of openSessions) {
-        if (!hiding.has(session.id) && belongsToWorkspace(session, workspaceId))
-          ids.add(session.id);
+        if (!hiding.has(session.id) && belongsToWorkspaceKey(session, key)) ids.add(session.id);
       }
       for (const tab of toolTabs) {
-        if (tab.workspaceId === workspaceId) ids.add(tab.id);
+        if (tab.workspaceKey === key) ids.add(tab.id);
       }
       return ids;
     },
@@ -494,11 +504,14 @@ export function Workspace({
   // the workspace's first open session, or none. The row click and the mount
   // both ask here, so a fallback written twice cannot drift.
   const landingTabFor = useCallback(
-    (workspaceId: string): string | null =>
+    (key: WorkspaceKey): string | null =>
       activeTabFor(
-        workspaceId,
-        liveTabIdsFor(workspaceId),
-        openSessions.find((session) => session.workspaceId === workspaceId)?.id ?? null,
+        key,
+        liveTabIdsFor(key),
+        openSessions.find(
+          (session) =>
+            session.workspaceId !== null && localWorkspaceKey(session.workspaceId) === key,
+        )?.id ?? null,
       ),
     [liveTabIdsFor, openSessions],
   );
@@ -522,9 +535,10 @@ export function Workspace({
   );
   const workspaceName = useMemo(
     () =>
-      projects.flatMap((project) => project.workspaces).find((w) => w.id === selectedWorkspace)
-        ?.title ?? null,
-    [projects, selectedWorkspace],
+      projects
+        .flatMap((project) => project.workspaces)
+        .find((w) => keyOfWorkspace(w) === selectedKey)?.title ?? null,
+    [projects, selectedKey],
   );
   const activeTool = visibleToolTabs.find((tab) => tab.id === activeToolTabId) ?? null;
   const activeToolId = activeTool?.id ?? null;
@@ -541,14 +555,14 @@ export function Workspace({
   // the same frame — neither is recorded, so neither can file one workspace's
   // tab under another's key.
   useEffect(() => {
-    const key = selectedWorkspace;
-    if (key === null) return;
+    if (selectedKey === null) return;
     if (activeTabId === null) {
-      if (composedTabs.length === 0) rememberActiveTab(key, null);
+      if (composedTabs.length === 0) rememberActiveTab(selectedKey, null);
       return;
     }
-    if (composedTabs.some((tab) => tab.id === activeTabId)) rememberActiveTab(key, activeTabId);
-  }, [activeTabId, composedTabs, selectedWorkspace]);
+    if (composedTabs.some((tab) => tab.id === activeTabId))
+      rememberActiveTab(selectedKey, activeTabId);
+  }, [activeTabId, composedTabs, selectedKey]);
   // What a toast may quote for a session: the pending permission card's text
   // and the last assistant message, and only for a row this window's tab
   // strip actually renders. The provider is rebuilt from the rendered rows
@@ -582,18 +596,13 @@ export function Workspace({
   // leftover. Null means nothing is asking for a move. The reconcile below and
   // the restore after it read this, so the road that moves the view and the
   // road that picks the tab cannot disagree about what is pushing.
-  const pushedWorkspaceId = useMemo(() => {
+  const pushedWorkspaceKey = useMemo(() => {
     const selected = sessions.find((session) => session.id === selectedSessionId);
-    if (
-      selected === undefined ||
-      selected.workspaceId === null ||
-      selected.workspaceId === selectedWorkspace ||
-      !knownWorkspaceIds.has(selected.workspaceId)
-    ) {
-      return null;
-    }
-    return selected.workspaceId;
-  }, [knownWorkspaceIds, selectedSessionId, selectedWorkspace, sessions]);
+    if (selected === undefined || selected.workspaceId === null) return null;
+    const key = localWorkspaceKey(selected.workspaceId);
+    if (key === null || key === selectedKey || !knownWorkspaceKeys.has(key)) return null;
+    return key;
+  }, [knownWorkspaceKeys, selectedSessionId, selectedKey, sessions]);
   // Selection is navigation, reconciled in ONE effect from ONE
   // snapshot so workspace and session can never undo each other across
   // renders (two effects here once fought: one scheduled the workspace
@@ -609,26 +618,26 @@ export function Workspace({
   useEffect(() => {
     if (sessionsLoading || projectsLoading) return;
     const movesTo = workspaceTheViewMovesTo(
-      pushedWorkspaceId,
+      pushedWorkspaceKey,
       userNavigatedRef.current,
-      restoredWorkspace,
-      selectedWorkspace,
+      restoredWorkspaceKey,
+      selectedKey,
     );
     if (movesTo !== null) {
-      setSelectedWorkspace(movesTo);
+      setSelectedKey(movesTo);
       return;
     }
     if (visibleSessions.some((session) => session.id === selectedSessionId)) return;
     selectSession(visibleSessions[0]?.id ?? null);
   }, [
     projectsLoading,
-    pushedWorkspaceId,
-    restoredWorkspace,
+    pushedWorkspaceKey,
+    restoredWorkspaceKey,
     selectedSessionId,
-    selectedWorkspace,
+    selectedKey,
     sessionsLoading,
     visibleSessions,
-    setSelectedWorkspace,
+    setSelectedKey,
     selectSession,
   ]);
   // One close, one act: the flow has already asked where the policy says so
@@ -647,12 +656,14 @@ export function Workspace({
       // refresh is deliberately NOT a roster refresh: the roster still
       // reports the rows live, and refreshing would unmark the closes and
       // resurrect them.
-      const closedWorkspaceIds = new Set(
-        matched
-          .map((session) => sessions.find((roster) => roster.id === session.id)?.workspaceId)
-          .filter((workspaceId) => workspaceId !== null && workspaceId !== undefined),
-      );
-      if (closedWorkspaceIds.size > 0) refreshWorkspaceStats([...closedWorkspaceIds]);
+      const closedWorkspaceKeys = new Set<WorkspaceKey>();
+      for (const session of matched) {
+        const closedIn = sessions.find((roster) => roster.id === session.id)?.workspaceId;
+        if (closedIn === null || closedIn === undefined) continue;
+        const key = localWorkspaceKey(closedIn);
+        if (key !== null) closedWorkspaceKeys.add(key);
+      }
+      if (closedWorkspaceKeys.size > 0) refreshWorkspaceStats([...closedWorkspaceKeys]);
       closeSessionTabs(matched.map((session) => session.id));
       for (const session of matched) {
         closeActions.act(
@@ -686,9 +697,12 @@ export function Workspace({
   }, []);
   // Opening the same (kind, workspace, path) again focuses the existing
   // tab instead of duplicating it; opening focuses either way.
-  const openToolTab = useCallback((workspaceId: string, path: string, kind: ToolTabKind) => {
-    setToolTabs((prev) => openToolTabs(prev, makeToolTab(kind, workspaceId, path)));
-    setActiveToolTabId(toolTabId(kind, workspaceId, path));
+  const openToolTab = useCallback((key: WorkspaceKey, path: string, kind: ToolTabKind) => {
+    // One tab mints one id: the strip selects what it is given, never a
+    // second string rebuilt from the same parts.
+    const tab = makeToolTab(kind, key, path);
+    setToolTabs((prev) => openToolTabs(prev, tab));
+    setActiveToolTabId(tab.id);
   }, []);
   // Every stand-down routes through here. The landed create is the only caller
   // that may skip it (guarded below); the roster reconcile never calls it.
@@ -733,19 +747,18 @@ export function Workspace({
     // for the workspace being left behind.
     if (
       workspaceTheViewMovesTo(
-        pushedWorkspaceId,
+        pushedWorkspaceKey,
         userNavigatedRef.current,
-        restoredWorkspace,
-        selectedWorkspace,
+        restoredWorkspaceKey,
+        selectedKey,
       ) !== null
     ) {
       return;
     }
-    const key = selectedWorkspace;
-    if (key === null) return;
+    if (selectedKey === null) return;
     // A tab this strip is showing was chosen by the road that got here.
     if (activeTabId !== null && composedTabs.some((tab) => tab.id === activeTabId)) return;
-    const landing = landingTabFor(key);
+    const landing = landingTabFor(selectedKey);
     if (landing === activeTabId) return;
     selectTab(landing);
   }, [
@@ -753,10 +766,10 @@ export function Workspace({
     composedTabs,
     landingTabFor,
     projectsLoading,
-    pushedWorkspaceId,
-    restoredWorkspace,
+    pushedWorkspaceKey,
+    restoredWorkspaceKey,
     selectTab,
-    selectedWorkspace,
+    selectedKey,
     sessionsLoading,
   ]);
   // A landed create takes the pane only while the tool axis stood still: the
@@ -785,7 +798,7 @@ export function Workspace({
       const gone = new Set(ids);
       setToolTabs((prev) => {
         for (const tab of prev) {
-          if (gone.has(tab.id)) evictToolContent(toolContentCache, tab.workspaceId, tab.path);
+          if (gone.has(tab.id)) evictToolContent(toolContentCache, tab.workspaceKey, tab.path);
         }
         return prev.filter((tab) => !gone.has(tab.id));
       });
@@ -851,15 +864,18 @@ export function Workspace({
     paneSession === null ? null : sharedSessionQueueOwner().queueFor(paneSession.id);
   // Primitive dependencies keep fileLinks stable across roster pushes so
   // unchanged messages retain their Markdown memo.
+  // The pane's workspace, as the UI names it: the header menu reads it for the
+  // branch row, the file links open tabs under it.
   const paneWorkspaceId = paneSession?.workspaceId ?? null;
+  const paneWorkspaceKey = paneWorkspaceId === null ? null : localWorkspaceKey(paneWorkspaceId);
   const paneCwd = paneSession?.cwd;
   const chatFileLinks = useMemo(() => {
-    if (paneWorkspaceId === null || paneCwd === undefined) return null;
+    if (paneWorkspaceId === null || paneCwd === undefined || paneWorkspaceKey === null) return null;
     return {
       root: paneCwd,
-      open: (relativePath: string) => openToolTab(paneWorkspaceId, relativePath, "file"),
+      open: (relativePath: string) => openToolTab(paneWorkspaceKey, relativePath, "file"),
     };
-  }, [paneWorkspaceId, paneCwd, openToolTab]);
+  }, [paneWorkspaceId, paneCwd, paneWorkspaceKey, openToolTab]);
   // The recovery decision is a small external store: it holds the episode, the
   // roster answer, and the attempt-failed note, which only change from pushed
   // updates. Both pushes happen in effects below — no ref is read during render.
@@ -942,11 +958,12 @@ export function Workspace({
       // Reopening names the session to show: the tool tab stands down.
       standDownToolTab();
       openSession(session);
-      if (session.workspaceId !== null) setSelectedWorkspace(session.workspaceId);
+      const key = session.workspaceId === null ? null : localWorkspaceKey(session.workspaceId);
+      if (key !== null) setSelectedKey(key);
       setHistoryOpen(false);
       setHistorySearch("");
     },
-    [openSession, setSelectedWorkspace, standDownToolTab],
+    [openSession, setSelectedKey, standDownToolTab],
   );
   const handleReopenAgent = useCallback(
     (session: Session) => {
@@ -1001,7 +1018,7 @@ export function Workspace({
   /** The button a provider flow was opened from: the portal positions off its rectangle. */
   const providerAnchorElRef = useRef<HTMLElement | null>(null);
   /** The workspace the open choice was made under: switching it must end the choice. */
-  const choiceWorkspaceRef = useRef<string | null>(selectedWorkspace);
+  const choiceWorkspaceRef = useRef<WorkspaceKey | null>(selectedKey);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
   const [providerError, setProviderError] = useState<ErrorSentence | null>(null);
@@ -1037,10 +1054,10 @@ export function Workspace({
   );
   const addSessionToWorkspace = useCallback(
     (provider: ProviderInfo | undefined) => {
-      startAgentSession(provider, selectedWorkspace);
+      startAgentSession(provider, selectedWorkspaceId);
       endProviderChoice();
     },
-    [endProviderChoice, selectedWorkspace, startAgentSession],
+    [endProviderChoice, selectedWorkspaceId, startAgentSession],
   );
   const handleConsentConfirmed = useCallback((provider: ProviderInfo) => {
     setProviderPicker(null);
@@ -1073,7 +1090,7 @@ export function Workspace({
       providerChoiceInFlightRef.current = true;
       // The workspace this choice belongs to, captured the moment it starts:
       // switching to another one mid-flow ends the choice (the effect below).
-      choiceWorkspaceRef.current = selectedWorkspace;
+      choiceWorkspaceRef.current = selectedKey;
       setProviderChoosing(true);
       setProviderError(null);
       let capable: ProviderInfo[];
@@ -1117,7 +1134,7 @@ export function Workspace({
       }
       setProviderPicker(capable);
     },
-    [endProviderChoice, loadChatProviders, requestConsent, selectedWorkspace],
+    [endProviderChoice, loadChatProviders, requestConsent, selectedKey],
   );
   const handleNewWorkspace = useCallback(
     (trigger: HTMLButtonElement, projectId: string) => {
@@ -1144,20 +1161,20 @@ export function Workspace({
   );
   const handleRetryProjects = useCallback(() => void retryProjects(), [retryProjects]);
   const selectWorkspace = useCallback(
-    (workspaceId: string) => {
+    (key: WorkspaceKey) => {
       // The row already in force is not navigation: no workspace changes, so
       // nothing is chosen either — which keeps it from reading the tool pane
       // again, a nudge that belongs to a click on the tab itself.
-      if (workspaceId === selectedWorkspace) return;
+      if (key === selectedKey) return;
       userNavigatedRef.current = true;
-      setSelectedWorkspace(workspaceId);
+      setSelectedKey(key);
       // The selection moves with the navigation: the tab this workspace was
       // last left on, else the fallback the switch has always used — the
       // workspace's first tab, or none (its empty state). Routing through
       // selectTab leaves the old workspace's tool tab behind with it.
-      selectTab(landingTabFor(workspaceId));
+      selectTab(landingTabFor(key));
     },
-    [landingTabFor, selectTab, selectedWorkspace, setSelectedWorkspace],
+    [landingTabFor, selectTab, selectedKey, setSelectedKey],
   );
   const handleNewSession = useCallback(
     (trigger: HTMLButtonElement | null) => {
@@ -1185,7 +1202,7 @@ export function Workspace({
       providerError: providerError?.sentence ?? null,
       pickerOpen: providerPicker !== null,
       selectedSessionId,
-      workspaceId: selectedWorkspace,
+      workspaceKey: selectedKey,
     });
   // Asked by the terminal surface at the moment it would focus: focus may
   // only move if it is still where this flow left it (body, null, or "+").
@@ -1200,10 +1217,10 @@ export function Workspace({
   // workspace the create ran under, so switching away cancels it.
   const handleNewTabTerminal = useCallback(() => {
     dismissNewTabMenu();
-    void createAndShowSession("terminal", null, selectedWorkspace).then((session) => {
-      if (session !== null) armTerminalFocus(session.id, selectedWorkspace);
+    void createAndShowSession("terminal", null, selectedWorkspaceId).then((session) => {
+      if (session !== null) armTerminalFocus(session.id, selectedKey);
     });
-  }, [armTerminalFocus, createAndShowSession, dismissNewTabMenu, selectedWorkspace]);
+  }, [armTerminalFocus, createAndShowSession, dismissNewTabMenu, selectedKey, selectedWorkspaceId]);
   const consentCancel = useCallback(() => {
     // The picker stays anchored behind the consent card; cancelling only
     // removes the card and returns to the option list.
@@ -1266,8 +1283,8 @@ export function Workspace({
   // here, in the workspace it was opened under, never the one now selected.
   useEffect(() => {
     if (!providerChoosing) return;
-    if (choiceWorkspaceRef.current !== selectedWorkspace) dismissPickerFlow();
-  }, [providerChoosing, selectedWorkspace, dismissPickerFlow]);
+    if (choiceWorkspaceRef.current !== selectedKey) dismissPickerFlow();
+  }, [providerChoosing, selectedKey, dismissPickerFlow]);
   useEffect(() => {
     if (providerAnchor === null && consentProvider === null) return;
     const onKey = (event: KeyboardEvent) => {
@@ -1594,7 +1611,7 @@ export function Workspace({
           searchValue: historySearch,
           projects,
           branches: workspaceBranches,
-          onWorkspaceIdsChange: handleHistoryWorkspaceIds,
+          onWorkspaceKeysChange: handleHistoryWorkspaceKeys,
           selectedSessionId: activeToolId === null ? selectedSessionId : null,
           onSearchChange: handleHistorySearchChange,
           onReopen: handleReopenSession,
@@ -1611,7 +1628,7 @@ export function Workspace({
           loading: projectsLoading,
           error: projectsError,
           providerError,
-          selectedWorkspace,
+          selectedWorkspace: selectedKey,
           onRetryProjects: handleRetryProjects,
           onSelectWorkspace: selectWorkspace,
           onNewWorkspace: handleNewWorkspace,
@@ -1635,7 +1652,7 @@ export function Workspace({
           newTab={{
             open: newTabMenuOpen,
             creating: sessionCreating || providerChoosing,
-            workspaceSelected: selectedWorkspace !== null,
+            workspaceSelected: selectedKey !== null,
             onToggle: () => setNewTabMenuOpen((open) => !open),
             onAgent: handleNewTabAgent,
             onTerminal: handleNewTabTerminal,
@@ -1698,7 +1715,7 @@ export function Workspace({
         ) : null}
 
         {sessionsError !== null &&
-        (sessionsError.workspaceId === null || sessionsError.workspaceId === selectedWorkspace) ? (
+        (sessionsError.workspaceKey === null || sessionsError.workspaceKey === selectedKey) ? (
           // The one render of the create/list failure: the spec's inline error
           // line (12, --danger, triangle), shown over the workspace the
           // failure belongs to. The daemon's own words ride in the tooltip
@@ -1760,7 +1777,7 @@ export function Workspace({
             {activeTool.kind === "diff" ? (
               <ToolDiffPane
                 key={activeTool.id}
-                workspaceId={activeTool.workspaceId}
+                workspaceKey={activeTool.workspaceKey}
                 path={activeTool.path}
                 refreshNonce={toolRefreshNonce}
                 cache={toolContentCache.diffs}
@@ -1768,7 +1785,7 @@ export function Workspace({
             ) : (
               <WorkspaceFileTab
                 key={activeTool.id}
-                workspaceId={activeTool.workspaceId}
+                workspaceKey={activeTool.workspaceKey}
                 path={activeTool.path}
                 refreshNonce={toolRefreshNonce}
                 cache={toolContentCache.fileCells}
@@ -1802,7 +1819,7 @@ export function Workspace({
                 subagentAttention={subagentAttention}
                 onRefreshSubagents={refreshSessions}
                 headerMenuSeam={{
-                  workspaceId: paneSession.workspaceId,
+                  workspaceKey: paneWorkspaceKey,
                   closeEntries: buildTabCloseEntries(
                     composedTabs.findIndex((tab) => tab.id === paneSession.id),
                     composedTabs.length,
@@ -1853,7 +1870,7 @@ export function Workspace({
               <TerminalSurface
                 key={paneSession.id}
                 id={WORKSPACE_TERMINAL_PANEL_ID}
-                workspaceId={selectedWorkspace}
+                workspaceKey={selectedKey}
                 sessionId={paneSession.id}
                 observedState={paneSession.state}
                 cwd={paneSession.cwd}
@@ -1866,7 +1883,7 @@ export function Workspace({
                 onExited={handleSessionClosed}
                 onCloseTab={() => tabClose.closeSingle(paneSession.id)}
                 headerMenuSeam={{
-                  workspaceId: paneSession.workspaceId,
+                  workspaceKey: paneWorkspaceKey,
                   closeEntries: buildTabCloseEntries(
                     composedTabs.findIndex((tab) => tab.id === paneSession.id),
                     composedTabs.length,
@@ -1951,7 +1968,7 @@ export function Workspace({
             />
 
             <div
-              key={`${selectedSurface.id}:${selectedWorkspace ?? ""}`}
+              key={`${selectedSurface.id}:${selectedKey ?? ""}`}
               id={SIDE_PANEL_BODY_ID}
               className="workspace-scroll workspace-side-scroll"
               // A kebab body is menu-opened, not tab-associated: a named
@@ -1976,7 +1993,8 @@ export function Workspace({
                     standing ask instead of acting behind the new panel. */}
                 <ConfirmProvider>
                   {selectedSurface.render({
-                    workspaceId: selectedWorkspace,
+                    workspaceKey: selectedKey,
+                    workspaceId: selectedWorkspaceId,
                     // The one fact the Changes panel gates on, computed from
                     // the daemon status this component already holds — a
                     // panel reads it here instead of polling for its own.

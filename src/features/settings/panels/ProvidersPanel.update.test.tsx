@@ -17,12 +17,16 @@ vi.mock("../../workspace/workspaceSessions", async (importOriginal) => {
 import { providerUpdate, providersList } from "../../../lib/tauri";
 import { resetTerminalShellForTests } from "../providers/terminalShell";
 import { takeTerminalInput } from "../../terminal/pendingTerminalInput";
-import { setLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
+import { setLastSelectedWorkspaceKey } from "../../workspace/lastSelectedWorkspace";
 import { useAppStore } from "../../../store/appStore";
 import type { ProviderInfo, ProviderUpdateOutcome, Session } from "../../../types/ipc";
 import { ProvidersPanel } from "./ProvidersPanel";
 import { sessionMocks } from "./providersPanelTestMocks";
 import { installedProvider, installProvidersPanelMockReset } from "./providersPanelTestSetup";
+import { localWorkspaceKey, type WorkspaceKey } from "../../workspace/hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 installProvidersPanelMockReset();
 
@@ -260,7 +264,7 @@ describe("provider update and install", () => {
     sessionMocks.creating = false;
     sessionMocks.error = null;
     resetTerminalShellForTests();
-    setLastSelectedWorkspaceId("w1");
+    setLastSelectedWorkspaceKey(keyFor("w1"));
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [
         {
@@ -292,6 +296,6 @@ describe("provider update and install", () => {
       "npm install -g @openai/codex@latest; if ($? -and $LASTEXITCODE -eq 0) { codex login }",
     ]);
     expect(useAppStore.getState().activeSurface).toBe("workspace");
-    setLastSelectedWorkspaceId(null);
+    setLastSelectedWorkspaceKey(null);
   });
 });

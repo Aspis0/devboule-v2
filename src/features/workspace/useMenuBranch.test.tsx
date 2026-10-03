@@ -7,6 +7,10 @@ import type { WorkspaceGitStatus } from "../../types/ipc";
 import { rememberChangesStatus } from "./changesStatusCache";
 import { useWorkspaceChanges } from "./useWorkspaceChanges";
 import { useMenuBranch } from "./useMenuBranch";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 vi.mock("../../lib/tauri", () => ({ workspaceGitStatus: vi.fn(), workspaceGitDiff: vi.fn() }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,19 +25,19 @@ const status = (branch: string | null = "feature/own"): WorkspaceGitStatus => ({
 let root: Root;
 let host: HTMLDivElement;
 function Probe({
-  workspaceId = "own",
+  workspaceKey = keyFor("own"),
   open = true,
 }: {
-  workspaceId?: string | null;
+  workspaceKey?: WorkspaceKey | null;
   open?: boolean;
 }) {
-  return <span>{useMenuBranch(workspaceId, open)}</span>;
+  return <span>{useMenuBranch(workspaceKey, open)}</span>;
 }
 beforeEach(() => {
   vi.useFakeTimers();
   vi.mocked(workspaceGitStatus).mockReset().mockResolvedValue(status());
-  rememberChangesStatus("own", null);
-  rememberChangesStatus("other", null);
+  rememberChangesStatus(keyFor("own"), null);
+  rememberChangesStatus(keyFor("other"), null);
   host = document.createElement("div");
   root = createRoot(host);
 });
@@ -42,7 +46,11 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 const render = async (workspaceId: string | null = "own", open = true) => {
-  await act(async () => root.render(<Probe workspaceId={workspaceId} open={open} />));
+  await act(async () =>
+    root.render(
+      <Probe workspaceKey={workspaceId === null ? null : keyFor(workspaceId)} open={open} />,
+    ),
+  );
 };
 
 describe("menu branch reads", () => {
@@ -78,7 +86,7 @@ describe("menu branch reads", () => {
   });
 
   it.each([0, 5000, 5001])("reuses Changes data only while fresh at %s ms", async (age) => {
-    rememberChangesStatus("own", status("cached"));
+    rememberChangesStatus(keyFor("own"), status("cached"));
     await act(async () => vi.advanceTimersByTimeAsync(age));
     await render();
     expect(host.textContent).toBe(age <= 5000 ? "cached" : "feature/own");
@@ -86,8 +94,8 @@ describe("menu branch reads", () => {
   });
 
   it("invalidates cached branch after a Changes error", async () => {
-    rememberChangesStatus("own", status("cached"));
-    rememberChangesStatus("own", null);
+    rememberChangesStatus(keyFor("own"), status("cached"));
+    rememberChangesStatus(keyFor("own"), null);
     await render();
     expect(workspaceGitStatus).toHaveBeenCalledExactlyOnceWith("own");
   });
@@ -141,7 +149,7 @@ describe("menu branch reads", () => {
   });
   it("reuses status actually read by the Changes hook", async () => {
     function ChangesProbe() {
-      useWorkspaceChanges("own");
+      useWorkspaceChanges(keyFor("own"));
       return null;
     }
     await act(async () => root.render(<ChangesProbe />));
@@ -154,7 +162,7 @@ describe("menu branch reads", () => {
   it("clears cached Changes status when the wired status read rejects", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValueOnce(status("stale"));
     function ChangesProbe() {
-      const changes = useWorkspaceChanges("own");
+      const changes = useWorkspaceChanges(keyFor("own"));
       return <button onClick={changes.refresh}>Refresh</button>;
     }
     await act(async () => root.render(<ChangesProbe />));
@@ -176,7 +184,7 @@ describe("menu branch reads", () => {
         }),
     );
     function ChangesProbe() {
-      useWorkspaceChanges("own");
+      useWorkspaceChanges(keyFor("own"));
       return null;
     }
     await act(async () => root.render(<ChangesProbe />));

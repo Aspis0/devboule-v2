@@ -25,6 +25,10 @@ import {
   workspaceFilesList,
 } from "../../lib/tauri";
 import { FilesSurface } from "./FilesSurface";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -116,7 +120,7 @@ describe("FilesPreview", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing(files.map((path) => entry(path, "file", 6))),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
   }
 
   function fileRow(path: string): HTMLButtonElement {
@@ -199,7 +203,7 @@ describe("FilesPreview", () => {
     vi.mocked(workspaceFilesList).mockImplementation((_workspaceId, path) =>
       Promise.resolve(path === "" ? listing([entry("src", "dir")]) : listing([])),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-tree-dir")?.click();

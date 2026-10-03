@@ -3,6 +3,8 @@ import { ErrorText } from "../../../components/ErrorText";
 import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import type { WorkspaceProject } from "../workspaceProjects";
+import { keyOfWorkspace } from "../workspaceProjects";
+import type { WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
 import { WorkspaceRow } from "./WorkspaceRow";
 import type { WorkspaceStat } from "./useWorkspaceStats";
@@ -12,9 +14,9 @@ export interface WorkspaceTreeProps {
   loading: boolean;
   error: ErrorSentence | null;
   providerError: ErrorSentence | null;
-  selectedWorkspace: string | null;
+  selectedWorkspace: WorkspaceKey | null;
   onRetryProjects: () => void;
-  onSelectWorkspace: (workspaceId: string) => void;
+  onSelectWorkspace: (workspaceKey: WorkspaceKey) => void;
   onNewWorkspace: (trigger: HTMLButtonElement, projectId: string) => void;
   /** Persists a row's new title; answers with the refusal, if one came. */
   onRenameWorkspace: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
@@ -24,7 +26,7 @@ export interface WorkspaceTreeProps {
   providerMenuAnchorProjectId: string | null;
   /** The provider choice UI itself (popover or consent card). */
   providerMenu: ReactNode;
-  stats: ReadonlyMap<string, WorkspaceStat>;
+  stats: ReadonlyMap<WorkspaceKey, WorkspaceStat>;
 }
 
 /**
@@ -114,18 +116,22 @@ export function WorkspaceTree({
             </div>
           ) : null}
           <div className="workspace-project-items">
-            {project.workspaces.map((workspace) => (
-              <WorkspaceRow
-                key={workspace.id}
-                workspace={workspace}
-                projectName={project.name}
-                selected={selectedWorkspace === workspace.id}
-                stat={stats.get(workspace.id)}
-                onSelect={onSelectWorkspace}
-                onRename={onRenameWorkspace}
-                onDelete={onDeleteWorkspace}
-              />
-            ))}
+            {project.workspaces.map((workspace) => {
+              const key = keyOfWorkspace(workspace);
+              return (
+                <WorkspaceRow
+                  key={workspace.id}
+                  workspace={workspace}
+                  workspaceKey={key}
+                  projectName={project.name}
+                  selected={key !== null && selectedWorkspace === key}
+                  stat={key === null ? undefined : stats.get(key)}
+                  onSelect={onSelectWorkspace}
+                  onRename={onRenameWorkspace}
+                  onDelete={onDeleteWorkspace}
+                />
+              );
+            })}
             <div className="workspace-new-row-wrap">
               <button
                 type="button"

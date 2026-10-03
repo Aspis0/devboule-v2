@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
-import { setLastSelectedWorkspaceId } from "./lastSelectedWorkspace";
+import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonStatus, Session } from "../../types/ipc";
 
@@ -140,7 +140,7 @@ beforeEach(() => {
   localStorage.removeItem("devboule.openSessionTabs");
   resetSharedSessionControllerForTests();
   resetTabMemoryForTests();
-  setLastSelectedWorkspaceId(null);
+  setLastSelectedWorkspaceKey(null);
   container = document.createElement("div");
   document.body.appendChild(container);
   vi.mocked(projectsList).mockResolvedValue([project]);

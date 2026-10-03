@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceGitRow } from "../../types/ipc";
 import { parseRules, stripComments } from "../../styles/cssText";
 import { ChangesTreeView } from "./ChangesTreeView";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import {
   assembleCssProof,
   removeCssProof,
@@ -22,6 +23,9 @@ import {
   specificity,
   type CssRule,
 } from "./cssProof";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -125,7 +129,7 @@ async function renderRowFamily(): Promise<{ token: (name: string) => string | un
         onToggleMenu={vi.fn()}
         onCloseMenu={vi.fn()}
         acting={false}
-        workspaceId="ws-1"
+        workspaceKey={keyFor("ws-1")}
       />,
     );
   });

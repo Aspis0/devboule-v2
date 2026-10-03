@@ -67,7 +67,13 @@ describe("explicit session tab membership", () => {
     await vi.waitFor(() => expect(controller.getState().loading).toBe(false));
     expect(source.list).toHaveBeenCalledTimes(1);
     expect(JSON.parse(disk.getItem()!).tabs).toEqual([
-      { id: row.id, workspaceId: row.workspaceId, createdAtMs: row.createdAtMs },
+      {
+        id: row.id,
+        hostId: "local",
+        workspaceId: row.workspaceId,
+        workspaceKey: `local:${row.workspaceId}`,
+        createdAtMs: row.createdAtMs,
+      },
     ]);
     const restored = createWorkspaceSessionController(source, undefined, undefined, disk);
     await restored.refresh();

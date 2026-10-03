@@ -1,5 +1,6 @@
 import { memo, useCallback, useState } from "react";
 import type { WorkspaceGitStatus } from "../../types/ipc";
+import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { useWorkspaceChanges } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import { isImeComposition } from "../../lib/imeComposition";
@@ -15,10 +16,11 @@ import "./panel/changes.css";
 
 interface ChangesSurfaceProps {
   /**
-   * The selected workspace's id, from the registry context. `null` before one
-   * settles — a panel with no workspace reads nothing and says so.
+   * The selected workspace as the UI names it, from the registry context.
+   * `null` before one settles — a panel with no workspace reads nothing and
+   * says so.
    */
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
   /**
    * Whether the running daemon can list this workspace's history, from
    * the registry context — a primitive, so the memo holds. Workspace
@@ -30,7 +32,7 @@ interface ChangesSurfaceProps {
    * Slice 8's hand-off: open a file as a diff tab. Optional until that tab
    * kind exists — the pencil that calls it renders only beside it.
    */
-  onOpenFile?: (workspaceId: string, path: string) => void;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
 }
 
 type ChangesPanelView = "uncommitted" | "commits";
@@ -232,11 +234,14 @@ function CommitRow({
  * number beside real data is worse than an empty space.
  */
 export const ChangesSurface = memo(function ChangesSurface({
-  workspaceId,
+  workspaceKey,
   canListCommits,
   onOpenFile,
 }: ChangesSurfaceProps) {
-  const { status, diff, selection, select, refresh } = useWorkspaceChanges(workspaceId);
+  // The daemon's own id for that workspace — what every read and write below
+  // is addressed by. The key is the panel's identity and its cache's key.
+  const workspaceId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).workspaceId;
+  const { status, diff, selection, select, refresh } = useWorkspaceChanges(workspaceKey);
   const { stage, unstage, discard, commit } = useWorkspaceGitActions({ workspaceId, refresh });
   const [view, setView] = useState<ChangesPanelView>("uncommitted");
   const reply = status.reply;
@@ -385,7 +390,7 @@ export const ChangesSurface = memo(function ChangesSurface({
       ) : null}
       {/* A first read that refused: the alert above is the whole answer, so
           nothing below this line may claim anything about the tree. */}
-      {workspaceId === null ? (
+      {workspaceKey === null ? (
         <div className="workspace-changes-state">No workspace is selected.</div>
       ) : loading ? (
         <>
@@ -432,7 +437,7 @@ export const ChangesSurface = memo(function ChangesSurface({
                   withheld list or a caveat could keep. */}
               {reply.rows.length > 0 ? (
                 <ChangesTreeView
-                  workspaceId={workspaceId}
+                  workspaceKey={workspaceKey}
                   rows={reply.rows}
                   inexact={reply.error !== null}
                   selection={selection}

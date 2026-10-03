@@ -3,6 +3,7 @@ import { AppSurface, DesignPanel, PullRequestSurface } from "./sidePanels";
 import { ChangesSurface } from "./ChangesSurface";
 import { FilesSurface } from "./FilesSurface";
 import type { PanelIconName } from "./panel/PanelIcon";
+import type { WorkspaceKey } from "./hosts/hostIdentity";
 import type { ToolTabKind } from "./strip/toolTabs";
 
 /** Where the tab row offers a panel: a visible tab, or the kebab menu. The
@@ -11,8 +12,13 @@ export type PanelPlacement = "tab" | "menu";
 
 export interface SidePanelContext {
   /**
-   * The selected workspace's id — the only form of it that may leave this
-   * process (`src/types/ipc.ts` declares `Workspace.path` display-only).
+   * The selected workspace as the UI names it — which panel this is, and what
+   * every cache the panel fills is keyed by.
+   */
+  workspaceKey: WorkspaceKey | null;
+  /**
+   * The selected workspace's daemon id — the only form of it that may leave
+   * this process (`src/types/ipc.ts` declares `Workspace.path` display-only).
    */
   workspaceId: string | null;
   /**
@@ -26,7 +32,7 @@ export interface SidePanelContext {
    * entry a diff tab, the Files entry a file tab — so the trees keep their
    * (workspaceId, path) call shape and the kind travels only this far.
    */
-  onOpenFile?: (workspaceId: string, path: string, kind: ToolTabKind) => void;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string, kind: ToolTabKind) => void;
 }
 
 export interface SidePanelEntry {
@@ -45,13 +51,13 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     name: "Files",
     placement: "tab",
     icon: "files",
-    render: ({ workspaceId, onOpenFile }) => (
+    render: ({ workspaceKey, onOpenFile }) => (
       <FilesSurface
-        workspaceId={workspaceId}
+        workspaceKey={workspaceKey}
         onOpenFile={
           onOpenFile === undefined
             ? undefined
-            : (childWorkspaceId, path) => onOpenFile(childWorkspaceId, path, "file")
+            : (childWorkspaceKey, path) => onOpenFile(childWorkspaceKey, path, "file")
         }
       />
     ),
@@ -63,14 +69,14 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     icon: "changes",
     // The counts live in R7b's branch row, read off the panel's own poll via
     // changesBadgeLabel — never on the tab (no room at 300 px).
-    render: ({ workspaceId, canListCommits, onOpenFile }) => (
+    render: ({ workspaceKey, canListCommits, onOpenFile }) => (
       <ChangesSurface
-        workspaceId={workspaceId}
+        workspaceKey={workspaceKey}
         canListCommits={canListCommits}
         onOpenFile={
           onOpenFile === undefined
             ? undefined
-            : (childWorkspaceId, path) => onOpenFile(childWorkspaceId, path, "diff")
+            : (childWorkspaceKey, path) => onOpenFile(childWorkspaceKey, path, "diff")
         }
       />
     ),

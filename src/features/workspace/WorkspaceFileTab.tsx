@@ -17,6 +17,7 @@ import { fileTabMode, setFileTabMode, type FileTabMode } from "./fileTabMode";
 import { OpenInEditorAction } from "./OpenInEditorAction";
 import { useWorkspaceFilePreview, type PreviewCell } from "./useWorkspaceFilePreview";
 import { toolContentKey } from "./toolContentCache";
+import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import "./fileTab.css";
 
 /** `.md` and `.markdown`, case-insensitive: Preview's only kinds. */
@@ -95,12 +96,12 @@ function WindowFooter({
 }
 
 export function WorkspaceFileTab({
-  workspaceId,
+  workspaceKey,
   path,
   refreshNonce,
   cache,
 }: {
-  workspaceId: string;
+  workspaceKey: WorkspaceKey;
   path: string;
   /** Bumped when the already-active tab is clicked again: re-reads. */
   refreshNonce: number;
@@ -108,7 +109,9 @@ export function WorkspaceFileTab({
   cache: Map<string, PreviewCell>;
 }) {
   const errorId = useId();
-  const cacheKey = toolContentKey(workspaceId, path);
+  // What the daemon is addressed by, read off the tab's own key.
+  const workspaceId = parseWorkspaceKey(workspaceKey).workspaceId;
+  const cacheKey = toolContentKey(workspaceKey, path);
   const { preview, selection, select, refresh, readMore } = useWorkspaceFilePreview(workspaceId, {
     path,
     cell: cache.get(cacheKey) ?? { reply: null, staged: null, failure: null },

@@ -4,6 +4,7 @@
 // Both live here so Workspace.tsx only wires them and the rule is stated once.
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import type { WorkspaceKey } from "../hosts/hostIdentity";
 
 /**
  * Is focus still where a strip flow left it — lost (body or null), or still
@@ -29,7 +30,7 @@ interface StripFocusArgs {
   /** The strip's current tab: the terminal request dies when it moves away. */
   selectedSessionId: string | null;
   /** The strip's current workspace: the request dies when the user leaves the one the create ran under. */
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
 }
 
 /**
@@ -61,14 +62,14 @@ export function useStripFocus({
   providerError,
   pickerOpen,
   selectedSessionId,
-  workspaceId,
+  workspaceKey,
 }: StripFocusArgs): {
   /** Arm: the picker was dismissed without a choice (Escape / outside click). */
   noteChoiceDismissed: () => void;
   /** Pass to TerminalSurface: the + menu's Terminal entry created this tab and its request stands. */
   terminalAutoFocus: boolean;
   /** The + menu's Terminal entry reports the session it created, under the workspace the create ran in. */
-  armTerminalFocus: (sessionId: string, createdInWorkspaceId: string | null) => void;
+  armTerminalFocus: (sessionId: string, createdInWorkspaceKey: WorkspaceKey | null) => void;
   /** The surface spent the request (focused, or declined because focus had moved). */
   takeTerminalFocus: () => void;
 } {
@@ -76,9 +77,10 @@ export function useStripFocus({
   const choiceDismissedRef = useRef(false);
   const startedSessionsError = useRef<string | null>(null);
   const startedProviderError = useRef<string | null>(null);
-  const [request, setRequest] = useState<{ sessionId: string; workspaceId: string | null } | null>(
-    null,
-  );
+  const [request, setRequest] = useState<{
+    sessionId: string;
+    workspaceKey: WorkspaceKey | null;
+  } | null>(null);
 
   // The request dies when the strip leaves the tab or the workspace it was
   // made for: the create's own tab in its own workspace takes focus when its
@@ -88,7 +90,7 @@ export function useStripFocus({
   // every selection and workspace path reaches here.
   if (
     request !== null &&
-    (request.sessionId !== selectedSessionId || request.workspaceId !== workspaceId)
+    (request.sessionId !== selectedSessionId || request.workspaceKey !== workspaceKey)
   ) {
     setRequest(null);
   }
@@ -97,8 +99,8 @@ export function useStripFocus({
     choiceDismissedRef.current = true;
   }, []);
   const armTerminalFocus = useCallback(
-    (sessionId: string, createdInWorkspaceId: string | null) =>
-      setRequest({ sessionId, workspaceId: createdInWorkspaceId }),
+    (sessionId: string, createdInWorkspaceKey: WorkspaceKey | null) =>
+      setRequest({ sessionId, workspaceKey: createdInWorkspaceKey }),
     [],
   );
   const takeTerminalFocus = useCallback(() => setRequest(null), []);

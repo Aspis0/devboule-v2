@@ -9,7 +9,8 @@ import { daemonDiagnostics, providersList } from "../../../lib/tauri";
 import { useAppStore } from "../../../store/appStore";
 import type { ProviderInfo, Session } from "../../../types/ipc";
 import { clearTerminalInputForTests } from "../../terminal/pendingTerminalInput";
-import { setLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
+import { setLastSelectedWorkspaceKey } from "../../workspace/lastSelectedWorkspace";
+import { localWorkspaceKey } from "../../workspace/hosts/hostIdentity";
 import { clearTerminalRuns } from "../providers/providerTerminalRuns";
 import { resetTerminalShellForTests } from "../providers/terminalShell";
 import { ProvidersPanel } from "./ProvidersPanel";
@@ -41,7 +42,7 @@ export function installTerminalInstallDom() {
     vi.mocked(daemonDiagnostics).mockResolvedValue({
       environment: { osVersion: WINDOWS_OS },
     } as never);
-    setLastSelectedWorkspaceId("w1");
+    setLastSelectedWorkspaceKey(localWorkspaceKey("w1")!);
     useAppStore.getState().selectSurface("settings");
   });
 
@@ -52,7 +53,7 @@ export function installTerminalInstallDom() {
     clearTerminalRuns();
     clearTerminalInputForTests();
     resetTerminalShellForTests();
-    setLastSelectedWorkspaceId(null);
+    setLastSelectedWorkspaceKey(null);
     useAppStore.getState().selectSurface("workspace");
   });
 }

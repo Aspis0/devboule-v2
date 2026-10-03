@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { workspaceGitStatus } from "../../../lib/tauri";
+import { parseWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 import { usableBranch } from "../changesStatusCache";
 
 export interface WorkspaceStat {
@@ -11,7 +12,7 @@ export interface WorkspaceStatsOptions {
   /** Stats refresh only while the daemon is connected — every trigger checks. */
   connected: boolean;
   /** A selection refreshes that workspace's numbers right away. */
-  selectedWorkspace: string | null;
+  selectedKey: WorkspaceKey | null;
   /**
    * A change in the roster's ended sessions (a session of some workspace
    * ending) carries a refresh with it.
@@ -22,35 +23,38 @@ export interface WorkspaceStatsOptions {
 // The in-flight ledger outlives every hook instance: a remount while an older
 // read is still running must not fire a second request for the same
 // workspace.
-const inFlight = new Map<string, Promise<void>>();
+const inFlight = new Map<WorkspaceKey, Promise<void>>();
 // A trigger that arrived while the workspace's read was in flight marks it
 // dirty; one follow-up refresh runs when the read settles. Dirty marks are
 // dropped when the last mounted instance unmounts — a follow-up with no
 // sidebar on screen would only leak reads into the next mount.
-const dirty = new Set<string>();
-// Deleted ids: the daemon's row is gone while History may keep naming the
-// id for its sessions, so no sweep and no late read may repopulate them. An id
-// leaves the set when the workspace list admits it again.
-const evicted = new Set<string>();
+const dirty = new Set<WorkspaceKey>();
+// Deleted keys: the daemon's row is gone while History may keep naming the
+// workspace for its sessions, so no sweep and no late read may repopulate it.
+// A key leaves the set when the workspace list admits it again.
+const evicted = new Set<WorkspaceKey>();
 let mountedInstances = 0;
 
 function dropUnlisted<V>(
-  current: ReadonlyMap<string, V>,
-  listed: ReadonlySet<string>,
-): ReadonlyMap<string, V> {
-  let next: Map<string, V> | null = null;
-  for (const id of current.keys()) {
-    if (listed.has(id)) continue;
+  current: ReadonlyMap<WorkspaceKey, V>,
+  listed: ReadonlySet<WorkspaceKey>,
+): ReadonlyMap<WorkspaceKey, V> {
+  let next: Map<WorkspaceKey, V> | null = null;
+  for (const key of current.keys()) {
+    if (listed.has(key)) continue;
     next ??= new Map(current);
-    next.delete(id);
+    next.delete(key);
   }
   return next ?? current;
 }
 
-function dropOne<V>(current: ReadonlyMap<string, V>, id: string): ReadonlyMap<string, V> {
-  if (!current.has(id)) return current;
+function dropOne<V>(
+  current: ReadonlyMap<WorkspaceKey, V>,
+  key: WorkspaceKey,
+): ReadonlyMap<WorkspaceKey, V> {
+  if (!current.has(key)) return current;
   const next = new Map(current);
-  next.delete(id);
+  next.delete(key);
   return next;
 }
 
@@ -59,48 +63,48 @@ function dropOne<V>(current: ReadonlyMap<string, V>, id: string): ReadonlyMap<st
  * History renders — so History asks the daemon for nothing itself.
  */
 export function useWorkspaceStats(
-  workspaceIds: readonly string[],
+  workspaceKeys: readonly WorkspaceKey[],
   options: WorkspaceStatsOptions,
 ): {
-  stats: ReadonlyMap<string, WorkspaceStat>;
-  branches: ReadonlyMap<string, string>;
-  refresh: (ids: readonly string[]) => void;
-  evict: (id: string) => void;
+  stats: ReadonlyMap<WorkspaceKey, WorkspaceStat>;
+  branches: ReadonlyMap<WorkspaceKey, string>;
+  refresh: (keys: readonly WorkspaceKey[]) => void;
+  evict: (key: WorkspaceKey) => void;
 } {
-  const [stats, setStats] = useState<ReadonlyMap<string, WorkspaceStat>>(() => new Map());
-  const [branches, setBranches] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [stats, setStats] = useState<ReadonlyMap<WorkspaceKey, WorkspaceStat>>(() => new Map());
+  const [branches, setBranches] = useState<ReadonlyMap<WorkspaceKey, string>>(() => new Map());
   const mountedRef = useRef(true);
-  const { connected, selectedWorkspace, endedKey } = options;
-  // The id list arrives as a fresh array every render (roster pushes rebuild
+  const { connected, selectedKey, endedKey } = options;
+  // The key list arrives as a fresh array every render (roster pushes rebuild
   // the views); the effects key on the joined list so only a real change in
   // WHICH workspaces are shown triggers a refresh.
-  const idsRef = useRef(workspaceIds);
-  idsRef.current = workspaceIds;
+  const keysRef = useRef(workspaceKeys);
+  keysRef.current = workspaceKeys;
   // Read at call time, so a refresh from a settling read sees a disconnect
   // committed after it was issued.
   const connectedRef = useRef(connected);
   useLayoutEffect(() => {
     connectedRef.current = connected;
   }, [connected]);
-  const listedRef = useRef<ReadonlySet<string>>(new Set());
+  const listedRef = useRef<ReadonlySet<WorkspaceKey>>(new Set());
   // What the last sweep covered while connected; a list change reads only what is new.
-  const sweptRef = useRef<ReadonlySet<string>>(new Set());
+  const sweptRef = useRef<ReadonlySet<WorkspaceKey>>(new Set());
 
-  const readWorkspace = useCallback(async (id: string): Promise<void> => {
-    // A read that outlives its id's place in the list — or its deletion —
+  const readWorkspace = useCallback(async (key: WorkspaceKey): Promise<void> => {
+    // A read that outlives its key's place in the list — or its deletion —
     // must not undo the prune.
-    const listed = () => mountedRef.current && listedRef.current.has(id) && !evicted.has(id);
+    const listed = () => mountedRef.current && listedRef.current.has(key) && !evicted.has(key);
     try {
-      const status = await workspaceGitStatus(id);
+      const status = await workspaceGitStatus(parseWorkspaceKey(key).workspaceId);
       if (!listed()) return;
       setStats((current) => {
-        const existing = current.get(id);
+        const existing = current.get(key);
         const showTotals =
           status.isGit && (status.totals.additions !== 0 || status.totals.deletions !== 0);
         if (!showTotals) {
           if (existing === undefined) return current;
           const cleared = new Map(current);
-          cleared.delete(id);
+          cleared.delete(key);
           return cleared;
         }
         if (
@@ -111,7 +115,7 @@ export function useWorkspaceStats(
           return current;
         }
         const next = new Map(current);
-        next.set(id, {
+        next.set(key, {
           additions: status.totals.additions,
           deletions: status.totals.deletions,
         });
@@ -120,14 +124,14 @@ export function useWorkspaceStats(
       const branch = status.isGit ? usableBranch(status.branch) : null;
       setBranches((current) => {
         if (branch === null) {
-          if (!current.has(id)) return current;
+          if (!current.has(key)) return current;
           const cleared = new Map(current);
-          cleared.delete(id);
+          cleared.delete(key);
           return cleared;
         }
-        if (current.get(id) === branch) return current;
+        if (current.get(key) === branch) return current;
         const next = new Map(current);
-        next.set(id, branch);
+        next.set(key, branch);
         return next;
       });
     } catch {
@@ -135,61 +139,59 @@ export function useWorkspaceStats(
       // A failed read hides the stats and the branch; it never shows zeros
       // or an error.
       setStats((current) => {
-        if (!current.has(id)) return current;
+        if (!current.has(key)) return current;
         const next = new Map(current);
-        next.delete(id);
+        next.delete(key);
         return next;
       });
       setBranches((current) => {
-        if (!current.has(id)) return current;
+        if (!current.has(key)) return current;
         const next = new Map(current);
-        next.delete(id);
+        next.delete(key);
         return next;
       });
     }
   }, []);
 
   const refresh = useCallback(
-    (ids: readonly string[]) => {
-      const read = (id: string): void => {
+    (keys: readonly WorkspaceKey[]) => {
+      const read = (key: WorkspaceKey): void => {
         // Every trigger answers to the connection: disconnected, nothing is
         // sent and nothing is dropped from the cache.
         if (!connectedRef.current) return;
-        if (evicted.has(id)) return;
-        if (inFlight.has(id)) {
+        if (evicted.has(key)) return;
+        if (inFlight.has(key)) {
           // A newer event arrived during the read: one follow-up refreshes
           // the row after it settles instead of leaving stale numbers.
-          dirty.add(id);
+          dirty.add(key);
           return;
         }
         inFlight.set(
-          id,
-          readWorkspace(id).finally(() => {
-            inFlight.delete(id);
+          key,
+          readWorkspace(key).finally(() => {
+            inFlight.delete(key);
             // An unchanged result renders nothing, so the follow-up cannot wait for a render.
-            // A dead instance's mark waits for the live one's next render or read of that id.
-            if (!mountedRef.current || !dirty.delete(id)) return;
-            if (listedRef.current.has(id)) read(id);
+            // A dead instance's mark waits for the live one's next render or read of that key.
+            if (!mountedRef.current || !dirty.delete(key)) return;
+            if (listedRef.current.has(key)) read(key);
           }),
         );
       };
-      for (const id of ids) {
-        if (id !== "") read(id);
-      }
+      for (const key of keys) read(key);
     },
     [readWorkspace],
   );
 
   /**
    * Drop a deleted workspace's stats and branch and bar every later read of
-   * it: the daemon's row is gone, and History can keep naming the id for its
-   * sessions far longer than any cache should live.
+   * it: the daemon's row is gone, and History can keep naming the workspace
+   * for its sessions far longer than any cache should live.
    */
-  const evict = useCallback((id: string): void => {
-    evicted.add(id);
-    dirty.delete(id);
-    setStats((current) => dropOne(current, id));
-    setBranches((current) => dropOne(current, id));
+  const evict = useCallback((key: WorkspaceKey): void => {
+    evicted.add(key);
+    dirty.delete(key);
+    setStats((current) => dropOne(current, key));
+    setBranches((current) => dropOne(current, key));
   }, []);
 
   useEffect(() => {
@@ -202,18 +204,18 @@ export function useWorkspaceStats(
     };
   }, []);
 
-  const idsStable = workspaceIds.join("\u0000");
+  const keysStable = workspaceKeys.join("\u0000");
 
   useEffect(() => {
-    idsRef.current = workspaceIds;
+    keysRef.current = workspaceKeys;
   });
 
   useEffect(() => {
-    // Entries for a departed id would outlive it: nothing else prunes.
-    const listed = new Set(idsRef.current);
-    // An id the list names again after an absence is a new workspace.
-    for (const id of listed) {
-      if (!listedRef.current.has(id)) evicted.delete(id);
+    // Entries for a departed workspace would outlive it: nothing else prunes.
+    const listed = new Set(keysRef.current);
+    // A key the list names again after an absence is a new workspace.
+    for (const key of listed) {
+      if (!listedRef.current.has(key)) evicted.delete(key);
     }
     listedRef.current = listed;
     setStats((current) => dropUnlisted(current, listed));
@@ -222,37 +224,37 @@ export function useWorkspaceStats(
       sweptRef.current = new Set();
       return;
     }
-    const added = idsRef.current.filter((id) => !sweptRef.current.has(id));
+    const added = keysRef.current.filter((key) => !sweptRef.current.has(key));
     sweptRef.current = listed;
     if (added.length > 0) refresh(added);
-  }, [refresh, connected, idsStable]);
+  }, [refresh, connected, keysStable]);
 
   useEffect(() => {
-    if (selectedWorkspace !== null) void refresh([selectedWorkspace]);
-  }, [refresh, selectedWorkspace]);
+    if (selectedKey !== null) void refresh([selectedKey]);
+  }, [refresh, selectedKey]);
 
   // Follow-up sweep for marks whose read settled in an unmounted instance.
   useEffect(() => {
     if (!connected) return;
-    const due = [...dirty].filter((id) => !inFlight.has(id));
+    const due = [...dirty].filter((key) => !inFlight.has(key));
     if (due.length === 0) return;
-    due.forEach((id) => dirty.delete(id));
-    void refresh(due.filter((id) => listedRef.current.has(id)));
+    due.forEach((key) => dirty.delete(key));
+    void refresh(due.filter((key) => listedRef.current.has(key)));
   });
 
   useEffect(() => {
-    const onFocus = () => void refresh(idsRef.current);
+    const onFocus = () => void refresh(keysRef.current);
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
   useEffect(() => {
-    if (endedKey !== "") void refresh(idsRef.current);
+    if (endedKey !== "") void refresh(keysRef.current);
   }, [refresh, endedKey]);
 
   useEffect(() => {
     if (!connected) return;
-    const timer = window.setInterval(() => void refresh(idsRef.current), 30_000);
+    const timer = window.setInterval(() => void refresh(keysRef.current), 30_000);
     return () => window.clearInterval(timer);
   }, [refresh, connected]);
 

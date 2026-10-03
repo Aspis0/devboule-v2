@@ -5,13 +5,15 @@
 // so a tool close lands focus exactly where a session close would.
 
 import type { Session } from "../../../types/ipc";
+import { parseWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 
 export type ToolTabKind = "diff" | "file";
 
 export interface ToolTab {
   id: string;
   kind: ToolTabKind;
-  workspaceId: string;
+  /** What the strip filters and prunes on: the workspace as the UI names it. */
+  workspaceKey: WorkspaceKey;
   /** Workspace-relative, `/`-joined — the trees' own spelling. */
   path: string;
 }
@@ -23,7 +25,12 @@ export type StripTab =
 /** Session ids embed a per-daemon-process nonce; the `tool:` prefix keeps
  * this namespace disjoint from them by construction. Each part is encoded
  * before joining, so a `:` inside a workspace id or path cannot collide
- * with the separators — the id is compared, never parsed. */
+ * with the separators — the id is compared, never parsed.
+ *
+ * The workspace is named by id alone: a tab id that carried its host would
+ * change the string of every Diff and File tab in a strip, remounting every
+ * chip for no gain. Two hosts can therefore mint the same id, and the id
+ * alone is not what separates their tabs — the strip never shows both. */
 export function toolTabId(kind: ToolTabKind, workspaceId: string, path: string): string {
   return `tool:${kind}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(path)}`;
 }
@@ -32,8 +39,13 @@ export function isToolTabId(id: string): boolean {
   return id.startsWith("tool:");
 }
 
-export function makeToolTab(kind: ToolTabKind, workspaceId: string, path: string): ToolTab {
-  return { id: toolTabId(kind, workspaceId, path), kind, workspaceId, path };
+export function makeToolTab(kind: ToolTabKind, workspaceKey: WorkspaceKey, path: string): ToolTab {
+  return {
+    id: toolTabId(kind, parseWorkspaceKey(workspaceKey).workspaceId, path),
+    kind,
+    workspaceKey,
+    path,
+  };
 }
 
 /** Opening twice focuses; it never duplicates. */
@@ -85,8 +97,8 @@ export function successorOf(
 
 export function pruneToolTabsForWorkspaces(
   tabs: ToolTab[],
-  knownWorkspaceIds: ReadonlySet<string>,
+  knownWorkspaceKeys: ReadonlySet<WorkspaceKey>,
 ): ToolTab[] {
-  if (tabs.every((tab) => knownWorkspaceIds.has(tab.workspaceId))) return tabs;
-  return tabs.filter((tab) => knownWorkspaceIds.has(tab.workspaceId));
+  if (tabs.every((tab) => knownWorkspaceKeys.has(tab.workspaceKey))) return tabs;
+  return tabs.filter((tab) => knownWorkspaceKeys.has(tab.workspaceKey));
 }

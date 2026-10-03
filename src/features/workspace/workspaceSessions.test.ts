@@ -32,6 +32,8 @@ import { workspaceView } from "./workspaceProjects";
 import { chipDisplay } from "./strip/stripDisplay";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 
+import { LOCAL_HOST_ID, type HostId } from "./hosts/hostIdentity";
+
 const liveSession = (id: string, title = id): Session => ({
   id,
   workspaceId: null,
@@ -384,7 +386,7 @@ describe("workspace session controller", () => {
     expect(controller.getState().error).toEqual({
       sentence: "Devboule could not complete that action.",
       detail: null,
-      workspaceId: null,
+      workspaceKey: null,
     });
   });
 
@@ -403,7 +405,7 @@ describe("workspace session controller", () => {
       sentence:
         "No agent CLI is installed on this machine. Install one — for example grok, claude, or gemini — then choose Refresh in Settings → Providers.",
       detail: "No ACP-capable agent was found on PATH.",
-      workspaceId: "workspace-42",
+      workspaceKey: "local:workspace-42",
     });
   });
 
@@ -762,17 +764,19 @@ describe("workspace session controller", () => {
       workspaceId: "workspace-agent",
       kind: "acp",
     });
-    const workspaceOne: Workspace = {
+    const workspaceOne: Workspace & { hostId: HostId } = {
       id: "workspace-one",
       projectId: "project-1",
       title: "one",
+      hostId: LOCAL_HOST_ID,
       isolation: "local",
       path: "C:\\project-1",
     };
-    const workspaceWithAgent: Workspace = {
+    const workspaceWithAgent: Workspace & { hostId: HostId } = {
       id: "workspace-agent",
       projectId: "project-1",
       title: "agent",
+      hostId: LOCAL_HOST_ID,
       isolation: "local",
       path: "C:\\project-1",
     };

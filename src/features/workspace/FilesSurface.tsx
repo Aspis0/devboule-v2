@@ -1,5 +1,6 @@
 import { memo, useCallback, useId, useState } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
+import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { FilesPreview } from "./FilesPreview";
 import { FilesTreeView, type FilesRenaming } from "./FilesTreeView";
 import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
@@ -12,15 +13,16 @@ import "./panel/files.css";
 
 interface FilesSurfaceProps {
   /**
-   * The selected workspace's id, from the registry context. `null` before one
-   * settles — a panel with no workspace reads nothing and says so.
+   * The selected workspace as the UI names it, from the registry context.
+   * `null` before one settles — a panel with no workspace reads nothing and
+   * says so.
    */
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
   /**
    * Slice 8's hand-off: open a file as a main tab. Optional until that tab
    * kind exists — the pencil that calls it renders only beside it.
    */
-  onOpenFile?: (workspaceId: string, path: string) => void;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
 }
 
 /**
@@ -110,9 +112,12 @@ function FilesToolbar({ onRefresh }: { onRefresh: () => void }) {
  * unrelated keystroke.
  */
 export const FilesSurface = memo(function FilesSurface({
-  workspaceId,
+  workspaceKey,
   onOpenFile,
 }: FilesSurfaceProps) {
+  // The daemon's own id for that workspace: what the file reads, the preview
+  // and the rename/duplicate/delete acts are all addressed by.
+  const workspaceId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).workspaceId;
   const { cells, expanded, toggle, refresh, refreshPath, rekey } = useWorkspaceFiles(workspaceId);
   const {
     preview,
@@ -263,7 +268,7 @@ export const FilesSurface = memo(function FilesSurface({
       ) : null}
       {/* A first read that refused: the alert above is the whole answer, so
           nothing below this line may claim anything about the folder. */}
-      {workspaceId === null ? (
+      {workspaceKey === null ? (
         <div className="workspace-files-state">No workspace is selected.</div>
       ) : loading ? (
         <div className="workspace-files-state" role="status">
@@ -293,7 +298,7 @@ export const FilesSurface = memo(function FilesSurface({
           onDuplicate={runDuplicate}
           onDelete={runDelete}
           onOpenFile={onOpenFile}
-          workspaceId={workspaceId}
+          workspaceKey={workspaceKey}
         />
       )}
       {/* The clicked file's own answer, below the tree the way the Changes

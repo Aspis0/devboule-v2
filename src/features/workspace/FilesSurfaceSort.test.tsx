@@ -16,6 +16,10 @@ vi.mock("../../lib/tauri", () => ({
 import { workspaceFileRead, workspaceFilesList } from "../../lib/tauri";
 import { FilesSurface } from "./FilesSurface";
 import { assembleCssProof, removeCssProof } from "./cssProof";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 /** How many folder sorts the panel ran: the memo test's only observable.
  * Reset per test; the wrapper calls through, so the order assertions keep
@@ -156,7 +160,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("Zeta.c", "file", 1), entry("alpha.txt", "file", 2), entry("src", "dir")]),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(labels()).toEqual(["src", "alpha.txt", "Zeta.c"]);
   });
@@ -175,7 +179,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
         entry("a2.txt", "file", 5),
       ]),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(labels()).toEqual(["a2.txt", "a10.txt", "éclair.md", "README.md", "Zeta.c"]);
   });
@@ -189,7 +193,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("a.txt", "file", 1), entry("A.txt", "file", 2)]),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(labels()).toEqual(["a.txt", "A.txt"]);
   });
@@ -202,7 +206,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
         ? Promise.resolve(listing([entry("src", "dir")]))
         : Promise.resolve(listing([entry("src/z.txt", "file", 1), entry("src/a.txt", "file", 2)])),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     await act(async () => {
       dirButton("src").click();
     });
@@ -222,7 +226,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
           : listing([entry("src/z.txt", "file", 1), entry("src/a.txt", "file", 2)]),
       ),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     await act(async () => {
       dirButton("src").click();
     });
@@ -265,7 +269,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing(files.map((path) => entry(path, "file", 6))),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     expect(sizeCalls).toBe(40);
 
     const trigger = Array.from(
@@ -302,7 +306,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("b.txt", "file", 1), entry("a.txt", "file", 2)]),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(labels()).toEqual(["a.txt", "b.txt"]);
     const label = container.querySelector(".workspace-files-sort-label");
@@ -320,7 +324,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
   // The refresh is a quiet icon button, as R7b's: no text control anywhere
   // in the toolbar, one labelled icon that re-reads tree and preview.
   it("refreshes from a quiet icon button, never a text control", async () => {
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(
       Array.from(container.querySelectorAll("button")).some(
@@ -348,7 +352,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
         ? Promise.resolve(listing([entry("src", "dir")]))
         : Promise.resolve(listing([entry("src/a.txt", "file", 1)])),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     await act(async () => {
       dirButton("src").click();
     });
@@ -382,7 +386,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
       ),
     );
     const onOpenFile = vi.fn();
-    await render(<FilesSurface workspaceId={WORKSPACE} onOpenFile={onOpenFile} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} onOpenFile={onOpenFile} />);
     expect(container.querySelector('[aria-label="Open file in a tab"]')).toBeNull();
     await act(async () => {
       dirButton("docs").click();
@@ -401,8 +405,8 @@ describe("FilesSurface R7c sort and toolbar", () => {
       pencil.click();
     });
 
-    expect(onOpenFile).toHaveBeenCalledWith(WORKSPACE, "docs/SETUP.md");
-    const [, path] = onOpenFile.mock.calls[0] as [string, string];
+    expect(onOpenFile).toHaveBeenCalledWith(keyFor(WORKSPACE), "docs/SETUP.md");
+    const [, path] = onOpenFile.mock.calls[0] as [WorkspaceKey, string];
     expect(path.startsWith("/")).toBe(false);
     expect(path).not.toContain(":");
     expect(path).not.toContain("\\");
@@ -410,7 +414,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
 
   it("shows no pencil while slice 8 has no callback", async () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(listing([entry("a.txt", "file", 1)]));
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-tree-file")?.click();
@@ -473,7 +477,7 @@ describe("FilesSurface R7c sort and toolbar", () => {
         path === "" ? listing([entry("src", "dir")]) : listing([entry("src/a.txt", "file", 2048)]),
       ),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} onOpenFile={() => undefined} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} onOpenFile={() => undefined} />);
 
     const toolbar = container.querySelector<HTMLElement>(".workspace-files-toolbar");
     if (toolbar === null) throw new Error("toolbar did not render");

@@ -23,6 +23,10 @@ vi.mock("../../lib/tauri", () => ({
 import { workspaceGitDiff, workspaceGitLog, workspaceGitStatus } from "../../lib/tauri";
 import { ChangesSurface } from "./ChangesSurface";
 import { assembleCssProof, removeCssProof } from "./cssProof";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -143,7 +147,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 96, deletions: 41 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(branchRow().textContent).toContain("feature/redesign");
     expect(branchRow().textContent).toContain("+96 −41");
@@ -156,7 +160,7 @@ describe("ChangesSurface R7b panel body", () => {
   it("shows no totals on a clean tree: the sentence already says it", async () => {
     // Live fix (dark screenshot 01): "+0 −0" beside the branch on an
     // empty tree is noise — "No uncommitted changes" is the whole story.
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.textContent).toContain("No uncommitted changes in this workspace.");
     expect(branchRow().textContent).toContain("main");
@@ -174,7 +178,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 2 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(branchRow().textContent).toContain("(detached)");
 
     vi.mocked(workspaceGitStatus).mockResolvedValue(
@@ -185,7 +189,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 2 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(branchRow().textContent).toContain("No branch");
   });
 
@@ -197,7 +201,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 96, deletions: 41, capped: true })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(branchRow().textContent).toContain("≈+96 −41");
   });
 
@@ -205,7 +209,7 @@ describe("ChangesSurface R7b panel body", () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({ dirty: true, branch: "main", totals: { additions: 0, deletions: 0 } }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     // The header facts survive the cap (workspace_git_status.rs:60-63), so
     // the branch name stands — but no totals and no tree, never zeros.
@@ -226,7 +230,7 @@ describe("ChangesSurface R7b panel body", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const tree = container.querySelector(".workspace-changes-tree");
     if (tree === null) throw new Error("tree did not render");
@@ -272,7 +276,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const stage = container.querySelector<HTMLButtonElement>('button[title="Stage src/a.ts"]');
     if (stage === null) throw new Error("Stage button did not render");
@@ -313,7 +317,7 @@ describe("ChangesSurface R7b panel body", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const folder = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.getAttribute("aria-label") === "Collapse src",
@@ -354,7 +358,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "notes/todo.md", additions: 7, status: "untracked" })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const stats = container.querySelector(".workspace-file-change-stats-is-add");
     if (stats === null) throw new Error("add-tone stats did not render");
@@ -385,7 +389,7 @@ describe("ChangesSurface R7b panel body", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const commits = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.textContent === "Commits",
@@ -438,7 +442,7 @@ describe("ChangesSurface R7b panel body", () => {
         commits: [commitEntry({ shortSha: "a1b2c3d", subject: "Add the thing" })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
         .find((candidate) => candidate.textContent === "Commits")
@@ -473,7 +477,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const commitRow = container.querySelector(".workspace-commit-row");
     if (commitRow === null) throw new Error("commit row did not render");
@@ -507,7 +511,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a b/f.ts", additions: 1 }), row({ path: "a-b/g.ts", additions: 1 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const groups = Array.from(container.querySelectorAll(".workspace-changes-tree ul[id]"));
     expect(groups).toHaveLength(2);
@@ -534,7 +538,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(container.querySelector("[aria-current]")).toBeNull();
 
     await act(async () => {
@@ -556,7 +560,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 9 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(branchRow().textContent).toContain("≈+9 −0");
     const folderStats = container.querySelector(".workspace-changes-folder-stats");
@@ -579,7 +583,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "src/a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     // Collapse first: the state to preserve is one a re-render could lose.
     const toggle = container.querySelector<HTMLButtonElement>('button[aria-expanded="true"]');
@@ -612,7 +616,11 @@ describe("ChangesSurface R7b panel body", () => {
     );
     const onOpenFile = vi.fn();
     await render(
-      <ChangesSurface workspaceId={WORKSPACE} canListCommits={true} onOpenFile={onOpenFile} />,
+      <ChangesSurface
+        workspaceKey={keyFor(WORKSPACE)}
+        canListCommits={true}
+        onOpenFile={onOpenFile}
+      />,
     );
     expect(container.querySelector('[aria-label="Open diff in a tab"]')).toBeNull();
 
@@ -630,7 +638,7 @@ describe("ChangesSurface R7b panel body", () => {
     await act(async () => {
       pencil.click();
     });
-    expect(onOpenFile).toHaveBeenCalledWith(WORKSPACE, "a.ts");
+    expect(onOpenFile).toHaveBeenCalledWith(keyFor(WORKSPACE), "a.ts");
   });
 
   it("paints rows, switch and totals from the real sheets in bundle order", async () => {
@@ -676,7 +684,7 @@ describe("ChangesSurface R7b panel body", () => {
         ],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const branch = branchRow();
     expect(getComputedStyle(branch).fontSize).toBe("12px");
@@ -724,7 +732,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     const seg = container.querySelector<HTMLElement>(".workspace-changes-seg");
     if (seg === null) throw new Error("switch did not render");
@@ -748,7 +756,7 @@ describe("ChangesSurface R7b panel body", () => {
         rows: [row({ path: "a.ts", additions: 3 })],
       }),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     // The root is a flex column carrying the row to the bottom; the row
     // itself sticks to the scrollport's bottom edge while the tree

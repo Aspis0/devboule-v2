@@ -51,6 +51,10 @@ import {
   workspaceGitUnstage,
 } from "../../lib/tauri";
 import { ChangesSurface } from "./ChangesSurface";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -181,7 +185,7 @@ describe("ChangesSurface no-op polls", () => {
         }),
       ),
     );
-    await render(<ChangesSurface workspaceId={WORKSPACE} canListCommits={true} />);
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
     expect(container.querySelector(`.workspace-file-change[title="${ROW_PATH}"]`)).not.toBeNull();
 
     const latest = (): ((paths: string[]) => void) =>

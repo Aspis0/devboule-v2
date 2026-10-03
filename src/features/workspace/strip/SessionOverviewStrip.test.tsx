@@ -12,6 +12,10 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Session } from "../../../types/ipc";
 import { SessionStrip } from "./SessionStrip";
 import { composeStripTabs, makeToolTab, type StripTab } from "./toolTabs";
+import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 function session(id: string, overrides: Partial<Session> = {}): Session {
   return {
@@ -25,8 +29,8 @@ function session(id: string, overrides: Partial<Session> = {}): Session {
   };
 }
 
-const FILE = makeToolTab("file", "workspace-1", "notes/todo.md");
-const DIFF = makeToolTab("diff", "workspace-1", "src/app.ts");
+const FILE = makeToolTab("file", keyFor("workspace-1"), "notes/todo.md");
+const DIFF = makeToolTab("diff", keyFor("workspace-1"), "src/app.ts");
 
 const ROSTER = [
   session("a", { title: "alpha", elapsedMs: 60_000 }),

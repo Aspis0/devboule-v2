@@ -20,6 +20,10 @@ import {
   workspaceFilesList,
 } from "../../lib/tauri";
 import { FilesSurface } from "./FilesSurface";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,7 +124,7 @@ describe("FilesSurface", () => {
   it("holds a loading state until the first answer arrives", async () => {
     const pending = deferred<WorkspaceDirectory>();
     vi.mocked(workspaceFilesList).mockReturnValue(pending.promise);
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Loading files…");
     expect(container.querySelector(".workspace-files-tree")).toBeNull();
@@ -142,7 +146,7 @@ describe("FilesSurface", () => {
         ? Promise.resolve(listing([entry("src", "dir"), entry("README.md", "file", 12)]))
         : pendingSub.promise,
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(vi.mocked(workspaceFilesList).mock.calls).toEqual([[WORKSPACE, ""]]);
     const src = dirButton("src");
@@ -175,7 +179,7 @@ describe("FilesSurface", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("src", "dir"), entry("README.md", "file", 12)]),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     vi.mocked(workspaceFilesList).mockRejectedValue(new Error("the daemon refused this read"));
 
     await act(async () => {
@@ -197,7 +201,7 @@ describe("FilesSurface", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("src", "dir"), entry("Zeta.c", "file", 1), entry("alpha.txt", "file", 2)]),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(labels()).toEqual(["src", "alpha.txt", "Zeta.c"]);
     // The other half of R2's rule, in the same breath: with `skipped: 0`
@@ -207,7 +211,7 @@ describe("FilesSurface", () => {
 
   it("says the folder is empty as its own state, not an error", async () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(listing([]));
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(container.textContent).toContain("This folder is empty.");
     expect(container.querySelector('[role="alert"]')).toBeNull();
@@ -220,7 +224,7 @@ describe("FilesSurface", () => {
   it("shows the wire's refusal instead of claiming anything about the folder", async () => {
     const refusal = "the workspace folder is not a directory";
     vi.mocked(workspaceFilesList).mockRejectedValue(new Error(refusal));
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(refusal);
     expect(container.textContent).not.toContain("This folder is empty.");
@@ -235,7 +239,7 @@ describe("FilesSurface", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("src", "dir"), entry("README.md", "file", 12)]),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     vi.mocked(workspaceFilesList).mockRejectedValue(new Error("the daemon refused this read"));
 
     await act(async () => {
@@ -261,7 +265,7 @@ describe("FilesSurface", () => {
         ? Promise.resolve(listing([entry("src", "dir"), entry("README.md", "file", 12)]))
         : Promise.reject(new Error(refusal)),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     await act(async () => {
       dirButton("src").click();
@@ -280,7 +284,7 @@ describe("FilesSurface", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("a.txt", "file", 1), entry("b.txt", "file", 1)], { capped: true }),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     const partial = Array.from(container.querySelectorAll('[role="status"]')).find((note) =>
       note.textContent?.includes("the list is partial"),
@@ -297,7 +301,7 @@ describe("FilesSurface", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("real.txt", "file", 4)], { skipped: 2 }),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(container.textContent).toContain("real.txt");
     const note = Array.from(container.querySelectorAll('[role="status"]')).find((element) =>
@@ -312,7 +316,7 @@ describe("FilesSurface", () => {
         path === "" ? listing([entry("src", "dir")]) : listing([entry("src/index.rs", "file", 6)]),
       ),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
     await act(async () => {
       dirButton("src").click();
     });
@@ -341,7 +345,7 @@ describe("FilesSurface", () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("crates", "dir"), entry("real-file.rs", "file", 2048)]),
     );
-    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    await render(<FilesSurface workspaceKey={keyFor(WORKSPACE)} />);
 
     expect(container.textContent).toContain("real-file.rs");
     expect(container.textContent).toContain("2.0 KB");
@@ -380,7 +384,7 @@ describe("FilesSurface", () => {
   });
 
   it("asks nothing while no workspace is selected and says so", async () => {
-    await render(<FilesSurface workspaceId={null} />);
+    await render(<FilesSurface workspaceKey={null} />);
 
     expect(vi.mocked(workspaceFilesList)).not.toHaveBeenCalled();
     expect(container.textContent).toContain("No workspace is selected.");
@@ -399,11 +403,11 @@ describe("FilesSurface", () => {
       if (workspaceId === "workspace-files-b" && path === "") return pendingB.promise;
       return Promise.resolve(listing([]));
     });
-    await render(<FilesSurface workspaceId="workspace-files-a" />);
+    await render(<FilesSurface workspaceKey={keyFor("workspace-files-a")} />);
     expect(labels()).toEqual(["a-only.txt"]);
 
     await act(async () => {
-      root.render(<FilesSurface workspaceId="workspace-files-b" />);
+      root.render(<FilesSurface workspaceKey={keyFor("workspace-files-b")} />);
     });
     expect(container.textContent).toContain("Loading files…");
     expect(container.textContent).not.toContain("a-only.txt");

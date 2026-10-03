@@ -1,14 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { Session, Workspace } from "../../types/ipc";
-import { projectView, reconcileProjectRecords, workspaceView } from "./workspaceProjects";
+import { LOCAL_HOST_ID, type HostId } from "./hosts/hostIdentity";
+import {
+  projectView,
+  reconcileProjectRecords,
+  workspaceView,
+  type HostWorkspace,
+} from "./workspaceProjects";
 
 // What the production path stores on a failed per-project read: the cause
 // through errorSentence, never a bare message (E1).
 const pipeBusy = errorSentence(new Error("the pipe was busy"));
 
-const workspace: Workspace = {
+const workspace: Workspace & { hostId: HostId } = {
   id: "workspace-1",
+  hostId: LOCAL_HOST_ID,
   projectId: "project-1",
   title: "devboule-v2",
   isolation: "local",
@@ -95,16 +102,18 @@ describe("workspaceView", () => {
 });
 
 describe("reconcileProjectRecords", () => {
-  const mk = (id: string): Workspace => ({
+  const mk = (id: string): HostWorkspace => ({
     id,
     projectId: "project-1",
     title: id,
+    hostId: LOCAL_HOST_ID,
     isolation: "local",
     path: `C:\\${id}`,
   });
-  const project = (workspaces: Workspace[], workspaceError?: ErrorSentence) => ({
+  const project = (workspaces: HostWorkspace[], workspaceError?: ErrorSentence) => ({
     id: "project-1",
     name: "devboule",
+    hostId: LOCAL_HOST_ID,
     path: "C:\\devboule",
     workspaces,
     workspaceError,
@@ -135,10 +144,11 @@ describe("reconcileProjectRecords", () => {
 
 describe("projectView", () => {
   it("numbers rows that share a title so each row reads apart", () => {
-    const sameTitle = (id: string): Workspace => ({
+    const sameTitle = (id: string): HostWorkspace => ({
       id,
       projectId: "project-1",
       title: "devboule-v2",
+      hostId: LOCAL_HOST_ID,
       isolation: "local",
       path: "C:\\devboule-v2",
     });
@@ -146,6 +156,7 @@ describe("projectView", () => {
       {
         id: "project-1",
         name: "devboule-v2",
+        hostId: LOCAL_HOST_ID,
         path: "C:\\devboule-v2",
         workspaces: [sameTitle("w1"), sameTitle("w2")],
       },

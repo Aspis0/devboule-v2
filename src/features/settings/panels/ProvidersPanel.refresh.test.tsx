@@ -21,7 +21,7 @@ import {
   providersRefresh,
   providersAuthCheck,
 } from "../../../lib/tauri";
-import { setLastSelectedWorkspaceId } from "../../workspace/lastSelectedWorkspace";
+import { setLastSelectedWorkspaceKey } from "../../workspace/lastSelectedWorkspace";
 import type { ProviderCatalog } from "../../../types/ipc";
 import { ProvidersPanel } from "./ProvidersPanel";
 import {
@@ -62,7 +62,7 @@ describe("providers refresh", () => {
     expect(providersAuthCheck).toHaveBeenCalledTimes(2);
 
     // An install is not a trigger: the mandate is open and explicit Refresh.
-    setLastSelectedWorkspaceId(null);
+    setLastSelectedWorkspaceKey(null);
     const install = container.querySelector<HTMLButtonElement>(".provider-install");
     if (!install) throw new Error("Install did not render");
     await act(async () => install.click());

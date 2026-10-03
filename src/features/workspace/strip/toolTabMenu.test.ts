@@ -3,6 +3,10 @@ import { composeStripTabs } from "./toolTabs";
 import { makeToolTab } from "./toolTabs";
 import { toolTabMenuEntries } from "./toolTabMenu";
 import type { Session } from "../../../types/ipc";
+import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 function session(id: string): Session {
   return {
@@ -17,7 +21,7 @@ function session(id: string): Session {
 
 describe("toolTabMenuEntries", () => {
   it("offers copy and close entries for a tool anchor", () => {
-    const tabs = composeStripTabs([session("s1")], [makeToolTab("diff", "ws", "a.ts")]);
+    const tabs = composeStripTabs([session("s1")], [makeToolTab("diff", keyFor("ws"), "a.ts")]);
     const entries = toolTabMenuEntries(tabs, "tool:diff:ws:a.ts");
     expect(entries?.map((entry) => entry.label)).toEqual([
       "Copy relative path",
@@ -29,7 +33,7 @@ describe("toolTabMenuEntries", () => {
   });
 
   it("answers null for a session anchor and an unknown id", () => {
-    const tabs = composeStripTabs([session("s1")], [makeToolTab("diff", "ws", "a.ts")]);
+    const tabs = composeStripTabs([session("s1")], [makeToolTab("diff", keyFor("ws"), "a.ts")]);
     expect(toolTabMenuEntries(tabs, "s1")).toBeNull();
     expect(toolTabMenuEntries(tabs, "gone")).toBeNull();
   });

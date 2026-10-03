@@ -36,6 +36,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("../features/plugins/install", () => ({ chooseAndInstall: vi.fn() }));
 vi.mock("../features/design/DesignHistoryList", () => ({ DesignHistoryList: () => null }));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { localWorkspaceKey, type WorkspaceKey } from "../features/workspace/hosts/hostIdentity";
+
+/** The workspace as the UI names it, for a fixture that only knows the daemon id. */
+const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
 
 beforeEach(() => {
   resetModalsStore();
@@ -229,7 +233,7 @@ describe("walking every menu the source finds — the band's open is the outside
           onCommitRename={() => undefined}
           onDuplicate={() => undefined}
           onDelete={() => undefined}
-          workspaceId="workspace-1"
+          workspaceKey={keyFor("workspace-1")}
         />
       </ShellWith>,
     );
@@ -258,7 +262,7 @@ describe("walking every menu the source finds — the band's open is the outside
           onToggleMenu={() => undefined}
           onCloseMenu={onCloseMenu}
           acting={false}
-          workspaceId="workspace-1"
+          workspaceKey={keyFor("workspace-1")}
         />
       </ShellWith>,
     );

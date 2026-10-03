@@ -80,7 +80,7 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
       searchValue: "",
       projects: [],
       branches: new Map(),
-      onWorkspaceIdsChange: vi.fn(),
+      onWorkspaceKeysChange: vi.fn(),
       selectedSessionId: null,
       onSearchChange: vi.fn(),
       onReopen: vi.fn(),

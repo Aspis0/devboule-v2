@@ -1,18 +1,20 @@
+import type { WorkspaceKey } from "../workspace/hosts/hostIdentity";
+
 export interface TerminalSessionRecord {
-  workspaceId: string | null;
+  workspaceKey: WorkspaceKey | null;
   sessionId: string;
   lastSeenSeq: number | null;
 }
 
 export interface TerminalSessionRegistry {
-  get: (workspaceId: string | null) => TerminalSessionRecord | null;
-  register: (workspaceId: string | null, sessionId: string) => void;
-  updateCursor: (workspaceId: string | null, sessionId: string, seq: number) => void;
-  remove: (workspaceId: string | null, sessionId: string) => void;
+  get: (workspaceKey: WorkspaceKey | null) => TerminalSessionRecord | null;
+  register: (workspaceKey: WorkspaceKey | null, sessionId: string) => void;
+  updateCursor: (workspaceKey: WorkspaceKey | null, sessionId: string, seq: number) => void;
+  remove: (workspaceKey: WorkspaceKey | null, sessionId: string) => void;
 }
 
-function registryKey(workspaceId: string | null): string {
-  return workspaceId === null ? "workspace:null" : `workspace:${workspaceId}`;
+function registryKey(workspaceKey: WorkspaceKey | null): string {
+  return workspaceKey === null ? "workspace:null" : `workspace:${workspaceKey}`;
 }
 
 /**
@@ -24,24 +26,24 @@ export const terminalSessionRegistry: TerminalSessionRegistry = (() => {
   const sessions = new Map<string, TerminalSessionRecord>();
 
   return {
-    get: (workspaceId) => sessions.get(registryKey(workspaceId)) ?? null,
-    register: (workspaceId, sessionId) => {
-      sessions.set(registryKey(workspaceId), {
-        workspaceId,
+    get: (workspaceKey) => sessions.get(registryKey(workspaceKey)) ?? null,
+    register: (workspaceKey, sessionId) => {
+      sessions.set(registryKey(workspaceKey), {
+        workspaceKey,
         sessionId,
         lastSeenSeq: null,
       });
     },
-    updateCursor: (workspaceId, sessionId, seq) => {
-      const key = registryKey(workspaceId);
+    updateCursor: (workspaceKey, sessionId, seq) => {
+      const key = registryKey(workspaceKey);
       const record = sessions.get(key);
       if (record === undefined || record.sessionId !== sessionId) return;
       if (record.lastSeenSeq === null || seq > record.lastSeenSeq) {
         record.lastSeenSeq = seq;
       }
     },
-    remove: (workspaceId, sessionId) => {
-      const key = registryKey(workspaceId);
+    remove: (workspaceKey, sessionId) => {
+      const key = registryKey(workspaceKey);
       const record = sessions.get(key);
       if (record?.sessionId === sessionId) sessions.delete(key);
     },
