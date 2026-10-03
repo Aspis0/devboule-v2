@@ -20,6 +20,12 @@ mod atomic;
 #[cfg(feature = "server")]
 mod attachment_store;
 #[cfg(feature = "server")]
+mod browser_affinity;
+#[cfg(feature = "server")]
+mod browser_broker;
+#[cfg(feature = "server")]
+mod browser_registry;
+#[cfg(feature = "server")]
 mod claude_abort;
 #[cfg(feature = "server")]
 mod claude_catalog;

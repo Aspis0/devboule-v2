@@ -331,6 +331,9 @@ impl PluginSession {
                         // never dials a peer. Listed with its id so the match
                         // stays exhaustive on purpose.
                         | DaemonMessage::RemoteHostList { id, .. }
+                        // The browser host answers to the desktop app alone; a
+                        // plugin backend never registers one or is sent a command.
+                        | DaemonMessage::BrowserHostRegistered { id, .. }
                         | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)
                         | DaemonMessage::Event(_)
@@ -339,7 +342,8 @@ impl PluginSession {
                         // Server-initiated, id-less: it answers no request, so
                         // it must not be matched against a pending one.
                         | DaemonMessage::DelegationChanged { .. }
-                        | DaemonMessage::RemoteHostStatus { .. } => None,
+                        | DaemonMessage::RemoteHostStatus { .. }
+                        | DaemonMessage::BrowserExecuteRequest(_) => None,
                     };
                     if message_id == Some(id) {
                         return Ok(message);

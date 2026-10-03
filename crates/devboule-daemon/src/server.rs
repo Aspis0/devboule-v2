@@ -82,6 +82,10 @@ use devices::*;
 mod peer_gate;
 use peer_gate::*;
 
+#[path = "server/browser_host.rs"]
+mod browser_host;
+use browser_host::dispatch_browser_host;
+
 #[path = "server/peer_dial.rs"]
 mod peer_dial;
 pub use peer_dial::{call_peer, dial_peer, DialError};
@@ -146,3 +150,15 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "server/create_size_tests.rs"]
 mod create_size_tests;
+
+#[cfg(test)]
+#[path = "server/browser_host_tests.rs"]
+mod browser_host_tests;
+
+#[cfg(all(test, windows))]
+#[path = "server/browser_host_harness.rs"]
+pub(crate) mod browser_host_harness;
+
+#[cfg(all(test, windows))]
+#[path = "server/browser_host_wire_tests.rs"]
+mod browser_host_wire_tests;

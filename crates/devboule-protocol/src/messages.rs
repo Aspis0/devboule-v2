@@ -456,6 +456,39 @@ pub enum ClientMessage {
         device_id: String,
         list: crate::RemoteHostList,
     },
+    /// Register this connection as the browser host: the place that runs
+    /// browser commands for agents. The reply is
+    /// [`DaemonMessage::BrowserHostRegistered`], and from then on the daemon
+    /// pushes this connection `browser_execute_request`.
+    ///
+    /// Local app connections only, and only when `browser.host` was
+    /// negotiated. `supported_commands` is what the host will run; a command
+    /// outside it is refused by the daemon before it is sent. A connection
+    /// holds one host: registering again replaces the earlier one and mints a
+    /// new `host_id`.
+    BrowserHostRegister {
+        id: u64,
+        supported_commands: Vec<String>,
+    },
+    /// Stop being a browser host. Calls still waiting on it fail as retryable
+    /// `browser_no_host`. A `host_id` that is not this connection's current
+    /// one is refused.
+    BrowserHostUnregister {
+        id: u64,
+        host_id: String,
+    },
+    /// The host's answer to one `browser_execute_request`. The daemon accepts it
+    /// only from the connection that owns `host_id` and only while the call is
+    /// still pending; any other answer is dropped without a trace in the
+    /// reply, so a late or foreign frame learns nothing. The reply is
+    /// [`DaemonMessage::Ok`], or an error naming `browser_result_too_large`
+    /// when the result would not fit one frame.
+    BrowserExecuteResponse {
+        id: u64,
+        request_id: String,
+        host_id: String,
+        outcome: crate::BrowserOutcome,
+    },
     /// Deliver text from one live agent session to another.
     AgentMessageSend {
         id: u64,
@@ -1267,6 +1300,9 @@ impl ClientMessage {
             | Self::RemoteHostWatch { id, .. }
             | Self::RemoteHostUnwatch { id, .. }
             | Self::RemoteHostList { id, .. }
+            | Self::BrowserHostRegister { id, .. }
+            | Self::BrowserHostUnregister { id, .. }
+            | Self::BrowserExecuteResponse { id, .. }
             | Self::AgentMessageSend { id, .. }
             | Self::SessionDeposit { id, .. }
             | Self::SessionAttachmentRead { id, .. }
@@ -1397,6 +1433,9 @@ impl ClientMessage {
             | Self::RemoteHostWatch { .. }
             | Self::RemoteHostUnwatch { .. }
             | Self::RemoteHostList { .. }
+            | Self::BrowserHostRegister { .. }
+            | Self::BrowserHostUnregister { .. }
+            | Self::BrowserExecuteResponse { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
@@ -1471,6 +1510,9 @@ impl ClientMessage {
             Self::RemoteHostWatch { .. } => "RemoteHostWatch",
             Self::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             Self::RemoteHostList { .. } => "RemoteHostList",
+            Self::BrowserHostRegister { .. } => "BrowserHostRegister",
+            Self::BrowserHostUnregister { .. } => "BrowserHostUnregister",
+            Self::BrowserExecuteResponse { .. } => "BrowserExecuteResponse",
             Self::AgentMessageSend { .. } => "AgentMessageSend",
             Self::SessionDeposit { .. } => "SessionDeposit",
             Self::SessionAttachmentRead { .. } => "SessionAttachmentRead",
@@ -1560,6 +1602,9 @@ impl ClientMessage {
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
             | Self::RemoteHostList { .. }
+            // An answer to a call the daemon made: it changes no durable state,
+            // and a row per answer would be a disk sink a busy host drives.
+            | Self::BrowserExecuteResponse { .. }
             | Self::WorkspaceOpenRoot { .. }
             | Self::ProvidersList { .. }
             // An unforced check is a read; a forced one spawns provider
@@ -1644,7 +1689,11 @@ impl ClientMessage {
             // Taking and giving back a lease both change what this daemon is
             // connected to, which is the fact an audit row would name.
             | Self::RemoteHostWatch { .. }
-            | Self::RemoteHostUnwatch { .. } => true,
+            | Self::RemoteHostUnwatch { .. }
+            // Registering or leaving decides which process runs the agents'
+            // browser commands, which is the fact an audit row would name.
+            | Self::BrowserHostRegister { .. }
+            | Self::BrowserHostUnregister { .. } => true,
         }
     }
 }
@@ -1865,6 +1914,18 @@ pub enum DaemonMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_failure: Option<String>,
     },
+    /// The reply to [`ClientMessage::BrowserHostRegister`]. `host_id` is
+    /// stamped with the connection and a per-daemon counter, so a
+    /// re-registration is a new id and an old id never matches again.
+    BrowserHostRegistered {
+        id: u64,
+        host_id: String,
+    },
+    /// One browser command for the registered host to run, pushed to that
+    /// connection alone. It answers no request, so it carries no id of its
+    /// own; the host answers with [`ClientMessage::BrowserExecuteResponse`]
+    /// naming `request_id`.
+    BrowserExecuteRequest(crate::BrowserExecuteRequest),
     /// The reply to [`ClientMessage::SessionSend`]: whether a turn is running
     /// on the session when the daemon answers, so the surface waits for a
     /// finish. True when this send began one, or when any other turn is

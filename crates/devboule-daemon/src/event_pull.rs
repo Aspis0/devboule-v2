@@ -204,6 +204,11 @@ pub struct ConnHandle {
     /// is assumed to want. A connection the daemon builds for itself has no
     /// hello and therefore no leases.
     remote_hosts: AtomicBool,
+    /// Whether this connection's hello negotiated `browser.host`.
+    ///
+    /// Defaults to **false**: being the place agents' browser commands run is
+    /// a thing a connection asks for, never a thing it is assumed to want.
+    browser_host: AtomicBool,
     /// Async create workers for this connection must not race on its retry key.
     pub(crate) session_create_lock: Mutex<()>,
     attached: Mutex<HashMap<u64, PullState>>,
@@ -262,6 +267,19 @@ impl ConnHandle {
         self.remote_hosts.load(Ordering::SeqCst)
     }
 
+    /// Record what this connection's hello agreed for the browser host. Called
+    /// once, by the serve loop, before this connection reads a request.
+    pub fn set_browser_host_negotiated(&self, negotiated: bool) {
+        self.browser_host.store(negotiated, Ordering::SeqCst);
+    }
+
+    /// Whether this connection's hello offered and the daemon agreed
+    /// `browser.host`, which is what decides whether it may register as the
+    /// browser host.
+    pub fn browser_host_negotiated(&self) -> bool {
+        self.browser_host.load(Ordering::SeqCst)
+    }
+
     pub fn with_peer(id: u64, peer: Option<PeerIdentity>) -> Arc<Self> {
         Self::with_conn_peer(id, peer, None)
     }
@@ -294,6 +312,7 @@ impl ConnHandle {
             session_queue: AtomicBool::new(true),
             resume_outcomes: AtomicBool::new(true),
             remote_hosts: AtomicBool::new(false),
+            browser_host: AtomicBool::new(false),
             session_create_lock: Mutex::new(()),
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),

@@ -8,12 +8,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    ActiveTurnBehavior, AgentActivityState, AttachmentReference, ClientHello, ClientMessage,
-    Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode, JournalRetention,
-    JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
-    Project, PromptAttachment, ProviderInfo, RemoteHostList, RemoteHostListBody, RemoteHostStatus,
-    ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope, SessionKind,
-    SessionResumeInfo, SessionResumeOutcome, SessionStateSnapshot, StoredAttachment,
+    ActiveTurnBehavior, AgentActivityState, AttachmentReference, BrowserExecuteRequest,
+    ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
+    JournalRetention, JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome,
+    Persistence, Project, PromptAttachment, ProviderInfo, RemoteHostList, RemoteHostListBody,
+    RemoteHostStatus, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
+    SessionKind, SessionResumeInfo, SessionResumeOutcome, SessionStateSnapshot, StoredAttachment,
     SubscriptionId, WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent,
     WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog,
     WorkspaceGitStatus, WorkspaceIsolation,
@@ -163,6 +163,16 @@ struct ClientInner {
     session_state_subscription: Mutex<Option<SessionStateHandler>>,
     delegation_subscription: Mutex<Option<DelegationChangedHandler>>,
     remote_host_status_handler: Mutex<Option<RemoteHostStatusHandler>>,
+    /// The sending half of the browser-host queue (`client_browser.rs`). The
+    /// reader only `try_send`s into it; emptied on connection failure so the
+    /// host's receiver sees the end.
+    browser_requests: Mutex<Option<mpsc::SyncSender<BrowserExecuteRequest>>>,
+    /// The receiving half, handed out once.
+    browser_request_inbox: Mutex<Option<mpsc::Receiver<BrowserExecuteRequest>>>,
+    /// Feeds the thread that writes `browser_busy` refusals for commands the
+    /// reader could not queue. Started by the first registration; emptied on
+    /// connection failure so the thread ends.
+    browser_rejects: Mutex<Option<mpsc::Sender<ClientMessage>>>,
     stop: AtomicBool,
     hello: DaemonHello,
     server_pid: Option<u32>,
@@ -2286,6 +2296,8 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
     let reply: DaemonMessage = framed.recv_timeout(HANDSHAKE_TIMEOUT)?;
     match reply {
         DaemonMessage::Hello(daemon_hello) => {
+            let (browser_requests, browser_request_inbox) =
+                mpsc::sync_channel(browser::REQUEST_QUEUE);
             let inner = Arc::new(ClientInner {
                 framed,
                 next_id: AtomicU64::new(1),
@@ -2298,6 +2310,9 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
                 session_state_subscription: Mutex::new(None),
                 delegation_subscription: Mutex::new(None),
                 remote_host_status_handler: Mutex::new(None),
+                browser_requests: Mutex::new(Some(browser_requests)),
+                browser_request_inbox: Mutex::new(Some(browser_request_inbox)),
+                browser_rejects: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 hello: daemon_hello,
                 server_pid,
@@ -2418,6 +2433,13 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                     }
                     continue;
                 }
+                // A browser command for this process's host: queued for the
+                // host's own thread and never run here, so this reader stays
+                // free to receive the reply the host's answer waits on.
+                if let DaemonMessage::BrowserExecuteRequest(request) = message {
+                    browser::enqueue_request(&inner, request);
+                    continue;
+                }
                 if let Some(id) = daemon_message_id(&message) {
                     if let DaemonMessage::SessionAttached {
                         subscription_id,
@@ -2501,6 +2523,16 @@ fn fail_connection(inner: &ClientInner, error: DaemonError) {
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .take();
+    inner
+        .browser_requests
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take();
+    inner
+        .browser_rejects
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take();
     let subscriptions: Vec<(SubscriptionId, String, EventHandler)> = inner
         .subscriptions
         .lock()
@@ -2568,7 +2600,10 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::DelegationChanged { .. }
         // The host-status push is a broadcast for the same reason, and it is
         // handed to the watch handler before this match runs.
-        | DaemonMessage::RemoteHostStatus { .. } => None,
+        | DaemonMessage::RemoteHostStatus { .. }
+        // A command for the browser host answers no request either; the
+        // reader queues it for the host before this match runs.
+        | DaemonMessage::BrowserExecuteRequest(_) => None,
         DaemonMessage::Error(error) => error.id,
         // Every request-shaped reply carries its id. The device RPCs are
         // listed rather than swept into a wildcard: this match is exhaustive on
@@ -2577,6 +2612,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         // request-shaped and sit in this arm — putting one in the arm above
         // would silence the compiler and hang the caller forever.
         DaemonMessage::ProviderVocabulary { id, .. }
+        | DaemonMessage::BrowserHostRegistered { id, .. }
         | DaemonMessage::Devices { id, .. }
         | DaemonMessage::PeerAgents { id, .. }
         | DaemonMessage::PairingCode { id, .. }
@@ -2652,3 +2688,10 @@ mod tests;
 #[cfg(all(test, feature = "server"))]
 #[path = "client_resume_tests.rs"]
 mod resume_tests;
+
+#[path = "client_browser.rs"]
+mod browser;
+
+#[cfg(all(test, feature = "server", windows))]
+#[path = "client_browser_tests.rs"]
+mod browser_tests;

@@ -92,6 +92,11 @@ pub enum ErrorDetails {
     WorktreeProjectGone {
         leftover_checkout: Option<String>,
     },
+    /// The daemon refused a browser frame for a reason the browser vocabulary
+    /// names, so a host reads the same code a caller would.
+    BrowserRefused {
+        code: crate::BrowserErrorCode,
+    },
 }
 
 /// Error payload used both as a handshake-level first frame (`id` is `None`)

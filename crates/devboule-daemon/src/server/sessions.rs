@@ -636,7 +636,11 @@ pub(super) fn dispatch_session(
         // is a routing bug and says only that.
         | ClientMessage::RemoteHostWatch { .. }
         | ClientMessage::RemoteHostUnwatch { .. }
-        | ClientMessage::RemoteHostList { .. }) => unexpected_session_frame(&other),
+        | ClientMessage::RemoteHostList { .. }
+        // Nor are the browser-host frames: `dispatch_immediate` answers them.
+        | ClientMessage::BrowserHostRegister { .. }
+        | ClientMessage::BrowserHostUnregister { .. }
+        | ClientMessage::BrowserExecuteResponse { .. }) => unexpected_session_frame(&other),
     }
 }
 

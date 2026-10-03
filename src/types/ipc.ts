@@ -1678,6 +1678,10 @@ export type ErrorDetails =
       type: "worktree_dirty";
       path: string;
       force_required: boolean;
+    }
+  | {
+      type: "browser_refused";
+      code: BrowserErrorCode;
     };
 
 /** Payload Tauri rejects with when a command returns `Err(CommandError)`. */
@@ -2399,4 +2403,97 @@ export interface RemoteHostStatus {
   deviceId: string;
   state: RemoteHostState;
   lastFailure?: string;
+}
+
+/**
+ * Why a browser command did not produce a result: the daemon's own refusals
+ * and the failures a host reports, in one vocabulary. Matches
+ * `BrowserErrorCode` in the protocol crate; alignment is enforced by
+ * `browser_error_code_matches_frontend_union` in
+ * `crates/devboule-protocol/src/browser_tests.rs`.
+ */
+export type BrowserErrorCode =
+  /** No host is registered, or the one serving the call went away. Retryable. */
+  | "browser_no_host"
+  /** The host did not answer inside the call's deadline. Retryable. */
+  | "browser_timeout"
+  /** The pending-call budget is spent. Retryable. */
+  | "browser_busy"
+  /** The result would not fit one frame (900 KiB of compact JSON). */
+  | "browser_result_too_large"
+  /** The command's arguments would not fit one frame. */
+  | "browser_args_too_large"
+  /** The host ran the command and reported a failure. */
+  | "browser_host_error"
+  /** The host did not register this command. */
+  | "browser_unsupported_command"
+  /** The host that owned the tab is gone, and the call is not rerouted. */
+  | "browser_owner_unavailable"
+  /** The tab is unknown, or belongs to another workspace than the caller's. */
+  | "browser_tab_not_found";
+
+/** A failed browser command. */
+export interface BrowserError {
+  code: BrowserErrorCode;
+  message: string;
+  retryable: boolean;
+}
+
+/**
+ * What a host answers one command with. The compact JSON of `result` must not
+ * exceed 900 KiB; a larger one is refused with `browser_result_too_large`.
+ */
+export type BrowserOutcome = { status: "ok"; result: unknown } | ({ status: "err" } & BrowserError);
+
+/**
+ * Who asked for a command, filled by the daemon from the calling agent
+ * session's own row — never from the command's arguments. The host scopes tabs
+ * by `workspaceId`: a tab from another workspace is `browser_tab_not_found`.
+ */
+export interface BrowserCaller {
+  callerSessionId: string;
+  workspaceId?: string;
+}
+
+/**
+ * The daemon's `browser_execute_request` push to the registered host. Answer it
+ * with a `BrowserExecuteResponse` naming the same `requestId` and `hostId`.
+ */
+export interface BrowserExecuteRequest {
+  type: "browser_execute_request";
+  requestId: string;
+  hostId: string;
+  command: string;
+  args: unknown;
+  caller: BrowserCaller;
+}
+
+/** `BrowserHostRegister`: the commands this host will run. */
+export interface BrowserHostRegister {
+  type: "browser_host_register";
+  id: number;
+  supportedCommands: string[];
+}
+
+/** The reply to `BrowserHostRegister`. A re-registration is a new `hostId`. */
+export interface BrowserHostRegistered {
+  type: "browser_host_registered";
+  id: number;
+  hostId: string;
+}
+
+/** `BrowserHostUnregister`: stop being the host; pending calls fail retryably. */
+export interface BrowserHostUnregister {
+  type: "browser_host_unregister";
+  id: number;
+  hostId: string;
+}
+
+/** `BrowserExecuteResponse`: the host's answer to one request. */
+export interface BrowserExecuteResponse {
+  type: "browser_execute_response";
+  id: number;
+  requestId: string;
+  hostId: string;
+  outcome: BrowserOutcome;
 }

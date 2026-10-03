@@ -374,6 +374,13 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::RemoteHostWatch { .. }
         | ClientMessage::RemoteHostUnwatch { .. }
         | ClientMessage::RemoteHostList { .. } => PeerDecision::Deny("remote_hosts"),
+        // Being the place agents' browser commands run is the local app's job.
+        // A paired device reaches a browser only through the per-device grant
+        // the MCP tools check (a later slice), never by registering as a host
+        // and receiving other people's commands.
+        ClientMessage::BrowserHostRegister { .. }
+        | ClientMessage::BrowserHostUnregister { .. }
+        | ClientMessage::BrowserExecuteResponse { .. } => PeerDecision::Deny("browser.host"),
     }
 }
 
@@ -1424,6 +1431,24 @@ pub(crate) mod tests {
                 device_id: "b".to_string(),
                 list: devboule_protocol::RemoteHostList::Sessions,
             },
+            // The browser host, all three frames: local-only like the link
+            // above, refused to a peer by name.
+            ClientMessage::BrowserHostRegister {
+                id: 1,
+                supported_commands: vec!["navigate".to_string()],
+            },
+            ClientMessage::BrowserHostUnregister {
+                id: 2,
+                host_id: "1.1".to_string(),
+            },
+            ClientMessage::BrowserExecuteResponse {
+                id: 3,
+                request_id: "browser-1".to_string(),
+                host_id: "1.1".to_string(),
+                outcome: devboule_protocol::BrowserOutcome::Ok {
+                    result: serde_json::json!({}),
+                },
+            },
             // The rest of the surface denied to every peer:
             // the session verbs outside the view/send pair, the read half of
             // the deposit, the watch set, the project/workspace/provider
@@ -1639,10 +1664,11 @@ pub(crate) mod tests {
         "SessionQueueSendNow",
     ];
 
-    /// The six wire variants no capability set opens — the three
+    /// The wire variants no capability set opens — the three
     /// permission-model acts (five frames: start or complete a pairing,
-    /// change a device's capability set, revoke a device) and the local-only
-    /// open root — with the reason each is refused under. `None` for every
+    /// change a device's capability set, revoke a device), the local-only
+    /// open root, the held host link and the browser host — with the reason
+    /// each is refused under. `None` for every
     /// other request, which under the parity rule is exactly "the
     /// administrative capability opens it". Deliberately a second closed
     /// match and not a reading of `matrix_row`: a row and the code
@@ -1658,6 +1684,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostWatch { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => Some("remote_hosts"),
+            ClientMessage::BrowserHostRegister { .. } => Some("browser.host"),
+            ClientMessage::BrowserHostUnregister { .. } => Some("browser.host"),
+            ClientMessage::BrowserExecuteResponse { .. } => Some("browser.host"),
             _ => None,
         }
     }
@@ -2576,6 +2605,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostWatch { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => local("remote_hosts"),
+            ClientMessage::BrowserHostRegister { .. } => local("browser.host"),
+            ClientMessage::BrowserHostUnregister { .. } => local("browser.host"),
+            ClientMessage::BrowserExecuteResponse { .. } => local("browser.host"),
         }
     }
 
@@ -2586,7 +2618,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 81;
+    pub(crate) const VARIANT_COUNT: usize = 84;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2675,6 +2707,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostWatch { .. } => "RemoteHostWatch",
             ClientMessage::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             ClientMessage::RemoteHostList { .. } => "RemoteHostList",
+            ClientMessage::BrowserHostRegister { .. } => "BrowserHostRegister",
+            ClientMessage::BrowserHostUnregister { .. } => "BrowserHostUnregister",
+            ClientMessage::BrowserExecuteResponse { .. } => "BrowserExecuteResponse",
         }
     }
 
@@ -3063,6 +3098,22 @@ pub(crate) mod tests {
                 id: 3,
                 device_id: "b".to_string(),
                 list: devboule_protocol::RemoteHostList::Sessions,
+            },
+            ClientMessage::BrowserHostRegister {
+                id: 1,
+                supported_commands: vec!["navigate".to_string()],
+            },
+            ClientMessage::BrowserHostUnregister {
+                id: 2,
+                host_id: "1.1".to_string(),
+            },
+            ClientMessage::BrowserExecuteResponse {
+                id: 3,
+                request_id: "browser-1".to_string(),
+                host_id: "1.1".to_string(),
+                outcome: devboule_protocol::BrowserOutcome::Ok {
+                    result: serde_json::json!({}),
+                },
             },
         ]
     }

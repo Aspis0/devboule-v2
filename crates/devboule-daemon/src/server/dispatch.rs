@@ -307,6 +307,17 @@ pub(super) fn dispatch_immediate(
             ErrorCode::InvalidRequest,
             "remote host frames are dispatched by the async wrapper",
         )),
+        // The browser host is a local app's job: the peer gate already refused
+        // every peer connection, and a local connection that did not negotiate
+        // `browser.host` is refused here, before the broker sees the frame.
+        ClientMessage::BrowserHostRegister { .. }
+        | ClientMessage::BrowserHostUnregister { .. }
+        | ClientMessage::BrowserExecuteResponse { .. } => {
+            if !conn.browser_host_negotiated() {
+                return capability_not_supported(request.request_id(), caps::BROWSER_HOST);
+            }
+            dispatch_browser_host(state, conn, request)
+        }
         ClientMessage::SessionPermissionRespond { .. } if !typed_permissions_ok => {
             capability_not_supported(request.request_id(), caps::TYPED_PERMISSIONS)
         }

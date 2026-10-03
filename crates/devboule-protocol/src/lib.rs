@@ -75,6 +75,7 @@
 //! [`ErrorCode::IdempotencyConflict`].
 
 mod attachments;
+mod browser;
 mod capability;
 mod error;
 mod handshake;
@@ -90,6 +91,8 @@ mod session_event_guard;
 mod text_safety;
 
 #[cfg(test)]
+mod browser_tests;
+#[cfg(test)]
 mod queue_frames_tests;
 #[cfg(test)]
 mod remote_host_tests;
@@ -101,6 +104,10 @@ pub use attachments::{
     empty_attachment_message, invalid_attachment_digest_message, invalid_base64_message,
     is_gif_webp_mime, unsupported_attachment_type_message, validate_attachment_references,
     validate_attachments, validate_session_send_attachments, ATTACHMENT_MIME_TYPES,
+};
+pub use browser::{
+    BrowserCaller, BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome,
+    MAX_BROWSER_ERROR_MESSAGE_BYTES, MAX_BROWSER_PAYLOAD_BYTES,
 };
 pub use capability::{intersect_capabilities, Capability};
 pub use error::{ErrorCode, ErrorDetails, WireError};
@@ -176,8 +183,12 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// `WorkspaceOpenRoot`; 20 was output-only fields). Protocol 22 adds the five
 /// `SessionQueue*` requests, the `queue_snapshot` event and the daemon-only
 /// `interrupt` send behaviour; all three ride the `session.queue` capability,
-/// so an older peer is never sent or asked to speak them.
-pub const PROTOCOL_VERSION: u32 = 23;
+/// so an older peer is never sent or asked to speak them. Protocol 23 added the
+/// held remote-host frames on `remote_hosts`; protocol 24 adds the browser-host
+/// frames (`BrowserHostRegister`, `BrowserHostUnregister`,
+/// `BrowserExecuteResponse` and the daemon's `browser_execute_request`) on
+/// `browser.host`.
+pub const PROTOCOL_VERSION: u32 = 24;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
@@ -189,7 +200,8 @@ pub const PROTOCOL_VERSION: u32 = 23;
 /// Protocol 19's one frame rides its own capability, so it does not move
 /// the floor either; protocol 21's frame is checked on `workspace.open`
 /// the same way before it is sent, and protocol 22's queue frames on
-/// `session.queue`.
+/// `session.queue`; protocol 24's browser-host frames are refused on
+/// `browser.host` the same way.
 pub const PROTOCOL_MIN_VERSION: u32 = 16;
 
 /// Well-known capability names. These are strings on the wire so a peer that
@@ -383,6 +395,16 @@ pub mod caps {
     /// not make this daemon dial a third machine — so this name is negotiated
     /// between the app and its own daemon and never between two daemons.
     pub const REMOTE_HOSTS: &str = "remote_hosts";
+
+    /// The browser host: the desktop app registers as the place that runs
+    /// browser commands (`BrowserHostRegister`, `BrowserHostUnregister`,
+    /// `BrowserExecuteResponse`) and is sent `browser_execute_request`.
+    ///
+    /// Local-only: the peer gate refuses the three request frames outright, so
+    /// this name is negotiated between the app and its own daemon and never
+    /// between two daemons. A connection that did not negotiate it is refused
+    /// the frames and is never sent a request.
+    pub const BROWSER_HOST: &str = "browser.host";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -773,6 +795,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // now reads: with the reset consumer in place the name belongs to both
     // lists (see `m3a_client_capabilities`).
     capabilities.push(Capability::new(caps::SESSION_RESUME_OUTCOMES));
+    // The browser host: the daemon serves its broker, and no client offers the
+    // name yet, so it is never negotiated until the app lane adds it.
+    capabilities.push(Capability::new(caps::BROWSER_HOST));
     capabilities
 }
 
@@ -922,6 +947,37 @@ mod tests {
             .any(|cap| cap.as_str() == caps::REMOTE_HOSTS));
     }
 
+    /// The browser-host frames ride their own capability, so the floor stays
+    /// put: a client that does not host a browser negotiates everything else
+    /// and is simply never sent a request.
+    #[test]
+    fn browser_host_is_negotiated_only_by_a_client_that_offers_it() {
+        assert_eq!(PROTOCOL_MIN_VERSION, 16, "no required field changed in 24");
+        let daemon_hello = crate::DaemonHello {
+            protocol_version: PROTOCOL_VERSION,
+            min_protocol_version: PROTOCOL_MIN_VERSION,
+            daemon_version: "test".to_string(),
+            instance_id: "d".to_string(),
+            pid: 1,
+            capabilities: m3a_daemon_capabilities(),
+        };
+        let owner = OwnerId::new("S-1-5-21-1", "client").expect("owner");
+        let plain = ClientHello::m3a(owner.clone(), "devboule-test");
+        let negotiated = negotiate(&plain, &daemon_hello).expect("a plain client connects");
+        assert!(!negotiated
+            .capabilities
+            .iter()
+            .any(|cap| cap.as_str() == caps::BROWSER_HOST));
+        let mut host = ClientHello::m3a(owner, "devboule-test");
+        host.capabilities.push(Capability::new(caps::BROWSER_HOST));
+        let negotiated = negotiate(&host, &daemon_hello).expect("a hosting client connects");
+        assert!(negotiated
+            .capabilities
+            .iter()
+            .any(|cap| cap.as_str() == caps::BROWSER_HOST));
+        assert_eq!(caps::BROWSER_HOST, "browser.host");
+    }
+
     #[test]
     fn protocol_min_still_accepts_a_v16_peer() {
         // 17 added only optional output-only fields, so the floor holds at
@@ -935,7 +991,11 @@ mod tests {
     /// the name buys it. Kept as a set so "the two lists are the same" stays a
     /// statement that names its own exceptions. Empty once every name the
     /// daemon serves has a consumer on this side.
-    const DAEMON_ONLY_CAPABILITIES: &[&str] = &[];
+    ///
+    /// `browser.host` is here because the app has no browser host to register
+    /// yet: the app lane adds the name to `m3a_client_capabilities` together
+    /// with the webview that executes the commands (slice 4b).
+    const DAEMON_ONLY_CAPABILITIES: &[&str] = &[caps::BROWSER_HOST];
 
     #[test]
     fn daemon_and_client_advertise_sessions() {

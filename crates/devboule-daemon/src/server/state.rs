@@ -216,6 +216,8 @@ pub struct ServerState {
     /// The held links to paired daemon peers (`peer_link.rs`): the leases, the
     /// link cap and the read budget, all per-daemon like the accept path's.
     pub(super) peer_links: super::peer_link::PeerLinks,
+    /// The registered browser host and the calls waiting on it.
+    pub(crate) browser: crate::browser_broker::BrowserBroker,
     pairing: Arc<crate::pairing::PairingService>,
     /// One write mutex per repository root: stage, unstage, discard,
     /// commit and the rename's `git mv` — this daemon's five index-touching
@@ -448,6 +450,7 @@ impl ServerState {
             peer_transport: OnceLock::new(),
             outbound_dials: super::peer_dial::DialSlots::default(),
             peer_links: super::peer_link::PeerLinks::new(),
+            browser: crate::browser_broker::BrowserBroker::new(),
             pairing: Arc::new(crate::pairing::PairingService::new()),
             git_write_locks: Mutex::new(HashMap::new()),
             #[cfg(test)]

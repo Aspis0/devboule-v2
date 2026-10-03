@@ -180,6 +180,12 @@ pub(crate) fn handle_client(
         .any(|capability| capability.as_str() == caps::SESSION_RESUME_OUTCOMES);
     conn.set_resume_outcomes_negotiated(resume_outcomes_ok);
     conn.set_remote_hosts_negotiated(remote_hosts_ok);
+    conn.set_browser_host_negotiated(
+        agreed
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == caps::BROWSER_HOST),
+    );
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
@@ -409,6 +415,8 @@ pub(crate) fn handle_client(
     // A dropped window takes its host leases with it; the links linger only for
     // the grace, so a reopen reuses them.
     state.peer_links.release_connection(conn.id);
+    // A host that leaves, however it leaves, fails the calls waiting on it.
+    state.browser.connection_closed(conn.id);
     state.sessions.clear_presence(conn.id);
     state.unregister_remote_conn(conn.id);
     // The device is gone, so the permission cards it was holding can no longer
