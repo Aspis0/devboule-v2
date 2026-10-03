@@ -217,7 +217,7 @@ export function useTabCloseFlow({
           anchorId: openMenuState.anchorId,
           entries: openMenuState.viaSelection
             ? [buildSelectionCloseEntry(openMenuState.targets.length)]
-            : (toolTabMenuEntries(tabs, openMenuState.anchorId) ?? [
+            : (toolTabMenuEntries(tabs, openMenuState.anchorId, resolveBrowserAddress) ?? [
                 ...buildTabCopyEntries(anchorTab, branch, resolveBrowserAddress),
                 ...renameEntriesFor(openMenuState.anchorId),
                 ...buildTabCloseEntries(

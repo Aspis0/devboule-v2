@@ -8,10 +8,14 @@ import { buildTabCopyEntries } from "./tabCopyActions";
 export function toolTabMenuEntries(
   tabs: readonly StripTab[],
   anchorId: string,
+  resolveBrowserAddress?: (browserId: string) => string | null,
 ): TabMenuEntry[] | null {
   const index = tabs.findIndex((tab) => tab.id === anchorId);
   if (index === -1) return null;
   const tab = tabs[index];
   if (tab?.type !== "tool") return null;
-  return [...buildTabCopyEntries(tab), ...buildToolTabCloseEntries(index, tabs.length)];
+  return [
+    ...buildTabCopyEntries(tab, null, resolveBrowserAddress),
+    ...buildToolTabCloseEntries(index, tabs.length),
+  ];
 }
