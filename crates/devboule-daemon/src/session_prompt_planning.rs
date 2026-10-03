@@ -274,8 +274,9 @@ impl AcpImageBlock {
 /// live transport.
 ///
 /// The plan carries both halves the send path needs: `fallback_text` (the
-/// user's text plus the path lines for the non-raster attachments — today:
-/// SVG, which no provider accepts inline) is the text block AND the exact
+/// user's text plus the path lines for the attachments this plan does not send
+/// inline — SVG, and GIF and WebP, which only Claude takes inline) is the text
+/// block AND the exact
 /// string the journal records, so the transcript can never carry image
 /// base64; `images` are the blocks that travel. One constructor builds both,
 /// so the journaled string and the sent text block cannot drift apart.
@@ -337,9 +338,10 @@ impl std::fmt::Debug for StructuredPromptPlan {
 /// that fails on its third attachment leaves nothing half-built), turns each
 /// raster (`image/png`, `image/jpeg`) into an image block carrying the
 /// STRIPPED bytes read back from disk, and keeps every other attachment
-/// (today: `image/svg+xml`) as a path line in the text. A prompt can
-/// therefore carry both blocks and path lines at once. Returns `None` when
-/// there is nothing to send inline (no attachments, or an SVG-only prompt),
+/// (`image/svg+xml`, `image/gif`, `image/webp`) as a path line in the text. A
+/// prompt can therefore carry both blocks and path lines at once. Returns
+/// `None` when there is nothing to send inline (no attachments, or only types
+/// that keep a path line),
 /// in which case the caller takes the legacy path-line write.
 pub(super) fn plan_structured_prompt(
     store: &AttachmentStore,
@@ -357,7 +359,9 @@ pub(super) fn plan_structured_prompt(
     let mut fallback_paths = Vec::new();
     for attachment in attachments {
         let path = session.materialize(attachment)?;
-        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some() {
+        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type)
+            .is_some_and(crate::raster_metadata::RasterMime::is_inline_everywhere)
+        {
             images.push(
                 AcpImageBlock::from_stored_file(&path, &attachment.mime_type).map_err(|error| {
                     WireError::new(

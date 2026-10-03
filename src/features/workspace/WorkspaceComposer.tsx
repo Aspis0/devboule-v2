@@ -43,6 +43,8 @@ interface WorkspaceComposerProps {
   /** The connected daemon does not keep a queue for this session: the action
    * stays on screen, disabled, and says why it cannot queue. */
   queueUnsupportedReason?: string | null;
+  /** The daemon agreed `attachments.gif_webp`: the picker offers GIF and WebP. */
+  gifWebpSupported?: boolean;
   disabled?: boolean;
   disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
@@ -99,6 +101,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   turnActive,
   queueAllowed = true,
   queueUnsupportedReason = null,
+  gifWebpSupported = false,
   disabled = false,
   disabledReason,
   availableCommands = [],
@@ -440,6 +443,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               disabled={disabled}
               sending={sendingImages}
               overflowNotice={restoreOverflow}
+              gifWebpSupported={gifWebpSupported}
               onAdd={(picked) => {
                 setRestoreOverflow(null);
                 setAttachedImages((current) => {

@@ -1408,6 +1408,44 @@ fn an_svg_keeps_its_path_line_beside_pi_image_entries() {
 }
 
 #[test]
+fn a_gif_and_a_webp_reach_pi_as_path_lines_not_image_entries() {
+    // Only Claude is known to take these inline, so the other providers keep
+    // the path line; the file on disk is the stripped one either way.
+    use crate::raster_metadata::container_fixtures::{clean_gif, clean_webp};
+    let temp = PlanTempDir::new("gif-webp");
+    let store = AttachmentStore::new(&temp.0);
+    let catalog = capable_catalog();
+    let plan = plan_pi_prompt(
+        &store,
+        "pi-plan-gif-webp",
+        "an animation and a photo",
+        &[
+            plan_attachment("loop.gif", "image/gif", &clean_gif(1)),
+            plan_attachment("photo.webp", "image/webp", &clean_webp(1)),
+        ],
+        &catalog,
+        Some("minimax-m3"),
+    )
+    .expect("materialized")
+    .expect("the route answers with the text");
+    assert!(carried_pi_mime_types(Some(&plan)).is_empty());
+    assert!(
+        plan.fallback_text
+            .starts_with("an animation and a photo\n\n[Image available at: "),
+        "{}",
+        plan.fallback_text
+    );
+    assert_eq!(plan.fallback_text.matches(".gif]").count(), 1);
+    assert!(
+        plan.fallback_text.ends_with(".webp]"),
+        "{}",
+        plan.fallback_text
+    );
+    let frame = pi_prompt_frame("p-3", &plan.fallback_text, &plan.images);
+    assert!(frame.get("images").is_none(), "no image entry travels");
+}
+
+#[test]
 fn a_frame_without_entries_is_the_text_only_frame() {
     // The static route frames every prompt it plans through this builder,
     // including one whose entries are all path lines. With no entry it has

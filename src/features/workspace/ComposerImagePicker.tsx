@@ -17,12 +17,15 @@ const MAX_CHAT_IMAGE_BYTES = 128 * 1024;
  */
 export const MAX_COMPOSER_IMAGES = 4;
 
-const ACCEPTED_MIME_TYPES = ["image/png", "image/jpeg", "image/svg+xml"] as const;
-type AcceptedMimeType = (typeof ACCEPTED_MIME_TYPES)[number];
+const BASE_MIME_TYPES = ["image/png", "image/jpeg", "image/svg+xml"] as const;
+/** Offered only to a daemon that agreed `attachments.gif_webp`. */
+const GIF_WEBP_MIME_TYPES = ["image/gif", "image/webp"] as const;
+type AcceptedMimeType = (typeof BASE_MIME_TYPES)[number] | (typeof GIF_WEBP_MIME_TYPES)[number];
 
-function isAcceptedMimeType(mime: string): mime is AcceptedMimeType {
-  return (ACCEPTED_MIME_TYPES as readonly string[]).includes(mime);
-}
+const WITH_GIF_WEBP_MIME_TYPES: readonly AcceptedMimeType[] = [
+  ...BASE_MIME_TYPES,
+  ...GIF_WEBP_MIME_TYPES,
+];
 
 /** Base64 without blowing the argument list: one 32 KiB chunk at a time. */
 function base64Of(bytes: Uint8Array): string {
@@ -49,6 +52,7 @@ export function ComposerImagePicker({
   disabled,
   sending,
   overflowNotice,
+  gifWebpSupported,
   onAdd,
   onRemove,
 }: {
@@ -58,6 +62,8 @@ export function ComposerImagePicker({
   sending: boolean;
   /** A handed-back row's images that did not fit beside current picks. */
   overflowNotice: string | null;
+  /** The daemon agreed `attachments.gif_webp`: GIF and WebP join the pickable types. */
+  gifWebpSupported: boolean;
   onAdd: (images: readonly PromptAttachment[]) => void;
   onRemove: (index: number) => void;
 }) {
@@ -65,6 +71,9 @@ export function ComposerImagePicker({
   const [pickRefusal, setPickRefusal] = useState<string | null>(null);
   const pickerDisabled = disabled || sending;
   const refusal = overflowNotice ?? pickRefusal;
+  const acceptedTypes: readonly AcceptedMimeType[] = gifWebpSupported
+    ? WITH_GIF_WEBP_MIME_TYPES
+    : BASE_MIME_TYPES;
 
   async function handleFiles(files: FileList | null) {
     if (files === null) return;
@@ -75,7 +84,8 @@ export function ComposerImagePicker({
         refused = `The composer carries at most ${MAX_COMPOSER_IMAGES} images.`;
         break;
       }
-      if (!isAcceptedMimeType(file.type)) {
+      const mimeType = acceptedTypes.find((accepted) => accepted === file.type);
+      if (mimeType === undefined) {
         refused = `${file.name} is not an image the composer can attach.`;
         continue;
       }
@@ -84,14 +94,10 @@ export function ComposerImagePicker({
         continue;
       }
       const bytes = new Uint8Array(await file.arrayBuffer());
-      accepted.push({ name: file.name, mimeType: file.type, data: base64Of(bytes) });
+      accepted.push({ name: file.name, mimeType, data: base64Of(bytes) });
     }
-    if (accepted.length > 0) {
-      setPickRefusal(null);
-      onAdd(accepted);
-    } else if (refused !== null) {
-      setPickRefusal(refused);
-    }
+    setPickRefusal(refused);
+    if (accepted.length > 0) onAdd(accepted);
     if (inputRef.current !== null) inputRef.current.value = "";
   }
 
@@ -154,7 +160,7 @@ export function ComposerImagePicker({
         type="file"
         className="workspace-composer-image-input"
         data-testid="composer-image-input"
-        accept={ACCEPTED_MIME_TYPES.join(",")}
+        accept={acceptedTypes.join(",")}
         multiple
         disabled={pickerDisabled}
         onChange={(event) => void handleFiles(event.currentTarget.files)}

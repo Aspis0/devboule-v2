@@ -858,9 +858,17 @@ export interface PromptAttachment {
   /**
    * The types the daemon accepts. `text/markdown` is a *deposit* type only:
    * the finish report stores a child's last message under it (`S5` decision
-   * 10). A composer sends the image types it can preview.
+   * 10). A composer sends the image types it can preview. `image/gif` and
+   * `image/webp` ride the `attachments.gif_webp` capability: send them only
+   * to a daemon that agreed it.
    */
-  mimeType: "image/png" | "image/jpeg" | "image/svg+xml" | "text/markdown";
+  mimeType:
+    | "image/png"
+    | "image/jpeg"
+    | "image/svg+xml"
+    | "image/gif"
+    | "image/webp"
+    | "text/markdown";
   data: string;
 }
 

@@ -1580,6 +1580,39 @@ fn an_svg_keeps_its_path_line_beside_codex_image_paths() {
 }
 
 #[test]
+fn a_gif_and_a_webp_reach_codex_as_path_lines_not_image_paths() {
+    // Only Claude is known to take these inline, so the other providers keep
+    // the path line; the file on disk is the stripped one either way.
+    use crate::raster_metadata::container_fixtures::{clean_gif, clean_webp};
+    let temp = PlanTempDir::new("gif-webp");
+    let store = AttachmentStore::new(&temp.0);
+    let plan = plan_codex_prompt(
+        &store,
+        "codex-plan-gif-webp",
+        "an animation and a photo",
+        &[
+            plan_attachment("loop.gif", "image/gif", &clean_gif(1)),
+            plan_attachment("photo.webp", "image/webp", &clean_webp(1)),
+        ],
+    )
+    .expect("materialized")
+    .expect("the route answers with the text");
+    assert!(carried_image_paths(Some(&plan)).is_empty());
+    assert!(
+        plan.fallback_text
+            .starts_with("an animation and a photo\n\n[Image available at: "),
+        "{}",
+        plan.fallback_text
+    );
+    assert_eq!(plan.fallback_text.matches(".gif]").count(), 1);
+    assert!(
+        plan.fallback_text.ends_with(".webp]"),
+        "{}",
+        plan.fallback_text
+    );
+}
+
+#[test]
 fn a_first_command_with_an_attachment_keeps_its_prefix_and_image_block() {
     let temp = PlanTempDir::new("first-command-image");
     let home = temp.0.join("home");

@@ -4,7 +4,7 @@ use super::*;
 use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
 use devboule_protocol::ATTACHMENT_MIME_TYPES;
 
-struct TempDir(PathBuf);
+pub(super) struct TempDir(pub(super) PathBuf);
 
 impl TempDir {
     /// The store hardens every session folder it creates, and a hardened
@@ -14,7 +14,7 @@ impl TempDir {
     /// `create_dir_all` succeeds on the inherited folder and the first write
     /// into it fails with `Access is denied`, in whatever test drew the short
     /// straw. Name it with the clock so no run can inherit another's.
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = crate::test_dirs::test_temp_dir("devboule-attachments");
         Self(dir)
     }
@@ -26,7 +26,7 @@ impl Drop for TempDir {
     }
 }
 
-fn attachment(name: &str, mime_type: &str, data: &str) -> PromptAttachment {
+pub(super) fn attachment(name: &str, mime_type: &str, data: &str) -> PromptAttachment {
     PromptAttachment {
         name: name.to_string(),
         mime_type: mime_type.to_string(),
@@ -34,7 +34,7 @@ fn attachment(name: &str, mime_type: &str, data: &str) -> PromptAttachment {
     }
 }
 
-fn encoded(bytes: &[u8]) -> String {
+pub(super) fn encoded(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
@@ -363,10 +363,10 @@ fn an_unsupported_type_is_refused_rather_than_named_png() {
     let store = AttachmentStore::new(&temp.0);
     let session = store.session("s.a.1").expect("session");
     let error = session
-        .materialize(&attachment("a.gif", "image/gif", &encoded(b"gif")))
+        .materialize(&attachment("a.bmp", "image/bmp", &encoded(b"bmp")))
         .expect_err("refused");
     assert_eq!(error.code, ErrorCode::InvalidRequest);
-    assert!(error.message.contains("image/gif"), "{}", error.message);
+    assert!(error.message.contains("image/bmp"), "{}", error.message);
 }
 
 #[test]

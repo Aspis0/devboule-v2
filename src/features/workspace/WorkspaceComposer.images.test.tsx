@@ -3,7 +3,7 @@
 // the arity every existing caller expects.
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PromptAttachment } from "../../types/ipc";
@@ -21,21 +21,35 @@ function pngFile(name = "photo.png"): File {
   });
 }
 
+function gifFile(name = "loop.gif"): File {
+  return new File([new TextEncoder().encode("GIF89a")], name, { type: "image/gif" });
+}
+
+function webpFile(name = "photo.webp"): File {
+  return new File([new TextEncoder().encode("RIFF....WEBP")], name, { type: "image/webp" });
+}
+
 async function renderComposer(
   onSend: (text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>,
+  overrides: Partial<ComponentProps<typeof WorkspaceComposer>> = {},
 ) {
   const mocks = { onSend: vi.fn(), onQueue: vi.fn() };
   root = createRoot(container);
   await act(async () => {
-    root.render(<WorkspaceComposer {...composerProps(mocks)} onSend={onSend} />);
+    root.render(<WorkspaceComposer {...composerProps(mocks, overrides)} onSend={onSend} />);
   });
 }
 
-function pickFiles(...files: File[]) {
+function imageInput(): HTMLInputElement {
   const input = container.querySelector<HTMLInputElement>(
     'input[data-testid="composer-image-input"]',
   );
   if (input === null) throw new Error("composer image input did not render");
+  return input;
+}
+
+function pickFiles(...files: File[]) {
+  const input = imageInput();
   Object.defineProperty(input, "files", { value: files, configurable: true });
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
@@ -108,6 +122,58 @@ describe("WorkspaceComposer images", () => {
     pickFiles(text);
     await act(async () => {});
     expect(container.querySelector('[data-testid="composer-image-preview"]')).toBeNull();
+  });
+
+  it("offers neither GIF nor WebP to a daemon that did not agree them", async () => {
+    await renderComposer(vi.fn());
+    expect(imageInput().accept).toBe("image/png,image/jpeg,image/svg+xml");
+    pickFiles(gifFile(), webpFile());
+    await act(async () => {});
+    expect(container.querySelector('[data-testid="composer-image-preview"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "is not an image the composer can attach.",
+    );
+  });
+
+  it("keeps the accepted files and says why the rest were refused in a mixed pick", async () => {
+    const onSend = vi.fn();
+    await renderComposer(onSend);
+    pickFiles(pngFile(), gifFile());
+    await act(async () => {});
+    expect(container.querySelectorAll('[data-testid="composer-image-preview"]')).toHaveLength(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "loop.gif is not an image the composer can attach.",
+    );
+
+    const oversized = new File([new Uint8Array(128 * 1024 + 1)], "big.png", { type: "image/png" });
+    pickFiles(pngFile("second.png"), oversized);
+    await act(async () => {});
+    expect(container.querySelectorAll('[data-testid="composer-image-preview"]')).toHaveLength(2);
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "big.png is larger than 128 KiB.",
+    );
+
+    pickFiles(pngFile("third.png"));
+    await act(async () => {});
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("sends a picked GIF and WebP once the daemon agreed them", async () => {
+    const onSend = vi.fn();
+    await renderComposer(onSend, { gifWebpSupported: true });
+    expect(imageInput().accept).toBe("image/png,image/jpeg,image/svg+xml,image/gif,image/webp");
+    pickFiles(gifFile(), webpFile());
+    await act(async () => {});
+    expect(container.querySelectorAll('[data-testid="composer-image-preview"]')).toHaveLength(2);
+    await typeText("an animation and a photo");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click();
+    });
+    const [, attachments] = onSend.mock.calls[0] as [string, readonly PromptAttachment[]];
+    expect(attachments.map((attachment) => attachment.mimeType)).toEqual([
+      "image/gif",
+      "image/webp",
+    ]);
   });
 });
 

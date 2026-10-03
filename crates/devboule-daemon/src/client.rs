@@ -206,6 +206,22 @@ impl DaemonClient {
         )))
     }
 
+    /// Refuse a GIF or a WebP for a daemon that did not agree
+    /// `attachments.gif_webp`.
+    ///
+    /// No frame is unknown to an older daemon here — it would answer with an
+    /// ordinary rejection — but the app is meant to know before it sends, so
+    /// the refusal is the client's, with the sentence of every other gate.
+    fn require_gif_webp_agreed(&self, attachments: &[PromptAttachment]) -> Result<(), DaemonError> {
+        if attachments
+            .iter()
+            .any(|attachment| devboule_protocol::is_gif_webp_mime(&attachment.mime_type))
+        {
+            self.require_agreed(devboule_protocol::caps::ATTACHMENTS_GIF_WEBP)?;
+        }
+        Ok(())
+    }
+
     pub fn ping(&self) -> Result<u64, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::Ping { id })? {
@@ -689,6 +705,7 @@ impl DaemonClient {
         active_turn_behavior: Option<ActiveTurnBehavior>,
         idempotency_key: Option<String>,
     ) -> Result<bool, DaemonError> {
+        self.require_gif_webp_agreed(attachments)?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {
             id,
@@ -731,6 +748,7 @@ impl DaemonClient {
         session_id: &str,
         attachment: &PromptAttachment,
     ) -> Result<AttachmentReference, DaemonError> {
+        self.require_gif_webp_agreed(std::slice::from_ref(attachment))?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionDeposit {
             id,
@@ -826,6 +844,7 @@ impl DaemonClient {
         attachment_references: &[AttachmentReference],
     ) -> Result<(), DaemonError> {
         self.require_agreed(devboule_protocol::caps::SESSION_QUEUE)?;
+        self.require_gif_webp_agreed(attachments)?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionQueueAdd {
             id,

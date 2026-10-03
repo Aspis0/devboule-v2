@@ -116,7 +116,7 @@ fn a_deposit_by_another_user_is_unauthorized_and_writes_nothing() {
 /// The discriminator has to be the size cap and not the type: the store
 /// refuses an unsupported type and a bad base64 with the *same* sentences
 /// the wire does (it calls `unsupported_attachment_type_message` and
-/// `invalid_base64_message` too), so an `image/gif` or a `"!!!"` attachment
+/// `invalid_base64_message` too), so an `image/bmp` or a `"!!!"` attachment
 /// would read identically whichever layer refused it. An `image/svg+xml`
 /// past the per-file cap decodes, is not a raster, and is written as it
 /// arrived — so a `deposit` that reached the store first would answer `Ok`
@@ -383,14 +383,14 @@ fn an_unsupported_attachment_type_is_refused() {
             "attach-type",
             45,
             "hello",
-            &[attachment("anim.gif", "image/gif", b"gif")],
+            &[attachment("pic.bmp", "image/bmp", b"bmp")],
             &[],
             &owner,
             &conn,
         )
-        .expect_err("a gif is refused");
+        .expect_err("a bmp is refused");
     assert!(
-        attachment_message(&error).contains("image/gif"),
+        attachment_message(&error).contains("image/bmp"),
         "{}",
         error.message
     );
@@ -860,6 +860,50 @@ fn an_svg_keeps_its_path_line_beside_image_blocks() {
         "the raster left no path line: {}",
         plan.fallback_text
     );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_gif_keeps_its_path_line_beside_image_blocks() {
+    // Only Claude is known to take a GIF inline, so the structured ACP plan
+    // sends the PNG as a block and the GIF as a path line, and a GIF-only
+    // prompt stays on the legacy write like an SVG-only one.
+    use crate::raster_metadata::container_fixtures::clean_gif;
+    let (dir, _registry, journal) = tmp_delete_registry();
+    let store = AttachmentStore::new(&dir);
+    let plan = plan_structured_prompt(
+        &store,
+        "attach-gif-mixed",
+        "photo and loop",
+        &[
+            attachment("photo.png", "image/png", &clean_png(0x15)),
+            attachment("loop.gif", "image/gif", &clean_gif(1)),
+        ],
+    )
+    .expect("planned")
+    .expect("the png plans a structured prompt");
+    assert_eq!(plan.images.len(), 1, "only the png becomes a block");
+    assert_eq!(plan.images[0].mime_type, "image/png");
+    assert!(
+        plan.fallback_text
+            .starts_with("photo and loop\n\n[Image available at: "),
+        "{}",
+        plan.fallback_text
+    );
+    assert!(
+        plan.fallback_text.ends_with(".gif]"),
+        "{}",
+        plan.fallback_text
+    );
+    let gif_only = plan_structured_prompt(
+        &store,
+        "attach-gif-only",
+        "loop",
+        &[attachment("loop.gif", "image/gif", &clean_gif(2))],
+    )
+    .expect("planned");
+    assert!(gif_only.is_none(), "a GIF-only prompt plans no block");
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -123,6 +123,8 @@ const WORKSPACE_GIT_LOG = "workspace.git_log";
 /** The negotiated capability the shared follow-up queue is gated on: the
  * daemon holds the rows, and this workspace asks it for them. */
 const SESSION_QUEUE_CAPABILITY = "session.queue";
+/** The negotiated capability GIF and WebP attachments are gated on. */
+const ATTACHMENTS_GIF_WEBP_CAPABILITY = "attachments.gif_webp";
 
 export { WorkspacePermissionCard, formatPermissionCommand };
 
@@ -280,6 +282,7 @@ export function Workspace({
   // the names are derived from that read rather than from a second one.
   const peerNames = useMemo(() => peerDeviceNames(devices.peers), [devices]);
   const queueSupported = daemon.capabilities.includes(SESSION_QUEUE_CAPABILITY);
+  const gifWebpSupported = daemon.capabilities.includes(ATTACHMENTS_GIF_WEBP_CAPABILITY);
   // The empty provider picker's action hands the user to Settings → Providers
   // (the surface opens on that tab), so the flow needs the app's one switcher.
   const selectSurface = useAppStore((state) => state.selectSurface);
@@ -1832,6 +1835,7 @@ export function Workspace({
                 // `queueSupported`): the surface renders its snapshots, and
                 // Enter mid-turn queues instead of interrupting.
                 queueSupported={queueSupported}
+                gifWebpSupported={gifWebpSupported}
                 auxiliary={
                   selectedPermission !== null ? (
                     <WorkspacePermissionCard

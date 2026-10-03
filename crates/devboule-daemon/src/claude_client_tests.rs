@@ -21,6 +21,9 @@ mod stored_reference_plan_tests;
 #[path = "claude_client_tests/stored_reference_admission_tests.rs"]
 mod stored_reference_admission_tests;
 
+#[path = "claude_client_tests/stored_gif_webp_tests.rs"]
+mod stored_gif_webp_tests;
+
 const CLAUDE_MODE_CAPTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/wire/claude-set-mode.jsonl"

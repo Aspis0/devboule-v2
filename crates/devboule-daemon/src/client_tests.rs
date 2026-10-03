@@ -874,6 +874,82 @@ fn a_daemon_that_did_not_negotiate_the_queue_is_never_sent_a_queue_rpc() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The fake daemon here never offers `attachments.gif_webp`: the PNG deposit is
+/// the one frame that may reach it, and a GIF or WebP, deposited or sent, is
+/// refused on this side before any frame is built.
+#[cfg(windows)]
+#[test]
+fn a_client_does_not_send_a_gif_or_webp_to_a_daemon_that_did_not_agree_them() {
+    let attachment = |name: &str, mime_type: &str| devboule_protocol::PromptAttachment {
+        name: name.to_string(),
+        mime_type: mime_type.to_string(),
+        data: "AA==".to_string(),
+    };
+    with_a_fake_daemon(
+        "gif-webp-cap",
+        |framed| {
+            let request = framed
+                .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+                .expect("the png deposit arrives");
+            let id = request.request_id().expect("request id");
+            assert!(
+                matches!(request, ClientMessage::SessionDeposit { .. }),
+                "{request:?}"
+            );
+            framed
+                .send(&DaemonMessage::SessionDeposited {
+                    id,
+                    reference: devboule_protocol::AttachmentReference {
+                        session_id: "s.owner.1".to_string(),
+                        digest: "0".repeat(64),
+                        stored_bytes: 1,
+                    },
+                })
+                .expect("reply");
+            let next = framed.recv_timeout::<ClientMessage>(Duration::from_millis(500));
+            assert!(
+                next.is_err(),
+                "a GIF or WebP must not be sent without the capability, got {next:?}"
+            );
+        },
+        |client| {
+            client
+                .session_deposit("s.owner.1", &attachment("a.png", "image/png"))
+                .expect("a png needs no capability");
+            let refused = [
+                client
+                    .session_deposit("s.owner.1", &attachment("a.gif", "image/gif"))
+                    .expect_err("a gif deposit must be refused"),
+                client
+                    .session_send_with_subscription(
+                        "s.owner.1",
+                        1,
+                        "look",
+                        &[attachment("a.webp", "image/webp")],
+                        &[],
+                        None,
+                        None,
+                    )
+                    .map(|_| ())
+                    .expect_err("a webp send must be refused"),
+            ];
+            for error in refused {
+                let crate::DaemonError::Handshake(wire) = error else {
+                    panic!("a capability refusal is a wire error, got {error:?}");
+                };
+                assert_eq!(
+                    wire.code,
+                    devboule_protocol::ErrorCode::CapabilityNotSupported
+                );
+                assert_eq!(
+                    wire.message,
+                    "capability 'attachments.gif_webp' was not negotiated"
+                );
+            }
+        },
+    );
+}
+
 /// One client on a fake daemon that runs `serve` against the connection, plus
 /// the teardown both deadline tests need: they differ only in what the far
 /// side does with the frames and when.

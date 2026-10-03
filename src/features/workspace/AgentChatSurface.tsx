@@ -188,6 +188,8 @@ interface AgentChatSurfaceProps {
    * as it always has, and the composer's queue action says why it cannot queue.
    */
   queueSupported?: boolean;
+  /** The connected daemon agreed `attachments.gif_webp`: the composer may attach GIF and WebP. */
+  gifWebpSupported?: boolean;
   onPermissionRequest?: (
     sessionId: string,
     subscriptionId: SubscriptionId,
@@ -353,6 +355,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   hasPendingPermission = false,
   pendingPlanToolCallId = null,
   queueSupported = false,
+  gifWebpSupported = false,
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
@@ -799,6 +802,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         turnActive={turnActive}
         queueAllowed={!hasPendingPermission}
         queueUnsupportedReason={noQueue}
+        gifWebpSupported={gifWebpSupported}
         disabled={composerDisabled}
         disabledReason={recoveredAttach ? null : disabledReason}
         availableCommands={composerCommands}

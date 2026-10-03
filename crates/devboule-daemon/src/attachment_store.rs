@@ -97,7 +97,7 @@ const DIGEST_HEX_LEN: usize = 64;
 /// not here, which left every deposited artifact unresolvable through the
 /// listing. `a_deposited_markdown_artifact_resolves_by_digest` is the test that
 /// notices, because it deposits and then resolves instead of counting entries.
-const STORED_EXTENSIONS: [&str; 4] = ["png", "jpg", "svg", "md"];
+const STORED_EXTENSIONS: [&str; 6] = ["png", "jpg", "svg", "md", "gif", "webp"];
 
 /// What the store's write lock carries besides the exclusion itself: the bytes
 /// each session folder holds, which is what the store's total is summed from.
@@ -1675,6 +1675,8 @@ fn extension_for(mime_type: &str) -> Option<&'static str> {
         "image/png" => Some("png"),
         "image/jpeg" => Some("jpg"),
         "image/svg+xml" => Some("svg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
         // The finish report's artifact: a child's last
         // message, deposited as one markdown file for the creator.
         "text/markdown" => Some("md"),
@@ -1692,6 +1694,8 @@ pub(crate) fn mime_type_for_extension(extension: &str) -> Option<&'static str> {
         "png" => Some("image/png"),
         "jpg" => Some("image/jpeg"),
         "svg" => Some("image/svg+xml"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
         "md" => Some("text/markdown"),
         _ => None,
     }
@@ -1952,3 +1956,7 @@ fn is_older_than(dir: &Path, now: SystemTime, max_age: Duration) -> Option<bool>
 #[cfg(test)]
 #[path = "attachment_store_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "attachment_store_gif_webp_tests.rs"]
+mod gif_webp_tests;

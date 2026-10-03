@@ -48,6 +48,12 @@
 //! not rewriting: what the walk produces is a length, and the bytes of the scan
 //! are copied from the input.
 //!
+//! GIF and WebP follow the same three rules in the child modules `gif` and
+//! `webp`, one per container. They have no TypeScript twin and so no shared
+//! vectors; their fixtures are built byte by byte in `gif_tests` and
+//! `webp_tests`. Both keep an animation whole: frames are copied, never
+//! decoded or re-encoded.
+//!
 //! The vocabulary is shared. [`RasterMetadataRule`] carries the same nine names
 //! as `RASTER_METADATA_RULES` in the TypeScript module, and the bytes the two
 //! implementations must agree on live in `fixtures/raster-metadata/vectors.json`
@@ -62,6 +68,16 @@
 //! write one sentence for a designer in the composer. The daemon has no window,
 //! its refusals become a `WireError`, and porting a sentence nobody reads would
 //! add a second place for the same nine names to be misspelled.
+
+mod gif;
+mod webp;
+
+#[cfg(test)]
+pub(crate) mod container_fixtures;
+#[cfg(test)]
+mod gif_tests;
+#[cfg(test)]
+mod webp_tests;
 
 use serde::{Serialize, Serializer};
 
@@ -190,6 +206,8 @@ impl std::fmt::Display for RasterStripError {
 pub(crate) enum RasterMime {
     Jpeg,
     Png,
+    Gif,
+    Webp,
 }
 
 impl RasterMime {
@@ -197,6 +215,8 @@ impl RasterMime {
         match mime_type {
             "image/jpeg" => Some(Self::Jpeg),
             "image/png" => Some(Self::Png),
+            "image/gif" => Some(Self::Gif),
+            "image/webp" => Some(Self::Webp),
             _ => None,
         }
     }
@@ -207,7 +227,17 @@ impl RasterMime {
         match self {
             Self::Jpeg => "image/jpeg",
             Self::Png => "image/png",
+            Self::Gif => "image/gif",
+            Self::Webp => "image/webp",
         }
+    }
+
+    /// Whether every provider that takes inline images takes this container.
+    /// Only Claude is known to take a GIF or a WebP; the others still get a
+    /// path line for them, so each provider's own planner asks this rather
+    /// than [`Self::from_mime_type`], which says only that a strip walk exists.
+    pub(crate) fn is_inline_everywhere(self) -> bool {
+        matches!(self, Self::Jpeg | Self::Png)
     }
 }
 
@@ -233,6 +263,12 @@ pub(crate) fn sniff_raster_mime(bytes: &[u8]) -> Option<RasterMime> {
     }
     if bytes.starts_with(&PNG_SIGNATURE) {
         return Some(RasterMime::Png);
+    }
+    if gif::has_gif_header(bytes) {
+        return Some(RasterMime::Gif);
+    }
+    if webp::has_webp_header(bytes) {
+        return Some(RasterMime::Webp);
     }
     None
 }
@@ -268,6 +304,8 @@ pub(crate) fn strip_raster_metadata(
     let stripped = match mime {
         RasterMime::Png => strip_png_chunks(bytes, &mut removed)?,
         RasterMime::Jpeg => strip_jpeg_segments(bytes, &mut removed)?,
+        RasterMime::Gif => gif::strip_gif_blocks(bytes, &mut removed)?,
+        RasterMime::Webp => webp::strip_webp_chunks(bytes, &mut removed)?,
     };
     Ok(StrippedRaster {
         bytes: stripped,
@@ -1005,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_raster_containers_have_a_walk() {
+    fn only_the_four_raster_containers_have_a_walk() {
         assert_eq!(
             RasterMime::from_mime_type("image/jpeg"),
             Some(RasterMime::Jpeg)
@@ -1014,6 +1052,15 @@ mod tests {
             RasterMime::from_mime_type("image/png"),
             Some(RasterMime::Png)
         );
+        assert_eq!(
+            RasterMime::from_mime_type("image/gif"),
+            Some(RasterMime::Gif)
+        );
+        assert_eq!(
+            RasterMime::from_mime_type("image/webp"),
+            Some(RasterMime::Webp)
+        );
+        assert_eq!(RasterMime::from_mime_type("image/bmp"), None);
         // SVG is outside this pass on purpose: the frontend sanitises SVG
         // source and the daemon does not. A `None` here means the caller writes
         // the bytes as they arrived, which is the gap `materialize` names.
@@ -1022,6 +1069,16 @@ mod tests {
 
     /// The vocabulary is a wire contract, not an internal choice: the names
     /// that leave here are the names the vectors and the composer's notice use.
+    #[test]
+    fn only_png_and_jpeg_are_inline_for_every_provider() {
+        for mime in [RasterMime::Png, RasterMime::Jpeg] {
+            assert!(mime.is_inline_everywhere(), "{mime:?}");
+        }
+        for mime in [RasterMime::Gif, RasterMime::Webp] {
+            assert!(!mime.is_inline_everywhere(), "{mime:?}");
+        }
+    }
+
     #[test]
     fn a_rule_serialises_to_the_name_the_vectors_use() {
         let names: Vec<&str> = RasterMetadataRule::ALL

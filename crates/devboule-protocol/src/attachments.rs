@@ -28,8 +28,24 @@ use crate::{
 /// Everything else is refused rather than guessed at: a daemon that writes an
 /// attachment to disk and names a path in a prompt is making a promise about
 /// what is in that file, and it can only keep a promise about formats it knows.
-pub const ATTACHMENT_MIME_TYPES: [&str; 4] =
-    ["image/png", "image/jpeg", "image/svg+xml", "text/markdown"];
+pub const ATTACHMENT_MIME_TYPES: [&str; 6] = [
+    "image/png",
+    "image/jpeg",
+    "image/svg+xml",
+    "text/markdown",
+    "image/gif",
+    "image/webp",
+];
+
+/// Whether a type is one a sender may carry only to a daemon that agreed
+/// `attachments.gif_webp`.
+///
+/// The validator below admits both types on every side so the daemon can
+/// answer a peer that sends one; the *sender's* refusal to send them to a
+/// daemon that predates them is the client's, keyed on this.
+pub fn is_gif_webp_mime(mime_type: &str) -> bool {
+    matches!(mime_type, "image/gif" | "image/webp")
+}
 
 /// The number of hex characters a SHA-256 digest has (32 bytes).
 ///
@@ -374,11 +390,25 @@ mod tests {
     #[test]
     fn an_unsupported_type_names_the_type_and_the_allowed_set() {
         let message =
-            validate_attachments(&[attachment("image/gif", "AA==")]).expect_err("rejected");
+            validate_attachments(&[attachment("image/bmp", "AA==")]).expect_err("rejected");
         assert!(message.starts_with("Attachment 1 ('a.png'): "), "{message}");
-        assert!(message.contains("image/gif"), "{message}");
+        assert!(message.contains("image/bmp"), "{message}");
         for allowed in ATTACHMENT_MIME_TYPES {
             assert!(message.contains(allowed), "{message} should name {allowed}");
+        }
+    }
+
+    #[test]
+    fn gif_and_webp_are_attachment_types() {
+        validate_attachments(&[
+            attachment("image/gif", "AA=="),
+            attachment("image/webp", "AA=="),
+        ])
+        .expect("both animated-capable rasters are carried");
+        assert!(is_gif_webp_mime("image/gif"));
+        assert!(is_gif_webp_mime("image/webp"));
+        for other in ["image/png", "image/jpeg", "image/svg+xml", "text/markdown"] {
+            assert!(!is_gif_webp_mime(other), "{other} rides no capability");
         }
     }
 
@@ -420,7 +450,7 @@ mod tests {
         let four = vec![
             attachment("image/png", "AA=="),
             attachment("image/png", "AA=="),
-            attachment("image/gif", "AA=="),
+            attachment("image/bmp", "AA=="),
             attachment("image/png", "AA=="),
         ];
         let message = validate_attachments(&four).expect_err("rejected");
@@ -459,11 +489,11 @@ mod tests {
 
     #[test]
     fn an_empty_name_is_labelled_by_position_alone() {
-        let mut item = attachment("image/gif", "AA==");
+        let mut item = attachment("image/bmp", "AA==");
         item.name = String::new();
         let message = validate_attachments(&[item]).expect_err("rejected");
         assert!(message.starts_with("Attachment 1: "), "{message}");
-        assert!(message.contains("image/gif"), "{message}");
+        assert!(message.contains("image/bmp"), "{message}");
     }
 
     #[test]
@@ -652,7 +682,7 @@ mod tests {
         // A broken inline attachment is reported first: those bytes are in the
         // frame the caller already built, and the reference half must not mask
         // the inline half.
-        let bad_inline = attachment("image/gif", "AA==");
+        let bad_inline = attachment("image/bmp", "AA==");
         let other_session = reference("s.a.2", &digest_of('f'));
         let message = validate_session_send_attachments(
             "s.a.1",
@@ -661,7 +691,7 @@ mod tests {
         )
         .expect_err("rejected");
         assert!(message.starts_with("Attachment 1 ('a.png'): "), "{message}");
-        assert!(message.contains("image/gif"), "{message}");
+        assert!(message.contains("image/bmp"), "{message}");
 
         // With the inline half valid, the reference half is what refuses; an
         // inline attachment does not turn the reference rules off.

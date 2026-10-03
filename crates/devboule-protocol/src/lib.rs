@@ -96,8 +96,8 @@ mod resume_tests;
 pub use attachments::{
     attachment_name_too_long_message, attachment_reference_session_mismatch_message,
     empty_attachment_message, invalid_attachment_digest_message, invalid_base64_message,
-    unsupported_attachment_type_message, validate_attachment_references, validate_attachments,
-    validate_session_send_attachments, ATTACHMENT_MIME_TYPES,
+    is_gif_webp_mime, unsupported_attachment_type_message, validate_attachment_references,
+    validate_attachments, validate_session_send_attachments, ATTACHMENT_MIME_TYPES,
 };
 pub use capability::{intersect_capabilities, Capability};
 pub use error::{ErrorCode, ErrorDetails, WireError};
@@ -289,6 +289,14 @@ pub mod caps {
     /// would ask a deposit-era daemon for bytes it cannot serve. In both
     /// lists for the reason `agent_profiles` is.
     pub const ATTACHMENTS_READ: &str = "attachments.read";
+
+    /// GIF and WebP prompt attachments (`image/gif`, `image/webp`).
+    ///
+    /// No frame changes: a daemon that predates the types answers a send that
+    /// carries one with an ordinary rejection. The name is how the app knows
+    /// before it sends, so it offers the types only to a daemon that agreed.
+    /// In both lists for the reason `attachments.read` is.
+    pub const ATTACHMENTS_GIF_WEBP: &str = "attachments.gif_webp";
 
     /// Agents create agents (`devboule_create_agent`) and the finish reports
     /// that come back.
@@ -699,6 +707,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // it away — and the app reads it to tell a daemon that serves
     // `SessionAttachmentRead` from one that predates it.
     capabilities.push(Capability::new(caps::ATTACHMENTS_READ));
+    // Same pairing, for the GIF and WebP types: the daemon strips and serves
+    // them, and the app reads the name before it offers or sends one.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_GIF_WEBP));
     // Same pairing again: `agent_create` names the MCP tool an agent may call
     // and the two events that come back from it. The daemon serves it, so the
     // app must offer it or the handshake would negotiate it away.
@@ -780,6 +791,9 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // keeps it, and reads it before asking a daemon that predates
     // `SessionAttachmentRead`.
     capabilities.push(Capability::new(caps::ATTACHMENTS_READ));
+    // Same pairing, for the GIF and WebP types: the app offers the name so the
+    // intersection keeps it, and sends those types only when it was agreed.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_GIF_WEBP));
     // Same pairing, for the creation surface: the app offers it so the
     // intersection keeps it, and reads it to know whether the daemon serves
     // `devboule_create_agent` and its two events.
@@ -1085,6 +1099,27 @@ mod tests {
                 .any(|cap| cap.as_str() == caps::ATTACHMENTS_READ),
             "the negotiated set must keep attachments.read: {agreed:?}"
         );
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_gif_webp_attachment_capability() {
+        // Both lists, for the reason the tests above state: the app refuses to
+        // send a GIF or WebP unless the name was negotiated, so a name only the
+        // daemon offered would leave the type permanently off.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::ATTACHMENTS_GIF_WEBP));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::ATTACHMENTS_GIF_WEBP));
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            agreed
+                .iter()
+                .any(|cap| cap.as_str() == caps::ATTACHMENTS_GIF_WEBP),
+            "the negotiated set must keep attachments.gif_webp: {agreed:?}"
+        );
+        assert_eq!(caps::ATTACHMENTS_GIF_WEBP, "attachments.gif_webp");
     }
 
     #[test]

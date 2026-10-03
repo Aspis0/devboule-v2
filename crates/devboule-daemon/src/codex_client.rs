@@ -1883,7 +1883,9 @@ fn plan_codex_prompt(
     let mut fallback_paths = Vec::new();
     for attachment in attachments {
         let path = session.materialize(attachment)?;
-        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some() {
+        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type)
+            .is_some_and(crate::raster_metadata::RasterMime::is_inline_everywhere)
+        {
             image_paths.push(path);
         } else {
             fallback_paths.push(path);

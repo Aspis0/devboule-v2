@@ -2484,7 +2484,9 @@ fn materialise_pi_prompt(
     let mut fallback_paths = Vec::new();
     for attachment in attachments {
         let path = session.materialize(attachment)?;
-        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some() {
+        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type)
+            .is_some_and(crate::raster_metadata::RasterMime::is_inline_everywhere)
+        {
             images.push(
                 super::AcpImageBlock::from_stored_file(&path, &attachment.mime_type).map_err(
                     |error| {

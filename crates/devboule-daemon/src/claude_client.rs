@@ -1378,19 +1378,11 @@ fn claude_image_block(mime_type: &str, data_base64: &str) -> serde_json::Value {
 /// `[Image available at: ...]` path line — never a silent drop.
 ///
 /// At the call site this is ANDed with
-/// [`crate::raster_metadata::RasterMime::from_mime_type`], which knows only
-/// jpeg and png, so a gif and a webp — both in the set above, both of which
-/// Claude itself accepts — always take the path line instead.
-///
-/// That is deliberate and must stay: we send inline only what we can prove we
-/// stripped. The strip walk recognises two containers on purpose
-/// (`raster_metadata.rs` explains that guessing a container from an unknown
-/// byte would be inventing a rule rather than applying one), so widening this
-/// gate without widening the walk first would ship un-stripped metadata to a
-/// provider. The gap is unreachable from the UI today — the Design composer
-/// accepts png, jpeg and svg only (`designAttachments.ts`) — and that is
-/// context, not a licence to relax it: attachments will arrive from paired
-/// devices later, where nothing narrows the set.
+/// [`crate::raster_metadata::RasterMime::from_mime_type`], which names the
+/// containers the strip walk follows. The two sets are equal today, and the
+/// AND is what must stay: we send inline only what we can prove we stripped,
+/// so a type added here without a walk would ship un-stripped metadata to a
+/// provider, and a walk added without Claude's say-so would not become a block.
 fn claude_accepts_inline(mime_type: &str) -> bool {
     matches!(
         mime_type,

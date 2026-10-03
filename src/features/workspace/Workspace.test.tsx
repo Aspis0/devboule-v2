@@ -132,6 +132,7 @@ vi.mock("../terminal/TerminalSurface", () => ({
 // so a test can prove the tab's label and the header's title are one string.
 const surfaceQueueSupported = vi.hoisted(() => ({ bySession: new Map<string, boolean>() }));
 const surfaceTitles = vi.hoisted(() => ({ bySession: new Map<string, string>() }));
+const surfaceGifWebpSupported = vi.hoisted(() => ({ bySession: new Map<string, boolean>() }));
 
 vi.mock("./AgentChatSurface", () => ({
   AgentChatSurface: ({
@@ -140,6 +141,7 @@ vi.mock("./AgentChatSurface", () => ({
     auxiliary,
     hasPendingPermission,
     queueSupported,
+    gifWebpSupported,
     onPermissionRequest,
     onPermissionResolved,
   }: {
@@ -148,6 +150,7 @@ vi.mock("./AgentChatSurface", () => ({
     auxiliary?: ReactNode;
     hasPendingPermission?: boolean;
     queueSupported?: boolean;
+    gifWebpSupported?: boolean;
     onPermissionRequest?: (
       sessionId: string,
       subscriptionId: number,
@@ -156,6 +159,7 @@ vi.mock("./AgentChatSurface", () => ({
     onPermissionResolved?: (sessionId: string, resolution: PermissionResolved) => void;
   }) => {
     surfaceQueueSupported.bySession.set(sessionId, queueSupported === true);
+    surfaceGifWebpSupported.bySession.set(sessionId, gifWebpSupported === true);
     surfaceTitles.bySession.set(sessionId, title ?? "");
     return (
       <div data-testid="agent-chat-surface">
@@ -543,6 +547,7 @@ describe("Workspace sessions", () => {
     resetTabMemoryForTests();
     setLastSelectedWorkspaceKey(null);
     surfaceQueueSupported.bySession.clear();
+    surfaceGifWebpSupported.bySession.clear();
     surfaceTitles.bySession.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -2365,6 +2370,31 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
     await pushRoster([rosterRow("agent-a")]);
     expect(surfaceQueueSupported.bySession.get("agent-a")).toBe(true);
+  });
+
+  it("hands the surface GIF and WebP only when the handshake agreed them", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await pushRoster([rosterRow("agent-a")]);
+    expect(surfaceGifWebpSupported.bySession.get("agent-a")).toBe(false);
+
+    await act(async () => root.unmount());
+    vi.mocked(daemonStatus).mockResolvedValue({
+      ...daemonConnected,
+      capabilities: ["typed_permissions", "attachments.gif_webp"],
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await pushRoster([rosterRow("agent-a")]);
+    expect(surfaceGifWebpSupported.bySession.get("agent-a")).toBe(true);
   });
 
   it("renders the description in its own compact class", async () => {

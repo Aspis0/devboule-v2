@@ -769,10 +769,10 @@ mod tests {
             error.message
         );
 
-        let error = require_attachment_limits(&[attachment("image/gif", "AA==".to_string())])
+        let error = require_attachment_limits(&[attachment("image/bmp", "AA==".to_string())])
             .expect_err("rejected");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
-        assert!(error.message.contains("image/gif"), "{}", error.message);
+        assert!(error.message.contains("image/bmp"), "{}", error.message);
 
         let error = require_attachment_limits(&[attachment(
             "image/png",
