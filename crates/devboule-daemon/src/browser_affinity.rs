@@ -25,7 +25,9 @@ const TAB_CREATING_COMMANDS: &[&str] = &["new_tab"];
 const TAB_CLOSING_COMMAND: &str = "close_tab";
 
 const MAX_TAB_OWNERS: usize = 1024;
-const MAX_BROWSER_ID_BYTES: usize = 128;
+/// Longest a tab id may be. The browser tool's schema states the same bound, so
+/// the number an agent reads is the one the daemon enforces.
+pub(crate) const MAX_BROWSER_ID_BYTES: usize = 128;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct TabKey {

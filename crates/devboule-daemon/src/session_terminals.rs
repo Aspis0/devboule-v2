@@ -26,12 +26,7 @@ impl super::SessionRegistry {
         owner: &OwnerId,
         conn_peer: &Option<ConnPeer>,
     ) -> Result<Option<String>, WireError> {
-        let map = self
-            .inner
-            .lock()
-            .map_err(|_| internal("Session state is unavailable."))?;
-        let entry = peer_entry(&map, session_id, owner, conn_peer)?;
-        Ok(entry.metadata().workspace_id.clone())
+        self.caller_workspace_id(session_id, owner, conn_peer)
     }
 
     /// The running terminals of `owner` inside `workspace_id`.

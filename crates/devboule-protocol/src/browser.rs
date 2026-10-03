@@ -69,6 +69,25 @@ pub enum BrowserErrorCode {
     TabNotFound,
 }
 
+/// The name this code travels as, spelled once for the wire's own `serde`
+/// rename and for the sentence an agent reads in a browser tool error, so the
+/// two cannot drift apart.
+impl BrowserErrorCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoHost => "browser_no_host",
+            Self::Timeout => "browser_timeout",
+            Self::Busy => "browser_busy",
+            Self::ResultTooLarge => "browser_result_too_large",
+            Self::ArgsTooLarge => "browser_args_too_large",
+            Self::HostError => "browser_host_error",
+            Self::UnsupportedCommand => "browser_unsupported_command",
+            Self::OwnerUnavailable => "browser_owner_unavailable",
+            Self::TabNotFound => "browser_tab_not_found",
+        }
+    }
+}
+
 /// A failed browser command: the code, one sentence, and whether asking again
 /// can help.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

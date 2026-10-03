@@ -74,6 +74,17 @@ pub const CAP_ADMIN: &str = "admin";
 /// it is taken back from one device without touching the rest.
 pub const CAP_SEARCH: &str = "search";
 
+/// The capability that gates the `browser_*` tools at the MCP tool door: this
+/// machine's browser tabs, read and driven by an agent of the paired device.
+///
+/// It is a name of its own for the same reason `search` is, and more sharply:
+/// what it hands over is the person's own browsing, in the logins and sessions
+/// of the keyboard they are sitting at. Off for every pairing until a person
+/// turns it on (`PEER_DEFAULT_CAPS`), and granted per device from the Devices
+/// panel — never through `admin`, whose switch means settings, projects and
+/// shutdown, and never by default.
+pub const CAP_BROWSER: &str = "browser";
+
 /// The audit outcome for a request refused because it would run a session
 /// without asking the user's permission (`DESIGN-remote-agents.md` §8b A5).
 /// One spelling, used by the refusal and by the audit row it writes.
@@ -612,6 +623,11 @@ pub enum McpToolWire {
 /// - Terminal kill (`devboule_kill_terminal`) ends a terminal's live session:
 ///   `SessionClose`, the act `admin` names, like the close agent tool — the
 ///   destructive supervisor verb, whatever it is pointed at.
+/// - The fifteen `browser_*` tools are `Requires(CAP_BROWSER)`: a browser
+///   command has no wire frame — it runs inside the desktop app the agent is
+///   not connected to — so the door checks the capability itself. It rides its
+///   own name, off until granted, because what it reaches is this machine's
+///   pages in the person's own logins.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_ARCHIVE_WORKSPACE_TOOL,
@@ -882,9 +898,27 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             session_id: String::new(),
             idempotency_key: None,
         }]))
+    } else if is_browser_tool(tool) {
+        // The browser lane: read a page, click it, type into it, in the
+        // desktop app this daemon is not itself. Nothing on the wire stands
+        // between the door and the page, so the door checks the capability
+        // directly — and it is the per-device `browser` grant, off until a
+        // person gives it.
+        Some(McpToolWire::Requires(CAP_BROWSER))
     } else {
         None
     }
+}
+
+/// Whether `tool` is one of the broker's `browser_*` tools: a **served** name
+/// carrying the lane's prefix. Both halves matter — the prefix alone would
+/// judge a name the broker never serves, and the served list alone would judge
+/// every tool there is.
+fn is_browser_tool(tool: &str) -> bool {
+    tool.starts_with(crate::provider_catalog::BROWSER_TOOL_PREFIX)
+        && crate::provider_catalog::MCP_BROKER_TOOLS
+            .iter()
+            .any(|(name, _)| *name == tool)
 }
 
 /// Judge one tool call for a peer with the same function the dispatcher uses:
@@ -1081,6 +1115,7 @@ pub(crate) mod tests {
             CAP_CREATE_SESSIONS,
             CAP_ROSTER,
             CAP_SEARCH,
+            CAP_BROWSER,
             CAP_ADMIN,
         ];
         named.sort_unstable();

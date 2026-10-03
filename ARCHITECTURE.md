@@ -641,17 +641,22 @@ handshake slot, which is why the slot budgets are separate from the connection c
 deadline is `HANDSHAKE_DEADLINE = 10 s` (`:71`).
 
 **What a capability is.** A capability names an *act* a paired device may ask for — or, in
-`admin`'s case, the surface no act-name covers (`search` is the other kind of name: one
-disclosure — this machine's code, searched — rather than an act). The list is one
-constant on the wire: `PEER_CAPS` is seven names — `view`, `send`,
-`answer_permissions`, `create_sessions`, `roster`, `search` and `admin`
+`admin`'s case, the surface no act-name covers (`search` and `browser` are the other kind of name:
+one disclosure — this machine's code, searched, and this machine's browser pages driven — rather than
+an act). The list is one
+constant on the wire: `PEER_CAPS` is eight names — `view`, `send`,
+`answer_permissions`, `create_sessions`, `roster`, `search`, `browser` and `admin`
 (`crates/devboule-protocol/src/messages.rs`, `PEER_CAPS`) —
-and `PEER_DEFAULT_CAPS` is the same seven, so a device is born holding everything and a person narrows
-it per device. The default is written once, at the pairing that creates the peer row (`pairing.rs`,
+and `PEER_DEFAULT_CAPS` is the same eight minus `browser`: a device is born holding everything
+except the browser, which a person grants per device, and narrows
+per device. The default is written once, at the pairing that creates the peer row (`pairing.rs`,
 its only production use), so a device paired before 2026-09-21 keeps the narrower set it was paired
 with: the panel draws its `admin` switch off, and turning it on there is the grant. That is the
 owner's decision of 2026-09-21: it revoked the old global deny list, under
-which anything no capability named was refused to every peer. `validate_caps` is what still refuses to
+which anything no capability named was refused to every peer. The `browser` exception is the owner's
+decision of 2026-09-23, the one deliberate deviation from that parity: an agent on a phone may steer
+this machine's sessions, and it may not read and click the pages the person at this keyboard is
+looking at. `validate_caps` is what still refuses to
 leave a `Client` without `view`. A capability is deliberately not a scope: which sessions an
 allowed request reaches is decided elsewhere, by the owner projection in `server.rs` and the origin
 branch of `check_user_owner` (`peer_policy.rs:14-18`). The gate itself is a closed match with **no

@@ -781,11 +781,11 @@ describe("devices panel", () => {
   });
 
   it("draws the capability switches for a daemon peer and drops the false scope sentence", async () => {
-    // A daemon peer is born holding the whole set (the 2026-09-21 parity
-    // decision), so a panel that drew it no switches and said it "reaches the
-    // sessions it created and nothing else" described a device that no longer
-    // exists: it reaches Shutdown, the settings stores, and the rest of the
-    // surface the `admin` switch names.
+    // A daemon peer given the whole set has switches for all of them and no
+    // "reaches the sessions it created and nothing else": it reaches Shutdown, the
+    // settings stores, and the rest of the surface the `admin` switch names.
+    // `browser` is in this fixture because a row can hold it; it is not born
+    // holding it.
     vi.mocked(devicesList).mockResolvedValue(
       replyWith({ peers: [{ ...CLIENT_PEER, role: "daemon", caps: [...CAP_ORDER] }] }),
     );
@@ -831,6 +831,7 @@ describe("devices panel", () => {
       "create_sessions",
       "roster",
       "search",
+      "browser",
     ]);
     expect(checkboxByLabel(ADMIN_LABEL).checked).toBe(false);
   });

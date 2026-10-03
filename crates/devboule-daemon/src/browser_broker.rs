@@ -91,9 +91,6 @@ impl BrowserBroker {
     ///
     /// Waits on this thread only, up to `timeout` (15 s when `None`); the
     /// connection threads never wait for it.
-    // Crate-internal API for the MCP browser tools, which this crate does not
-    // build yet; the tests are its only caller.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn execute(
         &self,
         caller: &BrowserCaller,

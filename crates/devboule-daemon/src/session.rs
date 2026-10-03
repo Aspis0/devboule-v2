@@ -4073,6 +4073,27 @@ impl SessionRegistry {
         Some(entry.metadata().origin.clone())
     }
 
+    /// The workspace the calling session's own row names, read through the same
+    /// ownership door a session target goes through: a peer whose identity does
+    /// not reach its own row does not reach a workspace either.
+    ///
+    /// `None` is a real answer, not an absence — a session started outside any
+    /// workspace has one, and the caller scopes its own work by itself rather
+    /// than being handed somebody else's.
+    pub(crate) fn caller_workspace_id(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<Option<String>, WireError> {
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let entry = peer_entry(&map, session_id, owner, conn_peer)?;
+        Ok(entry.metadata().workspace_id.clone())
+    }
+
     /// Whether `conn_peer` may reach `session_id` at all — asked *before* any
     /// question about what that session is (`session_mode_guard`, H6).
     ///

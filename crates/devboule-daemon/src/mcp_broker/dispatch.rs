@@ -214,6 +214,8 @@ pub(super) fn handle_rpc(
                 tools::terminal_writes::send_keys(state, broker, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_KILL_TERMINAL_TOOL) {
                 tools::terminal_writes::kill(state, broker, registration, caller, id, message)
+            } else if tool_name.is_some_and(tools::browser_commands::serves) {
+                tools::browser_tools::call(state, registration, caller, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -245,7 +247,13 @@ pub(super) fn enabled_tool_list(
         // call nor any tool its provider's policy already turned off.
         .filter(|(name, _)| overlay.allows(name))
         .map(|(name, description)| {
-            let input_schema = if *name == crate::provider_catalog::MCP_SEND_MESSAGE_TOOL {
+            let input_schema = if tools::browser_commands::serves(name) {
+                // Fifteen schemas in one table, spelled out where the
+                // declaration is (`tools::browser_commands`) rather than as
+                // fifteen arms here. That same table is what the daemon checks
+                // a call against, so the two cannot disagree.
+                tools::browser_commands::schema_for(name).unwrap_or(Value::Null)
+            } else if *name == crate::provider_catalog::MCP_SEND_MESSAGE_TOOL {
                 json!({
                     "type": "object",
                     "properties": {

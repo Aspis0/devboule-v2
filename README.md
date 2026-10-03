@@ -71,11 +71,12 @@ What works today:
   session. Every later connection is authenticated by the key pinned
   at pairing *and* by Tailscale agreeing that the address is the one the pairing
   was made from. Each paired device holds a set of capabilities — `view`,
-  `send`, `answer_permissions`, `create_sessions`, `roster`, `search` and
-  `admin` — shown
+  `send`, `answer_permissions`, `create_sessions`, `roster`, `search`,
+  `browser` and `admin` — shown
   as toggles on its row and revocable at any time. A new pairing starts with all
-  of them, so a paired phone is a full client: it lists and attaches to
-  sessions, sends prompts and steers a running turn, answers permission cards
+  of them except `browser`, so a paired phone is a full client: it lists and
+  attaches to sessions, sends prompts and steers a running turn, answers
+  permission cards
   (at most three undecided ones per device), creates sessions, and, with
   `admin`, reaches the rest of what the app can ask — settings, projects,
   journal, shutdown, the agent tools. The Oracle semantic search is not part of
@@ -83,7 +84,10 @@ What works today:
   may semantically search this machine's code — snippets, paths, line ranges —
   only while that switch is on for that device. A new pairing is born holding
   `search` too (the same "the phone is mine" default as everything else), and
-  the switch is how it is taken back from one device alone. The one thing it
+  the switch is how it is taken back from one device alone. This machine's
+  browser is the one exception to that default: an agent on a paired device may
+  read and click the pages the person at this keyboard is looking at only after
+  that device's `browser` switch is turned on. The one thing it
   cannot do is change who
   else may enter: starting or completing a pairing, changing a device's
   capabilities and revoking a device stay on this machine, because those decide

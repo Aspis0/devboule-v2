@@ -2183,9 +2183,12 @@ export type PeerRole = "client" | "daemon";
  * `client` peer (the panel holds that switch on); a `daemon` peer may be left
  * with any single one. Every new pairing starts holding all of them
  * (`PEER_DEFAULT_CAPS`, the 2026-09-21 parity decision), so the switches are
- * how a person narrows a device and how a grant is put back. Mirrors
- * `PEER_CAPS` in `crates/devboule-protocol/src/messages.rs` (the DevicesPanel
- * walker test reads that literal so the two cannot drift).
+ * how a person narrows a device and how a grant is put back — except
+ * `browser`, which no pairing is born holding (owner's decision, 2026-09-23):
+ * the pages the person at this machine is looking at are theirs until they tick
+ * that switch. Mirrors `PEER_CAPS` in
+ * `crates/devboule-protocol/src/messages.rs` (the DevicesPanel walker test
+ * reads that literal so the two cannot drift).
  */
 export type Cap =
   | "view"
@@ -2194,6 +2197,7 @@ export type Cap =
   | "create_sessions"
   | "roster"
   | "search"
+  | "browser"
   | "admin";
 
 /** Where the daemon keeps its Noise static key. Reported in `Status`. */

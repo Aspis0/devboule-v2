@@ -76,6 +76,7 @@ export const CAP_ORDER: readonly Cap[] = [
   "create_sessions",
   "roster",
   "search",
+  "browser",
   "admin",
 ];
 
@@ -91,6 +92,10 @@ const CAP_LABELS: Record<Cap, string> = {
   // for that device's agents — snippets, paths, line ranges.
   roster: "read this device's live agent roster",
   search: "search this machine's code (source snippets, paths, lines)",
+  // Off until a person ticks it (a new pairing never holds it): what this one
+  // hands over is the pages the person at this keyboard is looking at, in their
+  // own logins, and an agent on another device reads and clicks them.
+  browser: "drive this device's browser tabs (read pages, click, type)",
   // The whole remaining surface in one switch, so the label names the surface
   // and gives three examples of it: a person unchecking this is deciding that
   // the device may still drive sessions but may not change this machine.
@@ -1034,12 +1039,12 @@ export function DevicesPanel() {
             <p className="device-copy">Nothing is paired with this device yet.</p>
           ) : (
             <p className="device-copy">
-              A new pairing starts with every switch on. A device paired before 21 September 2026
-              keeps whatever set it had then: nothing grants it the new default on its own, and its
-              admin switch stays off until a person turns it on. The same is true of a device paired
-              before the search capability existed — its search switch starts off, because nothing
-              grants a switch the pairing never wrote. For every device, that search switch is the
-              one that turns the Oracle search on.
+              A new pairing starts with every switch on except browser. A device paired before 21
+              September 2026 keeps whatever set it had then: nothing grants it the new default on
+              its own, and its admin switch stays off until a person turns it on. The same is true
+              of the search and browser switches — a pairing never carries them until a person turns
+              them on, which is what opens this machine's Oracle search and its browser tabs to that
+              device's agents.
             </p>
           )}
         </div>

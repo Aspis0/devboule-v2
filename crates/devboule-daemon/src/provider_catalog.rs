@@ -323,6 +323,66 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_KILL_TERMINAL_TOOL,
         "Kills one running terminal of the calling session's own workspace: its process tree dies and the live session ends, while the journal row and the transcript stay in history. The scope and the refusal are devboule_send_terminal_keys' own - the caller's own user, origin and workspace, a terminal that is running - so any other id answers 'No session with that id.' and an agent session is never killable through this tool. The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses).",
     ),
+    (
+        MCP_BROWSER_NEW_TAB_TOOL,
+        "Opens a new browser tab in this machine's desktop app and answers its browserId, url and title. Keep that browserId: every other browser tool takes it, and a tab of another workspace is not visible from here. You have no refs until you snapshot. Needs the app running; with no host registered this fails browser_no_host.",
+    ),
+    (
+        MCP_BROWSER_LIST_TABS_TOOL,
+        "Lists the browser tabs of this session's own workspace: browserId, url, title and which is active. Use it to recover an id instead of inventing one. Needs the app running; with no host registered this fails browser_no_host.",
+    ),
+    (
+        MCP_BROWSER_CLOSE_TAB_TOOL,
+        "Closes one browser tab by browserId and answers closed: true. The tab leaves the app's strip for everyone. A browserId this session does not own answers browser_tab_not_found.",
+    ),
+    (
+        MCP_BROWSER_NAVIGATE_TOOL,
+        "Navigates one tab to url, or runs action back, forward or reload, and answers url, title and what changed. Give exactly one of url and action. Every ref from before a navigation is dead afterwards: snapshot again.",
+    ),
+    (
+        MCP_BROWSER_SNAPSHOT_TOOL,
+        "Reads a tab's page as a compact accessibility view, one line per control: - role \"name\" [state] [ref=e123]. This is how you see a page and get the refs every other browser action needs. scope reads one element's subtree and mode full keeps the nodes an interactive view drops. A truncated view answers a cursor to continue from. Refs are valid only until that page navigates: after a navigation, take a new snapshot rather than reusing one.",
+    ),
+    (
+        MCP_BROWSER_FIND_TOOL,
+        "Searches a tab's page for controls by name, role, value or nearby text and answers up to 20 matches, each with its ref. Use it when a snapshot is too big to read, or when you can describe the control but have not found it. Snapshot afterwards to see the matches in context.",
+    ),
+    (
+        MCP_BROWSER_CLICK_TOOL,
+        "Clicks one element, and answers what the click changed rather than the whole page again: the new url, the focus, a dialog, and what appeared, disappeared or changed. button (left, right, middle), clickCount and modifiers narrow it. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_FILL_TOOL,
+        "Replaces the whole value of one input, textarea or editable with text, and answers what changed. Use browser_type for text that must arrive as keystrokes. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_TYPE_TOOL,
+        "Types text as real key input, into ref when given and into the focused element otherwise, and answers what changed. Real keystrokes are what a rich editor needs; browser_fill sets a plain value outright. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_PRESS_TOOL,
+        "Presses one key - Enter, Tab, Escape, an arrow, or a chord such as Control+A - optionally in ref first, and answers what changed. Use it for what typing cannot express: a submit, a dismiss, a selection. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_SELECT_TOOL,
+        "Picks one option of a dropdown or listbox by value or by label (exactly one), fires the change, and answers what changed. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_CHECK_TOOL,
+        "Sets one checkbox, switch or radio to checked true or false, clicking only when the state differs, then verifying, and answers what changed with the control's final state. Read that state: a switch that did not move shows there. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_HOVER_TOOL,
+        "Hovers one element and answers what changed - a hover's menus and tooltips arrive in what was added. Hover before clicking something that only exists on hover. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_SCROLL_TOOL,
+        "Scrolls one element into view, or scrolls the page up or down by amount pixels, and answers what changed. Actions already scroll their target into view; use this when what you need is below the fold. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_WAIT_FOR_TOOL,
+        "Waits for a tab to reach text, a url, or a state of a ref (one of those three), for at most timeoutMs milliseconds (default 5000, max 12000), and answers met and what changed. met false means it did not arrive in time. Prefer this to sleeping after an action that navigates. A ref the page no longer has answers stale_ref - take a new snapshot.",
+    ),
 ];
 
 /// Tools whose handlers can park on a host consent card.
@@ -554,6 +614,36 @@ pub const MCP_SEND_TERMINAL_KEYS_TOOL: &str = "devboule_send_terminal_keys";
 /// the call as the wire's `SessionClose`, under the administrative
 /// capability.
 pub const MCP_KILL_TERMINAL_TOOL: &str = "devboule_kill_terminal";
+
+// The browser tools: `browser_<command>` after the contract, and the bare
+// command the host answers is `mcp_broker::tools::browser_commands`' table.
+// They are the only tools named without the `devboule_` prefix, because the
+// names agents already know from other browser tool sets are these ones, and a
+// second prefix would only make them miss.
+// The pair of facts every one of these descriptions carries: a ref dies when
+// its page navigates (so take a new snapshot), and an action answers what it
+// changed, not the whole page again.
+pub const MCP_BROWSER_NEW_TAB_TOOL: &str = "browser_new_tab";
+pub const MCP_BROWSER_LIST_TABS_TOOL: &str = "browser_list_tabs";
+pub const MCP_BROWSER_CLOSE_TAB_TOOL: &str = "browser_close_tab";
+pub const MCP_BROWSER_NAVIGATE_TOOL: &str = "browser_navigate";
+pub const MCP_BROWSER_SNAPSHOT_TOOL: &str = "browser_snapshot";
+pub const MCP_BROWSER_FIND_TOOL: &str = "browser_find";
+pub const MCP_BROWSER_CLICK_TOOL: &str = "browser_click";
+pub const MCP_BROWSER_FILL_TOOL: &str = "browser_fill";
+pub const MCP_BROWSER_TYPE_TOOL: &str = "browser_type";
+pub const MCP_BROWSER_PRESS_TOOL: &str = "browser_press";
+pub const MCP_BROWSER_SELECT_TOOL: &str = "browser_select";
+pub const MCP_BROWSER_CHECK_TOOL: &str = "browser_check";
+pub const MCP_BROWSER_HOVER_TOOL: &str = "browser_hover";
+pub const MCP_BROWSER_SCROLL_TOOL: &str = "browser_scroll";
+pub const MCP_BROWSER_WAIT_FOR_TOOL: &str = "browser_wait_for";
+/// The prefix those fifteen names share. The peer door judges a call on this
+/// prefix and not on fifteen spelled-out names, so a tool added to the lane
+/// needs no second edit here;
+/// `the_browser_prefix_is_exactly_the_browser_table` proves the prefix and the
+/// broker's own table name the same tools.
+pub const BROWSER_TOOL_PREFIX: &str = "browser_";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`].
 ///

@@ -627,6 +627,7 @@ fn devices_capability_is_advertised_and_the_peer_caps_are_the_agreed_set() {
             "create_sessions",
             "roster",
             "search",
+            "browser",
             "admin"
         ]
     );
@@ -650,12 +651,27 @@ fn devices_capability_is_advertised_and_the_peer_caps_are_the_agreed_set() {
 }
 
 #[test]
-fn a_new_pairing_is_born_with_every_capability() {
+fn a_new_pairing_is_born_with_every_capability_except_the_browser() {
     // The 2026-09-21 parity decision at the protocol layer: the default grant is
     // the whole wire set, so "the phone is mine" is the state a pairing starts
-    // in and a person narrows it afterwards, per device.
-    assert_eq!(PEER_DEFAULT_CAPS, PEER_CAPS);
-    // Spelled as well as compared, because the comparison is what a seventh
+    // in and a person narrows it afterwards, per device. `browser` is the one
+    // name that stays off until granted (owner's decision, 2026-09-23): an
+    // agent on a phone may steer sessions, and it may not read and click the
+    // pages the person is looking at.
+    assert_eq!(
+        PEER_CAPS,
+        [
+            "view",
+            "send",
+            "answer_permissions",
+            "create_sessions",
+            "roster",
+            "search",
+            "browser",
+            "admin"
+        ]
+    );
+    // Spelled as well as compared, because the comparison is what a new
     // capability must break deliberately: the lengths differ, so whoever adds a
     // name decides whether the default follows it instead of inheriting it
     // silently.

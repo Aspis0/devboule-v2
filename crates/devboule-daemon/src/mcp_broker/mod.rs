@@ -872,6 +872,25 @@ pub(crate) fn ready_timeout() -> Duration {
         .unwrap_or(MCP_READY_TIMEOUT)
 }
 
+/// Tab ownership as the tools reach it: an id learned from `browser_new_tab` and
+/// forgotten by `browser_close_tab`, both through the loopback door.
+#[cfg(test)]
+mod browser_tools_affinity_tests;
+/// What one browser call does with a host: the arguments it accepts, the frame
+/// the host receives, and what an agent reads back.
+#[cfg(test)]
+mod browser_tools_call_tests;
+/// What every browser-tool test drives: a session, a running broker and a fake
+/// host to answer for.
+#[cfg(test)]
+mod browser_tools_harness;
+/// Who may call a browser tool at all: a paired device's own capability switch.
+#[cfg(test)]
+mod browser_tools_peer_tests;
+/// What the broker serves of the lane: the names, the schemas, and the sentence
+/// each description carries.
+#[cfg(test)]
+mod browser_tools_served_tests;
 /// The creation card follows the creator's mode on the real road: a gate
 /// a person opened does not outrank a later mode switch.
 #[cfg(test)]

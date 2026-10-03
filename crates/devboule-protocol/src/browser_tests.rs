@@ -42,6 +42,11 @@ where
 fn the_error_enum_serializes_as_its_wire_names() {
     for (code, name) in EVERY_CODE {
         assert_eq!(serde_json::to_value(code).expect("json"), name);
+        assert_eq!(
+            code.as_str(),
+            name,
+            "the tool error text spells it the same"
+        );
     }
 }
 

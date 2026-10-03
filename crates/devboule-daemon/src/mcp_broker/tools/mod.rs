@@ -1,6 +1,9 @@
 pub(super) mod agents;
 pub(super) mod archive;
 mod archive_sessions;
+pub(super) mod browser_args;
+pub(super) mod browser_commands;
+pub(super) mod browser_tools;
 pub(super) mod commands;
 pub(super) mod creation;
 pub(super) mod first_use;

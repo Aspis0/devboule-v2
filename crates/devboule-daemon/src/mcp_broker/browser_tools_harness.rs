@@ -1,0 +1,213 @@
+//! What every browser-tool test drives: one MCP session inside a workspace, a
+//! loopback broker answering it, and a fake host the tests answer for.
+//!
+//! The host is registered on the same broker the app registers on, so a test
+//! sees the frame a real host would receive and answers through the same entry
+//! the connection thread uses.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value};
+
+use devboule_protocol::{
+    BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome, DaemonMessage,
+    SessionKind,
+};
+
+use super::tests::{http_request, owner, response_json};
+use super::tools::browser_commands::TOOLS;
+use super::{McpServerHandle, McpSessionGuard, ServerState};
+use crate::outbound::ConnOut;
+
+pub(super) const SESSION: &str = "session";
+
+/// One registered host, standing in for the desktop app.
+pub(super) struct FakeHost {
+    conn_id: u64,
+    out: Arc<ConnOut>,
+}
+
+impl FakeHost {
+    /// Register `conn_id` as a host that answers every command in the table.
+    pub(super) fn register(state: &ServerState, conn_id: u64) -> FakeHost {
+        let out = ConnOut::new();
+        state.browser.register(
+            conn_id,
+            Arc::clone(&out),
+            TOOLS
+                .iter()
+                .map(|(_, command)| (*command).to_string())
+                .collect(),
+        );
+        FakeHost { conn_id, out }
+    }
+
+    /// The next command the broker pushed to this host.
+    pub(super) fn next(&self) -> BrowserExecuteRequest {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            for message in self.out.pull_replies() {
+                if let DaemonMessage::BrowserExecuteRequest(request) = message {
+                    return request;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no browser command reached the host"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    pub(super) fn answer_ok(
+        &self,
+        state: &ServerState,
+        request: &BrowserExecuteRequest,
+        result: Value,
+    ) {
+        self.answer(state, request, BrowserOutcome::Ok { result });
+    }
+
+    pub(super) fn answer_error(
+        &self,
+        state: &ServerState,
+        request: &BrowserExecuteRequest,
+        outcome: BrowserOutcome,
+    ) {
+        self.answer(state, request, outcome);
+    }
+
+    fn answer(
+        &self,
+        state: &ServerState,
+        request: &BrowserExecuteRequest,
+        outcome: BrowserOutcome,
+    ) {
+        state
+            .browser
+            .accept_response(self.conn_id, &request.request_id, &request.host_id, outcome);
+    }
+}
+
+/// A host's refusal of one command, in the shape a real host sends it.
+pub(super) fn host_refusal(message: &str) -> BrowserOutcome {
+    BrowserOutcome::Err(BrowserError {
+        code: BrowserErrorCode::HostError,
+        message: message.to_string(),
+        retryable: false,
+    })
+}
+
+/// A running broker with one or more registered sessions inside workspaces.
+///
+/// The guards are fields, not `_` bindings: dropping one revokes the session's
+/// bearer, and a test that had already called through it would then get a 401.
+pub(super) struct Panel {
+    pub state: Arc<ServerState>,
+    token: String,
+    guards: Vec<McpSessionGuard>,
+    _server: McpServerHandle,
+}
+
+impl Panel {
+    pub(super) fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Add a second session of the same broker inside `workspace_id`, and answer
+    /// with its token. Used where the point is that two workspaces are two
+    /// scopes.
+    pub(super) fn join_workspace(&mut self, tag: &str, workspace_id: &str) -> String {
+        let session_id = format!("{SESSION}-{tag}");
+        let (guard, token) = register_session(&self.state, &session_id, tag, workspace_id);
+        self.guards.push(guard);
+        token
+    }
+
+    /// The call the broker is left waiting on, so a test can watch what it
+    /// refuses before it answers.
+    pub(super) fn in_background(
+        &self,
+        tool: &str,
+        arguments: Value,
+    ) -> std::thread::JoinHandle<Value> {
+        let url = self.state.mcp.url().to_string();
+        let bearer = format!("Bearer {}", self.token);
+        let body = tools_call(tool, arguments);
+        std::thread::spawn(move || response_json(&http_request(&url, Some(&bearer), &body)))
+    }
+
+    /// One whole call: the host receives it, answers `result`, and the reply
+    /// comes back on this thread.
+    pub(super) fn call(
+        &self,
+        host: &FakeHost,
+        tool: &str,
+        arguments: Value,
+        result: Value,
+    ) -> (Value, BrowserExecuteRequest) {
+        let reply = self.in_background(tool, arguments);
+        let request = host.next();
+        host.answer_ok(&self.state, &request, result);
+        (reply.join().expect("tool call"), request)
+    }
+}
+
+/// One broker, one session inside `workspace_id`.
+pub(super) fn panel(tag: &str) -> Panel {
+    panel_in(tag, "w-browser")
+}
+
+/// As [`panel`], for a session whose row names `workspace_id`.
+pub(super) fn panel_in(tag: &str, workspace_id: &str) -> Panel {
+    let state = ServerState::new(format!("mcp-browser-{tag}"));
+    let (guard, token) = register_session(&state, SESSION, tag, workspace_id);
+    let server = state.mcp.start(&state).expect("MCP server");
+    Panel {
+        state,
+        token,
+        guards: vec![guard],
+        _server: server,
+    }
+}
+
+fn register_session(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    tag: &str,
+    workspace_id: &str,
+) -> (McpSessionGuard, String) {
+    let owner = owner(&format!("browser-user-{tag}"), "browser-client");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        session_id,
+        owner.clone(),
+        workspace_id,
+    );
+    let guard = state
+        .mcp
+        .register(session_id, &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("MCP guard");
+    let token = state.mcp.test_token(session_id).expect("token");
+    (guard, token)
+}
+
+/// The `tools/call` body for one tool, as the agent writes it.
+pub(super) fn tools_call(tool: &str, arguments: Value) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    })
+    .to_string()
+}
+
+/// The text an agent reads out of a tool reply.
+pub(super) fn tool_text(body: &Value) -> &str {
+    body.pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("<no text>")
+}
