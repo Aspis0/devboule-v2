@@ -29,6 +29,7 @@ fn refusal(
         Err(sentence) => sentence,
     }
 }
+
 #[test]
 fn the_daemon_accepts_exactly_the_arguments_the_schema_offers() {
     for (tool, _) in TOOLS {
@@ -142,12 +143,93 @@ fn a_shape_the_schema_forbids_is_refused_before_the_host_sees_it() {
             json!({"browserId": "tab-1", "ref": "e1", "modifiers": ["Hyper"]}),
             "must be a list of",
         ),
+        (
+            "browser_scroll",
+            json!({"browserId": "t"}),
+            "exactly one of",
+        ),
+        (
+            "browser_scroll",
+            json!({"browserId": "t", "ref": "e1", "direction": "down"}),
+            "exactly one of",
+        ),
+        (
+            "browser_scroll",
+            json!({"browserId": "t", "amount": 300}),
+            "exactly one of",
+        ),
     ];
     for (tool, arguments, expected) in cases {
         let refused = refusal(spec(tool), tool, &arguments);
         assert!(
             refused.contains(expected),
             "{tool}: {refused} (want {expected})"
+        );
+    }
+}
+
+/// The schema's `maxLength` counts characters and the daemon counts bytes, so
+/// a tab id is held to one alphabet where those are the same number: without it
+/// `tools/list` advertises a 128-character id that `parse` then refuses.
+#[test]
+fn a_tab_id_is_ascii_so_the_schema_length_and_the_check_agree() {
+    let longest = "t".repeat(crate::browser_affinity::MAX_BROWSER_ID_BYTES);
+    assert!(
+        parse(
+            spec("browser_close_tab"),
+            "browser_close_tab",
+            &json!({ "browserId": longest })
+        )
+        .is_ok(),
+        "an id at the bound is accepted"
+    );
+    // 32 characters, 64 bytes: inside both bounds if the schema counted
+    // characters, so this case is about the alphabet alone.
+    let inside_both = "\u{e9}".repeat(32);
+    let refused = refusal(
+        spec("browser_close_tab"),
+        "browser_close_tab",
+        &json!({ "browserId": inside_both }),
+    );
+    assert!(refused.contains("must be a browserId"), "{refused}");
+}
+
+/// A browser call is an audited act like every other tool's: the row names the
+/// tool, the session that made the call, and how it ended.
+#[test]
+fn a_browser_call_is_audited_with_its_tool_and_how_it_ended() {
+    let panel = panel("audit");
+    let host = FakeHost::register(&panel.state, 11);
+    let (body, _) = panel.call(&host, "browser_list_tabs", json!({}), json!({"tabs": []}));
+    assert_eq!(body["result"]["isError"], json!(false), "{body}");
+
+    let reply = panel.in_background("browser_click", json!({"browserId": "t", "ref": "e1"}));
+    let request = host.next();
+    host.answer_error(
+        &panel.state,
+        &request,
+        host_refusal("stale_ref: e1 is gone"),
+    );
+    assert_eq!(
+        reply.join().expect("tool call")["result"]["isError"],
+        json!(true)
+    );
+
+    let malformed = panel
+        .in_background("browser_snapshot", json!({"mode": "full"}))
+        .join()
+        .expect("tool call");
+    assert_eq!(malformed.pointer("/error/code"), Some(&json!(-32602)));
+
+    let rows = audit_rows(&panel.state);
+    for (tool, outcome) in [
+        ("browser_list_tabs", "ok"),
+        ("browser_click", "failed"),
+        ("browser_snapshot", "invalid"),
+    ] {
+        assert!(
+            rows.contains(&(tool.to_string(), outcome.to_string())),
+            "{tool} as {outcome} is audited: {rows:?}"
         );
     }
 }

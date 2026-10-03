@@ -7,7 +7,7 @@
 
 use serde_json::json;
 
-use super::browser_tools_harness::panel;
+use super::browser_tools_harness::{design_panel, panel, tools_call, FakeHost};
 use super::tests::{http_request, response_json};
 use super::tools::browser_commands::{self, TOOLS};
 
@@ -156,6 +156,11 @@ fn the_list_carries_the_contract_schema_for_every_browser_tool() {
         snapshot["properties"]["browserId"]["maxLength"],
         json!(crate::browser_affinity::MAX_BROWSER_ID_BYTES)
     );
+    assert_eq!(
+        snapshot["properties"]["browserId"]["pattern"],
+        json!("^[\\x21-\\x7E]+$"),
+        "the schema's alphabet is the one the daemon enforces"
+    );
     let click = schema_of("browser_click");
     assert_eq!(click["required"], json!(["browserId", "ref"]));
     assert_eq!(click["properties"]["clickCount"]["minimum"], json!(1));
@@ -194,4 +199,52 @@ fn the_browser_tools_are_listed_with_no_host_registered() {
     for (tool, _) in TOOLS {
         assert!(names.contains(tool), "{tool} must be listed: {names:?}");
     }
+}
+
+/// A design child is a child of someone's session, and the lane is this
+/// machine's pages in the logins of the person at the keyboard, so the overlay
+/// denies the whole family — neither the list an agent reads nor the call it
+/// makes. Driven on a session registered with the real overlay, through the
+/// real door, because a local caller is otherwise unjudged.
+#[test]
+fn a_design_child_is_served_none_of_the_lane_and_reaches_no_host() {
+    let panel = design_panel("design");
+    let host = FakeHost::register(&panel.state, 5);
+    let body = response_json(&http_request(
+        panel.state.mcp.url(),
+        Some(&format!("Bearer {}", panel.token())),
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#,
+    ));
+    let names = body["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    for (tool, _) in TOOLS {
+        assert!(
+            !names.contains(tool),
+            "{tool} must not be listed: {names:?}"
+        );
+    }
+
+    let refused = response_json(&http_request(
+        panel.state.mcp.url(),
+        Some(&format!("Bearer {}", panel.token())),
+        &tools_call("browser_click", json!({"browserId": "tab-1", "ref": "e1"})),
+    ));
+    assert_eq!(
+        refused.pointer("/error/code"),
+        Some(&json!(-32601)),
+        "{refused}"
+    );
+    assert_eq!(
+        refused.pointer("/error/message"),
+        Some(&json!("Tool disabled by policy")),
+        "{refused}"
+    );
+    assert!(
+        host.pending().is_empty(),
+        "the overlay refuses before a host is asked"
+    );
 }

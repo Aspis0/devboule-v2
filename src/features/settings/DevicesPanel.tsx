@@ -95,7 +95,7 @@ const CAP_LABELS: Record<Cap, string> = {
   // Off until a person ticks it (a new pairing never holds it): what this one
   // hands over is the pages the person at this keyboard is looking at, in their
   // own logins, and an agent on another device reads and clicks them.
-  browser: "drive this device's browser tabs (read pages, click, type)",
+  browser: "drive this machine's browser tabs (read pages, click, type)",
   // The whole remaining surface in one switch, so the label names the surface
   // and gives three examples of it: a person unchecking this is deciding that
   // the device may still drive sessions but may not change this machine.
@@ -1041,10 +1041,9 @@ export function DevicesPanel() {
             <p className="device-copy">
               A new pairing starts with every switch on except browser. A device paired before 21
               September 2026 keeps whatever set it had then: nothing grants it the new default on
-              its own, and its admin switch stays off until a person turns it on. The same is true
-              of the search and browser switches — a pairing never carries them until a person turns
-              them on, which is what opens this machine's Oracle search and its browser tabs to that
-              device's agents.
+              its own, and its admin switch stays off until a person turns it on. No pairing carries
+              the browser switch until a person turns it on, which is what opens this machine's
+              browser tabs, in the logins of the person at this keyboard, to that device's agents.
             </p>
           )}
         </div>

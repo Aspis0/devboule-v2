@@ -176,9 +176,12 @@ const SPECS: &[Spec] = &[
             required("browserId", Kind::Tab),
             optional("ref", Kind::Ref).described("Scroll this element into view."),
             optional("direction", Kind::Choices(SCROLL_DIRECTIONS)),
-            optional("amount", Kind::Integer(1, None)).described("Pixels to scroll."),
+            optional("amount", Kind::Integer(1, None)).described("Pixels to scroll, with a direction."),
         ],
-        alternatives: &[],
+        // Scrolling an element into view and scrolling the page are two
+        // different acts, so one of them has to be named: neither named means
+        // no instruction at all, and both named means no single one to run.
+        alternatives: &[&["ref"], &["direction"]],
         tab: true,
     },
     Spec {

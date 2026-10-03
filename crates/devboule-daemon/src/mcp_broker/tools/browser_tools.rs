@@ -11,13 +11,14 @@
 //! so it carries the code (`browser_tab_not_found`) and the host's own sentence
 //! — which is where `stale_ref:` and its advice live. A refused argument is a
 //! malformed call instead, so an agent can tell "you asked wrong" from "the page
-//! said no".
+//! said no". Every outcome is audited like every other tool's, so a row
+//! attributed to the calling device says what an agent did on these pages.
 
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::mcp_broker::caller::{caller_conn, McpCaller};
+use crate::mcp_broker::caller::{audit_mcp_tool, caller_conn, McpCaller};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
 use crate::mcp_broker::RegisteredSession;
 use crate::server::ServerState;
@@ -47,16 +48,25 @@ pub(in crate::mcp_broker) fn call(
         .pointer("/params/arguments")
         .cloned()
         .unwrap_or(Value::Null);
+    let audit = |outcome: &str| {
+        audit_mcp_tool(state, &caller, tool, &registration.session_id, outcome);
+    };
     let call = match parse(spec, tool, &arguments) {
         Ok(call) => call,
-        Err(sentence) => return Ok(Some(rpc_error(id, -32602, &sentence))),
+        Err(sentence) => {
+            audit("invalid");
+            return Ok(Some(rpc_error(id, -32602, &sentence)));
+        }
     };
     let context = match browser_caller(state, registration, &caller) {
         Ok(context) => context,
         // The ownership door refused this caller its own row, so the daemon
         // cannot say which workspace its tabs belong to. Answering anyway would
         // quietly hand it a scope of its own.
-        Err(sentence) => return Ok(Some(tool_error(&id, &sentence))),
+        Err(sentence) => {
+            audit("denied");
+            return Ok(Some(tool_error(&id, &sentence)));
+        }
     };
     match state.browser.execute(
         &context,
@@ -65,11 +75,17 @@ pub(in crate::mcp_broker) fn call(
         call.browser_id.as_deref(),
         call.timeout,
     ) {
-        Ok(result) => Ok(Some(browser_reply(&id, result))),
-        Err(error) => Ok(Some(tool_error(
-            &id,
-            &format!("{}: {}", error.code.as_str(), error.message),
-        ))),
+        Ok(result) => {
+            audit("ok");
+            Ok(Some(browser_reply(&id, result)))
+        }
+        Err(error) => {
+            audit("failed");
+            Ok(Some(tool_error(
+                &id,
+                &format!("{}: {}", error.code.as_str(), error.message),
+            )))
+        }
     }
 }
 

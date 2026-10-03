@@ -17,8 +17,9 @@ use devboule_protocol::{
 
 use super::tests::{http_request, owner, response_json};
 use super::tools::browser_commands::TOOLS;
-use super::{McpServerHandle, McpSessionGuard, ServerState};
+use super::{AgentLineage, McpServerHandle, McpSessionGuard, ServerState};
 use crate::outbound::ConnOut;
+use crate::provider_catalog::ToolOverlay;
 
 pub(super) const SESSION: &str = "session";
 
@@ -58,6 +59,20 @@ impl FakeHost {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// The commands the broker pushed here and no test has answered: what a
+    /// call must *not* leave behind. It does not wait, so a test that expects
+    /// nothing costs nothing.
+    pub(super) fn pending(&self) -> Vec<BrowserExecuteRequest> {
+        self.out
+            .pull_replies()
+            .into_iter()
+            .filter_map(|message| match message {
+                DaemonMessage::BrowserExecuteRequest(request) => Some(request),
+                _ => None,
+            })
+            .collect()
     }
 
     pub(super) fn answer_ok(
@@ -120,7 +135,13 @@ impl Panel {
     /// scopes.
     pub(super) fn join_workspace(&mut self, tag: &str, workspace_id: &str) -> String {
         let session_id = format!("{SESSION}-{tag}");
-        let (guard, token) = register_session(&self.state, &session_id, tag, workspace_id);
+        let (guard, token) = register_session(
+            &self.state,
+            &session_id,
+            tag,
+            workspace_id,
+            AgentLineage::root(),
+        );
         self.guards.push(guard);
         token
     }
@@ -159,10 +180,28 @@ pub(super) fn panel(tag: &str) -> Panel {
     panel_in(tag, "w-browser")
 }
 
+/// As [`panel`], for a session born with the `design` overlay: local like every
+/// other session here, so the peer door passes it, and the only thing between it
+/// and a tool is the overlay its registration carries.
+pub(super) fn design_panel(tag: &str) -> Panel {
+    panel_lineage(
+        tag,
+        "w-browser",
+        AgentLineage {
+            depth: 1,
+            overlay: ToolOverlay::DESIGN,
+        },
+    )
+}
+
 /// As [`panel`], for a session whose row names `workspace_id`.
 pub(super) fn panel_in(tag: &str, workspace_id: &str) -> Panel {
+    panel_lineage(tag, workspace_id, AgentLineage::root())
+}
+
+fn panel_lineage(tag: &str, workspace_id: &str, lineage: AgentLineage) -> Panel {
     let state = ServerState::new(format!("mcp-browser-{tag}"));
-    let (guard, token) = register_session(&state, SESSION, tag, workspace_id);
+    let (guard, token) = register_session(&state, SESSION, tag, workspace_id, lineage);
     let server = state.mcp.start(&state).expect("MCP server");
     Panel {
         state,
@@ -177,6 +216,7 @@ fn register_session(
     session_id: &str,
     tag: &str,
     workspace_id: &str,
+    lineage: AgentLineage,
 ) -> (McpSessionGuard, String) {
     let owner = owner(&format!("browser-user-{tag}"), "browser-client");
     crate::session::insert_test_live_agent_in_workspace(
@@ -187,7 +227,7 @@ fn register_session(
     );
     let guard = state
         .mcp
-        .register(session_id, &owner, &SessionKind::Acp)
+        .register_with_provider(session_id, &owner, &SessionKind::Acp, None, lineage)
         .expect("registration")
         .expect("MCP guard");
     let token = state.mcp.test_token(session_id).expect("token");
@@ -210,4 +250,21 @@ pub(super) fn tool_text(body: &Value) -> &str {
     body.pointer("/result/content/0/text")
         .and_then(Value::as_str)
         .unwrap_or("<no text>")
+}
+
+/// The audit table's rows, as (tool, outcome): what the owner reads about what
+/// the lane did.
+pub(super) fn audit_rows(state: &ServerState) -> Vec<(String, String)> {
+    let connection = rusqlite::Connection::open(state.sessions.runtime_dir().join("journal.db"))
+        .expect("journal db");
+    let mut statement = connection
+        .prepare("SELECT action, outcome FROM audit ORDER BY id")
+        .expect("audit query");
+    statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .expect("audit rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read audit rows")
 }

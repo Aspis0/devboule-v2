@@ -53,8 +53,9 @@ const PEER: PeerRow = {
   online: true,
 };
 
-/** The browser switch's label: the machine's pages it hands over, not its wire name. */
-const BROWSER_LABEL = "drive this device's browser tabs (read pages, click, type)";
+/** The browser switch's label: the machine's pages it hands over, not its wire
+ * name — and this machine's, not the paired device's. */
+const BROWSER_LABEL = "drive this machine's browser tabs (read pages, click, type)";
 
 function replyWith(peers: PeerRow[]): DevicesReply {
   return { selfInfo: SELF, peers, pending: [] };
@@ -122,5 +123,19 @@ describe("the browser capability switch", () => {
     await renderPanel();
 
     expect(checkboxByLabel(BROWSER_LABEL).checked).toBe(true);
+  });
+
+  // `search` has been in the default since 22 September 2026, so a device
+  // paired then was born holding it: the copy may name the browser switch as
+  // the exception and may not group search with it.
+  it("says the browser switch is the one exception, without claiming search is off", async () => {
+    vi.mocked(devicesList).mockResolvedValue(replyWith([PEER]));
+    await renderPanel();
+
+    const copy = Array.from(container.querySelectorAll("p.device-copy"))
+      .map((node) => node.textContent ?? "")
+      .find((text) => text.startsWith("A new pairing starts"));
+    expect(copy).toContain("every switch on except browser");
+    expect(copy).not.toMatch(/search and browser/);
   });
 });

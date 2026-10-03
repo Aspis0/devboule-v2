@@ -25,6 +25,10 @@ pub(in crate::mcp_broker) enum Kind {
     /// An element ref from a snapshot: the contract's `e<backendDOMNodeId>`.
     Ref,
     /// A tab.
+    ///
+    /// ASCII, so the schema's `maxLength` (characters) and this check's length
+    /// (bytes) are one number: a multibyte id the list advertises as within
+    /// the bound would be refused here for being longer than it looks.
     Tab,
     /// A whole number, bounded. `None` leaves the upper bound open.
     Integer(i64, Option<i64>),
@@ -42,7 +46,12 @@ impl Kind {
             Self::Text => json!({"type": "string"}),
             Self::Ref => json!({"type": "string", "pattern": "^e\\d+$"}),
             Self::Tab => {
-                json!({"type": "string", "minLength": 1, "maxLength": MAX_BROWSER_ID_BYTES})
+                json!({
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_BROWSER_ID_BYTES,
+                    "pattern": "^[\\x21-\\x7E]+$"
+                })
             }
             Self::Integer(min, max) => {
                 let mut schema = Map::from_iter([("type".to_string(), json!("integer"))]);
@@ -73,7 +82,13 @@ impl Kind {
                 )),
             },
             Self::Tab => match value.as_str() {
-                Some(text) if !text.is_empty() && text.len() <= MAX_BROWSER_ID_BYTES => Ok(()),
+                Some(text)
+                    if !text.is_empty()
+                        && text.len() <= MAX_BROWSER_ID_BYTES
+                        && text.bytes().all(|byte| byte.is_ascii_graphic()) =>
+                {
+                    Ok(())
+                }
                 _ => Err(format!(
                     "{tool}: '{name}' must be a browserId from browser_new_tab or browser_list_tabs."
                 )),

@@ -1183,6 +1183,41 @@ impl Default for ToolOverlay {
     }
 }
 
+/// The `design` preset's deny list: the ten names beside the whole browser
+/// lane. Spelled out because a preset's list has to stay `const` and a `const`
+/// cannot join two lists;
+/// `the_design_overlay_hides_its_writes_and_the_whole_browser_lane_and_keeps_the_roster`
+/// compares it with the catalog's own browser names, so the lane cannot grow
+/// past the overlay.
+#[cfg(feature = "server")]
+const DESIGN_DENIED: &[&str] = &[
+    MCP_SEND_MESSAGE_TOOL,
+    MCP_CREATE_AGENT_TOOL,
+    MCP_CREATE_WORKSPACE_TOOL,
+    MCP_CREATE_TERMINAL_TOOL,
+    MCP_SEND_TERMINAL_KEYS_TOOL,
+    MCP_KILL_TERMINAL_TOOL,
+    MCP_CANCEL_AGENT_TOOL,
+    MCP_STOP_AGENT_TOOL,
+    MCP_CLOSE_AGENT_TOOL,
+    MCP_ARCHIVE_WORKSPACE_TOOL,
+    MCP_BROWSER_NEW_TAB_TOOL,
+    MCP_BROWSER_LIST_TABS_TOOL,
+    MCP_BROWSER_CLOSE_TAB_TOOL,
+    MCP_BROWSER_NAVIGATE_TOOL,
+    MCP_BROWSER_SNAPSHOT_TOOL,
+    MCP_BROWSER_FIND_TOOL,
+    MCP_BROWSER_CLICK_TOOL,
+    MCP_BROWSER_FILL_TOOL,
+    MCP_BROWSER_TYPE_TOOL,
+    MCP_BROWSER_PRESS_TOOL,
+    MCP_BROWSER_SELECT_TOOL,
+    MCP_BROWSER_CHECK_TOOL,
+    MCP_BROWSER_HOVER_TOOL,
+    MCP_BROWSER_SCROLL_TOOL,
+    MCP_BROWSER_WAIT_FOR_TOOL,
+];
+
 #[cfg(feature = "server")]
 impl ToolOverlay {
     /// The empty overlay: the session is served exactly what its provider's
@@ -1192,25 +1227,18 @@ impl ToolOverlay {
     };
     /// A design child: no `devboule_send_message`, no `devboule_create_agent`,
     /// no `devboule_create_workspace` or `devboule_archive_workspace`, no
-    /// terminal write — open, type or kill — and none of the supervision
+    /// terminal write — open, type or kill — none of the supervision
     /// verbs — `devboule_cancel_agent`, `devboule_stop_agent`,
-    /// `devboule_close_agent`.
+    /// `devboule_close_agent` — and no `browser_*` tool at all.
     /// It keeps the roster, which is its own bearer's read-only view. Depth
     /// alone would not stop it (a depth-1 child may create), so the deny list
     /// is the rule.
+    ///
+    /// The browser lane is denied whole, reads included: a snapshot is this
+    /// machine's pages in the logins of the person at the keyboard, which is
+    /// the person's own surface, not a child's assignment.
     pub(crate) const DESIGN: Self = Self {
-        disabled: OverlayNames::Preset(&[
-            MCP_SEND_MESSAGE_TOOL,
-            MCP_CREATE_AGENT_TOOL,
-            MCP_CREATE_WORKSPACE_TOOL,
-            MCP_CREATE_TERMINAL_TOOL,
-            MCP_SEND_TERMINAL_KEYS_TOOL,
-            MCP_KILL_TERMINAL_TOOL,
-            MCP_CANCEL_AGENT_TOOL,
-            MCP_STOP_AGENT_TOOL,
-            MCP_CLOSE_AGENT_TOOL,
-            MCP_ARCHIVE_WORKSPACE_TOOL,
-        ]),
+        disabled: OverlayNames::Preset(DESIGN_DENIED),
     };
 
     /// A profile's overlay: the tools the human's profile denies, by name.
